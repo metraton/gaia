@@ -30,7 +30,11 @@ Sistema de orquestación multi-agente para Claude Code - Toolkit de automatizaci
 Usa el instalador interactivo integrado para configurar Gaia-Ops en cualquier proyecto:
 
 ```bash
-npx @jaguilar87/gaia-ops init
+# Opción 1: Ejecutar directamente con npx
+npx gaia-init
+
+# Opción 2: Si prefieres especificar el paquete completo
+npx @jaguilar87/gaia-ops
 ```
 
 O si lo instalas globalmente:
@@ -185,11 +189,11 @@ const configPath = getConfigPath('orchestration-workflow.md');
 
 Este paquete sigue [Versionamiento Semántico](https://semver.org/):
 
-- **MAJOR:** Cambios que rompen compatibilidad en el comportamiento del orquestador
-- **MINOR:** Nuevas características, agentes o mejoras
-- **PATCH:** Correcciones de bugs, clarificaciones, errores tipográficos
+    - **MAJOR:** Cambios que rompen compatibilidad en el comportamiento del orquestador
+    - **MINOR:** Nuevas características, agentes o mejoras
+    - **PATCH:** Correcciones de bugs, clarificaciones, errores tipográficos
 
-Versión actual: **2.2.0**
+    Versión actual: **2.2.3**
 
 Ver [CHANGELOG.md](./CHANGELOG.md) para el historial de versiones.
 

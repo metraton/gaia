@@ -40,3 +40,4 @@ coverage/
 dist/
 build/
 *.egg-info/
+.npm-cache/

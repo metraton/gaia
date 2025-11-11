@@ -30,7 +30,11 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 Use the built-in interactive installer to set up Gaia-Ops in any project:
 
 ```bash
-npx @jaguilar87/gaia-ops init
+# Option 1: run the binary directly via npx
+npx gaia-init
+
+# Option 2: specify the npm package explicitly
+npx @jaguilar87/gaia-ops
 ```
 
 Or if installed globally:
@@ -189,7 +193,7 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features, agents, or improvements
 - **PATCH:** Bug fixes, clarifications, typos
 
-Current version: **2.2.0**
+Current version: **2.2.3**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 

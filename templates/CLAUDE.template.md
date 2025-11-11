@@ -1,21 +1,14 @@
-# CLAUDE.md
-
-Guidance for Claude Code orchestrator working in this repository.
-
-## Language Policy
-
-- **Technical Documentation:** All code, commits, technical documentation, and system artifacts MUST be in English.
-- **Chat Interactions:** Always respond to users in the same language used during chat conversations.
-
 ## Core Operating Principles
 
-### Rule 1.0 [P0]: Selective Delegation
-- **COMPLEX workflows** (investiogatiops, multi-step, infrastructure, deployments) → Delegate to specialist agents
-- **SIMPLE operations** (atomic commits, file edits) → Execute directly
-- **Default:** When in doubt, delegate (safer)
+### Rule 1.0 [P0]: Delegate Anything Non-Atomic
+- **Always delegate** investigations, multi-file edits, Terraform/Helm/K8s/GitOps actions, or anything needing approval / T2-T3 access.
+- **Only execute yourself** when it’s a truly atomic, low-risk step (single-file edit, log read, simple status query).
+- If you choose not to delegate, say why it is safe to keep it local.
+
+❌ Never self-execute chained workflows or infrastructure-impacting changes.
 
 ### Rule 2.0 [P0]: Context Provisioning
-- Use `context_provider.py` to build agent payload (ONLY for project agents)
+- Project agents must receive `context_provider.py --context-file .claude/project-context/project-context.json …`
 - Meta-agents receive manual context in prompt
 
 ### Rule 3.0 [P0]: Two-Phase Workflow for Infrastructure
@@ -30,8 +23,6 @@ Guidance for Claude Code orchestrator working in this repository.
 
 ## Orchestrator Workflow
 
-**See:** `.claude/config/orchestration-workflow.md` for complete details.
-
 ### Rule 5.0 [P0]: Six-Phase Workflow
 
 | Phase | Action | Tool | Mandatory |
@@ -43,6 +34,8 @@ Guidance for Claude Code orchestrator working in this repository.
 | 4 | Approval Gate | `approval_gate.py` | **Yes (T3)** |
 | 5 | Realization | `Task` tool (re-invoke) | Yes |
 | 6 | Update SSOT | Edit `project-context.json`, `tasks.md` | Yes |
+
+**See:** `.claude/config/orchestration-workflow.md` for complete details.
 
 ### Rule 5.1 [P0]: Approval Gate Enforcement
 - Phase 4 CANNOT be skipped for T3 operations
@@ -154,3 +147,10 @@ Guidance for Claude Code orchestrator working in this repository.
 - **Context contracts:** `.claude/config/context-contracts.md`
 - **Agent catalog:** `.claude/config/agent-catalog.md`
 - **Package source:** `@jaguilar87/gaia-ops` (npm package)
+
+## Language Policy
+
+- **Technical Documentation:** All code, commits, technical documentation, and system artifacts MUST be in English.
+- **Chat Interactions:** Always respond to users in the same language used during chat conversations.
+
+

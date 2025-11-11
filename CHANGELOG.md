@@ -5,6 +5,30 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.3] - 2025-11-11
+
+### Fixed - Deterministic Project Context Location
+- **context_provider.py**
+  - Always reads `.claude/project-context/project-context.json` (no fallback to legacy paths)
+  - Removed legacy auto-detection logic and unused imports
+  - Prevents “Context file not found” errors when projects only use the new structure
+- **templates/CLAUDE.template.md**
+  - Rule 1 clarifies when to delegate vs. self-execute
+  - Rule 2 explicitly documents the `context_provider.py --context-file .claude/project-context/project-context.json …` invocation
+  - Workflow summary now references orchestration docs after the table (cleaner render)
+
+### Changed - CLI Documentation & Version Alignment
+- **README.md / README.en.md**
+  - Documented the exact `npx` commands (`npx gaia-init` / `npx @jaguilar87/gaia-ops`) and clarified installation steps
+  - Updated “Current version” badges to **2.2.3**
+- **package.json**
+  - Bumped package version to `2.2.3`
+
+### Benefits
+- ✅ No manual tweaks needed to point `context_provider.py` at the correct project context
+- ✅ CLAUDE template now tells the orchestrator exactly how to invoke the context provider
+- ✅ README instructions reflect the real CLI entry points, reducing confusion for new installs
+
 ---
 
 ## [2.2.2] - 2025-11-11
