@@ -379,7 +379,8 @@ def main():
         """
     )
     parser.add_argument("agent_name", help="The name of the agent being invoked.")
-    parser.add_argument("user_task", help="The user's task or query for the agent.")
+    parser.add_argument("user_task", nargs="?", default="General inquiry",
+                        help="The user's task or query for the agent (default: 'General inquiry' if omitted).")
     parser.add_argument(
         "--context-file",
         type=Path,
