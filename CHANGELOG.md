@@ -5,6 +5,54 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2025-11-11
+
+### Added - Phase 0 Clarification Module
+- **NEW:** `tools/clarification/` module for intelligent ambiguity detection before routing
+  - `clarification/engine.py`: Core clarification engine (refactored from clarify_engine.py)
+  - `clarification/patterns.py`: Ambiguity detection patterns (ServiceAmbiguityPattern, NamespaceAmbiguityPattern, etc.)
+  - `clarification/workflow.py`: High-level helper functions for orchestrators (`execute_workflow()`)
+  - `clarification/__init__.py`: Clean public API
+- **Protocol G** in `agents/gaia.md`: Clarification system analysis and troubleshooting guide
+- **Rule 5.0.1** in `templates/CLAUDE.template.md`: Phase 0 implementation guide with code examples
+- **Phase 0 integration** in `/speckit.specify` command
+- **Regression tests** in `tests/integration/test_phase_0_regression.py`
+- **Clarification metrics** to Key System Metrics (target: 20-30% clarification rate)
+
+### Changed - Module Restructuring (BREAKING)
+- **BREAKING:** `clarify_engine.py` and `clarify_patterns.py` moved to `clarification/` module
+  - **Old imports:** `from clarify_engine import request_clarification`
+  - **New imports:** `from clarification import execute_workflow, request_clarification`
+- Updated `application_services` structure in project-context.json:
+  - Added `tech_stack` field (replaces `technology`)
+  - Added `namespace` field for service location
+  - **Removed** `status` field (dynamic state must be verified in real-time, not stored in SSOT)
+- Service metadata now shows only static information: `tech_stack | namespace | port`
+
+### Fixed
+- Import paths in `tests/tools/test_clarify_engine.py` updated to new module structure
+- Service metadata test updated to reflect removal of dynamic status field
+- All 20 unit tests passing with new module structure
+
+### Documentation
+- Added comprehensive Phase 0 implementation guide
+- Added troubleshooting guide for clarification system
+- Updated speckit.specify.md with Phase 0 workflow integration
+- Added Protocol G diagnostic steps in gaia.md
+
+### Migration Guide for v2.3.0
+```python
+# Before (v2.2.x)
+from clarify_engine import request_clarification, process_clarification
+
+# After (v2.3.0)
+from clarification import execute_workflow
+
+# Simple usage
+result = execute_workflow(user_prompt)
+enriched_prompt = result["enriched_prompt"]
+```
+
 ## [2.2.3] - 2025-11-11
 
 ### Fixed - Deterministic Project Context Location
