@@ -113,6 +113,8 @@ When `npx @jaguilar87/gaia-ops init` (or `gaia-init` after a global install) run
 ### Key System Metrics (What to Track)
 
 - **Routing Accuracy:** Target 92.7% (from tests)
+- **Clarification Rate:** Target 20-30% (Phase 0 effectiveness)
+- **Clarification Effectiveness:** Routing accuracy improvement post-enrichment
 - **Context Efficiency:** 79-85% token savings (via context_provider.py)
 - **Test Coverage:** 55+ tests, 100% pass rate
 - **Production Uptime:** Track via logs/
@@ -471,6 +473,88 @@ You:
 7. Propose implementation plan
 
 **Output:** Feature RFC (Request for Comments)
+
+### Protocol G: Clarification System Analysis
+
+**Trigger:** "¿Por qué no se activó clarificación?" or "Ambiguity detection issues" or "Analyze Phase 0"
+
+**Steps:**
+1. Review clarification logs:
+   ```bash
+   cat .claude/logs/clarifications.jsonl | jq .
+   ```
+
+2. Check configuration:
+   ```bash
+   cat .claude/config/clarification_rules.json
+   jq '.global_settings' .claude/config/clarification_rules.json
+   ```
+
+3. Test detection manually:
+   ```python
+   import sys
+   sys.path.insert(0, '.claude/tools')
+   from clarification import execute_workflow, request_clarification
+
+   result = request_clarification("Check the API")
+   print(f"Needs clarification: {result['needs_clarification']}")
+   print(f"Ambiguity score: {result.get('ambiguity_score', 0)}")
+   print(f"Patterns detected: {[a['pattern'] for a in result.get('ambiguity_points', [])]}")
+   ```
+
+4. Review pattern definitions:
+   ```bash
+   cat .claude/tools/clarification/patterns.py
+   ```
+
+5. Analyze recent clarifications:
+   ```bash
+   cat .claude/logs/clarifications.jsonl | \
+     jq -r '[.timestamp, .ambiguity_score, .original_prompt] | @csv' | \
+     tail -20
+   ```
+
+6. Benchmark effectiveness:
+   - **Clarification rate:** Target 20-30%
+   - **User satisfaction:** No complaints about "too many questions"
+   - **Routing accuracy improvement:** Measure before/after enrichment
+
+7. Check module structure:
+   ```bash
+   ls -la .claude/tools/clarification/
+   # Should show: __init__.py, engine.py, patterns.py, workflow.py
+   ```
+
+**Output:** Clarification effectiveness report + tuning recommendations
+
+**Common Issues:**
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Threshold too high | Ambiguity not detected | Lower from 30 to 20 in `clarification_rules.json` |
+| Threshold too low | Too many questions | Raise from 30 to 40 |
+| Missing patterns | New ambiguous terms not caught | Add to `patterns.py` (ServiceAmbiguityPattern.keywords) |
+| Spanish keywords missing | Spanish prompts not detected | Add to keywords list in patterns |
+| Import errors | Module not found | Check symlinks to gaia-ops package |
+| No services found | Tests failing | Verify `project-context.json` has `application_services` section |
+
+**Metrics to Track:**
+
+```python
+# Calculate clarification rate
+import json
+
+with open('.claude/logs/clarifications.jsonl') as f:
+    logs = [json.loads(line) for line in f]
+
+total_requests = len(logs)
+clarified = sum(1 for log in logs if log.get('ambiguity_score', 0) > 30)
+rate = (clarified / total_requests * 100) if total_requests > 0 else 0
+
+print(f"Clarification rate: {rate:.1f}%")
+print(f"Target: 20-30%")
+print(f"Status: {'✅ Good' if 20 <= rate <= 30 else '⚠️ Needs tuning'}")
+```
 
 ## Research Guidelines (WebSearch Usage)
 

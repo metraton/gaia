@@ -31,32 +31,23 @@ Given those arguments, do this:
 
    ```python
    import sys
-   sys.path.insert(0, '/home/jaguilar/aaxis/rnd/repositories/.claude/tools')
-   from clarify_engine import request_clarification, process_clarification
+   sys.path.insert(0, '.claude/tools')
+   from clarification import execute_workflow
 
-   # Detect ambiguity in feature description
-   clarification_data = request_clarification(
+   # Detect and resolve ambiguity in feature description
+   result = execute_workflow(
        user_prompt=feature_description,
-       command_context={"command": "speckit.specify"}
+       command_context={"command": "speckit.specify"},
+       ask_user_question_func=AskUserQuestion  # Claude Code tool
    )
 
-   if clarification_data["needs_clarification"]:
-       # Present summary
-       print(clarification_data["summary"])
+   # Use enriched description for remaining steps
+   feature_description = result["enriched_prompt"]
 
-       # Ask questions (AskUserQuestion tool)
-       response = AskUserQuestion(**clarification_data["question_config"])
-
-       # Enrich feature description
-       result = process_clarification(
-           clarification_data["engine_instance"],
-           feature_description,
-           response["answers"],
-           clarification_data["clarification_context"]
-       )
-
-       # Use enriched description for remaining steps
-       feature_description = result["enriched_prompt"]
+   # Log clarification if it occurred
+   if result["clarification_occurred"]:
+       from clarification import get_clarification_summary
+       print(get_clarification_summary(result["clarification_data"]))
    ```
 
    **What gets clarified**:

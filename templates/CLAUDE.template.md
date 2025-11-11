@@ -27,7 +27,7 @@
 
 | Phase | Action | Tool | Mandatory |
 |-------|--------|------|-----------|
-| 0 | Clarification (if ambiguous) | `clarify_engine.py` | Conditional |
+| 0 | Clarification (if ambiguous) | `clarification` module | Conditional |
 | 1 | Route to agent | `agent_router.py` | Yes |
 | 2 | Provision context | `context_provider.py` | Yes |
 | 3 | Invoke (Planning) | `Task` tool | Yes |
@@ -36,6 +36,55 @@
 | 6 | Update SSOT | Edit `project-context.json`, `tasks.md` | Yes |
 
 **See:** `.claude/config/orchestration-workflow.md` for complete details.
+
+### Rule 5.0.1 [P0]: Phase 0 Implementation
+
+**When to invoke Phase 0:**
+- User prompt contains generic terms: "the service", "the API", "the cluster"
+- User mentions "production" but project-context says "non-prod"
+- User references resource without specifying which (Redis, DB, namespace)
+- Ambiguity score > 30 (threshold configurable in `.claude/config/clarification_rules.json`)
+
+**When to skip Phase 0:**
+- User prompt is specific: "tcm-api in tcm-non-prod"
+- Read-only queries: "show me logs"
+- Simple commands: "/help", "/status"
+
+**Code Integration:**
+
+```python
+import sys
+sys.path.insert(0, '.claude/tools')
+from clarification import execute_workflow
+
+# At orchestrator entry point
+result = execute_workflow(
+    user_prompt=user_prompt,
+    command_context={"command": "general_prompt"}
+)
+
+enriched_prompt = result["enriched_prompt"]
+
+# Then proceed to Phase 1 with enriched_prompt
+# agent = route_to_agent(enriched_prompt)
+```
+
+**Manual Mode (custom UX):**
+
+```python
+from clarification import execute_workflow
+
+result = execute_workflow(user_prompt)  # No ask_user_question_func
+
+if result.get("needs_manual_questioning"):
+    # Show summary and questions to user
+    print(result["summary"])
+
+    # Get user responses with custom UI
+    # Then manually process clarification
+```
+
+**See:** `.claude/config/orchestration-workflow.md` lines 25-150 for complete Phase 0 protocol.
 
 ### Rule 5.1 [P0]: Approval Gate Enforcement
 - Phase 4 CANNOT be skipped for T3 operations

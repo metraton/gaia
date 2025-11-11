@@ -52,7 +52,7 @@ class ClarificationEngine:
             }
         """
         # Import patterns here to avoid circular dependency
-        from clarify_patterns import detect_all_ambiguities
+        from .patterns import detect_all_ambiguities
 
         # Step 1: Detect all ambiguities using patterns
         ambiguities = detect_all_ambiguities(user_prompt, self.project_context)
@@ -330,10 +330,10 @@ class ClarificationEngine:
             tech_stack = svc.get("tech_stack", "N/A")
             namespace = svc.get("namespace", "N/A")
             port = svc.get("port", "N/A")
-            status = svc.get("status", "unknown")
-            status_emoji = "✅" if status == "running" else "⏸️"
 
-            return f"{tech_stack} | Namespace: {namespace} | Puerto: {port} | Estado: {status_emoji} {status}"
+            # Status is NOT stored in project-context (must be verified in real-time)
+            # Only show static metadata
+            return f"{tech_stack} | Namespace: {namespace} | Puerto: {port}"
 
         # Namespace metadata
         elif pattern == "namespace_ambiguity" and "namespace_metadata" in ambiguity:

@@ -1,5 +1,5 @@
 """
-Unit tests for clarify_engine.py
+Unit tests for clarification module
 """
 
 import pytest
@@ -11,7 +11,7 @@ import os
 tools_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tools')
 sys.path.insert(0, tools_path)
 
-from clarify_engine import ClarificationEngine, request_clarification, process_clarification
+from clarification import ClarificationEngine, request_clarification, process_clarification
 
 
 @pytest.fixture
@@ -338,8 +338,7 @@ def test_get_option_metadata_service(engine_with_mock_context):
             "tcm-api": {
                 "tech_stack": "NestJS",
                 "namespace": "tcm-non-prod",
-                "port": 3001,
-                "status": "running"
+                "port": 3001
             }
         }
     }
@@ -349,7 +348,7 @@ def test_get_option_metadata_service(engine_with_mock_context):
     assert "NestJS" in metadata
     assert "tcm-non-prod" in metadata
     assert "3001" in metadata
-    assert "✅" in metadata  # Running status emoji
+    # Status is NOT in project-context (verified in real-time only)
 
 
 def test_get_option_metadata_namespace(engine_with_mock_context):
