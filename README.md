@@ -17,7 +17,8 @@ Sistema de orquestación multi-agente para Claude Code - Toolkit de automatizaci
 - **Soporte multi-cloud** - Funciona con GCP, AWS, y listo para Azure
 - **6 agentes especialistas** (terraform-architect, gitops-operator, gcp-troubleshooter, aws-troubleshooter, devops-developer, Gaia)
 - **3 meta-agentes** (Explore, Plan, Gaia)
-- **Motor de clarificación** para detección de ambigüedades
+- **Sistema de clarificación genérico** (Phase 0) - Detección automática de ambigüedades desde project-context.json con preguntas dinámicas y multi-tab
+- **Helper AskUserQuestion** - Función `ask()` para forzar UX consistente (SIEMPRE preguntas, nunca texto plano)
 - **Puertas de aprobación** para operaciones T3 (terraform apply, kubectl apply, etc.)
 - **Validación de commits Git** con Conventional Commits
 - **Sistema de provisión de contexto** para ruteo inteligente de agentes

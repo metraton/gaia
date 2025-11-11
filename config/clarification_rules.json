@@ -1,0 +1,152 @@
+{
+  "version": "1.1.0",
+  "description": "Clarification system configuration for generic ambiguity detection",
+
+  "global_settings": {
+    "enabled": true,
+    "ambiguity_threshold": 30,
+    "max_questions_per_clarification": 5,
+    "skip_readonly_threshold": 50,
+    "cache_results": true,
+    "cache_ttl_seconds": 300
+  },
+
+  "entity_types": {
+    "service": {
+      "enabled": true,
+      "weight": 80,
+      "keywords": [
+        "the api",
+        "el api",
+        "la api",
+        "api service",
+        "the service",
+        "el servicio",
+        "la aplicación",
+        "the app",
+        "la app",
+        "the web",
+        "web service",
+        "the bot",
+        "el bot"
+      ]
+    },
+    "namespace": {
+      "enabled": true,
+      "weight": 60,
+      "keywords": [
+        "namespace",
+        "deploy to",
+        "desplegar en",
+        "in namespace",
+        "en el namespace",
+        "en el namespace",
+        "in the namespace"
+      ]
+    },
+    "cluster": {
+      "enabled": true,
+      "weight": 70,
+      "keywords": [
+        "cluster",
+        "clúster",
+        "in cluster",
+        "to cluster"
+      ]
+    },
+    "environment": {
+      "enabled": true,
+      "weight": 90,
+      "keywords": [
+        "production",
+        "prod",
+        "producción",
+        "staging",
+        "dev",
+        "development"
+      ]
+    },
+    "resource": {
+      "enabled": true,
+      "weight": 70,
+      "keywords": [
+        "the redis",
+        "el redis",
+        "redis instance",
+        "the database",
+        "la database",
+        "la base de datos",
+        "the postgres",
+        "el postgres",
+        "database"
+      ]
+    }
+  },
+
+  "skip_clarification": {
+    "if_command_is_slash": true,
+    "if_high_specificity": true,
+    "specificity_threshold": 0.8,
+    "if_readonly_and_low_ambiguity": true
+  },
+
+  "emoji_map": {
+    "service": "📦",
+    "namespace": "🎯",
+    "cluster": "🏢",
+    "environment": "⚠️",
+    "resource": "🔧",
+    "all": "🌐",
+    "database": "🗄️",
+    "production": "🔴",
+    "staging": "🟡",
+    "development": "🟢"
+  },
+
+  "question_templates": {
+    "service": "¿Qué servicio quieres usar?",
+    "namespace": "¿En qué namespace?",
+    "cluster": "¿En qué cluster?",
+    "environment": "¿En qué entorno?",
+    "resource": "¿Qué recurso?"
+  },
+
+  "header_templates": {
+    "service": "Servicio",
+    "namespace": "Namespace",
+    "cluster": "Cluster",
+    "environment": "Entorno",
+    "resource": "Recurso"
+  },
+
+  "default_option": {
+    "label_all": "Todos",
+    "description_template": "Aplicar a todos ({count} total)",
+    "apply_to_entities": [
+      "service",
+      "namespace",
+      "cluster"
+    ]
+  },
+
+  "performance": {
+    "max_analysis_time_ms": 150,
+    "max_context_search_time_ms": 100,
+    "max_question_generation_time_ms": 100,
+    "parallel_search": false
+  },
+
+  "logging": {
+    "enabled": true,
+    "log_file": ".claude/logs/clarifications.jsonl",
+    "log_level": "info",
+    "log_format": "jsonl"
+  },
+
+  "notes": {
+    "project_context_path": ".claude/project-context/project-context.json",
+    "search_strategy": "project-context-only",
+    "filesystem_search": false,
+    "filesystem_fallback": false
+  }
+}
