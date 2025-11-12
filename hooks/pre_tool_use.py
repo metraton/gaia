@@ -242,6 +242,50 @@ class PolicyEngine:
             logger.info("Using fallback capabilities configuration")
             return self._get_fallback_capabilities()
 
+    def _get_fallback_capabilities(self) -> Dict[str, Any]:
+        """
+        Provide fallback capabilities when agent_capabilities.json is not available.
+        Uses hardcoded agent definitions based on gaia-ops agent catalog.
+        """
+        logger.info("Using fallback agent capabilities (hardcoded)")
+
+        return {
+            "routing_matrix": {
+                "skills": {
+                    "terraform-architect": {
+                        "description": "Terraform/Terragrunt infrastructure management",
+                        "triggers": ["terraform", "terragrunt", "infrastructure", "vpc", "gcs", "s3"],
+                        "tools": ["terraform", "terragrunt"]
+                    },
+                    "gitops-operator": {
+                        "description": "Kubernetes/GitOps deployment management",
+                        "triggers": ["kubectl", "kubernetes", "k8s", "deploy", "helm", "flux"],
+                        "tools": ["kubectl", "helm", "flux", "kustomize"]
+                    },
+                    "gcp-troubleshooter": {
+                        "description": "GCP infrastructure diagnostics",
+                        "triggers": ["gcp", "gcloud", "gke", "cloud sql", "google cloud"],
+                        "tools": ["gcloud", "kubectl"]
+                    },
+                    "aws-troubleshooter": {
+                        "description": "AWS infrastructure diagnostics",
+                        "triggers": ["aws", "eks", "ec2", "rds", "s3", "cloudwatch"],
+                        "tools": ["aws", "kubectl", "eksctl"]
+                    },
+                    "devops-developer": {
+                        "description": "Application development and testing",
+                        "triggers": ["npm", "test", "build", "lint", "docker", "application"],
+                        "tools": ["npm", "pnpm", "docker", "pytest", "jest"]
+                    }
+                }
+            },
+            "integration_metadata": {
+                "version": "2.0.0",
+                "source": "fallback_hardcoded",
+                "note": "Using hardcoded capabilities - agent_capabilities.json not found"
+            }
+        }
+
     def _inspect_script_content(self, script_path: str) -> Tuple[bool, str, Optional[str]]:
         """Inspects script content for blocked or sensitive commands."""
         try:

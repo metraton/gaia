@@ -5,13 +5,18 @@ Tests semantic routing, intent classification, and capability validation
 
 import pytest
 import sys
+import importlib
 from pathlib import Path
 
 # Add tools directory to path
 TOOLS_PATH = Path(__file__).resolve().parents[2] / "tools"
 sys.path.insert(0, str(TOOLS_PATH))
 
-from agent_router import IntentClassifier, CapabilityValidator, AgentRouter
+# Import from reorganized tools structure
+routing = importlib.import_module("1-routing")
+IntentClassifier = routing.IntentClassifier
+CapabilityValidator = routing.CapabilityValidator
+AgentRouter = routing.AgentRouter
 
 
 class TestIntentClassifier:

@@ -98,32 +98,32 @@ class TestToolsDirectory:
         return tools.resolve() if tools.is_symlink() else tools
 
     def test_critical_tools_exist(self, tools_dir):
-        """All critical tools must exist"""
-        critical_tools = [
-            "context_provider.py",
-            "context_section_reader.py",
-            "agent_router.py",
-            "semantic_matcher.py",
-            "generate_embeddings.py",
-            "approval_gate.py",
-            "commit_validator.py",
-            "task_manager.py",
-            "agent_invoker_helper.py"
-        ]
+        """All critical tools must exist in reorganized structure"""
+        critical_tools = {
+            "2-context/context_provider.py",
+            "2-context/context_section_reader.py",
+            "1-routing/agent_router.py",
+            "6-semantic/semantic_matcher.py",
+            "6-semantic/generate_embeddings.py",
+            "4-validation/approval_gate.py",
+            "4-validation/commit_validator.py",
+            "5-task-management/task_manager.py",
+            "7-utilities/agent_invoker_helper.py"
+        }
 
         for tool in critical_tools:
             tool_path = tools_dir / tool
             assert tool_path.exists(), f"Critical tool missing: {tool}"
 
     def test_quicktriage_scripts_exist(self, tools_dir):
-        """All QuickTriage scripts must exist"""
-        quicktriage_scripts = [
-            "quicktriage_gitops_operator.sh",
-            "quicktriage_gcp_troubleshooter.sh",
-            "quicktriage_terraform_architect.sh",
-            "quicktriage_devops_developer.sh",
-            "quicktriage_aws_troubleshooter.sh"
-        ]
+        """All QuickTriage scripts must exist in fast-queries"""
+        quicktriage_scripts = {
+            "fast-queries/gitops/quicktriage_gitops_operator.sh",
+            "fast-queries/cloud/gcp/quicktriage_gcp_troubleshooter.sh",
+            "fast-queries/terraform/quicktriage_terraform_architect.sh",
+            "fast-queries/appservices/quicktriage_devops_developer.sh",
+            "fast-queries/cloud/aws/quicktriage_aws_troubleshooter.sh"
+        }
 
         for script in quicktriage_scripts:
             script_path = tools_dir / script

@@ -1,0 +1,165 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "last_updated": "2025-11-12T00:00:00Z",
+    "project_name": "Gaia-Ops Test Project",
+    "cloud_provider": "GCP",
+    "environment": "non-prod"
+  },
+  "sections": {
+    "project_details": {
+      "id": "gaia-ops-test",
+      "region": "us-central1",
+      "environment": "non-prod",
+      "description": "Test project for gaia-ops tools"
+    },
+    "application_services": [
+      {
+        "name": "tcm-api",
+        "tech_stack": "NestJS",
+        "namespace": "tcm-non-prod",
+        "port": 3001,
+        "status": "running",
+        "description": "TCM Backend API"
+      },
+      {
+        "name": "tcm-web",
+        "tech_stack": "React",
+        "namespace": "tcm-non-prod",
+        "port": 80,
+        "status": "running",
+        "description": "TCM Frontend Web"
+      },
+      {
+        "name": "tcm-bot",
+        "tech_stack": "Python",
+        "namespace": "tcm-non-prod",
+        "port": 8080,
+        "status": "running",
+        "description": "TCM Automation Bot"
+      },
+      {
+        "name": "tcm-jobs",
+        "tech_stack": "Python",
+        "namespace": "tcm-non-prod",
+        "port": 8081,
+        "status": "running",
+        "description": "TCM Background Jobs"
+      },
+      {
+        "name": "api-gateway",
+        "tech_stack": "Kong",
+        "namespace": "common",
+        "port": 8000,
+        "status": "running",
+        "description": "API Gateway"
+      },
+      {
+        "name": "backend-api",
+        "tech_stack": "NestJS",
+        "namespace": "backend",
+        "port": 3000,
+        "status": "running",
+        "description": "Main Backend API"
+      },
+      {
+        "name": "graphql-api",
+        "tech_stack": "Apollo",
+        "namespace": "common",
+        "port": 4000,
+        "status": "running",
+        "description": "GraphQL API"
+      }
+    ],
+    "cluster_details": [
+      {
+        "name": "gke-prod-1",
+        "cloud_provider": "GCP",
+        "region": "us-central1",
+        "environment": "production",
+        "node_count": 5,
+        "status": "running"
+      },
+      {
+        "name": "gke-staging-1",
+        "cloud_provider": "GCP",
+        "region": "us-east1",
+        "environment": "staging",
+        "node_count": 3,
+        "status": "running"
+      },
+      {
+        "name": "eks-prod-1",
+        "cloud_provider": "AWS",
+        "region": "us-east-1",
+        "environment": "production",
+        "node_count": 5,
+        "status": "running"
+      }
+    ],
+    "namespaces": [
+      {
+        "name": "tcm-non-prod",
+        "cluster": "gke-staging-1",
+        "environment": "non-prod"
+      },
+      {
+        "name": "tcm-prod",
+        "cluster": "gke-prod-1",
+        "environment": "production"
+      },
+      {
+        "name": "common",
+        "cluster": "gke-staging-1",
+        "environment": "non-prod"
+      },
+      {
+        "name": "backend",
+        "cluster": "gke-staging-1",
+        "environment": "non-prod"
+      },
+      {
+        "name": "production",
+        "cluster": "gke-prod-1",
+        "environment": "production"
+      }
+    ],
+    "environments": [
+      {
+        "name": "production",
+        "clusters": ["gke-prod-1", "eks-prod-1"],
+        "description": "Production environment"
+      },
+      {
+        "name": "staging",
+        "clusters": ["gke-staging-1"],
+        "description": "Staging environment"
+      },
+      {
+        "name": "development",
+        "clusters": ["gke-dev-1"],
+        "description": "Development environment"
+      }
+    ],
+    "terraform_infrastructure": {
+      "layout": {
+        "base_path": "terraform/",
+        "modules": ["vpc", "gke", "cloudsql", "storage"]
+      },
+      "state_backend": "gcs"
+    },
+    "gitops_configuration": {
+      "repository": {
+        "url": "https://github.com/org/gitops",
+        "path": "gitops/",
+        "branch": "main"
+      },
+      "tool": "flux"
+    },
+    "operational_guidelines": {
+      "commit_standards": "conventional",
+      "approval_required_for": ["production", "terraform_apply"],
+      "max_replicas": 10
+    }
+  }
+}

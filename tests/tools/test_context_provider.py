@@ -45,8 +45,8 @@ def temp_project_context(tmp_path: Path) -> Path:
 
 def run_script(context_file: Path, agent: str, task: str) -> dict:
     """Helper function to run the context_provider.py script and parse its output."""
-    script_path = TOOLS_DIR / "context_provider.py"
-    
+    script_path = TOOLS_DIR / "2-context" / "context_provider.py"
+
     if not script_path.exists():
         pytest.fail(f"context_provider.py not found at {script_path}")
     
@@ -144,7 +144,7 @@ def test_invalid_agent(temp_project_context: Path):
     agent = "unknown-agent"
     task = "Do something."
     
-    script_path = TOOLS_DIR / "context_provider.py"
+    script_path = TOOLS_DIR / "2-context" / "context_provider.py"
     process = subprocess.run(
         [sys.executable, str(script_path), agent, task, "--context-file", str(temp_project_context)],
         capture_output=True,

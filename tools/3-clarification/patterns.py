@@ -143,13 +143,20 @@ class NamespaceAmbiguityPattern(AmbiguityPattern):
         if not detected_keyword:
             return None
 
-        # Extract namespaces
+        # Extract namespaces (support both old and new structures)
         namespaces = []
         namespace_metadata = {}
 
-        if "sections" in project_context and "cluster_details" in project_context["sections"]:
-            cluster_details = project_context["sections"]["cluster_details"]
-            namespaces = cluster_details.get("primary_namespaces", [])
+        if "sections" in project_context:
+            # New structure: sections.namespaces (list of objects)
+            if "namespaces" in project_context["sections"]:
+                namespace_list = project_context["sections"]["namespaces"]
+                namespaces = [ns["name"] for ns in namespace_list] if isinstance(namespace_list, list) else []
+            # Old structure: sections.cluster_details.primary_namespaces (list of strings)
+            elif "cluster_details" in project_context["sections"]:
+                cluster_details = project_context["sections"]["cluster_details"]
+                if isinstance(cluster_details, dict) and "primary_namespaces" in cluster_details:
+                    namespaces = cluster_details["primary_namespaces"]
 
             # Build metadata: count services per namespace
             if "application_services" in project_context["sections"]:

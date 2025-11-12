@@ -6,12 +6,17 @@ import pytest
 import json
 import sys
 import os
+import importlib
 
 # Add tools to path (gaia-ops/tools)
 tools_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tools')
 sys.path.insert(0, tools_path)
 
-from clarification import ClarificationEngine, request_clarification, process_clarification
+# Import from reorganized tools structure
+clarification = importlib.import_module("3-clarification")
+ClarificationEngine = clarification.ClarificationEngine
+request_clarification = clarification.request_clarification
+process_clarification = clarification.process_clarification
 
 
 @pytest.fixture

@@ -458,6 +458,8 @@ def request_clarification(
 
     return {
         "needs_clarification": True,
+        "ambiguity_score": ambiguity.get("ambiguity_score", 0),
+        "ambiguity_points": ambiguity.get("ambiguity_points", []),
         "summary": questions["summary"],
         "question_config": questions["question_config"],
         "engine_instance": engine,

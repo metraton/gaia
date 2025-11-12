@@ -6,37 +6,37 @@ This command provides intelligent session restoration with context loading for b
 
 ## Quick command (restore latest relevant)
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/session_startup_check.py
+python3 $PROJECT_ROOT/.claude/session/scripts/session_startup_check.py
 ```
 
 Shows the most relevant recent session with restoration suggestions.
 
 ## Restore specific session
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/restore_session.py <bundle-id>
+python3 $PROJECT_ROOT/.claude/session/scripts/restore_session.py <bundle-id>
 ```
 
 Restores complete session context from the specified bundle.
 
 ## List available sessions
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/restore_session.py --list
+python3 $PROJECT_ROOT/.claude/session/scripts/restore_session.py --list
 ```
 
 Shows all available session bundles with descriptions and timestamps.
 
 ## View session details (without restoring)
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/restore_session.py <bundle-id> --show
+python3 $PROJECT_ROOT/.claude/session/scripts/restore_session.py <bundle-id> --show
 ```
 
 Display detailed information about a session bundle without loading it.
 
 ## Agent-specific context extraction
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/restore_session.py <bundle-id> --agent terraform-architect
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/restore_session.py <bundle-id> --agent gitops-operator
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/restore_session.py <bundle-id> --agent devops-developer
+python3 $PROJECT_ROOT/.claude/session/scripts/restore_session.py <bundle-id> --agent terraform-architect
+python3 $PROJECT_ROOT/.claude/session/scripts/restore_session.py <bundle-id> --agent gitops-operator
+python3 $PROJECT_ROOT/.claude/session/scripts/restore_session.py <bundle-id> --agent devops-developer
 ```
 
 Extract context specific to a particular agent type for on-demand loading.

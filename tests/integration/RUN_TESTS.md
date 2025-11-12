@@ -11,7 +11,7 @@ This directory contains **75 integration tests** validating the hooks and permis
 
 ### Run All Integration Tests
 ```bash
-cd /home/jaguilar/aaxis/rnd/repositories/ops/.claude-shared
+cd $PROJECT_ROOT/ops/.claude-shared
 python3 -m pytest tests/integration/ -v
 ```
 
@@ -118,7 +118,7 @@ python3 -m pytest tests/integration/ -v -x
 ### Import Errors
 If you see import errors, ensure you're running from the correct directory:
 ```bash
-cd /home/jaguilar/aaxis/rnd/repositories/ops/.claude-shared
+cd $PROJECT_ROOT/ops/.claude-shared
 python3 -m pytest tests/integration/ -v
 ```
 

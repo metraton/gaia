@@ -32,7 +32,7 @@ Execute `clarify_engine.py` to analyze the user's request:
 
 ```python
 import sys
-sys.path.insert(0, '/home/jaguilar/aaxis/rnd/repositories/.claude/tools')
+sys.path.insert(0, '$PROJECT_ROOT/.claude/tools')
 from clarify_engine import request_clarification
 
 # Detect ambiguity
@@ -159,7 +159,7 @@ Clarification is automatically logged to `.claude/logs/clarifications.jsonl` for
 Execute `agent_router.py` to determine the appropriate specialized agent:
 
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/tools/agent_router.py --prompt "$PROMPT"
+python3 $PROJECT_ROOT/.claude/tools/agent_router.py --prompt "$PROMPT"
 ```
 
 **Output:** Agent name (e.g., `gitops-operator`, `terraform-architect`, `gcp-troubleshooter`)
@@ -182,7 +182,7 @@ python3 /home/jaguilar/aaxis/rnd/repositories/.claude/tools/agent_router.py --pr
 **CRITICAL:** Use absolute path to ensure it works from any directory:
 
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/tools/context_provider.py "$AGENT_NAME" "$USER_TASK"
+python3 $PROJECT_ROOT/.claude/tools/context_provider.py "$AGENT_NAME" "$USER_TASK"
 ```
 
 **What context_provider.py does:**
@@ -286,7 +286,7 @@ Receive agent's output and **HALT the workflow**. DO NOT proceed to Phase 5 auto
 
 ```python
 import sys
-sys.path.insert(0, '/home/jaguilar/aaxis/rnd/repositories/.claude/tools')
+sys.path.insert(0, '$PROJECT_ROOT/.claude/tools')
 from approval_gate import request_approval
 
 approval_data = request_approval(
@@ -543,7 +543,7 @@ Use `TaskManager` to mark completed tasks in `tasks.md`:
 
 ```python
 import sys
-sys.path.insert(0, '/home/jaguilar/aaxis/rnd/repositories/.claude/tools')
+sys.path.insert(0, '$PROJECT_ROOT/.claude/tools')
 from task_manager import TaskManager
 
 # Initialize with path to tasks.md

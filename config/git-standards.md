@@ -17,7 +17,7 @@ This document defines the universal commit message standards for this repository
 
 ```python
 import sys
-sys.path.insert(0, '/home/jaguilar/aaxis/rnd/repositories/.claude/tools')
+sys.path.insert(0, '$PROJECT_ROOT/.claude/tools')
 from commit_validator import safe_validate_before_commit
 
 # Validate commit message
@@ -463,7 +463,7 @@ Specialist agents perform git commits for:
 
 ### commit_validator.py
 
-Located at: `/home/jaguilar/aaxis/rnd/repositories/.claude/tools/commit_validator.py`
+Located at: `$PROJECT_ROOT/.claude/tools/commit_validator.py`
 
 **Functions:**
 

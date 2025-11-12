@@ -42,7 +42,7 @@ tests/
 
 ### Run All Tests
 ```bash
-cd /home/jaguilar/aaxis/rnd/repositories/.claude
+cd $PROJECT_ROOT/.claude
 python3 -m pytest tests/ -v
 ```
 
@@ -264,7 +264,7 @@ These tests should be run:
 ### Import Errors
 If you see import errors, ensure you're running from the correct directory:
 ```bash
-cd /home/jaguilar/aaxis/rnd/repositories/.claude
+cd $PROJECT_ROOT/.claude
 python3 -m pytest tests/ -v
 ```
 

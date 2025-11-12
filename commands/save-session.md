@@ -8,14 +8,14 @@ This command saves the complete current session into a new bundle with all conte
 
 ### Default session bundle
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/create_current_session_bundle.py
+python3 $PROJECT_ROOT/.claude/session/scripts/create_current_session_bundle.py
 ```
 
 Creates: `2025-10-16-session-163244-abc12345`
 
 ### Custom labeled bundle
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/create_current_session_bundle.py --label agent-upgrades
+python3 $PROJECT_ROOT/.claude/session/scripts/create_current_session_bundle.py --label agent-upgrades
 ```
 
 Creates: `2025-10-16-agent-upgrades-163244-abc12345`
@@ -46,11 +46,11 @@ After creating a bundle, **manually update** the `summary.md` file to capture:
 - Relevant next steps
 
 The auto-generated summary is a template. For accurate session documentation,
-edit: `.claude/session/bundles/<bundle-id>/summary.md`
+edit: `$PROJECT_ROOT/.claude/session/bundles/<bundle-id>/summary.md`
 
 ## Alternative: Legacy snapshot (updates existing bundle)
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/save_session_snapshot.py
+python3 $PROJECT_ROOT/.claude/session/scripts/save_session_snapshot.py
 ```
 
 - Updates an existing bundle with current active context only
@@ -59,23 +59,23 @@ python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/save_sessi
 ## Flujo detallado (opcional)
 Si prefieres hacerlo paso a paso o necesitas crear un nuevo bundle antes de guardar:
 
-1. **Crear/actualizar bundle**  
+1. **Crear/actualizar bundle**
    Ejecuta cualquier comando del agente (p.ej. `/analizer T010`) para que el hook `subagent_stop` genere un bundle fresco.
 
 2. **Inspeccionar bundles disponibles**
    ```bash
-   python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/session-manager.py list
+   python3 $PROJECT_ROOT/.claude/session/scripts/session-manager.py list
    ```
 
 3. **Copiar contexto activo al bundle deseado**
    ```bash
-   python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/save_session_snapshot.py --bundle-id <bundle-id>
+   python3 $PROJECT_ROOT/.claude/session/scripts/save_session_snapshot.py --bundle-id <bundle-id>
    ```
 
 4. **(Opcional) Empaquetar para compartir**
    ```bash
-   tar -czf /home/jaguilar/aaxis/rnd/repositories/.claude/session/bundles/<bundle-id>.tar.gz \
-     -C /home/jaguilar/aaxis/rnd/repositories/.claude/session/bundles/<bundle-id> .
+   tar -czf $PROJECT_ROOT/.claude/session/bundles/<bundle-id>.tar.gz \
+     -C $PROJECT_ROOT/.claude/session/bundles/<bundle-id> .
    ```
 
 ## Notes

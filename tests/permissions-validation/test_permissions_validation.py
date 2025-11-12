@@ -13,8 +13,10 @@ This test validates:
 import json
 import re
 import sys
+import os
+import argparse
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 
 
@@ -491,13 +493,80 @@ class PermissionsValidator:
         print(f"\n📝 Manual validation guide generated: {output_path}")
 
 
-def main():
-    """Main test execution"""
-    # Paths
-    base_path = Path("/home/jaguilar/aaxis/rnd/repositories/ops/.claude-shared")
-    settings_path = base_path / "settings.json"
-    settings_local_path = base_path / "settings.local.json"
-    output_path = Path(__file__).parent / "MANUAL_VALIDATION.md"
+def find_claude_shared_dir() -> Optional[Path]:
+    """
+    Try to find .claude-shared directory by:
+    1. Checking CLAUDE_SHARED_PATH environment variable
+    2. Looking in parent directories for .claude-shared
+    3. Returning None if not found
+    """
+    # Check environment variable
+    env_path = os.getenv("CLAUDE_SHARED_PATH")
+    if env_path:
+        path = Path(env_path)
+        if path.exists():
+            return path
+
+    # Look in parent directories
+    current = Path(__file__).resolve().parent
+    for _ in range(5):  # Look up to 5 levels
+        claude_shared = current / ".claude-shared"
+        if claude_shared.exists():
+            return claude_shared
+        current = current.parent
+
+    return None
+
+
+def main(argv=None):
+    """Main test execution
+
+    Args:
+        argv: Optional list of command-line arguments (for testing)
+    """
+    parser = argparse.ArgumentParser(
+        description="Validate permissions in settings.json and settings.local.json"
+    )
+    parser.add_argument(
+        "--settings-dir",
+        type=str,
+        help="Path to directory containing settings.json (defaults to found .claude-shared dir)"
+    )
+    parser.add_argument(
+        "--settings-file",
+        type=str,
+        help="Path to settings.json file"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="Path to output validation report"
+    )
+
+    args = parser.parse_args(argv)
+
+    # Determine paths
+    if args.settings_file:
+        settings_path = Path(args.settings_file)
+    elif args.settings_dir:
+        settings_path = Path(args.settings_dir) / "settings.json"
+    else:
+        # Try to find .claude-shared
+        base_path = find_claude_shared_dir()
+        if not base_path:
+            print("❌ Error: Could not find .claude-shared directory")
+            print("   Set CLAUDE_SHARED_PATH or use --settings-dir option")
+            sys.exit(1)
+        settings_path = base_path / "settings.json"
+
+    # Determine settings local path
+    settings_local_path = settings_path.parent / "settings.local.json"
+
+    # Determine output path
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        output_path = Path(__file__).parent / "MANUAL_VALIDATION.md"
 
     # Validate files exist
     if not settings_path.exists():

@@ -39,16 +39,16 @@ Task(
 ## System Context (Auto-provided)
 
 **System Paths:**
-- Agent system: /home/jaguilar/aaxis/rnd/repositories/.claude/
-- Orchestrator logic: /home/jaguilar/aaxis/rnd/repositories/CLAUDE.md
-- Logs: /home/jaguilar/aaxis/rnd/repositories/.claude/logs/
-- Tests: /home/jaguilar/aaxis/rnd/repositories/.claude/tests/
-- Tools: /home/jaguilar/aaxis/rnd/repositories/.claude/tools/
-- Agents: /home/jaguilar/aaxis/rnd/repositories/.claude/agents/
-- Commands: /home/jaguilar/aaxis/rnd/repositories/.claude/commands/
-- Sessions: /home/jaguilar/aaxis/rnd/repositories/.claude/session/
-- Ops repository: /home/jaguilar/aaxis/rnd/repositories/ops/
-- Project context: /home/jaguilar/aaxis/rnd/repositories/.claude/project-context.json
+- Agent system: $PROJECT_ROOT/.claude/
+- Orchestrator logic: $PROJECT_ROOT/CLAUDE.md
+- Logs: $PROJECT_ROOT/.claude/logs/
+- Tests: $PROJECT_ROOT/.claude/tests/
+- Tools: $PROJECT_ROOT/.claude/tools/
+- Agents: $PROJECT_ROOT/.claude/agents/
+- Commands: $PROJECT_ROOT/.claude/commands/
+- Sessions: $PROJECT_ROOT/.claude/session/
+- Ops repository: $PROJECT_ROOT/../ops/
+- Project context: $PROJECT_ROOT/.claude/project-context.json
 
 **Spec-Kit Commands:**
 - /speckit.specify - Create/update feature specification

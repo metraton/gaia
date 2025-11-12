@@ -127,7 +127,6 @@
       "Bash(fdisk:*)"
     ],
     "ask": [
-      "Edit",
       "Write",
       "NotebookEdit",
       "Bash(kubectl delete:*)",

@@ -187,7 +187,7 @@ def main():
                     print(f"   • {suggestion}")
 
             print("\n🔒 GitOps Security Enforcement Active")
-            print("📖 Review: /home/jaguilar/aaxis/rnd/repositories/.claude/agents/gitops-operator.md")
+            print("📖 Review: .claude/agents/gitops-operator.md or set GAIA_DOCS_PATH environment variable")
 
             sys.exit(1)  # Block command execution
 

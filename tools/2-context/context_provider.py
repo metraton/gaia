@@ -176,8 +176,8 @@ def resolve_path(relative_path: str, project_root: Optional[Path] = None) -> Pat
     Resolves a path to absolute, handling both relative and absolute paths.
 
     Examples:
-        ./gitops         → /home/jaguilar/project/gitops
-        ../shared-infra  → /home/jaguilar/shared-infra
+        ./gitops         → $PROJECT_ROOT/gitops
+        ../shared-infra  → $PROJECT_ROOT/../shared-infra
         /abs/path        → /abs/path (unchanged)
 
     Args:

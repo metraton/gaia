@@ -164,19 +164,19 @@ terraform-architect:
     },
     "terraform_infrastructure": {
       "layout": {
-        "base_path": "/home/jaguilar/aaxis/rnd/repositories/ops/terraform",
-        "modules_path": "/home/jaguilar/aaxis/rnd/repositories/ops/terraform/modules",
-        "environments_path": "/home/jaguilar/aaxis/rnd/repositories/ops/terraform/environments"
+        "base_path": "$PROJECT_ROOT/ops/terraform",
+        "modules_path": "$PROJECT_ROOT/ops/terraform/modules",
+        "environments_path": "$PROJECT_ROOT/ops/terraform/environments"
       },
       "provider_credentials": {
-        "gcp_credentials_path": "/home/jaguilar/.config/gcloud/aaxis-rnd-terraform-sa.json"
+        "gcp_credentials_path": "$HOME/.config/gcloud/aaxis-rnd-terraform-sa.json"
       }
     },
     "operational_guidelines": {
       "commit_standards": {
         "validation_required": true,
-        "validator_path": "/home/jaguilar/aaxis/rnd/repositories/.claude/tools/commit_validator.py",
-        "config_path": "/home/jaguilar/aaxis/rnd/repositories/.claude/config/git_standards.json"
+        "validator_path": "$PROJECT_ROOT/.claude/tools/commit_validator.py",
+        "config_path": "$PROJECT_ROOT/.claude/config/git_standards.json"
       }
     }
   },
@@ -267,7 +267,7 @@ gitops-operator:
     },
     "gitops_configuration": {
       "repository": {
-        "path": "/home/jaguilar/aaxis/rnd/repositories/gitops/non-prod-rnd-gke-gitops",
+        "path": "$PROJECT_ROOT/gitops/non-prod-rnd-gke-gitops",
         "remote_url": "git@github.com:aaxis/non-prod-rnd-gke-gitops.git",
         "branch": "main"
       },
@@ -283,8 +283,8 @@ gitops-operator:
     "operational_guidelines": {
       "commit_standards": {
         "validation_required": true,
-        "validator_path": "/home/jaguilar/aaxis/rnd/repositories/.claude/tools/commit_validator.py",
-        "config_path": "/home/jaguilar/aaxis/rnd/repositories/.claude/config/git_standards.json"
+        "validator_path": "$PROJECT_ROOT/.claude/tools/commit_validator.py",
+        "config_path": "$PROJECT_ROOT/.claude/config/git_standards.json"
       }
     }
   },
@@ -376,12 +376,12 @@ gcp-troubleshooter:
     },
     "terraform_infrastructure": {
       "layout": {
-        "base_path": "/home/jaguilar/aaxis/rnd/repositories/ops/terraform"
+        "base_path": "$PROJECT_ROOT/ops/terraform"
       }
     },
     "gitops_configuration": {
       "repository": {
-        "path": "/home/jaguilar/aaxis/rnd/repositories/gitops/non-prod-rnd-gke-gitops"
+        "path": "$PROJECT_ROOT/gitops/non-prod-rnd-gke-gitops"
       }
     }
   },
@@ -500,8 +500,8 @@ devops-developer:
     "operational_guidelines": {
       "commit_standards": {
         "validation_required": true,
-        "validator_path": "/home/jaguilar/aaxis/rnd/repositories/.claude/tools/commit_validator.py",
-        "config_path": "/home/jaguilar/aaxis/rnd/repositories/.claude/config/git_standards.json"
+        "validator_path": "$PROJECT_ROOT/.claude/tools/commit_validator.py",
+        "config_path": "$PROJECT_ROOT/.claude/config/git_standards.json"
       }
     }
   },
@@ -567,11 +567,11 @@ Task(
 ## System Context
 
 **System Paths:**
-- Agent system: /home/jaguilar/aaxis/rnd/repositories/.claude/
-- Orchestrator: /home/jaguilar/aaxis/rnd/repositories/CLAUDE.md
-- Logs: /home/jaguilar/aaxis/rnd/repositories/.claude/logs/
-- Tools: /home/jaguilar/aaxis/rnd/repositories/.claude/tools/
-- Tests: /home/jaguilar/aaxis/rnd/repositories/.claude/tests/
+- Agent system: $PROJECT_ROOT/.claude/
+- Orchestrator: $PROJECT_ROOT/CLAUDE.md
+- Logs: $PROJECT_ROOT/.claude/logs/
+- Tools: $PROJECT_ROOT/.claude/tools/
+- Tests: $PROJECT_ROOT/.claude/tests/
 
 **System Knowledge:**
 - 5 specialist agents: terraform-architect, gitops-operator, gcp-troubleshooter, aws-troubleshooter, devops-developer

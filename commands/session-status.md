@@ -6,7 +6,7 @@ This command provides an intelligent overview of your current session state and 
 
 ## Quick status check
 ```bash
-python3 /home/jaguilar/aaxis/rnd/repositories/.claude/session/scripts/session_startup_check.py
+python3 $PROJECT_ROOT/.claude/session/scripts/session_startup_check.py
 ```
 
 Shows:

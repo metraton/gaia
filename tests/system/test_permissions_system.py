@@ -30,22 +30,76 @@ from permissions_helpers import (
 )
 
 
+# ============================================================================
+# Fixtures for temporary project structures
+# ============================================================================
+
+@pytest.fixture
+def temp_project_with_claude_dir(tmp_path):
+    """Create a temporary project structure with .claude directory."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    claude_dir = project_root / ".claude"
+    claude_dir.mkdir()
+
+    # Create a sample settings.json
+    settings_file = claude_dir / "settings.json"
+    settings_file.write_text(json.dumps({
+        "permissions": {
+            "bash": {"allow": ["git status"]}
+        }
+    }))
+
+    return project_root
+
+
+@pytest.fixture
+def temp_project_without_claude_dir(tmp_path):
+    """Create a temporary project without .claude directory."""
+    project_root = tmp_path / "project_no_claude"
+    project_root.mkdir()
+    return project_root
+
+
+@pytest.fixture
+def temp_shared_settings_dir(tmp_path):
+    """Create a temporary shared settings directory."""
+    shared_root = tmp_path / ".claude-shared"
+    shared_root.mkdir()
+
+    settings_file = shared_root / "settings.json"
+    settings_file.write_text(json.dumps({
+        "permissions": {
+            "bash": {"deny": ["rm -rf"]}
+        }
+    }))
+
+    return shared_root
+
+
+@pytest.fixture
+def temp_empty_shared_dir(tmp_path):
+    """Create a temporary empty shared settings directory."""
+    shared_root = tmp_path / ".claude-shared-empty"
+    shared_root.mkdir()
+    return shared_root
+
+
 class TestSettingsMerge:
     """Test settings file loading and merging logic."""
-    
-    def test_load_project_settings_graceful(self):
+
+    def test_load_project_settings_graceful(self, temp_project_with_claude_dir):
         """Project settings.json should load gracefully (or return None)."""
-        project_root = Path("/home/jaguilar/aaxis/rnd/repositories/ops")
-        settings = load_project_settings(project_root)
-        
+        settings = load_project_settings(temp_project_with_claude_dir)
+
         # Should either load successfully or return None (not crash)
         assert settings is None or isinstance(settings, dict)
-    
-    def test_load_shared_settings_graceful(self):
+
+    def test_load_shared_settings_graceful(self, temp_shared_settings_dir):
         """Shared settings.json should load gracefully (or return None)."""
-        shared_root = Path("/home/jaguilar/aaxis/rnd/repositories/ops/.claude-shared")
-        settings = load_shared_settings(shared_root)
-        
+        settings = load_shared_settings(temp_shared_settings_dir)
+
         # Should either load successfully or return None (not crash)
         assert settings is None or isinstance(settings, dict)
     
@@ -168,11 +222,10 @@ class TestSettingsMerge:
         assert isinstance(result["permissions"]["bash"]["max_timeout_ms"], int)
         assert isinstance(result["permissions"]["bash"]["require_description"], bool)
     
-    def test_find_claude_config_in_project(self):
+    def test_find_claude_config_in_project(self, temp_project_with_claude_dir):
         """Should find .claude directory in project."""
-        project_root = Path("/home/jaguilar/aaxis/rnd/repositories/ops")
-        claude_dir = find_claude_config(project_root)
-        
+        claude_dir = find_claude_config(temp_project_with_claude_dir)
+
         # Should either find it or return None gracefully
         assert claude_dir is None or (claude_dir.exists() and claude_dir.name == ".claude")
 

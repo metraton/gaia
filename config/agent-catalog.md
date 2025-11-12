@@ -367,9 +367,9 @@ Task(
     description="Analyze routing accuracy",
     prompt="""
 ## System Context
-- Agent system: /home/jaguilar/aaxis/rnd/repositories/.claude/
-- Logs: /home/jaguilar/aaxis/rnd/repositories/.claude/logs/
-- Tools: /home/jaguilar/aaxis/rnd/repositories/.claude/tools/
+- Agent system: $PROJECT_ROOT/.claude/
+- Logs: $PROJECT_ROOT/.claude/logs/
+- Tools: $PROJECT_ROOT/.claude/tools/
 
 ## Task
 Analyze routing accuracy over last 100 invocations. Propose improvements.

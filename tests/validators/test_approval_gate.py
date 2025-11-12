@@ -10,20 +10,20 @@ import json
 import os
 import tempfile
 import sys
+import importlib
 from datetime import datetime
 
 # Add parent directory to path to import approval_gate
-# From /home/jaguilar/aaxis/rnd/repositories/ops/.claude-shared/tests
-# To   /home/jaguilar/aaxis/rnd/repositories/.claude/tools
+# Resolves: tests/validators/test_approval_gate.py → tools/
 test_dir = os.path.dirname(os.path.abspath(__file__))
-claude_tools_path = os.path.join(test_dir, '../../../.claude/tools')
-sys.path.insert(0, claude_tools_path)
+tools_path = os.path.join(test_dir, '../../tools')
+sys.path.insert(0, tools_path)
 
-from approval_gate import (
-    ApprovalGate,
-    request_approval,
-    process_approval_response
-)
+# Import from reorganized tools structure
+validation = importlib.import_module("4-validation")
+ApprovalGate = validation.ApprovalGate
+request_approval = validation.request_approval
+process_approval_response = validation.process_approval_response
 
 
 class TestApprovalGate(unittest.TestCase):

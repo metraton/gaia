@@ -9,13 +9,13 @@ This document defines the architectural principles and standards that guide all 
 - **Region**: us-central1
 - **Project ID**: aaxis-rnd-general-project
 - **Infrastructure as Code**: Terraform + Terragrunt
-- **Terraform Base Path**: `/home/jaguilar/aaxis/rnd/repositories/terraform`
+- **Terraform Base Path**: `$PROJECT_ROOT/terraform`
 
 ### Kubernetes Layer
 - **Orchestration**: Google Kubernetes Engine (GKE)
 - **Cluster**: tcm-gke-non-prod
 - **GitOps Tool**: Flux CD
-- **GitOps Repository**: `/home/jaguilar/aaxis/rnd/repositories/gitops`
+- **GitOps Repository**: `$PROJECT_ROOT/gitops`
 - **Package Manager**: Helm
 
 ### Application Layer
