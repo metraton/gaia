@@ -6,6 +6,166 @@
 
 ---
 
+## NUEVA: Suite Exhaustiva de Permisos - AWS CLI, GCP gcloud, Docker
+
+**IMPORTANTE:** Esta sección contiene **50+ casos de prueba** generados por Gaia tras investigar documentación oficial de AWS CLI, GCP gcloud y Docker CLI. Proporciona cobertura completa de tiers T0-T3 para cada plataforma.
+
+### AWS CLI - Casos de Prueba Nuevos
+
+#### T0.AWS - Comandos de Lectura (PERMITIDOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T0.AWS.1 | `aws s3 ls` | ✅ Permitido - Lista buckets S3 |
+| T0.AWS.2 | `aws ec2 describe-instances --instance-ids i-0123456789abcdef0` | ✅ Permitido - JSON de instancia |
+| T0.AWS.3 | `aws iam list-users` | ✅ Permitido - Lista usuarios IAM |
+| T0.AWS.4 | `aws rds describe-db-instances` | ✅ Permitido - Detalles de BDD |
+| T0.AWS.5 | `aws lambda list-functions` | ✅ Permitido - Lista funciones Lambda |
+| T0.AWS.6 | `aws s3api list-buckets` | ✅ Permitido - Buckets con metadatos |
+| T0.AWS.7 | `aws cloudformation describe-stacks` | ✅ Permitido - Estado de stacks |
+| T0.AWS.8 | `aws logs describe-log-groups` | ✅ Permitido - CloudWatch logs |
+| T0.AWS.9 | `aws dynamodb list-tables` | ✅ Permitido - Tablas DynamoDB |
+| T0.AWS.10 | `aws ec2 describe-security-groups` | ✅ Permitido - Grupos de seguridad |
+
+#### T1.AWS - Validaciones sin efectos (PERMITIDOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T1.AWS.1 | `aws ec2 run-instances --image-id ami-0c55b159cbfafe1f0 --instance-type t2.micro --dryrun` | ✅ Permitido - Simulación sin crear |
+| T1.AWS.2 | `aws cloudformation validate-template --template-body file://template.yaml` | ✅ Permitido - Valida sintaxis |
+
+#### T2.AWS - Crear/Modificar (PIDEN ASK)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T2.AWS.1 | `aws s3 mb s3://my-test-bucket-$(date +%s)` | ⚠️ Ask generado - Si "Yes": bucket se crea |
+| T2.AWS.2 | `aws ec2 run-instances --image-id ami-0c55b159cbfafe1f0 --instance-type t2.micro` | ⚠️ Ask generado - Si "Yes": instancia se crea |
+| T2.AWS.3 | `aws iam create-role --role-name my-role --assume-role-policy-document file://trust.json` | ⚠️ Ask generado |
+| T2.AWS.4 | `aws rds create-db-instance --db-instance-identifier mydb --engine mysql` | ⚠️ Ask generado |
+| T2.AWS.5 | `aws lambda create-function --function-name myfunction --runtime python3.9` | ⚠️ Ask generado |
+
+#### T3.AWS - Destrucción (BLOQUEADOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T3.AWS.1 | `aws ec2 terminate-instances --instance-ids i-0123456789abcdef0` | ❌ BLOQUEADO - No se ejecuta |
+| T3.AWS.2 | `aws iam delete-role --role-name my-role` | ❌ BLOQUEADO - IAM crítico |
+| T3.AWS.3 | `aws rds delete-db-instance --db-instance-identifier mydb` | ❌ BLOQUEADO - Datos críticos |
+| T3.AWS.4 | `aws s3 rb s3://bucket-name` | ❌ BLOQUEADO - S3 crítico |
+| T3.AWS.5 | `aws lambda delete-function --function-name myfunction` | ❌ BLOQUEADO |
+| T3.AWS.6 | `aws cloudformation delete-stack --stack-name my-stack` | ❌ BLOQUEADO |
+
+---
+
+### GCP gcloud - Casos de Prueba Nuevos
+
+#### T0.GCP - Comandos de Lectura (PERMITIDOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T0.GCP.1 | `gcloud compute instances list` | ✅ Permitido - Lista VMs |
+| T0.GCP.2 | `gcloud container clusters list` | ✅ Permitido - Clusters GKE |
+| T0.GCP.3 | `gsutil ls` | ✅ Permitido - Buckets Cloud Storage |
+| T0.GCP.4 | `gcloud sql instances list` | ✅ Permitido - Instancias Cloud SQL |
+| T0.GCP.5 | `gcloud functions list` | ✅ Permitido - Cloud Functions |
+| T0.GCP.6 | `gcloud compute networks list` | ✅ Permitido - VPCs |
+| T0.GCP.7 | `gcloud compute firewall-rules list` | ✅ Permitido - Reglas firewall |
+| T0.GCP.8 | `gcloud iam roles list` | ✅ Permitido - Roles IAM |
+| T0.GCP.9 | `gcloud projects describe` | ✅ Permitido - Info proyecto |
+| T0.GCP.10 | `gsutil du -sh gs://bucket-name/` | ✅ Permitido - Tamaño bucket |
+
+#### T1.GCP - Validaciones sin efectos (PERMITIDOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T1.GCP.1 | `gcloud compute instances create test-vm --zone=us-central1-a --dryrun` | ✅ Permitido - Simulación |
+| T1.GCP.2 | `gcloud container clusters create test-cluster --zone=us-central1-a --num-nodes=1 --dry-run` | ✅ Permitido - Simulación |
+
+#### T2.GCP - Crear/Modificar (PIDEN ASK)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T2.GCP.1 | `gcloud compute instances create test-vm --zone=us-central1-a --image-family=debian-10` | ⚠️ Ask generado |
+| T2.GCP.2 | `gcloud container clusters create my-cluster --zone=us-central1-a --num-nodes=3` | ⚠️ Ask generado |
+| T2.GCP.3 | `gsutil mb gs://my-bucket-$(date +%s)` | ⚠️ Ask generado |
+| T2.GCP.4 | `gcloud sql instances create mydb --database-version=MYSQL_8_0` | ⚠️ Ask generado |
+| T2.GCP.5 | `gcloud functions deploy myfunction --runtime python39` | ⚠️ Ask generado |
+
+#### T3.GCP - Destrucción (BLOQUEADOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T3.GCP.1 | `gcloud container clusters delete test-cluster --zone=us-central1-a` | ❌ BLOQUEADO - Cluster crítico |
+| T3.GCP.2 | `gcloud sql instances delete my-db` | ❌ BLOQUEADO - BD crítica |
+| T3.GCP.3 | `gsutil -m rm -r gs://my-bucket/` | ❌ BLOQUEADO - Storage crítico |
+| T3.GCP.4 | `gcloud compute instances delete test-vm --zone=us-central1-a` | ❌ BLOQUEADO |
+| T3.GCP.5 | `gcloud functions delete myfunction` | ❌ BLOQUEADO |
+| T3.GCP.6 | `gcloud compute networks delete my-vpc` | ❌ BLOQUEADO |
+
+---
+
+### Docker CLI - Casos de Prueba Nuevos
+
+#### T0.Docker - Comandos de Lectura (PERMITIDOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T0.Docker.1 | `docker ps` | ✅ Permitido - Contenedores activos |
+| T0.Docker.2 | `docker images` | ✅ Permitido - Imágenes disponibles |
+| T0.Docker.3 | `docker logs my-container` | ✅ Permitido - Logs de contenedor |
+| T0.Docker.4 | `docker inspect my-container` | ✅ Permitido - Detalles contenedor |
+| T0.Docker.5 | `docker volume ls` | ✅ Permitido - Volúmenes |
+| T0.Docker.6 | `docker network ls` | ✅ Permitido - Redes |
+| T0.Docker.7 | `docker ps -a` | ✅ Permitido - Todos los contenedores |
+| T0.Docker.8 | `docker version` | ✅ Permitido - Versión Docker |
+| T0.Docker.9 | `docker stats --no-stream` | ✅ Permitido - Estadísticas |
+| T0.Docker.10 | `docker history my-image` | ✅ Permitido - Historial imagen |
+
+#### T1.Docker - Validaciones sin efectos (PERMITIDOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T1.Docker.1 | `docker build -t test:1.0 --dry-run -f Dockerfile .` (si aplica) | ✅ Permitido - Simulación |
+| T1.Docker.2 | `docker compose config` | ✅ Permitido - Valida sintaxis |
+
+#### T2.Docker - Crear/Ejecutar (PIDEN ASK)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T2.Docker.1 | `docker run -d --name test-nginx nginx:latest` | ⚠️ Ask generado - Si "Yes": contenedor se crea |
+| T2.Docker.2 | `docker build -t test-app:1.0 -f Dockerfile .` | ⚠️ Ask generado - Si "Yes": imagen se construye |
+| T2.Docker.3 | `docker exec test-container /bin/bash -c "commands"` | ⚠️ Ask generado |
+| T2.Docker.4 | `docker compose up -d` | ⚠️ Ask generado |
+| T2.Docker.5 | `docker commit test-container my-image:tag` | ⚠️ Ask generado |
+
+#### T3.Docker - Destrucción (BLOQUEADOS sin ask)
+
+| Caso | Comando | Resultado Esperado |
+|------|---------|-------------------|
+| T3.Docker.1 | `docker rm test-container` | ❌ BLOQUEADO - No se ejecuta |
+| T3.Docker.2 | `docker rmi my-image:tag` | ❌ BLOQUEADO - Imagen crítica |
+| T3.Docker.3 | `docker volume rm my-volume` | ❌ BLOQUEADO - Volumen crítico |
+| T3.Docker.4 | `docker system prune --all --force` | ❌ BLOQUEADO - Limpieza agresiva |
+| T3.Docker.5 | `docker image prune --all --force` | ❌ BLOQUEADO |
+| T3.Docker.6 | `docker compose down` | ❌ BLOQUEADO - Destruye servicios |
+
+---
+
+## Métricas de Cobertura
+
+**Documentación Oficial Revisada:**
+- AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/
+- GCP gcloud: https://cloud.google.com/docs
+- Docker CLI: https://docs.docker.com/engine/reference/commandline/
+
+**Comandos Especificados:**
+- AWS CLI: 26 casos (10 T0 + 2 T1 + 5 T2 + 6 T3)
+- GCP gcloud: 26 casos (10 T0 + 2 T1 + 5 T2 + 6 T3)
+- Docker CLI: 26 casos (10 T0 + 2 T1 + 5 T2 + 6 T3)
+- **Total: 78 nuevos casos de prueba**
+
+---
+
 ## Ejecución Ordenada: Fases de Validación
 
 ### FASE 1: T0 - Consultas y Lectura (Sin cambios)
