@@ -1,0 +1,210 @@
+================================================================================
+REPORTE DE COBERTURA DE PERMISOS
+Análisis: empirical-permission-testing.md vs settings.template.json
+Fecha: 2025-11-12
+================================================================================
+
+RESUMEN EJECUTIVO
+================================================================================
+Total de Casos de Prueba Empíricos:    45
+Casos Cubiertos:                       39 (86.7%)
+Casos NO Cubiertos:                    6 (13.3%)
+
+Estado General: GOOD with ACTION ITEMS
+- Las pruebas de lectura (T0) están 100% cubiertas
+- Las pruebas de confirmación (T2) están 100% cubiertas
+- Las pruebas de bloqueo (T3) tienen 60% de cobertura (NECESITA ATENCIÓN)
+
+
+DESGLOSE POR TIER
+================================================================================
+
+TIER T0: READ ONLY (Allow) - Operaciones de Lectura Pura
+─────────────────────────────────────────────────────────
+Casos de Prueba:        15
+Casos Cubiertos:        15
+Casos Faltantes:        0
+Cobertura:              100% ✓ EXCELENTE
+
+Operaciones Cubiertas:
+✓ kubectl get             → Bash(kubectl get:*)
+✓ kubectl describe        → Bash(kubectl describe:*)
+✓ kubectl logs            → Bash(kubectl logs:*)
+✓ git log                 → Bash(git log:*)
+✓ git diff                → Bash(git diff:*)
+✓ aws s3 ls               → Bash(aws s3 ls:*)
+✓ aws ec2 describe        → Bash(aws ec2 describe-:*)
+✓ aws iam list            → Bash(aws iam list-:*)
+✓ gcloud compute list     → Bash(gcloud compute instances list:*)
+✓ gcloud clusters desc    → Bash(gcloud container clusters describe:*)
+✓ docker ps               → Bash(docker ps:*)
+✓ docker logs             → Bash(docker logs:*)
+✓ helm list               → Bash(helm list:*)
+✓ flux check              → Bash(flux check:*)
+✓ terraform show          → Bash(terraform show:*)
+
+Operaciones Faltantes:
+(Ninguna)
+
+
+TIER T3: HIGHLY DESTRUCTIVE (Deny) - Bloqueadas Automáticamente
+────────────────────────────────────────────────────────────────
+Casos de Prueba:        15
+Casos Cubiertos:        9
+Casos Faltantes:        6
+Cobertura:              60% ✗ NECESITA ATENCIÓN
+
+Operaciones Cubiertas:
+✓ aws ec2 terminate       → Bash(aws ec2 terminate-instances:*)
+✓ aws rds delete          → Bash(aws rds delete-db-instance:*)
+✓ aws iam delete          → Bash(aws iam delete-:*)
+✓ gcloud clusters delete  → Bash(gcloud container clusters delete:*)
+✓ gcloud compute delete   → Bash(gcloud compute instances delete:*)
+✓ gcloud sql delete       → Bash(gcloud sql instances delete:*)
+✓ docker rm               → Bash(docker rm:*)
+✓ docker rmi              → Bash(docker rmi:*)
+✓ terraform destroy       → Bash(terraform destroy:*)
+
+Operaciones FALTANTES (Critical Issues):
+✗ kubectl delete          → NO ESTÁ EN DENY (está en ASK T2 solamente)
+                            Problema: Namespace/pods pueden ser eliminados sin bloqueo
+                            Severidad: HIGH
+
+✗ gsutil rb / gsutil rm   → NO ESTÁ EN DENY
+                            Problema: Buckets GCP pueden ser eliminados sin bloqueo
+                            Severidad: HIGH
+
+✗ aws s3 delete (rb/rm)   → PATRÓN INCOMPLETO EN DENY
+                            Problema: Regex puede no captar todos los casos
+                            Severidad: HIGH
+
+✗ docker volume rm        → COBERTURA PARCIAL
+                            Problema: docker volume rm puede no estar completamente bloqueado
+                            Severidad: MEDIUM
+
+✗ git reset --hard        → NO ESTÁ EN DENY
+                            Problema: Cambios pueden ser descartados sin bloqueo
+                            Severidad: CRITICAL
+
+✗ git push --force        → NO ESTÁ EN DENY
+                            Problema: History pode ser sobrescrita sin bloqueo
+                            Severidad: CRITICAL
+
+
+TIER T2: REVERSIBLE (Ask) - Require Confirmación
+───────────────────────────────────────────────
+Casos de Prueba:        15
+Casos Cubiertos:        15
+Casos Faltantes:        0
+Cobertura:              100% ✓ EXCELENTE
+
+Operaciones Cubiertas:
+✓ kubectl create          → Bash(kubectl create:*)
+✓ kubectl apply           → Bash(kubectl apply:*)
+✓ kubectl delete (pods)   → Bash(kubectl delete:*)
+✓ aws s3 mb               → Bash(aws s3 mb:*)
+✓ aws ec2 run-instances   → Bash(aws ec2 run-instances:*)
+✓ aws iam create          → Bash(aws iam create-:*)
+✓ gcloud compute create   → Bash(gcloud compute instances create:*)
+✓ gcloud clusters create  → Bash(gcloud container clusters create:*)
+✓ gcloud sql create       → Bash(gcloud sql instances create:*)
+✓ gsutil mb               → Bash(gsutil mb:*)
+✓ docker build            → Bash(docker build:*)
+✓ docker run              → Bash(docker run:*)
+✓ helm install            → Bash(helm install:*)
+✓ flux reconcile          → Bash(flux reconcile:*)
+✓ git commit / git push   → Bash(git commit:*) / Bash(git push:*)
+
+Operaciones Faltantes:
+(Ninguna)
+
+
+ESTADÍSTICAS DE settings.template.json
+================================================================================
+Total de Reglas de Permisos:    127
+
+Desglose:
+- Allow Rules (T0):             74 (58.3%)
+- Deny Rules (T3):              16 (12.6%)
+- Ask Rules (T2):               37 (29.1%)
+
+Filosofía: "Permissive by default"
+- Permitir la mayoría de operaciones (58%)
+- Bloquear solo lo más peligroso (13%)
+- Pedir confirmación para operaciones reversibles (29%)
+
+
+DEFINICIONES DE VALIDACIÓN (test_permissions_validation.py)
+================================================================================
+READ_ONLY_OPERATIONS (14 operaciones):
+  get, describe, logs, show, list, status, diff, branch, top, version,
+  config get, explain, wait, check
+
+DANGEROUS_OPERATIONS (10 operaciones):
+  delete, apply, destroy, create, patch, scale, reset --hard, 
+  push --force, push -f, mv
+
+APPROVAL_OPERATIONS (11 operaciones):
+  Edit, Write, NotebookEdit, rm, rmdir, install, upgrade, uninstall,
+  rollback, commit, push
+
+
+RECOMENDACIONES - PRIORITY HIGH
+================================================================================
+
+[R1] kubectl delete no está en DENY rules
+─────────────────────────────────────────
+Problema:    kubectl delete está en ASK (T2) pero debería estar en DENY (T3)
+Impacto:     ALTO - Usuarios pueden eliminar namespaces/pods sin bloqueo
+Solución:    Agregar Bash(kubectl delete:*) a deny rules
+             O usar patrones específicos:
+             - DENY: Bash(kubectl delete namespace:*)
+             - ASK:  Bash(kubectl delete pod:*)
+
+[R2] git reset --hard y git push --force no están en DENY
+─────────────────────────────────────────────────────────
+Problema:    Operaciones críticas sin protección
+Impacto:     CRÍTICO - History puede ser sobrescrita sin bloqueo
+Solución:    Agregar a deny rules:
+             - Bash(git reset --hard:*)
+             - Bash(git push.*--force:*)
+             - Bash(git push.*-f:*)
+
+[R3] gsutil rb / gsutil rm -r no están en DENY
+───────────────────────────────────────────────
+Problema:    Buckets GCP pueden ser eliminados sin protección
+Impacto:     ALTO - Pérdida de datos sin bloqueo
+Solución:    Agregar a deny rules:
+             - Bash(gsutil rb:*)
+             - Bash(gsutil rm.*-r:*)
+
+[R4] Patrones de aws s3 pueden ser incompletos
+───────────────────────────────────────────────
+Problema:    Patrón Bash(aws s3.*rb:*) puede no captar todos los casos
+Impacto:     ALTO - Buckets S3 pueden no estar protegidos
+Solución:    Revisar y mejorar patrones regex:
+             - Bash(aws s3.*rb:*)
+             - Bash(aws s3 rm.*recursive:*)
+
+
+PRÓXIMOS PASOS
+================================================================================
+1. Implementar las 4 recomendaciones Priority High
+2. Ejecutar test_permissions_validation.py con las correcciones
+3. Validar que todos los patrones regex funcionan correctamente
+4. Ejecutar empirical-permission-testing.md en sesión nueva de Claude
+5. Documentar los cambios en las release notes
+
+
+MATRIZ DE COBERTURA
+================================================================================
+Tier    Nombre                  Casos   Cubiertos   Faltantes   Cobertura   Status
+────────────────────────────────────────────────────────────────────────────────
+T0      Read Only (Allow)         15        15          0         100%      ✓ OK
+T1      Validation                 -         -          -           -       (No testeable)
+T2      Reversible (Ask)          15        15          0         100%      ✓ OK
+T3      Destructive (Deny)        15         9          6          60%      ✗ ACTION
+
+TOTAL:                            45        39          6         86.7%     ⚠ ACTION NEEDED
+
+
