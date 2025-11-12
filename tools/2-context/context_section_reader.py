@@ -65,6 +65,8 @@ class ContextSectionReader:
         'gitops-operator': [
             'infrastructure_topology',
             'gitops_configuration',
+            'gitops_repositories',
+            'application_deployments',
             'operational_guidelines',
         ],
         'gcp-troubleshooter': [
@@ -75,15 +77,20 @@ class ContextSectionReader:
         'terraform-architect': [
             'infrastructure_topology',
             'terraform_infrastructure',
+            'terraform_configurations',
+            'vpc_mapping',
             'operational_guidelines',
         ],
         'devops-developer': [
             'application_architecture',
+            'application_deployments',
             'development_standards',
             'operational_guidelines',
         ],
         'aws-troubleshooter': [
             'infrastructure_topology',
+            'vpc_mapping',
+            'dynamic_queries',
             'operational_guidelines',
         ]
     }
@@ -93,12 +100,16 @@ class ContextSectionReader:
         Initialize reader with project context file.
 
         Args:
-            context_file: Path to project-context.json (default: searches for .claude/project-context.json)
+            context_file: Path to project-context.json (default: searches for .claude/project-context/project-context.json)
         """
         if context_file is None:
             # Find the .claude directory by searching upward
             claude_dir = find_claude_dir()
-            context_file = claude_dir / "project-context.json"
+            # Try project-context/ subdirectory first (new location)
+            context_file = claude_dir / "project-context" / "project-context.json"
+            if not Path(context_file).exists():
+                # Fallback to root .claude/ (old location)
+                context_file = claude_dir / "project-context.json"
 
         self.path = Path(context_file)
 
