@@ -65,12 +65,13 @@ class PolicyEngine:
             r"flux\s+create",
             r"flux\s+delete",
 
-            # GCP write operations
-            r"gcloud\s+.*\s+(create|update|delete|patch)",
-            r"gcloud\s+(create|update|delete|patch)",
+            # GCP write operations (create/update/delete/patch as subcommands with word boundaries)
+            r"gcloud\s+[\w-]+\s+(create|update|delete|patch)",
+            r"gcloud\s+[\w-]+\s+[\w-]+\s+(create|update|delete|patch)",
 
-            # AWS write operations
-            r"aws\s+.*\s+(create|update|delete|put)",
+            # AWS write operations (create/update/delete/put as subcommands with word boundaries)
+            r"aws\s+[\w-]+\s+(?!--)(create|update|delete|put)",
+            r"aws\s+[\w-]+\s+[\w-]+\s+(?!--)(create|update|delete|put)",
 
             # Docker write operations
             r"docker\s+build",
@@ -105,16 +106,37 @@ class PolicyEngine:
             # Flux read operations
             r"flux\s+(check|get|version)",
 
+            # Docker read operations
+            r"docker\s+(ps|images|inspect|logs|stats|version|info)",
+            r"docker\s+(container|image|network|volume)\s+(ls|inspect|list)",
+
             # GCP read operations
-            r"gcloud\s+.*\s+(describe|list|show|get)",
-            r"gcloud\s+(describe|list|show|get)",
+            r"gcloud\s+[\w-]+\s+(describe|list|show|get)",
+            r"gcloud\s+[\w-]+\s+[\w-]+\s+(describe|list|show|get)",
 
             # AWS read operations
-            r"aws\s+.*\s+(describe|list|get)",
+            r"aws\s+[\w-]+\s+(describe|list|get).*",
+            r"aws\s+[\w-]+\s+[\w-]+\s+(describe|list|get).*",
 
             # General utilities
             r"ls|pwd|cd|cat|head|tail|grep|find|which",
             r"echo|printf",
+
+            # Network verification commands (diagnostic/monitoring)
+            r"ping(\s|$)",
+            r"nslookup(\s|$)",
+            r"dig(\s|$)",
+            r"traceroute(\s|$)",
+            r"curl(\s|$)",
+            r"wget(\s|$)",
+            r"nc(\s|$)",
+            r"telnet(\s|$)",
+            r"netstat(\s|$)",
+            r"ss(\s|$)",
+            r"ifconfig(\s|$)",
+            r"ip\s+(addr|route|link|neigh)",
+            r"route(\s|$)",
+            r"arp(\s|$)",
 
             # Python scripts (session management)
             r"python3?\s+.*session.*\.py",

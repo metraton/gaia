@@ -12,6 +12,7 @@ This package is organized into atomic modules:
 - 6-semantic: Embedding-based semantic matching
 - 7-utilities: Helper tools and audit logging
 - 8-shared: Common schemas and utilities
+- 9-agent-framework: Agnostic agent execution protocol (5-layer workflow)
 - fast-queries: Agent diagnostic scripts
 
 Backward Compatibility
@@ -29,6 +30,12 @@ Preferred New Imports
     from tools["1-routing"] import AgentRouter
     from tools["2-context"] import context_provider
     from tools["4-validation"] import ApprovalGate
+
+Agent Framework (New)
+====================
+
+    from tools["9-agent-framework"] import AgentOrchestrator
+    from tools["9-agent-framework"] import PayloadValidator, LocalDiscoverer
 """
 
 import importlib
@@ -42,6 +49,7 @@ _task_management = importlib.import_module(".5-task-management", package=__name_
 _semantic = importlib.import_module(".6-semantic", package=__name__)
 _utilities = importlib.import_module(".7-utilities", package=__name__)
 _shared = importlib.import_module(".8-shared", package=__name__)
+_agent_framework = importlib.import_module(".9-agent-framework", package=__name__)
 
 # Extract main exports for backward compatibility
 AgentRouter = _routing.AgentRouter
@@ -59,6 +67,14 @@ generate_embeddings = _semantic.generate_embeddings
 AgentInvokerHelper = _utilities.AgentInvokerHelper
 TaskAuditLogger = _utilities.TaskAuditLogger
 
+# Agent framework exports (new)
+AgentOrchestrator = _agent_framework.AgentOrchestrator
+PayloadValidator = _agent_framework.PayloadValidator
+LocalDiscoverer = _agent_framework.LocalDiscoverer
+FindingClassifier = _agent_framework.FindingClassifier
+ExecutionManager = _agent_framework.ExecutionManager
+JSONLogger = _agent_framework.JSONLogger
+
 # Re-export submodules for access
 routing = _routing
 context = _context
@@ -68,6 +84,7 @@ task_management = _task_management
 semantic = _semantic
 utilities = _utilities
 shared = _shared
+agent_framework = _agent_framework
 
 __all__ = [
     # Main classes and functions (backward compatible)
@@ -85,6 +102,13 @@ __all__ = [
     "generate_embeddings",
     "AgentInvokerHelper",
     "TaskAuditLogger",
+    # Agent framework (new)
+    "AgentOrchestrator",
+    "PayloadValidator",
+    "LocalDiscoverer",
+    "FindingClassifier",
+    "ExecutionManager",
+    "JSONLogger",
     # Submodules (new style)
     "routing",
     "context",
@@ -94,6 +118,7 @@ __all__ = [
     "semantic",
     "utilities",
     "shared",
+    "agent_framework",
 ]
 
 __version__ = "2.0.0"  # Major version bump for reorganization
