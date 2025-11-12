@@ -1009,9 +1009,15 @@ async function main() {
       config = await runInteractiveWizard(detected);
     }
 
-    // Step 4: Install Claude Code if requested
-    if (config.installClaudeCode && !claudeCodeInstalled) {
-      await installClaudeCode();
+    // Step 4: Install Claude Code only if requested AND not already installed
+    if (config.installClaudeCode) {
+      if (claudeCodeInstalled) {
+        console.log(chalk.green('✓ Claude Code already installed, skipping reinstall\n'));
+      } else {
+        await installClaudeCode();
+      }
+    } else {
+      console.log(chalk.gray('✓ Claude Code installation skipped\n'));
     }
 
     // Step 5: Install @jaguilar87/gaia-ops package

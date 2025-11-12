@@ -1,11 +1,12 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
   "bin": {
-    "gaia-init": "bin/gaia-init.js"
+    "gaia-init": "bin/gaia-init.js",
+    "gaia-cleanup": "bin/cleanup-claude-install.js"
   },
   "keywords": [
     "claude-code",
@@ -42,6 +43,7 @@
     "tests/",
     "CHANGELOG.md",
     "README.en.md",
+    "README.md",
     "index.js"
   ],
   "scripts": {
