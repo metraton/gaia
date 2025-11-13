@@ -29,11 +29,11 @@ const __dirname = dirname(__filename);
 const CWD = process.env.INIT_CWD || process.cwd();
 
 /**
- * Check if CLAUDE.md exists (to determine if this is first-time install)
+ * Check if .claude/ directory exists (to determine if this is first-time install)
  */
-async function claudeMdExists() {
-  const claudeMdPath = join(CWD, 'CLAUDE.md');
-  return existsSync(claudeMdPath);
+async function isExistingInstallation() {
+  const claudeDir = join(CWD, '.claude');
+  return existsSync(claudeDir);
 }
 
 /**
@@ -52,22 +52,25 @@ async function updateClaudeMd() {
     }
 
     const claudeMdPath = join(CWD, 'CLAUDE.md');
+    const claudeDir = join(CWD, '.claude');
 
-    // Check if this is first-time install
-    if (!existsSync(claudeMdPath)) {
-      // First time install - don't auto-generate, gaia-init handles it
+    // Check if .claude/ exists (indicates this is NOT first-time install)
+    if (!existsSync(claudeDir)) {
+      // True first-time install - skip, let gaia-init handle it
       spinner.info('First-time installation detected - skipping auto-update');
       return false;
     }
 
-    // Read template and copy it directly (no placeholder replacement)
-    // The template will be copied as-is with placeholders intact
+    // .claude/ exists, so this is an existing installation
+    // Regenerate CLAUDE.md (whether it exists or not)
+    const fileExistedBefore = existsSync(claudeMdPath);
     const template = await fs.readFile(templatePath, 'utf-8');
 
-    // Write updated CLAUDE.md (OVERWRITES existing file)
+    // Write/overwrite CLAUDE.md
     await fs.writeFile(claudeMdPath, template, 'utf-8');
 
-    spinner.succeed('CLAUDE.md updated successfully (existing file overwritten)');
+    const action = fileExistedBefore ? 'updated successfully (existing file overwritten)' : 'created successfully';
+    spinner.succeed(`CLAUDE.md ${action}`);
     return true;
   } catch (error) {
     spinner.fail(`Failed to update CLAUDE.md: ${error.message}`);
@@ -186,7 +189,7 @@ async function main() {
 
   try {
     // Check if this is an update (not first-time install)
-    const isUpdate = await claudeMdExists();
+    const isUpdate = await isExistingInstallation();
 
     if (isUpdate) {
       // Show warning before overwriting files
