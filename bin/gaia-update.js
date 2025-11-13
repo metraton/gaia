@@ -82,18 +82,21 @@ async function updateSettingsJson() {
   try {
     const templatePath = join(__dirname, '../templates/settings.template.json');
     const settingsPath = join(CWD, '.claude', 'settings.json');
+    const claudeDir = join(CWD, '.claude');
 
     if (!existsSync(templatePath)) {
       spinner.warn('Settings template not found, skipping');
       return false;
     }
 
-    if (!existsSync(join(CWD, '.claude'))) {
+    // Only skip if .claude/ directory doesn't exist (true first-time install)
+    if (!existsSync(claudeDir)) {
       spinner.info('First-time installation detected - skipping auto-update');
       return false;
     }
 
-    // Copy template to settings.json (OVERWRITES existing file)
+    // If .claude/ exists, ALWAYS regenerate settings.json
+    // (even if settings.json was manually deleted)
     const template = await fs.readFile(templatePath, 'utf-8');
     await fs.writeFile(settingsPath, template, 'utf-8');
 
