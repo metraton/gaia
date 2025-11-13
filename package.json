@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -51,7 +51,8 @@
     "validate": "python3 tools/commit_validator.py",
     "lint": "eslint .",
     "clean": "find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true",
-    "prepublishOnly": "npm run clean"
+    "prepublishOnly": "npm run clean",
+    "postinstall": "node bin/gaia-update.js"
   },
   "dependencies": {
     "prompts": "^2.4.2",

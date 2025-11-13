@@ -30,14 +30,25 @@
 | 0 | Clarification (if ambiguous) | `clarification` module | Conditional |
 | 1 | Route to agent | `agent_router.py` | Yes |
 | 2 | Provision context | `context_provider.py` | Yes |
-| 3 | Invoke (Planning) | `Task` tool | Yes |
+| 3 | Invoke (Planning) | `Task(subagent_type=<agent>, prompt=<enriched>)` | Yes |
 | 4 | Approval Gate | `approval_gate.py` | **Yes (T3)** |
 | 5 | Realization | `Task` tool (re-invoke) | Yes |
 | 6 | Update SSOT | Edit `project-context.json`, `tasks.md` | Yes |
 
-**See:** `.claude/config/orchestration-workflow.md` for complete details.
+### Rule 5.0.1 [P0]: Execution Flow
 
-### Rule 5.0.1 [P0]: Phase 0 Implementation
+When receiving a user prompt, execute phases sequentially:
+
+1. **Phase 0 (Conditional):** If prompt is ambiguous, call clarification module to enrich prompt
+2. **Phase 1:** Call `agent_router.py` with enriched prompt → Receive agent suggestion
+3. **Phase 2:** Call `context_provider.py` with selected agent → Receive provisioned context
+4. **Phase 3:** Invoke `Task` tool with `subagent_type=<agent>`, `prompt=<enriched_prompt>`, and provisioned context
+   - **Checkpoint:** Agent must return a plan. If no plan received, halt workflow and report error
+5. **Phase 4 (T3 only):** Run approval gate (MANDATORY for T3 operations)
+6. **Phase 5:** After user approval, re-invoke `Task` tool for realization
+7. **Phase 6:** Update `project-context.json` and `tasks.md` with results
+
+### Rule 5.0.2 [P0]: Phase 0 Implementation
 
 **When to invoke Phase 0:**
 - User prompt contains generic terms: "the service", "the API", "the cluster"
@@ -86,7 +97,7 @@ if result.get("needs_manual_questioning"):
 
 **See:** `.claude/config/orchestration-workflow.md` lines 25-150 for complete Phase 0 protocol.
 
-### Rule 5.1 [P0]: Approval Gate Enforcement
+### Rule 5.1 [P0]: Phase Checkpoint Enforcement
 - Phase 4 CANNOT be skipped for T3 operations
 - Phase 5 requires `validation["approved"] == True`
 - Phase 6 updates MUST complete after successful realization
