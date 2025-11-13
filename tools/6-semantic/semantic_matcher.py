@@ -87,16 +87,19 @@ class SemanticMatcher:
 
         Args:
             text: User request
-            keyword_scores: Scores from keyword matching {intent: score}
+            keyword_scores: Scores from keyword matching {intent: score} (0-100 scale)
 
         Returns:
-            (best_intent, confidence)
+            (best_intent, confidence) - confidence in 0-1.0 range
 
         Strategy:
         1. If embeddings available, calculate text embedding (via TF-IDF approximation)
         2. Find similarity to each intent embedding
-        3. Combine with keyword scores
+        3. Combine with keyword scores (70% weight) + embedding scores (30% weight)
         4. Return best match
+
+        NOTE: Confidence is returned as 0.0-1.0 float (not 0-100).
+        Caller must normalize to 0-100 if needed.
         """
         if not keyword_scores:
             return None, 0.0
@@ -167,10 +170,11 @@ class SemanticMatcher:
                 emb_score = embedding_scores.get(intent, 0.0)
 
                 # Normalize both to 0-1
-                kw_norm = min(kw_score / 5.0, 1.0)  # keyword scores are ~0-5
+                # keyword_scores are now in 0-100 scale (per agent_router.py normalization)
+                kw_norm = min(kw_score / 100.0, 1.0)
                 emb_norm = max(0.0, min(emb_score, 1.0))  # embedding scores already 0-1
 
-                # Weighted combination
+                # Weighted combination (70% keyword, 30% embedding)
                 combined = (kw_norm * 0.7) + (emb_norm * 0.3)
                 combined_scores[intent] = combined
 

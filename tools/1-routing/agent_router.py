@@ -13,6 +13,7 @@ keyword-only router.
 import argparse
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,7 +62,8 @@ class IntentClassifier:
                 "include": [
                     "pod", "deployment", "service", "namespace", "helm",
                     "flux", "kubectl", "verify", "status", "logs",
-                    "scale", "restart", "update"
+                    "scale", "restart", "update",
+                    "cluster", "traffic", "configuration", "gitops"
                 ],
                 "exclude": ["create infrastructure", "provision"],
                 "confidence_boost": 0.82
@@ -183,8 +185,38 @@ class CapabilityValidator:
 
         return "devops-developer"  # Ultimate fallback
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_TASK_FILE = ROOT_DIR / "spec-kit-tcm-plan" / "specs" / "001-tcm-deployment-plan" / "tasks.md"
+# Agent Router is AGNOSTIC: No hardcoded task file paths
+# Task metadata routing is OPTIONAL and only used if explicitly provided via:
+# 1. Constructor argument: AgentRouter(task_file="/path/to/tasks.md")
+# 2. Environment variable: GAIA_TASKS_FILE=/path/to/tasks.md
+# 3. Direct method: router.route(user_request, task_file="/path/to/tasks.md")
+#
+# If NO task file is provided, router falls back to:
+# - Semantic keyword matching (IntentClassifier)
+# - Pattern-based keyword routing
+#
+# This design ensures portability across different project structures:
+# - gaia-ops (primary)
+# - vtr (project)
+# - Any other Claude Code project
+
+def _resolve_task_file_from_env() -> Optional[Path]:
+    """
+    Resolve task file ONLY from explicit environment variable.
+    No directory scanning or assumptions about project structure.
+    """
+    if env_tasks_file := os.environ.get("GAIA_TASKS_FILE"):
+        candidate = Path(env_tasks_file)
+        if candidate.exists():
+            logger.debug(f"Using task file from GAIA_TASKS_FILE: {candidate}")
+            return candidate
+        else:
+            logger.warning(f"GAIA_TASKS_FILE specified but not found: {candidate}")
+
+    return None
+
+# NO DEFAULT_TASK_FILE - Router is agnostic by design
+DEFAULT_TASK_FILE = _resolve_task_file_from_env()
 
 
 @dataclass
@@ -248,7 +280,8 @@ class AgentRouter:
                     "service", "services", "flux", "helmrelease",
                     "kubernetes", "k8s", "namespace", "namespaces",
                     "ingress", "configmap", "secret",
-                    "reconcile", "kustomization"
+                    "reconcile", "kustomization",
+                    "traffic", "cluster", "gitops", "configuration"
                 ],
                 patterns=[
                     r"check.*pod[s]?",
@@ -399,7 +432,9 @@ class AgentRouter:
                 continue
 
             base_conf = meta.get("confidence")
-            confidence_score = 100 if base_conf is None else max(10, int(round(base_conf * 10)))
+            # Normalize task confidence to 0-100 scale
+            # If no confidence specified, default to 85 (high confidence)
+            confidence_score = 100 if base_conf is None else int(round(base_conf * 100))
 
             reason_parts = [f"task {meta.get('raw_id', norm)} metadata"]
             if meta.get("tier"):
@@ -419,9 +454,13 @@ class AgentRouter:
 
     def _calculate_keyword_scores(self, request: str) -> Dict[str, float]:
         """
-        Calculate keyword scores for all intents (Week 2 addition)
+        Calculate keyword scores for all intents (normalized to 0-100)
 
-        Used for embedding-enhanced routing
+        Used for embedding-enhanced routing via semantic_matcher.
+        Scores are normalized to 0-100 for consistency across routing methods.
+
+        Returns:
+            Dict mapping intent names to confidence scores (0-100)
         """
         request_lower = request.lower()
         scores = {}
@@ -450,7 +489,16 @@ class AgentRouter:
 
         # Filter out negative scores
         valid_scores = {k: v for k, v in scores.items() if v >= 0}
-        return valid_scores if valid_scores else {}
+
+        # Normalize to 0-100 scale
+        # (raw scores are typically 0-4.4, normalize relative to max)
+        if valid_scores:
+            max_score = max(valid_scores.values())
+            if max_score > 0:
+                normalized = {k: int(round((v / max_score) * 100)) for k, v in valid_scores.items()}
+                return normalized
+
+        return {}
 
     def _route_semantic(self, user_request: str) -> Tuple[str, float, str]:
         """
@@ -506,6 +554,17 @@ class AgentRouter:
         """
         Suggest agent based on keywords and patterns in user request
 
+        CONFIDENCE SCORES (All normalized to 0-100):
+        - Task routing: 0-100 (from task metadata or 100 if no confidence specified)
+        - Semantic routing: 0-100 (from intent classification with embeddings)
+        - Keyword routing: 0-100 (raw_score / max_possible_score * 100)
+
+        Routing Priority (highest to lowest confidence):
+        1. Task metadata (if available and matched)
+        2. Semantic routing (intent classification with embeddings)
+        3. Keyword pattern matching (simple keyword/pattern scoring)
+        4. Fallback: devops-developer (confidence=0)
+
         Args:
             user_request: User's request text
             verbose: If True, log scoring details
@@ -543,6 +602,13 @@ class AgentRouter:
         scores = {}
         reasons = {}
 
+        # Calculate max possible score for normalization
+        max_possible_score = 0
+        for rule in self.routing_rules.values():
+            rule_max = len(rule.keywords) + (len(rule.patterns) * 2)
+            if rule_max > max_possible_score:
+                max_possible_score = rule_max
+
         for agent_name, rule in self.routing_rules.items():
             score = 0
             matched_keywords = []
@@ -578,7 +644,9 @@ class AgentRouter:
 
         # Return highest scoring agent
         best_agent = max(scores, key=scores.get)
-        confidence = scores[best_agent]
+        raw_score = scores[best_agent]
+        # Normalize to 0-100 scale based on max possible score
+        confidence = int(round((raw_score / max_possible_score) * 100)) if max_possible_score > 0 else 0
         reason = reasons[best_agent]
 
         if verbose:
