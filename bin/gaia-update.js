@@ -24,7 +24,9 @@ import ora from 'ora';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const CWD = process.cwd();
+// Use INIT_CWD (npm's original working directory) when available,
+// otherwise fall back to process.cwd()
+const CWD = process.env.INIT_CWD || process.cwd();
 
 /**
  * Check if CLAUDE.md exists (to determine if this is first-time install)
