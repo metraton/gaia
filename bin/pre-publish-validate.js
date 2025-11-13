@@ -25,9 +25,48 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const GAIA_OPS_ROOT = path.resolve(__dirname, '..');
-const MONOREPO_ROOT = path.resolve(GAIA_OPS_ROOT, '..');
-const NODE_MODULES_INSTALL = path.resolve(MONOREPO_ROOT, 'node_modules', '@jaguilar87', 'gaia-ops');
+// Detectar gaia-ops root buscando package.json
+function detectGaiaOpsRoot(startPath) {
+  let currentPath = startPath;
+
+  while (currentPath !== path.dirname(currentPath)) { // hasta raíz
+    const packageJsonPath = path.join(currentPath, 'package.json');
+    if (fs.existsSync(packageJsonPath)) {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      if (pkg.name === '@jaguilar87/gaia-ops') {
+        return currentPath;
+      }
+    }
+    currentPath = path.dirname(currentPath);
+  }
+
+  throw new Error('Could not find gaia-ops package.json');
+}
+
+// Buscar node_modules de múltiples maneras
+function findNodeModulesPath(gaiaOpsRoot) {
+  const candidates = [
+    path.resolve(gaiaOpsRoot, '..', 'node_modules'),           // ../node_modules
+    path.resolve(gaiaOpsRoot, 'node_modules'),                 // ./node_modules
+    path.resolve(process.cwd(), 'node_modules'),               // cwd/node_modules
+    path.join(gaiaOpsRoot, '..', '..', 'node_modules'),        // ../../node_modules
+  ];
+
+  for (const candidate of candidates) {
+    const gaiaPath = path.join(candidate, '@jaguilar87', 'gaia-ops');
+    if (fs.existsSync(gaiaPath)) {
+      return candidate;
+    }
+  }
+
+  // Si no encuentra, retorna la ruta esperada (será creada por npm install)
+  return path.resolve(gaiaOpsRoot, '..', 'node_modules');
+}
+
+const GAIA_OPS_ROOT = detectGaiaOpsRoot(path.resolve(__dirname, '..'));
+const NODE_MODULES_BASE = findNodeModulesPath(GAIA_OPS_ROOT);
+const MONOREPO_ROOT = path.resolve(NODE_MODULES_BASE, '..');
+const NODE_MODULES_INSTALL = path.resolve(NODE_MODULES_BASE, '@jaguilar87', 'gaia-ops');
 
 class PrePublishValidator {
   constructor(options = {}) {
@@ -293,15 +332,19 @@ class PrePublishValidator {
     console.log('='.repeat(70));
 
     console.log(`
-  Source:           ${GAIA_OPS_ROOT}
-  Monorepo:         ${MONOREPO_ROOT}
-  node_modules:     ${NODE_MODULES_INSTALL}
-
-  Current Version:  ${this.currentVersion}
-  ${this.newVersion ? `New Version:      ${this.newVersion}` : '  (No version change)'}
-
-  Dry Run:          ${this.dryRun ? 'YES' : 'NO'}
-  Validate Only:    ${this.validateOnly ? 'YES' : 'NO'}
+  ┌─ Path Detection
+  │  gaia-ops root:   ${GAIA_OPS_ROOT}
+  │  node_modules:    ${NODE_MODULES_BASE}
+  │  monorepo root:   ${MONOREPO_ROOT}
+  │  installed path:  ${NODE_MODULES_INSTALL}
+  │
+  ├─ Version Info
+  │  Current:        ${this.currentVersion}
+  │  ${this.newVersion ? `New:              ${this.newVersion}` : '  (No change)'}
+  │
+  └─ Options
+     Dry Run:        ${this.dryRun ? 'YES' : 'NO'}
+     Validate Only:  ${this.validateOnly ? 'YES' : 'NO'}
     `);
 
     console.log('='.repeat(70));
@@ -320,6 +363,7 @@ class PrePublishValidator {
   async run() {
     try {
       this.log('Starting pre-publish validation...', 'info');
+      this.log(`Detected paths: gaia-ops=${path.basename(GAIA_OPS_ROOT)}, monorepo=${path.basename(MONOREPO_ROOT)}`, 'info');
       console.log('');
 
       this.validateGitStatus();
