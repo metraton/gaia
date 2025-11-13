@@ -3,7 +3,7 @@
 /**
  * @jaguilar87/gaia-ops - Cleanup script
  *
- * Runs automatically on npm uninstall (preuninstall hook)
+ * Manual cleanup command for removing gaia-ops files
  *
  * Purpose:
  * - Remove CLAUDE.md
@@ -11,18 +11,21 @@
  * - Remove all symlinks (agents, tools, hooks, commands, config, templates, speckit, CHANGELOG.md)
  * - Preserve project-specific data (logs, tests, project-context, session, metrics)
  *
- * Usage: Automatic (npm preuninstall hook)
+ * Usage:
+ *   npx gaia-cleanup
+ *   OR
+ *   npm exec gaia-cleanup
+ *
+ * Recommended before uninstalling:
+ *   npx gaia-cleanup && npm uninstall @jaguilar87/gaia-ops
  */
 
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import chalk from 'chalk';
 import ora from 'ora';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 const CWD = process.env.INIT_CWD || process.cwd();
 
 /**
