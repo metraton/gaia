@@ -56,13 +56,14 @@
     "pre-publish:dry": "node bin/pre-publish-validate.js --dry-run",
     "pre-publish:validate": "node bin/pre-publish-validate.js --validate-only",
     "prepublishOnly": "npm run clean",
-    "postinstall": "node bin/gaia-update.js"
+    "postinstall": "node bin/gaia-update.js",
+    "preuninstall": "node bin/gaia-cleanup.js"
   },
   "_postinstall_note": "⚠️ postinstall hook overwrites CLAUDE.md and settings.json from templates on every npm install/update",
   "dependencies": {
-    "prompts": "^2.4.2",
     "chalk": "^5.3.0",
     "ora": "^7.0.1",
+    "prompts": "^2.4.2",
     "yargs": "^17.7.2"
   },
   "devDependencies": {

@@ -3,8 +3,6 @@
 /**
  * @jaguilar87/gaia-ops - Cleanup script
  *
- * Manual cleanup command for removing gaia-ops files
- *
  * Purpose:
  * - Remove CLAUDE.md
  * - Remove settings.json
@@ -12,21 +10,55 @@
  * - Preserve project-specific data (logs, tests, project-context, session, metrics)
  *
  * Usage:
- *   npx gaia-cleanup
- *   OR
- *   npm exec gaia-cleanup
+ *   Manual: npx gaia-cleanup
+ *   Automatic: Runs via preuninstall hook when uninstalling from npm registry
  *
- * Recommended before uninstalling:
+ * IMPORTANT FOR LOCAL DEVELOPMENT:
+ *   When testing with local installs (npm install ./gaia-ops), the preuninstall hook
+ *   will NOT execute automatically due to npm's file: protocol behavior.
+ *   You must run 'npx gaia-cleanup' manually before uninstalling:
+ *
  *   npx gaia-cleanup && npm uninstall @jaguilar87/gaia-ops
+ *
+ *   When installed from npm registry, cleanup happens automatically on uninstall.
  */
 
-import { join } from 'path';
+import { join, dirname, resolve } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import chalk from 'chalk';
 import ora from 'ora';
 
-const CWD = process.env.INIT_CWD || process.cwd();
+/**
+ * Find the project root directory by looking for .claude/ directory
+ * Searches upward from the current working directory
+ */
+function findProjectRoot() {
+  // First try INIT_CWD (available during npm install/uninstall)
+  if (process.env.INIT_CWD) {
+    const claudeDir = join(process.env.INIT_CWD, '.claude');
+    if (existsSync(claudeDir)) {
+      return process.env.INIT_CWD;
+    }
+  }
+
+  // Search upward from current directory
+  let currentDir = process.cwd();
+  const root = resolve('/');
+
+  while (currentDir !== root) {
+    const claudeDir = join(currentDir, '.claude');
+    if (existsSync(claudeDir)) {
+      return currentDir;
+    }
+    currentDir = dirname(currentDir);
+  }
+
+  // Fallback to current directory
+  return process.env.INIT_CWD || process.cwd();
+}
+
+const CWD = findProjectRoot();
 
 /**
  * Remove CLAUDE.md if it exists
