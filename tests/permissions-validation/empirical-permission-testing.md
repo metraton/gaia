@@ -114,6 +114,9 @@ Quiero verificar que un servidor web está respondiendo correctamente. Necesito 
 ### 1.20 - Red: Ver Configuración de Red Local
 Necesito conocer la configuración de red de este host (direcciones IP, interfaces, rutas). Muestra información de red.
 
+### 1.21 - AWS: Filtrar Instancias con Procesamiento Complejo
+Necesito identificar y analizar las instancias EC2 que pertenecen a un cluster EKS específico en producción. Quiero ver el ID de instancia, estado, perfil IAM y el nombre del cluster al que pertenecen, filtrando solo las del cluster de producción y limitando los resultados para revisión inicial.
+
 ---
 
 ## FASE 2: DENEGACIONES AUTOMÁTICAS (T3 - Bloqueado Sin Ask)

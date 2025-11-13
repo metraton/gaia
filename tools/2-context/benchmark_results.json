@@ -1,0 +1,30 @@
+[
+  {
+    "scenario": "Terraform Apply (T3)",
+    "token_reduction": 0.9565681737273051,
+    "speed_improvement": 0.3533018041688562,
+    "original_tokens": 8427,
+    "optimized_tokens": 366
+  },
+  {
+    "scenario": "Pod Debugging (T2)",
+    "token_reduction": 0.9760294292156164,
+    "speed_improvement": 0.42140118508191005,
+    "original_tokens": 8427,
+    "optimized_tokens": 202
+  },
+  {
+    "scenario": "Status Check (T0)",
+    "token_reduction": 0.9857600569597722,
+    "speed_improvement": 0.8331318016928658,
+    "original_tokens": 8427,
+    "optimized_tokens": 120
+  },
+  {
+    "scenario": "Cost Analysis (T1)",
+    "token_reduction": 0.967248131007476,
+    "speed_improvement": 0.25984072810011377,
+    "original_tokens": 8427,
+    "optimized_tokens": 276
+  }
+]

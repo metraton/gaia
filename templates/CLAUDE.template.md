@@ -1,3 +1,24 @@
+# CLAUDE.md - Orchestrator Protocol
+
+## TL;DR (Essential Loading Only)
+
+**Two-Phase Workflow:**
+1. Planning (Phase 1-3): Route → Context → Agent generates plan
+2. Approval (Phase 4): MANDATORY user approval via `approval_gate.py`
+3. Realization (Phase 5): Execute ONLY if `validation["approved"] == True`
+
+**Critical Rules:**
+- [P0] Delegate non-atomic ops (Rule 1.0)
+- [P0] Phase 4 approval CANNOT be skipped for T3 (Rule 5.1)
+- [P0] All commits use `commit_validator.py` (Rule 6.1)
+
+**Tool Contracts:** See Rule 5.2 for agent_router.py, context_provider.py, approval_gate.py
+**Failure Handling:** See Rule 5.3 for complete failure matrix
+
+**On-Demand Loading:** Load full context from `.claude/config/*.md` only when needed.
+
+---
+
 ## Core Operating Principles
 
 ### Rule 1.0 [P0]: Delegate Anything Non-Atomic
@@ -88,6 +109,98 @@ if result.get("needs_manual_questioning"):
 - Phase 4 CANNOT be skipped for T3 operations
 - Phase 5 requires `validation["approved"] == True`
 - Phase 6 updates MUST complete after successful realization
+
+### Rule 5.2 [P0]: Tool Invocation Contracts
+
+**Phase 1 - Agent Router:**
+```bash
+python3 .claude/tools/1-routing/agent_router.py "$USER_REQUEST" --json
+```
+**Output:** `{"agent": str, "confidence": int, "reason": str}`
+
+**Phase 2 - Context Provider:**
+```bash
+python3 .claude/tools/2-context/context_provider.py "$AGENT_NAME" "$USER_TASK"
+```
+**Output:** `{"contract": {...}, "enrichment": {...}, "metadata": {...}}`
+
+**Phase 4 - Approval Gate:**
+```python
+from approval_gate import request_approval, process_approval_response
+
+# Step 1: Request
+approval_data = request_approval(realization_package, agent_name, phase)
+# Returns: {summary: str, question_config: dict, gate_instance: ApprovalGate}
+
+# Step 2: Present summary + Ask question
+AskUserQuestion(**approval_data["question_config"])
+
+# Step 3: Validate
+validation = process_approval_response(gate_instance, user_response, ...)
+# Returns: {approved: bool, action: str, message: str}
+```
+
+**Enforcement:**
+- Phase 5 REQUIRES `validation["approved"] == True`
+- NO manual approval bypass allowed
+
+### Rule 5.3 [P0]: Failure Matrix & Recovery
+
+| Phase | Failure Mode | Detection | Action | Fallback |
+|-------|-------------|-----------|--------|----------|
+| **0** | Clarification timeout | No response in 60s | Use original prompt | Log warning, proceed |
+| **0** | Invalid user response | Non-standard answer | Re-ask with examples | Max 2 retries |
+| **1** | Router returns no agent | `confidence == 0` | Use `devops-developer` | Log fallback reason |
+| **1** | Router timeout | Process > 5s | Kill, use fallback | Investigate routing complexity |
+| **2** | Context file missing | `project-context.json` not found | HALT workflow | User must run `/speckit.init` |
+| **2** | Invalid JSON in context | JSONDecodeError | HALT workflow | User must fix syntax |
+| **2** | Provider mismatch | GCP contract for AWS project | Load correct contract | Auto-detect provider |
+| **3** | Agent invocation fails | Task tool error | Retry once, then HALT | Log full error context |
+| **3** | Agent timeout | Duration > 120s | Warn user, extend timeout | Max 300s for T3 ops |
+| **3** | Malformed realization package | Missing required fields | Request re-generation | Provide package schema |
+| **4** | Approval timeout | No response in 300s | Auto-reject | Email notification (future) |
+| **4** | Approval bypassed | Phase 5 without Phase 4 | ABORT immediately | Log security violation |
+| **4** | Invalid approval response | Parse error | Re-ask with simplified options | Max 2 retries |
+| **5** | Git push fails | Non-zero exit code | Check remote access | Suggest `git push --force-with-lease` |
+| **5** | Kubectl apply fails | ImagePullBackOff | Rollback, check registry | Suggest image tag verification |
+| **5** | Terraform apply fails | Resource already exists | Suggest `terraform import` | Check state file |
+| **5** | Verification fails | Resources not ready | Wait + retry (max 3x) | Manual verification instructions |
+| **6** | SSOT update fails | Edit tool error | HALT, require manual fix | Log inconsistency |
+| **6** | Tasks.md not found | File doesn't exist | Skip task updates | Create with `/speckit.init` |
+
+**Critical Recovery Actions:**
+
+**Phase 2 Context Failure (P0):**
+```bash
+# Auto-recovery script
+if [ ! -f .claude/project-context.json ]; then
+    echo "ERROR: project-context.json missing"
+    echo "Run: /speckit.init"
+    exit 1
+fi
+```
+
+**Phase 4 Bypass Detection (P0):**
+```python
+# Enforcement check before Phase 5
+if not validation.get("approved"):
+    raise SecurityViolation("Phase 5 cannot proceed without Phase 4 approval")
+    # Log to .claude/logs/security-violations.jsonl
+```
+
+**Phase 5 Verification Failure (P1):**
+```bash
+# Rollback sequence
+kubectl rollout undo deployment/$NAME
+kubectl get pods -l app=$NAME  # Verify rollback
+git revert HEAD  # Revert code changes
+git push origin $BRANCH
+```
+
+**Logging Requirements:**
+- ALL failures logged to `.claude/logs/audit-YYYY-MM-DD.jsonl`
+- Include: timestamp, phase, error_type, recovery_action, success
+- Retention: 90 days minimum
 
 ## Git Operations
 

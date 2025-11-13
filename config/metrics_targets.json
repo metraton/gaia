@@ -1,0 +1,37 @@
+{
+  "kpi_targets": {
+    "routing_accuracy": {
+      "avg_confidence_min": 0.7,
+      "semantic_routing_rate_min": 0.6
+    },
+    "delegation_effectiveness": {
+      "avg_confidence_min": 0.8
+    },
+    "guard_effectiveness": {
+      "pass_rate_min": 0.9,
+      "phase_4_pass_rate_min": 1.0
+    },
+    "phase_completion": {
+      "phase_4_skip_rate_t3_max": 0.0
+    },
+    "approval_gate": {
+      "approval_rate_min": 0.5,
+      "avg_response_time_max_seconds": 300
+    },
+    "agent_performance": {
+      "success_rate_min": 0.8,
+      "avg_duration_max_ms": 30000
+    },
+    "overall_health": {
+      "score_min": 0.8
+    }
+  },
+  "alerting": {
+    "enabled": true,
+    "critical_thresholds": {
+      "phase_4_skip_rate_t3": 0.0,
+      "guard_pass_rate": 0.85,
+      "agent_success_rate": 0.7
+    }
+  }
+}

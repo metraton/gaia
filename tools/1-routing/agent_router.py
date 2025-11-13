@@ -794,5 +794,57 @@ def main():
         print(f"Agent Description: {description}")
 
 
+# ============================================================================
+# WEEK 4: Binary Delegation Matrix Integration
+# ============================================================================
+
+def should_delegate(user_request: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Determine if request should be delegated to agent or executed locally.
+
+    Args:
+        user_request: User's request text
+        context: Optional context (file_count, task_agent, etc.)
+
+    Returns:
+        Dict with:
+        - delegate: bool
+        - decision: DelegationDecision enum
+        - reason: str
+        - confidence: float
+        - suggested_agent: str (if delegate=True)
+    """
+    # Import here to avoid circular dependency
+    sys.path.insert(0, str(Path(__file__).parent.parent / "0-guards"))
+    from delegation_matrix import BinaryDelegationMatrix, DelegationDecision
+
+    matrix = BinaryDelegationMatrix()
+
+    # Analyze request
+    conditions = matrix.analyze_request(user_request, context)
+    decision, reason, confidence = matrix.decide(conditions)
+
+    result = {
+        "delegate": decision == DelegationDecision.DELEGATE,
+        "decision": decision.value,
+        "reason": reason,
+        "confidence": confidence
+    }
+
+    # If delegating, suggest agent
+    if decision == DelegationDecision.DELEGATE:
+        # Use task metadata agent if available
+        if conditions.task_agent:
+            result["suggested_agent"] = conditions.task_agent
+        else:
+            # Use standard routing
+            router = AgentRouter()
+            agent, routing_conf, routing_reason = router.suggest_agent(user_request)
+            result["suggested_agent"] = agent
+            result["routing_confidence"] = routing_conf
+
+    return result
+
+
 if __name__ == "__main__":
     main()
