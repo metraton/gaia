@@ -16,10 +16,14 @@
  *   node bin/pre-publish-validate.js --validate-only
  */
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
-const chalk = require('chalk');
+import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
+import chalk from 'chalk';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const GAIA_OPS_ROOT = path.resolve(__dirname, '..');
 const MONOREPO_ROOT = path.resolve(GAIA_OPS_ROOT, '..');
@@ -343,17 +347,24 @@ class PrePublishValidator {
   }
 }
 
-// Parse command line arguments
-const args = process.argv.slice(2);
-const options = {
-  dryRun: args.includes('--dry-run'),
-  validateOnly: args.includes('--validate-only'),
-  versionBump: 'patch'
-};
+// Parse command line arguments and run
+async function main() {
+  const args = process.argv.slice(2);
+  const options = {
+    dryRun: args.includes('--dry-run'),
+    validateOnly: args.includes('--validate-only'),
+    versionBump: 'patch'
+  };
 
-if (args.includes('major')) options.versionBump = 'major';
-if (args.includes('minor')) options.versionBump = 'minor';
-if (args.includes('patch')) options.versionBump = 'patch';
+  if (args.includes('major')) options.versionBump = 'major';
+  if (args.includes('minor')) options.versionBump = 'minor';
+  if (args.includes('patch')) options.versionBump = 'patch';
 
-const validator = new PrePublishValidator(options);
-validator.run();
+  const validator = new PrePublishValidator(options);
+  await validator.run();
+}
+
+main().catch(err => {
+  console.error(chalk.red('Fatal error:', err.message));
+  process.exit(1);
+});
