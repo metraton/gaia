@@ -111,6 +111,74 @@ async function updateSettingsJson() {
 }
 
 /**
+ * Recreate missing symlinks in .claude/ directory
+ */
+async function recreateSymlinks() {
+  const spinner = ora('Checking symlinks...').start();
+
+  try {
+    const claudeDir = join(CWD, '.claude');
+
+    // Skip if .claude/ doesn't exist (first-time install)
+    if (!existsSync(claudeDir)) {
+      spinner.info('First-time installation detected - skipping symlink check');
+      return false;
+    }
+
+    // Calculate relative path from .claude/ to node_modules/@jaguilar87/gaia-ops
+    const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
+
+    // Verify package exists
+    if (!existsSync(packagePath)) {
+      spinner.fail('Package not found in node_modules');
+      return false;
+    }
+
+    const { relative } = await import('path');
+    const relativePath = relative(claudeDir, packagePath);
+
+    // Define all symlinks that should exist
+    const symlinks = [
+      { target: join(relativePath, 'agents'), link: join(claudeDir, 'agents'), name: 'agents' },
+      { target: join(relativePath, 'tools'), link: join(claudeDir, 'tools'), name: 'tools' },
+      { target: join(relativePath, 'hooks'), link: join(claudeDir, 'hooks'), name: 'hooks' },
+      { target: join(relativePath, 'commands'), link: join(claudeDir, 'commands'), name: 'commands' },
+      { target: join(relativePath, 'templates'), link: join(claudeDir, 'templates'), name: 'templates' },
+      { target: join(relativePath, 'config'), link: join(claudeDir, 'config'), name: 'config' },
+      { target: join(relativePath, 'speckit'), link: join(claudeDir, 'speckit'), name: 'speckit' },
+      { target: join(relativePath, 'CHANGELOG.md'), link: join(claudeDir, 'CHANGELOG.md'), name: 'CHANGELOG.md' }
+    ];
+
+    let recreated = 0;
+    for (const { target, link, name } of symlinks) {
+      // Check if symlink exists and is valid
+      if (existsSync(link)) {
+        continue; // Symlink exists, skip
+      }
+
+      // Symlink missing, recreate it
+      try {
+        await fs.symlink(target, link);
+        recreated++;
+      } catch (error) {
+        // Ignore errors, might be permissions or already exists
+      }
+    }
+
+    if (recreated > 0) {
+      spinner.succeed(`Recreated ${recreated} missing symlink(s)`);
+      return true;
+    } else {
+      spinner.succeed('All symlinks are valid');
+      return false;
+    }
+  } catch (error) {
+    spinner.fail(`Failed to check symlinks: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Main function
  */
 async function main() {
@@ -130,8 +198,9 @@ async function main() {
 
     const claudeUpdated = await updateClaudeMd();
     const settingsUpdated = await updateSettingsJson();
+    const symlinksRecreated = await recreateSymlinks();
 
-    if (claudeUpdated || settingsUpdated) {
+    if (claudeUpdated || settingsUpdated || symlinksRecreated) {
       console.log(chalk.green('\n✅ Auto-update completed\n'));
       console.log(chalk.yellow('⚠️  IMPORTANT: Files have been overwritten from templates'));
       console.log(chalk.gray('\nNext steps:'));
