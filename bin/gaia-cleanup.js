@@ -25,7 +25,7 @@
 
 import { join, dirname, resolve } from 'path';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, lstatSync } from 'fs';
 import chalk from 'chalk';
 import ora from 'ora';
 
@@ -136,13 +136,15 @@ async function removeSymlinks() {
 
     let removed = 0;
     for (const symlinkPath of symlinks) {
-      if (existsSync(symlinkPath)) {
-        try {
+      try {
+        // Use lstat to check if path exists as a symlink (works for broken symlinks too)
+        const stats = lstatSync(symlinkPath);
+        if (stats.isSymbolicLink() || stats.isFile()) {
           await fs.unlink(symlinkPath);
           removed++;
-        } catch (error) {
-          // Ignore errors
         }
+      } catch (error) {
+        // Path doesn't exist or other error, skip
       }
     }
 

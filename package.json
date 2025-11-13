@@ -6,7 +6,8 @@
   "type": "module",
   "bin": {
     "gaia-init": "bin/gaia-init.js",
-    "gaia-cleanup": "bin/gaia-cleanup.js"
+    "gaia-cleanup": "bin/gaia-cleanup.js",
+    "gaia-uninstall": "bin/gaia-uninstall.js"
   },
   "keywords": [
     "claude-code",
