@@ -54,7 +54,6 @@
       "mcp__ide__executeCode",
       "WebSearch",
       "WebFetch",
-
       "Bash(kubectl get:*)",
       "Bash(kubectl describe:*)",
       "Bash(kubectl logs:*)",
@@ -64,24 +63,20 @@
       "Bash(kubectl top:*)",
       "Bash(kubectl wait:*)",
       "Bash(kubectl run:*)",
-
       "Bash(flux check:*)",
       "Bash(flux get:*)",
       "Bash(flux version:*)",
-
       "Bash(helm list:*)",
       "Bash(helm status:*)",
       "Bash(helm version:*)",
       "Bash(helm template:*)",
       "Bash(helm lint:*)",
-
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
       "Bash(git show:*)",
       "Bash(git branch:*)",
       "Bash(git init:*)",
-
       "Bash(gcloud version:*)",
       "Bash(gcloud config:*)",
       "Bash(gcloud auth:*)",
@@ -101,13 +96,18 @@
       "Bash(gcloud iam.*describe:*)",
       "Bash(gcloud logging read:*)",
       "Bash(gsutil ls:*)",
-
       "Bash(terraform version:*)",
       "Bash(terraform fmt:*)",
       "Bash(terraform validate:*)",
       "Bash(terraform show:*)",
       "Bash(terraform output:*)",
-
+      "Bash(terragrunt init:*)",
+      "Bash(terragrunt validate:*)",
+      "Bash(terragrunt version:*)",
+      "Bash(terragrunt fmt:*)",
+      "Bash(terragrunt output:*)",
+      "Bash(terragrunt state list:*)",
+      "Bash(terragrunt show:*)",
       "Bash(aws s3 ls:*)",
       "Bash(aws s3api get-:*)",
       "Bash(aws s3api list-:*)",
@@ -128,7 +128,6 @@
       "Bash(aws logs describe-:*)",
       "Bash(aws logs get-log-events:*)",
       "Bash(aws sts get-caller-identity:*)",
-
       "Bash(docker ps:*)",
       "Bash(docker images:*)",
       "Bash(docker inspect:*)",
@@ -141,7 +140,6 @@
       "Bash(docker version:*)",
       "Bash(docker info:*)",
       "Bash(docker system df:*)",
-
       "Bash(ls:*)",
       "Bash(pwd:*)",
       "Bash(cd:*)",
@@ -172,33 +170,16 @@
       "Bash(gcloud compute networks delete:*)",
       "Bash(gsutil rm.*-r:*)",
       "Bash(gsutil rb:*)",
-
       "Bash(kubectl drain:*)",
       "Bash(kubectl cordon:*)",
       "Bash(kubectl uncordon:*)",
-
-      "Bash(terraform destroy:*)",
-      "Bash(terragrunt destroy:*)",
-
       "Bash(aws ec2 terminate-instances:*)",
       "Bash(aws rds delete-db-instance:*)",
       "Bash(aws rds delete-db-cluster:*)",
       "Bash(aws iam delete-:*)",
       "Bash(aws iam.*delete.*policy:*)",
       "Bash(aws cloudformation delete-stack:*)",
-      "Bash(aws lambda delete-function:*)",
-      "Bash(aws s3.*rb :*)",
-      "Bash(aws s3 rm.*--recursive:*)",
-
-      "Bash(docker rm:*)",
-      "Bash(docker rmi:*)",
-      "Bash(docker volume rm:*)",
-      "Bash(docker network rm:*)",
-      "Bash(docker system prune.*--all:*)",
-      "Bash(docker container prune:*)",
-      "Bash(docker image prune.*--all:*)",
-      "Bash(docker compose down.*--volumes:*)",
-
+      "Bash(aws lambda delete-function:*)",  
       "Bash(dd:*)",
       "Bash(mkfs:*)",
       "Bash(fdisk:*)"
@@ -208,7 +189,6 @@
       "Edit",
       "Write",
       "NotebookEdit",
-
       "Bash(kubectl delete:*)",
       "Bash(kubectl rollout:*)",
       "Bash(kubectl scale:*)",
@@ -217,41 +197,33 @@
       "Bash(kubectl apply:*)",
       "Bash(kubectl replace:*)",
       "Bash(kubectl exec:*)",
-
       "Bash(flux delete:*)",
       "Bash(flux reconcile:*)",
       "Bash(flux create:*)",
       "Bash(flux suspend:*)",
       "Bash(flux resume:*)",
-
       "Bash(helm install:*)",
       "Bash(helm upgrade:*)",
       "Bash(helm uninstall:*)",
       "Bash(helm delete:*)",
       "Bash(helm rollback:*)",
-
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(git merge:*)",
       "Bash(git rebase:*)",
       "Bash(git cherry-pick:*)",
       "Bash(git add:*)",
-
       "Bash(terraform plan:*)",
       "Bash(terraform apply:*)",
       "Bash(terragrunt plan:*)",
       "Bash(terragrunt apply:*)",
-
       "Bash(rm:*)",
       "Bash(rmdir:*)",
       "Bash(mv:*)",
       "Bash(cp:*)",
       "Bash(chmod:*)",
       "Bash(chown:*)",
-
-      "Bash(aws.*--dryrun:*)",
-      "Bash(aws s3 mb:*)",
-      "Bash(aws s3 cp:*)",
+      
       "Bash(aws s3api put-:*)",
       "Bash(aws ec2 run-instances:*)",
       "Bash(aws ec2 create-:*)",
@@ -269,8 +241,6 @@
       "Bash(aws lambda update-:*)",
       "Bash(aws cloudformation create-stack:*)",
       "Bash(aws cloudformation update-stack:*)",
-
-      "Bash(gcloud.*--dryrun:*)",
       "Bash(gcloud compute instances create:*)",
       "Bash(gcloud compute instances stop:*)",
       "Bash(gcloud compute instances start:*)",
@@ -286,88 +256,9 @@
       "Bash(gsutil mb:*)",
       "Bash(gsutil cp:*)",
       "Bash(gcloud functions deploy:*)",
-
-      "Bash(docker build:*)",
-      "Bash(docker run:*)",
-      "Bash(docker commit:*)",
-      "Bash(docker start:*)",
-      "Bash(docker stop:*)",
-      "Bash(docker restart:*)",
-      "Bash(docker pause:*)",
-      "Bash(docker unpause:*)",
-      "Bash(docker rename:*)",
-      "Bash(docker cp:*)",
-      "Bash(docker tag:*)",
-      "Bash(docker push:*)",
-      "Bash(docker pull:*)",
-      "Bash(docker volume create:*)",
-      "Bash(docker network create:*)",
-      "Bash(docker network connect:*)",
-      "Bash(docker compose up:*)",
-      "Bash(docker compose down:*)",
-      "Bash(docker compose stop:*)",
-      "Bash(docker compose start:*)",
-      "Bash(docker compose restart:*)"
-    ]
-  },
-
-  "security": {
-    "default_tier": "T0",
-    "tier_definitions": {
-      "T0": {
-        "name": "Read Only",
-        "description": "Query and information commands allowed without approval",
-        "blocked": false
-      },
-      "T1": {
-        "name": "Validation",
-        "description": "Validation and planning operations allowed without approval",
-        "blocked": false
-      },
-      "T2": {
-        "name": "Reversible - Ask",
-        "description": "Reversible operations require user approval",
-        "blocked": false
-      },
-      "T3": {
-        "name": "Highly Destructive - Blocked",
-        "description": "Highly destructive operations blocked automatically",
-        "blocked": true
-      }
-    },
-    "always_blocked": [
-      "gcloud container clusters delete",
-      "gcloud sql instances delete",
-      "gcloud projects delete",
-      "gcloud compute instances delete",
-      "gcloud services disable",
-      "gcloud compute firewall-rules delete",
-      "gcloud compute networks delete",
-      "gsutil rm.*-r",
-      "gsutil rb",
-      "terraform destroy",
-      "terragrunt destroy",
-      "git push.*--force",
-      "git push.*-f ",
-      "git reset.*--hard",
-      "kubectl drain",
-      "rm -rf /",
-      "dd if=",
-      "mkfs\\.",
-      "fdisk",
-      "aws ec2 terminate-instances",
-      "aws rds delete-db-instance",
-      "aws rds delete-db-cluster",
-      "aws iam delete-",
-      "aws cloudformation delete-stack",
-      "aws lambda delete-function",
-      "aws s3.*rb",
-      "docker rm",
-      "docker rmi",
-      "docker volume rm",
-      "docker network rm",
-      "docker system prune.*--all",
-      "docker compose down.*--volumes"
+      "Bash(terragrunt apply:*)",
+      "Bash(terragrunt destroy:*)",
+      "Bash(terraform destroy:*)"
     ]
   },
 
