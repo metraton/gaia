@@ -44,6 +44,7 @@
     "CHANGELOG.md",
     "README.en.md",
     "README.md",
+    "PRE_PUBLISH_WORKFLOW.md",
     "index.js"
   ],
   "scripts": {
@@ -51,6 +52,9 @@
     "validate": "python3 tools/commit_validator.py",
     "lint": "eslint .",
     "clean": "find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true",
+    "pre-publish": "node bin/pre-publish-validate.js",
+    "pre-publish:dry": "node bin/pre-publish-validate.js --dry-run",
+    "pre-publish:validate": "node bin/pre-publish-validate.js --validate-only",
     "prepublishOnly": "npm run clean",
     "postinstall": "node bin/gaia-update.js"
   },
