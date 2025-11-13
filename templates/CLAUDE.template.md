@@ -35,20 +35,7 @@
 | 5 | Realization | `Task` tool (re-invoke) | Yes |
 | 6 | Update SSOT | Edit `project-context.json`, `tasks.md` | Yes |
 
-### Rule 5.0.1 [P0]: Execution Flow
-
-When receiving a user prompt, execute phases sequentially:
-
-1. **Phase 0 (Conditional):** If prompt is ambiguous, call clarification module to enrich prompt
-2. **Phase 1:** Call `agent_router.py` with enriched prompt → Receive agent suggestion
-3. **Phase 2:** Call `context_provider.py` with selected agent → Receive provisioned context
-4. **Phase 3:** Invoke `Task` tool with `subagent_type=<agent>`, `prompt=<enriched_prompt>`, and provisioned context
-   - **Checkpoint:** Agent must return a plan. If no plan received, halt workflow and report error
-5. **Phase 4 (T3 only):** Run approval gate (MANDATORY for T3 operations)
-6. **Phase 5:** After user approval, re-invoke `Task` tool for realization
-7. **Phase 6:** Update `project-context.json` and `tasks.md` with results
-
-### Rule 5.0.2 [P0]: Phase 0 Implementation
+### Rule 5.0.1 [P0]: Phase 0 Implementation
 
 **When to invoke Phase 0:**
 - User prompt contains generic terms: "the service", "the API", "the cluster"
