@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
