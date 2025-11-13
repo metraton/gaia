@@ -92,6 +92,52 @@ npx @jaguilar87/gaia-ops init --non-interactive
 3. ✅ Update `.claude/project-context/project-context.json`
 4. ✅ Start Claude Code: `claude`
 
+## Package Updates
+
+⚠️ **IMPORTANT:** When you update the `@jaguilar87/gaia-ops` package, the following files will be **OVERWRITTEN** from templates:
+
+- `CLAUDE.md` - All customizations will be lost
+- `.claude/settings.json` - All customizations will be lost
+
+### Update Behavior
+
+```bash
+# When you run npm install or update
+npm install @jaguilar87/gaia-ops@latest
+
+# The postinstall hook automatically:
+# 1. Shows warning about files being overwritten
+# 2. Regenerates CLAUDE.md from template
+# 3. Regenerates .claude/settings.json from template
+# 4. Does NOT touch other files in .claude/ (symlinked)
+```
+
+### Best Practices
+
+| File | Update Strategy |
+|------|----------------|
+| `CLAUDE.md` | ⚠️ Will be overwritten - reconfigure after updates |
+| `.claude/settings.json` | ⚠️ Will be overwritten - backup if you customize |
+| `.claude/project-context/` | ✅ Safe - not touched by updates |
+| `.claude/logs/` | ✅ Safe - not touched by updates |
+| Other `.claude/` files | ✅ Auto-updated via symlinks |
+
+### Backup Workflow (Optional)
+
+If you heavily customize `CLAUDE.md` or `settings.json`:
+
+```bash
+# Before update - backup customizations
+cp CLAUDE.md CLAUDE.md.backup
+cp .claude/settings.json .claude/settings.json.backup
+
+# Update package
+npm install @jaguilar87/gaia-ops@latest
+
+# After update - restore customizations manually
+# (compare and merge changes as needed)
+```
+
 ## Troubleshooting
 
 ### Multiple Claude Code Installations

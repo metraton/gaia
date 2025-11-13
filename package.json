@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "2.4.5",
+  "version": "2.5.1",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -58,6 +58,7 @@
     "prepublishOnly": "npm run clean",
     "postinstall": "node bin/gaia-update.js"
   },
+  "_postinstall_note": "⚠️ postinstall hook overwrites CLAUDE.md and settings.json from templates on every npm install/update",
   "dependencies": {
     "prompts": "^2.4.2",
     "chalk": "^5.3.0",
