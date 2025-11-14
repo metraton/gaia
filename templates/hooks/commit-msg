@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+Git commit-msg hook: Auto-validates and cleans commit messages.
+Executes before commit is finalized.
+
+This hook:
+1. Validates commit format against git-standards.json
+2. Removes forbidden footers (Claude Code attribution)
+3. Ensures conventional commits format
+"""
+
+import sys
+import os
+import re
+import json
+from pathlib import Path
+
+def clean_commit_message(message: str) -> str:
+    """Remove Claude Code attribution footers."""
+    # Remove lines with "Generated with Claude Code"
+    message = re.sub(
+        r'\n?.*Generated with\s+Claude Code.*\n?',
+        '',
+        message,
+        flags=re.IGNORECASE
+    )
+
+    # Remove Co-Authored-By Claude lines
+    message = re.sub(
+        r'\n?Co-Authored-By:\s+Claude.*\n?',
+        '',
+        message,
+        flags=re.IGNORECASE
+    )
+
+    # Remove empty lines at end
+    message = message.rstrip() + '\n'
+
+    return message
+
+def validate_commit_format(message: str) -> tuple[bool, list]:
+    """Validate commit message format."""
+    errors = []
+
+    lines = message.strip().split('\n')
+    if not lines:
+        errors.append("Commit message is empty")
+        return False, errors
+
+    subject = lines[0]
+
+    # Check subject length (max 72 chars)
+    if len(subject) > 72:
+        errors.append(f"Subject line too long ({len(subject)} > 72 chars)")
+
+    # Check conventional commits format: type(scope): description
+    pattern = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?:\s+.+'
+    if not re.match(pattern, subject):
+        errors.append(
+            f"Commit must use conventional format: "
+            f"type(scope): description\n"
+            f"Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore"
+        )
+
+    # Check no period at end of subject
+    if subject.endswith('.'):
+        errors.append("Subject line should not end with a period")
+
+    return len(errors) == 0, errors
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: commit-msg <commit-msg-file>")
+        sys.exit(1)
+
+    commit_msg_file = sys.argv[1]
+
+    if not os.path.exists(commit_msg_file):
+        sys.exit(0)
+
+    # Read original message
+    try:
+        with open(commit_msg_file, 'r', encoding='utf-8') as f:
+            original_message = f.read()
+    except Exception as e:
+        print(f"❌ Error reading commit message: {e}")
+        sys.exit(1)
+
+    # Skip validation for merge commits
+    if original_message.startswith('Merge '):
+        sys.exit(0)
+
+    # Clean the message
+    cleaned_message = clean_commit_message(original_message)
+
+    # Validate format
+    valid, errors = validate_commit_format(cleaned_message)
+
+    if not valid:
+        print("❌ Commit message validation failed:")
+        for error in errors:
+            print(f"   • {error}")
+        print("\nℹ️  Use conventional format: type(scope): description")
+        print("   Example: feat(auth): add JWT validation")
+        sys.exit(1)
+
+    # Write cleaned message back if changed
+    if original_message != cleaned_message:
+        try:
+            with open(commit_msg_file, 'w', encoding='utf-8') as f:
+                f.write(cleaned_message)
+            print("✅ Commit message cleaned (removed Claude attribution)")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not clean message: {e}")
+
+    sys.exit(0)
+
+if __name__ == '__main__':
+    main()
