@@ -114,48 +114,6 @@ async function updateSettingsJson() {
 }
 
 /**
- * Install git hooks for commit message validation
- */
-async function installGitHooks() {
-  const spinner = ora('Installing git hooks...').start();
-
-  try {
-    // Check if .git exists
-    const gitDir = join(CWD, '.git');
-    if (!existsSync(gitDir)) {
-      spinner.info('Not in a git repository - skipping hooks');
-      return false;
-    }
-
-    const hooksDir = join(gitDir, 'hooks');
-    if (!existsSync(hooksDir)) {
-      await fs.mkdir(hooksDir, { recursive: true });
-    }
-
-    const templateHook = join(__dirname, '../templates/hooks/commit-msg');
-    const commitMsgHook = join(hooksDir, 'commit-msg');
-
-    if (!existsSync(templateHook)) {
-      spinner.warn('Hook template not found');
-      return false;
-    }
-
-    // Copy hook and make executable
-    const hookContent = await fs.readFile(templateHook, 'utf-8');
-    await fs.writeFile(commitMsgHook, hookContent, 'utf-8');
-
-    // Make it executable (644 + executable bit = 755)
-    await fs.chmod(commitMsgHook, 0o755);
-
-    spinner.succeed('Git hooks installed successfully');
-    return true;
-  } catch (error) {
-    spinner.warn(`Failed to install git hooks: ${error.message}`);
-    return false;
-  }
-}
-
-/**
  * Recreate missing symlinks in .claude/ directory
  */
 async function recreateSymlinks() {
@@ -244,9 +202,8 @@ async function main() {
     const claudeUpdated = await updateClaudeMd();
     const settingsUpdated = await updateSettingsJson();
     const symlinksRecreated = await recreateSymlinks();
-    const hooksInstalled = await installGitHooks();
 
-    if (claudeUpdated || settingsUpdated || symlinksRecreated || hooksInstalled) {
+    if (claudeUpdated || settingsUpdated || symlinksRecreated) {
       console.log(chalk.green('\n✅ Auto-update completed\n'));
       console.log(chalk.yellow('⚠️  IMPORTANT: Files have been overwritten from templates'));
       console.log(chalk.gray('\nNext steps:'));
@@ -255,9 +212,6 @@ async function main() {
       }
       if (settingsUpdated) {
         console.log(chalk.gray('  • Review .claude/settings.json for security rules'));
-      }
-      if (hooksInstalled) {
-        console.log(chalk.gray('  • Git commit hooks installed for message validation'));
       }
       console.log(chalk.gray('\n  Tip: Run "gaia-init" to reconfigure from scratch\n'));
     } else {
