@@ -133,8 +133,13 @@ async function removeSymlinks() {
       join(claudeDir, 'README.en.md'),
       join(claudeDir, 'README.md')
     ];
+    
+    // Also remove AGENTS.md at project root
+    const agentsMdPath = join(CWD, 'AGENTS.md');
 
     let removed = 0;
+    
+    // Remove known symlinks in .claude/
     for (const symlinkPath of symlinks) {
       try {
         // Use lstat to check if path exists as a symlink (works for broken symlinks too)
@@ -146,6 +151,44 @@ async function removeSymlinks() {
       } catch (error) {
         // Path doesn't exist or other error, skip
       }
+    }
+    
+    // Remove AGENTS.md at project root (it's a symlink)
+    try {
+      const stats = lstatSync(agentsMdPath);
+      if (stats.isSymbolicLink() || stats.isFile()) {
+        await fs.unlink(agentsMdPath);
+        removed++;
+      }
+    } catch (error) {
+      // Path doesn't exist, skip
+    }
+    
+    // Scan for ANY other broken symlinks in .claude/ directory
+    try {
+      const entries = await fs.readdir(claudeDir);
+      for (const entry of entries) {
+        const fullPath = join(claudeDir, entry);
+        try {
+          const stats = lstatSync(fullPath);
+          // Check if it's a symlink
+          if (stats.isSymbolicLink()) {
+            // Try to access the target to see if it's broken
+            try {
+              await fs.access(fullPath);
+              // Symlink is valid, skip
+            } catch {
+              // Symlink is broken, remove it
+              await fs.unlink(fullPath);
+              removed++;
+            }
+          }
+        } catch {
+          // Skip if can't check
+        }
+      }
+    } catch (error) {
+      // Can't read directory, skip scan
     }
 
     if (removed > 0) {

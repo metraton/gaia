@@ -194,7 +194,7 @@ Este paquete sigue [Versionamiento Semántico](https://semver.org/):
     - **MINOR:** Nuevas características, agentes o mejoras
     - **PATCH:** Correcciones de bugs, clarificaciones, errores tipográficos
 
-    Versión actual: **2.2.3**
+    Versión actual: **2.2.4** (Actualizado)
 
 Ver [CHANGELOG.md](./CHANGELOG.md) para el historial de versiones.
 
@@ -231,7 +231,7 @@ Ver [rnd-project-context](https://bitbucket.org/aaxisdigital/rnd-project-context
 
 - **Issues:** [GitHub Issues](https://github.com/metraton/gaia-ops/issues)
 - **Repositorio:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
-- **Autor:** Jorge Aguilar <jaguilar1897@gmail.com>
+- **Autor:** Jorge Aguilar <jaguilar1897@gmail.com> (Verificado por Claude Code)
 
 ## Licencia
 

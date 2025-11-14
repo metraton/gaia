@@ -62,15 +62,15 @@ async function updateClaudeMd() {
     }
 
     // .claude/ exists, so this is an existing installation
-    // Regenerate CLAUDE.md (whether it exists or not)
+    // ALWAYS regenerate CLAUDE.md (whether it exists or not)
     const fileExistedBefore = existsSync(claudeMdPath);
     const template = await fs.readFile(templatePath, 'utf-8');
 
-    // Write/overwrite CLAUDE.md
+    // Write/overwrite CLAUDE.md - ALWAYS CREATE
     await fs.writeFile(claudeMdPath, template, 'utf-8');
 
     const action = fileExistedBefore ? 'updated successfully (existing file overwritten)' : 'created successfully';
-    spinner.succeed(`CLAUDE.md ${action}`);
+    spinner.succeed(`CLAUDE.md ${action} [ALWAYS CREATED]`);
     return true;
   } catch (error) {
     spinner.fail(`Failed to update CLAUDE.md: ${error.message}`);
@@ -102,10 +102,12 @@ async function updateSettingsJson() {
 
     // If .claude/ exists, ALWAYS regenerate settings.json
     // (even if settings.json was manually deleted)
+    const fileExistedBefore = existsSync(settingsPath);
     const template = await fs.readFile(templatePath, 'utf-8');
     await fs.writeFile(settingsPath, template, 'utf-8');
 
-    spinner.succeed('settings.json updated successfully (existing file overwritten)');
+    const action = fileExistedBefore ? 'updated successfully (existing file overwritten)' : 'created successfully';
+    spinner.succeed(`settings.json ${action} [ALWAYS CREATED]`);
     return true;
   } catch (error) {
     spinner.fail(`Failed to update settings.json: ${error.message}`);
