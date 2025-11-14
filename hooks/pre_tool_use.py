@@ -16,6 +16,100 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from pre_kubectl_security import validate_gitops_workflow
 
+# ============================================================================
+# COMMIT MESSAGE VALIDATION AND CLEANING
+# ============================================================================
+
+def clean_and_validate_git_commit(command: str) -> Tuple[str, bool, str]:
+    """
+    Clean and validate git commit messages.
+
+    Removes Claude Code attribution footers and validates Conventional Commits format.
+
+    Args:
+        command: The full git commit command
+
+    Returns:
+        (cleaned_command: str, is_valid: bool, validation_reason: str)
+    """
+    # Extract commit message from command
+    # Handles: git commit -m "message" or git commit -m 'message'
+    msg_match = re.search(r"-m\s+['\"]([^'\"]*)['\"]", command)
+    if not msg_match:
+        # No message found, might be interactive - allow
+        return command, True, "Interactive commit"
+
+    original_message = msg_match.group(1)
+    message = original_message
+
+    # 1. CLEAN: Remove Claude Code footers
+    # Remove "Generated with Claude Code"
+    message = re.sub(
+        r'\n.*Generated with\s+Claude Code.*',
+        '',
+        message,
+        flags=re.IGNORECASE
+    )
+
+    # Remove "Co-Authored-By: Claude"
+    message = re.sub(
+        r'\n.*Co-Authored-By:\s+Claude\s+<.*>.*',
+        '',
+        message,
+        flags=re.IGNORECASE
+    )
+
+    # Strip trailing whitespace
+    message = message.rstrip()
+
+    # 2. VALIDATE: Conventional Commits format
+    lines = message.split('\n')
+    subject = lines[0] if lines else ""
+
+    validation_errors = []
+
+    # Check subject length (max 72 chars)
+    if len(subject) > 72:
+        validation_errors.append(
+            f"Subject line too long ({len(subject)} > 72 chars): '{subject[:50]}...'"
+        )
+
+    # Check Conventional Commits format: type(scope): description
+    conventional_pattern = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\(.+\))?:\s+.+'
+    if not re.match(conventional_pattern, subject):
+        validation_errors.append(
+            f"Not in Conventional Commits format. Use: type(scope): description\n"
+            f"Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore\n"
+            f"Got: {subject}"
+        )
+
+    # Check no period at end of subject
+    if subject.endswith('.'):
+        validation_errors.append("Subject line should not end with a period")
+
+    # Build result
+    if validation_errors:
+        return command, False, "\n".join(validation_errors)
+
+    # If message was cleaned, return the updated command
+    if message != original_message:
+        # Reconstruct command with cleaned message
+        cleaned_command = command.replace(
+            f"-m \"{original_message}\"",
+            f"-m \"{message}\"",
+            1
+        )
+        if cleaned_command == command:
+            # Try single quotes variant
+            cleaned_command = command.replace(
+                f"-m '{original_message}'",
+                f"-m '{message}'",
+                1
+            )
+        return cleaned_command, True, "✅ Cleaned Claude attribution footers"
+
+    return command, True, "✅ Commit message valid"
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -422,6 +516,23 @@ class PolicyEngine:
                 is_allowed, tier, reason = self._inspect_script_content(script_path)
                 if not is_allowed:
                     return is_allowed, tier, reason
+
+            # INTERCEPT: Clean and validate git commit messages
+            if "git commit" in command:
+                cleaned_cmd, is_valid, reason = clean_and_validate_git_commit(command)
+                if not is_valid:
+                    logger.warning(f"Git commit validation failed: {reason}")
+                    return False, SecurityTier.T3_BLOCKED, f"❌ Commit validation failed:\n{reason}"
+                if cleaned_cmd != command:
+                    # Footers detected - reject and suggest clean version
+                    logger.warning(f"Git commit contains Claude attribution footers")
+                    error_msg = (
+                        f"❌ Commit contains Claude Code attribution footers\n\n"
+                        f"Use this cleaned command instead:\n\n"
+                        f"  {cleaned_cmd}\n\n"
+                        f"Reason: {reason}"
+                    )
+                    return False, SecurityTier.T3_BLOCKED, error_msg
 
             # Enforce GitOps security rules for cluster-related commands
             if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
