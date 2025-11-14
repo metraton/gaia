@@ -12,13 +12,28 @@
  *
  * CLI Options:
  *   --non-interactive          Skip interactive prompts, use defaults or provided values
- *   --gitops <path>            GitOps directory path
- *   --terraform <path>         Terraform directory path
- *   --app-services <path>      App services directory path
+ *   --gitops <path>            GitOps directory path (relative or absolute)
+ *   --terraform <path>         Terraform directory path (relative or absolute)
+ *   --app-services <path>      App services directory path (relative or absolute)
  *   --project-id <id>          GCP Project ID
  *   --region <region>          Primary region (default: us-central1)
  *   --cluster <name>           Cluster name
  *   --skip-claude-install      Skip Claude Code installation
+ *   --project-context-repo <url>  Git repository URL for project context
+ *
+ * Examples:
+ *   # With relative paths
+ *   npx gaia-init --non-interactive --gitops ./gitops --terraform ./terraform
+ *
+ *   # With absolute paths (recommended for clarity)
+ *   npx gaia-init --non-interactive \
+ *     --gitops /home/user/projects/my-app/gitops \
+ *     --terraform /home/user/projects/my-app/terraform \
+ *     --app-services /home/user/projects/my-app/services \
+ *     --project-id my-gcp-project \
+ *     --region us-east-1 \
+ *     --cluster prod-cluster \
+ *     --project-context-repo git@bitbucket.org:org/project-context.git
  *
  * Environment Variables:
  *   CLAUDE_GITOPS_DIR          GitOps directory path
@@ -27,6 +42,7 @@
  *   CLAUDE_PROJECT_ID          GCP Project ID
  *   CLAUDE_REGION              Primary region
  *   CLAUDE_CLUSTER_NAME        Cluster name
+ *   CLAUDE_PROJECT_CONTEXT_REPO Project context git repository URL
  *
  * Features:
  * - Auto-detects project structure (GitOps, Terraform, AppServices)
@@ -172,15 +188,15 @@ function parseCliArguments() {
     })
     .option('gitops', {
       type: 'string',
-      description: 'GitOps directory path'
+      description: 'GitOps directory path (relative or absolute)'
     })
     .option('terraform', {
       type: 'string',
-      description: 'Terraform directory path'
+      description: 'Terraform directory path (relative or absolute)'
     })
     .option('app-services', {
       type: 'string',
-      description: 'App services directory path'
+      description: 'App services directory path (relative or absolute)'
     })
     .option('project-id', {
       type: 'string',
@@ -200,11 +216,32 @@ function parseCliArguments() {
       description: 'Skip Claude Code installation',
       default: false
     })
+    .option('project-context-repo', {
+      type: 'string',
+      description: 'Git repository URL for project context (e.g., git@bitbucket.org:org/repo.git)'
+    })
     .help('h')
     .alias('h', 'help')
     .version('1.0.0')
     .alias('v', 'version')
     .parse();
+}
+
+/**
+ * Normalize path to be relative to CWD
+ * Accepts both absolute and relative paths
+ * Returns path relative to CWD for consistency
+ */
+function normalizePath(userPath) {
+  if (!userPath) return null;
+  
+  // If absolute path, return as-is (user knows what they want)
+  if (isAbsolute(userPath)) {
+    return userPath;
+  }
+  
+  // If relative path, ensure it's relative to CWD
+  return userPath.startsWith('./') ? userPath : `./${userPath}`;
 }
 
 /**
@@ -214,13 +251,14 @@ function getConfiguration(detected, args) {
   // Priority: CLI args > Environment variables > Detected values > Defaults
 
   const config = {
-    gitops: args.gitops || process.env.CLAUDE_GITOPS_DIR || detected.gitops || './gitops',
-    terraform: args.terraform || process.env.CLAUDE_TERRAFORM_DIR || detected.terraform || './terraform',
-    appServices: args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || detected.appServices || './app-services',
+    gitops: normalizePath(args.gitops || process.env.CLAUDE_GITOPS_DIR || detected.gitops) || './gitops',
+    terraform: normalizePath(args.terraform || process.env.CLAUDE_TERRAFORM_DIR || detected.terraform) || './terraform',
+    appServices: normalizePath(args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || detected.appServices) || './app-services',
     projectId: args.projectId || process.env.CLAUDE_PROJECT_ID || '',
     region: args.region || process.env.CLAUDE_REGION || 'us-central1',
     clusterName: args.cluster || process.env.CLAUDE_CLUSTER_NAME || '',
-    installClaudeCode: !args.skipClaudeInstall
+    installClaudeCode: !args.skipClaudeInstall,
+    projectContextRepo: args.projectContextRepo || process.env.CLAUDE_PROJECT_CONTEXT_REPO || ''
   };
 
   return config;
@@ -694,6 +732,7 @@ async function generateAgentsMd() {
 /**
  * Validate and setup project paths (gitops, terraform, app-services)
  * Creates directories automatically if they don't exist
+ * Accepts both absolute and relative paths
  */
 async function validateAndSetupProjectPaths(config) {
   console.log(chalk.cyan('\n📁 Setting up project directories...\n'));
@@ -705,7 +744,8 @@ async function validateAndSetupProjectPaths(config) {
   };
 
   for (const [, { path: userPath, name }] of Object.entries(paths)) {
-    const absPath = resolve(CWD, userPath);
+    // Handle both absolute and relative paths
+    const absPath = isAbsolute(userPath) ? userPath : resolve(CWD, userPath);
 
     // Check if path exists
     if (existsSync(absPath)) {
@@ -716,11 +756,6 @@ async function validateAndSetupProjectPaths(config) {
     // Create directory automatically
     await fs.mkdir(absPath, { recursive: true });
     console.log(chalk.green(`  ✓ ${name}: ${userPath} (created)`));
-
-    // Warn about absolute paths (portability concern)
-    if (isAbsolute(userPath)) {
-      console.log(chalk.yellow(`    ⚠ Note: Absolute path may not work on other machines`));
-    }
   }
 
   console.log('');

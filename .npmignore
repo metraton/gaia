@@ -1,45 +1,41 @@
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyc
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-coverage/
-tests/
-*.test.js
-
-# Development
+# Development files
+*.md.bak
+.DS_Store
 .vscode/
 .idea/
+
+# Test files
+TEST_ABSOLUTE_PATHS.sh
+TEST_PLAN.md
+TEST_RESULTS_2.6.1.md
+EXAMPLES_ABSOLUTE_PATHS.md
+
+# Git files
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build artifacts
+dist/
+build/
+*.tgz
+
+# IDE
 *.swp
 *.swo
 *~
 
 # OS
-.DS_Store
 Thumbs.db
-
-# Git
-.git/
-.gitignore
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-
-# CI/CD
-.github/
-.gitlab-ci.yml
-
-# Documentation source (not needed in package)
-docs/source/
-
-# Local development
-.env
-.env.local
