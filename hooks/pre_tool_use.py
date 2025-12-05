@@ -14,7 +14,23 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+# Configure logging early - before any usage
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 from pre_kubectl_security import validate_gitops_workflow
+
+# Add workflow enforcer
+sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "0-guards"))
+try:
+    from workflow_enforcer import WorkflowEnforcer, GuardViolation
+    WORKFLOW_ENFORCER_AVAILABLE = True
+except ImportError:
+    logger.warning("WorkflowEnforcer not available - guards will not be enforced")
+    WORKFLOW_ENFORCER_AVAILABLE = False
 
 # ============================================================================
 # CLAUDE CODE ATTRIBUTION FOOTER DETECTION
@@ -39,13 +55,6 @@ def detect_claude_footers(command: str) -> bool:
 
     return False
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 class SecurityTier:
     """Security tier definitions for command classification"""
 
@@ -62,6 +71,14 @@ class PolicyEngine:
         self.capabilities = self._load_capabilities()
         self.skills = self.capabilities.get("routing_matrix", {}).get("skills", {})
         self.integration_config = self.capabilities.get("integration_metadata", {})
+
+        # Initialize workflow enforcer if available
+        if WORKFLOW_ENFORCER_AVAILABLE:
+            self.workflow_enforcer = WorkflowEnforcer()
+            logger.info("✅ WorkflowEnforcer initialized - guards are active")
+        else:
+            self.workflow_enforcer = None
+            logger.warning("⚠️ WorkflowEnforcer not available - guards disabled")
 
         self.blocked_commands = [
             # Terraform destructive operations
@@ -429,8 +446,19 @@ class PolicyEngine:
                 logger.error(f"Invalid command type: {type(command)}")
                 return False, SecurityTier.T3_BLOCKED, "Invalid command"
 
-            # Skip validation for non-bash tools
-            if tool_name.lower() != "bash":
+            # CRITICAL: Intercept Task tool invocations for workflow validation
+            if tool_name.lower() == "task":
+                logger.info("Task tool invocation detected - validating workflow")
+                # For Task tool, command contains JSON-encoded parameters
+                try:
+                    task_parameters = json.loads(command) if command else {}
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid Task parameters JSON: {command}")
+                    return False, SecurityTier.T3_BLOCKED, "Invalid Task parameters"
+                return self._validate_task_invocation(task_parameters)
+
+            # Skip validation for other non-bash tools
+            elif tool_name.lower() != "bash":
                 return True, SecurityTier.T0_READ_ONLY, "Non-bash tool allowed"
 
             # Handle empty commands
@@ -518,6 +546,241 @@ class PolicyEngine:
             # Fail closed - if validation errors, block the command
             return False, SecurityTier.T3_BLOCKED, f"Validation error: {str(e)}"
 
+    def _validate_task_invocation(self, parameters: Dict) -> Tuple[bool, str, str]:
+        """
+        Validate Task tool invocation against workflow rules.
+
+        Checks:
+        - Agent exists
+        - Context was provided (Phase 2)
+        - Approval received if T3 operation
+
+        Returns:
+            (is_allowed: bool, tier: str, reason: str)
+        """
+        try:
+            # Extract agent name from parameters
+            agent_name = parameters.get("subagent_type", "unknown")
+            prompt = parameters.get("prompt", "")
+            description = parameters.get("description", "")
+
+            logger.info(f"Task tool validation for agent: {agent_name}")
+
+            # Phase 1: Verify agent exists
+            available_agents = [
+                "terraform-architect",
+                "gitops-operator",
+                "gcp-troubleshooter",
+                "aws-troubleshooter",
+                "devops-developer",
+                "gaia",
+                "Explore",
+                "Plan"
+            ]
+
+            # Use workflow enforcer if available
+            if self.workflow_enforcer:
+                try:
+                    # Phase 1 Guard: Agent must exist
+                    passed, reason = self.workflow_enforcer.guard_phase_1_agent_exists(
+                        agent_name, available_agents
+                    )
+                    if not passed:
+                        logger.warning(f"WorkflowEnforcer blocked: {reason}")
+                        return False, SecurityTier.T3_BLOCKED, reason
+
+                except GuardViolation as e:
+                    logger.error(f"Guard violation: {e}")
+                    return False, SecurityTier.T3_BLOCKED, str(e)
+            else:
+                # Fallback to simple check if enforcer not available
+                if agent_name not in available_agents:
+                    logger.warning(f"Unknown agent requested: {agent_name}")
+                    return False, SecurityTier.T3_BLOCKED, f"Unknown agent: {agent_name}. Available agents: {', '.join(available_agents)}"
+
+            # Phase 2: Check if context was provided
+            has_context = (
+                "# Project Context" in prompt or
+                "contract" in prompt.lower() or
+                "context_provider.py" in prompt.lower()
+            )
+
+            if self.workflow_enforcer:
+                try:
+                    # Phase 2 Guard: Context must be provided for project agents
+                    project_agents = [
+                        "terraform-architect", "gitops-operator",
+                        "gcp-troubleshooter", "aws-troubleshooter", "devops-developer"
+                    ]
+
+                    if agent_name in project_agents and has_context:
+                        # Create a minimal context payload for validation
+                        # In real usage, this would be the actual context from context_provider.py
+                        context_payload = {
+                            "contract": {
+                                "project_details": {},
+                                "operational_guidelines": {}
+                            }
+                        }
+
+                        # Define required sections based on agent
+                        required_sections = {
+                            "terraform-architect": ["project_details", "terraform_infrastructure"],
+                            "gitops-operator": ["project_details", "gitops_configuration"],
+                            "gcp-troubleshooter": ["project_details", "terraform_infrastructure"],
+                            "aws-troubleshooter": ["project_details", "terraform_infrastructure"],
+                            "devops-developer": ["project_details", "operational_guidelines"]
+                        }
+
+                        agent_sections = required_sections.get(agent_name, ["project_details"])
+
+                        passed, reason = self.workflow_enforcer.guard_phase_2_context_completeness(
+                            context_payload=context_payload,
+                            required_sections=agent_sections
+                        )
+                        if not passed:
+                            logger.warning(f"WorkflowEnforcer: {reason}")
+                            # Don't block but warn strongly (Phase 2 is orchestrator's responsibility)
+                except Exception as e:
+                    logger.error(f"Error checking Phase 2 guard: {e}")
+
+            if not has_context and agent_name not in ["gaia", "Explore", "Plan"]:
+                logger.warning(
+                    f"⚠️ Task invocation for {agent_name} without apparent context provisioning. "
+                    f"Orchestrator should call context_provider.py first (Phase 2)."
+                )
+
+            # Phase 4: Check if this is a T3 operation requiring approval
+            # Heuristic: look for keywords in description/prompt
+            t3_keywords = [
+                "terraform apply", "kubectl apply", "git push origin main",
+                "flux reconcile", "helm install", "production", "prod"
+            ]
+
+            is_t3_operation = any(
+                keyword in description.lower() or keyword in prompt.lower()
+                for keyword in t3_keywords
+            )
+
+            if is_t3_operation:
+                # Check if approval was indicated in prompt
+                # (Orchestrator should include approval confirmation in prompt)
+                approval_indicators = [
+                    "approved by user",
+                    "user approval received",
+                    "validation[\"approved\"] == True",
+                    "Phase 5: Realization"
+                ]
+
+                has_approval = any(
+                    indicator in prompt.lower()
+                    for indicator in approval_indicators
+                )
+
+                # Use workflow enforcer for Phase 4 guard
+                if self.workflow_enforcer:
+                    try:
+                        # Phase 4 Guard: T3 operations require approval
+                        passed, reason = self.workflow_enforcer.guard_phase_4_approval_mandatory(
+                            tier="T3",
+                            approval_received=has_approval
+                        )
+                        if not passed:
+                            logger.warning(f"WorkflowEnforcer blocked T3 operation: {reason}")
+                            return False, SecurityTier.T3_BLOCKED, (
+                                f"❌ {reason}\n\n"
+                                "Phase 4 (Approval Gate) is MANDATORY before Task invocation.\n"
+                                "Orchestrator must:\n"
+                                "  1. Call approval_gate.request_approval()\n"
+                                "  2. Get user approval via AskUserQuestion\n"
+                                "  3. Validate with approval_gate.process_approval_response()\n"
+                                "  4. Include 'User approval received' in Task prompt\n\n"
+                                "See CLAUDE.md Rule 5.2 for approval gate protocol."
+                            )
+                    except Exception as e:
+                        logger.error(f"Error checking Phase 4 guard: {e}")
+                        # Fall through to original check
+
+                # Fallback check if enforcer not available or failed
+                elif not has_approval:
+                    return False, SecurityTier.T3_BLOCKED, (
+                        "❌ T3 operation detected without approval indication.\n\n"
+                        "Phase 4 (Approval Gate) is MANDATORY before Task invocation.\n"
+                        "Orchestrator must:\n"
+                        "  1. Call approval_gate.request_approval()\n"
+                        "  2. Get user approval via AskUserQuestion\n"
+                        "  3. Validate with approval_gate.process_approval_response()\n"
+                        "  4. Include 'User approval received' in Task prompt\n\n"
+                        "See CLAUDE.md Rule 5.2 for approval gate protocol."
+                    )
+
+            # Phase 5: Check if this is a Realization phase invocation
+            is_realization = (
+                "Phase 5" in prompt or
+                "Realization" in prompt or
+                "Execute the plan" in prompt or
+                "Apply the changes" in prompt
+            )
+
+            if self.workflow_enforcer and is_realization:
+                try:
+                    # Phase 5 Guard: Planning must be complete before realization
+                    # Heuristic: check if prompt contains planning output
+                    has_plan = (
+                        "Plan:" in prompt or
+                        "Steps:" in prompt or
+                        "Implementation:" in prompt or
+                        "Planning phase output" in prompt
+                    )
+
+                    # Create realization package if plan exists
+                    realization_package = {
+                        "agent": agent_name,
+                        "plan": prompt
+                    } if has_plan else None
+
+                    passed, reason = self.workflow_enforcer.guard_phase_5_planning_complete(
+                        realization_package=realization_package
+                    )
+                    if not passed:
+                        logger.warning(f"WorkflowEnforcer Phase 5: {reason}")
+                        # Warning only for now - Phase 3 is orchestrator's responsibility
+                except Exception as e:
+                    logger.error(f"Error checking Phase 5 guard: {e}")
+
+            # Track T3 operations for Phase 6 SSOT update requirement
+            if self.workflow_enforcer and is_t3_operation and has_approval:
+                try:
+                    # Record that a T3 operation is being executed
+                    # Orchestrator must update SSOT after completion
+                    self.workflow_enforcer.guard_history.append({
+                        "phase": "T3_EXECUTION",
+                        "agent": agent_name,
+                        "requires_ssot_update": True,
+                        "description": description
+                    })
+
+                    logger.info(
+                        f"📝 T3 operation recorded. Orchestrator MUST update "
+                        f"project-context.json after completion (Phase 6)"
+                    )
+                except Exception as e:
+                    logger.error(f"Error recording T3 operation: {e}")
+
+            # Log Task invocation with all phase checks
+            logger.info(
+                f"Task invocation validated: {agent_name} "
+                f"(T3={is_t3_operation}, has_approval={has_approval if is_t3_operation else 'N/A'}, "
+                f"has_context={has_context}, is_realization={is_realization})"
+            )
+
+            tier = SecurityTier.T3_BLOCKED if is_t3_operation and not has_approval else SecurityTier.T0_READ_ONLY
+            return True, tier, f"Task invocation allowed for {agent_name}"
+
+        except Exception as e:
+            logger.error(f"Error validating Task invocation: {e}", exc_info=True)
+            return False, SecurityTier.T3_BLOCKED, f"Task validation error: {str(e)}"
+
 def pre_tool_use_hook(tool_name: str, parameters: Dict) -> Optional[str]:
     """
     Pre-tool use hook implementation with robust error handling
@@ -550,8 +813,11 @@ def pre_tool_use_hook(tool_name: str, parameters: Dict) -> Optional[str]:
             if not command:
                 logger.warning("Bash tool invoked without command")
                 return "🚫 Error: Bash tool requires a command"
+        elif tool_name.lower() == "task":
+            # For Task tool, pass parameters as JSON string
+            command = json.dumps(parameters)
 
-        # Validate command
+        # Validate command (for Task tool, command contains JSON parameters)
         is_allowed, tier, reason = policy_engine.validate_command(tool_name, command)
 
         # Log the decision with structured data

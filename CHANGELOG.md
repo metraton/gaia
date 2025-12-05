@@ -5,6 +5,142 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2025-12-05
+
+### Added - Agent Intelligence System (MAJOR)
+
+- **NEW:** `tools/10-agent-intelligence/` module for intelligent agent optimization
+  - `agent_writing_assistant.py` (24KB) - Assists in writing and improving agent definitions
+  - `workflow_optimizer.py` (29KB) - Applies the 7 LLM Engineering Principles to optimize workflows
+    - Binary Decision Trees
+    - Guards Over Advice
+    - Tool Contracts
+    - Failure Paths
+    - TL;DR First
+    - References Over Duplication
+    - Metrics Over Subjective Goals
+
+- **NEW:** `tools/4-memory/` Episodic Memory System
+  - `episodic.py` (23KB) - Persistent storage and retrieval of historical context
+  - `demo.py` - Demonstration script for episodic memory
+  - Features:
+    - Automatic episode storage with keywords and classifications
+    - Smart search with time decay and relevance scoring
+    - Auto-classification of episode types (deployment, troubleshooting, etc.)
+    - Index management with automatic trimming (1000 episode limit)
+    - Audit trail with append-only JSONL file
+
+- **NEW:** `tools/conversation/` Enhanced Conversation Management
+  - `enhanced_conversation_manager.py` (21KB) - Advanced conversation state management
+  - `agent_contract_builder.py` (19KB) - Dynamic agent contract generation
+  - `progressive_disclosure.py` (17KB) - Progressive context disclosure for token optimization
+
+- **NEW:** `tests/workflow/` directory for workflow-specific tests
+- **NEW:** `tests/test_agent_contract_integration.py` - Agent contract validation tests
+- **NEW:** `tools/agent_capabilities.json` - Centralized agent capabilities definition
+
+### Changed - Agent Enhancements
+
+- **agents/gaia.md** - Major refactoring (1707 lines changed)
+  - Streamlined agent definition
+  - Improved protocol definitions
+  - Better integration with new intelligence modules
+
+- **agents/gitops-operator.md** - Enhanced with 234 new lines
+  - Improved Kubernetes operation patterns
+  - Better Flux CD integration guidance
+  - Enhanced troubleshooting protocols
+
+- **agents/terraform-architect.md** - Enhanced with 47 new lines
+  - Improved Terragrunt support
+  - Better module design guidance
+  - Enhanced security scanning protocols
+
+- **agents/gcp-troubleshooter.md** - Enhanced with 52 new lines
+  - Improved GKE diagnostics
+  - Better IAM analysis patterns
+  - Enhanced networking troubleshooting
+
+### Changed - Tools & Infrastructure
+
+- **hooks/pre_tool_use.py** - Major enhancement (286+ lines)
+  - Improved security validations
+  - Better command blocking logic
+  - Enhanced credential detection
+
+- **hooks/subagent_stop.py** - Enhanced with 193 new lines
+  - Better result packaging
+  - Improved bundle generation
+  - Enhanced session integration
+
+- **tools/2-context/context_provider.py** - Enhanced (120+ lines changed)
+  - Better provider detection
+  - Improved contract validation
+  - Enhanced error handling
+
+- **tools/3-clarification/workflow.py** - Major enhancement (162+ lines)
+  - Episodic memory integration
+  - Improved ambiguity detection
+  - Better context enrichment
+
+- **tools/9-agent-framework/agent_orchestrator.py** - Enhanced (38+ lines)
+  - Better phase management
+  - Improved error recovery
+  - Enhanced logging
+
+### Changed - Fast Queries (Simplified)
+
+- **tools/fast-queries/README.md** - Simplified documentation (185 lines changed)
+- **tools/fast-queries/run_triage.sh** - Streamlined (152 lines changed)
+- **tools/fast-queries/terraform/quicktriage_terraform_architect.sh** - Enhanced (90+ lines)
+- **tools/fast-queries/gitops/quicktriage_gitops_operator.sh** - Enhanced (69+ lines)
+- **tools/fast-queries/cloud/gcp/quicktriage_gcp_troubleshooter.sh** - Enhanced (99+ lines)
+
+### Removed (BREAKING)
+
+- **REMOVED:** `tools/fast-queries/USAGE_GUIDE.md` (369 lines) - Consolidated into README
+- **REMOVED:** `tools/fast-queries/appservices/quicktriage_devops_developer.sh` (38 lines)
+- **REMOVED:** `tools/fast-queries/cloud/aws/quicktriage_aws_troubleshooter.sh` (45 lines)
+
+### Improved
+
+- **Token Efficiency:** New progressive disclosure system reduces context by up to 70%
+- **Agent Intelligence:** Workflows now validated against 7 engineering principles
+- **Memory System:** Historical context improves routing accuracy over time
+- **Conversation Management:** Multi-turn conversations with intelligent context carry-over
+- **Test Coverage:** New workflow and integration tests
+
+### Migration Guide for v3.0.0
+
+**Breaking Changes:**
+1. Removed `quicktriage_devops_developer.sh` - Use agent directly
+2. Removed `quicktriage_aws_troubleshooter.sh` - Use agent directly
+3. Removed `USAGE_GUIDE.md` - See README.md instead
+
+**New Features to Adopt:**
+```python
+# Episodic Memory
+from tools.4_memory.episodic import EpisodicMemory
+memory = EpisodicMemory()
+memory.store_episode(prompt="...", context={...})
+
+# Workflow Optimizer
+from tools.10_agent_intelligence.workflow_optimizer import WorkflowOptimizer
+optimizer = WorkflowOptimizer()
+result = optimizer.analyze(workflow_content)
+
+# Enhanced Conversation
+from tools.conversation.enhanced_conversation_manager import EnhancedConversationManager
+manager = EnhancedConversationManager()
+```
+
+**Recommended Actions:**
+- Review new agent definitions for improved patterns
+- Enable episodic memory for better context over time
+- Use workflow optimizer to validate custom workflows
+
+---
+
 ## [2.3.0] - 2025-11-11
 
 ### Added - Phase 0 Clarification Module

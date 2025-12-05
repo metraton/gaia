@@ -198,7 +198,7 @@ class TestSpecKitDirectory:
 
     def test_speckit_subdirectories_exist(self, speckit_dir):
         """Spec-Kit subdirectories must exist"""
-        required_subdirs = ["templates", "decisions"]
+        required_subdirs = ["templates", "scripts"]
 
         for subdir in required_subdirs:
             subdir_path = speckit_dir / subdir

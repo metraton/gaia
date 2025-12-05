@@ -454,6 +454,53 @@ terragrunt apply
 terragrunt run-all apply --terragrunt-modules-that-include vpc
 ```
 
+
+## Quick Diagnostics (Fast-Queries)
+
+For rapid Terraform validation that only shows issues (not full output), use the optimized diagnostic scripts:
+
+### Terraform Validation Check (3-4 seconds)
+
+**Instead of multiple terraform commands:**
+```bash
+# ❌ SLOW: Multiple commands with full output
+terraform init
+terraform fmt -check -diff
+terraform validate
+terraform plan
+# Results in 100+ lines of output
+```
+
+**Use the optimized script:**
+```bash
+# ✅ FAST: One command showing only validation status
+bash .claude/tools/fast-queries/terraform/quicktriage_terraform_architect.sh [directory]
+# Returns ✅/❌ status in 6 lines
+```
+
+**What it checks:**
+- Format compliance (without showing diff)
+- Configuration validation (only errors shown)
+- Drift detection (change count only, not full plan)
+- Auto-detects terraform vs terragrunt
+
+**Example output:**
+```
+=== TERRAFORM CHECK: terraform/environments/dev (terragrunt) ===
+✅ Format OK
+✅ Valid configuration
+⚠️  Changes detected: +2 ~1 -0
+```
+
+**Usage pattern:**
+1. **Always start** with quick triage for validation status
+2. **If issues found**, then run specific terraform commands for details
+3. **If all green**, proceed with confidence
+
+**Auto-detection:** Script automatically uses terragrunt if `terragrunt.hcl` is present.
+
+**Fallback:** If script is missing or fails, use standard terraform/terragrunt commands.
+
 ## 4-Phase Workflow
 
 Your execution follows a standardized 4-phase workflow that ensures investigation, transparency, approval, and realization.

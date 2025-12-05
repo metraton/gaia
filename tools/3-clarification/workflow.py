@@ -6,7 +6,8 @@ with minimal code changes.
 """
 
 import sys
-from typing import Dict, Any, Optional
+from pathlib import Path
+from typing import Dict, Any, Optional, List
 
 from .engine import request_clarification, process_clarification
 
@@ -69,13 +70,33 @@ def execute_workflow(
         command_context=command_context or {"command": "general_prompt"}
     )
 
+    # Step 1.5: SEARCH EPISODIC MEMORY (NEW)
+    relevant_episodes = _search_episodic_memory(user_prompt)
+
+    if relevant_episodes:
+        # Log found episodes for transparency
+        print(f"📚 Found {len(relevant_episodes)} relevant episodes from project memory", file=sys.stderr)
+
+        # Enrich the prompt internally with historical context
+        historical_context = "\n\n[Historical Context from Project Memory]:\n"
+        for episode in relevant_episodes[:2]:  # Max 2 episodes to avoid overload
+            historical_context += f"- {episode.get('title', 'Previous task')}: {episode.get('outcome', 'completed')}"
+            if episode.get('lessons_learned'):
+                historical_context += f" (Lesson: {episode['lessons_learned'][0] if isinstance(episode['lessons_learned'], list) else episode['lessons_learned']})"
+            historical_context += "\n"
+
+        # Add context to clarification data
+        clarification["historical_context"] = relevant_episodes
+        clarification["historical_summary"] = historical_context
+
     # Step 2: Decision point - no clarification needed
     if not clarification["needs_clarification"]:
         return {
             "enriched_prompt": user_prompt,
             "clarification_occurred": False,
             "clarification_data": None,
-            "questions": []
+            "questions": [],
+            "historical_context": relevant_episodes if relevant_episodes else []  # Include episodes even without clarification
         }
 
     # Step 3: If no ask function provided, return questions for manual handling
@@ -203,3 +224,140 @@ def get_clarification_summary(clarification_data: Dict[str, Any]) -> str:
     lines.append("=" * 60)
 
     return "\n".join(lines)
+
+
+def _search_episodic_memory(user_prompt: str, max_results: int = 3) -> List[Dict[str, Any]]:
+    """
+    Search episodic memory for relevant historical context.
+
+    Uses simple keyword matching. Can be enhanced with embeddings later.
+
+    Args:
+        user_prompt: User's request
+        max_results: Maximum episodes to return
+
+    Returns:
+        List of relevant episodes with relevance scores
+    """
+    import json
+    from datetime import datetime, timedelta
+
+    try:
+        # Find episodic memory path (search in current project first)
+        memory_paths = [
+            Path(".claude/project-context/episodic-memory"),  # Current project
+            Path("../.claude/project-context/episodic-memory"),  # Parent directory
+            Path("/home/jaguilar/aaxis/vtr/repositories/.claude/project-context/episodic-memory")  # Absolute fallback
+        ]
+
+        index_file = None
+        for memory_dir in memory_paths:
+            candidate = memory_dir / "index.json"
+            if candidate.exists():
+                index_file = candidate
+                break
+
+        if not index_file:
+            # No episodic memory found (normal for new projects)
+            return []
+
+        with open(index_file) as f:
+            index = json.load(f)
+
+        # Extract keywords from prompt
+        prompt_lower = user_prompt.lower()
+        prompt_words = set(prompt_lower.split())
+
+        # Score each episode
+        scored_episodes = []
+        for episode in index.get("episodes", []):
+            score = 0.0
+
+            # Tag matching (highest weight)
+            for tag in episode.get("tags", []):
+                if tag.lower() in prompt_lower:
+                    score += 0.4
+
+            # Title matching
+            title_words = set(episode.get("title", "").lower().split())
+            common_words = prompt_words & title_words
+            if common_words:
+                score += 0.3 * (len(common_words) / max(len(title_words), 1))
+
+            # Type matching
+            if episode.get("type", "") in prompt_lower:
+                score += 0.2
+
+            # Apply time decay (if timestamp is available)
+            try:
+                episode_date = datetime.fromisoformat(episode["timestamp"].replace("Z", "+00:00"))
+                age_days = (datetime.now(episode_date.tzinfo) - episode_date).days
+
+                if age_days < 30:
+                    time_factor = 1.0
+                elif age_days < 90:
+                    time_factor = 0.8
+                elif age_days < 180:
+                    time_factor = 0.6
+                else:
+                    time_factor = 0.4
+            except:
+                time_factor = 0.5  # Default if timestamp parsing fails
+
+            final_score = score * time_factor * episode.get("relevance_score", 0.5)
+
+            if final_score > 0.1:  # Threshold
+                # Load full episode details from JSONL if needed
+                episode_full = _load_full_episode(episode["id"], index_file.parent)
+                if episode_full:
+                    episode_full["match_score"] = final_score
+                    scored_episodes.append(episode_full)
+                else:
+                    episode["match_score"] = final_score
+                    scored_episodes.append(episode)
+
+        # Sort by score and return top N
+        scored_episodes.sort(key=lambda x: x["match_score"], reverse=True)
+        top_episodes = scored_episodes[:max_results]
+
+        if top_episodes:
+            print(f"📚 Memory search found {len(top_episodes)} relevant episodes (searched {len(index.get('episodes', []))} total)", file=sys.stderr)
+
+        return top_episodes
+
+    except Exception as e:
+        # Silent fail - episodic memory is optional enhancement
+        import sys
+        print(f"Warning: Could not search episodic memory: {e}", file=sys.stderr)
+        return []
+
+
+def _load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, Any]]:
+    """
+    Load full episode details from JSONL file.
+
+    Args:
+        episode_id: Episode ID to load
+        memory_dir: Directory containing episodes.jsonl
+
+    Returns:
+        Full episode dict or None if not found
+    """
+    try:
+        episodes_file = memory_dir / "episodes.jsonl"
+        if not episodes_file.exists():
+            return None
+
+        with open(episodes_file) as f:
+            for line in f:
+                try:
+                    episode = json.loads(line)
+                    if episode.get("id") == episode_id:
+                        return episode
+                except:
+                    continue
+
+    except Exception:
+        pass
+
+    return None

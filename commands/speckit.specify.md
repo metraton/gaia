@@ -118,7 +118,7 @@ Given those arguments, do this:
      - `[TECHNICAL_CONSTRAINTS]` → Infer from description (or mark TBD)
 
    - Preserve section order and headings from template
-   - Flag any placeholders that couldn't be auto-filled (mark with TODO)
+   - Flag any placeholders that could not be auto-filled (these will need manual completion)
 
 7. **Auto-context verification**:
    - List which placeholders were auto-filled from project-context.json

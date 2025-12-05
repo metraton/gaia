@@ -289,6 +289,58 @@ git push origin $BRANCH
 - **Terraform Path:** {{TERRAFORM_PATH}}
 - **App Services Path:** {{APP_SERVICES_PATH}}
 
+## Workflow Enforcement & Memory Systems
+
+### Task Tool Validation (NEW - Implemented)
+
+**CRITICAL:** Task tool invocations are now validated by `pre_tool_use.py`:
+- Agent existence verification
+- T3 operations require approval indication in prompt
+- Unknown agents are blocked
+
+```python
+# T3 operations must include approval in prompt:
+Task(
+    subagent_type='terraform-architect',
+    prompt='User approval received. Run terraform apply...'  # ✅ Allowed
+)
+
+# Without approval:
+Task(
+    subagent_type='terraform-architect',
+    prompt='Run terraform apply...'  # ❌ BLOCKED
+)
+```
+
+### Episodic Memory System (NEW - Active)
+
+**Project Memory** (`.claude/project-context/episodic-memory/`):
+- Stores operational episodes (migrations, troubleshooting, configurations)
+- Automatically searched during Phase 0 (clarification)
+- Enriches agent context via `context_provider.py`
+- No manual commands needed - fully automatic
+
+**Workflow Memory** (`.claude/memory/workflow-episodic/`):
+- Captures execution metrics (duration, exit codes)
+- Detects anomalies (>120s execution, consecutive failures)
+- Auto-signals Gaia when problems detected
+- Check for signals: `.claude/memory/workflow-episodic/signals/needs_analysis.flag`
+
+### Anomaly Detection & Auto-Trigger
+
+When anomalies are detected:
+1. Signal file created at `.claude/memory/workflow-episodic/signals/needs_analysis.flag`
+2. Orchestrator should check for signal before starting workflow
+3. If signal exists, offer to invoke Gaia for analysis
+
+```python
+# Check for analysis signal (orchestrator responsibility)
+signal_file = Path(".claude/memory/workflow-episodic/signals/needs_analysis.flag")
+if signal_file.exists():
+    # Offer Gaia analysis to user
+    # If accepted: Task(subagent_type="gaia", prompt="Analyze system anomalies...")
+```
+
 ## System Paths
 
 **NOTE:** All paths are relative to this repository root, resolved at runtime via npm package.

@@ -18,8 +18,8 @@ class TestAgentStructure:
 
     @pytest.fixture
     def all_agents(self, agents_dir):
-        """Get all agent markdown files"""
-        return list(agents_dir.glob("*.md"))
+        """Get all agent markdown files (exclude READMEs and documentation)"""
+        return [f for f in agents_dir.glob("*.md") if "README" not in f.name.upper()]
 
     def test_all_agents_have_title(self, all_agents):
         """All agents should have a title heading"""
@@ -123,13 +123,14 @@ class TestAgentSecurity:
 
     def test_agents_document_security_tiers(self, agents_dir):
         """Agents should document their security tier capabilities"""
-        for agent_file in agents_dir.glob("*.md"):
+        agent_files = [f for f in agents_dir.glob("*.md") if "README" not in f.name.upper()]
+        for agent_file in agent_files:
             content = agent_file.read_text()
-            
+
             # Should mention security tiers or permissions
             tier_indicators = ["T0", "T1", "T2", "T3", "tier", "security", "permission"]
             mentions_tiers = any(indicator.lower() in content.lower() for indicator in tier_indicators)
-            
+
             assert mentions_tiers, \
                 f"{agent_file.name} should document security tier usage or permissions"
 
@@ -145,15 +146,16 @@ class TestAgentConsistency:
 
     def test_no_duplicate_agent_names(self, agents_dir):
         """Agent names should be unique"""
-        agent_files = list(agents_dir.glob("*.md"))
+        agent_files = [f for f in agents_dir.glob("*.md") if "README" not in f.name.upper()]
         agent_names = [f.stem for f in agent_files]
-        
+
         assert len(agent_names) == len(set(agent_names)), \
             "Duplicate agent names detected"
 
     def test_agent_naming_convention(self, agents_dir):
         """Agent files should follow naming convention (kebab-case)"""
-        for agent_file in agents_dir.glob("*.md"):
+        agent_files = [f for f in agents_dir.glob("*.md") if "README" not in f.name.upper()]
+        for agent_file in agent_files:
             name = agent_file.stem
             # Should be lowercase with hyphens (or all lowercase)
             assert name.islower() or "-" in name, \

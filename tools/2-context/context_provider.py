@@ -370,6 +370,116 @@ def get_semantic_enrichment(
 
     return enrichment
 
+def load_relevant_episodes(user_task: str, max_episodes: int = 2) -> Dict[str, Any]:
+    """
+    Load relevant historical episodes for the user's task.
+
+    This provides agents with historical context automatically from episodic memory.
+
+    Args:
+        user_task: The user's task description
+        max_episodes: Maximum episodes to include
+
+    Returns:
+        Dict with historical context
+    """
+    try:
+        from datetime import datetime
+
+        # Find episodic memory path
+        memory_paths = [
+            Path(".claude/project-context/episodic-memory"),  # Current project
+            Path("/home/jaguilar/aaxis/vtr/repositories/.claude/project-context/episodic-memory")  # Absolute fallback
+        ]
+
+        index_file = None
+        for memory_dir in memory_paths:
+            candidate = memory_dir / "index.json"
+            if candidate.exists():
+                index_file = candidate
+                break
+
+        if not index_file:
+            # No episodic memory (normal for new projects)
+            return {}
+
+        with open(index_file) as f:
+            index = json.load(f)
+
+        # Extract keywords from task
+        task_lower = user_task.lower()
+        task_words = set(task_lower.split())
+
+        # Score and filter episodes
+        relevant_episodes = []
+        for episode in index.get("episodes", []):
+            score = 0.0
+
+            # Tag matching
+            for tag in episode.get("tags", []):
+                if tag.lower() in task_lower:
+                    score += 0.4
+
+            # Title matching
+            title_words = set(episode.get("title", "").lower().split())
+            common_words = task_words & title_words
+            if common_words:
+                score += 0.3 * (len(common_words) / max(len(title_words), 1))
+
+            # Apply relevance threshold
+            final_score = score * episode.get("relevance_score", 0.5)
+
+            if final_score > 0.1:
+                # Load full episode from JSONL
+                full_episode = load_full_episode(episode["id"], index_file.parent)
+                if full_episode:
+                    relevant_episodes.append({
+                        "id": full_episode["id"],
+                        "title": full_episode["title"],
+                        "type": full_episode["type"],
+                        "relevance": final_score,
+                        "timestamp": full_episode.get("timestamp"),
+                        "lessons_learned": full_episode.get("lessons_learned", [])[:2],  # Max 2 lessons
+                        "resolution": full_episode.get("resolution", "")[:200]  # Truncate long resolutions
+                    })
+
+        # Sort by relevance and limit
+        relevant_episodes.sort(key=lambda x: x["relevance"], reverse=True)
+        relevant_episodes = relevant_episodes[:max_episodes]
+
+        if relevant_episodes:
+            print(f"📚 Added {len(relevant_episodes)} historical episodes to context", file=sys.stderr)
+
+            return {
+                "episodes": relevant_episodes,
+                "summary": f"Found {len(relevant_episodes)} relevant historical episodes from project memory"
+            }
+
+        return {}
+
+    except Exception as e:
+        print(f"Warning: Could not load episodic memory: {e}", file=sys.stderr)
+        return {}
+
+
+def load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, Any]]:
+    """Load full episode details from JSONL file."""
+    try:
+        episodes_file = memory_dir / "episodes.jsonl"
+        if episodes_file.exists():
+            with open(episodes_file) as f:
+                for line in f:
+                    try:
+                        episode = json.loads(line)
+                        if episode.get("id") == episode_id:
+                            return episode
+                    except:
+                        continue
+    except:
+        pass
+    return None
+
+
 def main():
     """Main function to generate and print the context payload."""
     parser = argparse.ArgumentParser(
@@ -410,15 +520,23 @@ def main():
         args.user_task
     )
 
+    # Load relevant historical episodes
+    historical_context = load_relevant_episodes(args.user_task)
+
     # Build final payload
     final_payload = {
         "contract": contract_context,
         "enrichment": enrichment_context,
         "metadata": {
             "cloud_provider": cloud_provider,
-            "contract_version": provider_contracts.get("version", "unknown")
+            "contract_version": provider_contracts.get("version", "unknown"),
+            "historical_episodes_count": len(historical_context.get("episodes", []))
         }
     }
+
+    # Add historical context if episodes found
+    if historical_context:
+        final_payload["historical_context"] = historical_context
 
     print(json.dumps(final_payload, indent=2))
 

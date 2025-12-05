@@ -236,6 +236,58 @@ fi
 
 ## 4-Phase Diagnostic Workflow
 
+## Quick Diagnostics (Fast-Queries)
+
+For rapid GCP health checks that only show problems (not all resources), use the optimized diagnostic scripts:
+
+### GCP Resource Health Check (4-5 seconds)
+
+**Instead of multiple gcloud commands:**
+```bash
+# ❌ SLOW: Multiple commands listing everything
+gcloud container clusters list
+gcloud sql instances list  
+gcloud compute instances list
+gcloud logging read "severity>=ERROR"
+# Results in 30+ lines even when all healthy
+```
+
+**Use the optimized script:**
+```bash
+# ✅ FAST: One command showing only unhealthy resources
+bash .claude/tools/fast-queries/cloud/gcp/quicktriage_gcp_troubleshooter.sh [project]
+# Returns summary in 8 lines
+```
+
+**What it checks:**
+- GKE clusters (only non-RUNNING)
+- Cloud SQL instances (only non-RUNNABLE)
+- Recent errors count (last hour)
+- Quota warnings (>80% usage)
+
+**Example output:**
+```
+=== GCP HEALTH CHECK: aaxis-rnd-general-project ===
+GKE Clusters: ✅ 2 cluster(s) running
+Cloud SQL: ❌ Issues detected
+  - tcm-db-staging: MAINTENANCE
+Recent errors: ⚠️  3 errors in last hour
+Quota status: ✅ All quotas healthy
+```
+
+**Usage pattern:**
+1. **Always start** with quick triage for GCP resource overview
+2. **If issues found**, use specific gcloud commands for details
+3. **Combines** multiple resource checks in one scan
+
+**Parameters (all optional):**
+- `$1`: GCP Project ID (defaults to current)
+- `$2`: GKE Cluster name (for future use)
+- `$3`: Region (defaults to us-central1)
+
+**Fallback:** If script is missing or fails, use standard gcloud commands.
+
+
 Your investigation follows a standardized 4-phase diagnostic workflow that ensures code-first analysis, live verification, clear reporting, and actionable recommendations.
 
 ### Phase 1: Investigación (Investigation)

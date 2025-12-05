@@ -1,0 +1,140 @@
+{
+  "terraform-architect": {
+    "domains": ["terraform", "terragrunt", "infrastructure", "iac", "hcl", "modules", "providers"],
+    "tiers": ["T0", "T1", "T2", "T3"],
+    "tools": ["terraform", "terragrunt", "tflint", "terraform-docs", "checkov", "git"],
+    "confidence_keywords": ["terraform", "module", "provider", "state", "resource", "data source", "variable", "output", "backend", "workspace"],
+    "capabilities": [
+      "terraform_init",
+      "terraform_plan",
+      "terraform_validate",
+      "terraform_fmt",
+      "terraform_apply",
+      "module_creation",
+      "state_management",
+      "drift_detection"
+    ],
+    "limitations": [
+      "no direct cloud API calls",
+      "requires approval for apply (T3)",
+      "cannot modify state directly",
+      "needs credentials pre-configured"
+    ],
+    "routing_score_boost": 1.2
+  },
+  "gitops-operator": {
+    "domains": ["kubernetes", "flux", "gitops", "helm", "argocd", "k8s", "deployments"],
+    "tiers": ["T0", "T1", "T2", "T3"],
+    "tools": ["kubectl", "flux", "helm", "kustomize", "k9s", "stern", "kubectx"],
+    "confidence_keywords": ["pod", "deployment", "service", "namespace", "configmap", "secret", "ingress", "helmrelease", "kustomization", "flux"],
+    "capabilities": [
+      "kubectl_apply",
+      "kubectl_get",
+      "kubectl_describe",
+      "flux_reconcile",
+      "helm_install",
+      "helm_upgrade",
+      "manifest_generation",
+      "drift_detection",
+      "rollback_operations"
+    ],
+    "limitations": [
+      "requires cluster credentials",
+      "T3 operations need approval",
+      "cannot modify etcd directly",
+      "namespace isolation enforced"
+    ],
+    "routing_score_boost": 1.15
+  },
+  "gcp-troubleshooter": {
+    "domains": ["gcp", "google cloud", "gke", "cloud sql", "vpc", "iam", "gcloud"],
+    "tiers": ["T0", "T1", "T2"],
+    "tools": ["gcloud", "gsutil", "bq", "kubectl", "terraform"],
+    "confidence_keywords": ["gcp", "google", "gke", "gce", "gcs", "bigquery", "firewall", "load balancer", "cloud sql", "compute engine"],
+    "capabilities": [
+      "gcp_diagnostics",
+      "iam_analysis",
+      "network_troubleshooting",
+      "gke_cluster_inspection",
+      "resource_inventory",
+      "quota_checking",
+      "billing_analysis",
+      "log_analysis"
+    ],
+    "limitations": [
+      "read-only operations primarily",
+      "cannot modify production resources",
+      "requires gcloud auth",
+      "project scope limited"
+    ],
+    "routing_score_boost": 1.1
+  },
+  "aws-troubleshooter": {
+    "domains": ["aws", "amazon", "ec2", "eks", "s3", "rds", "vpc", "cloudformation"],
+    "tiers": ["T0", "T1", "T2"],
+    "tools": ["aws", "eksctl", "kubectl", "terraform", "helm"],
+    "confidence_keywords": ["aws", "ec2", "s3", "lambda", "eks", "rds", "cloudwatch", "route53", "elb", "vpc", "iam"],
+    "capabilities": [
+      "aws_diagnostics",
+      "iam_policy_analysis",
+      "vpc_troubleshooting",
+      "eks_cluster_inspection",
+      "cloudformation_validation",
+      "cost_analysis",
+      "cloudwatch_metrics",
+      "resource_tagging"
+    ],
+    "limitations": [
+      "read-only operations primarily",
+      "cannot modify production resources",
+      "requires aws credentials",
+      "region-specific operations"
+    ],
+    "routing_score_boost": 1.1
+  },
+  "devops-developer": {
+    "domains": ["application", "nodejs", "typescript", "python", "docker", "ci/cd", "testing", "build"],
+    "tiers": ["T0", "T1", "T2"],
+    "tools": ["node", "npm", "pip", "docker", "git", "jest", "pytest", "eslint", "prettier"],
+    "confidence_keywords": ["npm", "package.json", "dockerfile", "pipeline", "test", "build", "lint", "format", "debug", "compile"],
+    "capabilities": [
+      "code_analysis",
+      "dependency_management",
+      "test_execution",
+      "build_automation",
+      "docker_operations",
+      "ci_cd_pipeline",
+      "linting_formatting",
+      "debugging"
+    ],
+    "limitations": [
+      "no production deployments",
+      "cannot modify infrastructure",
+      "language-specific constraints",
+      "requires build tools installed"
+    ],
+    "routing_score_boost": 1.0
+  },
+  "gaia": {
+    "domains": ["meta", "orchestration", "analysis", "optimization", "documentation", "workflow", "agent"],
+    "tiers": ["T0", "T1", "T2", "T3"],
+    "tools": ["all"],
+    "confidence_keywords": ["analyze", "optimize", "document", "improve", "orchestrate", "coordinate", "meta", "workflow", "agent"],
+    "capabilities": [
+      "system_analysis",
+      "workflow_optimization",
+      "agent_coordination",
+      "documentation_generation",
+      "pattern_recognition",
+      "improvement_suggestions",
+      "cross-agent_orchestration",
+      "meta_learning"
+    ],
+    "limitations": [
+      "requires context from other agents",
+      "cannot execute direct infrastructure changes",
+      "depends on specialist agents for implementation"
+    ],
+    "routing_score_boost": 0.9
+  }
+}

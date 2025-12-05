@@ -36,6 +36,10 @@ htmlcov/
 .tox/
 coverage/
 
+# Claude runtime directories (created by tests or development)
+# This should NOT exist in the package - only in consuming projects
+.claude/
+
 # Distribution
 dist/
 build/

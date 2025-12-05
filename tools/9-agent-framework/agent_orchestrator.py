@@ -25,6 +25,7 @@ from local_discoverer import LocalDiscoverer, DiscoveryResult
 from finding_classifier import FindingClassifier, FindingTier, DataOrigin, Finding
 from execution_manager import ExecutionManager, ExecutionMetrics
 from logging_manager import JSONLogger, EventType
+from remote_validator import RemoteValidator, RemoteValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -168,15 +169,40 @@ class AgentOrchestrator:
         # ═════════════════════════════════════════════════════════════════════
         # CAPA 4: REMOTE VALIDATION (if needed)
         # ═════════════════════════════════════════════════════════════════════
+        remote_validation_results = []
         if should_escalate:
             logger.info("Escalating to Capa 4: Remote Validation")
             report_lines.append("Escalating to remote validation due to discrepancies...\n")
-            # TODO: Implement remote validation
-            # This would involve:
-            # - kubectl describe
-            # - terraform show (state file)
-            # - gcloud/aws describe-instances
-            # For now, just log that we would do this
+
+            # Initialize remote validator (dry_run mode for safety)
+            dry_run = payload.get("dry_run", True)
+            remote_validator = RemoteValidator(dry_run=dry_run)
+
+            # Validate resources based on findings
+            for finding in classifier.findings:
+                if finding.tier in [FindingTier.CRITICAL, FindingTier.HIGH]:
+                    # Extract resource info from finding
+                    # This is a simplified example - real implementation would parse finding details
+                    if "kubernetes" in finding.description.lower():
+                        # Example: validate Kubernetes resource
+                        result = remote_validator.validate_kubernetes_resource(
+                            resource_type="deployment",
+                            resource_name="example-deployment",
+                            namespace="default"
+                        )
+                        remote_validation_results.append(result)
+
+                    elif "terraform" in finding.description.lower():
+                        # Example: validate Terraform resource
+                        result = remote_validator.validate_terraform_resource(
+                            resource_address="google_compute_instance.example"
+                        )
+                        remote_validation_results.append(result)
+
+            # Generate validation report
+            if remote_validation_results:
+                validation_report = remote_validator.generate_report()
+                report_lines.append(validation_report)
 
         # ═════════════════════════════════════════════════════════════════════
         # CAPA 5: EXECUTION (if needed)

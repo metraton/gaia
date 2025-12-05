@@ -63,6 +63,7 @@ class ContextCompressor:
         """
         self.aggressive = aggressive
         self.dedup_cache: Dict[str, str] = {}  # For deduplication
+        self.items_summarized_count: int = 0  # Track summarized arrays
         self.stats = None
 
     def compress(self, context: Dict[str, Any]) -> Tuple[Dict[str, Any], CompressionStats]:
@@ -122,7 +123,7 @@ class ContextCompressor:
             compressed_size=compressed_size,
             compression_ratio=compressed_size / original_size if original_size > 0 else 1.0,
             techniques_used=techniques_used,
-            items_summarized=0,  # TODO: Track this
+            items_summarized=self.items_summarized_count,
             items_deduplicated=len(self.dedup_cache)
         )
 
@@ -153,6 +154,9 @@ class ContextCompressor:
             "summary": self._create_array_summary(array, context_name),
             "relevant_items": []
         }
+
+        # Track summarization
+        self.items_summarized_count += 1
 
         # Identify and keep relevant items
         relevant_items = self._select_relevant_items(array, context_name)
