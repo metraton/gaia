@@ -5,6 +5,52 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2025-12-06
+
+### Added - Episodic Memory P0+P1 Enhancements
+
+Inspired by [memory-graph](https://github.com/gregorydickson/memory-graph) analysis, selective feature adoption.
+
+- **P0: Outcome Tracking** (`tools/4-memory/episodic.py`)
+  - New fields: `outcome`, `success`, `duration_seconds`, `commands_executed`
+  - Valid outcomes: "success", "partial", "failed", "abandoned"
+  - New method: `update_outcome()` - Update episode results after execution
+  - Search boost: 10% relevance increase for successful episodes
+
+- **P1: Simple Relationships** (`tools/4-memory/episodic.py`)
+  - New field: `related_episodes` - List of related episode IDs with types
+  - Relationship types: SOLVES, CAUSES, DEPENDS_ON, VALIDATES, SUPERSEDES, RELATED_TO
+  - New method: `add_relationship()` - Link episodes together
+  - New method: `get_related_episodes()` - Query related episodes (outgoing/incoming/both)
+  - Search enhancement: `include_relationships=True` parameter
+
+- **Statistics Enhancements**
+  - Outcome counts by type
+  - Total relationships count
+  - Relationship types breakdown
+
+- **CLI Commands**
+  - `store --outcome --duration` - Store with outcome tracking
+  - `update-outcome <id> <outcome>` - Update episode outcome
+  - `add-relationship <source> <target> <type>` - Create relationship
+  - `get-related <id>` - Query related episodes
+  - `search --include-relationships` - Search with relationship context
+
+### Design Decisions
+
+- Backward compatible: All new fields optional with None defaults
+- Audit trail: Relationship and outcome events logged to JSONL
+- Performance limits: 1000 episodes, 5000 relationships in index
+- No external dependencies: Pure Python implementation
+
+## [3.1.1] - 2025-12-06
+
+### Fixed
+
+- **package.json** - Added `docs/` to files array (was missing in 3.1.0)
+  - `docs/standards/` now included in npm package
+  - Required for hybrid pre-loading in `context_provider.py`
+
 ## [3.1.0] - 2025-12-06
 
 ### Added - Token Optimization & Consolidation

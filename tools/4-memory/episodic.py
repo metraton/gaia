@@ -11,6 +11,9 @@ Architecture:
 - JSONL index for fast keyword-based search
 - Automatic directory creation and management
 - Integration with workflow.py for context enhancement
+
+P0 Enhancement: Outcome tracking (success/failure/partial, duration, commands)
+P1 Enhancement: Simple relationships between episodes (SOLVES, CAUSES, etc.)
 """
 
 import json
@@ -21,8 +24,22 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import hashlib
+
+
+# Valid relationship types for episode connections
+RELATIONSHIP_TYPES = frozenset([
+    "SOLVES",       # This episode solves another (problem -> solution)
+    "CAUSES",       # This episode caused another (action -> consequence)
+    "DEPENDS_ON",   # This episode depends on another
+    "VALIDATES",    # This episode validates another
+    "SUPERSEDES",   # This episode replaces another
+    "RELATED_TO",   # Generic relation
+])
+
+# Valid outcome values
+OUTCOME_VALUES = frozenset(["success", "partial", "failed", "abandoned"])
 
 
 @dataclass
@@ -39,6 +56,13 @@ class Episode:
     type: Optional[str] = None
     title: Optional[str] = None
     relevance_score: float = 1.0
+    # P0: Outcome tracking fields
+    outcome: Optional[str] = None  # "success", "partial", "failed", "abandoned"
+    success: Optional[bool] = None
+    duration_seconds: Optional[float] = None
+    commands_executed: Optional[List[str]] = None
+    # P1: Simple relationships
+    related_episodes: Optional[List[Dict[str, str]]] = None  # [{"id": "ep_xxx", "type": "SOLVES"}]
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert episode to dictionary."""
@@ -56,6 +80,7 @@ class EpisodicMemory:
     - Search episodes by keywords and context
     - Maintain an efficient index for fast retrieval
     - Auto-create required directory structures
+    - Track outcomes and relationships between episodes (P0/P1)
     """
 
     def __init__(self, base_path: Optional[Union[str, Path]] = None):
@@ -97,7 +122,11 @@ class EpisodicMemory:
 
         # Create empty index if it doesn't exist
         if not self.index_file.exists():
-            self._save_index({"episodes": [], "metadata": {"created": datetime.now(timezone.utc).isoformat()}})
+            self._save_index({
+                "episodes": [],
+                "relationships": [],  # P1: Track relationships in index
+                "metadata": {"created": datetime.now(timezone.utc).isoformat()}
+            })
 
     def _save_index(self, index_data: Dict[str, Any]):
         """Save index to JSON file."""
@@ -107,14 +136,18 @@ class EpisodicMemory:
     def _load_index(self) -> Dict[str, Any]:
         """Load index from JSON file."""
         if not self.index_file.exists():
-            return {"episodes": [], "metadata": {}}
+            return {"episodes": [], "relationships": [], "metadata": {}}
 
         try:
             with open(self.index_file, 'r') as f:
-                return json.load(f)
+                index = json.load(f)
+                # Ensure relationships key exists for backward compatibility
+                if "relationships" not in index:
+                    index["relationships"] = []
+                return index
         except (json.JSONDecodeError, IOError):
             # Return empty index if file is corrupted
-            return {"episodes": [], "metadata": {}}
+            return {"episodes": [], "relationships": [], "metadata": {}}
 
     def _extract_keywords(self, text: str) -> List[str]:
         """
@@ -182,7 +215,14 @@ class EpisodicMemory:
         enriched_prompt: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
-        episode_id: Optional[str] = None
+        episode_id: Optional[str] = None,
+        # P0: Outcome tracking parameters
+        outcome: Optional[str] = None,
+        success: Optional[bool] = None,
+        duration_seconds: Optional[float] = None,
+        commands_executed: Optional[List[str]] = None,
+        # P1: Relationship parameters
+        related_episodes: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """
         Store a new episode in memory.
@@ -194,6 +234,11 @@ class EpisodicMemory:
             context: Additional context information
             tags: Optional tags for categorization
             episode_id: Optional specific ID (auto-generated if not provided)
+            outcome: Episode outcome ("success", "partial", "failed", "abandoned")
+            success: Boolean indicating if episode was successful
+            duration_seconds: How long the episode took to complete
+            commands_executed: List of commands executed during episode
+            related_episodes: List of related episode references [{"id": "ep_xxx", "type": "SOLVES"}]
 
         Returns:
             Episode ID
@@ -201,6 +246,24 @@ class EpisodicMemory:
         # Generate episode ID if not provided
         if not episode_id:
             episode_id = f"ep_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+        # Validate outcome if provided
+        if outcome is not None and outcome not in OUTCOME_VALUES:
+            print(f"Warning: Invalid outcome '{outcome}'. Must be one of {OUTCOME_VALUES}", file=sys.stderr)
+            outcome = None
+
+        # Validate relationships if provided
+        validated_relationships = None
+        if related_episodes:
+            validated_relationships = []
+            for rel in related_episodes:
+                if isinstance(rel, dict) and "id" in rel and "type" in rel:
+                    if rel["type"] in RELATIONSHIP_TYPES:
+                        validated_relationships.append({"id": rel["id"], "type": rel["type"]})
+                    else:
+                        print(f"Warning: Invalid relationship type '{rel['type']}'. Skipping.", file=sys.stderr)
+            if not validated_relationships:
+                validated_relationships = None
 
         # Extract keywords from prompt and enriched prompt
         all_text = prompt
@@ -228,7 +291,14 @@ class EpisodicMemory:
             tags=tags,
             type=episode_type,
             title=title,
-            relevance_score=1.0
+            relevance_score=1.0,
+            # P0: Outcome fields
+            outcome=outcome,
+            success=success,
+            duration_seconds=duration_seconds,
+            commands_executed=commands_executed,
+            # P1: Relationships
+            related_episodes=validated_relationships
         )
 
         # Save full episode to file
@@ -249,13 +319,32 @@ class EpisodicMemory:
             "tags": tags or [],
             "type": episode_type,
             "title": title,
-            "relevance_score": 1.0
+            "relevance_score": 1.0,
+            # P0: Include outcome summary in index
+            "outcome": outcome,
+            "success": success,
+            # P1: Include relationship count in index
+            "relationship_count": len(validated_relationships) if validated_relationships else 0
         }
         index["episodes"].append(index_entry)
+
+        # P1: Add relationships to index for fast lookup
+        if validated_relationships:
+            for rel in validated_relationships:
+                index["relationships"].append({
+                    "source": episode_id,
+                    "target": rel["id"],
+                    "type": rel["type"],
+                    "timestamp": episode.timestamp
+                })
 
         # Keep only last 1000 episodes in index (for performance)
         if len(index["episodes"]) > 1000:
             index["episodes"] = index["episodes"][-1000:]
+
+        # Keep only last 5000 relationships in index
+        if len(index["relationships"]) > 5000:
+            index["relationships"] = index["relationships"][-5000:]
 
         # Ensure metadata exists
         if "metadata" not in index:
@@ -263,15 +352,240 @@ class EpisodicMemory:
         index["metadata"]["last_updated"] = datetime.now(timezone.utc).isoformat()
         self._save_index(index)
 
-        print(f"💾 Stored episode: {episode_id} with {len(keywords)} keywords", file=sys.stderr)
+        print(f"Stored episode: {episode_id} with {len(keywords)} keywords", file=sys.stderr)
 
         return episode_id
+
+    def update_outcome(
+        self,
+        episode_id: str,
+        outcome: str,
+        success: bool,
+        duration_seconds: Optional[float] = None,
+        commands_executed: Optional[List[str]] = None
+    ) -> bool:
+        """
+        Update the outcome of an existing episode.
+
+        Args:
+            episode_id: Episode ID to update
+            outcome: New outcome ("success", "partial", "failed", "abandoned")
+            success: Boolean indicating success
+            duration_seconds: Optional duration in seconds
+            commands_executed: Optional list of commands that were executed
+
+        Returns:
+            True if updated successfully, False if episode not found or invalid outcome
+        """
+        # Validate outcome
+        if outcome not in OUTCOME_VALUES:
+            print(f"Error: Invalid outcome '{outcome}'. Must be one of {OUTCOME_VALUES}", file=sys.stderr)
+            return False
+
+        # Load the episode
+        episode_file = self.episodes_dir / f"episode-{episode_id}.json"
+        if not episode_file.exists():
+            print(f"Error: Episode {episode_id} not found", file=sys.stderr)
+            return False
+
+        try:
+            with open(episode_file, 'r') as f:
+                episode_data = json.load(f)
+
+            # Update outcome fields
+            episode_data["outcome"] = outcome
+            episode_data["success"] = success
+            if duration_seconds is not None:
+                episode_data["duration_seconds"] = duration_seconds
+            if commands_executed is not None:
+                episode_data["commands_executed"] = commands_executed
+
+            # Save updated episode
+            with open(episode_file, 'w') as f:
+                json.dump(episode_data, f, indent=2)
+
+            # Append outcome update to JSONL (as a separate event for audit trail)
+            with open(self.episodes_jsonl, 'a') as f:
+                outcome_event = {
+                    "event_type": "outcome_update",
+                    "episode_id": episode_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "outcome": outcome,
+                    "success": success,
+                    "duration_seconds": duration_seconds,
+                    "commands_executed": commands_executed
+                }
+                f.write(json.dumps(outcome_event) + '\n')
+
+            # Update index
+            index = self._load_index()
+            for ep in index["episodes"]:
+                if ep.get("id") == episode_id:
+                    ep["outcome"] = outcome
+                    ep["success"] = success
+                    break
+            index["metadata"]["last_updated"] = datetime.now(timezone.utc).isoformat()
+            self._save_index(index)
+
+            print(f"Updated outcome for episode {episode_id}: {outcome} (success={success})", file=sys.stderr)
+            return True
+
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Error updating episode {episode_id}: {e}", file=sys.stderr)
+            return False
+
+    def add_relationship(
+        self,
+        source_episode_id: str,
+        target_episode_id: str,
+        relationship_type: str
+    ) -> bool:
+        """
+        Add a relationship between two episodes.
+
+        Args:
+            source_episode_id: The source episode ID
+            target_episode_id: The target episode ID
+            relationship_type: Type of relationship (SOLVES, CAUSES, DEPENDS_ON, etc.)
+
+        Returns:
+            True if relationship added successfully, False otherwise
+        """
+        # Validate relationship type
+        if relationship_type not in RELATIONSHIP_TYPES:
+            print(f"Error: Invalid relationship type '{relationship_type}'. Must be one of {RELATIONSHIP_TYPES}", file=sys.stderr)
+            return False
+
+        # Check source episode exists
+        source_file = self.episodes_dir / f"episode-{source_episode_id}.json"
+        if not source_file.exists():
+            print(f"Error: Source episode {source_episode_id} not found", file=sys.stderr)
+            return False
+
+        # Check target episode exists (optional - might reference external or future episode)
+        target_file = self.episodes_dir / f"episode-{target_episode_id}.json"
+        target_exists = target_file.exists()
+
+        try:
+            # Load source episode
+            with open(source_file, 'r') as f:
+                source_data = json.load(f)
+
+            # Initialize or get existing relationships
+            if "related_episodes" not in source_data or source_data["related_episodes"] is None:
+                source_data["related_episodes"] = []
+
+            # Check if relationship already exists
+            for rel in source_data["related_episodes"]:
+                if rel.get("id") == target_episode_id and rel.get("type") == relationship_type:
+                    print(f"Relationship already exists: {source_episode_id} --{relationship_type}--> {target_episode_id}", file=sys.stderr)
+                    return True  # Not an error, just already exists
+
+            # Add new relationship
+            source_data["related_episodes"].append({
+                "id": target_episode_id,
+                "type": relationship_type
+            })
+
+            # Save updated episode
+            with open(source_file, 'w') as f:
+                json.dump(source_data, f, indent=2)
+
+            # Append relationship event to JSONL
+            with open(self.episodes_jsonl, 'a') as f:
+                rel_event = {
+                    "event_type": "relationship_added",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "source": source_episode_id,
+                    "target": target_episode_id,
+                    "type": relationship_type,
+                    "target_exists": target_exists
+                }
+                f.write(json.dumps(rel_event) + '\n')
+
+            # Update index
+            index = self._load_index()
+            index["relationships"].append({
+                "source": source_episode_id,
+                "target": target_episode_id,
+                "type": relationship_type,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+            # Update relationship count in episode index entry
+            for ep in index["episodes"]:
+                if ep.get("id") == source_episode_id:
+                    ep["relationship_count"] = ep.get("relationship_count", 0) + 1
+                    break
+
+            index["metadata"]["last_updated"] = datetime.now(timezone.utc).isoformat()
+            self._save_index(index)
+
+            print(f"Added relationship: {source_episode_id} --{relationship_type}--> {target_episode_id}", file=sys.stderr)
+            return True
+
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Error adding relationship: {e}", file=sys.stderr)
+            return False
+
+    def get_related_episodes(
+        self,
+        episode_id: str,
+        relationship_type: Optional[str] = None,
+        direction: str = "outgoing"
+    ) -> List[Dict[str, Any]]:
+        """
+        Get episodes related to the given episode.
+
+        Args:
+            episode_id: The episode to find relationships for
+            relationship_type: Optional filter by relationship type
+            direction: "outgoing" (this episode points to), "incoming" (points to this), or "both"
+
+        Returns:
+            List of related episodes with relationship info
+        """
+        results = []
+        index = self._load_index()
+
+        # Find relationships in index
+        for rel in index.get("relationships", []):
+            match = False
+
+            if direction in ("outgoing", "both") and rel.get("source") == episode_id:
+                match = True
+                related_id = rel.get("target")
+                rel_direction = "outgoing"
+            elif direction in ("incoming", "both") and rel.get("target") == episode_id:
+                match = True
+                related_id = rel.get("source")
+                rel_direction = "incoming"
+
+            if not match:
+                continue
+
+            # Filter by type if specified
+            if relationship_type and rel.get("type") != relationship_type:
+                continue
+
+            # Load the related episode
+            related_episode = self.get_episode(related_id)
+            if related_episode:
+                results.append({
+                    "episode": related_episode,
+                    "relationship_type": rel.get("type"),
+                    "direction": rel_direction,
+                    "relationship_timestamp": rel.get("timestamp")
+                })
+
+        return results
 
     def search_episodes(
         self,
         query: str,
         max_results: int = 5,
-        min_score: float = 0.1
+        min_score: float = 0.1,
+        include_relationships: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant episodes based on query.
@@ -280,6 +594,7 @@ class EpisodicMemory:
             query: Search query
             max_results: Maximum number of results to return
             min_score: Minimum relevance score threshold
+            include_relationships: If True, include related episode summaries in results
 
         Returns:
             List of relevant episodes with match scores
@@ -317,6 +632,13 @@ class EpisodicMemory:
             if episode_meta.get("type", "") in query_lower:
                 score += 0.1
 
+            # P0: Boost successful episodes slightly
+            if episode_meta.get("success") is True:
+                score *= 1.1
+            elif episode_meta.get("success") is False:
+                # Don't penalize failed episodes - they're valuable for troubleshooting
+                pass
+
             # Apply time decay
             try:
                 episode_date = datetime.fromisoformat(episode_meta["timestamp"])
@@ -344,6 +666,22 @@ class EpisodicMemory:
                 full_episode = self.get_episode(episode_meta["id"])
                 if full_episode:
                     full_episode["match_score"] = final_score
+
+                    # P1: Include relationship summaries if requested
+                    if include_relationships:
+                        relationships = self.get_related_episodes(episode_meta["id"], direction="both")
+                        if relationships:
+                            full_episode["related_episodes_summary"] = [
+                                {
+                                    "id": r["episode"].get("episode_id", r["episode"].get("id")),
+                                    "title": r["episode"].get("title", "Untitled"),
+                                    "type": r["relationship_type"],
+                                    "direction": r["direction"],
+                                    "outcome": r["episode"].get("outcome")
+                                }
+                                for r in relationships[:5]  # Limit to 5 related episodes
+                            ]
+
                     scored_episodes.append(full_episode)
 
         # Sort by score and return top N
@@ -351,7 +689,7 @@ class EpisodicMemory:
         top_episodes = scored_episodes[:max_results]
 
         if top_episodes:
-            print(f"📚 Found {len(top_episodes)} relevant episodes from {len(index['episodes'])} total", file=sys.stderr)
+            print(f"Found {len(top_episodes)} relevant episodes from {len(index['episodes'])} total", file=sys.stderr)
 
         return top_episodes
 
@@ -434,6 +772,12 @@ class EpisodicMemory:
         index["episodes"] = [ep for ep in index.get("episodes", [])
                            if ep.get("id") != episode_id]
 
+        # Also remove relationships involving this episode
+        index["relationships"] = [
+            rel for rel in index.get("relationships", [])
+            if rel.get("source") != episode_id and rel.get("target") != episode_id
+        ]
+
         if len(index["episodes"]) < original_count:
             self._save_index(index)
             deleted = True
@@ -457,6 +801,7 @@ class EpisodicMemory:
 
         index = self._load_index()
         episodes_to_keep = []
+        deleted_ids = set()
 
         for episode_meta in index.get("episodes", []):
             try:
@@ -471,6 +816,7 @@ class EpisodicMemory:
                     episode_file = self.episodes_dir / f"episode-{episode_meta['id']}.json"
                     if episode_file.exists():
                         episode_file.unlink()
+                    deleted_ids.add(episode_meta['id'])
                     deleted_count += 1
             except:
                 # Keep episodes with invalid timestamps
@@ -478,10 +824,15 @@ class EpisodicMemory:
 
         if deleted_count > 0:
             index["episodes"] = episodes_to_keep
+            # Also clean up relationships involving deleted episodes
+            index["relationships"] = [
+                rel for rel in index.get("relationships", [])
+                if rel.get("source") not in deleted_ids and rel.get("target") not in deleted_ids
+            ]
             index["metadata"]["last_cleanup"] = datetime.now(timezone.utc).isoformat()
             self._save_index(index)
 
-            print(f">� Cleaned up {deleted_count} episodes older than {days} days", file=sys.stderr)
+            print(f"Cleaned up {deleted_count} episodes older than {days} days", file=sys.stderr)
 
         return deleted_count
 
@@ -490,7 +841,7 @@ class EpisodicMemory:
         Get statistics about the episodic memory.
 
         Returns:
-            Dict with statistics
+            Dict with statistics including outcome and relationship stats
         """
         index = self._load_index()
         episodes = index.get("episodes", [])
@@ -499,6 +850,8 @@ class EpisodicMemory:
             return {
                 "total_episodes": 0,
                 "types": {},
+                "outcomes": {},
+                "relationships": {},
                 "recent_episodes": []
             }
 
@@ -507,6 +860,21 @@ class EpisodicMemory:
         for ep in episodes:
             ep_type = ep.get("type", "unknown")
             type_counts[ep_type] = type_counts.get(ep_type, 0) + 1
+
+        # P0: Count by outcome
+        outcome_counts = {"success": 0, "partial": 0, "failed": 0, "abandoned": 0, "unknown": 0}
+        for ep in episodes:
+            outcome = ep.get("outcome", "unknown")
+            if outcome in outcome_counts:
+                outcome_counts[outcome] += 1
+            else:
+                outcome_counts["unknown"] += 1
+
+        # P1: Count relationships by type
+        relationship_counts = {}
+        for rel in index.get("relationships", []):
+            rel_type = rel.get("type", "unknown")
+            relationship_counts[rel_type] = relationship_counts.get(rel_type, 0) + 1
 
         # Get recent episodes
         recent = sorted(episodes, key=lambda x: x.get("timestamp", ""), reverse=True)[:5]
@@ -526,6 +894,9 @@ class EpisodicMemory:
         stats = {
             "total_episodes": len(episodes),
             "types": type_counts,
+            "outcomes": outcome_counts,
+            "total_relationships": len(index.get("relationships", [])),
+            "relationship_types": relationship_counts,
             "recent_episodes": recent,
             "storage_size_mb": self._calculate_storage_size() / (1024 * 1024),
             "index_size_kb": self.index_file.stat().st_size / 1024 if self.index_file.exists() else 0
@@ -694,11 +1065,14 @@ if __name__ == "__main__":
     store_parser.add_argument("prompt", help="User prompt")
     store_parser.add_argument("--enriched", help="Enriched prompt")
     store_parser.add_argument("--tags", nargs="+", help="Tags")
+    store_parser.add_argument("--outcome", choices=["success", "partial", "failed", "abandoned"], help="Episode outcome")
+    store_parser.add_argument("--duration", type=float, help="Duration in seconds")
 
     # Search command
     search_parser = subparsers.add_parser("search", help="Search episodes")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--limit", type=int, default=5, help="Max results")
+    search_parser.add_argument("--include-relationships", action="store_true", help="Include related episodes")
 
     # List command
     list_parser = subparsers.add_parser("list", help="List recent episodes")
@@ -711,6 +1085,24 @@ if __name__ == "__main__":
     cleanup_parser = subparsers.add_parser("cleanup", help="Clean old episodes")
     cleanup_parser.add_argument("--days", type=int, default=180, help="Days to keep")
 
+    # Update outcome command
+    outcome_parser = subparsers.add_parser("update-outcome", help="Update episode outcome")
+    outcome_parser.add_argument("episode_id", help="Episode ID")
+    outcome_parser.add_argument("outcome", choices=["success", "partial", "failed", "abandoned"], help="Outcome")
+    outcome_parser.add_argument("--duration", type=float, help="Duration in seconds")
+
+    # Add relationship command
+    rel_parser = subparsers.add_parser("add-relationship", help="Add relationship between episodes")
+    rel_parser.add_argument("source", help="Source episode ID")
+    rel_parser.add_argument("target", help="Target episode ID")
+    rel_parser.add_argument("type", choices=list(RELATIONSHIP_TYPES), help="Relationship type")
+
+    # Get related command
+    related_parser = subparsers.add_parser("get-related", help="Get related episodes")
+    related_parser.add_argument("episode_id", help="Episode ID")
+    related_parser.add_argument("--type", help="Filter by relationship type")
+    related_parser.add_argument("--direction", choices=["outgoing", "incoming", "both"], default="both", help="Direction")
+
     args = parser.parse_args()
 
     memory = EpisodicMemory()
@@ -719,17 +1111,27 @@ if __name__ == "__main__":
         episode_id = memory.store_episode(
             prompt=args.prompt,
             enriched_prompt=args.enriched,
-            tags=args.tags
+            tags=args.tags,
+            outcome=args.outcome,
+            success=args.outcome == "success" if args.outcome else None,
+            duration_seconds=args.duration
         )
         print(f"Stored episode: {episode_id}")
 
     elif args.command == "search":
-        episodes = memory.search_episodes(args.query, max_results=args.limit)
+        episodes = memory.search_episodes(
+            args.query,
+            max_results=args.limit,
+            include_relationships=args.include_relationships
+        )
         for i, ep in enumerate(episodes, 1):
             print(f"\n{i}. [{ep.get('match_score', 0):.2f}] {ep.get('title', 'Untitled')}")
             print(f"   ID: {ep.get('episode_id', ep.get('id'))}")
             print(f"   Type: {ep.get('type', 'unknown')}")
+            print(f"   Outcome: {ep.get('outcome', 'unknown')}")
             print(f"   Timestamp: {ep.get('timestamp', 'unknown')}")
+            if ep.get('related_episodes_summary'):
+                print(f"   Related: {len(ep['related_episodes_summary'])} episodes")
 
     elif args.command == "list":
         episodes = memory.list_episodes(limit=args.limit)
@@ -737,6 +1139,7 @@ if __name__ == "__main__":
             print(f"\n{i}. {ep.get('title', 'Untitled')}")
             print(f"   ID: {ep.get('id')}")
             print(f"   Type: {ep.get('type', 'unknown')}")
+            print(f"   Outcome: {ep.get('outcome', 'unknown')}")
             print(f"   Timestamp: {ep.get('timestamp', 'unknown')}")
 
     elif args.command == "stats":
@@ -751,6 +1154,17 @@ if __name__ == "__main__":
             for ep_type, count in stats["types"].items():
                 print(f"    {ep_type}: {count}")
 
+        if stats.get("outcomes"):
+            print(f"\n  Outcomes:")
+            for outcome, count in stats["outcomes"].items():
+                if count > 0:
+                    print(f"    {outcome}: {count}")
+
+        if stats.get("total_relationships"):
+            print(f"\n  Relationships: {stats['total_relationships']} total")
+            for rel_type, count in stats.get("relationship_types", {}).items():
+                print(f"    {rel_type}: {count}")
+
         if stats.get("age_stats"):
             print(f"\n  Age statistics:")
             print(f"    Newest: {stats['age_stats']['newest_days']} days")
@@ -760,6 +1174,46 @@ if __name__ == "__main__":
     elif args.command == "cleanup":
         count = memory.cleanup_old_episodes(days=args.days)
         print(f"Cleaned up {count} episodes older than {args.days} days")
+
+    elif args.command == "update-outcome":
+        success = memory.update_outcome(
+            episode_id=args.episode_id,
+            outcome=args.outcome,
+            success=args.outcome == "success",
+            duration_seconds=args.duration
+        )
+        if success:
+            print(f"Updated outcome for {args.episode_id}")
+        else:
+            print(f"Failed to update outcome")
+
+    elif args.command == "add-relationship":
+        success = memory.add_relationship(
+            source_episode_id=args.source,
+            target_episode_id=args.target,
+            relationship_type=args.type
+        )
+        if success:
+            print(f"Added relationship: {args.source} --{args.type}--> {args.target}")
+        else:
+            print(f"Failed to add relationship")
+
+    elif args.command == "get-related":
+        related = memory.get_related_episodes(
+            episode_id=args.episode_id,
+            relationship_type=args.type,
+            direction=args.direction
+        )
+        if related:
+            print(f"\nRelated episodes for {args.episode_id}:")
+            for rel in related:
+                ep = rel["episode"]
+                print(f"\n  --{rel['relationship_type']}--> ({rel['direction']})")
+                print(f"    ID: {ep.get('episode_id', ep.get('id'))}")
+                print(f"    Title: {ep.get('title', 'Untitled')}")
+                print(f"    Outcome: {ep.get('outcome', 'unknown')}")
+        else:
+            print(f"No related episodes found for {args.episode_id}")
 
     else:
         parser.print_help()
