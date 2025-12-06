@@ -311,8 +311,6 @@ claude-code
 
 # O usa comandos slash:
 /gaia Explica cómo funciona el routing
-/save-session mi-sesion
-/session-status
 ```
 
 ---

@@ -548,7 +548,7 @@ gaia:
 
     - system_metadata:
         - spec_kit_commands: array (List of /speckit.* commands)
-        - session_commands: array (List of /save-session, /restore-session, etc.)
+        - session_commands: array (List of etc.)
         - agents: array (List of specialist agents)
 
     - operational_context:

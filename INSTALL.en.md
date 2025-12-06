@@ -278,8 +278,6 @@ claude-code
 
 # Or use slash commands:
 /gaia Explain how routing works
-/save-session my-session
-/session-status
 ```
 
 ---

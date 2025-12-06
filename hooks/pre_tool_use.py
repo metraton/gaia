@@ -178,9 +178,6 @@ class PolicyEngine:
             r"route(\s|$)",
             r"arp(\s|$)",
 
-            # Python scripts (session management)
-            r"python3?\s+.*session.*\.py",
-            r"python3?\s+\.claude/session/scripts/.*\.py",
         ]
 
         # Commands that require credentials to be loaded

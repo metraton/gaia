@@ -1,162 +1,66 @@
 # Comandos Slash de Gaia-Ops
 
-**[🇺🇸 English version](README.en.md)**
+**[English version](README.en.md)**
 
-Los comandos slash son atajos rápidos que te permiten invocar funcionalidades específicas del sistema directamente. Son como accesos directos del teclado para tareas comunes.
+Los comandos slash son atajos rapidos que te permiten invocar funcionalidades especificas del sistema directamente. Son como accesos directos del teclado para tareas comunes.
 
-## 🎯 Propósito
+## Proposito
 
-Los comandos slash proporcionan una forma rápida y consistente de acceder a funcionalidades avanzadas sin necesidad de escribir solicitudes completas en lenguaje natural.
+Los comandos slash proporcionan una forma rapida y consistente de acceder a funcionalidades avanzadas sin necesidad de escribir solicitudes completas en lenguaje natural.
 
-**Problema que resuelve:** Algunas tareas requieren invocación directa de herramientas específicas. En lugar de describir verbosamente lo que quieres hacer, simplemente usas un comando slash.
+**Problema que resuelve:** Algunas tareas requieren invocacion directa de herramientas especificas. En lugar de describir verbosamente lo que quieres hacer, simplemente usas un comando slash.
 
-## 🔄 Cómo Funciona
+## Como Funciona
 
 ### Flujo de Arquitectura
 
 ```
 Usuario escribe /comando
-        ↓
-[Claude Code] detecta el patrón /
-        ↓
+        |
+[Claude Code] detecta el patron /
+        |
 [Command Handler] carga el archivo .md del comando
-        ↓
+        |
 [Orquestador] ejecuta instrucciones del comando
-        ↓
+        |
 Resultado al usuario
 ```
 
-### Flujo de Ejemplo Real
+## Comandos Disponibles
 
-```
-Ejemplo: "/save-session production-deploy"
-
-1. Usuario escribe: /save-session production-deploy
-   ↓
-2. [Claude Code] detecta slash command
-   ↓
-3. [Command Handler] lee → commands/save-session.md
-   ↓
-4. [Save Session Tool] ejecuta:
-   - Recopila contexto activo
-   - Guarda session/active/active-context.json
-   - Crea bundle: session/bundles/production-deploy.bundle.json
-   - Genera resumen
-   ↓
-5. Resultado:
-   "✅ Session saved: production-deploy
-    Files: 12 | Size: 45KB | Context: 3.2K tokens"
-```
-
-## 📋 Comandos Disponibles
-
-### Comandos de Meta-Análisis
+### Comandos de Meta-Analisis
 
 #### `/gaia`
-Invoca a Gaia, el meta-agente que analiza y optimiza el sistema de orquestación.
+Invoca a Gaia, el meta-agente que analiza y optimiza el sistema de orquestacion.
 
-**Cuándo usar:**
+**Cuando usar:**
 - Analizar logs del sistema
 - Investigar problemas de routing
 - Optimizar workflows
-- Mejorar documentación
+- Mejorar documentacion
 
 **Ejemplo:**
 ```bash
-/gaia Analiza por qué falló el routing en las últimas 10 solicitudes
+/gaia Analiza por que fallo el routing en las ultimas 10 solicitudes
 ```
 
 **Salida esperada:**
-- Análisis detallado de los eventos
-- Identificación de patrones
+- Analisis detallado de los eventos
+- Identificacion de patrones
 - Recomendaciones de mejora
-
----
-
-### Comandos de Sesiones
-
-#### `/save-session [nombre]`
-Guarda el contexto actual de trabajo en un bundle persistente.
-
-**Cuándo usar:**
-- Antes de terminar el día
-- Después de completar una tarea importante
-- Antes de cambiar de contexto a otra tarea
-- Para compartir contexto con otro desarrollador
-
-**Ejemplo:**
-```bash
-/save-session deploy-auth-v2
-```
-
-**Lo que guarda:**
-- Archivos abiertos y modificados
-- Conversaciones relevantes
-- Estado del proyecto (project-context.json)
-- Comandos ejecutados
-
----
-
-#### `/restore-session [nombre]`
-Restaura un contexto de trabajo guardado previamente.
-
-**Cuándo usar:**
-- Al comenzar el día
-- Al retomar una tarea pausada
-- Al hacer onboarding de un nuevo dev
-
-**Ejemplo:**
-```bash
-/restore-session deploy-auth-v2
-```
-
-**Lo que restaura:**
-- Lista de archivos del bundle
-- Conversaciones previas
-- Estado del proyecto
-- Contexto completo para continuar
-
----
-
-#### `/session-status`
-Muestra el estado actual de la sesión activa.
-
-**Cuándo usar:**
-- Para verificar qué se guardará
-- Para ver el tamaño del contexto
-- Para revisar archivos rastreados
-
-**Ejemplo:**
-```bash
-/session-status
-```
-
-**Información que muestra:**
-```
-📊 Active Session Status
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Files tracked: 12
-Context size: 3.2K tokens
-Last updated: 2 minutes ago
-
-Recent activity:
-- Modified: gitops/deployment.yaml
-- Executed: kubectl apply
-- Agent: gitops-operator
-```
 
 ---
 
 ### Comandos de Spec-Kit
 
-El framework Spec-Kit proporciona un workflow estructurado de idea → implementación.
+El framework Spec-Kit proporciona un workflow estructurado de idea -> implementacion.
 
 #### `/speckit.init`
 Inicializa Spec-Kit en el proyecto actual, creando/validando `project-context.json`.
 
-**Cuándo usar:**
+**Cuando usar:**
 - Primera vez usando Spec-Kit en un proyecto
-- Para validar configuración existente
+- Para validar configuracion existente
 
 **Ejemplo:**
 ```bash
@@ -165,10 +69,10 @@ Inicializa Spec-Kit en el proyecto actual, creando/validando `project-context.js
 
 ---
 
-#### `/speckit.specify [spec-root] [descripción]`
-Crea una especificación de feature con contexto del proyecto auto-llenado.
+#### `/speckit.specify [spec-root] [descripcion]`
+Crea una especificacion de feature con contexto del proyecto auto-llenado.
 
-**Cuándo usar:**
+**Cuando usar:**
 - Inicio de una nueva feature
 - Documentar requisitos
 
@@ -185,10 +89,10 @@ Crea una especificación de feature con contexto del proyecto auto-llenado.
 ---
 
 #### `/speckit.plan [spec-root] [spec-id]`
-Genera plan de implementación con clarificación automática integrada.
+Genera plan de implementacion con clarificacion automatica integrada.
 
-**Cuándo usar:**
-- Después de crear la especificación
+**Cuando usar:**
+- Despues de crear la especificacion
 - Antes de generar tareas
 
 **Ejemplo:**
@@ -197,18 +101,18 @@ Genera plan de implementación con clarificación automática integrada.
 ```
 
 **Lo que genera:**
-- `plan.md` - Plan técnico detallado
+- `plan.md` - Plan tecnico detallado
 - `data-model.md` - Modelo de datos
 - `contracts/` - Contratos de API
-- Preguntas de clarificación (si hay ambigüedades)
+- Preguntas de clarificacion (si hay ambiguedades)
 
 ---
 
 #### `/speckit.tasks [spec-root] [spec-id]`
 Genera lista de tareas enriquecidas con metadata inline.
 
-**Cuándo usar:**
-- Después de completar el plan
+**Cuando usar:**
+- Despues de completar el plan
 - Antes de implementar
 
 **Ejemplo:**
@@ -220,19 +124,19 @@ Genera lista de tareas enriquecidas con metadata inline.
 - `tasks.md` con metadata completa:
   - Agent asignado
   - Tier de seguridad
-  - Tags de categoría
+  - Tags de categoria
   - Confidence score
-- Validación de cobertura automática
-- Gate si hay issues críticos
+- Validacion de cobertura automatica
+- Gate si hay issues criticos
 
 ---
 
 #### `/speckit.implement [spec-root] [spec-id]`
 Ejecuta las tareas usando agentes especializados.
 
-**Cuándo usar:**
-- Después de generar tareas
-- Para implementar automáticamente
+**Cuando usar:**
+- Despues de generar tareas
+- Para implementar automaticamente
 
 **Ejemplo:**
 ```bash
@@ -242,17 +146,17 @@ Ejecuta las tareas usando agentes especializados.
 **Lo que hace:**
 - Lee tasks.md enriquecido
 - Invoca agentes apropiados por tarea
-- T2/T3 tasks → análisis automático pre-ejecución
+- T2/T3 tasks -> analisis automatico pre-ejecucion
 - Approval gates cuando necesario
-- Genera código, tests, documentación
+- Genera codigo, tests, documentacion
 
 ---
 
 #### `/speckit.add-task [spec-root] [spec-id]`
-Agrega una tarea ad-hoc durante la implementación.
+Agrega una tarea ad-hoc durante la implementacion.
 
-**Cuándo usar:**
-- Durante implementación
+**Cuando usar:**
+- Durante implementacion
 - Para tareas no previstas en el plan
 
 **Ejemplo:**
@@ -261,17 +165,17 @@ Agrega una tarea ad-hoc durante la implementación.
 ```
 
 **Pregunta interactivamente:**
-- Descripción de la tarea
+- Descripcion de la tarea
 - ID de la tarea
-- Fase de implementación
+- Fase de implementacion
 - Dependencias
 
 ---
 
 #### `/speckit.analyze-task [spec-root] [spec-id] [task-id]`
-Análisis profundo de una tarea específica (auto-triggered para T2/T3).
+Analisis profundo de una tarea especifica (auto-triggered para T2/T3).
 
-**Cuándo usar:**
+**Cuando usar:**
 - Para tareas de alto riesgo
 - Antes de ejecutar operaciones T3
 
@@ -284,19 +188,19 @@ Análisis profundo de una tarea específica (auto-triggered para T2/T3).
 - Riesgos potenciales
 - Dependencias
 - Impacto en sistema
-- Recomendaciones de ejecución
+- Recomendaciones de ejecucion
 
 ---
 
-## 🚀 Uso General
+## Uso General
 
-### Sintaxis Básica
+### Sintaxis Basica
 
 ```bash
 /comando [argumentos]
 ```
 
-### Características Comunes
+### Caracteristicas Comunes
 
 **Autocompletado:**
 Claude Code sugiere comandos disponibles al escribir `/`
@@ -304,29 +208,28 @@ Claude Code sugiere comandos disponibles al escribir `/`
 **Help inline:**
 Todos los comandos soportan ayuda contextual si se invocan sin argumentos
 
-**Validación:**
-Los comandos validan argumentos y dan feedback claro si falta información
+**Validacion:**
+Los comandos validan argumentos y dan feedback claro si falta informacion
 
 ### Diferencia vs Lenguaje Natural
 
 | Lenguaje Natural | Comando Slash |
 |------------------|---------------|
-| "Guarda el contexto actual con el nombre deploy-v2" | `/save-session deploy-v2` |
 | "Analiza los logs del sistema" | `/gaia Analiza logs` |
-| "Crea una spec para autenticación OAuth" | `/speckit.specify auth-spec Add OAuth2` |
+| "Crea una spec para autenticacion OAuth" | `/speckit.specify auth-spec Add OAuth2` |
 
 **Ventajas de comandos slash:**
-- ✅ Más rápido
-- ✅ Sintaxis consistente
-- ✅ Invocación directa de herramientas
-- ✅ Menos ambiguo
+- Mas rapido
+- Sintaxis consistente
+- Invocacion directa de herramientas
+- Menos ambiguo
 
-**Cuándo usar lenguaje natural:**
+**Cuando usar lenguaje natural:**
 - Preguntas exploratorias
-- Diagnóstico de problemas
+- Diagnostico de problemas
 - Consultas complejas
 
-## 🔧 Características Técnicas
+## Caracteristicas Tecnicas
 
 ### Estructura de un Comando
 
@@ -335,7 +238,7 @@ Cada comando es un archivo Markdown en `commands/[nombre].md` con frontmatter:
 ```markdown
 ---
 name: comando
-description: Breve descripción
+description: Breve descripcion
 usage: Sintaxis de uso
 ---
 
@@ -348,38 +251,34 @@ usage: Sintaxis de uso
 
 ```
 commands/
-├── gaia.md                  (~100 líneas)
-├── save-session.md          (~80 líneas)
-├── restore-session.md       (~75 líneas)
-├── session-status.md        (~60 líneas)
-├── speckit.init.md          (~90 líneas)
-├── speckit.specify.md       (~120 líneas)
-├── speckit.plan.md          (~150 líneas)
-├── speckit.tasks.md         (~140 líneas)
-├── speckit.implement.md     (~180 líneas)
-├── speckit.add-task.md      (~70 líneas)
-└── speckit.analyze-task.md  (~85 líneas)
+├── gaia.md                  (~100 lineas)
+├── speckit.init.md          (~90 lineas)
+├── speckit.specify.md       (~120 lineas)
+├── speckit.plan.md          (~150 lineas)
+├── speckit.tasks.md         (~140 lineas)
+├── speckit.implement.md     (~180 lineas)
+├── speckit.add-task.md      (~70 lineas)
+└── speckit.analyze-task.md  (~85 lineas)
 ```
 
-**Total:** 11 comandos (1 meta + 3 session + 7 speckit)
+**Total:** 8 comandos (1 meta + 7 speckit)
 
-## 📖 Referencias
+## Referencias
 
-**Documentación relacionada:**
-- [Orchestration Workflow](../config/orchestration-workflow.md) - Cómo el orquestador procesa comandos
+**Documentacion relacionada:**
+- [Orchestration Workflow](../config/orchestration-workflow.md) - Como el orquestador procesa comandos
 - [Spec-Kit Framework](../speckit/README.md) - Detalles completos de Spec-Kit
 - [Gaia Agent](../agents/gaia.md) - El meta-agente
-- [Session Management](../tools/5-task-management/README.md) - Sistema de sesiones
+- [Episodic Memory](../tools/4-memory/episodic.py) - Sistema de memoria de contexto
 
 **Herramientas subyacentes:**
-- Session manager: `tools/5-task-management/session-manager.py`
 - Task manager: `tools/5-task-management/task_manager.py`
+- Episodic memory: `tools/4-memory/episodic.py`
 - Spec-Kit scripts: `speckit/scripts/`
 
 ---
 
-**Versión:** 1.0.0  
-**Última actualización:** 2025-11-14  
-**Total de comandos:** 11 (1 meta, 3 sesión, 7 spec-kit)  
+**Version:** 2.0.0  
+**Ultima actualizacion:** 2025-12-06  
+**Total de comandos:** 8 (1 meta, 7 spec-kit)  
 **Mantenido por:** Gaia (meta-agent)
-

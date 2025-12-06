@@ -9,251 +9,193 @@ import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import pytest
 
 # Add paths for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "hooks"))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools" / "0-guards"))
 
-def test_workflow_enforcer_integration():
+
+class TestWorkflowEnforcerIntegration:
     """Test complete workflow enforcer integration"""
-    print("🧪 Testing WorkflowEnforcer Integration...")
 
-    from pre_tool_use import PolicyEngine, SecurityTier
+    def test_phase_1_invalid_agent_blocked(self):
+        """Test case 1: Phase 1 - Agent must exist"""
+        from pre_tool_use import PolicyEngine
 
-    # Test case 1: Phase 1 - Agent must exist
-    print("\n📋 Test 1: Phase 1 - Agent Existence")
-    policy = PolicyEngine()
+        policy = PolicyEngine()
 
-    # Test with invalid agent
-    result = policy._validate_task_invocation({
-        "subagent_type": "invalid-agent",
-        "prompt": "Do something",
-        "description": "Test task"
-    })
-
-    allowed, tier, reason = result
-    if not allowed and ("Unknown agent" in reason or "does not exist" in reason):
-        print("  ✅ PASSED: Invalid agent blocked")
-    else:
-        print(f"  ❌ FAILED: Invalid agent not blocked properly. Result: allowed={allowed}, reason={reason}")
-        return False
-
-    # Test case 2: Phase 2 - Context provisioning warning
-    print("\n📋 Test 2: Phase 2 - Context Provisioning")
-    result = policy._validate_task_invocation({
-        "subagent_type": "terraform-architect",
-        "prompt": "Run terraform plan",  # No context
-        "description": "Plan infrastructure"
-    })
-
-    allowed, tier, reason = result
-    # Should be allowed but warned (check logs)
-    if allowed:
-        print("  ✅ PASSED: Missing context generates warning (not blocking)")
-    else:
-        print(f"  ❌ FAILED: Should not block for missing context: {reason}")
-        return False
-
-    # Test case 3: Phase 4 - T3 operations require approval
-    print("\n📋 Test 3: Phase 4 - T3 Approval Required")
-
-    # T3 without approval - should be blocked
-    result = policy._validate_task_invocation({
-        "subagent_type": "terraform-architect",
-        "prompt": "# Project Context\n\nRun terraform apply to production",
-        "description": "Apply terraform changes"
-    })
-
-    allowed, tier, reason = result
-    if not allowed and "Phase 4" in reason:
-        print("  ✅ PASSED: T3 operation blocked without approval")
-    else:
-        print(f"  ❌ FAILED: T3 should be blocked without approval: {reason}")
-        return False
-
-    # T3 with approval - should be allowed
-    result = policy._validate_task_invocation({
-        "subagent_type": "terraform-architect",
-        "prompt": "# Project Context\n\nUser approval received. Run terraform apply to production",
-        "description": "Apply terraform changes"
-    })
-
-    allowed, tier, reason = result
-    if allowed:
-        print("  ✅ PASSED: T3 operation allowed with approval")
-    else:
-        print(f"  ❌ FAILED: T3 should be allowed with approval: {reason}")
-        return False
-
-    # Test case 4: Phase 5 - Realization checks
-    print("\n📋 Test 4: Phase 5 - Realization Checks")
-
-    result = policy._validate_task_invocation({
-        "subagent_type": "gitops-operator",
-        "prompt": "# Project Context\n\nPhase 5: Realization\n\nPlan: Deploy application\nSteps: 1. Update manifests",
-        "description": "Execute deployment"
-    })
-
-    allowed, tier, reason = result
-    if allowed:
-        print("  ✅ PASSED: Realization with plan allowed")
-    else:
-        print(f"  ❌ FAILED: Realization should be allowed with plan: {reason}")
-        return False
-
-    # Test case 5: Phase 6 - SSOT tracking
-    print("\n📋 Test 5: Phase 6 - SSOT Update Tracking")
-
-    # Check if T3 operations are tracked for SSOT update
-    if policy.workflow_enforcer:
-        # Clear history
-        policy.workflow_enforcer.guard_history = []
-
-        # Execute T3 with approval
         result = policy._validate_task_invocation({
-            "subagent_type": "terraform-architect",
-            "prompt": "User approval received. Apply terraform to create GKE cluster",
-            "description": "Create production cluster"
+            "subagent_type": "invalid-agent",
+            "prompt": "Do something",
+            "description": "Test task"
         })
 
-        # Check if history was recorded
-        if policy.workflow_enforcer.guard_history:
-            last_entry = policy.workflow_enforcer.guard_history[-1]
-            if last_entry.get("requires_ssot_update"):
-                print("  ✅ PASSED: T3 operation tracked for SSOT update")
+        allowed, tier, reason = result
+        assert not allowed, "Invalid agent should be blocked"
+        assert "Unknown agent" in reason or "does not exist" in reason, \
+            f"Invalid agent not blocked properly. Result: allowed={allowed}, reason={reason}"
+
+    def test_phase_2_missing_context_warning(self):
+        """Test case 2: Phase 2 - Context provisioning warning"""
+        from pre_tool_use import PolicyEngine
+
+        policy = PolicyEngine()
+
+        result = policy._validate_task_invocation({
+            "subagent_type": "terraform-architect",
+            "prompt": "Run terraform plan",  # No context
+            "description": "Plan infrastructure"
+        })
+
+        allowed, tier, reason = result
+        # Should be allowed but warned (check logs)
+        assert allowed, f"Should not block for missing context: {reason}"
+
+    def test_phase_4_t3_without_approval_blocked(self):
+        """Test case 3: Phase 4 - T3 operations require approval"""
+        from pre_tool_use import PolicyEngine
+
+        policy = PolicyEngine()
+
+        # T3 without approval - should be blocked
+        result = policy._validate_task_invocation({
+            "subagent_type": "terraform-architect",
+            "prompt": "# Project Context\n\nRun terraform apply to production",
+            "description": "Apply terraform changes"
+        })
+
+        allowed, tier, reason = result
+        assert not allowed, "T3 operation should be blocked without approval"
+        assert "Phase 4" in reason, \
+            f"T3 should be blocked without approval: {reason}"
+
+    def test_phase_4_t3_with_approval_allowed(self):
+        """Test case 3b: T3 with approval - should be allowed"""
+        from pre_tool_use import PolicyEngine
+
+        policy = PolicyEngine()
+
+        result = policy._validate_task_invocation({
+            "subagent_type": "terraform-architect",
+            "prompt": "# Project Context\n\nUser approval received. Run terraform apply to production",
+            "description": "Apply terraform changes"
+        })
+
+        allowed, tier, reason = result
+        assert allowed, f"T3 should be allowed with approval: {reason}"
+
+    def test_phase_5_realization_with_plan_allowed(self):
+        """Test case 4: Phase 5 - Realization checks"""
+        from pre_tool_use import PolicyEngine
+
+        policy = PolicyEngine()
+
+        result = policy._validate_task_invocation({
+            "subagent_type": "gitops-operator",
+            "prompt": "# Project Context\n\nPhase 5: Realization\n\nPlan: Deploy application\nSteps: 1. Update manifests",
+            "description": "Execute deployment"
+        })
+
+        allowed, tier, reason = result
+        assert allowed, f"Realization should be allowed with plan: {reason}"
+
+    def test_phase_6_ssot_tracking(self):
+        """Test case 5: Phase 6 - SSOT tracking"""
+        from pre_tool_use import PolicyEngine
+
+        policy = PolicyEngine()
+
+        if policy.workflow_enforcer:
+            # Clear history
+            policy.workflow_enforcer.guard_history = []
+
+            # Execute T3 with approval
+            result = policy._validate_task_invocation({
+                "subagent_type": "terraform-architect",
+                "prompt": "User approval received. Apply terraform to create GKE cluster",
+                "description": "Create production cluster"
+            })
+
+            # Check if history was recorded
+            if policy.workflow_enforcer.guard_history:
+                last_entry = policy.workflow_enforcer.guard_history[-1]
+                assert last_entry.get("requires_ssot_update"), \
+                    "T3 operation not marked for SSOT update"
             else:
-                print("  ❌ FAILED: T3 operation not marked for SSOT update")
-                return False
+                pytest.skip("Guard history not populated")
         else:
-            print("  ⚠️ WARNING: Guard history not populated")
-    else:
-        print("  ⚠️ SKIPPED: WorkflowEnforcer not available")
-
-    return True
+            pytest.skip("WorkflowEnforcer not available")
 
 
-def test_all_guards_available():
+class TestAllGuardsAvailable:
     """Test that all phase guards are available"""
-    print("\n🧪 Testing All Guards Availability...")
 
-    try:
-        from workflow_enforcer import WorkflowEnforcer, PhaseGuard
-
-        enforcer = WorkflowEnforcer()
-
-        # Test each guard method exists
-        guards_to_test = [
-            ("guard_phase_0_ambiguity_threshold", [0.5]),
-            ("guard_phase_1_agent_exists", ["terraform-architect", ["terraform-architect"]]),
-            ("guard_phase_1_routing_confidence", [0.8]),
-            ("guard_phase_2_context_completeness", [
-                {"contract": {"project_details": {}}},  # context_payload
-                ["project_details"]  # required_sections
-            ]),
-            ("guard_phase_4_approval_mandatory", ["T3", True]),
-            ("guard_phase_5_planning_complete", [{"agent": "test", "plan": "Plan output"}]),  # realization_package
-            ("guard_phase_6_ssot_update_after_t3", ["T3", True])  # tier, ssot_updated
-        ]
-
-        all_passed = True
-        for method_name, test_args in guards_to_test:
-            if hasattr(enforcer, method_name):
-                method = getattr(enforcer, method_name)
-                try:
-                    result = method(*test_args)
-                    if isinstance(result, tuple) and len(result) == 2:
-                        print(f"  ✅ {method_name}: Available and working")
-                    else:
-                        print(f"  ❌ {method_name}: Invalid return format")
-                        all_passed = False
-                except Exception as e:
-                    print(f"  ❌ {method_name}: Error - {e}")
-                    all_passed = False
-            else:
-                print(f"  ❌ {method_name}: Not found")
-                all_passed = False
-
-        return all_passed
-
-    except ImportError as e:
-        print(f"  ❌ FAILED: Could not import WorkflowEnforcer: {e}")
-        return False
-
-
-def test_guard_violations():
-    """Test that guard violations properly block operations"""
-    print("\n🧪 Testing Guard Violations...")
-
-    try:
-        from workflow_enforcer import WorkflowEnforcer, GuardViolation
-
-        enforcer = WorkflowEnforcer()
-
-        # Test 1: High ambiguity should fail
-        passed, reason = enforcer.guard_phase_0_ambiguity_threshold(0.8, threshold=0.3)
-        if not passed and "Guard Violation" in reason:
-            print("  ✅ High ambiguity properly blocked")
-        else:
-            print("  ❌ High ambiguity not blocked")
-            return False
-
-        # Test 2: Low routing confidence should fail
-        passed, reason = enforcer.guard_phase_1_routing_confidence(0.2, min_confidence=0.5)
-        if not passed and "below minimum" in reason:
-            print("  ✅ Low routing confidence blocked")
-        else:
-            print("  ❌ Low routing confidence not blocked")
-            return False
-
-        # Test 3: T3 without approval should fail
-        passed, reason = enforcer.guard_phase_4_approval_mandatory("T3", approval_received=False)
-        if not passed and "MANDATORY" in reason:
-            print("  ✅ T3 without approval blocked")
-        else:
-            print("  ❌ T3 without approval not blocked")
-            return False
-
-        return True
-
-    except Exception as e:
-        print(f"  ❌ FAILED: {e}")
-        return False
-
-
-def main():
-    """Run all integration tests"""
-    print("="*60)
-    print("WORKFLOW ENFORCER INTEGRATION TESTS")
-    print("="*60)
-
-    tests = [
-        test_all_guards_available,
-        test_guard_violations,
-        test_workflow_enforcer_integration
-    ]
-
-    results = []
-    for test in tests:
+    def test_all_guards_exist_and_work(self):
+        """Test that all guard methods exist and return correct format"""
         try:
-            result = test()
-            results.append(result)
-        except Exception as e:
-            print(f"\n  ❌ Test failed with exception: {e}")
-            import traceback
-            traceback.print_exc()
-            results.append(False)
+            from workflow_enforcer import WorkflowEnforcer
 
-    print("\n" + "="*60)
-    print(f"RESULTS: {sum(results)}/{len(results)} test suites passed")
-    print("="*60)
+            enforcer = WorkflowEnforcer()
 
-    if all(results):
-        print("✅ All integration tests passed!")
-        return 0
-    else:
-        print("❌ Some integration tests failed")
-        return 1
+            # Test each guard method exists
+            guards_to_test = [
+                ("guard_phase_0_ambiguity_threshold", [0.5]),
+                ("guard_phase_1_agent_exists", ["terraform-architect", ["terraform-architect"]]),
+                ("guard_phase_1_routing_confidence", [0.8]),
+                ("guard_phase_2_context_completeness", [
+                    {"contract": {"project_details": {}}},  # context_payload
+                    ["project_details"]  # required_sections
+                ]),
+                ("guard_phase_4_approval_mandatory", ["T3", True]),
+                ("guard_phase_5_planning_complete", [{"agent": "test", "plan": "Plan output"}]),  # realization_package
+                ("guard_phase_6_ssot_update_after_t3", ["T3", True])  # tier, ssot_updated
+            ]
+
+            for method_name, test_args in guards_to_test:
+                assert hasattr(enforcer, method_name), f"{method_name}: Not found"
+                method = getattr(enforcer, method_name)
+                result = method(*test_args)
+                assert isinstance(result, tuple) and len(result) == 2, \
+                    f"{method_name}: Invalid return format"
+
+        except ImportError as e:
+            pytest.fail(f"Could not import WorkflowEnforcer: {e}")
+
+
+class TestGuardViolations:
+    """Test that guard violations properly block operations"""
+
+    def test_high_ambiguity_blocked(self):
+        """Test 1: High ambiguity should fail"""
+        from workflow_enforcer import WorkflowEnforcer
+
+        enforcer = WorkflowEnforcer()
+
+        passed, reason = enforcer.guard_phase_0_ambiguity_threshold(0.8, threshold=0.3)
+        assert not passed, "High ambiguity should be blocked"
+        assert "Guard Violation" in reason, "Should contain Guard Violation message"
+
+    def test_low_routing_confidence_blocked(self):
+        """Test 2: Low routing confidence should fail"""
+        from workflow_enforcer import WorkflowEnforcer
+
+        enforcer = WorkflowEnforcer()
+
+        passed, reason = enforcer.guard_phase_1_routing_confidence(0.2, min_confidence=0.5)
+        assert not passed, "Low routing confidence should be blocked"
+        assert "below minimum" in reason, "Should mention below minimum"
+
+    def test_t3_without_approval_blocked(self):
+        """Test 3: T3 without approval should fail"""
+        from workflow_enforcer import WorkflowEnforcer
+
+        enforcer = WorkflowEnforcer()
+
+        passed, reason = enforcer.guard_phase_4_approval_mandatory("T3", approval_received=False)
+        assert not passed, "T3 without approval should be blocked"
+        assert "MANDATORY" in reason, "Should mention MANDATORY"
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    pytest.main([__file__, "-v"])

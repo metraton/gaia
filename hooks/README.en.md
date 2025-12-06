@@ -1,111 +1,67 @@
 # Gaia-Ops Hooks
 
-**[🇪🇸 Versión en español](README.md)**
+**[Spanish version](README.md)**
 
-Hooks are interception points that allow validating and auditing operations before and after execution. They're like security guards who check every action.
+Hooks are interception points that validate and audit operations before and after execution. They're like security guards that verify each action.
 
-## 🎯 Purpose
+## Purpose
 
-Hooks ensure operations comply with security policies and are auditable. They provide an automatic protection layer without requiring constant manual intervention.
+Hooks ensure operations comply with security policies and are auditable. They provide automatic protection without requiring constant manual intervention.
 
-**Problem it solves:** Without hooks, dangerous operations could execute without validation. Hooks intercept commands and automatically apply security rules, blocking unauthorized operations.
-
-## 🔄 How It Works
+## How It Works
 
 ### Architecture Flow
 
 ```
 Agent attempts to execute command
-        ↓
-[pre_tool_use.py] ← intercepts BEFORE
-        ↓
+        |
+[pre_tool_use.py] <- intercepts BEFORE
+        |
     Validates operation
-    ┌───────┴───────┐
-    ↓               ↓
+    +-------+-------+
+    |               |
  ALLOWED        BLOCKED
-    ↓               ↓
+    |               |
 Command executes  ERROR + log
-    ↓
-[post_tool_use.py] ← intercepts AFTER
-        ↓
+    |
+[post_tool_use.py] <- intercepts AFTER
+    |
 Audits result
-        ↓
+    |
 Log to .claude/logs/
 ```
 
-### Real Example Flow
-
-```
-Example: Agent attempts "kubectl apply -f deployment.yaml"
-
-1. [gitops-operator] generates command:
-   kubectl apply -f deployment.yaml
-   ↓
-2. [pre_tool_use.py] intercepts:
-   - Detects: kubectl apply (T3 operation)
-   - Classifies: write_operation, production
-   - Consults: settings.json permissions
-   ↓
-3. [PolicyEngine] evaluates:
-   - Tier: T3 (execution)
-   - Requires: user_approval
-   - Current state: no_approval_yet
-   ↓
-4. Decision: BLOCK temporarily
-   ↓
-5. [Approval Gate] activates:
-   - Shows proposed changes
-   - User reviews: deployment.yaml
-   - User approves: ✅
-   ↓
-6. [pre_tool_use.py] allows execution
-   ↓
-7. [kubectl] executes:
-   deployment.apps/auth configured
-   ↓
-8. [post_tool_use.py] audits:
-   - Timestamp: 2025-11-14 10:23:45
-   - Command: kubectl apply
-   - Exit code: 0
-   - Output: deployment configured
-   - Approved by: user@example.com
-   ↓
-9. Log saved to:
-   .claude/logs/2025-11-14-audit.jsonl
-```
-
-## 📋 Available Hooks
+## Available Hooks
 
 ### Pre-Execution Hooks
 
-**`pre_tool_use.py`** (~400 lines) - Main guardian, validates ALL operations  
-**`pre_phase_hook.py`** (~200 lines) - Validates Phase 0-6 transitions  
-**`pre_kubectl_security.py`** (~180 lines) - Kubernetes-specific validation  
+**`pre_tool_use.py`** (~400 lines) - Main guardian - validates ALL operations before execution  
+**`pre_phase_hook.py`** (~200 lines) - Validates workflow phase transitions (Phase 0-6)  
+**`pre_kubectl_security.py`** (~180 lines) - Specialized validation for Kubernetes commands
 
 ### Post-Execution Hooks
 
-**`post_tool_use.py`** (~300 lines) - Audits ALL operations  
-**`post_phase_hook.py`** (~150 lines) - Audits phase transitions  
+**`post_tool_use.py`** (~300 lines) - Audits ALL operations after execution  
+**`post_phase_hook.py`** (~150 lines) - Audits phase transitions
 
-### Lifecycle Hooks
+### Workflow Metrics Hook
 
-**`session_start.py`** (~100 lines) - Executes at session start  
-**`subagent_stop.py`** (~120 lines) - Executes when subagent finishes  
+**`subagent_stop.py`** (~200 lines) - Captures metrics and detects anomalies when agents finish
 
-## 🚀 How Hooks Work
+## How Hooks Work
 
 ### Automatic Invocation
 
 Claude Code invokes hooks automatically - no manual call required:
 
 ```
-Agent → pre_tool_use.py → VALIDATE → ALLOW/BLOCK
-                            ↓
+Agent -> pre_tool_use.py -> VALIDATE -> ALLOW/BLOCK
+                            |
                       If ALLOW:
-                            ↓
+                            |
                       Execute command
-                            ↓
-Agent ← post_tool_use.py ← AUDIT
+                            |
+Agent <- post_tool_use.py <- AUDIT
 ```
 
 ### Permission Configuration
@@ -116,73 +72,37 @@ Hooks read `.claude/settings.json` for decisions:
 {
   "security_tiers": {
     "T0": {"approval_required": false},
+    "T1": {"approval_required": false},
+    "T2": {"approval_required": false},
     "T3": {"approval_required": true}
-  },
-  "always_blocked": ["rm -rf /"],
-  "ask_permissions": ["kubectl delete"]
+  }
 }
 ```
 
-### Audit Logs
-
-All hooks write to `.claude/logs/`:
-
-```bash
-# View today's logs
-cat .claude/logs/$(date +%Y-%m-%d)-audit.jsonl | jq .
-
-# Search T3 operations
-cat .claude/logs/*.jsonl | jq 'select(.tier == "T3")'
-```
-
-## 🔧 Technical Details
-
 ### Security Tiers
 
-| Tier | Operation Type | Requires Approval | Validation Hook |
+| Tier | Operation Type | Requires Approval | Hook Validation |
 |------|----------------|-------------------|-----------------|
-| **T0** | Read-only | No | pre_tool_use |
-| **T1** | Validation | No | pre_tool_use |
-| **T2** | Planning | No | pre_tool_use |
-| **T3** | Execution | **Yes** ✅ | pre_tool_use + pre_phase |
+| **T0** | Read-only (get, list) | No | pre_tool_use |
+| **T1** | Validation (validate, dry-run) | No | pre_tool_use |
+| **T2** | Planning (plan, simulate) | No | pre_tool_use |
+| **T3** | Execution (apply, delete) | **Yes** | pre_tool_use + pre_phase |
 
-### Hook Structure
+## File Structure
 
-```python
-def execute_hook(context: dict) -> dict:
-    """
-    Returns:
-        {
-            "action": "allow" | "block" | "ask",
-            "reason": "Explanation",
-            "metadata": {}
-        }
-    """
-```
-
-## 📖 References
-
-**Hook files:**
 ```
 hooks/
-├── pre_tool_use.py        (~400 lines)
-├── post_tool_use.py       (~300 lines)
-├── pre_phase_hook.py      (~200 lines)
-├── post_phase_hook.py     (~150 lines)
-├── pre_kubectl_security.py (~180 lines)
-├── session_start.py       (~100 lines)
-└── subagent_stop.py       (~120 lines)
+├── pre_tool_use.py        (~400 lines) - Main guardian
+├── post_tool_use.py       (~300 lines) - Main auditor
+├── pre_phase_hook.py      (~200 lines) - Phase validator
+├── post_phase_hook.py     (~150 lines) - Phase auditor
+├── pre_kubectl_security.py (~180 lines) - K8s security
+└── subagent_stop.py       (~200 lines) - Workflow metrics
 ```
-
-**Related tests:**
-- `tests/integration/test_hooks_integration.py` (~55 tests)
-- `tests/integration/test_hooks_workflow.py` (~19 tests)
 
 ---
 
-**Version:** 1.0.0  
-**Last updated:** 2025-11-14  
-**Total hooks:** 7 hooks  
-**Test coverage:** ~120 tests  
-**Maintained by:** Gaia (meta-agent) + security team
-
+**Version:** 2.0.0  
+**Last updated:** 2025-12-06  
+**Total hooks:** 6 hooks (4 pre, 1 post, 1 metrics)  
+**Maintained by:** Gaia (meta-agent)

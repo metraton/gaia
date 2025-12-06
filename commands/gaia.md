@@ -59,8 +59,6 @@ Task(
 - /speckit.analyze-task - Deep-dive task analysis
 
 **Session Commands:**
-- /save-session - Persist current session
-- /restore-session - Load previous session
 - /session-status - Check session state
 
 **Your System Knowledge:**

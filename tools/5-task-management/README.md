@@ -15,62 +15,55 @@ Manages large Terraform and infrastructure plans.
 ```python
 from tools.task_management import TaskManager
 
-manager = TaskManager()
-chunks = manager.split_plan(terraform_plan_output, chunk_size=500)
-# Returns: List of plan chunks
+manager = TaskManager(tasks_file_path)
 
-manager.get_current_chunk()
-manager.mark_chunk_complete()
-manager.save_state()
+# Mark a task as complete
+manager.mark_task_complete("T045")
+
+# Get pending tasks
+pending = manager.get_pending_tasks(limit=10)
+
+# Get full details for a specific task
+details = manager.get_task_details("T045")
+
+# Get statistics
+stats = manager.get_task_statistics()
 ```
 
 ## Purpose
 
 Large plans (>3000 lines) can exceed context limits. TaskManager:
-- Splits plans into logical chunks
-- Maintains execution state
-- Enables resume on interruption
+- Handles task files efficiently without loading entire content
+- Uses Grep for searching and Edit for targeted updates
 - Tracks completion progress
+- Extracts task metadata from HTML comments
 
 ## Usage Example
 
 ```python
 from tools.task_management import TaskManager
 
-# Initialize with large plan
-manager = TaskManager()
-terraform_plan = read_large_terraform_plan()
+# Initialize with path to tasks.md
+tm = TaskManager("/path/to/tasks.md")
 
-# Split into chunks (each ~500 lines max)
-chunks = manager.split_plan(terraform_plan)
+# Get task statistics
+stats = tm.get_task_statistics()
+print(f"Total: {stats['total_tasks']}, Pending: {stats['pending_tasks']}")
 
-# Process each chunk
-for i, chunk in enumerate(chunks):
-    print(f"Processing chunk {i+1}/{len(chunks)}")
-    execute_chunk(chunk)
-    manager.mark_chunk_complete(i)
+# Get pending tasks
+for task in tm.get_pending_tasks(limit=5):
+    print(f"{task['task_id']}: {task['title']}")
 
-# Persist state for potential resume
-manager.save_state()
+# Mark task complete
+tm.mark_task_complete("T045")
 ```
 
 ## Features
 
-- **Plan splitting:** Logical resource grouping
-- **State persistence:** Save/restore execution state
-- **Progress tracking:** Know which chunks are done
-- **Resume capability:** Continue after interruption
-- **Line count tracking:** Manage context windows
-
-## Configuration
-
-**Default chunk size:** 500 lines per chunk
-
-Adjustable:
-```python
-manager = TaskManager()
-chunks = manager.split_plan(plan, chunk_size=1000)  # Custom size
-```
+- **Task status management:** Mark tasks complete/pending
+- **Efficient file operations:** Uses grep/sed, no full-file rewrites
+- **Metadata extraction:** Parses agent, tier, tags from HTML comments
+- **Statistics:** Track completion progress
 
 ## Files
 
@@ -80,6 +73,5 @@ chunks = manager.split_plan(plan, chunk_size=1000)  # Custom size
 
 ## See Also
 
-- `tools/__init__.py` - Package re-exports
-- Terraform/Terragrunt agents - Primary consumers
-- GitOps operators - Secondary consumers
+- `tools/4-memory/episodic.py` - Episodic memory for context
+- `hooks/subagent_stop.py` - Workflow metrics capture

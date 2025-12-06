@@ -1,54 +1,32 @@
 # Gaia-Ops Slash Commands
 
-**[🇪🇸 Versión en español](README.md)**
+**[Spanish version](README.md)**
 
 Slash commands are quick shortcuts that let you invoke specific system functions directly. They're like keyboard shortcuts for common tasks.
 
-## 🎯 Purpose
+## Purpose
 
 Slash commands provide a fast and consistent way to access advanced features without needing to write complete natural language requests.
 
 **Problem it solves:** Some tasks require direct invocation of specific tools. Instead of verbosely describing what you want to do, you simply use a slash command.
 
-## 🔄 How It Works
+## How It Works
 
 ### Architecture Flow
 
 ```
 User types /command
-        ↓
+        |
 [Claude Code] detects / pattern
-        ↓
+        |
 [Command Handler] loads command .md file
-        ↓
+        |
 [Orchestrator] executes command instructions
-        ↓
+        |
 Result to user
 ```
 
-### Real Example Flow
-
-```
-Example: "/save-session production-deploy"
-
-1. User types: /save-session production-deploy
-   ↓
-2. [Claude Code] detects slash command
-   ↓
-3. [Command Handler] reads → commands/save-session.md
-   ↓
-4. [Save Session Tool] executes:
-   - Gathers active context
-   - Saves session/active/active-context.json
-   - Creates bundle: session/bundles/production-deploy.bundle.json
-   - Generates summary
-   ↓
-5. Result:
-   "✅ Session saved: production-deploy
-    Files: 12 | Size: 45KB | Context: 3.2K tokens"
-```
-
-## 📋 Available Commands
+## Available Commands
 
 ### Meta-Analysis Commands
 
@@ -73,83 +51,9 @@ Invokes Gaia, the meta-agent that analyzes and optimizes the orchestration syste
 
 ---
 
-### Session Commands
-
-#### `/save-session [name]`
-Saves current work context in a persistent bundle.
-
-**When to use:**
-- Before ending the day
-- After completing an important task
-- Before switching context to another task
-- To share context with another developer
-
-**Example:**
-```bash
-/save-session deploy-auth-v2
-```
-
-**What it saves:**
-- Open and modified files
-- Relevant conversations
-- Project state (project-context.json)
-- Executed commands
-
----
-
-#### `/restore-session [name]`
-Restores a previously saved work context.
-
-**When to use:**
-- When starting the day
-- When resuming a paused task
-- When onboarding a new dev
-
-**Example:**
-```bash
-/restore-session deploy-auth-v2
-```
-
-**What it restores:**
-- Bundle file list
-- Previous conversations
-- Project state
-- Complete context to continue
-
----
-
-#### `/session-status`
-Shows current active session status.
-
-**When to use:**
-- To check what will be saved
-- To see context size
-- To review tracked files
-
-**Example:**
-```bash
-/session-status
-```
-
-**Information shown:**
-```
-📊 Active Session Status
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Files tracked: 12
-Context size: 3.2K tokens
-Last updated: 2 minutes ago
-
-Recent activity:
-- Modified: gitops/deployment.yaml
-- Executed: kubectl apply
-- Agent: gitops-operator
-```
-
----
-
 ### Spec-Kit Commands
 
-The Spec-Kit framework provides a structured workflow from idea → implementation.
+The Spec-Kit framework provides a structured workflow from idea -> implementation.
 
 #### `/speckit.init`
 Initializes Spec-Kit in the current project, creating/validating `project-context.json`.
@@ -242,7 +146,7 @@ Executes tasks using specialized agents.
 **What it does:**
 - Reads enriched tasks.md
 - Invokes appropriate agents per task
-- T2/T3 tasks → automatic pre-execution analysis
+- T2/T3 tasks -> automatic pre-execution analysis
 - Approval gates when needed
 - Generates code, tests, documentation
 
@@ -288,7 +192,7 @@ Deep analysis of a specific task (auto-triggered for T2/T3).
 
 ---
 
-## 🚀 General Usage
+## General Usage
 
 ### Basic Syntax
 
@@ -311,22 +215,21 @@ Commands validate arguments and give clear feedback if information is missing
 
 | Natural Language | Slash Command |
 |------------------|---------------|
-| "Save current context with name deploy-v2" | `/save-session deploy-v2` |
 | "Analyze system logs" | `/gaia Analyze logs` |
 | "Create a spec for OAuth authentication" | `/speckit.specify auth-spec Add OAuth2` |
 
 **Advantages of slash commands:**
-- ✅ Faster
-- ✅ Consistent syntax
-- ✅ Direct tool invocation
-- ✅ Less ambiguous
+- Faster
+- Consistent syntax
+- Direct tool invocation
+- Less ambiguous
 
 **When to use natural language:**
 - Exploratory questions
 - Problem diagnosis
 - Complex queries
 
-## 🔧 Technical Details
+## Technical Details
 
 ### Command Structure
 
@@ -349,9 +252,6 @@ usage: Usage syntax
 ```
 commands/
 ├── gaia.md                  (~100 lines)
-├── save-session.md          (~80 lines)
-├── restore-session.md       (~75 lines)
-├── session-status.md        (~60 lines)
 ├── speckit.init.md          (~90 lines)
 ├── speckit.specify.md       (~120 lines)
 ├── speckit.plan.md          (~150 lines)
@@ -361,25 +261,24 @@ commands/
 └── speckit.analyze-task.md  (~85 lines)
 ```
 
-**Total:** 11 commands (1 meta + 3 session + 7 spec-kit)
+**Total:** 8 commands (1 meta + 7 spec-kit)
 
-## 📖 References
+## References
 
 **Related documentation:**
 - [Orchestration Workflow](../config/orchestration-workflow.md) - How the orchestrator processes commands
 - [Spec-Kit Framework](../speckit/README.md) - Complete Spec-Kit details
 - [Gaia Agent](../agents/gaia.md) - The meta-agent
-- [Session Management](../tools/5-task-management/README.md) - Session system
+- [Episodic Memory](../tools/4-memory/episodic.py) - Context memory system
 
 **Underlying tools:**
-- Session manager: `tools/5-task-management/session-manager.py`
 - Task manager: `tools/5-task-management/task_manager.py`
+- Episodic memory: `tools/4-memory/episodic.py`
 - Spec-Kit scripts: `speckit/scripts/`
 
 ---
 
-**Version:** 1.0.0  
-**Last updated:** 2025-11-14  
-**Total commands:** 11 (1 meta, 3 session, 7 spec-kit)  
+**Version:** 2.0.0  
+**Last updated:** 2025-12-06  
+**Total commands:** 8 (1 meta, 7 spec-kit)  
 **Maintained by:** Gaia (meta-agent)
-

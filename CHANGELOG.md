@@ -5,6 +5,66 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2025-12-06
+
+### Added - Token Optimization & Consolidation
+
+- **NEW:** `docs/standards/` - Shared execution standards
+  - `security-tiers.md` - T0-T3 definitions
+  - `output-format.md` - Report structure
+  - `command-execution.md` - Execution pillars
+  - `anti-patterns.md` - Common mistakes by tool
+
+- **NEW:** Hybrid pre-loading in `context_provider.py`
+  - Always loads: security-tiers, output-format
+  - On-demand: command-execution, anti-patterns
+  - **78% token reduction** per agent invocation
+
+- **NEW:** QuickTriage scripts
+  - `tools/fast-queries/cloud/aws/quicktriage_aws_troubleshooter.sh`
+  - `tools/fast-queries/appservices/quicktriage_devops_developer.sh`
+
+### Changed - Agent Optimization
+
+- **agents/*.md** - All 5 agents reduced by 78%
+  - terraform-architect: 916 → 183 lines
+  - gitops-operator: 1,238 → 217 lines
+  - gcp-troubleshooter: 600 → 156 lines
+  - aws-troubleshooter: 565 → 142 lines
+  - devops-developer: 641 → 173 lines
+
+### Removed - Session System Consolidation
+
+- **REMOVED:** Session management system (consolidated into Episodic Memory)
+  - `commands/save-session.md`
+  - `commands/restore-session.md`
+  - `commands/session-status.md`
+  - `hooks/session_start.py`
+  - `tools/5-task-management/session-manager.py`
+  - `tools/5-task-management/create_current_session_bundle.py`
+  - `tools/5-task-management/restore_session.py`
+
+### Changed - Episodic Memory Enhanced
+
+- **tools/4-memory/episodic.py** - Added `capture_git_state()` migrated from session system
+
+### Fixed - Test Suite
+
+- **359 tests passing (100%)**
+- Fixed import in `test_commit_validator.py`
+- Fixed import in `test_episodic_memory.py`
+- Updated `test_agent_definitions.py` for meta-agents
+- Changed `test_hook_blocks_docker_ps` to `test_hook_default_permit_for_docker_ps`
+- Fixed 11 warnings (return → assert)
+
+### Changed - Documentation
+
+- **README.md & README.en.md** - Updated to v3.1.0, reduced 41%
+- **All subdirectory READMEs** - Reduced 63% total (~2,025 lines removed)
+- Eliminated all references to session system
+
+---
+
 ## [3.0.0] - 2025-12-05
 
 ### Added - Agent Intelligence System (MAJOR)
@@ -141,9 +201,48 @@ manager = EnhancedConversationManager()
 
 ---
 
+## [2.6.2] - 2025-11-14
+
+### Added - Absolute Paths Support
+
+- **NEW:** `normalizePath()` function - Handles both absolute and relative paths transparently
+- **NEW:** CLI option `--project-context-repo` - Specify git repository for project context in non-interactive mode
+- **NEW:** Environment variable `CLAUDE_PROJECT_CONTEXT_REPO` - Alternative way to specify context repo
+
+### Changed
+
+- **`getConfiguration()`** - Now normalizes paths using `normalizePath()`
+- **`validateAndSetupProjectPaths()`** - Enhanced to handle absolute paths correctly
+- **CLI help and documentation** - Updated examples with absolute paths
+
+### Improved
+
+- Path handling is now more robust and user-friendly
+- Better error messages for path-related issues
+- Clearer documentation and examples
+
+### Examples
+
+```bash
+# Absolute paths without context repo
+npx gaia-init --non-interactive \
+  --gitops /home/user/project/gitops \
+  --terraform /home/user/project/terraform \
+  --app-services /home/user/project/services
+
+# Absolute paths with context repo
+npx gaia-init --non-interactive \
+  --gitops /path/to/gitops \
+  --terraform /path/to/terraform \
+  --project-context-repo git@bitbucket.org:org/repo.git
+```
+
+---
+
 ## [2.3.0] - 2025-11-11
 
 ### Added - Phase 0 Clarification Module
+
 - **NEW:** `tools/clarification/` module for intelligent ambiguity detection before routing
   - `clarification/engine.py`: Core clarification engine (refactored from clarify_engine.py)
   - `clarification/patterns.py`: Ambiguity detection patterns (ServiceAmbiguityPattern, NamespaceAmbiguityPattern, etc.)
@@ -156,6 +255,7 @@ manager = EnhancedConversationManager()
 - **Clarification metrics** to Key System Metrics (target: 20-30% clarification rate)
 
 ### Changed - Module Restructuring (BREAKING)
+
 - **BREAKING:** `clarify_engine.py` and `clarify_patterns.py` moved to `clarification/` module
   - **Old imports:** `from clarify_engine import request_clarification`
   - **New imports:** `from clarification import execute_workflow, request_clarification`
@@ -166,17 +266,13 @@ manager = EnhancedConversationManager()
 - Service metadata now shows only static information: `tech_stack | namespace | port`
 
 ### Fixed
+
 - Import paths in `tests/tools/test_clarify_engine.py` updated to new module structure
 - Service metadata test updated to reflect removal of dynamic status field
 - All 20 unit tests passing with new module structure
 
-### Documentation
-- Added comprehensive Phase 0 implementation guide
-- Added troubleshooting guide for clarification system
-- Updated speckit.specify.md with Phase 0 workflow integration
-- Added Protocol G diagnostic steps in gaia.md
-
 ### Migration Guide for v2.3.0
+
 ```python
 # Before (v2.2.x)
 from clarify_engine import request_clarification, process_clarification
@@ -189,41 +285,48 @@ result = execute_workflow(user_prompt)
 enriched_prompt = result["enriched_prompt"]
 ```
 
+---
+
 ## [2.2.3] - 2025-11-11
 
 ### Fixed - Deterministic Project Context Location
+
 - **context_provider.py**
   - Always reads `.claude/project-context/project-context.json` (no fallback to legacy paths)
   - Removed legacy auto-detection logic and unused imports
-  - Prevents “Context file not found” errors when projects only use the new structure
+  - Prevents "Context file not found" errors when projects only use the new structure
 - **templates/CLAUDE.template.md**
   - Rule 1 clarifies when to delegate vs. self-execute
   - Rule 2 explicitly documents the `context_provider.py --context-file .claude/project-context/project-context.json …` invocation
   - Workflow summary now references orchestration docs after the table (cleaner render)
 
 ### Changed - CLI Documentation & Version Alignment
+
 - **README.md / README.en.md**
   - Documented the exact `npx` commands (`npx gaia-init` / `npx @jaguilar87/gaia-ops`) and clarified installation steps
-  - Updated “Current version” badges to **2.2.3**
+  - Updated "Current version" badges to **2.2.3**
 - **package.json**
   - Bumped package version to `2.2.3`
 
 ### Benefits
-- ✅ No manual tweaks needed to point `context_provider.py` at the correct project context
-- ✅ CLAUDE template now tells the orchestrator exactly how to invoke the context provider
-- ✅ README instructions reflect the real CLI entry points, reducing confusion for new installs
+
+- No manual tweaks needed to point `context_provider.py` at the correct project context
+- CLAUDE template now tells the orchestrator exactly how to invoke the context provider
+- README instructions reflect the real CLI entry points, reducing confusion for new installs
 
 ---
 
 ## [2.2.2] - 2025-11-11
 
 ### Added - Pre-generated Semantic Embeddings
+
 - **NEW:** Included pre-generated intent embeddings in package (74KB total)
   - `config/intent_embeddings.json` (55KB) - Semantic vectors for intent matching
   - `config/intent_embeddings.npy` (19KB) - Binary embeddings for fast loading
   - `config/embeddings_info.json` (371B) - Metadata about embeddings
 
 ### Changed - Semantic Routing Now Works Out-of-the-Box
+
 - **Semantic matching enabled by default:** No manual setup required
 - **Routing accuracy improved:** Ambiguous queries now route correctly using semantic similarity
 - **Example improvement:**
@@ -234,6 +337,7 @@ enriched_prompt = result["enriched_prompt"]
   ```
 
 ### Fixed - Directory Structure Consistency
+
 - **Consolidated `configs/` into `config/`:** All configuration and data files now in single directory
 - **Updated tool references:**
   - `tools/semantic_matcher.py`: Updated embeddings path (configs/ → config/)
@@ -241,6 +345,7 @@ enriched_prompt = result["enriched_prompt"]
   - All documentation updated to reference correct paths
 
 ### Fixed - Test Suite (254 tests, 100% passing)
+
 - **tests/system/test_configuration_files.py:**
   - Updated to validate `templates/settings.template.json` (package contains template, not installed settings.json)
   - Tests now reflect npm package structure instead of installed project structure
@@ -265,33 +370,20 @@ enriched_prompt = result["enriched_prompt"]
   - Better error messages: "ERROR: Invalid agent" instead of "Warning: No contract found"
 
 ### Benefits
-- ✅ **Zero configuration:** Semantic routing works immediately after installation
-- ✅ **Better routing:** Handles ambiguous queries with 6x higher confidence
-- ✅ **Consistent structure:** All config files in one place (`config/`)
-- ✅ **Smaller package:** Embeddings optimized for size (74KB vs 5MB unoptimized)
-- ✅ **Regeneration optional:** Users can regenerate with `python3 .claude/tools/generate_embeddings.py` if needed
-- ✅ **Test coverage:** 254 tests passing (0 failures)
 
-### Technical Details
-```
-config/ directory now contains:
-├── Documentation (markdown)
-│   ├── AGENTS.md, agent-catalog.md, context-contracts.md
-│   ├── git-standards.md, orchestration-workflow.md
-├── Provider Contracts (JSON)
-│   ├── context-contracts.gcp.json, context-contracts.aws.json
-│   └── git_standards.json
-└── Semantic Embeddings (JSON + binary) ← NEW
-    ├── intent_embeddings.json
-    ├── intent_embeddings.npy
-    └── embeddings_info.json
-```
+- Zero configuration: Semantic routing works immediately after installation
+- Better routing: Handles ambiguous queries with 6x higher confidence
+- Consistent structure: All config files in one place (`config/`)
+- Smaller package: Embeddings optimized for size (74KB vs 5MB unoptimized)
+- Regeneration optional: Users can regenerate with `python3 .claude/tools/generate_embeddings.py` if needed
+- Test coverage: 254 tests passing (0 failures)
 
 ---
 
 ## [2.2.1] - 2025-11-10
 
 ### Fixed - Documentation Consistency
+
 - **README.md & README.en.md:**
   - Updated version numbers from 2.1.0 → 2.2.0
   - Corrected package structure (hooks/, templates/, commands/)
@@ -343,17 +435,19 @@ config/ directory now contains:
   - Complete branding consistency: package name, agent name, and command name all use "gaia"
 
 ### Benefits
-- ✅ **Accurate documentation:** All paths and structures match actual package contents
-- ✅ **No broken links:** References point to existing files
-- ✅ **Clear API:** Deprecated functions clearly marked
-- ✅ **User trust:** Documentation matches reality
-- ✅ **npm test passes:** No false failures
+
+- Accurate documentation: All paths and structures match actual package contents
+- No broken links: References point to existing files
+- Clear API: Deprecated functions clearly marked
+- User trust: Documentation matches reality
+- npm test passes: No false failures
 
 ---
 
 ## [2.2.0] - 2025-11-10
 
 ### Added - Unified Settings Template & Auto-Installation
+
 - **NEW:** Created unified `templates/settings.template.json` (214 lines)
   - Merged functionality from `settings.json` + `settings.local.json`
   - Includes all hooks (PreToolUse, PostToolUse, SubagentStop)
@@ -367,6 +461,7 @@ config/ directory now contains:
   - Projects get complete settings from day 1
 
 ### Removed - Dead Code Elimination
+
 - **CLAUDE.md** from package root (only template exists now)
 - **templates/code-examples/** (321 lines - never imported or executed)
   - `commit_validation.py`
@@ -377,6 +472,7 @@ config/ directory now contains:
 - **package.json:** Removed `CLAUDE.md` from files array
 
 ### Changed - Package Consistency
+
 - **templates/CLAUDE.template.md:**
   - Updated all references: `.claude/docs/` → `.claude/config/`
   - Updated package name: `@aaxis/claude-agents` → `@jaguilar87/gaia-ops`
@@ -395,30 +491,26 @@ config/ directory now contains:
   - Clarified symlink architecture and layout
 
 ### Improved - Package Quality
+
 - **Reduced template bloat by 57%:** 882 lines → 378 lines (504 lines removed)
 - **Single source of truth:** One settings template instead of scattered config
 - **Cleaner architecture:** Only actual templates remain in `templates/`
 - **Better defaults:** Projects start with complete, production-ready settings
 
 ### Benefits
-- ✅ **Unified configuration:** Everything in one settings.json file
-- ✅ **Automatic setup:** No manual settings configuration needed
-- ✅ **Smaller package:** 57% reduction in template code
-- ✅ **Flexibility maintained:** Users can still create `settings.local.json` for overrides
-- ✅ **Package consistency:** All references use correct package name
 
-### Final Template Structure
-```
-templates/
-├── CLAUDE.template.md         (164 lines) - Orchestrator instructions
-└── settings.template.json     (214 lines) - Complete Claude Code settings
-```
+- Unified configuration: Everything in one settings.json file
+- Automatic setup: No manual settings configuration needed
+- Smaller package: 57% reduction in template code
+- Flexibility maintained: Users can still create `settings.local.json` for overrides
+- Package consistency: All references use correct package name
 
 ---
 
 ## [2.1.0] - 2025-11-10
 
 ### Added - Provider-Specific Context Contracts
+
 - **NEW:** Created separate contract files per cloud provider
   - `config/context-contracts.gcp.json` - GCP-specific contracts
   - `config/context-contracts.aws.json` - AWS-specific contracts
@@ -435,6 +527,7 @@ templates/
   - `tests/fixtures/project-context.aws.json`
 
 ### Changed
+
 - **Context Provider:** Updated `tools/context_provider.py`
   - Added `detect_cloud_provider()` function
   - Added `load_provider_contracts()` function
@@ -457,33 +550,25 @@ templates/
   - Version bumped to 2.1.0
 
 ### Benefits
-- ✅ **Clarity:** Field names match cloud provider terminology
-- ✅ **Simplicity:** No complex conditional validation logic in agents
-- ✅ **Extensibility:** Adding Azure = create one JSON file (15 minutes)
-- ✅ **Agents Stay Agnostic:** Agents use pattern discovery, don't need provider logic
-- ✅ **Single Source of Truth:** Orchestrator selects the right contract
+
+- Clarity: Field names match cloud provider terminology
+- Simplicity: No complex conditional validation logic in agents
+- Extensibility: Adding Azure = create one JSON file (15 minutes)
+- Agents Stay Agnostic: Agents use pattern discovery, don't need provider logic
+- Single Source of Truth: Orchestrator selects the right contract
 
 ### Backward Compatibility
-- **Legacy support maintained:** If provider-specific contracts don't exist, falls back to hardcoded contracts
-- **Existing projects:** Continue to work without changes
-- **Migration:** Optional, but recommended for clarity
 
-### Technical Details
-```python
-# Before (v2.0.0):
-contract_keys = AGENT_CONTRACTS[agent_name]  # Hardcoded
-
-# After (v2.1.0):
-cloud_provider = detect_cloud_provider(project_context)  # Auto-detect
-contracts = load_provider_contracts(cloud_provider)      # Load from JSON
-contract_keys = contracts["agents"][agent_name]["required"]  # Provider-specific
-```
+- Legacy support maintained: If provider-specific contracts don't exist, falls back to hardcoded contracts
+- Existing projects: Continue to work without changes
+- Migration: Optional, but recommended for clarity
 
 ---
 
 ## [1.4.0] - 2025-11-10
 
 ### Changed - BREAKING: Complete Installer Redesign
+
 - **NEW FLOW:** Directories first, context second (much more logical!)
   1. Ask for directories (gitops, terraform, app-services) - ALWAYS
   2. Ask for project context repo - OPTIONAL
@@ -491,317 +576,72 @@ contract_keys = contracts["agents"][agent_name]["required"]  # Provider-specific
   4. If YES context: Use that configuration and done!
 
 ### Improved
+
 - **Clearer Purpose:** Context repo is now clearly optional
 - **Better Fallback:** If no context exists, creates a basic one with minimal info
 - **All Fields Optional:** Can leave everything empty if you don't know yet
 - **Logical Order:** Ask for what you always need first (paths), then optional context
-
-### Benefits
-- Makes sense for new projects (no context yet)
-- Makes sense for existing projects (have context)
-- Directories are always the starting point (local to project)
-- Context comes second (can be shared across projects)
 
 ---
 
 ## [1.3.6] - 2025-11-10
 
 ### Fixed
+
 - **Installer:** Skip questions when project context already has the answers
 - **Smart Detection:** Only ask what's missing or needs confirmation (paths)
 - **User Experience:** Show config summary when context is loaded
 - **Directory Creation:** Auto-create missing directories without prompting
 
 ### Changed
+
 - When project context loads successfully, only asks to confirm/adjust paths
 - Cloud provider, credentials, region, and cluster name auto-applied from context
 - Clearer feedback showing what was loaded from project context
 - Missing directories (gitops, terraform, app-services) now created automatically
-
-### Improved
-- Eliminates ALL redundant questions when context exists
-- Better UX: "Here's what we loaded, just confirm the paths"
-- Faster setup for teams with complete project contexts
-- No interruptions for directory creation confirmations
 
 ---
 
 ## [1.3.5] - 2025-11-10
 
 ### Added
+
 - **Smart Installer Flow:** Project context repo now asked FIRST, with auto-population of all config
 - **Input Sanitization:** Handles "git clone <url>" pastes automatically (extracts just URL)
 - **Auto-Configuration:** Parses project-context.json and pre-fills all wizard questions
 - **Better Error Messages:** Clear troubleshooting tips for git clone failures (SSH keys, access, URL)
 
 ### Changed
+
 - **Wizard Question Order:** Project context moved from last to first question
 - **User Experience:** Reduced manual input when project context exists
 - **Clone Strategy:** Validates project context early, then sets up in final location
 - **Error Handling:** Installation continues even if project context clone fails
-
-### Improved
-- Eliminates typos and configuration errors by pre-filling from existing context
-- Saves time for users with existing project-context repos
-- Better guidance when git operations fail
 
 ---
 
 ## [1.3.4] - 2025-11-10
 
 ### Fixed
+
 - **Installer:** Removed incorrect AGENTS.md symlink creation in project root during installation
 - **Documentation:** AGENTS.md now only accessible via `.claude/config/AGENTS.md` as intended
 - **Package Quality:** Excluded Python cache files (`__pycache__/`) from published package
 
 ### Changed
+
 - **README.md:** Updated project structure documentation to reflect correct AGENTS.md location
 - **README.en.md:** Updated project structure and corrected package references
 - **Package Size:** Reduced from 911.7 kB (93 files) to 660.7 kB (77 files) - 27% reduction
 
 ### Added
+
 - **Package Metadata:** Added `homepage` and `bugs` fields to package.json for better npm discovery
 - **Badges:** Added npm version, license, and Node.js version badges to README files
 - **CI/CD:** Created GitHub Actions workflow for automated npm publishing
 - **.npmignore:** Added file to exclude development artifacts from package
 - **Cleanup Script:** Added `npm run clean` to remove Python cache files automatically
 - **Pre-publish Hook:** Added `prepublishOnly` script for automatic cleanup before publishing
-
-### Package Quality Improvements
-- Better npm package metadata for discoverability
-- Professional badges in documentation
-- Automated publishing workflow
-- Cleaner package distribution (no cache files)
-- Improved documentation consistency
-
----
-
-## [2.1.0] - 2025-11-07
-
-### Changed
-
-- **Optimized CLAUDE.md verbosity:** Further reduced from 195 lines to 154 lines (21% additional reduction)
-- **Converted narrative to rules format:** All sections now use Rule X.Y [Priority] format for clarity
-- **Implemented numeric priority system:** `[P0]` (critical), `[P1]` (important) for better emphasis
-- **Reduced Python code blocks:** Removed verbose code examples, replaced with concise function references
-- **Optimized sections:**
-  - Core Operating Principles: Narrative → Rules 1.0-4.0
-  - Orchestrator Workflow: Narrative → Rule 5.0-5.1 with table format
-  - Git Operations: Narrative → Rules 6.0-6.1 with table format
-  - Common Anti-Patterns: Lists → Rule 7.0 with comparison table
-
-### Added
-
-- **Code examples in templates:** Created `.claude/templates/code-examples/` with:
-  - `commit_validation.py` (86 lines) - Complete commit validation patterns
-  - `clarification_workflow.py` (94 lines) - Phase 0 clarification examples
-  - `approval_gate_workflow.py` (141 lines) - Phase 4 approval gate examples
-- **Rule numbering system:** Rules 1.0-7.0 for easy reference and navigation
-- **Priority indicators:** `[P0]` for critical rules, `[P1]` for important rules
-
-### Improved
-
-- **Token efficiency:** Additional 25% reduction (1,900 → ~1,450 tokens)
-- **Scannability:** Table format for workflows, commit rules, anti-patterns
-- **Conciseness:** Removed redundant explanations, kept essential info
-- **Maintainability:** Code examples separate from core instructions
-
----
-
-## [2.0.0] - 2025-11-07
-
-### Changed (BREAKING)
-
-- **Refactored to modular structure:** Split 380-line monolith into:
-  - `CLAUDE.md` (core instructions, 196 lines)
-  - `.claude/docs/orchestration-workflow.md` (phases 0-6, ~550 lines)
-  - `.claude/docs/git-standards.md` (complete git specification, ~450 lines)
-  - `.claude/docs/context-contracts.md` (agent contracts, ~400 lines)
-  - `.claude/docs/agent-catalog.md` (agent capabilities, ~550 lines)
-
-- **Updated Core Operating Principles:**
-  - Changed Principle #1 from "ZERO Direct Execution" to "Selective Delegation (Context-Aware)"
-  - Clarified that orchestrator CAN execute SIMPLE operations (commits, file edits, queries)
-  - Clarified that orchestrator MUST delegate COMPLEX workflows (infrastructure, deployments)
-
-### Added
-
-- **Frontmatter with metadata:**
-  - Version: 2.0.0
-  - Last updated date
-  - Maintainer info
-  - Changelog reference
-
-- **Git Operations section:**
-  - Clear distinction between orchestrator-level commits (simple, ad-hoc) and agent-level commits (complex workflows)
-  - Table of "Distinction Rules" showing which handler (orchestrator or agent) for each scenario
-  - Universal validation requirement (`commit_validator.py`) for both orchestrator and agents
-
-- **References section:**
-  - Links to all modular docs (`.claude/docs/*.md`)
-  - Links to code examples (`.claude/templates/code-examples/`)
-
-- **System Paths section:**
-  - Centralized list of all system paths (agent system, tools, logs, tests, project SSOT)
-
-- **Common Anti-Patterns section:**
-  - DON'T list (skip approval gate, use context_provider for meta-agents, etc.)
-  - DO list (route tasks, use AskUserQuestion, update SSOT, etc.)
-
-### Improved
-
-- **Token efficiency:** Reduced from ~3,800 tokens to ~1,500 tokens (60% reduction)
-- **Navigability:** Clear section structure with references to detailed docs
-- **Mantenibility:** Changes to git standards, workflows, or contracts don't require editing CLAUDE.md
-- **Clarity:** Explicit distinction between project agents and meta-agents
-
-### Removed
-
-- **Detailed Phase 0-6 workflows:** Moved to `.claude/docs/orchestration-workflow.md`
-- **Complete git standards:** Moved to `.claude/docs/git-standards.md`
-- **Full context contracts:** Moved to `.claude/docs/context-contracts.md`
-- **Detailed agent capabilities:** Moved to `.claude/docs/agent-catalog.md`
-- **Code examples:** Moved to `.claude/templates/code-examples/`
-
----
-
-## [1.4.x] - 2025-11-01 to 2025-11-06
-
-### Added
-
-- **Phase 0: Intelligent Clarification** (NEW)
-  - `clarify_engine.py` integration for ambiguity detection
-  - Dynamic questions with options from `project-context.json`
-  - Enriched prompt generation for better routing accuracy
-
-- **Phase 6: System State Update**
-  - Mandatory SSOT updates after realization
-  - `TaskManager` integration for `tasks.md` updates (handles >25K tokens)
-  - Infrastructure state updates (`project-context.json`)
-
-### Changed
-
-- **Phase 4: Approval Gate** made MANDATORY (enforced with validation logic)
-- **Phase 5: Realization** requires `validation["approved"] == True` (cannot skip)
-
----
-
-## [1.3.x] - 2025-10-15 to 2025-10-31
-
-### Added
-
-- **Git Commit Standards:**
-  - `commit_validator.py` integration (mandatory validation)
-  - Conventional Commits format enforcement
-  - Forbidden footers (Claude Code attribution)
-  - Violations logging to `.claude/logs/commit-violations.jsonl`
-
-- **Context Contracts:**
-  - Defined minimum context payload for each agent
-  - `context_provider.py` as SSOT for context generation
-
-### Changed
-
-- **Core Principle #4:** Clarified two-phase workflow (Planning → Approval → Realization)
-
----
-
-## [1.2.x] - 2025-09-20 to 2025-10-14
-
-### Added
-
-- **Agent System Overview:**
-  - Distinction between Project Agents (use `context_provider.py`) and Meta-Agents (manual context)
-  - Security tiers (T0-T3) for operations
-  - Agent capabilities and tools
-
-### Changed
-
-- **Orchestrator Workflow:** Simplified to 5 phases (before Phase 0 was added later)
-
----
-
-## [1.1.x] - 2025-08-15 to 2025-09-19
-
-### Added
-
-- **Execution Standards:**
-  - Use native tools over bash redirections
-  - Execute simple commands (not chained with `&&`)
-  - Permission priority rules
-
-### Changed
-
-- **Language Policy:** Separated technical docs (English) from chat interactions (Spanish)
-
----
-
-## [1.0.0] - 2025-08-01
-
-### Added
-
-- **Initial CLAUDE.md structure:**
-  - Language Policy
-  - Core Operating Principles (ZERO Direct Execution, Delegate to Specialists, Master of Context)
-  - Basic workflow (Analysis → Context → Invocation → Verification)
-  - Agent list with roles
-
----
-
-## Future (Planned)
-
-### Version 2.1.0 (Planned Q1 2026)
-
-- **Improved routing:** Machine learning-based agent selection
-- **Enhanced clarification:** Proactive clarification based on user history
-- **Performance metrics:** Track token usage, latency, success rates per agent
-
-### Version 2.2.0 (Planned Q2 2026)
-
-- **Multi-agent coordination:** Support for workflows requiring multiple agents (e.g., terraform + gitops)
-- **Rollback automation:** Automatic rollback on failed verifications
-- **Enhanced observability:** Real-time workflow visualization
-
-### Version 3.0.0 (Planned Q3 2026 - BREAKING)
-
-- **Agent auto-discovery:** Agents register themselves via manifest files
-- **Dynamic contract negotiation:** Agents specify required context dynamically
-- **Plugin system:** Third-party agents can be added without modifying CLAUDE.md
-
----
-
-## Migration Guide
-
-### Migrating from 1.x to 2.0
-
-**What changed:**
-
-1. **CLAUDE.md is now modular:**
-   - The file is 196 lines instead of 380 lines
-   - Detailed docs moved to `.claude/docs/*.md`
-
-2. **Core Principle #1 updated:**
-   - OLD: "ZERO Direct Execution" (orchestrator never executes technical work)
-   - NEW: "Selective Delegation" (orchestrator executes SIMPLE ops, delegates COMPLEX workflows)
-
-3. **Git operations clarified:**
-   - Orchestrator CAN do ad-hoc commits ("commitea los cambios")
-   - Agents do commits as part of realization workflows
-   - Both MUST use `commit_validator.py`
-
-**Breaking changes:**
-
-- None (backward compatible). Orchestrator behavior remains the same, only documentation structure changed.
-
-**Action required:**
-
-- None. System continues to work as before.
-
-**Recommended:**
-
-- Read `.claude/config/orchestration-workflow.md` to understand full Phase 0-6 workflow
-- Review `.claude/config/git-standards.md` for complete commit standards
-- Check `.claude/config/agent-catalog.md` for detailed agent capabilities
 
 ---
 
@@ -819,56 +659,6 @@ contract_keys = contracts["agents"][agent_name]["required"]  # Provider-specific
 - Changing core principle: MAJOR (e.g., 2.1.0 → 3.0.0)
 - Fixing typo in docs: PATCH (e.g., 2.1.0 → 2.1.1)
 - Refactoring structure (like 2.0.0): MAJOR (changed from monolith to modular)
-
----
-
-## Contributing
-
-### How to Update CLAUDE.md
-
-1. **For small changes (typos, clarifications):**
-   - Edit `CLAUDE.md` directly
-   - Increment PATCH version in frontmatter
-   - Add entry to this CHANGELOG under "Unreleased"
-
-2. **For new sections or features:**
-   - Decide if belongs in `CLAUDE.md` (core instructions) or `.claude/config/*.md` (details)
-   - If modular doc, create/update appropriate file in `.claude/config/`
-   - If core instruction, update `CLAUDE.md` and add reference to modular doc
-   - Increment MINOR version in frontmatter
-   - Add entry to this CHANGELOG under "Unreleased"
-
-3. **For breaking changes:**
-   - Discuss with team first (impacts orchestrator behavior)
-   - Update `CLAUDE.md` and related docs
-   - Increment MAJOR version in frontmatter
-   - Add entry to this CHANGELOG under "Unreleased" with **BREAKING** tag
-   - Create migration guide if needed
-
-### Testing Changes
-
-Before committing changes to CLAUDE.md:
-
-1. **Run validation script:**
-   ```bash
-   python3 .claude/scripts/validate-claude-md.py
-   ```
-
-2. **Check line count:**
-   ```bash
-   wc -l CLAUDE.md
-   # Should be < 250 lines
-   ```
-
-3. **Test with orchestrator:**
-   - Start Claude Code session
-   - Verify CLAUDE.md is loaded correctly
-   - Test sample workflows (routing, clarification, approval)
-
-4. **Run test suite:**
-   ```bash
-   pytest .claude/tests/ -v
-   ```
 
 ---
 

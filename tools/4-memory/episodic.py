@@ -540,6 +540,106 @@ class EpisodicMemory:
 
         return stats
 
+    def capture_git_state(self, repo_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+        """
+        Capture current git state as part of episode context.
+
+        Migrated from session system to provide git context for episodes.
+
+        Args:
+            repo_path: Path to git repository. Defaults to current working directory.
+
+        Returns:
+            Dict with git state including:
+            - branch: Current branch name
+            - commit: Current commit hash
+            - status: List of modified files
+            - recent_commits: Last 5 commits (hash, message, timestamp)
+        """
+        import subprocess
+
+        repo_path = Path(repo_path) if repo_path else Path.cwd()
+        git_state = {
+            "branch": None,
+            "commit": None,
+            "status": [],
+            "recent_commits": [],
+            "is_git_repo": False
+        }
+
+        try:
+            # Check if it is a git repo
+            result = subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                return git_state
+
+            git_state["is_git_repo"] = True
+
+            # Get current branch
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                git_state["branch"] = result.stdout.strip()
+
+            # Get current commit
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                git_state["commit"] = result.stdout.strip()[:12]
+
+            # Get status (modified files)
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                git_state["status"] = result.stdout.strip().split("\n")
+
+            # Get recent commits
+            result = subprocess.run(
+                ["git", "log", "--oneline", "-5", "--pretty=format:%H|%s|%ai"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                for line in result.stdout.strip().split("\n"):
+                    if line and "|" in line:
+                        parts = line.split("|")
+                        if len(parts) >= 3:
+                            git_state["recent_commits"].append({
+                                "hash": parts[0][:12],
+                                "message": parts[1],
+                                "timestamp": parts[2]
+                            })
+
+        except subprocess.TimeoutExpired:
+            print("Warning: Git command timed out", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Could not capture git state: {e}", file=sys.stderr)
+
+        return git_state
+
     def _calculate_storage_size(self) -> float:
         """Calculate total storage size used by episodic memory."""
         total_size = 0

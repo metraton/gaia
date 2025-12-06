@@ -9,7 +9,9 @@ TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if TOOLS_DIR.is_symlink():
     TOOLS_DIR = TOOLS_DIR.resolve()
 
+# Add both TOOLS_DIR and the 2-context subdirectory for direct imports
 sys.path.insert(0, str(TOOLS_DIR))
+sys.path.insert(0, str(TOOLS_DIR / "2-context"))
 
 @pytest.fixture
 def temp_project_context(tmp_path: Path) -> Path:
@@ -155,3 +157,128 @@ def test_invalid_agent(temp_project_context: Path):
     assert process.returncode != 0
     # Error message should mention invalid agent
     assert "invalid" in process.stderr.lower() or "unknown" in process.stderr.lower()
+
+
+# ============================================================================
+# STANDARDS PRE-LOADING TESTS
+# ============================================================================
+
+def test_get_standards_dir():
+    """Test that standards directory is correctly resolved."""
+    from context_provider import get_standards_dir
+    
+    standards_dir = get_standards_dir()
+    # Should return a Path that ends with docs/standards
+    assert str(standards_dir).endswith("docs/standards"), f"Expected path ending in docs/standards, got {standards_dir}"
+
+
+def test_read_standard_file_exists():
+    """Test reading an existing standard file."""
+    from context_provider import read_standard_file, get_standards_dir
+    
+    standards_dir = get_standards_dir()
+    if standards_dir.is_dir():
+        content = read_standard_file("security-tiers.md", standards_dir)
+        if content is not None:
+            assert "Security Tiers" in content or "T0" in content
+            assert len(content) > 100  # Should have substantial content
+
+
+def test_read_standard_file_not_exists():
+    """Test reading a non-existent standard file returns None."""
+    from context_provider import read_standard_file
+    
+    content = read_standard_file("nonexistent-file.md", Path("/tmp"))
+    assert content is None
+
+
+def test_should_preload_standard_matches():
+    """Test that trigger keywords correctly match tasks."""
+    from context_provider import should_preload_standard
+    
+    config = {
+        "file": "command-execution.md",
+        "triggers": ["kubectl", "terraform", "gcloud"]
+    }
+    
+    # Should match
+    assert should_preload_standard(config, "run kubectl get pods") == True
+    assert should_preload_standard(config, "terraform plan") == True
+    assert should_preload_standard(config, "check GCLOUD status") == True  # Case insensitive
+    
+    # Should not match
+    assert should_preload_standard(config, "check status") == False
+    assert should_preload_standard(config, "read logs") == False
+
+
+def test_build_standards_context_always_loads_critical():
+    """Test that critical standards are always loaded."""
+    from context_provider import build_standards_context, get_standards_dir
+    
+    standards_dir = get_standards_dir()
+    if not standards_dir.is_dir():
+        pytest.skip("Standards directory not found")
+    
+    # Even a simple task should load critical standards
+    result = build_standards_context("check status")
+    
+    assert "preloaded" in result
+    assert "security_tiers" in result["preloaded"]
+    assert "output_format" in result["preloaded"]
+
+
+def test_build_standards_context_on_demand():
+    """Test that on-demand standards are loaded based on task keywords."""
+    from context_provider import build_standards_context, get_standards_dir
+    
+    standards_dir = get_standards_dir()
+    if not standards_dir.is_dir():
+        pytest.skip("Standards directory not found")
+    
+    # Task with kubectl should load command_execution
+    result = build_standards_context("run kubectl get pods")
+    
+    assert "command_execution" in result["preloaded"]
+    
+    # Task with apply should load anti_patterns
+    result = build_standards_context("terraform apply changes")
+    
+    assert "anti_patterns" in result["preloaded"]
+
+
+def test_build_standards_context_returns_content():
+    """Test that standards content is included in result."""
+    from context_provider import build_standards_context, get_standards_dir
+    
+    standards_dir = get_standards_dir()
+    if not standards_dir.is_dir():
+        pytest.skip("Standards directory not found")
+    
+    result = build_standards_context("terraform apply")
+    
+    assert "content" in result
+    assert isinstance(result["content"], dict)
+    
+    # Should have content for each preloaded standard
+    for name in result["preloaded"]:
+        if name in result["content"]:
+            assert len(result["content"][name]) > 0
+
+
+def test_standards_in_final_payload(temp_project_context: Path):
+    """Test that standards are included in the final context payload."""
+    agent = "terraform-architect"
+    task = "terraform apply to create cluster"
+    
+    result = run_script(temp_project_context, agent, task)
+    
+    # Should have metadata with standards info
+    assert "metadata" in result
+    metadata = result["metadata"]
+    
+    # Check standards metadata is present
+    assert "standards_preloaded" in metadata
+    assert "standards_count" in metadata
+    
+    # For apply task, should have loaded standards
+    # Note: depends on standards directory being available during test
