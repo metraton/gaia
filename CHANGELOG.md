@@ -5,6 +5,27 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.1] - 2025-12-06
+
+### Security Fix - Permission Bypass Bug
+
+**Critical security fix** for permission enforcement in `settings.template.json`.
+
+#### Fixed
+- **Removed generic `"Bash"` from `allow[]`**: The generic `"Bash"` permission was bypassing all specific `ask[]` rules like `"Bash(git push:*)"`, allowing T3 operations (git push, git commit) to execute without user confirmation.
+- **Changed hook matcher from `"BashTool"` to `"Bash"`**: The PreToolUse and PostToolUse hooks were configured with matcher `"BashTool"` but Claude Code invokes the tool as `"Bash"`, causing hooks to never execute.
+
+#### Root Cause Analysis
+- See post-mortem: Generic permission `allow: ["Bash"]` has higher precedence than specific `ask: ["Bash(git push:*)"]` in Claude Code's permission evaluation.
+- Hook matchers must match the exact tool name used by Claude Code.
+
+#### Impact
+- All git operations (push, commit, add) now correctly trigger "ask" confirmation
+- PreToolUse hooks now execute for bash commands
+- Security tier enforcement restored
+
+---
+
 ## [3.2.0] - 2025-12-06
 
 ### Added - Episodic Memory P0+P1 Enhancements

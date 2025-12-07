@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "BashTool",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "BashTool",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
@@ -37,7 +37,6 @@
   },
   "permissions": {
     "allow": [
-      "Bash",
       "BashOutput",
       "ExitPlanMode",
       "Glob",
