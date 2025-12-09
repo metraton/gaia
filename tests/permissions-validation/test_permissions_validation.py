@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Test suite for permissions validation in settings.json and settings.local.json
+Test suite for permissions validation in settings.json
 
-This test validates:
-1. settings.json has strict, standard configurations
-2. settings.local.json has more open, query-focused configurations
-3. All deny rules are properly configured
-4. All allow rules (gets, queries) are properly configured
-5. Ask rules require user approval
+This test EMULATES Claude Code's actual permission matching behavior:
+1. Pattern matching: Prefix matching with :* wildcard
+2. Precedence order: Deny → Allow → Ask (deny has absolute precedence)
+3. Validates that specific commands produce expected results
+
+Based on Claude Code documentation and behavior analysis:
+- https://www.petefreitag.com/blog/claude-code-permissions/
+- https://github.com/anthropics/claude-code/issues (various pattern matching issues)
 """
 
 import json
@@ -18,578 +20,529 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class PermissionResult(Enum):
+    """Result of permission check - matches Claude Code behavior"""
+    DENY = "deny"      # Command is blocked
+    ALLOW = "allow"    # Command executes automatically
+    ASK = "ask"        # Command requires user approval
+    DEFAULT = "default"  # No pattern matched - Claude Code default behavior
 
 
 @dataclass
-class PermissionValidationResult:
-    """Result of a permission validation"""
-    rule_type: str  # 'allow', 'deny', 'ask'
-    pattern: str
-    is_valid: bool
-    reason: str = ""
-    examples: List[str] = field(default_factory=list)
-    file_source: str = ""  # 'settings.json' or 'settings.local.json'
+class TestCase:
+    """A test case with command and expected result"""
+    command: str
+    expected: PermissionResult
+    description: str = ""
+    category: str = ""
 
 
 @dataclass
-class ValidationSummary:
-    """Summary of all validation results"""
-    total_rules: int = 0
-    valid_rules: int = 0
-    invalid_rules: int = 0
-    allow_rules: int = 0
-    deny_rules: int = 0
-    ask_rules: int = 0
-    results: List[PermissionValidationResult] = field(default_factory=list)
+class TestResult:
+    """Result of running a test case"""
+    test_case: TestCase
+    actual: PermissionResult
+    matched_pattern: str = ""
+    passed: bool = False
+
+    def __post_init__(self):
+        self.passed = self.actual == self.test_case.expected
 
 
-class PermissionsValidator:
-    """Validator for permissions configuration"""
+class ClaudeCodePermissionMatcher:
+    """
+    Emulates Claude Code's permission matching behavior.
 
-    # Read-only operations that should be in 'allow'
-    READ_ONLY_OPERATIONS = [
-        'get', 'describe', 'logs', 'show', 'list', 'status',
-        'diff', 'branch', 'top', 'version', 'config get', 'explain',
-        'wait', 'check'
-    ]
+    Pattern Syntax:
+    - Exact match: "Bash(git status)"
+    - Wildcard: "Bash(git:*)" matches any command starting with "git"
+    - Tool-only: "Read" matches all Read operations
 
-    # Dangerous operations that should be in 'deny'
-    DANGEROUS_OPERATIONS = [
-        'delete', 'apply', 'destroy', 'create', 'patch', 'scale',
-        'reset --hard', 'push --force', 'push -f', 'mv'
-    ]
+    Precedence (Claude Code behavior):
+    1. Deny list (checked first - absolute precedence)
+    2. Allow list (checked second)
+    3. Ask list (checked if no deny/allow match)
+    4. Default (if nothing matches)
+    """
 
-    # Operations that should require approval ('ask')
-    APPROVAL_OPERATIONS = [
-        'Edit', 'Write', 'NotebookEdit', 'rm', 'rmdir',
-        'install', 'upgrade', 'uninstall', 'rollback',
-        'commit', 'push'
-    ]
+    def __init__(self, permissions: Dict):
+        self.deny_patterns = permissions.get('deny', [])
+        self.allow_patterns = permissions.get('allow', [])
+        self.ask_patterns = permissions.get('ask', [])
 
-    def __init__(self, settings_path: str, settings_local_path: str = None):
-        self.settings_path = Path(settings_path)
-        self.settings_local_path = Path(settings_local_path) if settings_local_path else None
-        self.settings = self._load_json(self.settings_path)
-        self.settings_local = self._load_json(self.settings_local_path) if self.settings_local_path else {}
-        self.summary = ValidationSummary()
-
-    def _load_json(self, path: Path) -> Dict:
-        """Load JSON file"""
-        if not path or not path.exists():
-            return {}
-        with open(path, 'r') as f:
-            return json.load(f)
-
-    def _extract_operation(self, pattern: str) -> str:
-        """Extract the operation from a permission pattern"""
-        # Pattern format: Tool(operation:args) or Tool(*)
-        match = re.search(r'\(([^:)]+)', pattern)
-        if match:
-            return match.group(1).lower()
-        return ""
-
-    def _is_read_only_pattern(self, pattern: str) -> bool:
-        """Check if pattern matches read-only operations"""
-        pattern_lower = pattern.lower()
-        return any(op in pattern_lower for op in self.READ_ONLY_OPERATIONS)
-
-    def _is_dangerous_pattern(self, pattern: str) -> bool:
-        """Check if pattern matches dangerous operations"""
-        pattern_lower = pattern.lower()
-        return any(op in pattern_lower for op in self.DANGEROUS_OPERATIONS)
-
-    def _is_approval_pattern(self, pattern: str) -> bool:
-        """Check if pattern matches operations requiring approval"""
-        return any(op in pattern for op in self.APPROVAL_OPERATIONS)
-
-    def _generate_example_commands(self, pattern: str) -> List[str]:
-        """Generate example commands for a permission pattern"""
-        examples = []
-
-        if 'Read(*)' in pattern:
-            examples = [
-                'Read("/path/to/file.txt")',
-                'Read("/home/user/config.yaml")'
-            ]
-        elif 'Glob(*)' in pattern:
-            examples = [
-                'Glob("**/*.py")',
-                'Glob("src/**/*.ts")'
-            ]
-        elif 'Grep(*)' in pattern:
-            examples = [
-                'Grep("pattern", "file.txt")',
-                'Grep("error", "**/*.log")'
-            ]
-        elif 'kubectl get' in pattern:
-            examples = [
-                'kubectl get pods -n default',
-                'kubectl get services -A',
-                'kubectl get deployments'
-            ]
-        elif 'kubectl describe' in pattern:
-            examples = [
-                'kubectl describe pod my-pod',
-                'kubectl describe service my-service'
-            ]
-        elif 'kubectl logs' in pattern:
-            examples = [
-                'kubectl logs my-pod',
-                'kubectl logs my-pod -f'
-            ]
-        elif 'kubectl delete' in pattern:
-            examples = [
-                'kubectl delete pod my-pod',
-                'kubectl delete deployment my-deployment'
-            ]
-        elif 'kubectl apply' in pattern:
-            examples = [
-                'kubectl apply -f manifest.yaml',
-                'kubectl apply -k ./kustomize'
-            ]
-        elif 'git status' in pattern:
-            examples = ['git status']
-        elif 'git diff' in pattern:
-            examples = ['git diff', 'git diff HEAD~1']
-        elif 'git commit' in pattern:
-            examples = ['git commit -m "feat: add feature"']
-        elif 'git push' in pattern and '--force' in pattern:
-            examples = ['git push --force', 'git push -f']
-        elif 'git push' in pattern:
-            examples = ['git push origin main']
-        elif 'Edit(*)' in pattern:
-            examples = [
-                'Edit("file.py", "old_text", "new_text")',
-                'Edit("config.yaml", "key: old", "key: new")'
-            ]
-        elif 'Write(*)' in pattern:
-            examples = [
-                'Write("new_file.py", "content")',
-                'Write("output.txt", "data")'
-            ]
-        elif 'terraform destroy' in pattern:
-            examples = ['terraform destroy', 'terraform destroy -auto-approve']
-        elif 'flux delete' in pattern:
-            examples = ['flux delete kustomization my-app']
-        elif 'helm install' in pattern:
-            examples = ['helm install my-release stable/nginx']
-        elif 'helm upgrade' in pattern:
-            examples = ['helm upgrade my-release stable/nginx']
-
-        return examples
-
-    def validate_allow_rules(self, permissions: Dict, source: str) -> List[PermissionValidationResult]:
-        """Validate 'allow' rules"""
-        results = []
-        allow_rules = permissions.get('allow', [])
-
-        for pattern in allow_rules:
-            is_valid = True
-            reason = "Valid read-only/query operation"
-
-            # Check if it's actually a dangerous operation
-            if self._is_dangerous_pattern(pattern):
-                is_valid = False
-                reason = "Dangerous operation in 'allow' section - should be in 'deny'"
-
-            # Check if it requires approval
-            elif self._is_approval_pattern(pattern) and 'Read' not in pattern and 'Glob' not in pattern and 'Grep' not in pattern:
-                is_valid = False
-                reason = "Operation requires approval - should be in 'ask'"
-
-            # Validate it's a read-only operation
-            elif not self._is_read_only_pattern(pattern) and pattern not in ['Read(*)', 'Glob(*)', 'Grep(*)', 'Task(*)']:
-                is_valid = False
-                reason = "Not a clear read-only operation - validate pattern"
-
-            examples = self._generate_example_commands(pattern)
-
-            result = PermissionValidationResult(
-                rule_type='allow',
-                pattern=pattern,
-                is_valid=is_valid,
-                reason=reason,
-                examples=examples,
-                file_source=source
-            )
-            results.append(result)
-
-            self.summary.allow_rules += 1
-            if is_valid:
-                self.summary.valid_rules += 1
-            else:
-                self.summary.invalid_rules += 1
-
-        return results
-
-    def validate_deny_rules(self, permissions: Dict, source: str) -> List[PermissionValidationResult]:
-        """Validate 'deny' rules"""
-        results = []
-        deny_rules = permissions.get('deny', [])
-
-        for pattern in deny_rules:
-            is_valid = True
-            reason = "Valid dangerous operation blocked"
-
-            # Check if it's actually a safe operation
-            if self._is_read_only_pattern(pattern):
-                is_valid = False
-                reason = "Read-only operation in 'deny' section - should be in 'allow'"
-
-            # Validate it's a dangerous operation
-            elif not self._is_dangerous_pattern(pattern):
-                is_valid = False
-                reason = "Not clearly a dangerous operation - validate pattern"
-
-            examples = self._generate_example_commands(pattern)
-
-            result = PermissionValidationResult(
-                rule_type='deny',
-                pattern=pattern,
-                is_valid=is_valid,
-                reason=reason,
-                examples=examples,
-                file_source=source
-            )
-            results.append(result)
-
-            self.summary.deny_rules += 1
-            if is_valid:
-                self.summary.valid_rules += 1
-            else:
-                self.summary.invalid_rules += 1
-
-        return results
-
-    def validate_ask_rules(self, permissions: Dict, source: str) -> List[PermissionValidationResult]:
-        """Validate 'ask' rules"""
-        results = []
-        ask_rules = permissions.get('ask', [])
-
-        for pattern in ask_rules:
-            is_valid = True
-            reason = "Valid operation requiring approval"
-
-            # Check if it's a dangerous operation that should be denied
-            if self._is_dangerous_pattern(pattern) and not any(op in pattern for op in ['commit', 'push', 'install', 'upgrade']):
-                is_valid = False
-                reason = "Too dangerous - should be in 'deny'"
-
-            # Check if it's a read-only operation that should be allowed
-            elif self._is_read_only_pattern(pattern):
-                is_valid = False
-                reason = "Read-only operation - should be in 'allow'"
-
-            examples = self._generate_example_commands(pattern)
-
-            result = PermissionValidationResult(
-                rule_type='ask',
-                pattern=pattern,
-                is_valid=is_valid,
-                reason=reason,
-                examples=examples,
-                file_source=source
-            )
-            results.append(result)
-
-            self.summary.ask_rules += 1
-            if is_valid:
-                self.summary.valid_rules += 1
-            else:
-                self.summary.invalid_rules += 1
-
-        return results
-
-    def validate_settings_philosophy(self) -> Tuple[bool, str]:
+    def _pattern_matches(self, pattern: str, tool: str, command: str) -> bool:
         """
-        Validate that settings.json is strict and settings.local.json is more open
+        Check if a pattern matches a tool/command combination.
+
+        Emulates Claude Code's prefix matching with :* wildcard.
+
+        Examples:
+        - Pattern "Bash(git status:*)" matches command "git status --short"
+        - Pattern "Bash(kubectl get:*)" matches "kubectl get pods -n default"
+        - Pattern "Read" matches any Read operation
+        - Pattern "Bash(echo:*)" matches "echo hello world"
+        """
+        # Tool-only pattern (e.g., "Read", "Glob", "Task")
+        if '(' not in pattern:
+            return pattern == tool
+
+        # Extract tool and command pattern from "Tool(command:args)"
+        match = re.match(r'^(\w+)\((.+)\)$', pattern)
+        if not match:
+            return False
+
+        pattern_tool = match.group(1)
+        pattern_cmd = match.group(2)
+
+        # Tool must match
+        if pattern_tool != tool:
+            return False
+
+        # Wildcard matching
+        if pattern_cmd == '*':
+            # Matches any command for this tool
+            return True
+
+        if pattern_cmd.endswith(':*'):
+            # Prefix matching: "git push:*" matches "git push origin main"
+            prefix = pattern_cmd[:-2]  # Remove :*
+            return command.startswith(prefix)
+
+        if ':*' in pattern_cmd:
+            # Middle wildcard: "aws s3:*:bucket" - not commonly used
+            # For safety, treat as prefix up to :*
+            prefix = pattern_cmd.split(':*')[0]
+            return command.startswith(prefix)
+
+        # Exact match
+        return pattern_cmd == command
+
+    def _find_matching_pattern(self, patterns: List[str], tool: str, command: str) -> Optional[str]:
+        """Find the first matching pattern in a list"""
+        for pattern in patterns:
+            if self._pattern_matches(pattern, tool, command):
+                return pattern
+        return None
+
+    def check_permission(self, tool: str, command: str = "") -> Tuple[PermissionResult, str]:
+        """
+        Check permission for a tool/command combination.
 
         Returns:
-            (is_valid, reason)
+            Tuple of (PermissionResult, matched_pattern)
+
+        Emulates Claude Code's precedence:
+        1. Check deny list first (absolute precedence)
+        2. Check allow list second
+        3. Check ask list third
+        4. Return default if nothing matches
         """
-        if not self.settings_local:
-            return True, "No settings.local.json found - skipping philosophy check"
+        # 1. Check deny list first (highest precedence)
+        matched = self._find_matching_pattern(self.deny_patterns, tool, command)
+        if matched:
+            return PermissionResult.DENY, matched
 
-        settings_perms = self.settings.get('permissions', {})
-        local_perms = self.settings_local.get('permissions', {})
+        # 2. Check allow list second
+        matched = self._find_matching_pattern(self.allow_patterns, tool, command)
+        if matched:
+            return PermissionResult.ALLOW, matched
 
-        # Check that local has more 'allow' rules (more open)
-        settings_allow = len(settings_perms.get('allow', []))
-        local_allow = len(local_perms.get('allow', []))
+        # 3. Check ask list third
+        matched = self._find_matching_pattern(self.ask_patterns, tool, command)
+        if matched:
+            return PermissionResult.ASK, matched
 
-        # Check that local has fewer 'deny' rules (more permissive)
-        settings_deny = len(settings_perms.get('deny', []))
-        local_deny = len(local_perms.get('deny', []))
+        # 4. No match - default behavior
+        return PermissionResult.DEFAULT, ""
 
-        issues = []
 
-        if local_allow <= settings_allow:
-            issues.append(f"settings.local.json should have MORE allow rules than settings.json ({local_allow} <= {settings_allow})")
+def get_test_cases() -> List[TestCase]:
+    """
+    Define test cases for permission validation.
 
-        if local_deny >= settings_deny:
-            issues.append(f"settings.local.json should have FEWER deny rules than settings.json ({local_deny} >= {settings_deny})")
+    These test the expected behavior of our permission configuration:
+    - Read-only commands should be ALLOW
+    - Destructive commands should be DENY
+    - Modifying commands should be ASK
+    """
+    return [
+        # ========== READ-ONLY COMMANDS (should be ALLOW) ==========
 
-        if issues:
-            return False, "; ".join(issues)
+        # Shell basics
+        TestCase("ls -la", PermissionResult.ALLOW, "List files", "shell"),
+        TestCase("pwd", PermissionResult.ALLOW, "Print working directory", "shell"),
+        TestCase("cat /etc/hosts", PermissionResult.ALLOW, "Read file content", "shell"),
+        TestCase("head -n 10 file.txt", PermissionResult.ALLOW, "Read first lines", "shell"),
+        TestCase("tail -f log.txt", PermissionResult.ALLOW, "Read last lines", "shell"),
+        TestCase("grep pattern file.txt", PermissionResult.ALLOW, "Search in file", "shell"),
+        TestCase("find . -name '*.py'", PermissionResult.ALLOW, "Find files", "shell"),
+        TestCase("which python", PermissionResult.ALLOW, "Find command path", "shell"),
+        TestCase("whoami", PermissionResult.ALLOW, "Current user", "shell"),
+        TestCase("date", PermissionResult.ALLOW, "Current date", "shell"),
+        TestCase("env", PermissionResult.ALLOW, "Environment variables", "shell"),
 
-        return True, "Philosophy check passed: settings.local.json is more permissive"
+        # Git read-only
+        TestCase("git status", PermissionResult.ALLOW, "Git status", "git"),
+        TestCase("git log --oneline", PermissionResult.ALLOW, "Git log", "git"),
+        TestCase("git diff HEAD", PermissionResult.ALLOW, "Git diff", "git"),
+        TestCase("git branch -a", PermissionResult.ALLOW, "List branches", "git"),
+        TestCase("git remote -v", PermissionResult.ALLOW, "List remotes", "git"),
+        TestCase("git show HEAD", PermissionResult.ALLOW, "Show commit", "git"),
+        TestCase("git blame file.py", PermissionResult.ALLOW, "Git blame", "git"),
 
-    def run_validation(self) -> ValidationSummary:
-        """Run complete validation"""
+        # Kubernetes read-only
+        TestCase("kubectl get pods", PermissionResult.ALLOW, "List pods", "kubernetes"),
+        TestCase("kubectl get pods -n default", PermissionResult.ALLOW, "List pods in namespace", "kubernetes"),
+        TestCase("kubectl get services -A", PermissionResult.ALLOW, "List all services", "kubernetes"),
+        TestCase("kubectl describe pod my-pod", PermissionResult.ALLOW, "Describe pod", "kubernetes"),
+        TestCase("kubectl logs my-pod", PermissionResult.ALLOW, "Pod logs", "kubernetes"),
+        TestCase("kubectl logs my-pod -f", PermissionResult.ALLOW, "Follow pod logs", "kubernetes"),
+        TestCase("kubectl top pods", PermissionResult.ALLOW, "Pod metrics", "kubernetes"),
+        TestCase("kubectl config current-context", PermissionResult.ALLOW, "Current context", "kubernetes"),
+
+        # Helm read-only
+        TestCase("helm list", PermissionResult.ALLOW, "List releases", "helm"),
+        TestCase("helm list -A", PermissionResult.ALLOW, "List all releases", "helm"),
+        TestCase("helm status my-release", PermissionResult.ALLOW, "Release status", "helm"),
+        TestCase("helm get values my-release", PermissionResult.ALLOW, "Get values", "helm"),
+        TestCase("helm history my-release", PermissionResult.ALLOW, "Release history", "helm"),
+
+        # Flux read-only
+        TestCase("flux get all", PermissionResult.ALLOW, "List all Flux resources", "flux"),
+        TestCase("flux get kustomizations", PermissionResult.ALLOW, "List kustomizations", "flux"),
+        TestCase("flux logs", PermissionResult.ALLOW, "Flux logs", "flux"),
+
+        # Terraform read-only
+        TestCase("terraform version", PermissionResult.ALLOW, "Terraform version", "terraform"),
+        TestCase("terraform show", PermissionResult.ALLOW, "Show state", "terraform"),
+        TestCase("terraform output", PermissionResult.ALLOW, "Show outputs", "terraform"),
+        TestCase("terraform state list", PermissionResult.ALLOW, "List state", "terraform"),
+        TestCase("terraform validate", PermissionResult.ALLOW, "Validate config", "terraform"),
+        TestCase("terraform fmt -check", PermissionResult.ALLOW, "Check formatting", "terraform"),
+
+        # AWS read-only
+        TestCase("aws sts get-caller-identity", PermissionResult.ALLOW, "Get AWS identity", "aws"),
+        TestCase("aws s3 ls", PermissionResult.ALLOW, "List S3 buckets", "aws"),
+        TestCase("aws ec2 describe-instances", PermissionResult.ALLOW, "Describe EC2", "aws"),
+        TestCase("aws iam list-users", PermissionResult.ALLOW, "List IAM users", "aws"),
+        TestCase("aws rds describe-db-instances", PermissionResult.ALLOW, "Describe RDS", "aws"),
+
+        # GCP read-only
+        TestCase("gcloud config list", PermissionResult.ALLOW, "GCP config", "gcp"),
+        TestCase("gcloud projects list", PermissionResult.ALLOW, "List projects", "gcp"),
+        TestCase("gcloud compute instances list", PermissionResult.ALLOW, "List instances", "gcp"),
+        TestCase("gcloud container clusters list", PermissionResult.ALLOW, "List GKE clusters", "gcp"),
+        TestCase("gcloud sql instances list", PermissionResult.ALLOW, "List SQL instances", "gcp"),
+
+        # Docker read-only
+        TestCase("docker ps", PermissionResult.ALLOW, "List containers", "docker"),
+        TestCase("docker images", PermissionResult.ALLOW, "List images", "docker"),
+        TestCase("docker logs my-container", PermissionResult.ALLOW, "Container logs", "docker"),
+        TestCase("docker inspect my-container", PermissionResult.ALLOW, "Inspect container", "docker"),
+
+        # ========== MODIFYING COMMANDS (should be ASK) ==========
+
+        # Git modifying
+        TestCase("git add .", PermissionResult.ASK, "Stage all changes", "git"),
+        TestCase("git commit -m 'message'", PermissionResult.ASK, "Create commit", "git"),
+        TestCase("git push origin main", PermissionResult.ASK, "Push to remote", "git"),
+        TestCase("git pull origin main", PermissionResult.ASK, "Pull from remote", "git"),
+        TestCase("git merge feature", PermissionResult.ASK, "Merge branch", "git"),
+        TestCase("git rebase main", PermissionResult.ASK, "Rebase branch", "git"),
+        TestCase("git reset HEAD~1", PermissionResult.ASK, "Reset commit", "git"),
+        TestCase("git checkout -b new-branch", PermissionResult.ASK, "Create branch", "git"),
+
+        # Kubernetes modifying
+        TestCase("kubectl apply -f manifest.yaml", PermissionResult.ASK, "Apply manifest", "kubernetes"),
+        TestCase("kubectl create deployment nginx", PermissionResult.ASK, "Create deployment", "kubernetes"),
+        TestCase("kubectl delete pod my-pod", PermissionResult.ASK, "Delete pod", "kubernetes"),
+        TestCase("kubectl scale deployment nginx --replicas=3", PermissionResult.ASK, "Scale deployment", "kubernetes"),
+        TestCase("kubectl rollout restart deployment nginx", PermissionResult.ASK, "Restart deployment", "kubernetes"),
+        TestCase("kubectl exec -it my-pod -- /bin/bash", PermissionResult.ASK, "Exec into pod", "kubernetes"),
+
+        # Helm modifying
+        TestCase("helm install my-release chart/", PermissionResult.ASK, "Install release", "helm"),
+        TestCase("helm upgrade my-release chart/", PermissionResult.ASK, "Upgrade release", "helm"),
+        TestCase("helm uninstall my-release", PermissionResult.ASK, "Uninstall release", "helm"),
+        TestCase("helm rollback my-release 1", PermissionResult.ASK, "Rollback release", "helm"),
+
+        # Terraform modifying
+        TestCase("terraform plan", PermissionResult.ASK, "Plan changes", "terraform"),
+        TestCase("terraform apply", PermissionResult.ASK, "Apply changes", "terraform"),
+        TestCase("terraform destroy", PermissionResult.ASK, "Destroy resources", "terraform"),
+
+        # File operations
+        TestCase("rm file.txt", PermissionResult.ASK, "Remove file", "file"),
+        TestCase("rm -rf directory/", PermissionResult.ASK, "Remove directory", "file"),
+        TestCase("mv old.txt new.txt", PermissionResult.ASK, "Move/rename file", "file"),
+        TestCase("cp source.txt dest.txt", PermissionResult.ASK, "Copy file", "file"),
+        TestCase("mkdir new-directory", PermissionResult.ASK, "Create directory", "file"),
+        TestCase("chmod 755 script.sh", PermissionResult.ASK, "Change permissions", "file"),
+
+        # AWS modifying
+        TestCase("aws s3 cp file.txt s3://bucket/", PermissionResult.ASK, "Upload to S3", "aws"),
+        TestCase("aws ec2 start-instances --instance-ids i-123", PermissionResult.ASK, "Start EC2", "aws"),
+        TestCase("aws ec2 stop-instances --instance-ids i-123", PermissionResult.ASK, "Stop EC2", "aws"),
+        TestCase("aws lambda update-function-code --function-name fn", PermissionResult.ASK, "Update Lambda", "aws"),
+
+        # GCP modifying
+        TestCase("gcloud compute instances start my-vm", PermissionResult.ASK, "Start GCE instance", "gcp"),
+        TestCase("gcloud compute instances stop my-vm", PermissionResult.ASK, "Stop GCE instance", "gcp"),
+        TestCase("gcloud container clusters resize my-cluster", PermissionResult.ASK, "Resize GKE", "gcp"),
+
+        # Docker modifying
+        TestCase("docker build -t my-image .", PermissionResult.ASK, "Build image", "docker"),
+        TestCase("docker run my-image", PermissionResult.ASK, "Run container", "docker"),
+        TestCase("docker push my-image", PermissionResult.ASK, "Push image", "docker"),
+        TestCase("docker stop my-container", PermissionResult.ASK, "Stop container", "docker"),
+
+        # Package managers
+        TestCase("npm install", PermissionResult.ASK, "Install npm packages", "npm"),
+        TestCase("npm publish", PermissionResult.ASK, "Publish npm package", "npm"),
+        TestCase("pip install package", PermissionResult.ASK, "Install pip package", "pip"),
+
+        # ========== DESTRUCTIVE COMMANDS (should be DENY) ==========
+
+        # AWS destructive
+        TestCase("aws ec2 terminate-instances --instance-ids i-123", PermissionResult.DENY, "Terminate EC2", "aws"),
+        TestCase("aws s3 rb s3://bucket --force", PermissionResult.DENY, "Delete S3 bucket", "aws"),
+        TestCase("aws rds delete-db-instance --db-instance-identifier db", PermissionResult.DENY, "Delete RDS", "aws"),
+        TestCase("aws lambda delete-function --function-name fn", PermissionResult.DENY, "Delete Lambda", "aws"),
+        TestCase("aws iam delete-user --user-name user", PermissionResult.DENY, "Delete IAM user", "aws"),
+        TestCase("aws iam delete-role --role-name role", PermissionResult.DENY, "Delete IAM role", "aws"),
+        TestCase("aws cloudformation delete-stack --stack-name stack", PermissionResult.DENY, "Delete CFN stack", "aws"),
+
+        # GCP destructive
+        TestCase("gcloud compute instances delete my-vm", PermissionResult.DENY, "Delete GCE instance", "gcp"),
+        TestCase("gcloud container clusters delete my-cluster", PermissionResult.DENY, "Delete GKE cluster", "gcp"),
+        TestCase("gcloud sql instances delete my-sql", PermissionResult.DENY, "Delete Cloud SQL", "gcp"),
+        TestCase("gcloud projects delete my-project", PermissionResult.DENY, "Delete project", "gcp"),
+        TestCase("gsutil rm -r gs://bucket", PermissionResult.DENY, "Delete GCS bucket contents", "gcp"),
+
+        # Kubernetes destructive
+        TestCase("kubectl delete namespace production", PermissionResult.DENY, "Delete namespace", "kubernetes"),
+        TestCase("kubectl delete pv my-pv", PermissionResult.DENY, "Delete persistent volume", "kubernetes"),
+        TestCase("kubectl delete clusterrole admin", PermissionResult.DENY, "Delete cluster role", "kubernetes"),
+        TestCase("kubectl drain node-1", PermissionResult.DENY, "Drain node", "kubernetes"),
+
+        # System destructive
+        TestCase("dd if=/dev/zero of=/dev/sda", PermissionResult.DENY, "Overwrite disk", "system"),
+        TestCase("mkfs.ext4 /dev/sda1", PermissionResult.DENY, "Format partition", "system"),
+        TestCase("fdisk /dev/sda", PermissionResult.DENY, "Partition disk", "system"),
+    ]
+
+
+def run_tests(permissions: Dict) -> Tuple[List[TestResult], bool]:
+    """
+    Run all test cases against the permission configuration.
+
+    Returns:
+        Tuple of (list of results, all_passed)
+    """
+    matcher = ClaudeCodePermissionMatcher(permissions)
+    test_cases = get_test_cases()
+    results = []
+
+    for test_case in test_cases:
+        # All test cases are Bash commands
+        actual, matched_pattern = matcher.check_permission("Bash", test_case.command)
+
+        result = TestResult(
+            test_case=test_case,
+            actual=actual,
+            matched_pattern=matched_pattern
+        )
+        results.append(result)
+
+    all_passed = all(r.passed for r in results)
+    return results, all_passed
+
+
+def print_results(results: List[TestResult], verbose: bool = False):
+    """Print test results in a readable format"""
+
+    print("=" * 80)
+    print("CLAUDE CODE PERMISSION MATCHING TEST")
+    print("=" * 80)
+    print()
+    print("This test emulates Claude Code's actual permission matching behavior:")
+    print("- Pattern matching: Prefix matching with :* wildcard")
+    print("- Precedence: Deny → Allow → Ask")
+    print()
+
+    # Group by category
+    categories = {}
+    for result in results:
+        cat = result.test_case.category
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append(result)
+
+    passed = sum(1 for r in results if r.passed)
+    failed = sum(1 for r in results if not r.passed)
+
+    print(f"Total tests: {len(results)}")
+    print(f"Passed: {passed} ✅")
+    print(f"Failed: {failed} ❌")
+    print()
+
+    # Print failures first
+    if failed > 0:
         print("=" * 80)
-        print("PERMISSIONS VALIDATION TEST")
+        print("FAILED TESTS")
         print("=" * 80)
-        print()
-
-        # Validate settings.json
-        print(f"📋 Validating: {self.settings_path}")
-        print("-" * 80)
-        settings_perms = self.settings.get('permissions', {})
-
-        self.summary.results.extend(self.validate_allow_rules(settings_perms, 'settings.json'))
-        self.summary.results.extend(self.validate_deny_rules(settings_perms, 'settings.json'))
-        self.summary.results.extend(self.validate_ask_rules(settings_perms, 'settings.json'))
-
-        # Validate settings.local.json if exists
-        if self.settings_local:
-            print(f"\n📋 Validating: {self.settings_local_path}")
-            print("-" * 80)
-            local_perms = self.settings_local.get('permissions', {})
-
-            self.summary.results.extend(self.validate_allow_rules(local_perms, 'settings.local.json'))
-            self.summary.results.extend(self.validate_deny_rules(local_perms, 'settings.local.json'))
-            self.summary.results.extend(self.validate_ask_rules(local_perms, 'settings.local.json'))
-
-        # Validate philosophy
-        print("\n" + "=" * 80)
-        print("PHILOSOPHY VALIDATION")
-        print("=" * 80)
-        philosophy_valid, philosophy_reason = self.validate_settings_philosophy()
-        print(f"{'✅' if philosophy_valid else '❌'} {philosophy_reason}")
-
-        self.summary.total_rules = len(self.summary.results)
-
-        return self.summary
-
-    def print_summary(self):
-        """Print validation summary"""
-        print("\n" + "=" * 80)
-        print("VALIDATION SUMMARY")
-        print("=" * 80)
-        print(f"Total rules validated: {self.summary.total_rules}")
-        print(f"Valid rules: {self.summary.valid_rules} ✅")
-        print(f"Invalid rules: {self.summary.invalid_rules} ❌")
-        print()
-        print(f"Allow rules: {self.summary.allow_rules}")
-        print(f"Deny rules: {self.summary.deny_rules}")
-        print(f"Ask rules: {self.summary.ask_rules}")
-        print()
-
-        # Print invalid rules
-        invalid_results = [r for r in self.summary.results if not r.is_valid]
-        if invalid_results:
-            print("⚠️  INVALID RULES FOUND:")
-            print("-" * 80)
-            for result in invalid_results:
-                print(f"[{result.file_source}] {result.rule_type.upper()}: {result.pattern}")
-                print(f"  Reason: {result.reason}")
+        for result in results:
+            if not result.passed:
+                print(f"❌ {result.test_case.command}")
+                print(f"   Expected: {result.test_case.expected.value}")
+                print(f"   Actual: {result.actual.value}")
+                if result.matched_pattern:
+                    print(f"   Matched pattern: {result.matched_pattern}")
+                else:
+                    print(f"   No pattern matched (defaulted to {result.actual.value})")
+                print(f"   Description: {result.test_case.description}")
                 print()
-        else:
-            print("✅ All rules are valid!")
 
-        return self.summary.invalid_rules == 0
+    # Print summary by category
+    print("=" * 80)
+    print("SUMMARY BY CATEGORY")
+    print("=" * 80)
+    for cat, cat_results in sorted(categories.items()):
+        cat_passed = sum(1 for r in cat_results if r.passed)
+        cat_total = len(cat_results)
+        status = "✅" if cat_passed == cat_total else "❌"
+        print(f"{status} {cat}: {cat_passed}/{cat_total}")
+    print()
 
-    def generate_manual_validation_markdown(self, output_path: str):
-        """Generate markdown file with manual validation instructions"""
-        from datetime import datetime
+    # Print all results if verbose
+    if verbose:
+        print("=" * 80)
+        print("ALL TEST RESULTS")
+        print("=" * 80)
+        for cat, cat_results in sorted(categories.items()):
+            print(f"\n### {cat.upper()} ###")
+            for result in cat_results:
+                status = "✅" if result.passed else "❌"
+                print(f"{status} {result.test_case.command}")
+                if not result.passed or verbose:
+                    print(f"   Expected: {result.test_case.expected.value}, Actual: {result.actual.value}")
+                    if result.matched_pattern:
+                        print(f"   Pattern: {result.matched_pattern}")
 
-        output = []
-        output.append("# Manual Permissions Validation Guide")
-        output.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        output.append("This guide provides step-by-step instructions to manually validate all permission rules.\n")
-
-        # Group by rule type
-        allow_results = [r for r in self.summary.results if r.rule_type == 'allow']
-        deny_results = [r for r in self.summary.results if r.rule_type == 'deny']
-        ask_results = [r for r in self.summary.results if r.rule_type == 'ask']
-
-        # ALLOW section
-        output.append("## 1. ALLOW Rules - Should Execute Automatically\n")
-        output.append("These commands should execute WITHOUT asking for approval.\n")
-        output.append("**Expected behavior:** Commands run immediately and return results.\n")
-
-        for i, result in enumerate(allow_results, 1):
-            output.append(f"### Test {i}: {result.pattern}")
-            output.append(f"**Source:** `{result.file_source}`")
-            output.append(f"**Status:** {'✅ Valid' if result.is_valid else '❌ Invalid'}")
-            if not result.is_valid:
-                output.append(f"**Issue:** {result.reason}")
-            output.append("\n**Example commands:**")
-            for example in result.examples:
-                output.append(f"```bash\n{example}\n```")
-            output.append("\n**Validation steps:**")
-            output.append("1. Execute the example command")
-            output.append("2. Verify it runs WITHOUT asking for approval")
-            output.append("3. Verify it returns results successfully")
-            output.append(f"4. Mark result: [ ] ✅ Pass | [ ] ❌ Fail\n")
-            output.append("---\n")
-
-        # DENY section
-        output.append("\n## 2. DENY Rules - Should Block Automatically\n")
-        output.append("These commands should be BLOCKED WITHOUT asking.\n")
-        output.append("**Expected behavior:** Commands are blocked with an error message.\n")
-
-        for i, result in enumerate(deny_results, 1):
-            output.append(f"### Test {i}: {result.pattern}")
-            output.append(f"**Source:** `{result.file_source}`")
-            output.append(f"**Status:** {'✅ Valid' if result.is_valid else '❌ Invalid'}")
-            if not result.is_valid:
-                output.append(f"**Issue:** {result.reason}")
-            output.append("\n**Example commands:**")
-            for example in result.examples:
-                output.append(f"```bash\n{example}\n```")
-            output.append("\n**Validation steps:**")
-            output.append("1. Execute the example command")
-            output.append("2. Verify it is BLOCKED immediately")
-            output.append("3. Verify an error message is shown")
-            output.append("4. Verify NO approval prompt is shown")
-            output.append(f"5. Mark result: [ ] ✅ Pass | [ ] ❌ Fail\n")
-            output.append("---\n")
-
-        # ASK section
-        output.append("\n## 3. ASK Rules - Should Prompt for Approval\n")
-        output.append("These commands should ASK for user approval before execution.\n")
-        output.append("**Expected behavior:** User is prompted to approve/deny before execution.\n")
-
-        for i, result in enumerate(ask_results, 1):
-            output.append(f"### Test {i}: {result.pattern}")
-            output.append(f"**Source:** `{result.file_source}`")
-            output.append(f"**Status:** {'✅ Valid' if result.is_valid else '❌ Invalid'}")
-            if not result.is_valid:
-                output.append(f"**Issue:** {result.reason}")
-            output.append("\n**Example commands:**")
-            for example in result.examples:
-                output.append(f"```bash\n{example}\n```")
-            output.append("\n**Validation steps:**")
-            output.append("1. Execute the example command")
-            output.append("2. Verify an approval prompt is shown")
-            output.append("3. Test DENY: Select 'No' and verify command is blocked")
-            output.append("4. Test APPROVE: Select 'Yes' and verify command executes")
-            output.append(f"5. Mark result: [ ] ✅ Pass | [ ] ❌ Fail\n")
-            output.append("---\n")
-
-        # Summary checklist
-        output.append("\n## Validation Summary Checklist\n")
-        output.append(f"- [ ] All {len(allow_results)} ALLOW rules execute automatically")
-        output.append(f"- [ ] All {len(deny_results)} DENY rules block automatically")
-        output.append(f"- [ ] All {len(ask_results)} ASK rules prompt for approval")
-        output.append("- [ ] settings.json is strict (standard operations)")
-        output.append("- [ ] settings.local.json is more open (query operations)")
-
-        # Write to file
-        with open(output_path, 'w') as f:
-            f.write('\n'.join(output))
-
-        print(f"\n📝 Manual validation guide generated: {output_path}")
+    return failed == 0
 
 
-def find_claude_shared_dir() -> Optional[Path]:
-    """
-    Try to find .claude-shared directory by:
-    1. Checking CLAUDE_SHARED_PATH environment variable
-    2. Looking in parent directories for .claude-shared
-    3. Returning None if not found
-    """
-    # Check environment variable
-    env_path = os.getenv("CLAUDE_SHARED_PATH")
-    if env_path:
-        path = Path(env_path)
-        if path.exists():
-            return path
+def validate_permission_structure(permissions: Dict) -> List[str]:
+    """Validate the basic structure of permissions configuration"""
+    errors = []
 
-    # Look in parent directories
-    current = Path(__file__).resolve().parent
-    for _ in range(5):  # Look up to 5 levels
-        claude_shared = current / ".claude-shared"
-        if claude_shared.exists():
-            return claude_shared
-        current = current.parent
+    required_keys = ['allow', 'deny', 'ask']
+    for key in required_keys:
+        if key not in permissions:
+            errors.append(f"Missing required key: '{key}'")
+        elif not isinstance(permissions[key], list):
+            errors.append(f"'{key}' must be a list")
 
-    return None
+    # Check for duplicate patterns
+    all_patterns = []
+    for key in required_keys:
+        if key in permissions:
+            for pattern in permissions[key]:
+                if pattern in all_patterns:
+                    errors.append(f"Duplicate pattern found: '{pattern}'")
+                all_patterns.append(pattern)
+
+    # Check for conflicting patterns (same pattern in multiple lists)
+    for pattern in permissions.get('deny', []):
+        if pattern in permissions.get('allow', []):
+            errors.append(f"Pattern in both deny and allow: '{pattern}'")
+        if pattern in permissions.get('ask', []):
+            errors.append(f"Pattern in both deny and ask: '{pattern}'")
+
+    for pattern in permissions.get('allow', []):
+        if pattern in permissions.get('ask', []):
+            errors.append(f"Pattern in both allow and ask: '{pattern}'")
+
+    return errors
 
 
 def main(argv=None):
-    """Main test execution
-
-    Args:
-        argv: Optional list of command-line arguments (for testing)
-    """
+    """Main test execution"""
     parser = argparse.ArgumentParser(
-        description="Validate permissions in settings.json and settings.local.json"
-    )
-    parser.add_argument(
-        "--settings-dir",
-        type=str,
-        help="Path to directory containing settings.json (defaults to found .claude-shared dir)"
+        description="Test permissions using Claude Code's actual matching behavior"
     )
     parser.add_argument(
         "--settings-file",
         type=str,
-        help="Path to settings.json file"
+        required=True,
+        help="Path to settings.json file to test"
     )
     parser.add_argument(
-        "--output",
-        type=str,
-        help="Path to output validation report"
+        "--verbose", "-v",
+        action="store_true",
+        help="Show all test results, not just failures"
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output results as JSON"
     )
 
     args = parser.parse_args(argv)
 
-    # Determine paths
-    if args.settings_file:
-        settings_path = Path(args.settings_file)
-    elif args.settings_dir:
-        settings_path = Path(args.settings_dir) / "settings.json"
-    else:
-        # Try to find .claude-shared
-        base_path = find_claude_shared_dir()
-        if not base_path:
-            print("❌ Error: Could not find .claude-shared directory")
-            print("   Set CLAUDE_SHARED_PATH or use --settings-dir option")
-            sys.exit(1)
-        settings_path = base_path / "settings.json"
-
-    # Determine settings local path
-    settings_local_path = settings_path.parent / "settings.local.json"
-
-    # Determine output path
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        output_path = Path(__file__).parent / "MANUAL_VALIDATION.md"
-
-    # Validate files exist
+    # Load settings file
+    settings_path = Path(args.settings_file)
     if not settings_path.exists():
         print(f"❌ Error: {settings_path} not found")
         sys.exit(1)
 
-    # Create validator
-    validator = PermissionsValidator(
-        str(settings_path),
-        str(settings_local_path) if settings_local_path.exists() else None
-    )
+    with open(settings_path, 'r') as f:
+        settings = json.load(f)
 
-    # Run validation
-    summary = validator.run_validation()
+    permissions = settings.get('permissions', {})
 
-    # Print results
-    all_valid = validator.print_summary()
+    # Validate structure first
+    print("Validating permission structure...")
+    structure_errors = validate_permission_structure(permissions)
+    if structure_errors:
+        print("❌ Structure validation failed:")
+        for error in structure_errors:
+            print(f"   - {error}")
+        sys.exit(1)
+    print("✅ Structure validation passed")
+    print()
 
-    # Generate manual validation guide
-    validator.generate_manual_validation_markdown(str(output_path))
+    # Run tests
+    results, all_passed = run_tests(permissions)
 
-    # Exit with appropriate code
-    sys.exit(0 if all_valid else 1)
+    if args.json:
+        # JSON output
+        output = {
+            "total": len(results),
+            "passed": sum(1 for r in results if r.passed),
+            "failed": sum(1 for r in results if not r.passed),
+            "results": [
+                {
+                    "command": r.test_case.command,
+                    "expected": r.test_case.expected.value,
+                    "actual": r.actual.value,
+                    "passed": r.passed,
+                    "matched_pattern": r.matched_pattern,
+                    "description": r.test_case.description,
+                    "category": r.test_case.category
+                }
+                for r in results
+            ]
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        # Human-readable output
+        print_results(results, verbose=args.verbose)
+
+    sys.exit(0 if all_passed else 1)
 
 
 if __name__ == "__main__":

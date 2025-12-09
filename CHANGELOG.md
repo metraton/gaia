@@ -5,6 +5,36 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.2] - 2025-12-09
+
+### Enhanced Permissions System
+
+Complete overhaul of the permissions configuration to implement "permissive-with-guardrails" strategy.
+
+#### Changed
+- **Comprehensive allow[] rules**: 331 specific read-only patterns for shell, git, kubernetes, helm, flux, terraform, aws, gcp, docker commands
+- **Granular ask[] rules**: 162 modification operations that require user confirmation
+- **Strict deny[] rules**: 73 destructive operations that are completely blocked
+
+#### Fixed
+- Removed duplicate patterns (`uname:*`, `xargs:*`)
+- Fixed `gsutil rm -r:*::*` → `gsutil rm -r:*` (incorrect double colon)
+- Added missing `git branch:*` to allow[] for `git branch -a`
+
+#### Added
+- **New test suite**: `tests/permissions-validation/test_permissions_validation.py`
+  - Emulates Claude Code's actual permission matching behavior
+  - 114 test cases across 13 categories
+  - Tests prefix matching with `:*` wildcard
+  - Validates precedence: Deny → Allow → Ask
+
+#### Philosophy
+- **Allow**: Read-only commands execute automatically (no confirmation)
+- **Ask**: Modification commands require user approval (can be approved)
+- **Deny**: Destructive commands are blocked (cannot be approved)
+
+---
+
 ## [3.2.1] - 2025-12-06
 
 ### Security Fix - Permission Bypass Bug
