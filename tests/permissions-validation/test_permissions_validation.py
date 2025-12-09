@@ -282,16 +282,16 @@ def get_test_cases() -> List[TestCase]:
         TestCase("mkdir new-directory", PermissionResult.ASK, "Create directory", "file"),
         TestCase("chmod 755 script.sh", PermissionResult.ASK, "Change permissions", "file"),
 
-        # AWS modifying
-        TestCase("aws s3 cp file.txt s3://bucket/", PermissionResult.ASK, "Upload to S3", "aws"),
-        TestCase("aws ec2 start-instances --instance-ids i-123", PermissionResult.ASK, "Start EC2", "aws"),
-        TestCase("aws ec2 stop-instances --instance-ids i-123", PermissionResult.ASK, "Stop EC2", "aws"),
-        TestCase("aws lambda update-function-code --function-name fn", PermissionResult.ASK, "Update Lambda", "aws"),
+        # AWS modifying (ALLOW with service-level wildcards - Option A1)
+        TestCase("aws s3 cp file.txt s3://bucket/", PermissionResult.ALLOW, "Upload to S3", "aws"),
+        TestCase("aws ec2 start-instances --instance-ids i-123", PermissionResult.ALLOW, "Start EC2", "aws"),
+        TestCase("aws ec2 stop-instances --instance-ids i-123", PermissionResult.ALLOW, "Stop EC2", "aws"),
+        TestCase("aws lambda update-function-code --function-name fn", PermissionResult.ALLOW, "Update Lambda", "aws"),
 
-        # GCP modifying
-        TestCase("gcloud compute instances start my-vm", PermissionResult.ASK, "Start GCE instance", "gcp"),
-        TestCase("gcloud compute instances stop my-vm", PermissionResult.ASK, "Stop GCE instance", "gcp"),
-        TestCase("gcloud container clusters resize my-cluster", PermissionResult.ASK, "Resize GKE", "gcp"),
+        # GCP modifying (ALLOW with service-level wildcards - Option A1)
+        TestCase("gcloud compute instances start my-vm", PermissionResult.ALLOW, "Start GCE instance", "gcp"),
+        TestCase("gcloud compute instances stop my-vm", PermissionResult.ALLOW, "Stop GCE instance", "gcp"),
+        TestCase("gcloud container clusters resize my-cluster", PermissionResult.ALLOW, "Resize GKE", "gcp"),
 
         # Docker modifying
         TestCase("docker build -t my-image .", PermissionResult.ASK, "Build image", "docker"),

@@ -5,6 +5,35 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.3] - 2025-12-09
+
+### Service-Level Permission Wildcards
+
+Simplified permission patterns using service-level wildcards for better Claude Code compatibility.
+
+#### Changed
+- **AWS patterns**: Simplified from `Bash(aws rds describe-:*)` to `Bash(aws rds :*)`
+  - Service-level wildcards: `aws ec2`, `aws rds`, `aws s3`, `aws iam`, etc.
+  - Works around Claude Code pattern matching issues with hyphens
+- **GCP patterns**: Simplified to `Bash(gcloud compute :*)`, `Bash(gcloud container :*)`, etc.
+- **Format standardization**: Removed spaces before `:*` for commands without arguments
+
+#### Fixed
+- Agent README files renamed to `_README.md` to avoid Claude Code parse errors
+- Pattern matching now works for `aws rds describe-db-instances` and similar commands
+
+#### Impact
+- **Read-only commands**: Execute automatically ✓
+- **Modification commands** (start/stop, upload, resize): Now execute automatically (Option A1)
+- **Destructive commands** (delete, terminate): Still blocked ✓
+
+#### Philosophy (Option A1 - Permissive with guardrails)
+- Wide `allow[]` for entire services (e.g., `aws ec2 :*`)
+- Strict `deny[]` for destructive operations
+- Trade-off: Modification commands no longer require confirmation
+
+---
+
 ## [3.2.2] - 2025-12-09
 
 ### Enhanced Permissions System
