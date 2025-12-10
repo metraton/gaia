@@ -17,7 +17,7 @@ Usuario envia pregunta
         |
    Selecciona agente
         |
-  terraform | gitops | gcp | aws | devops | gaia
+  terraform | gitops | gcp | aws | devops | speckit | gaia
         |
 [Context Provider] -> Agente ejecuta
         |
@@ -33,7 +33,8 @@ Usuario envia pregunta
 | **gcp-troubleshooter** | Diagnostico GCP | T0 |
 | **aws-troubleshooter** | Diagnostico AWS | T0 |
 | **devops-developer** | Codigo y CI/CD | T0-T2 |
-| **Gaia** | Sistema de agentes | T0-T2 |
+| **speckit-planner** | Especificacion y planificacion de features | T0-T2 |
+| **gaia** | Sistema de agentes | T0-T2 |
 
 ## Tiers de Seguridad
 
@@ -52,6 +53,9 @@ Usuario envia pregunta
 # El orquestador selecciona automaticamente
 "Despliega auth-service version 1.2.3"
 # -> gitops-operator
+
+"Planificar feature de notificaciones"
+# -> speckit-planner
 ```
 
 ### Manual
@@ -61,6 +65,12 @@ Task(
   subagent_type="gitops-operator",
   description="Deploy auth service",
   prompt="Deploy auth-service version 1.2.3"
+)
+
+Task(
+  subagent_type="speckit-planner",
+  description="Plan notification feature",
+  prompt="Create spec for push notification system"
 )
 ```
 
@@ -80,4 +90,4 @@ Task(
 
 ---
 
-**Actualizado:** 2025-12-06 | **Agentes:** 6
+**Actualizado:** 2025-12-10 | **Agentes:** 7

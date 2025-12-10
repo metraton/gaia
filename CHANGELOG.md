@@ -19,7 +19,7 @@ Simplified permission patterns using service-level wildcards for better Claude C
 - **Format standardization**: Removed spaces before `:*` for commands without arguments
 
 #### Fixed
-- Agent README files renamed to `_README.md` to avoid Claude Code parse errors
+- Agent README files renamed back to `README.md` (underscore prefix removed)
 - Pattern matching now works for `aws rds describe-db-instances` and similar commands
 
 #### Impact

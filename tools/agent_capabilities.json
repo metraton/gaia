@@ -136,5 +136,28 @@
       "depends on specialist agents for implementation"
     ],
     "routing_score_boost": 0.9
+  },
+  "speckit-planner": {
+    "domains": ["speckit", "specification", "planning", "requirements", "features", "tasks", "workflow"],
+    "tiers": ["T0", "T1", "T2"],
+    "tools": ["Read", "Edit", "Glob", "Grep", "Bash", "Task", "AskUserQuestion"],
+    "confidence_keywords": ["spec-kit", "speckit", "specify", "feature", "requirement", "plan", "task", "enrichment", "spec.md", "plan.md", "tasks.md"],
+    "capabilities": [
+      "feature_specification",
+      "implementation_planning",
+      "task_generation",
+      "task_enrichment",
+      "governance_validation",
+      "clarification_workflow",
+      "artifact_creation",
+      "dependency_analysis"
+    ],
+    "limitations": [
+      "cannot execute infrastructure changes",
+      "cannot execute kubernetes operations",
+      "cannot run builds or tests",
+      "delegates execution to specialized agents"
+    ],
+    "routing_score_boost": 1.25
   }
 }

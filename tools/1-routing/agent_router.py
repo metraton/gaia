@@ -77,6 +77,17 @@ class IntentClassifier:
                 "exclude": ["infrastructure"],
                 "confidence_boost": 0.80
             },
+            "feature_planning": {
+                "include": [
+                    "spec-kit", "speckit", "specify", "plan", "tasks",
+                    "feature", "specification", "requirements", "requerimiento",
+                    "planificar", "planear", "crear tareas", "generate tasks",
+                    "spec.md", "plan.md", "tasks.md", "enrichment",
+                    "workflow", "implement feature", "new feature"
+                ],
+                "exclude": ["terraform apply", "kubectl apply", "deploy"],
+                "confidence_boost": 0.92
+            },
             "infrastructure_validation": {
                 "include": [
                     "validate", "check", "verify", "scan", "lint",
@@ -158,6 +169,11 @@ class CapabilityValidator:
                 "can_do": ["application_development", "infrastructure_validation"],
                 "cannot_do": ["kubernetes_operations", "infrastructure_creation"],
                 "requires_context": ["application", "development"]
+            },
+            "speckit-planner": {
+                "can_do": ["feature_planning"],
+                "cannot_do": ["infrastructure_creation", "kubernetes_operations", "infrastructure_diagnosis"],
+                "requires_context": ["speckit", "planning"]
             }
         }
 
@@ -265,7 +281,8 @@ class AgentRouter:
             "infrastructure_diagnosis": "gcp-troubleshooter",
             "kubernetes_operations": "gitops-operator",
             "application_development": "devops-developer",
-            "infrastructure_validation": "terraform-architect"
+            "infrastructure_validation": "terraform-architect",
+            "feature_planning": "speckit-planner"
         }
 
         return intent_to_agent.get(intent, "devops-developer")
@@ -355,6 +372,30 @@ class AgentRouter:
                     r"github.*action"
                 ],
                 description="Application development and CI/CD"
+            ),
+
+            "speckit-planner": RoutingRule(
+                agent="speckit-planner",
+                keywords=[
+                    "spec-kit", "speckit", "specify", "specification",
+                    "feature", "requirements", "requerimiento", "requerimientos",
+                    "planificar", "planear", "crear tareas", "generate tasks",
+                    "spec.md", "plan.md", "tasks.md",
+                    "enrichment", "enrich tasks",
+                    "workflow planning", "feature planning"
+                ],
+                patterns=[
+                    r"create.*spec",
+                    r"crear.*spec",
+                    r"planificar.*feature",
+                    r"plan.*feature",
+                    r"generate.*tasks",
+                    r"generar.*tareas",
+                    r"spec-?kit",
+                    r"new.*feature.*spec",
+                    r"requirements.*document"
+                ],
+                description="Feature specification, planning, and task generation (Spec-Kit)"
             ),
         }
 
@@ -736,6 +777,9 @@ def main():
             "Check flux reconciliation status",
             "Review Cloud SQL IAM bindings",
             "Plan infrastructure changes with terragrunt",
+            "Create a spec for new authentication feature",
+            "Planificar feature de notificaciones",
+            "Generate tasks for the API migration",
         ]
 
         if router.tasks_metadata:
