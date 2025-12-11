@@ -5,6 +5,37 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2025-12-11
+
+### Granular AWS Permissions & Command Chaining Block
+
+Refined AWS permission patterns to read-only operations and blocked command chaining to ensure predictable permission evaluation.
+
+#### Changed
+- **AWS permissions**: Replaced broad service wildcards with granular read-only patterns
+  - `Bash(aws ec2:*)` → 40 specific `describe-*` and `get-*` commands
+  - `Bash(aws s3:*)` → `s3 ls`, `s3api get-*`, `s3api list-*`, `s3api head-*`
+  - `Bash(aws rds:*)` → `describe-*`, `list-tags-for-resource`
+  - `Bash(aws iam:*)` → `get-*`, `list-*`, `generate-*`, `simulate-*`
+  - Similar granular patterns for Lambda, Logs, CloudWatch, CloudFormation, ELB, Route53, SecretsManager, SSM, SNS, SQS, DynamoDB, ECR, EKS, ElastiCache
+
+#### Added
+- **Command chaining block** in `pre_tool_use.py`:
+  - Blocks `&&`, `;`, `||` operators to prevent bypassing permission checks
+  - Allows pipes `|` (don't affect permissions)
+  - Smart detection avoids false positives in quoted strings
+  - Clear error message: "Execute each command separately"
+
+#### Fixed
+- Moved `agents/README.md` files to `docs/` to resolve Claude Code parse errors
+
+#### Security Impact
+- Modification commands (create, start, stop) now properly require ASK confirmation
+- Chained commands can no longer bypass individual permission evaluation
+- Read-only operations execute without confirmation
+
+---
+
 ## [3.2.3] - 2025-12-09
 
 ### Service-Level Permission Wildcards

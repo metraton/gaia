@@ -345,6 +345,33 @@ class PolicyEngine:
             }
         }
 
+    def _contains_command_chaining(self, command: str) -> bool:
+        """
+        Detect command chaining operators that bypass permission evaluation.
+
+        Blocks: && ; ||
+        Allows: | (pipes are safe, don't affect permissions)
+
+        Smart detection avoids false positives in quoted strings.
+        """
+        # Remove content inside quotes to avoid false positives
+        # e.g., echo "foo && bar" should be allowed
+        cleaned = re.sub(r'"[^"]*"', '""', command)
+        cleaned = re.sub(r"'[^']*'", "''", cleaned)
+
+        # Check for chaining operators outside quotes
+        chaining_patterns = [
+            r'&&',      # AND chaining
+            r';\s*\S',  # Semicolon followed by another command (not trailing ;)
+            r'\|\|',    # OR chaining
+        ]
+
+        for pattern in chaining_patterns:
+            if re.search(pattern, cleaned):
+                return True
+
+        return False
+
     def _inspect_script_content(self, script_path: str) -> Tuple[bool, str, Optional[str]]:
         """Inspects script content for blocked or sensitive commands."""
         try:
@@ -462,6 +489,16 @@ class PolicyEngine:
             if not command or not command.strip():
                 logger.warning("Empty command provided")
                 return False, SecurityTier.T3_BLOCKED, "Empty command not allowed"
+
+            # INTERCEPT: Block chained commands with && or ;
+            # This prevents bypassing permission checks and ensures predictable behavior
+            if self._contains_command_chaining(command):
+                logger.warning(f"Command contains chaining operators: {command[:100]}")
+                return False, SecurityTier.T3_BLOCKED, (
+                    "❌ Chained commands (&&, ;) are not allowed\n\n"
+                    "Execute each command separately for proper permission evaluation.\n"
+                    "This ensures consistent security behavior."
+                )
 
             # Check if command is a script execution
             script_match = re.match(r"^\s*(bash|sh)\s+([\w\-\./_]+)", command)
