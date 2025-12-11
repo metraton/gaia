@@ -5,6 +5,45 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.2] - 2025-12-11
+
+### Read-Only Auto-Approval & Code Optimization
+
+Major improvements to the permission system with compound command support and code quality optimizations.
+
+#### Added
+- **Compound command auto-approval**: Safe compound commands (`cat file | grep foo`, `ls && pwd`, `tail file || echo error`) now execute WITHOUT ASK prompts
+- **Extended safe command list**: Added `base64`, `md5sum`, `sha256sum`, `tar`, `gzip`, `time`, `timeout`, `sleep` to always-safe commands
+- **Multi-word command support**: Added `kubectl get/describe/logs`, `helm list/status`, `flux check/get`, `docker ps/images`, `gcloud/aws describe/list` as always-safe
+
+#### Changed
+- **R1: Unified safe command configuration** (`SAFE_COMMANDS_CONFIG`) - Single source of truth for all safe commands, eliminating ~150 lines of duplicate patterns
+- **R2: Unified validation flow** - `classify_command_tier()` now uses `is_read_only_command()` for T0 classification
+- **R4: Singleton ShellCommandParser** - Single instance reused across all validations
+
+#### Removed
+- **R3: Dead code removal** - Removed unused `_contains_command_chaining()` method (~30 lines)
+- **Removed tenacity dependency** - Simplified capabilities loading (retry logic was over-engineering)
+- **Removed duplicate `allowed_read_operations`** - Now derived from `SAFE_COMMANDS_CONFIG`
+
+#### Fixed
+- Compound commands with safe components no longer trigger ASK prompts
+- More consistent tier classification between auto-approval and security validation
+
+#### Technical Details
+- **Lines reduced**: ~200 lines removed through deduplication
+- **Maintainability**: Single source of truth for safe commands
+- **Performance**: Singleton parser avoids repeated instantiation
+
+#### Test Results
+All previous tests continue to pass:
+- Simple read-only commands: NO ASK (auto-approved)
+- Safe compound commands: NO ASK (NEW - auto-approved)
+- Dangerous commands: BLOCKED correctly
+- Compound with dangerous components: BLOCKED correctly
+
+---
+
 ## [3.3.1] - 2025-12-11
 
 ### Granular AWS Permissions & Command Chaining Block

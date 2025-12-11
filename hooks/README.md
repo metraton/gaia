@@ -37,17 +37,44 @@ Log a .claude/logs/
 
 ### Pre-Execution Hooks
 
-#### `pre_tool_use.py` (~400 lineas)
+#### `pre_tool_use.py` (~750 lineas)
 El guardian principal - valida TODAS las operaciones antes de ejecutarlas.
+
+**Caracteristicas principales (v3.3.2):**
+
+1. **Auto-aprobacion de comandos read-only:**
+   - Comandos simples: `ls`, `cat`, `grep`, `git status` -> NO ASK
+   - Comandos compuestos seguros: `cat file | grep foo`, `ls && pwd` -> NO ASK
+   - Retorna `permissionDecision: "allow"` para bypass del ASK prompt
+
+2. **Configuracion unificada (`SAFE_COMMANDS_CONFIG`):**
+   ```python
+   SAFE_COMMANDS_CONFIG = {
+       "always_safe": {"ls", "cat", "grep", ...},
+       "always_safe_multiword": {"git status", "kubectl get", ...},
+       "conditional_safe": {"sed": [r"-i\b"], "curl": [r"-T\b"], ...}
+   }
+   ```
+
+3. **ShellCommandParser singleton:**
+   - Parsea comandos compuestos (pipes, &&, ||, ;)
+   - Valida cada componente individualmente
+   - Si TODOS son seguros -> auto-aprueba
 
 **Que valida:**
 - Tier de seguridad (T0, T1, T2, T3)
 - Permisos segun settings.json
 - Comandos bloqueados globalmente
 - Contexto de ejecucion
+- Componentes de comandos compuestos
 
 **Reglas de decision:**
 ```python
+# 1. Auto-aprobacion para read-only
+if is_read_only_command(command):
+    return AUTO_APPROVE  # Retorna JSON con permissionDecision: "allow"
+
+# 2. Validacion de seguridad
 if tier == "T3" and not has_approval():
     return BLOCK  # Requiere aprobacion
 
@@ -83,6 +110,26 @@ Validacion especializada para comandos de Kubernetes.
 - No operaciones en kube-system
 - No secrets expuestos en logs
 - RBAC apropiado
+
+---
+
+#### `shell_parser.py` (~290 lineas)
+Parser nativo de Python para comandos shell compuestos.
+
+**Que hace:**
+- Parsea pipes: `cmd1 | cmd2` -> `["cmd1", "cmd2"]`
+- Parsea AND: `cmd1 && cmd2` -> `["cmd1", "cmd2"]`
+- Parsea OR: `cmd1 || cmd2` -> `["cmd1", "cmd2"]`
+- Preserva strings con comillas: `echo 'a|b'` -> `["echo 'a|b'"]`
+
+**Uso:**
+```python
+from shell_parser import ShellCommandParser
+
+parser = ShellCommandParser()
+components = parser.parse("ls | grep foo && wc -l")
+# ["ls", "grep foo", "wc -l"]
+```
 
 ---
 
@@ -138,23 +185,52 @@ Se ejecuta cuando un subagente termina su trabajo. Captura metricas y detecta an
 
 ---
 
-## Como Funcionan los Hooks
+## Auto-Aprobacion de Comandos Read-Only
 
-### Invocacion Automatica
+### Como Funciona
 
-Claude Code invoca hooks automaticamente - no requieren llamado manual:
+Cuando Claude Code ejecuta un comando bash:
 
-```
-Agent -> pre_tool_use.py -> VALIDATE -> ALLOW/BLOCK
-                            |
-                      If ALLOW:
-                            |
-                      Execute command
-                            |
-Agent <- post_tool_use.py <- AUDIT
-```
+1. **Hook recibe el comando** via stdin como JSON
+2. **Verifica si es read-only** usando `is_read_only_command()`
+3. **Si es read-only**, retorna JSON con `permissionDecision: "allow"`
+4. **Claude Code bypassa el ASK prompt** y ejecuta inmediatamente
 
-### Configuracion de Permisos
+### Comandos Auto-Aprobados
+
+**Simples (siempre seguros):**
+- System info: `uname`, `hostname`, `whoami`, `date`, `uptime`, `free`
+- File listing: `ls`, `pwd`, `tree`, `which`, `stat`, `file`
+- Text processing: `awk`, `cut`, `grep`, `head`, `tail`, `sort`, `wc`
+- Network: `ping`, `dig`, `nslookup`, `netstat`, `ss`
+- Git read-only: `git status`, `git diff`, `git log`, `git branch`
+
+**Compuestos (si TODOS los componentes son seguros):**
+- `cat file | grep foo` -> auto-aprueba
+- `ls && pwd` -> auto-aprueba
+- `tail file || echo error` -> auto-aprueba
+
+**Condicionales (seguros excepto con flags peligrosos):**
+- `sed` -> seguro excepto con `-i` (in-place edit)
+- `curl` -> seguro excepto con `-T`, `-X POST`, `--data`
+- `find` -> seguro excepto con `-delete`, `-exec rm`
+
+### Comandos NO Auto-Aprobados
+
+**Siempre bloqueados:**
+- `rm`, `rm -rf`, `shred`
+- `dd`, `fdisk`, `parted`
+- `sudo`, `su`
+- `kill -9`, `killall -9`
+- `terraform apply`, `kubectl apply`, `git push`
+
+**Compuestos con componentes peligrosos:**
+- `ls && rm -rf /` -> BLOQUEADO (rm es peligroso)
+- `cat | kubectl apply` -> BLOQUEADO (kubectl apply es peligroso)
+
+---
+
+## Configuracion de Permisos
 
 Los hooks leen `.claude/settings.json` para decisiones:
 
@@ -177,7 +253,9 @@ Los hooks leen `.claude/settings.json` para decisiones:
 }
 ```
 
-### Logs de Auditoria
+---
+
+## Logs de Auditoria
 
 Todos los hooks escriben a `.claude/logs/`:
 
@@ -190,40 +268,25 @@ cat .claude/logs/*.jsonl | jq 'select(.tier == "T3")'
 
 # Buscar operaciones bloqueadas
 cat .claude/logs/*.jsonl | jq 'select(.action == "blocked")'
+
+# Ver auto-aprobaciones
+grep "AUTO-APPROVED" .claude/logs/pre_tool_use-*.log
 ```
 
-## Caracteristicas Tecnicas
+---
 
-### Estructura de Hooks
+## Tiers de Seguridad
 
-Cada hook es un script Python con interface estandarizada:
+| Tier | Tipo de Operacion | Requiere Approval | Auto-Aprueba |
+|------|-------------------|-------------------|--------------|
+| **T0** | Read-only (get, list) | No | Si |
+| **T1** | Validation (validate, dry-run) | No | No |
+| **T2** | Planning (plan, simulate) | No | No |
+| **T3** | Execution (apply, delete) | **Si** | No |
 
-```python
-def execute_hook(context: dict) -> dict:
-    """
-    Args:
-        context: Informacion del comando/fase
-    
-    Returns:
-        {
-            "action": "allow" | "block" | "ask",
-            "reason": "Explicacion",
-            "metadata": {}
-        }
-    """
-    pass
-```
+---
 
-### Tiers de Seguridad
-
-| Tier | Tipo de Operacion | Requiere Approval | Hook Validacion |
-|------|-------------------|-------------------|-----------------|
-| **T0** | Read-only (get, list) | No | pre_tool_use |
-| **T1** | Validation (validate, dry-run) | No | pre_tool_use |
-| **T2** | Planning (plan, simulate) | No | pre_tool_use |
-| **T3** | Execution (apply, delete) | **Si** | pre_tool_use + pre_phase |
-
-### Tests de Hooks
+## Tests de Hooks
 
 Los hooks tienen tests de integracion:
 
@@ -233,18 +296,25 @@ python3 -m pytest tests/integration/ -v
 
 # Tests especificos de hooks
 python3 -m pytest tests/integration/test_hooks_integration.py -v
+
+# Test manual de comandos
+python3 .claude/hooks/pre_tool_use.py "ls -la"
+python3 .claude/hooks/pre_tool_use.py --test
 ```
+
+---
 
 ## Referencias
 
 **Archivos de hooks:**
 ```
 hooks/
-├── pre_tool_use.py        (~400 lineas) - Guardian principal
+├── pre_tool_use.py        (~750 lineas) - Guardian principal + auto-approval
 ├── post_tool_use.py       (~300 lineas) - Auditor principal
 ├── pre_phase_hook.py      (~200 lineas) - Validador de fases
 ├── post_phase_hook.py     (~150 lineas) - Auditor de fases
 ├── pre_kubectl_security.py (~180 lineas) - K8s security
+├── shell_parser.py        (~290 lineas) - Parser de comandos compuestos
 └── subagent_stop.py       (~200 lineas) - Workflow metrics
 ```
 
@@ -258,7 +328,7 @@ hooks/
 
 ---
 
-**Version:** 2.0.0  
-**Ultima actualizacion:** 2025-12-06  
-**Total de hooks:** 6 hooks (4 pre, 1 post, 1 metrics)  
+**Version:** 3.3.2  
+**Ultima actualizacion:** 2025-12-11  
+**Total de hooks:** 7 hooks (5 pre, 1 post, 1 metrics)  
 **Mantenido por:** Gaia (meta-agent)
