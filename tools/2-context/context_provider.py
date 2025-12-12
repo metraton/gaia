@@ -71,6 +71,60 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
 
 
 # ============================================================================
+# UNIVERSAL RULES SYSTEM
+# ============================================================================
+
+DEFAULT_RULES_FILE = "universal-rules.json"
+
+
+def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Loads universal rules and agent-specific rules from JSON file.
+
+    These rules are injected into every agent invocation to ensure consistent
+    behavior across all agents (native tools usage, AskUserQuestion for options, etc.)
+
+    Args:
+        agent_name: Name of the agent to get specific rules for
+        rules_file: Path to rules JSON. If None, auto-detected.
+
+    Returns:
+        Dict with 'universal' and 'agent_specific' rule lists
+    """
+    if rules_file is None:
+        rules_file = get_contracts_dir() / DEFAULT_RULES_FILE
+
+    if not rules_file.is_file():
+        print(f"⚠️  Rules file not found: {rules_file}", file=sys.stderr)
+        return {"universal": [], "agent_specific": []}
+
+    try:
+        with open(rules_file, 'r', encoding='utf-8') as f:
+            rules_data = json.load(f)
+
+        # Extract universal rules
+        universal = [r["rule"] for r in rules_data.get("rules", {}).get("universal", [])]
+
+        # Extract agent-specific rules
+        agent_specific = [
+            r["rule"]
+            for r in rules_data.get("rules", {}).get("agent_specific", {}).get(agent_name, [])
+        ]
+
+        total_rules = len(universal) + len(agent_specific)
+        if total_rules > 0:
+            print(f"📜 Loaded {len(universal)} universal rules, {len(agent_specific)} agent-specific", file=sys.stderr)
+
+        return {
+            "universal": universal,
+            "agent_specific": agent_specific
+        }
+    except Exception as e:
+        print(f"⚠️  Could not load rules: {e}", file=sys.stderr)
+        return {"universal": [], "agent_specific": []}
+
+
+# ============================================================================
 # STANDARDS PRE-LOADING SYSTEM (Hybrid Intelligence)
 # ============================================================================
 
@@ -679,16 +733,21 @@ def main():
         standards_context = {"content": {}, "preloaded": [], "total_standards": 0}
         print("📋 Standards pre-loading disabled via --no-standards", file=sys.stderr)
 
+    # Load universal rules (always loaded)
+    rules_context = load_universal_rules(args.agent_name)
+
     # Build final payload
     final_payload = {
         "contract": contract_context,
         "enrichment": enrichment_context,
+        "rules": rules_context,  # Universal + agent-specific rules
         "metadata": {
             "cloud_provider": cloud_provider,
             "contract_version": provider_contracts.get("version", "unknown"),
             "historical_episodes_count": len(historical_context.get("episodes", [])),
             "standards_preloaded": standards_context["preloaded"],
-            "standards_count": standards_context["total_standards"]
+            "standards_count": standards_context["total_standards"],
+            "rules_count": len(rules_context.get("universal", [])) + len(rules_context.get("agent_specific", []))
         }
     }
 

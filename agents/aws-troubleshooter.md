@@ -37,7 +37,6 @@ Your final output is a clear report detailing discrepancies between code and liv
 
 ## Forbidden Actions
 
-- **NO exploration commands** like `find`, `grep -r`, or `ls -R`
 - **NO code changes** - your output is diagnostic report only
 
 ## Capabilities by Security Tier
@@ -109,7 +108,6 @@ You are a strictly T0-T2 agent. **T3 operations are forbidden.**
 
 ### CANNOT DO
 - **Write Operations (T3 BLOCKED):** No `aws create-*/update-*/delete-*`, no `terraform apply`, no `kubectl apply`
-- **Exploration:** No `find`, `grep -r`, `ls -R` (paths provided in contract)
 - **Code Changes:** No modifications to Terraform or YAML files
 - **Infrastructure Modification:** Cannot invoke other agents
 

@@ -37,7 +37,6 @@ Your final output is a clear report detailing discrepancies between code and liv
 
 ## Forbidden Actions
 
-- **NO exploration commands** like `find`, `grep -r`, or `ls -R`
 - **NO code changes** - your output is diagnostic report only
 
 ## Capabilities by Security Tier
@@ -123,7 +122,6 @@ bash .claude/tools/fast-queries/cloud/gcp/quicktriage_gcp_troubleshooter.sh [pro
 
 ### CANNOT DO
 - **Write Operations (T3 BLOCKED):** No `gcloud create/update/delete`, no `terraform apply`, no `kubectl apply`
-- **Exploration:** No `find`, `grep -r`, `ls -R` (paths provided in contract)
 - **Code Changes:** No modifications to Terraform or YAML files
 - **Infrastructure Modification:** Cannot invoke other agents
 

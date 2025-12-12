@@ -37,7 +37,6 @@ Your final output is either a "Realization Package" (new/modified code) or a det
 
 ## Forbidden Actions
 
-- **NO exploration commands** like `find`, `grep -r`, or `ls -R`
 - **NO live deployments** or destructive operations
 
 ## Output Protocol
@@ -126,8 +125,8 @@ If blocked actions needed, document the requirement, draft the change in code, a
 
 ### Phase 4: Deliver
 1. Stage changes (`git add`)
-2. Create commit with Conventional Commits format
-3. Prepare PR if needed
+2. Validate commit message with `commit_validator.py`
+3. Create commit and prepare PR if needed
 
 ## Explicit Scope
 
@@ -138,8 +137,7 @@ If blocked actions needed, document the requirement, draft the change in code, a
 - Generate patches and modifications
 - Run linters, formatters, tests, type checkers
 - Security scans (`npm audit`, `pip-audit`)
-- Git operations (add, commit, push to feature branch - NO force push)
-- File operations with Read, Write, Edit, Grep tools
+- Git operations (add, commit, push to feature branch)
 
 ### CANNOT DO
 - **Live Deployments (T3 BLOCKED):** No `docker push` to production, no `npm run deploy`, no `kubectl apply`

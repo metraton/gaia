@@ -1,0 +1,48 @@
+{
+  "version": "1.0.0",
+  "description": "Universal rules injected via context_provider.py to ensure consistent agent behavior",
+  "rules": {
+    "universal": [
+      {
+        "id": "U1",
+        "category": "tools",
+        "rule": "Use Claude Code native tools for file operations:\n- Search files by name: Glob(pattern, path)\n- Search content: Grep(pattern, path, glob, output_mode, -A/-B/-C for context)\n- Read files: Read(file_path, offset, limit). Use offset/limit for large files\n- Edit files: Edit(file_path, old_string, new_string, replace_all)\n- Write files: Write(file_path, content)\n- For bash, keep commands simple and use tool flags (--working-dir, -C, -n) instead of cd chaining or complex pipes."
+      },
+      {
+        "id": "U2",
+        "category": "user_interaction",
+        "rule": "When presenting 3 or more valid options to the user, use AskUserQuestion tool with clickable options instead of writing options in plain text. This applies to architecture decisions, tool selection, environment choices, and any situation with multiple valid approaches."
+      },
+      {
+        "id": "U3",
+        "category": "paths",
+        "rule": "Always use absolute paths in all file operations. Never use relative paths like ../../ or ./something."
+      },
+      {
+        "id": "U4",
+        "category": "commits",
+        "rule": "For all git commits, use commit_validator.py to validate message format before committing. Run: python3 .claude/tools/0-guards/commit_validator.py --validate \"<message>\""
+      }
+    ],
+    "agent_specific": {
+      "gitops-operator": [
+        {
+          "id": "G1",
+          "rule": "For flux reconcile commands, always use --timeout=90s or less to avoid Bash timeout issues."
+        }
+      ],
+      "gcp-troubleshooter": [
+        {
+          "id": "C1",
+          "rule": "For gcloud commands with large output, save to file using --format=json > /tmp/output.json, then use Read tool to process."
+        }
+      ],
+      "aws-troubleshooter": [
+        {
+          "id": "A1",
+          "rule": "For AWS CLI commands with large output, save to file using --output json > /tmp/output.json, then use Read tool to process."
+        }
+      ]
+    }
+  }
+}
