@@ -36,6 +36,7 @@
 ## Format: `[ID] [P?] Description`
 - **[P]**: Can run in parallel (different files, no dependencies)
 - Include exact file paths in descriptions
+- **verify**: Each task MUST include a verification step (command, check, or observable outcome)
 
 ## Path Conventions
 - **Single project**: `src/`, `tests/` at repository root
@@ -45,6 +46,7 @@
 
 ## Phase 3.1: Setup
 - [ ] T001 Create project structure per implementation plan
+  - verify: `ls -la src/` shows expected directories
   <!-- 🤖 Agent: terraform-architect | ✅ T1 | ❓ 0.70 -->
   <!-- 🏷️ Tags: #code #setup -->
   <!-- 🧠 Reasoning: Skill 'terraform_operations' matched (score: 2.0), Routed to terraform-architect, Security tier: T1 -->
@@ -52,6 +54,7 @@
   <!-- 🔄 Fallback: devops-developer -->
 
 - [ ] T002 Initialize [language] project with [framework] dependencies
+  - verify: `[package-manager] list` shows dependencies installed
   <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
   <!-- 🏷️ Tags: #setup -->
   <!-- 🧠 Reasoning: Defaulted to devops-developer (no specific skill match) -->
@@ -59,6 +62,7 @@
   <!-- 🔄 Fallback: devops-developer -->
 
 - [ ] T003 [P] Configure linting and formatting tools
+  - verify: `npm run lint` exits with code 0
   <!-- 🤖 Agent: gitops-operator | 👁️ T0 | ❓ 0.50 -->
   <!-- 🏷️ Tags: #config #setup -->
   <!-- 🧠 Reasoning: Skill 'configuration_management' matched (score: 2.0), Routed to gitops-operator, Security tier: T0 -->
@@ -69,6 +73,7 @@
 ## Phase 3.2: Tests First (TDD) ⚠️ MUST COMPLETE BEFORE 3.3
 **CRITICAL: These tests MUST be written and MUST FAIL before ANY implementation**
 - [ ] T004 [P] Contract test POST /api/users in tests/contract/test_users_post.py
+  - verify: `pytest tests/contract/test_users_post.py` runs (fails before implementation)
   <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
   <!-- 🏷️ Tags: #api #hr #integration #test -->
   <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 10.0), Routed to devops-developer, Security tier: T1 -->

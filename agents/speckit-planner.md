@@ -142,35 +142,42 @@ Idea → /speckit.specify → spec.md
 
 ### tasks.md Structure with Enrichment
 
+**Every task MUST include a `verify:` line** - a command or observable outcome to confirm completion.
+
 ```markdown
 # Tasks: [FEATURE NAME]
 
 ## Phase 3.1: Setup
 - [ ] T001 Create project structure
+  - verify: `ls -la src/` shows expected directories
   <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.70 -->
   <!-- 🏷️ Tags: #setup #config -->
   <!-- 🎯 skill: project_setup (6.0) -->
 
 ## Phase 3.2: Tests First (TDD)
 - [ ] T004 [P] Contract test POST /api/users
+  - verify: `pytest tests/contract/test_users_post.py` runs
   <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
   <!-- 🏷️ Tags: #test #api -->
   <!-- 🎯 skill: testing_validation (10.0) -->
 
 ## Phase 3.3: Core Implementation
 - [ ] T008 User model in src/models/user.py
+  - verify: file exists and imports successfully
   <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.90 -->
   <!-- 🏷️ Tags: #code -->
   <!-- 🎯 skill: application_development (8.0) -->
 
 ## Phase 3.4: Integration
 - [ ] T015 Connect service to database
+  - verify: `kubectl logs` shows successful DB connection
   <!-- 🤖 Agent: gitops-operator | 👁️ T0 | ⚡ 0.60 -->
   <!-- 🏷️ Tags: #database #kubernetes -->
   <!-- 🎯 skill: kubernetes_deployment (6.0) -->
 
 ## Phase 3.5: Polish
 - [ ] T020 Performance tests
+  - verify: `pytest tests/performance/` passes with <500ms response
   <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
   <!-- 🏷️ Tags: #test #performance -->
   <!-- 🎯 skill: testing_validation (8.0) -->
@@ -180,6 +187,7 @@ Idea → /speckit.specify → spec.md
 
 ```markdown
 - [ ] T042 Apply Terraform changes to production
+  - verify: `terraform show` confirms expected resources created
   <!-- 🤖 Agent: terraform-architect | 🚫 T3 | 🔥 0.95 -->
   <!-- 🏷️ Tags: #terraform #infrastructure #production -->
   <!-- ⚠️ HIGH RISK: Analyze before execution -->
