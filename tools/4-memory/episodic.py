@@ -63,6 +63,8 @@ class Episode:
     commands_executed: Optional[List[str]] = None
     # P1: Simple relationships
     related_episodes: Optional[List[Dict[str, str]]] = None  # [{"id": "ep_xxx", "type": "SOLVES"}]
+    # P1 Phase 1: Agent tracking
+    agents: Optional[List[Dict[str, Any]]] = None  # [{"agent_id": "agent-123", "agent_name": "gitops", ...}]
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert episode to dictionary."""
@@ -222,7 +224,8 @@ class EpisodicMemory:
         duration_seconds: Optional[float] = None,
         commands_executed: Optional[List[str]] = None,
         # P1: Relationship parameters
-        related_episodes: Optional[List[Dict[str, str]]] = None
+        related_episodes: Optional[List[Dict[str, str]]] = None,
+        agents: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
         Store a new episode in memory.
@@ -239,6 +242,7 @@ class EpisodicMemory:
             duration_seconds: How long the episode took to complete
             commands_executed: List of commands executed during episode
             related_episodes: List of related episode references [{"id": "ep_xxx", "type": "SOLVES"}]
+            agents: List of agent execution info [{"agent_id": "agent-123", "agent_name": "gitops", ...}]
 
         Returns:
             Episode ID
@@ -298,7 +302,9 @@ class EpisodicMemory:
             duration_seconds=duration_seconds,
             commands_executed=commands_executed,
             # P1: Relationships
-            related_episodes=validated_relationships
+            related_episodes=validated_relationships,
+            # P1 Phase 1: Agent tracking
+            agents=agents
         )
 
         # Save full episode to file

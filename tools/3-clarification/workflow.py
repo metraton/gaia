@@ -1,8 +1,10 @@
 """
-Clarification Workflow Functions
+Clarification Workflow Functions - WITH EPISODIC MEMORY INTEGRATION
 
 High-level helper functions for orchestrators to integrate Phase 0 clarification
 with minimal code changes.
+
+Now includes automatic episodic memory capture.
 """
 
 import sys
@@ -11,6 +13,16 @@ from typing import Dict, Any, Optional, List
 
 from .engine import request_clarification, process_clarification
 
+# Import episodic capture hook
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "hooks"))
+try:
+    from episodic_capture_hook import capture_phase_0
+    EPISODIC_CAPTURE_AVAILABLE = True
+except ImportError:
+    print("Warning: Episodic capture hook not available", file=sys.stderr)
+    EPISODIC_CAPTURE_AVAILABLE = False
+    capture_phase_0 = None
+
 
 def execute_workflow(
     user_prompt: str,
@@ -18,13 +30,14 @@ def execute_workflow(
     ask_user_question_func: Optional[callable] = None
 ) -> Dict[str, Any]:
     """
-    Execute complete Phase 0 clarification workflow.
+    Execute complete Phase 0 clarification workflow WITH EPISODIC MEMORY CAPTURE.
 
     This is the main entry point for orchestrators. It handles:
     1. Ambiguity detection
     2. Question generation
     3. User interaction (if ask function provided)
     4. Prompt enrichment
+    5. Episodic memory capture (NEW)
 
     Args:
         user_prompt: Original user request
@@ -38,6 +51,8 @@ def execute_workflow(
             "clarification_occurred": bool,       # True if clarification happened
             "clarification_data": Dict or None,   # Full clarification data (for logging)
             "questions": List[Dict],              # Questions asked (if any)
+            "episode_id": str or None,            # Episodic memory ID (NEW)
+            "historical_context": List[Dict],     # Historical episodes found
 
             # Only if ask_user_question_func is None:
             "needs_manual_questioning": bool,     # True if manual question handling needed
@@ -52,6 +67,7 @@ def execute_workflow(
             ask_user_question_func=AskUserQuestion  # Claude Code tool
         )
         enriched_prompt = result["enriched_prompt"]
+        episode_id = result["episode_id"]  # Store for later phases
 
     Example (manual mode - for custom UX):
         result = execute_workflow("check the API")
@@ -70,7 +86,7 @@ def execute_workflow(
         command_context=command_context or {"command": "general_prompt"}
     )
 
-    # Step 1.5: SEARCH EPISODIC MEMORY (NEW)
+    # Step 1.5: SEARCH EPISODIC MEMORY
     relevant_episodes = _search_episodic_memory(user_prompt)
 
     if relevant_episodes:
@@ -91,12 +107,23 @@ def execute_workflow(
 
     # Step 2: Decision point - no clarification needed
     if not clarification["needs_clarification"]:
+        # Even without clarification, capture episode if enrichment happened
+        episode_id = None
+        if EPISODIC_CAPTURE_AVAILABLE and capture_phase_0:
+            episode_id = capture_phase_0(
+                original_prompt=user_prompt,
+                enriched_prompt=user_prompt,  # Same as original if no clarification
+                clarification_data=None,
+                command_context=command_context
+            )
+        
         return {
             "enriched_prompt": user_prompt,
             "clarification_occurred": False,
             "clarification_data": None,
             "questions": [],
-            "historical_context": relevant_episodes if relevant_episodes else []  # Include episodes even without clarification
+            "episode_id": episode_id,
+            "historical_context": relevant_episodes if relevant_episodes else []
         }
 
     # Step 3: If no ask function provided, return questions for manual handling
@@ -107,7 +134,8 @@ def execute_workflow(
             "clarification_data": clarification,
             "questions": clarification["question_config"]["questions"],
             "summary": clarification["summary"],
-            "needs_manual_questioning": True
+            "needs_manual_questioning": True,
+            "episode_id": None  # Cannot capture yet without enrichment
         }
 
     # Step 4: Ask user questions (using provided function)
@@ -121,6 +149,7 @@ def execute_workflow(
             "clarification_occurred": False,
             "clarification_data": None,
             "questions": [],
+            "episode_id": None,
             "error": str(e)
         }
 
@@ -132,6 +161,21 @@ def execute_workflow(
         clarification_context=clarification["clarification_context"]
     )
 
+    # Step 6: CAPTURE EPISODIC MEMORY (NEW)
+    episode_id = None
+    if EPISODIC_CAPTURE_AVAILABLE and capture_phase_0:
+        episode_id = capture_phase_0(
+            original_prompt=user_prompt,
+            enriched_prompt=result["enriched_prompt"],
+            clarification_data={
+                "clarification_occurred": True,
+                "ambiguity_score": clarification.get("ambiguity_score", 0),
+                "patterns_detected": [a["pattern"] for a in clarification.get("ambiguity_points", [])],
+                "user_responses": user_responses.get("answers", {})
+            },
+            command_context=command_context
+        )
+
     return {
         "enriched_prompt": result["enriched_prompt"],
         "clarification_occurred": True,
@@ -141,7 +185,9 @@ def execute_workflow(
             "patterns_detected": [a["pattern"] for a in clarification.get("ambiguity_points", [])],
             "user_responses": user_responses.get("answers", {})
         },
-        "questions": clarification["question_config"]["questions"]
+        "questions": clarification["question_config"]["questions"],
+        "episode_id": episode_id,  # NEW: Return episode ID for later phases
+        "historical_context": relevant_episodes if relevant_episodes else []
     }
 
 
@@ -343,6 +389,8 @@ def _load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, 
     Returns:
         Full episode dict or None if not found
     """
+    import json
+    
     try:
         episodes_file = memory_dir / "episodes.jsonl"
         if not episodes_file.exists():
@@ -352,7 +400,7 @@ def _load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, 
             for line in f:
                 try:
                     episode = json.loads(line)
-                    if episode.get("id") == episode_id:
+                    if episode.get("id") == episode_id or episode.get("episode_id") == episode_id:
                         return episode
                 except:
                     continue
