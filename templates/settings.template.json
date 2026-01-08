@@ -10,6 +10,15 @@
             "command": ".claude/hooks/pre_tool_use.py"
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre_tool_use.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -261,11 +270,26 @@
       "Bash(aws cloudformation validate-template:*)",
       "Bash(aws cloudformation estimate-template-cost:*)",
 
+      "Bash(aws apigateway get-rest-apis:*)",
+      "Bash(aws apigateway get-resources:*)",
+      "Bash(aws apigateway get-stages:*)",
+      "Bash(aws apigateway get-vpc-links:*)",
+      "Bash(aws apigateway get-vpc-link:*)",
+      "Bash(aws apigateway get-integration:*)",
+      "Bash(aws apigateway get-method:*)",
+      "Bash(aws apigateway get-deployment:*)",
+      "Bash(aws apigatewayv2 get-:*)",
+
       "Bash(aws elbv2 describe-:*)",
+      "Bash(aws elbv2 describe-target-groups:*)",
+      "Bash(aws elbv2 describe-load-balancers:*)",
+      "Bash(aws elbv2 describe-rules:*)",
+      "Bash(aws elbv2 describe-listeners:*)",
       "Bash(aws elb describe-:*)",
 
       "Bash(aws route53 get-:*)",
       "Bash(aws route53 list-:*)",
+      "Bash(aws route53 list-resource-record-sets:*)",
       "Bash(aws route53 test-dns-answer:*)",
 
       "Bash(aws secretsmanager describe-secret:*)",
@@ -281,6 +305,11 @@
 
       "Bash(aws sqs get-:*)",
       "Bash(aws sqs list-:*)",
+      "Bash(aws sqs receive-message:*)",
+
+      "Bash(aws workmail describe-:*)",
+      "Bash(aws workmail list-:*)",
+      "Bash(aws workmail get-:*)",
 
       "Bash(aws dynamodb describe-:*)",
       "Bash(aws dynamodb list-:*)",

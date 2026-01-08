@@ -17,115 +17,103 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools" / "0-guards
 
 
 class TestWorkflowEnforcerIntegration:
-    """Test complete workflow enforcer integration"""
+    """Test complete workflow enforcer integration with modular hooks."""
 
     def test_phase_1_invalid_agent_blocked(self):
         """Test case 1: Phase 1 - Agent must exist"""
-        from pre_tool_use import PolicyEngine
+        from modules.tools.task_validator import TaskValidator
 
-        policy = PolicyEngine()
+        validator = TaskValidator()
 
-        result = policy._validate_task_invocation({
+        result = validator.validate({
             "subagent_type": "invalid-agent",
             "prompt": "Do something",
             "description": "Test task"
         })
 
-        allowed, tier, reason = result
-        assert not allowed, "Invalid agent should be blocked"
-        assert "Unknown agent" in reason or "does not exist" in reason, \
-            f"Invalid agent not blocked properly. Result: allowed={allowed}, reason={reason}"
+        assert not result.allowed, "Invalid agent should be blocked"
+        assert "Unknown agent" in result.reason or "unknown" in result.reason.lower(), \
+            f"Invalid agent not blocked properly. Result: allowed={result.allowed}, reason={result.reason}"
 
     def test_phase_2_missing_context_warning(self):
         """Test case 2: Phase 2 - Context provisioning warning"""
-        from pre_tool_use import PolicyEngine
+        from modules.tools.task_validator import TaskValidator
 
-        policy = PolicyEngine()
+        validator = TaskValidator()
 
-        result = policy._validate_task_invocation({
+        result = validator.validate({
             "subagent_type": "terraform-architect",
             "prompt": "Run terraform plan",  # No context
             "description": "Plan infrastructure"
         })
 
-        allowed, tier, reason = result
-        # Should be allowed but warned (check logs)
-        assert allowed, f"Should not block for missing context: {reason}"
+        # Should be allowed but without context flag
+        assert result.allowed, f"Should not block for missing context: {result.reason}"
+        # Check that context was not detected
+        assert not result.has_context, "Should detect missing context"
 
     def test_phase_4_t3_without_approval_blocked(self):
         """Test case 3: Phase 4 - T3 operations require approval"""
-        from pre_tool_use import PolicyEngine
+        from modules.tools.task_validator import TaskValidator
 
-        policy = PolicyEngine()
+        validator = TaskValidator()
 
         # T3 without approval - should be blocked
-        result = policy._validate_task_invocation({
+        result = validator.validate({
             "subagent_type": "terraform-architect",
             "prompt": "# Project Context\n\nRun terraform apply to production",
             "description": "Apply terraform changes"
         })
 
-        allowed, tier, reason = result
-        assert not allowed, "T3 operation should be blocked without approval"
-        assert "Phase 4" in reason, \
-            f"T3 should be blocked without approval: {reason}"
+        assert not result.allowed, "T3 operation should be blocked without approval"
+        assert "Phase 4" in result.reason or "approval" in result.reason.lower(), \
+            f"T3 should be blocked without approval: {result.reason}"
 
     def test_phase_4_t3_with_approval_allowed(self):
         """Test case 3b: T3 with approval - should be allowed"""
-        from pre_tool_use import PolicyEngine
+        from modules.tools.task_validator import TaskValidator
 
-        policy = PolicyEngine()
+        validator = TaskValidator()
 
-        result = policy._validate_task_invocation({
+        result = validator.validate({
             "subagent_type": "terraform-architect",
             "prompt": "# Project Context\n\nUser approval received. Run terraform apply to production",
             "description": "Apply terraform changes"
         })
 
-        allowed, tier, reason = result
-        assert allowed, f"T3 should be allowed with approval: {reason}"
+        assert result.allowed, f"T3 should be allowed with approval: {result.reason}"
 
     def test_phase_5_realization_with_plan_allowed(self):
         """Test case 4: Phase 5 - Realization checks"""
-        from pre_tool_use import PolicyEngine
+        from modules.tools.task_validator import TaskValidator
 
-        policy = PolicyEngine()
+        validator = TaskValidator()
 
-        result = policy._validate_task_invocation({
+        result = validator.validate({
             "subagent_type": "gitops-operator",
             "prompt": "# Project Context\n\nPhase 5: Realization\n\nPlan: Deploy application\nSteps: 1. Update manifests",
             "description": "Execute deployment"
         })
 
-        allowed, tier, reason = result
-        assert allowed, f"Realization should be allowed with plan: {reason}"
+        assert result.allowed, f"Realization should be allowed with plan: {result.reason}"
 
     def test_phase_6_ssot_tracking(self):
-        """Test case 5: Phase 6 - SSOT tracking"""
-        from pre_tool_use import PolicyEngine
+        """Test case 5: Phase 6 - SSOT tracking through Task validator"""
+        from modules.tools.task_validator import TaskValidator
 
-        policy = PolicyEngine()
+        validator = TaskValidator()
 
-        if policy.workflow_enforcer:
-            # Clear history
-            policy.workflow_enforcer.guard_history = []
+        # Execute T3 with approval
+        result = validator.validate({
+            "subagent_type": "terraform-architect",
+            "prompt": "User approval received. Apply terraform to create GKE cluster",
+            "description": "Create production cluster"
+        })
 
-            # Execute T3 with approval
-            result = policy._validate_task_invocation({
-                "subagent_type": "terraform-architect",
-                "prompt": "User approval received. Apply terraform to create GKE cluster",
-                "description": "Create production cluster"
-            })
-
-            # Check if history was recorded
-            if policy.workflow_enforcer.guard_history:
-                last_entry = policy.workflow_enforcer.guard_history[-1]
-                assert last_entry.get("requires_ssot_update"), \
-                    "T3 operation not marked for SSOT update"
-            else:
-                pytest.skip("Guard history not populated")
-        else:
-            pytest.skip("WorkflowEnforcer not available")
+        # T3 operation should be marked in result
+        assert result.is_t3_operation, "Should detect T3 operation"
+        assert result.has_approval, "Should detect approval"
+        assert result.allowed, "T3 with approval should be allowed"
 
 
 class TestAllGuardsAvailable:

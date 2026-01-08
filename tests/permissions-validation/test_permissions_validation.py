@@ -32,7 +32,7 @@ class PermissionResult(Enum):
 
 
 @dataclass
-class TestCase:
+class PermissionTestCase:
     """A test case with command and expected result"""
     command: str
     expected: PermissionResult
@@ -41,9 +41,9 @@ class TestCase:
 
 
 @dataclass
-class TestResult:
+class PermissionTestResult:
     """Result of running a test case"""
-    test_case: TestCase
+    test_case: PermissionTestCase
     actual: PermissionResult
     matched_pattern: str = ""
     passed: bool = False
@@ -159,7 +159,7 @@ class ClaudeCodePermissionMatcher:
         return PermissionResult.DEFAULT, ""
 
 
-def get_test_cases() -> List[TestCase]:
+def get_test_cases() -> List[PermissionTestCase]:
     """
     Define test cases for permission validation.
 
@@ -172,170 +172,170 @@ def get_test_cases() -> List[TestCase]:
         # ========== READ-ONLY COMMANDS (should be ALLOW) ==========
 
         # Shell basics
-        TestCase("ls -la", PermissionResult.ALLOW, "List files", "shell"),
-        TestCase("pwd", PermissionResult.ALLOW, "Print working directory", "shell"),
-        TestCase("cat /etc/hosts", PermissionResult.ALLOW, "Read file content", "shell"),
-        TestCase("head -n 10 file.txt", PermissionResult.ALLOW, "Read first lines", "shell"),
-        TestCase("tail -f log.txt", PermissionResult.ALLOW, "Read last lines", "shell"),
-        TestCase("grep pattern file.txt", PermissionResult.ALLOW, "Search in file", "shell"),
-        TestCase("find . -name '*.py'", PermissionResult.ALLOW, "Find files", "shell"),
-        TestCase("which python", PermissionResult.ALLOW, "Find command path", "shell"),
-        TestCase("whoami", PermissionResult.ALLOW, "Current user", "shell"),
-        TestCase("date", PermissionResult.ALLOW, "Current date", "shell"),
-        TestCase("env", PermissionResult.ALLOW, "Environment variables", "shell"),
+        PermissionTestCase("ls -la", PermissionResult.ALLOW, "List files", "shell"),
+        PermissionTestCase("pwd", PermissionResult.ALLOW, "Print working directory", "shell"),
+        PermissionTestCase("cat /etc/hosts", PermissionResult.ALLOW, "Read file content", "shell"),
+        PermissionTestCase("head -n 10 file.txt", PermissionResult.ALLOW, "Read first lines", "shell"),
+        PermissionTestCase("tail -f log.txt", PermissionResult.ALLOW, "Read last lines", "shell"),
+        PermissionTestCase("grep pattern file.txt", PermissionResult.ALLOW, "Search in file", "shell"),
+        PermissionTestCase("find . -name '*.py'", PermissionResult.ALLOW, "Find files", "shell"),
+        PermissionTestCase("which python", PermissionResult.ALLOW, "Find command path", "shell"),
+        PermissionTestCase("whoami", PermissionResult.ALLOW, "Current user", "shell"),
+        PermissionTestCase("date", PermissionResult.ALLOW, "Current date", "shell"),
+        PermissionTestCase("env", PermissionResult.ALLOW, "Environment variables", "shell"),
 
         # Git read-only
-        TestCase("git status", PermissionResult.ALLOW, "Git status", "git"),
-        TestCase("git log --oneline", PermissionResult.ALLOW, "Git log", "git"),
-        TestCase("git diff HEAD", PermissionResult.ALLOW, "Git diff", "git"),
-        TestCase("git branch -a", PermissionResult.ALLOW, "List branches", "git"),
-        TestCase("git remote -v", PermissionResult.ALLOW, "List remotes", "git"),
-        TestCase("git show HEAD", PermissionResult.ALLOW, "Show commit", "git"),
-        TestCase("git blame file.py", PermissionResult.ALLOW, "Git blame", "git"),
+        PermissionTestCase("git status", PermissionResult.ALLOW, "Git status", "git"),
+        PermissionTestCase("git log --oneline", PermissionResult.ALLOW, "Git log", "git"),
+        PermissionTestCase("git diff HEAD", PermissionResult.ALLOW, "Git diff", "git"),
+        PermissionTestCase("git branch -a", PermissionResult.ALLOW, "List branches", "git"),
+        PermissionTestCase("git remote -v", PermissionResult.ALLOW, "List remotes", "git"),
+        PermissionTestCase("git show HEAD", PermissionResult.ALLOW, "Show commit", "git"),
+        PermissionTestCase("git blame file.py", PermissionResult.ALLOW, "Git blame", "git"),
 
         # Kubernetes read-only
-        TestCase("kubectl get pods", PermissionResult.ALLOW, "List pods", "kubernetes"),
-        TestCase("kubectl get pods -n default", PermissionResult.ALLOW, "List pods in namespace", "kubernetes"),
-        TestCase("kubectl get services -A", PermissionResult.ALLOW, "List all services", "kubernetes"),
-        TestCase("kubectl describe pod my-pod", PermissionResult.ALLOW, "Describe pod", "kubernetes"),
-        TestCase("kubectl logs my-pod", PermissionResult.ALLOW, "Pod logs", "kubernetes"),
-        TestCase("kubectl logs my-pod -f", PermissionResult.ALLOW, "Follow pod logs", "kubernetes"),
-        TestCase("kubectl top pods", PermissionResult.ALLOW, "Pod metrics", "kubernetes"),
-        TestCase("kubectl config current-context", PermissionResult.ALLOW, "Current context", "kubernetes"),
+        PermissionTestCase("kubectl get pods", PermissionResult.ALLOW, "List pods", "kubernetes"),
+        PermissionTestCase("kubectl get pods -n default", PermissionResult.ALLOW, "List pods in namespace", "kubernetes"),
+        PermissionTestCase("kubectl get services -A", PermissionResult.ALLOW, "List all services", "kubernetes"),
+        PermissionTestCase("kubectl describe pod my-pod", PermissionResult.ALLOW, "Describe pod", "kubernetes"),
+        PermissionTestCase("kubectl logs my-pod", PermissionResult.ALLOW, "Pod logs", "kubernetes"),
+        PermissionTestCase("kubectl logs my-pod -f", PermissionResult.ALLOW, "Follow pod logs", "kubernetes"),
+        PermissionTestCase("kubectl top pods", PermissionResult.ALLOW, "Pod metrics", "kubernetes"),
+        PermissionTestCase("kubectl config current-context", PermissionResult.ALLOW, "Current context", "kubernetes"),
 
         # Helm read-only
-        TestCase("helm list", PermissionResult.ALLOW, "List releases", "helm"),
-        TestCase("helm list -A", PermissionResult.ALLOW, "List all releases", "helm"),
-        TestCase("helm status my-release", PermissionResult.ALLOW, "Release status", "helm"),
-        TestCase("helm get values my-release", PermissionResult.ALLOW, "Get values", "helm"),
-        TestCase("helm history my-release", PermissionResult.ALLOW, "Release history", "helm"),
+        PermissionTestCase("helm list", PermissionResult.ALLOW, "List releases", "helm"),
+        PermissionTestCase("helm list -A", PermissionResult.ALLOW, "List all releases", "helm"),
+        PermissionTestCase("helm status my-release", PermissionResult.ALLOW, "Release status", "helm"),
+        PermissionTestCase("helm get values my-release", PermissionResult.ALLOW, "Get values", "helm"),
+        PermissionTestCase("helm history my-release", PermissionResult.ALLOW, "Release history", "helm"),
 
         # Flux read-only
-        TestCase("flux get all", PermissionResult.ALLOW, "List all Flux resources", "flux"),
-        TestCase("flux get kustomizations", PermissionResult.ALLOW, "List kustomizations", "flux"),
-        TestCase("flux logs", PermissionResult.ALLOW, "Flux logs", "flux"),
+        PermissionTestCase("flux get all", PermissionResult.ALLOW, "List all Flux resources", "flux"),
+        PermissionTestCase("flux get kustomizations", PermissionResult.ALLOW, "List kustomizations", "flux"),
+        PermissionTestCase("flux logs", PermissionResult.ALLOW, "Flux logs", "flux"),
 
         # Terraform read-only
-        TestCase("terraform version", PermissionResult.ALLOW, "Terraform version", "terraform"),
-        TestCase("terraform show", PermissionResult.ALLOW, "Show state", "terraform"),
-        TestCase("terraform output", PermissionResult.ALLOW, "Show outputs", "terraform"),
-        TestCase("terraform state list", PermissionResult.ALLOW, "List state", "terraform"),
-        TestCase("terraform validate", PermissionResult.ALLOW, "Validate config", "terraform"),
-        TestCase("terraform fmt -check", PermissionResult.ALLOW, "Check formatting", "terraform"),
+        PermissionTestCase("terraform version", PermissionResult.ALLOW, "Terraform version", "terraform"),
+        PermissionTestCase("terraform show", PermissionResult.ALLOW, "Show state", "terraform"),
+        PermissionTestCase("terraform output", PermissionResult.ALLOW, "Show outputs", "terraform"),
+        PermissionTestCase("terraform state list", PermissionResult.ALLOW, "List state", "terraform"),
+        PermissionTestCase("terraform validate", PermissionResult.ALLOW, "Validate config", "terraform"),
+        PermissionTestCase("terraform fmt -check", PermissionResult.ALLOW, "Check formatting", "terraform"),
 
         # AWS read-only
-        TestCase("aws sts get-caller-identity", PermissionResult.ALLOW, "Get AWS identity", "aws"),
-        TestCase("aws s3 ls", PermissionResult.ALLOW, "List S3 buckets", "aws"),
-        TestCase("aws ec2 describe-instances", PermissionResult.ALLOW, "Describe EC2", "aws"),
-        TestCase("aws iam list-users", PermissionResult.ALLOW, "List IAM users", "aws"),
-        TestCase("aws rds describe-db-instances", PermissionResult.ALLOW, "Describe RDS", "aws"),
+        PermissionTestCase("aws sts get-caller-identity", PermissionResult.ALLOW, "Get AWS identity", "aws"),
+        PermissionTestCase("aws s3 ls", PermissionResult.ALLOW, "List S3 buckets", "aws"),
+        PermissionTestCase("aws ec2 describe-instances", PermissionResult.ALLOW, "Describe EC2", "aws"),
+        PermissionTestCase("aws iam list-users", PermissionResult.ALLOW, "List IAM users", "aws"),
+        PermissionTestCase("aws rds describe-db-instances", PermissionResult.ALLOW, "Describe RDS", "aws"),
 
         # GCP read-only
-        TestCase("gcloud config list", PermissionResult.ALLOW, "GCP config", "gcp"),
-        TestCase("gcloud projects list", PermissionResult.ALLOW, "List projects", "gcp"),
-        TestCase("gcloud compute instances list", PermissionResult.ALLOW, "List instances", "gcp"),
-        TestCase("gcloud container clusters list", PermissionResult.ALLOW, "List GKE clusters", "gcp"),
-        TestCase("gcloud sql instances list", PermissionResult.ALLOW, "List SQL instances", "gcp"),
+        PermissionTestCase("gcloud config list", PermissionResult.ALLOW, "GCP config", "gcp"),
+        PermissionTestCase("gcloud projects list", PermissionResult.ALLOW, "List projects", "gcp"),
+        PermissionTestCase("gcloud compute instances list", PermissionResult.ALLOW, "List instances", "gcp"),
+        PermissionTestCase("gcloud container clusters list", PermissionResult.ALLOW, "List GKE clusters", "gcp"),
+        PermissionTestCase("gcloud sql instances list", PermissionResult.ALLOW, "List SQL instances", "gcp"),
 
         # Docker read-only
-        TestCase("docker ps", PermissionResult.ALLOW, "List containers", "docker"),
-        TestCase("docker images", PermissionResult.ALLOW, "List images", "docker"),
-        TestCase("docker logs my-container", PermissionResult.ALLOW, "Container logs", "docker"),
-        TestCase("docker inspect my-container", PermissionResult.ALLOW, "Inspect container", "docker"),
+        PermissionTestCase("docker ps", PermissionResult.ALLOW, "List containers", "docker"),
+        PermissionTestCase("docker images", PermissionResult.ALLOW, "List images", "docker"),
+        PermissionTestCase("docker logs my-container", PermissionResult.ALLOW, "Container logs", "docker"),
+        PermissionTestCase("docker inspect my-container", PermissionResult.ALLOW, "Inspect container", "docker"),
 
         # ========== MODIFYING COMMANDS (should be ASK) ==========
 
         # Git modifying
-        TestCase("git add .", PermissionResult.ASK, "Stage all changes", "git"),
-        TestCase("git commit -m 'message'", PermissionResult.ASK, "Create commit", "git"),
-        TestCase("git push origin main", PermissionResult.ASK, "Push to remote", "git"),
-        TestCase("git pull origin main", PermissionResult.ASK, "Pull from remote", "git"),
-        TestCase("git merge feature", PermissionResult.ASK, "Merge branch", "git"),
-        TestCase("git rebase main", PermissionResult.ASK, "Rebase branch", "git"),
-        TestCase("git reset HEAD~1", PermissionResult.ASK, "Reset commit", "git"),
-        TestCase("git checkout -b new-branch", PermissionResult.ASK, "Create branch", "git"),
+        PermissionTestCase("git add .", PermissionResult.ASK, "Stage all changes", "git"),
+        PermissionTestCase("git commit -m 'message'", PermissionResult.ASK, "Create commit", "git"),
+        PermissionTestCase("git push origin main", PermissionResult.ASK, "Push to remote", "git"),
+        PermissionTestCase("git pull origin main", PermissionResult.ASK, "Pull from remote", "git"),
+        PermissionTestCase("git merge feature", PermissionResult.ASK, "Merge branch", "git"),
+        PermissionTestCase("git rebase main", PermissionResult.ASK, "Rebase branch", "git"),
+        PermissionTestCase("git reset HEAD~1", PermissionResult.ASK, "Reset commit", "git"),
+        PermissionTestCase("git checkout -b new-branch", PermissionResult.ASK, "Create branch", "git"),
 
         # Kubernetes modifying
-        TestCase("kubectl apply -f manifest.yaml", PermissionResult.ASK, "Apply manifest", "kubernetes"),
-        TestCase("kubectl create deployment nginx", PermissionResult.ASK, "Create deployment", "kubernetes"),
-        TestCase("kubectl delete pod my-pod", PermissionResult.ASK, "Delete pod", "kubernetes"),
-        TestCase("kubectl scale deployment nginx --replicas=3", PermissionResult.ASK, "Scale deployment", "kubernetes"),
-        TestCase("kubectl rollout restart deployment nginx", PermissionResult.ASK, "Restart deployment", "kubernetes"),
-        TestCase("kubectl exec -it my-pod -- /bin/bash", PermissionResult.ASK, "Exec into pod", "kubernetes"),
+        PermissionTestCase("kubectl apply -f manifest.yaml", PermissionResult.ASK, "Apply manifest", "kubernetes"),
+        PermissionTestCase("kubectl create deployment nginx", PermissionResult.ASK, "Create deployment", "kubernetes"),
+        PermissionTestCase("kubectl delete pod my-pod", PermissionResult.ASK, "Delete pod", "kubernetes"),
+        PermissionTestCase("kubectl scale deployment nginx --replicas=3", PermissionResult.ASK, "Scale deployment", "kubernetes"),
+        PermissionTestCase("kubectl rollout restart deployment nginx", PermissionResult.ASK, "Restart deployment", "kubernetes"),
+        PermissionTestCase("kubectl exec -it my-pod -- /bin/bash", PermissionResult.ASK, "Exec into pod", "kubernetes"),
 
         # Helm modifying
-        TestCase("helm install my-release chart/", PermissionResult.ASK, "Install release", "helm"),
-        TestCase("helm upgrade my-release chart/", PermissionResult.ASK, "Upgrade release", "helm"),
-        TestCase("helm uninstall my-release", PermissionResult.ASK, "Uninstall release", "helm"),
-        TestCase("helm rollback my-release 1", PermissionResult.ASK, "Rollback release", "helm"),
+        PermissionTestCase("helm install my-release chart/", PermissionResult.ASK, "Install release", "helm"),
+        PermissionTestCase("helm upgrade my-release chart/", PermissionResult.ASK, "Upgrade release", "helm"),
+        PermissionTestCase("helm uninstall my-release", PermissionResult.ASK, "Uninstall release", "helm"),
+        PermissionTestCase("helm rollback my-release 1", PermissionResult.ASK, "Rollback release", "helm"),
 
         # Terraform modifying
-        TestCase("terraform plan", PermissionResult.ASK, "Plan changes", "terraform"),
-        TestCase("terraform apply", PermissionResult.ASK, "Apply changes", "terraform"),
-        TestCase("terraform destroy", PermissionResult.ASK, "Destroy resources", "terraform"),
+        PermissionTestCase("terraform plan", PermissionResult.ASK, "Plan changes", "terraform"),
+        PermissionTestCase("terraform apply", PermissionResult.ASK, "Apply changes", "terraform"),
+        PermissionTestCase("terraform destroy", PermissionResult.ASK, "Destroy resources", "terraform"),
 
         # File operations
-        TestCase("rm file.txt", PermissionResult.ASK, "Remove file", "file"),
-        TestCase("rm -rf directory/", PermissionResult.ASK, "Remove directory", "file"),
-        TestCase("mv old.txt new.txt", PermissionResult.ASK, "Move/rename file", "file"),
-        TestCase("cp source.txt dest.txt", PermissionResult.ASK, "Copy file", "file"),
-        TestCase("mkdir new-directory", PermissionResult.ASK, "Create directory", "file"),
-        TestCase("chmod 755 script.sh", PermissionResult.ASK, "Change permissions", "file"),
+        PermissionTestCase("rm file.txt", PermissionResult.ASK, "Remove file", "file"),
+        PermissionTestCase("rm -rf directory/", PermissionResult.ASK, "Remove directory", "file"),
+        PermissionTestCase("mv old.txt new.txt", PermissionResult.ASK, "Move/rename file", "file"),
+        PermissionTestCase("cp source.txt dest.txt", PermissionResult.ASK, "Copy file", "file"),
+        PermissionTestCase("mkdir new-directory", PermissionResult.ASK, "Create directory", "file"),
+        PermissionTestCase("chmod 755 script.sh", PermissionResult.ASK, "Change permissions", "file"),
 
         # AWS modifying (ALLOW with service-level wildcards - Option A1)
-        TestCase("aws s3 cp file.txt s3://bucket/", PermissionResult.ALLOW, "Upload to S3", "aws"),
-        TestCase("aws ec2 start-instances --instance-ids i-123", PermissionResult.ALLOW, "Start EC2", "aws"),
-        TestCase("aws ec2 stop-instances --instance-ids i-123", PermissionResult.ALLOW, "Stop EC2", "aws"),
-        TestCase("aws lambda update-function-code --function-name fn", PermissionResult.ALLOW, "Update Lambda", "aws"),
+        PermissionTestCase("aws s3 cp file.txt s3://bucket/", PermissionResult.ALLOW, "Upload to S3", "aws"),
+        PermissionTestCase("aws ec2 start-instances --instance-ids i-123", PermissionResult.ALLOW, "Start EC2", "aws"),
+        PermissionTestCase("aws ec2 stop-instances --instance-ids i-123", PermissionResult.ALLOW, "Stop EC2", "aws"),
+        PermissionTestCase("aws lambda update-function-code --function-name fn", PermissionResult.ALLOW, "Update Lambda", "aws"),
 
         # GCP modifying (ALLOW with service-level wildcards - Option A1)
-        TestCase("gcloud compute instances start my-vm", PermissionResult.ALLOW, "Start GCE instance", "gcp"),
-        TestCase("gcloud compute instances stop my-vm", PermissionResult.ALLOW, "Stop GCE instance", "gcp"),
-        TestCase("gcloud container clusters resize my-cluster", PermissionResult.ALLOW, "Resize GKE", "gcp"),
+        PermissionTestCase("gcloud compute instances start my-vm", PermissionResult.ALLOW, "Start GCE instance", "gcp"),
+        PermissionTestCase("gcloud compute instances stop my-vm", PermissionResult.ALLOW, "Stop GCE instance", "gcp"),
+        PermissionTestCase("gcloud container clusters resize my-cluster", PermissionResult.ALLOW, "Resize GKE", "gcp"),
 
         # Docker modifying
-        TestCase("docker build -t my-image .", PermissionResult.ASK, "Build image", "docker"),
-        TestCase("docker run my-image", PermissionResult.ASK, "Run container", "docker"),
-        TestCase("docker push my-image", PermissionResult.ASK, "Push image", "docker"),
-        TestCase("docker stop my-container", PermissionResult.ASK, "Stop container", "docker"),
+        PermissionTestCase("docker build -t my-image .", PermissionResult.ASK, "Build image", "docker"),
+        PermissionTestCase("docker run my-image", PermissionResult.ASK, "Run container", "docker"),
+        PermissionTestCase("docker push my-image", PermissionResult.ASK, "Push image", "docker"),
+        PermissionTestCase("docker stop my-container", PermissionResult.ASK, "Stop container", "docker"),
 
         # Package managers
-        TestCase("npm install", PermissionResult.ASK, "Install npm packages", "npm"),
-        TestCase("npm publish", PermissionResult.ASK, "Publish npm package", "npm"),
-        TestCase("pip install package", PermissionResult.ASK, "Install pip package", "pip"),
+        PermissionTestCase("npm install", PermissionResult.ASK, "Install npm packages", "npm"),
+        PermissionTestCase("npm publish", PermissionResult.ASK, "Publish npm package", "npm"),
+        PermissionTestCase("pip install package", PermissionResult.ASK, "Install pip package", "pip"),
 
         # ========== DESTRUCTIVE COMMANDS (should be DENY) ==========
 
         # AWS destructive
-        TestCase("aws ec2 terminate-instances --instance-ids i-123", PermissionResult.DENY, "Terminate EC2", "aws"),
-        TestCase("aws s3 rb s3://bucket --force", PermissionResult.DENY, "Delete S3 bucket", "aws"),
-        TestCase("aws rds delete-db-instance --db-instance-identifier db", PermissionResult.DENY, "Delete RDS", "aws"),
-        TestCase("aws lambda delete-function --function-name fn", PermissionResult.DENY, "Delete Lambda", "aws"),
-        TestCase("aws iam delete-user --user-name user", PermissionResult.DENY, "Delete IAM user", "aws"),
-        TestCase("aws iam delete-role --role-name role", PermissionResult.DENY, "Delete IAM role", "aws"),
-        TestCase("aws cloudformation delete-stack --stack-name stack", PermissionResult.DENY, "Delete CFN stack", "aws"),
+        PermissionTestCase("aws ec2 terminate-instances --instance-ids i-123", PermissionResult.DENY, "Terminate EC2", "aws"),
+        PermissionTestCase("aws s3 rb s3://bucket --force", PermissionResult.DENY, "Delete S3 bucket", "aws"),
+        PermissionTestCase("aws rds delete-db-instance --db-instance-identifier db", PermissionResult.DENY, "Delete RDS", "aws"),
+        PermissionTestCase("aws lambda delete-function --function-name fn", PermissionResult.DENY, "Delete Lambda", "aws"),
+        PermissionTestCase("aws iam delete-user --user-name user", PermissionResult.DENY, "Delete IAM user", "aws"),
+        PermissionTestCase("aws iam delete-role --role-name role", PermissionResult.DENY, "Delete IAM role", "aws"),
+        PermissionTestCase("aws cloudformation delete-stack --stack-name stack", PermissionResult.DENY, "Delete CFN stack", "aws"),
 
         # GCP destructive
-        TestCase("gcloud compute instances delete my-vm", PermissionResult.DENY, "Delete GCE instance", "gcp"),
-        TestCase("gcloud container clusters delete my-cluster", PermissionResult.DENY, "Delete GKE cluster", "gcp"),
-        TestCase("gcloud sql instances delete my-sql", PermissionResult.DENY, "Delete Cloud SQL", "gcp"),
-        TestCase("gcloud projects delete my-project", PermissionResult.DENY, "Delete project", "gcp"),
-        TestCase("gsutil rm -r gs://bucket", PermissionResult.DENY, "Delete GCS bucket contents", "gcp"),
+        PermissionTestCase("gcloud compute instances delete my-vm", PermissionResult.DENY, "Delete GCE instance", "gcp"),
+        PermissionTestCase("gcloud container clusters delete my-cluster", PermissionResult.DENY, "Delete GKE cluster", "gcp"),
+        PermissionTestCase("gcloud sql instances delete my-sql", PermissionResult.DENY, "Delete Cloud SQL", "gcp"),
+        PermissionTestCase("gcloud projects delete my-project", PermissionResult.DENY, "Delete project", "gcp"),
+        PermissionTestCase("gsutil rm -r gs://bucket", PermissionResult.DENY, "Delete GCS bucket contents", "gcp"),
 
         # Kubernetes destructive
-        TestCase("kubectl delete namespace production", PermissionResult.DENY, "Delete namespace", "kubernetes"),
-        TestCase("kubectl delete pv my-pv", PermissionResult.DENY, "Delete persistent volume", "kubernetes"),
-        TestCase("kubectl delete clusterrole admin", PermissionResult.DENY, "Delete cluster role", "kubernetes"),
-        TestCase("kubectl drain node-1", PermissionResult.DENY, "Drain node", "kubernetes"),
+        PermissionTestCase("kubectl delete namespace production", PermissionResult.DENY, "Delete namespace", "kubernetes"),
+        PermissionTestCase("kubectl delete pv my-pv", PermissionResult.DENY, "Delete persistent volume", "kubernetes"),
+        PermissionTestCase("kubectl delete clusterrole admin", PermissionResult.DENY, "Delete cluster role", "kubernetes"),
+        PermissionTestCase("kubectl drain node-1", PermissionResult.DENY, "Drain node", "kubernetes"),
 
         # System destructive
-        TestCase("dd if=/dev/zero of=/dev/sda", PermissionResult.DENY, "Overwrite disk", "system"),
-        TestCase("mkfs.ext4 /dev/sda1", PermissionResult.DENY, "Format partition", "system"),
-        TestCase("fdisk /dev/sda", PermissionResult.DENY, "Partition disk", "system"),
+        PermissionTestCase("dd if=/dev/zero of=/dev/sda", PermissionResult.DENY, "Overwrite disk", "system"),
+        PermissionTestCase("mkfs.ext4 /dev/sda1", PermissionResult.DENY, "Format partition", "system"),
+        PermissionTestCase("fdisk /dev/sda", PermissionResult.DENY, "Partition disk", "system"),
     ]
 
 
-def run_tests(permissions: Dict) -> Tuple[List[TestResult], bool]:
+def run_tests(permissions: Dict) -> Tuple[List[PermissionTestResult], bool]:
     """
     Run all test cases against the permission configuration.
 
@@ -350,7 +350,7 @@ def run_tests(permissions: Dict) -> Tuple[List[TestResult], bool]:
         # All test cases are Bash commands
         actual, matched_pattern = matcher.check_permission("Bash", test_case.command)
 
-        result = TestResult(
+        result = PermissionTestResult(
             test_case=test_case,
             actual=actual,
             matched_pattern=matched_pattern
@@ -361,7 +361,7 @@ def run_tests(permissions: Dict) -> Tuple[List[TestResult], bool]:
     return results, all_passed
 
 
-def print_results(results: List[TestResult], verbose: bool = False):
+def print_results(results: List[PermissionTestResult], verbose: bool = False):
     """Print test results in a readable format"""
 
     print("=" * 80)

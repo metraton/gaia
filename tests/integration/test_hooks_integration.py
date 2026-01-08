@@ -2,7 +2,7 @@
 Integration tests for hooks and permissions system.
 
 Tests the integration between:
-- pre_tool_use hook and PolicyEngine
+- pre_tool_use hook and BashValidator (modular architecture)
 - post_tool_use hook and AuditLogger
 - Settings permissions and pattern matching
 - GitOps security validation
@@ -22,14 +22,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "system"))
 
 try:
-    from pre_tool_use import PolicyEngine, SecurityTier, pre_tool_use_hook
+    from pre_tool_use import pre_tool_use_hook
+    from modules.security.tiers import SecurityTier
+    from modules.tools.bash_validator import BashValidator
     PRE_HOOK_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: pre_tool_use hook not available: {e}")
     PRE_HOOK_AVAILABLE = False
 
 try:
-    from post_tool_use import post_tool_use_hook, AuditLogger, MetricsCollector
+    from post_tool_use import post_tool_use_hook
+    from modules.audit.logger import AuditLogger
+    from modules.audit.metrics import MetricsCollector
     POST_HOOK_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: post_tool_use hook not available: {e}")
@@ -92,11 +96,11 @@ class TestPreToolUseHook:
         assert result is not None
         assert "blocked" in result.lower()
     
-    def test_hook_blocks_git_status(self):
-        """Test that git status is blocked (not in allowed patterns)"""
+    def test_hook_allows_git_status(self):
+        """Test that git status is allowed (read-only command)"""
         result = pre_tool_use_hook("bash", {"command": "git status"})
-        # git status is not in allowed_read_operations, so it's blocked by default
-        assert result is not None
+        # git status is a read-only command, should be allowed
+        assert result is None
     
     def test_hook_blocks_helm_install(self):
         """Test that helm install is blocked"""
@@ -150,137 +154,121 @@ class TestPreToolUseHook:
         """Test that blocked commands get helpful error messages"""
         result = pre_tool_use_hook("bash", {"command": "kubectl delete pod test-pod"})
         assert result is not None
-        assert ("alternative" in result.lower() or "instead" in result.lower()), \
+        assert ("suggestion" in result.lower() or "use:" in result.lower()), \
             "Error message should suggest alternatives"
 
 
-@pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="PolicyEngine not available")
-class TestPolicyEngine:
-    """Test PolicyEngine command classification"""
-    
+@pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="BashValidator not available")
+class TestBashValidator:
+    """Test BashValidator command classification (modular architecture)"""
+
     @pytest.fixture
-    def policy_engine(self):
-        """Create a PolicyEngine instance"""
-        return PolicyEngine()
-    
-    def test_classify_read_operations(self, policy_engine):
+    def validator(self):
+        """Create a BashValidator instance"""
+        return BashValidator()
+
+    def test_classify_read_operations(self, validator):
         """Test classification of read operations"""
-        tier = policy_engine.classify_command_tier("kubectl get pods")
-        assert tier == SecurityTier.T0_READ_ONLY
-    
-    def test_classify_validation_operations(self, policy_engine):
+        result = validator.validate("kubectl get pods")
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    def test_classify_validation_operations(self, validator):
         """Test classification of validation operations"""
-        tier = policy_engine.classify_command_tier("terraform plan")
-        assert tier == SecurityTier.T1_VALIDATION
-    
-    def test_classify_dry_run_operations(self, policy_engine):
+        result = validator.validate("terraform plan")
+        assert result.tier == SecurityTier.T1_VALIDATION
+
+    def test_classify_dry_run_operations(self, validator):
         """Test classification of dry-run operations"""
-        tier = policy_engine.classify_command_tier("kubectl apply -f test.yaml --dry-run=client")
-        assert tier == SecurityTier.T2_DRY_RUN
-    
-    def test_classify_blocked_operations(self, policy_engine):
+        result = validator.validate("kubectl apply -f test.yaml --dry-run=client")
+        assert result.tier == SecurityTier.T2_DRY_RUN
+
+    def test_classify_blocked_operations(self, validator):
         """Test classification of blocked operations"""
-        tier = policy_engine.classify_command_tier("terraform apply")
-        assert tier == SecurityTier.T3_BLOCKED
-    
-    def test_validate_command_returns_tuple(self, policy_engine):
-        """Test that validate_command returns proper tuple"""
-        is_allowed, tier, reason = policy_engine.validate_command("bash", "kubectl get pods")
-        assert isinstance(is_allowed, bool)
-        assert isinstance(tier, str)
-        assert isinstance(reason, str)
-    
-    def test_validate_allows_safe_commands(self, policy_engine):
+        result = validator.validate("terraform apply")
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+    def test_validate_returns_result_object(self, validator):
+        """Test that validate returns proper result object"""
+        result = validator.validate("kubectl get pods")
+        assert isinstance(result.allowed, bool)
+        assert isinstance(result.tier, SecurityTier)
+        assert isinstance(result.reason, str)
+
+    def test_validate_allows_safe_commands(self, validator):
         """Test that safe commands are allowed"""
-        is_allowed, tier, reason = policy_engine.validate_command("bash", "ls -la")
-        assert is_allowed is True
-    
-    def test_validate_blocks_dangerous_commands(self, policy_engine):
+        result = validator.validate("ls -la")
+        assert result.allowed is True
+
+    def test_validate_blocks_dangerous_commands(self, validator):
         """Test that dangerous commands are blocked"""
-        is_allowed, tier, reason = policy_engine.validate_command("bash", "kubectl delete namespace production")
-        assert is_allowed is False
-        assert tier == SecurityTier.T3_BLOCKED
-    
-    def test_validate_handles_invalid_tool_name(self, policy_engine):
-        """Test handling of invalid tool names"""
-        is_allowed, tier, reason = policy_engine.validate_command(123, "test")
-        assert is_allowed is False
-        assert "invalid" in reason.lower()
-    
-    def test_validate_handles_invalid_command(self, policy_engine):
-        """Test handling of invalid commands"""
-        is_allowed, tier, reason = policy_engine.validate_command("bash", None)
-        assert is_allowed is False
-    
-    def test_check_credentials_required(self, policy_engine):
-        """Test credential requirement detection"""
-        requires, warning = policy_engine.check_credentials_required("kubectl get pods")
-        assert isinstance(requires, bool)
-        assert isinstance(warning, str)
+        result = validator.validate("kubectl delete namespace production")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+    def test_validate_handles_empty_command(self, validator):
+        """Test handling of empty commands"""
+        result = validator.validate("")
+        assert result.allowed is False
+
+    def test_validate_handles_whitespace_command(self, validator):
+        """Test handling of whitespace-only commands"""
+        result = validator.validate("   ")
+        assert result.allowed is False
 
 
-@pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="PolicyEngine not available")
+@pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="BashValidator not available")
 class TestGitOpsSecurityValidation:
     """Test GitOps-specific security validation"""
-    
+
     @pytest.fixture
-    def policy_engine(self):
-        return PolicyEngine()
-    
-    def test_kubectl_write_blocked(self, policy_engine):
+    def validator(self):
+        return BashValidator()
+
+    def test_kubectl_write_blocked(self, validator):
         """Test that kubectl write operations are blocked"""
-        is_allowed, tier, _ = policy_engine.validate_command("bash", "kubectl apply -f deployment.yaml")
-        assert is_allowed is False
-    
-    def test_kubectl_read_allowed(self, policy_engine):
+        result = validator.validate("kubectl apply -f deployment.yaml")
+        assert result.allowed is False
+
+    def test_kubectl_read_allowed(self, validator):
         """Test that kubectl read operations are allowed"""
-        is_allowed, tier, _ = policy_engine.validate_command("bash", "kubectl get deployments")
-        assert is_allowed is True
-    
-    def test_helm_upgrade_blocked(self, policy_engine):
+        result = validator.validate("kubectl get deployments")
+        assert result.allowed is True
+
+    def test_helm_upgrade_blocked(self, validator):
         """Test that helm upgrade is blocked"""
-        is_allowed, tier, _ = policy_engine.validate_command("bash", "helm upgrade myapp ./chart")
-        assert is_allowed is False
-    
-    def test_helm_template_allowed(self, policy_engine):
+        result = validator.validate("helm upgrade myapp ./chart")
+        assert result.allowed is False
+
+    def test_helm_template_allowed(self, validator):
         """Test that helm template is allowed"""
-        is_allowed, tier, _ = policy_engine.validate_command("bash", "helm template myapp ./chart")
-        assert is_allowed is True
-    
-    def test_flux_reconcile_blocked(self, policy_engine):
+        result = validator.validate("helm template myapp ./chart")
+        assert result.allowed is True
+
+    def test_flux_reconcile_blocked(self, validator):
         """Test that flux reconcile is blocked"""
-        is_allowed, tier, _ = policy_engine.validate_command("bash", "flux reconcile helmrelease myapp")
-        assert is_allowed is False
-    
-    def test_flux_check_allowed(self, policy_engine):
+        result = validator.validate("flux reconcile helmrelease myapp")
+        assert result.allowed is False
+
+    def test_flux_check_allowed(self, validator):
         """Test that flux check is allowed"""
-        is_allowed, tier, _ = policy_engine.validate_command("bash", "flux check")
-        assert is_allowed is True
-    
-    def test_dry_run_kubectl_allowed(self, policy_engine):
+        result = validator.validate("flux check")
+        assert result.allowed is True
+
+    def test_dry_run_kubectl_allowed(self, validator):
         """Test that kubectl --dry-run is allowed"""
-        is_allowed, tier, _ = policy_engine.validate_command(
-            "bash", 
-            "kubectl apply -f deployment.yaml --dry-run=client"
-        )
-        assert is_allowed is True
-        assert tier == SecurityTier.T2_DRY_RUN
-    
-    def test_dry_run_helm_allowed(self, policy_engine):
+        result = validator.validate("kubectl apply -f deployment.yaml --dry-run=client")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T2_DRY_RUN
+
+    def test_dry_run_helm_allowed(self, validator):
         """Test that helm --dry-run is allowed"""
-        is_allowed, tier, _ = policy_engine.validate_command(
-            "bash",
-            "helm install myapp ./chart --dry-run"
-        )
-        assert is_allowed is True
-    
-    def test_namespace_delete_blocked(self, policy_engine):
+        result = validator.validate("helm install myapp ./chart --dry-run")
+        assert result.allowed is True
+
+    def test_namespace_delete_blocked(self, validator):
         """Test that namespace deletion is blocked"""
-        is_allowed, tier, _ = policy_engine.validate_command(
-            "bash",
-            "kubectl delete namespace production"
-        )
-        assert is_allowed is False
+        result = validator.validate("kubectl delete namespace production")
+        assert result.allowed is False
 
 
 class TestSettingsPermissionMatching:

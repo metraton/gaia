@@ -22,13 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "system"))
 
 try:
-    from pre_tool_use import PolicyEngine, SecurityTier, pre_tool_use_hook
+    from pre_tool_use import pre_tool_use_hook
+    from modules.security.tiers import SecurityTier
+    from modules.tools.bash_validator import BashValidator
     PRE_HOOK_AVAILABLE = True
 except ImportError:
     PRE_HOOK_AVAILABLE = False
 
 try:
-    from post_tool_use import post_tool_use_hook, AuditLogger
+    from post_tool_use import post_tool_use_hook
+    from modules.audit.logger import AuditLogger
     POST_HOOK_AVAILABLE = True
 except ImportError:
     POST_HOOK_AVAILABLE = False
@@ -135,19 +138,18 @@ class TestErrorHandlingWorkflow:
         result = pre_tool_use_hook("read", {"file_path": "/tmp/test.txt"})
         assert result is None, "Non-bash tools should pass through"
     
-    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="PolicyEngine not available")
-    def test_policy_engine_error_handling(self):
-        """Test that PolicyEngine handles errors gracefully"""
-        engine = PolicyEngine()
-        
-        # Invalid tool name type
-        is_allowed, tier, reason = engine.validate_command(123, "test")
-        assert is_allowed is False
-        assert "invalid" in reason.lower()
-        
-        # Invalid command type
-        is_allowed, tier, reason = engine.validate_command("bash", None)
-        assert is_allowed is False
+    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="BashValidator not available")
+    def test_bash_validator_error_handling(self):
+        """Test that BashValidator handles errors gracefully"""
+        validator = BashValidator()
+
+        # Empty command
+        result = validator.validate("")
+        assert result.allowed is False
+
+        # Whitespace command
+        result = validator.validate("   ")
+        assert result.allowed is False
     
     @pytest.mark.skipif(not POST_HOOK_AVAILABLE, reason="Post-hook not available")
     def test_audit_logger_creates_directories(self):
@@ -283,59 +285,59 @@ class TestGitOpsWorkflow:
 
 class TestTierEscalationWorkflow:
     """Test tier escalation scenarios"""
-    
-    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="PolicyEngine not available")
+
+    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="BashValidator not available")
     def test_tier_progression(self):
         """Test that tiers progress logically"""
-        engine = PolicyEngine()
-        
+        validator = BashValidator()
+
         # T0: Read only
-        tier = engine.classify_command_tier("kubectl get pods")
-        assert tier == SecurityTier.T0_READ_ONLY
-        
+        result = validator.validate("kubectl get pods")
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
         # T1: Validation
-        tier = engine.classify_command_tier("terraform validate")
-        assert tier == SecurityTier.T1_VALIDATION
-        
+        result = validator.validate("terraform validate")
+        assert result.tier == SecurityTier.T1_VALIDATION
+
         # T2: Dry-run
-        tier = engine.classify_command_tier("kubectl apply -f test.yaml --dry-run=client")
-        assert tier == SecurityTier.T2_DRY_RUN
-        
+        result = validator.validate("kubectl apply -f test.yaml --dry-run=client")
+        assert result.tier == SecurityTier.T2_DRY_RUN
+
         # T3: Blocked
-        tier = engine.classify_command_tier("terraform apply")
-        assert tier == SecurityTier.T3_BLOCKED
-    
-    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="PolicyEngine not available")
+        result = validator.validate("terraform apply")
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="BashValidator not available")
     def test_cannot_skip_tiers(self):
         """Test that T0 commands cannot escalate directly to T3"""
-        engine = PolicyEngine()
-        
+        validator = BashValidator()
+
         # Read operation is T0
-        is_allowed, tier, _ = engine.validate_command("bash", "kubectl get pods")
-        assert is_allowed is True
-        assert tier == SecurityTier.T0_READ_ONLY
-        
+        result = validator.validate("kubectl get pods")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
         # Write operation is T3 (blocked)
-        is_allowed, tier, _ = engine.validate_command("bash", "kubectl delete pod test")
-        assert is_allowed is False
-        assert tier == SecurityTier.T3_BLOCKED
-    
-    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="PolicyEngine not available")
+        result = validator.validate("kubectl delete pod test")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+    @pytest.mark.skipif(not PRE_HOOK_AVAILABLE, reason="BashValidator not available")
     def test_dry_run_bridges_validation_to_realization(self):
         """Test that dry-run (T2) bridges validation (T1) to realization (T3)"""
-        engine = PolicyEngine()
-        
+        validator = BashValidator()
+
         # T1: Validation
-        tier = engine.classify_command_tier("terraform plan")
-        assert tier == SecurityTier.T1_VALIDATION
-        
+        result = validator.validate("terraform plan")
+        assert result.tier == SecurityTier.T1_VALIDATION
+
         # T2: Dry-run (approved path to T3)
-        tier = engine.classify_command_tier("terraform apply --help")  # Not actually blocked
-        # Note: This test shows the conceptual bridge, not actual execution
-        
+        result = validator.validate("kubectl apply -f test.yaml --dry-run=client")
+        assert result.tier == SecurityTier.T2_DRY_RUN
+
         # T3: Realization (requires explicit approval)
-        tier = engine.classify_command_tier("terraform apply")
-        assert tier == SecurityTier.T3_BLOCKED
+        result = validator.validate("terraform apply")
+        assert result.tier == SecurityTier.T3_BLOCKED
 
 
 class TestAuditTrailWorkflow:
