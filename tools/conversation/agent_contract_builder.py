@@ -319,7 +319,7 @@ class AgentContractBuilder:
         agent_requirements = {
             "gitops-operator": ["resources", "errors"],
             "terraform-architect": ["validation_results", "plan_summary"],
-            "gcp-troubleshooter": ["diagnostics", "recommendations"],
+            "cloud-troubleshooter": ["diagnostics", "recommendations"],
             "devops-developer": ["build_status", "test_results"]
         }
 
@@ -468,7 +468,7 @@ if __name__ == "__main__":
     test_cases = [
         ("check the pods in namespace default", "gitops-operator", None),  # Simple
         ("show me the logs of those pods", "gitops-operator", mock_conversation),  # Reference
-        ("debug the database connection error", "gcp-troubleshooter", mock_conversation)  # Complex
+        ("debug the database connection error", "cloud-troubleshooter", mock_conversation)  # Complex
     ]
 
     print("Agent Contract Builder Test")

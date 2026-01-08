@@ -74,7 +74,7 @@ El test de precision evalua 26 requests semanticos:
 |-------|-----------|
 | terraform-architect | 95% |
 | gitops-operator | 93% |
-| gcp-troubleshooter | 90% |
+| cloud-troubleshooter | 90% |
 | devops-developer | 92% |
 
 ---

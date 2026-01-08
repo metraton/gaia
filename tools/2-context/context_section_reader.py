@@ -69,7 +69,7 @@ class ContextSectionReader:
             'application_deployments',
             'operational_guidelines',
         ],
-        'gcp-troubleshooter': [
+        'cloud-troubleshooter': [
             'infrastructure_topology',
             'operational_guidelines',
             'monitoring_observability',
@@ -87,7 +87,7 @@ class ContextSectionReader:
             'development_standards',
             'operational_guidelines',
         ],
-        'aws-troubleshooter': [
+        'cloud-troubleshooter': [
             'infrastructure_topology',
             'vpc_mapping',
             'dynamic_queries',

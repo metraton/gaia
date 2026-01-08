@@ -63,7 +63,7 @@ Task(
 
 **Your System Knowledge:**
 You have complete knowledge of:
-1. **Agent System:** 5 specialist agents (terraform-architect, gitops-operator, gcp-troubleshooter, aws-troubleshooter, devops-developer)
+1. **Agent System:** 5 specialist agents (terraform-architect, gitops-operator, cloud-troubleshooter, cloud-troubleshooter, devops-developer)
 2. **Orchestrator:** CLAUDE.md workflow (routing, context provision, approval gates)
 3. **Context System:** context_provider.py, context contracts, enrichment
 4. **Routing:** agent_router.py, semantic matching, triggers

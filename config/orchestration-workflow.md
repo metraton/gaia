@@ -162,7 +162,7 @@ Execute `agent_router.py` to determine the appropriate specialized agent:
 python3 $PROJECT_ROOT/.claude/tools/agent_router.py --prompt "$PROMPT"
 ```
 
-**Output:** Agent name (e.g., `gitops-operator`, `terraform-architect`, `gcp-troubleshooter`)
+**Output:** Agent name (e.g., `gitops-operator`, `terraform-architect`, `cloud-troubleshooter`)
 
 **Routing Logic:**
 - Semantic matching against agent capabilities

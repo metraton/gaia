@@ -293,16 +293,16 @@ Task(
 |-------|---------------|-----------|
 | **terraform-architect** | Terraform/Terragrunt validation | T0-T1 |
 | **gitops-operator** | Kubernetes/Flux operations | T0-T1 |
-| **gcp-troubleshooter** | GCP diagnostics | T0 only |
+| **cloud-troubleshooter** | GCP diagnostics | T0 only |
 | **devops-developer** | Application development | T0-T2 |
-| **aws-troubleshooter** | AWS diagnostics (standby) | T0 only |
+| **cloud-troubleshooter** | AWS diagnostics (standby) | T0 only |
 
 ### Routing Decision Factors
 
 **Keyword matching:**
 - "terraform" → terraform-architect
 - "kubectl", "flux" → gitops-operator
-- "gcp", "gke" → gcp-troubleshooter
+- "gcp", "gke" → cloud-troubleshooter
 - "build", "test" → devops-developer
 
 **Skill scoring:**
@@ -314,7 +314,7 @@ Agent: gitops-operator
 ```
 
 **Context requirements:**
-- Cluster name → gitops-operator, gcp-troubleshooter
+- Cluster name → gitops-operator, cloud-troubleshooter
 - Terraform path → terraform-architect
 - Repository → devops-developer
 

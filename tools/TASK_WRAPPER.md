@@ -122,7 +122,7 @@ Task Wrapper clasifica automáticamente cada agente por **Security Tier**:
 
 | Tier | Agentes | Descripción |
 |------|---------|-------------|
-| **T0** | gcp-troubleshooter, aws-troubleshooter, Explore | Read-only, no cambios |
+| **T0** | cloud-troubleshooter, cloud-troubleshooter, Explore | Read-only, no cambios |
 | **T1** | terraform-architect (validate), Plan | Validación solamente |
 | **T2** | terraform-architect (plan) | Cambios potenciales, ask for approval |
 | **T3** | gitops-operator, terraform-architect (apply) | Write operations, REQUIRE approval |
@@ -130,7 +130,7 @@ Task Wrapper clasifica automáticamente cada agente por **Security Tier**:
 **Lógica de clasificación:**
 ```python
 def _classify_agent_tier(self, agent_type: str) -> str:
-    if agent_type in ["gcp-troubleshooter", "aws-troubleshooter"]:
+    if agent_type in ["cloud-troubleshooter", "cloud-troubleshooter"]:
         return "T0"
     elif agent_type in ["Plan", "terraform-architect"]:
         return "T1"
@@ -241,7 +241,7 @@ Ejecución del 2025-11-11 21:07:
 ### Archivos Generados
 
 ```
-agent-gcp-troubleshooter-2025-11-11.jsonl    1 registro    0.44 KB
+agent-cloud-troubleshooter-2025-11-11.jsonl    1 registro    0.44 KB
 agent-gitops-operator-2025-11-11.jsonl       2 registros   0.81 KB
 agent-terraform-architect-2025-11-11.jsonl   2 registros   0.89 KB
 audit-2025-11-11.jsonl                       5 registros   2.15 KB

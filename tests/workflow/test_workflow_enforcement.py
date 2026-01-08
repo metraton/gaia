@@ -50,7 +50,7 @@ class TestTaskValidation:
         from pre_tool_use import pre_tool_use_hook
 
         result = pre_tool_use_hook('Task', {
-            'subagent_type': 'gcp-troubleshooter',
+            'subagent_type': 'cloud-troubleshooter',
             'prompt': 'Check cluster status',
             'description': 'Get cluster information'
         })

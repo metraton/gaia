@@ -256,6 +256,106 @@ python3 tool.py "example input"
 
 ---
 
+## 7 LLM Engineering Principles
+
+When writing workflows, agents, or documentation, apply these principles:
+
+| Principle | Bad | Good |
+|-----------|-----|------|
+| **Binary Decisions** | "if X and Y or Z..." | "Is X? YES→step2 NO→step3" |
+| **Guards Over Advice** | "should", "may", "consider" | "MUST", "MUST NOT" |
+| **Tool Contracts** | "call the tool" | "Input: X, Output: Y" |
+| **Failure Paths** | (no error handling) | "If fails → rollback" |
+| **TL;DR First** | Long intro before the point | Summary in first 3 lines |
+| **References Over Duplication** | Copy-paste content | "See: config/X.md" |
+| **Metrics Over Subjective** | "fast", "efficient" | "< 100ms", "> 95%" |
+
+### Applying Principles
+
+When reviewing any document:
+1. Can decisions be made binary (yes/no)?
+2. Are there "should" words that should be "MUST"?
+3. Is there a TL;DR or summary at the top?
+4. Are failure scenarios documented?
+5. Are goals measurable?
+
+---
+
+## Agent Creation
+
+When creating or modifying agents, follow this structure:
+
+### Required Sections
+
+Every agent MUST have:
+
+1. **YAML Frontmatter** - name, description, tools, model
+2. **Overview** - What this agent does (2-3 sentences)
+3. **Core Responsibilities** - Numbered list of main tasks
+4. **Available Tools** - Which tools and when to use each
+5. **Security Tiers** - T0/T1/T2/T3 operations for this agent
+6. **Workflow** - Step-by-step flow for common tasks
+7. **Error Handling** - What to do when things fail
+
+### Agent Template
+
+```markdown
+---
+name: agent-name
+description: One-line description
+tools: Tool1, Tool2, Tool3
+model: inherit
+---
+
+## Overview
+
+[What this agent does and when to use it - 2-3 sentences]
+
+## Core Responsibilities
+
+1. [Primary responsibility]
+2. [Secondary responsibility]
+3. [Tertiary responsibility]
+
+## Available Tools
+
+| Tool | When to Use |
+|------|-------------|
+| Tool1 | [Scenario] |
+| Tool2 | [Scenario] |
+
+## Security Tiers
+
+| Tier | Operations |
+|------|-----------|
+| T0 | [Read-only ops] |
+| T1 | [Validation ops] |
+| T2 | [Dry-run ops] |
+| T3 | [State-changing ops - require approval] |
+
+## Workflow
+
+1. [Step 1] → produces...
+2. [Step 2] → leads to...
+3. [Step 3] → results in...
+
+## Error Handling
+
+| Error | Recovery |
+|-------|----------|
+| [Error type] | [What to do] |
+```
+
+### Best Practices
+
+- **Single purpose** - One agent, one domain
+- **Tool documentation** - Show examples for each tool
+- **Explicit limitations** - State what the agent cannot do
+- **3+ examples** - Show real usage scenarios
+- **Token budget** - Keep under 3,000 tokens
+
+---
+
 ## Research & Critical Thinking
 
 **Always be critical.** Don't just accept things - question them, suggest improvements.

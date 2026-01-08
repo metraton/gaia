@@ -93,7 +93,7 @@ def pre_phase_2_context(
     agent_requirements = {
         "terraform-architect": ["project_details", "terraform_infrastructure", "operational_guidelines"],
         "gitops-operator": ["project_details", "gitops_configuration", "cluster_details"],
-        "gcp-troubleshooter": ["project_details", "cluster_details"],
+        "cloud-troubleshooter": ["project_details", "cluster_details"],
         "devops-developer": ["project_details", "operational_guidelines"]
     }
 

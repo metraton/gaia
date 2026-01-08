@@ -66,7 +66,7 @@ class LazyContextLoader:
             "operational_guidelines": ContextPriority.RECOMMENDED,
             "secrets": ContextPriority.ON_DEMAND
         },
-        "gcp-troubleshooter": {
+        "cloud-troubleshooter": {
             "project_details": ContextPriority.REQUIRED,
             "cluster_details": ContextPriority.REQUIRED,
             "error_logs": ContextPriority.REQUIRED,

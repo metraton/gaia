@@ -30,8 +30,8 @@ Usuario envia pregunta
 |--------|-----------|-------|
 | **terraform-architect** | Infraestructura como codigo | T0-T3 |
 | **gitops-operator** | Kubernetes y despliegues | T0-T3 |
-| **gcp-troubleshooter** | Diagnostico GCP | T0 |
-| **aws-troubleshooter** | Diagnostico AWS | T0 |
+| **cloud-troubleshooter** | Diagnostico GCP | T0 |
+| **cloud-troubleshooter** | Diagnostico AWS | T0 |
 | **devops-developer** | Codigo y CI/CD | T0-T2 |
 | **speckit-planner** | Especificacion y planificacion de features | T0-T2 |
 | **gaia** | Sistema de agentes | T0-T2 |

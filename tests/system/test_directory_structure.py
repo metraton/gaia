@@ -50,7 +50,7 @@ class TestCoreDirectories:
             "context-contracts.gcp.json",
             "context-contracts.aws.json",
             "git_standards.json",
-            "intent_embeddings.json"
+            "universal-rules.json"
         ]
 
         for file_name in required_files:
@@ -68,13 +68,12 @@ class TestAgentsDirectory:
         return agents.resolve() if agents.is_symlink() else agents
 
     def test_all_project_agents_exist(self, agents_dir):
-        """All 5 project agents must exist"""
+        """All 4 project agents must exist (cloud-troubleshooter unified GCP/AWS)"""
         required_agents = [
             "gitops-operator.md",
-            "gcp-troubleshooter.md",
+            "cloud-troubleshooter.md",
             "terraform-architect.md",
-            "devops-developer.md",
-            "aws-troubleshooter.md"
+            "devops-developer.md"
         ]
 
         for agent in required_agents:

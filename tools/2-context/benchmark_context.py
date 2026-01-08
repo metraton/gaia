@@ -182,7 +182,7 @@ class ContextBenchmark:
             },
             {
                 "name": "Cost Analysis (T1)",
-                "agent": "gcp-troubleshooter",
+                "agent": "cloud-troubleshooter",
                 "task": "Analyze cost trends and identify optimization opportunities",
                 "tier": "T1"
             }

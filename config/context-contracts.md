@@ -320,14 +320,14 @@ gitops-operator:
 
 ---
 
-## gcp-troubleshooter
+## cloud-troubleshooter
 
 **Purpose:** Diagnoses issues by comparing intended state (IaC) with actual state (live GCP resources)
 
 ### Contract v1.0
 
 ```yaml
-gcp-troubleshooter:
+cloud-troubleshooter:
   contract_version: "1.0"
 
   required:
@@ -404,14 +404,14 @@ gcp-troubleshooter:
 
 ---
 
-## aws-troubleshooter
+## cloud-troubleshooter
 
-**Purpose:** Diagnoses issues in AWS environments (similar to gcp-troubleshooter but for AWS)
+**Purpose:** Diagnoses issues in AWS environments (similar to cloud-troubleshooter but for AWS)
 
 ### Contract v1.0
 
 ```yaml
-aws-troubleshooter:
+cloud-troubleshooter:
   contract_version: "1.0"
 
   required:
@@ -574,7 +574,7 @@ Task(
 - Tests: $PROJECT_ROOT/.claude/tests/
 
 **System Knowledge:**
-- 5 specialist agents: terraform-architect, gitops-operator, gcp-troubleshooter, aws-troubleshooter, devops-developer
+- 5 specialist agents: terraform-architect, gitops-operator, cloud-troubleshooter, cloud-troubleshooter, devops-developer
 - Routing: agent_router.py with semantic matching
 - Context: context_provider.py with contracts
 - Logs: JSONL format in .claude/logs/
@@ -711,8 +711,8 @@ if agent_contract_version == "1.0":
 |-------|----------------|-----------------|------------------|
 | terraform-architect | project_details, terraform_infrastructure, operational_guidelines | terraform_state, recent_changes | Terraform/Terragrunt operations |
 | gitops-operator | project_details, gitops_configuration, cluster_details, operational_guidelines | application_services, recent_changes | Kubernetes/Flux deployments |
-| gcp-troubleshooter | project_details, terraform_infrastructure, gitops_configuration | application_services, issue_context | GCP diagnostics |
-| aws-troubleshooter | project_details, terraform_infrastructure, gitops_configuration | application_services, issue_context | AWS diagnostics |
+| cloud-troubleshooter | project_details, terraform_infrastructure, gitops_configuration | application_services, issue_context | GCP diagnostics |
+| cloud-troubleshooter | project_details, terraform_infrastructure, gitops_configuration | application_services, issue_context | AWS diagnostics |
 | devops-developer | project_details, operational_guidelines | application_services, development_context | App build/test/debug |
 | Gaia | (manual context in prompt) | N/A | System analysis & optimization |
 

@@ -18,8 +18,8 @@ These agents work on **USER PROJECTS** (infrastructure, GitOps, applications). T
 |-------|--------------|---------------|-------|
 | **terraform-architect** | Terraform/Terragrunt validation & realization | T0-T3 | inherit |
 | **gitops-operator** | Kubernetes/Flux operations & realization | T0-T3 | inherit |
-| **gcp-troubleshooter** | GCP diagnostics | T0-T2 | inherit |
-| **aws-troubleshooter** | AWS diagnostics | T0-T2 | inherit |
+| **cloud-troubleshooter** | GCP diagnostics | T0-T2 | inherit |
+| **cloud-troubleshooter** | AWS diagnostics | T0-T2 | inherit |
 | **devops-developer** | Application build/test/debug | T0-T2 | inherit |
 
 ---
@@ -186,7 +186,7 @@ Task(
 
 ---
 
-### gcp-troubleshooter
+### cloud-troubleshooter
 
 **Full Name:** GCP Diagnostic Specialist
 
@@ -214,7 +214,7 @@ Task(
 - T2: `gcloud compute ssh` (for VM diagnostics)
 - T3: None (diagnostic agent, no destructive operations)
 
-**Context Contract:** See `.claude/config/context-contracts.md#gcp-troubleshooter`
+**Context Contract:** See `.claude/config/context-contracts.md#cloud-troubleshooter`
 
 **Use Cases:**
 - "Why is tcm-api pod crashing with database connection error?"
@@ -226,14 +226,14 @@ Task(
 ```python
 # Phase 1: Routing
 agent = agent_router.py("Why is tcm-api pod crashing with database connection error?")
-# Returns: "gcp-troubleshooter"
+# Returns: "cloud-troubleshooter"
 
 # Phase 2: Context
-context = context_provider.py("gcp-troubleshooter", "Diagnose tcm-api pod crash")
+context = context_provider.py("cloud-troubleshooter", "Diagnose tcm-api pod crash")
 
 # Phase 3: Invoke for Diagnosis
 Task(
-    subagent_type="gcp-troubleshooter",
+    subagent_type="cloud-troubleshooter",
     description="Diagnose tcm-api database error",
     prompt=f"{context}\n\nTask: Why is tcm-api pod crashing with database connection error?"
 )
@@ -242,7 +242,7 @@ Task(
 
 ---
 
-### aws-troubleshooter
+### cloud-troubleshooter
 
 **Full Name:** AWS Diagnostic Specialist
 
@@ -270,7 +270,7 @@ Task(
 - T2: `aws ec2 ssh` (for EC2 diagnostics)
 - T3: None (diagnostic agent, no destructive operations)
 
-**Context Contract:** See `.claude/config/context-contracts.md#aws-troubleshooter`
+**Context Contract:** See `.claude/config/context-contracts.md#cloud-troubleshooter`
 
 **Use Cases:**
 - "Why is EKS pod failing with IAM permission error?"
@@ -464,8 +464,8 @@ User Request
 │  └─ YES → gitops-operator
 │
 ├─ Diagnostic/troubleshooting?
-│  ├─ GCP? → gcp-troubleshooter
-│  └─ AWS? → aws-troubleshooter
+│  ├─ GCP? → cloud-troubleshooter
+│  └─ AWS? → cloud-troubleshooter
 │
 ├─ Application code/build/test?
 │  └─ YES → devops-developer
@@ -573,8 +573,8 @@ Track in `.claude/logs/agent-metrics.jsonl`:
 |-------|-------------|--------------|--------------|---------------|
 | terraform-architect | 234 | 94% | 45s | 87% |
 | gitops-operator | 567 | 96% | 32s | 91% |
-| gcp-troubleshooter | 123 | 98% | 28s | N/A |
-| aws-troubleshooter | 45 | 96% | 31s | N/A |
+| cloud-troubleshooter | 123 | 98% | 28s | N/A |
+| cloud-troubleshooter | 45 | 96% | 31s | N/A |
 | devops-developer | 189 | 92% | 18s | 15% |
 | Gaia | 34 | 100% | 120s | N/A |
 | Explore | 456 | 99% | 8s | N/A |

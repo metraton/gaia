@@ -96,7 +96,7 @@ $ARGUMENTS
    |-----------------|-------|------|
    | terraform, terragrunt, .tf, infrastructure, vpc, gke, cloud-sql | terraform-architect | T0 (read), T2 (plan), T3 (apply) |
    | kubectl, helm, flux, kubernetes, k8s, deployment, service, ingress | gitops-operator | T0 (read), T2 (dry-run), T3 (push) |
-   | gcloud, GCP, cloud logging, IAM, service account | gcp-troubleshooter | T0 (diagnostics) |
+   | gcloud, GCP, cloud logging, IAM, service account | cloud-troubleshooter | T0 (diagnostics) |
    | docker, npm, build, test, CI, pipeline, Dockerfile | devops-developer | T0-T1 |
 
    **Security Tier Detection**:

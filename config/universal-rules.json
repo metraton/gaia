@@ -31,15 +31,13 @@
           "rule": "For flux reconcile commands, always use --timeout=90s or less to avoid Bash timeout issues."
         }
       ],
-      "gcp-troubleshooter": [
+      "cloud-troubleshooter": [
         {
           "id": "C1",
           "rule": "For gcloud commands with large output, save to file using --format=json > /tmp/output.json, then use Read tool to process."
-        }
-      ],
-      "aws-troubleshooter": [
+        },
         {
-          "id": "A1",
+          "id": "C2",
           "rule": "For AWS CLI commands with large output, save to file using --output json > /tmp/output.json, then use Read tool to process."
         }
       ]

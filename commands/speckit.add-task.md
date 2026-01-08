@@ -57,7 +57,7 @@ Use this command to append or insert a **single** task in the currently active S
    |----------|-------|-----------|
    | terraform, terragrunt, .tf, infrastructure, vpc, gke | terraform-architect | T0/T2/T3 |
    | kubectl, helm, flux, kubernetes, deployment, service | gitops-operator | T0/T2/T3 |
-   | gcloud, GCP, cloud logging, IAM | gcp-troubleshooter | T0 |
+   | gcloud, GCP, cloud logging, IAM | cloud-troubleshooter | T0 |
    | docker, npm, build, test, CI, Dockerfile | devops-developer | T0-T1 |
 
    **Security Tier**:

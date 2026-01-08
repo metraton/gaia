@@ -15,7 +15,7 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 ### Features
 
 - **Multi-cloud support** - GCP, AWS, Azure-ready
-- **6 specialist agents** (terraform-architect, gitops-operator, gcp-troubleshooter, aws-troubleshooter, devops-developer, Gaia)
+- **6 specialist agents** (terraform-architect, gitops-operator, cloud-troubleshooter, cloud-troubleshooter, devops-developer, Gaia)
 - **3 meta-agents** (Explore, Plan, Gaia)
 - **Episodic Memory** - Memory system for operational patterns
 - **Hybrid standards pre-loading** - 78% token reduction per invocation

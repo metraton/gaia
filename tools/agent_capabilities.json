@@ -46,7 +46,7 @@
     ],
     "routing_score_boost": 1.15
   },
-  "gcp-troubleshooter": {
+  "cloud-troubleshooter": {
     "domains": ["gcp", "google cloud", "gke", "cloud sql", "vpc", "iam", "gcloud"],
     "tiers": ["T0", "T1", "T2"],
     "tools": ["gcloud", "gsutil", "bq", "kubectl", "terraform"],
@@ -69,7 +69,7 @@
     ],
     "routing_score_boost": 1.1
   },
-  "aws-troubleshooter": {
+  "cloud-troubleshooter": {
     "domains": ["aws", "amazon", "ec2", "eks", "s3", "rds", "vpc", "cloudformation"],
     "tiers": ["T0", "T1", "T2"],
     "tools": ["aws", "eksctl", "kubectl", "terraform", "helm"],

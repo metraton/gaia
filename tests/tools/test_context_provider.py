@@ -45,15 +45,19 @@ def temp_project_context(tmp_path: Path) -> Path:
     context_file.write_text(json.dumps(mock_context))
     return context_file
 
-def run_script(context_file: Path, agent: str, task: str) -> dict:
+def run_script(context_file: Path, agent: str, task: str, full_context: bool = False) -> dict:
     """Helper function to run the context_provider.py script and parse its output."""
     script_path = TOOLS_DIR / "2-context" / "context_provider.py"
 
     if not script_path.exists():
         pytest.fail(f"context_provider.py not found at {script_path}")
     
+    cmd = [sys.executable, str(script_path), agent, task, "--context-file", str(context_file)]
+    if full_context:
+        cmd.append("--full-context")
+    
     process = subprocess.run(
-        [sys.executable, str(script_path), agent, task, "--context-file", str(context_file)],
+        cmd,
         capture_output=True,
         text=True,
         check=True,
@@ -66,7 +70,8 @@ def test_terraform_architect_contract(temp_project_context: Path):
     agent = "terraform-architect"
     task = "Create a new GCS bucket."
     
-    result = run_script(temp_project_context, agent, task)
+    # Use --full-context to ensure full contract is loaded
+    result = run_script(temp_project_context, agent, task, full_context=True)
     
     assert "contract" in result
     contract = result["contract"]
@@ -77,11 +82,12 @@ def test_terraform_architect_contract(temp_project_context: Path):
     assert "gitops_configuration" not in contract
 
 def test_gitops_operator_contract(temp_project_context: Path):
-    """Verify the gitops-operator gets its complete contract."""
+    """Verify the gitops-operator gets its complete contract with full context."""
     agent = "gitops-operator"
     task = "Deploy the frontend-app to the cluster."
     
-    result = run_script(temp_project_context, agent, task)
+    # Use --full-context to ensure full contract is loaded
+    result = run_script(temp_project_context, agent, task, full_context=True)
     
     assert "contract" in result
     contract = result["contract"]
@@ -92,12 +98,32 @@ def test_gitops_operator_contract(temp_project_context: Path):
     assert "operational_guidelines" in contract
     assert "terraform_infrastructure" not in contract
 
+def test_progressive_disclosure_level(temp_project_context: Path):
+    """Verify progressive disclosure adjusts context based on task complexity."""
+    agent = "gitops-operator"
+    
+    # Simple task should get minimal context
+    simple_task = "check pod status"
+    result = run_script(temp_project_context, agent, simple_task)
+    
+    assert "progressive_disclosure" in result
+    assert result["progressive_disclosure"]["level"] <= 2
+    
+    # Complex debugging task should get more context
+    complex_task = "debug why the backend-api is crashing with database connection errors"
+    result = run_script(temp_project_context, agent, complex_task)
+    
+    assert "progressive_disclosure" in result
+    # Debugging tasks should trigger higher context level
+    assert result["progressive_disclosure"]["needs_debugging"] == True
+
 def test_troubleshooter_contract(temp_project_context: Path):
     """Verify troubleshooters get the right contract (required fields only)."""
-    agent = "gcp-troubleshooter"
+    agent = "cloud-troubleshooter"
     task = "Why is the backend-api crashing?"
 
-    result = run_script(temp_project_context, agent, task)
+    # Use full context for contract testing
+    result = run_script(temp_project_context, agent, task, full_context=True)
 
     assert "contract" in result
     contract = result["contract"]
@@ -123,7 +149,7 @@ def test_enrichment_by_keyword(temp_project_context: Path):
 
 def test_enrichment_by_service_name(temp_project_context: Path):
     """Verify enrichment adds services when mentioned in task."""
-    agent = "gcp-troubleshooter"
+    agent = "cloud-troubleshooter"
     task = "Check the logs for the frontend-app."
     
     result = run_script(temp_project_context, agent, task)
@@ -282,3 +308,56 @@ def test_standards_in_final_payload(temp_project_context: Path):
     
     # For apply task, should have loaded standards
     # Note: depends on standards directory being available during test
+
+
+# ============================================================================
+# PROGRESSIVE DISCLOSURE TESTS
+# ============================================================================
+
+def test_progressive_disclosure_integration():
+    """Test progressive disclosure module integration."""
+    from context_provider import analyze_query_for_context_level
+    
+    # Simple query should get low level
+    simple_result = analyze_query_for_context_level("check status")
+    assert "recommended_level" in simple_result
+    assert simple_result["recommended_level"] <= 2
+    
+    # Debug query should get higher level
+    debug_result = analyze_query_for_context_level("debug database connection error")
+    assert debug_result["needs_debugging"] == True or debug_result.get("fallback") == True
+
+
+def test_filter_context_by_level():
+    """Test context filtering by level."""
+    from context_provider import filter_context_by_level
+    
+    full_context = {
+        "project_details": {"id": "test"},
+        "operational_guidelines": {"rules": "test"},
+        "terraform_infrastructure": {"path": "test"},
+        "infrastructure_topology": {"vpc": "test"},
+        "application_services": [{"name": "test"}],
+        "monitoring_observability": {"metrics": "test"}
+    }
+    
+    # Level 1 should only include basics
+    level1 = filter_context_by_level(full_context, 1, "terraform-architect")
+    assert "project_details" in level1
+    assert len(level1) < len(full_context)
+    
+    # Level 4 should include everything
+    level4 = filter_context_by_level(full_context, 4, "terraform-architect")
+    assert level4 == full_context
+
+
+def test_context_level_in_metadata(temp_project_context: Path):
+    """Test that context level is included in metadata."""
+    agent = "terraform-architect"
+    task = "check terraform status"
+    
+    result = run_script(temp_project_context, agent, task)
+    
+    assert "metadata" in result
+    assert "context_level" in result["metadata"]
+    assert "query_complexity" in result["metadata"]

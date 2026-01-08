@@ -258,7 +258,7 @@ Another example - GCP troubleshooting:
 
 \```bash
 python3 agent_router.py --prompt "Why is the GKE cluster failing?"
-# Output: gcp-troubleshooter
+# Output: cloud-troubleshooter
 \```
 ```
 

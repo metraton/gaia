@@ -2,12 +2,13 @@
 """
 Unified Agent Router for Claude Agent System
 
-- If the request references a Spec-Kit task (Txxx or TASK-xxx), the router reads
-  the task metadata and routes to the agent declared there.
-- Otherwise it falls back to keyword/pattern scoring.
+Routing Priority:
+1. Task Metadata (if Txxx in request) - highest priority
+2. LLM Classification (via llm_classifier.py) - primary method
+3. Keyword Fallback (if LLM unavailable) - backup
 
-This script replaces the previous split between TaskAnalyzer routing and the
-keyword-only router.
+This simplified router replaces the previous keyword/embedding system
+with a single LLM call for more accurate intent classification.
 """
 
 import argparse
@@ -15,6 +16,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,205 +24,26 @@ from typing import Any, Dict, List, Optional, Tuple
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Week 2: Try to import SemanticMatcher (optional - graceful degradation if not available)
+
+# ============================================================================
+# LLM CLASSIFIER IMPORT
+# ============================================================================
+
 try:
-    from semantic_matcher import SemanticMatcher
-    SEMANTIC_MATCHER_AVAILABLE = True
+    from llm_classifier import classify_intent, classify_intent_mock, AGENT_DEFINITIONS
+    LLM_CLASSIFIER_AVAILABLE = True
 except ImportError:
-    SEMANTIC_MATCHER_AVAILABLE = False
-    logger.debug("SemanticMatcher not available (embeddings not generated yet)")
+    LLM_CLASSIFIER_AVAILABLE = False
+    logger.warning("llm_classifier not available, using keyword fallback only")
+    AGENT_DEFINITIONS = {}
 
 
 # ============================================================================
-# WEEK 1: Enhanced Semantic Keywords - IntentClassifier
+# TASK FILE RESOLUTION (unchanged from original)
 # ============================================================================
-
-class IntentClassifier:
-    """Classify request intent using semantic keywords (Week 1 addition)"""
-
-    def __init__(self):
-        self.intent_keywords = {
-            "infrastructure_creation": {
-                "include": [
-                    "create", "provision", "deploy", "setup", "build",
-                    "infrastructure", "infra", "resources", "services",
-                    "cluster", "network", "vpc", "database", "instance"
-                ],
-                "exclude": ["diagnose", "troubleshoot", "debug", "check", "analyze"],
-                "confidence_boost": 0.85
-            },
-            "infrastructure_diagnosis": {
-                "include": [
-                    "diagnose", "troubleshoot", "debug", "check", "analyze",
-                    "problem", "issue", "error", "failing", "broken",
-                    "crash", "latency", "timeout", "connectivity"
-                ],
-                "exclude": ["create", "provision", "deploy", "setup"],
-                "confidence_boost": 0.88
-            },
-            "kubernetes_operations": {
-                "include": [
-                    "pod", "deployment", "service", "namespace", "helm",
-                    "flux", "kubectl", "verify", "status", "logs",
-                    "scale", "restart", "update",
-                    "cluster", "traffic", "configuration", "gitops"
-                ],
-                "exclude": ["create infrastructure", "provision"],
-                "confidence_boost": 0.82
-            },
-            "application_development": {
-                "include": [
-                    "build", "docker", "compile", "test", "run",
-                    "npm", "python", "node", "typescript", "lint",
-                    "unit test", "integration test"
-                ],
-                "exclude": ["infrastructure"],
-                "confidence_boost": 0.80
-            },
-            "feature_planning": {
-                "include": [
-                    "spec-kit", "speckit", "specify", "plan", "tasks",
-                    "feature", "specification", "requirements", "requerimiento",
-                    "planificar", "planear", "crear tareas", "generate tasks",
-                    "spec.md", "plan.md", "tasks.md", "enrichment",
-                    "workflow", "implement feature", "new feature"
-                ],
-                "exclude": ["terraform apply", "kubectl apply", "deploy"],
-                "confidence_boost": 0.92
-            },
-            "infrastructure_validation": {
-                "include": [
-                    "validate", "check", "verify", "scan", "lint",
-                    "terraform", "hcl", "syntax", "security", "plan"
-                ],
-                "exclude": ["deploy", "apply", "execute"],
-                "confidence_boost": 0.86
-            }
-        }
-
-    def classify(self, request: str) -> Tuple[Optional[str], float]:
-        """
-        Classify intent using semantic keyword matching
-
-        Returns:
-            (intent_name, confidence_score)
-        """
-        request_lower = request.lower()
-        scores = {}
-
-        for intent, keywords in self.intent_keywords.items():
-            score = 0.0
-
-            # Count matching include keywords
-            include_matches = sum(
-                1 for kw in keywords["include"]
-                if kw in request_lower
-            )
-
-            # Check exclusion keywords (veto)
-            exclude_matches = sum(
-                1 for kw in keywords["exclude"]
-                if kw in request_lower
-            )
-
-            if exclude_matches > 0:
-                score = -1.0  # Veto this intent
-            else:
-                score = include_matches * keywords["confidence_boost"]
-
-            scores[intent] = score
-
-        # Find best intent (exclude vetoed)
-        valid_scores = {k: v for k, v in scores.items() if v >= 0}
-
-        if not valid_scores:
-            return None, 0.0
-
-        best_intent = max(valid_scores, key=valid_scores.get)
-        # Normalize to 0-1 range (adjust divisor based on typical scores)
-        # Most requests have 1-5 keyword matches, so we normalize with factor of 5
-        raw_score = valid_scores[best_intent]
-        confidence = min(raw_score / 5, 1.0)
-
-        return best_intent, confidence
-
-
-class CapabilityValidator:
-    """Validate that selected agent has required capabilities (Week 1 addition)"""
-
-    def __init__(self):
-        self.agent_capabilities = {
-            "terraform-architect": {
-                "can_do": ["infrastructure_creation", "infrastructure_validation"],
-                "cannot_do": ["kubernetes_operations", "infrastructure_diagnosis"],
-                "requires_context": ["infrastructure", "iac"]
-            },
-            "gitops-operator": {
-                "can_do": ["kubernetes_operations", "infrastructure_diagnosis"],
-                "cannot_do": ["infrastructure_creation", "application_development"],
-                "requires_context": ["kubernetes", "gitops"]
-            },
-            "gcp-troubleshooter": {
-                "can_do": ["infrastructure_diagnosis"],
-                "cannot_do": ["infrastructure_creation", "application_development"],
-                "requires_context": ["gcp", "monitoring"]
-            },
-            "devops-developer": {
-                "can_do": ["application_development", "infrastructure_validation"],
-                "cannot_do": ["kubernetes_operations", "infrastructure_creation"],
-                "requires_context": ["application", "development"]
-            },
-            "speckit-planner": {
-                "can_do": ["feature_planning"],
-                "cannot_do": ["infrastructure_creation", "kubernetes_operations", "infrastructure_diagnosis"],
-                "requires_context": ["speckit", "planning"]
-            }
-        }
-
-    def validate(self, agent: str, intent: str) -> bool:
-        """Check if agent can handle the intent"""
-        if agent not in self.agent_capabilities:
-            return False
-
-        capabilities = self.agent_capabilities[agent]
-
-        # Can't do list is hard veto
-        if intent in capabilities["cannot_do"]:
-            return False
-
-        # Can do list is preferred
-        return intent in capabilities["can_do"]
-
-    def find_fallback_agent(self, intent: str, exclude: str = None) -> str:
-        """Find alternative agent if primary fails"""
-        for agent, capabilities in self.agent_capabilities.items():
-            if agent == exclude:
-                continue
-            if intent in capabilities["can_do"]:
-                return agent
-
-        return "devops-developer"  # Ultimate fallback
-
-# Agent Router is AGNOSTIC: No hardcoded task file paths
-# Task metadata routing is OPTIONAL and only used if explicitly provided via:
-# 1. Constructor argument: AgentRouter(task_file="/path/to/tasks.md")
-# 2. Environment variable: GAIA_TASKS_FILE=/path/to/tasks.md
-# 3. Direct method: router.route(user_request, task_file="/path/to/tasks.md")
-#
-# If NO task file is provided, router falls back to:
-# - Semantic keyword matching (IntentClassifier)
-# - Pattern-based keyword routing
-#
-# This design ensures portability across different project structures:
-# - gaia-ops (primary)
-# - vtr (project)
-# - Any other Claude Code project
 
 def _resolve_task_file_from_env() -> Optional[Path]:
-    """
-    Resolve task file ONLY from explicit environment variable.
-    No directory scanning or assumptions about project structure.
-    """
+    """Resolve task file ONLY from explicit environment variable."""
     if env_tasks_file := os.environ.get("GAIA_TASKS_FILE"):
         candidate = Path(env_tasks_file)
         if candidate.exists():
@@ -228,12 +51,15 @@ def _resolve_task_file_from_env() -> Optional[Path]:
             return candidate
         else:
             logger.warning(f"GAIA_TASKS_FILE specified but not found: {candidate}")
-
     return None
 
-# NO DEFAULT_TASK_FILE - Router is agnostic by design
+
 DEFAULT_TASK_FILE = _resolve_task_file_from_env()
 
+
+# ============================================================================
+# ROUTING RULES (for fallback when LLM unavailable)
+# ============================================================================
 
 @dataclass
 class RoutingRule:
@@ -244,10 +70,57 @@ class RoutingRule:
     description: str
 
 
+# Simplified routing rules for fallback
+ROUTING_RULES: Dict[str, RoutingRule] = {
+    "gitops-operator": RoutingRule(
+        agent="gitops-operator",
+        keywords=["pod", "deployment", "service", "flux", "kubernetes", "k8s", "namespace", "helm", "kubectl"],
+        patterns=[r"check.*pod", r"deploy.*to", r"flux.*status", r"kubectl"],
+        description="Kubernetes/GitOps operations"
+    ),
+    "cloud-troubleshooter": RoutingRule(
+        agent="cloud-troubleshooter",
+        keywords=["gke", "gcp", "google cloud", "cloudsql", "eks", "aws", "amazon", "rds", "ec2", "diagnose", "troubleshoot"],
+        patterns=[r"gke.*cluster", r"cloud\s*sql", r"gcp.*diagnose", r"eks.*cluster", r"aws.*diagnose"],
+        description="Cloud diagnostics (GCP and AWS)"
+    ),
+    "terraform-architect": RoutingRule(
+        agent="terraform-architect",
+        keywords=["terraform", "terragrunt", "infrastructure", "iac", "plan", "apply"],
+        patterns=[r"terraform.*validate", r"terraform.*plan", r"terragrunt"],
+        description="Terraform/Terragrunt operations"
+    ),
+    "devops-developer": RoutingRule(
+        agent="devops-developer",
+        keywords=["build", "docker", "test", "npm", "python", "git", "ci", "cd"],
+        patterns=[r"build.*image", r"run.*tests", r"npm.*install"],
+        description="Application development and CI/CD"
+    ),
+    "speckit-planner": RoutingRule(
+        agent="speckit-planner",
+        keywords=["spec-kit", "speckit", "specification", "feature", "plan", "tasks"],
+        patterns=[r"create.*spec", r"plan.*feature", r"generate.*tasks"],
+        description="Feature specification and planning"
+    ),
+}
+
+
+# ============================================================================
+# AGENT ROUTER CLASS
+# ============================================================================
+
 class AgentRouter:
-    """Unified router that prefers task metadata and falls back to keywords."""
+    """
+    Unified router that prefers task metadata, then LLM, then keywords.
+    
+    Routing Priority:
+    1. Task metadata (if Txxx found in request)
+    2. LLM classification (via llm_classifier.py)
+    3. Keyword fallback (if LLM unavailable)
+    """
 
     def __init__(self, task_file: Optional[Path] = None):
+        """Initialize router with optional task file."""
         if task_file:
             candidate = Path(task_file)
         else:
@@ -259,145 +132,7 @@ class AgentRouter:
             self.task_file = None
 
         self.tasks_metadata = self._load_tasks_metadata()
-        self.routing_rules = self._load_routing_rules()
-
-        # Week 1 additions: Semantic routing components
-        self.intent_classifier = IntentClassifier()
-        self.capability_validator = CapabilityValidator()
-
-        # Week 2 additions: Semantic matcher (with embeddings)
-        self.semantic_matcher = None
-        if SEMANTIC_MATCHER_AVAILABLE:
-            try:
-                self.semantic_matcher = SemanticMatcher()
-            except Exception as e:
-                logger.warning(f"Could not initialize SemanticMatcher: {e}")
-                self.semantic_matcher = None
-
-    def _get_agent_for_intent(self, intent: str) -> str:
-        """Map intent to primary agent (Week 1 addition)"""
-        intent_to_agent = {
-            "infrastructure_creation": "terraform-architect",
-            "infrastructure_diagnosis": "gcp-troubleshooter",
-            "kubernetes_operations": "gitops-operator",
-            "application_development": "devops-developer",
-            "infrastructure_validation": "terraform-architect",
-            "feature_planning": "speckit-planner"
-        }
-
-        return intent_to_agent.get(intent, "devops-developer")
-
-    def _load_routing_rules(self) -> Dict[str, RoutingRule]:
-        """Load routing rules for all agents"""
-        return {
-            "gitops-operator": RoutingRule(
-                agent="gitops-operator",
-                keywords=[
-                    "pod", "pods", "deployment", "deployments",
-                    "service", "services", "flux", "helmrelease",
-                    "kubernetes", "k8s", "namespace", "namespaces",
-                    "ingress", "configmap", "secret",
-                    "reconcile", "kustomization",
-                    "traffic", "cluster", "gitops", "configuration"
-                ],
-                patterns=[
-                    r"check.*pod[s]?",
-                    r"validate.*deployment",
-                    r"flux.*status",
-                    r"helmrelease",
-                    r"kubernetes.*health",
-                    r"k8s.*status"
-                ],
-                description="Flux/Kubernetes operations (read-only)"
-            ),
-
-            "gcp-troubleshooter": RoutingRule(
-                agent="gcp-troubleshooter",
-                keywords=[
-                    "gke", "gcp", "google cloud",
-                    "cloud sql", "cloudsql", "postgres", "postgresql",
-                    "redis", "memorystore",
-                    "iam", "workload identity", "service account",
-                    "networking", "vpc", "firewall",
-                    "artifact registry", "gcr",
-                    "load balancer", "ip address"
-                ],
-                patterns=[
-                    r"gke.*cluster",
-                    r"cloud\s*sql",
-                    r"iam.*binding",
-                    r"workload.*identity",
-                    r"gcp.*diagnose",
-                    r"google.*cloud"
-                ],
-                description="GCP/GKE/IAM diagnostics"
-            ),
-
-            "terraform-architect": RoutingRule(
-                agent="terraform-architect",
-                keywords=[
-                    "terraform", "terragrunt",
-                    "infrastructure", "iac", "infrastructure as code",
-                    "tfstate", "state file",
-                    "module", "modules",
-                    "plan", "validate", "fmt"
-                ],
-                patterns=[
-                    r"terraform.*validate",
-                    r"terraform.*plan",
-                    r"terragrunt.*plan",
-                    r"infrastructure.*code",
-                    r"iac.*validation"
-                ],
-                description="Terraform/Terragrunt validation (T0-T2)"
-            ),
-
-            "devops-developer": RoutingRule(
-                agent="devops-developer",
-                keywords=[
-                    "build", "docker", "container", "image",
-                    "npm", "yarn", "pnpm", "turborepo",
-                    "test", "tests", "testing",
-                    "ci", "cd", "pipeline", "github actions",
-                    "lint", "prettier", "eslint",
-                    "package", "dependencies"
-                ],
-                patterns=[
-                    r"build.*image",
-                    r"docker.*build",
-                    r"run.*tests",
-                    r"npm.*install",
-                    r"turborepo",
-                    r"ci.*cd",
-                    r"github.*action"
-                ],
-                description="Application development and CI/CD"
-            ),
-
-            "speckit-planner": RoutingRule(
-                agent="speckit-planner",
-                keywords=[
-                    "spec-kit", "speckit", "specify", "specification",
-                    "feature", "requirements", "requerimiento", "requerimientos",
-                    "planificar", "planear", "crear tareas", "generate tasks",
-                    "spec.md", "plan.md", "tasks.md",
-                    "enrichment", "enrich tasks",
-                    "workflow planning", "feature planning"
-                ],
-                patterns=[
-                    r"create.*spec",
-                    r"crear.*spec",
-                    r"planificar.*feature",
-                    r"plan.*feature",
-                    r"generate.*tasks",
-                    r"generar.*tareas",
-                    r"spec-?kit",
-                    r"new.*feature.*spec",
-                    r"requirements.*document"
-                ],
-                description="Feature specification, planning, and task generation (Spec-Kit)"
-            ),
-        }
+        self.routing_rules = ROUTING_RULES
 
     def _load_tasks_metadata(self) -> Dict[str, Dict[str, Any]]:
         """Parse tasks.md metadata to map task IDs to suggested agents."""
@@ -408,7 +143,7 @@ class AgentRouter:
 
         try:
             lines = self.task_file.read_text(encoding="utf-8").splitlines()
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             logger.warning("Could not read task metadata file %s: %s", self.task_file, exc)
             return metadata
 
@@ -436,24 +171,16 @@ class AgentRouter:
                 for part in parts:
                     if "Agent:" in part:
                         metadata[current_id]["agent"] = part.split("Agent:", 1)[1].strip()
-
                     tier_match = re.search(r"T[0-3]", part)
                     if tier_match:
                         metadata[current_id]["tier"] = tier_match.group(0)
-
-                    # Parse numeric confidence (e.g. 0.90) if present
                     conf_match = re.search(r"([0-9]+(?:\.[0-9]+)?)", part)
-                    if (
-                        conf_match
-                        and "Agent" not in part
-                        and not tier_match
-                    ):
+                    if conf_match and "Agent" not in part and not tier_match:
                         try:
                             metadata[current_id]["confidence"] = float(conf_match.group(1))
                         except ValueError:
                             pass
 
-        # Drop entries without agent info
         return {task_id: meta for task_id, meta in metadata.items() if meta.get("agent")}
 
     def _route_by_task(self, user_request: str) -> Optional[Dict[str, Any]]:
@@ -473,8 +200,6 @@ class AgentRouter:
                 continue
 
             base_conf = meta.get("confidence")
-            # Normalize task confidence to 0-100 scale
-            # If no confidence specified, default to 85 (high confidence)
             confidence_score = 100 if base_conf is None else int(round(base_conf * 100))
 
             reason_parts = [f"task {meta.get('raw_id', norm)} metadata"]
@@ -493,274 +218,292 @@ class AgentRouter:
 
         return None
 
-    def _calculate_keyword_scores(self, request: str) -> Dict[str, float]:
-        """
-        Calculate keyword scores for all intents (normalized to 0-100)
+    def _route_by_llm(self, user_request: str) -> Optional[Tuple[str, int, str]]:
+        """Route using LLM classifier."""
+        if not LLM_CLASSIFIER_AVAILABLE:
+            return None
 
-        Used for embedding-enhanced routing via semantic_matcher.
-        Scores are normalized to 0-100 for consistency across routing methods.
+        try:
+            result = classify_intent(user_request)
+            agent = result["agent"]
+            confidence = int(result["confidence"] * 100)
+            reasoning = result["reasoning"]
+            
+            logger.debug(f"LLM routing: {agent} (confidence: {confidence}%)")
+            return agent, confidence, f"llm | {reasoning}"
+            
+        except Exception as e:
+            logger.warning(f"LLM routing failed: {e}")
+            return None
 
-        Returns:
-            Dict mapping intent names to confidence scores (0-100)
-        """
-        request_lower = request.lower()
-        scores = {}
-
-        for intent, keywords in self.intent_classifier.intent_keywords.items():
-            score = 0.0
-
-            # Count matching include keywords
-            include_matches = sum(
-                1 for kw in keywords["include"]
-                if kw in request_lower
-            )
-
-            # Check exclusion keywords (veto)
-            exclude_matches = sum(
-                1 for kw in keywords["exclude"]
-                if kw in request_lower
-            )
-
-            if exclude_matches > 0:
-                score = -1.0  # Veto this intent
-            else:
-                score = include_matches * keywords["confidence_boost"]
-
-            scores[intent] = score
-
-        # Filter out negative scores
-        valid_scores = {k: v for k, v in scores.items() if v >= 0}
-
-        # Normalize to 0-100 scale
-        # (raw scores are typically 0-4.4, normalize relative to max)
-        if valid_scores:
-            max_score = max(valid_scores.values())
-            if max_score > 0:
-                normalized = {k: int(round((v / max_score) * 100)) for k, v in valid_scores.items()}
-                return normalized
-
-        return {}
-
-    def _route_semantic(self, user_request: str) -> Tuple[str, float, str]:
-        """
-        Route using semantic keywords and capability validation
-        Enhanced with embeddings if available (Week 1-2 additions)
-
-        Returns:
-            (agent, confidence, reasoning)
-        """
-        # Step 1: Classify intent using semantic keywords
-        intent, confidence = self.intent_classifier.classify(user_request)
-
-        # Week 2: Try to enhance with embedding-based matching
-        if self.semantic_matcher and self.semantic_matcher.is_available():
-            try:
-                # Get keyword scores for embedding matcher
-                keyword_scores = self._calculate_keyword_scores(user_request)
-
-                if keyword_scores:
-                    # Use embedding-enhanced similarity
-                    enhanced_intent, enhanced_conf = self.semantic_matcher.find_similar_intent(
-                        user_request,
-                        keyword_scores
-                    )
-
-                    if enhanced_intent is not None:
-                        intent = enhanced_intent
-                        confidence = enhanced_conf
-
-                        logger.debug(f"Embedding-enhanced routing: {intent} ({confidence:.3f})")
-            except Exception as e:
-                logger.warning(f"Embedding enhancement failed, using semantic keywords: {e}")
-                # Continue with non-enhanced confidence
-
-        if intent is None:
-            # Fallback to keyword routing
-            agent, kw_conf, reason = self.suggest_agent(user_request, verbose=False)
-            return agent, kw_conf / 100, f"Semantic: no intent match, used keyword fallback: {reason}"
-
-        # Step 2: Select agent for intent
-        agent = self._get_agent_for_intent(intent)
-
-        # Step 3: Validate agent has capability
-        if not self.capability_validator.validate(agent, intent):
-            fallback_agent = self.capability_validator.find_fallback_agent(intent, exclude=agent)
-            confidence *= 0.8  # Lower confidence for fallback
-            agent = fallback_agent
-
-        reasoning = f"Semantic: {intent} (conf: {confidence:.2f}) → {agent}"
-        return agent, confidence, reasoning
-
-    def suggest_agent(self, user_request: str, verbose: bool = False) -> Tuple[str, int, str]:
-        """
-        Suggest agent based on keywords and patterns in user request
-
-        CONFIDENCE SCORES (All normalized to 0-100):
-        - Task routing: 0-100 (from task metadata or 100 if no confidence specified)
-        - Semantic routing: 0-100 (from intent classification with embeddings)
-        - Keyword routing: 0-100 (raw_score / max_possible_score * 100)
-
-        Routing Priority (highest to lowest confidence):
-        1. Task metadata (if available and matched)
-        2. Semantic routing (intent classification with embeddings)
-        3. Keyword pattern matching (simple keyword/pattern scoring)
-        4. Fallback: devops-developer (confidence=0)
-
-        Args:
-            user_request: User's request text
-            verbose: If True, log scoring details
-
-        Returns:
-            Tuple of (agent_name, confidence_score, reason)
-        """
-        task_result = self._route_by_task(user_request)
-        if task_result:
-            if verbose:
-                logger.info(
-                    "Routing via task metadata: %s -> %s",
-                    task_result["task_id"],
-                    task_result["agent"],
-                )
-            return (
-                task_result["agent"],
-                task_result["confidence"],
-                task_result["reason"],
-            )
-
-        # ACTIVATED: Try semantic routing first (Week 1-3 feature flag)
-        if self.semantic_matcher and self.semantic_matcher.is_available():
-            try:
-                agent, sem_conf, reasoning = self._route_semantic(user_request)
-                if verbose:
-                    logger.info(f"Semantic routing: {agent} (confidence: {sem_conf:.2f})")
-                # Convert float confidence to int (0-100 scale) for compatibility
-                return agent, int(sem_conf * 100), f"semantic | {reasoning}"
-            except Exception as e:
-                logger.debug(f"Semantic routing failed, fallback to keyword: {e}")
-                # Fall through to keyword routing below
-
+    def _route_by_keywords(self, user_request: str) -> Tuple[str, int, str]:
+        """Fallback routing using keyword matching."""
         request_lower = user_request.lower()
-        scores = {}
-        reasons = {}
-
-        # Calculate max possible score for normalization
-        max_possible_score = 0
-        for rule in self.routing_rules.values():
-            rule_max = len(rule.keywords) + (len(rule.patterns) * 2)
-            if rule_max > max_possible_score:
-                max_possible_score = rule_max
+        scores: Dict[str, int] = {}
+        reasons: Dict[str, str] = {}
 
         for agent_name, rule in self.routing_rules.items():
             score = 0
-            matched_keywords = []
-            matched_patterns = []
+            matched = []
 
-            # Check keywords (1 point each)
+            # Check keywords
             for keyword in rule.keywords:
                 if keyword in request_lower:
                     score += 1
-                    matched_keywords.append(keyword)
+                    matched.append(keyword)
 
-            # Check patterns (2 points each - higher weight)
+            # Check patterns (higher weight)
             for pattern in rule.patterns:
                 if re.search(pattern, request_lower, re.IGNORECASE):
                     score += 2
-                    matched_patterns.append(pattern)
 
             if score > 0:
                 scores[agent_name] = score
-                reason_parts = []
-                if matched_keywords:
-                    reason_parts.append(f"keywords: {', '.join(matched_keywords[:3])}")
-                if matched_patterns:
-                    reason_parts.append(f"patterns: {len(matched_patterns)} matched")
-                reasons[agent_name] = " | ".join(reason_parts)
+                reasons[agent_name] = f"keywords: {', '.join(matched[:3])}"
 
         if not scores:
-            # No matches - use fallback
-            fallback = "devops-developer"
-            if verbose:
-                logger.info(f"No keyword matches, using fallback: {fallback}")
-            return fallback, 0, "fallback (no keyword matches)"
+            return "devops-developer", 0, "fallback (no keyword matches)"
 
-        # Return highest scoring agent
         best_agent = max(scores, key=scores.get)
-        raw_score = scores[best_agent]
-        # Normalize to 0-100 scale based on max possible score
-        confidence = int(round((raw_score / max_possible_score) * 100)) if max_possible_score > 0 else 0
-        reason = reasons[best_agent]
+        # Normalize to 0-100
+        max_possible = max(len(rule.keywords) + len(rule.patterns) * 2 
+                          for rule in self.routing_rules.values())
+        confidence = min(int((scores[best_agent] / max_possible) * 100), 100)
+        
+        return best_agent, confidence, f"keywords | {reasons[best_agent]}"
 
+    def suggest_agent(self, user_request: str, verbose: bool = False) -> Tuple[str, int, str]:
+        """
+        Suggest agent based on request.
+        
+        Priority:
+        1. Task metadata (if Txxx in request)
+        2. LLM classification
+        3. Keyword fallback
+        
+        Returns:
+            Tuple of (agent_name, confidence_0_100, reason)
+        """
+        # Priority 1: Task metadata
+        task_result = self._route_by_task(user_request)
+        if task_result:
+            if verbose:
+                logger.info(f"Task routing: {task_result['task_id']} -> {task_result['agent']}")
+            return task_result["agent"], task_result["confidence"], task_result["reason"]
+
+        # Priority 2: LLM classification
+        llm_result = self._route_by_llm(user_request)
+        if llm_result:
+            if verbose:
+                logger.info(f"LLM routing: {llm_result[0]} ({llm_result[1]}%)")
+            return llm_result
+
+        # Priority 3: Keyword fallback
+        agent, confidence, reason = self._route_by_keywords(user_request)
         if verbose:
-            logger.info(f"Agent routing scores: {scores}")
-            logger.info(f"Selected: {best_agent} (confidence: {confidence})")
-
-        return best_agent, confidence, reason
+            logger.info(f"Keyword routing: {agent} ({confidence}%)")
+        return agent, confidence, reason
 
     def get_agent_description(self, agent_name: str) -> Optional[str]:
-        """Get description of an agent's responsibilities"""
+        """Get description of an agent's responsibilities."""
         rule = self.routing_rules.get(agent_name)
         return rule.description if rule else None
 
     def list_agents(self) -> List[str]:
-        """List all available agents"""
+        """List all available agents."""
         return list(self.routing_rules.keys())
 
     def explain_routing(self, user_request: str) -> str:
         """Provide detailed explanation of routing decision."""
-        task_result = self._route_by_task(user_request)
-        lines = [
-            f'Request: "{user_request}"',
-            "",
-        ]
+        lines = [f'Request: "{user_request}"', ""]
 
+        # Check task routing
+        task_result = self._route_by_task(user_request)
         if task_result:
-            meta = task_result["metadata"]
-            lines.append(f"Suggested Agent: {task_result['agent']} (confidence: {task_result['confidence']})")
-            lines.append(f"Reason: {task_result['reason']}")
-            lines.append("")
-            lines.append("Task Metadata:")
-            lines.append(f"  Task ID: {task_result['task_id']}")
-            if meta.get("tier"):
-                lines.append(f"  Tier: {meta['tier']}")
-            if meta.get("confidence") is not None:
-                lines.append(f"  Confidence: {meta['confidence']:.2f}")
+            lines.append(f"Routing Method: Task Metadata")
+            lines.append(f"Task ID: {task_result['task_id']}")
+            lines.append(f"Agent: {task_result['agent']}")
+            lines.append(f"Confidence: {task_result['confidence']}%")
             return "\n".join(lines)
 
-        # No task metadata match -> fall back to keyword scoring
-        agent, confidence, reason = self.suggest_agent(user_request, verbose=False)
-        request_lower = user_request.lower()
-
-        lines.extend([
-            f"Suggested Agent: {agent} (confidence: {confidence})",
-            f"Reason: {reason}",
-            "",
-            "Detailed Scoring:",
-        ])
-
-        for agent_name, rule in self.routing_rules.items():
-            matched_keywords = [kw for kw in rule.keywords if kw in request_lower]
-            matched_patterns = [
-                pattern for pattern in rule.patterns if re.search(pattern, request_lower, re.IGNORECASE)
-            ]
-            score = len(matched_keywords) + (len(matched_patterns) * 2)
-
-            if score > 0:
-                lines.append(f"  {agent_name}: {score} points")
-                if matched_keywords:
-                    lines.append(f"    - Keywords: {', '.join(matched_keywords[:5])}")
-                if matched_patterns:
-                    lines.append(f"    - Patterns: {len(matched_patterns)} matched")
+        # Try LLM
+        agent, confidence, reason = self.suggest_agent(user_request)
+        lines.append(f"Routing Method: {'LLM' if 'llm' in reason else 'Keywords'}")
+        lines.append(f"Agent: {agent}")
+        lines.append(f"Confidence: {confidence}%")
+        lines.append(f"Reason: {reason}")
 
         return "\n".join(lines)
+
+
+# ============================================================================
+# DELEGATION MATRIX (unchanged)
+# ============================================================================
+
+def should_delegate(user_request: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Determine if request should be delegated to agent or executed locally.
+    """
+    sys.path.insert(0, str(Path(__file__).parent.parent / "0-guards"))
+    try:
+        from delegation_matrix import BinaryDelegationMatrix, DelegationDecision
+    except ImportError:
+        # Fallback if delegation_matrix not available
+        return {
+            "delegate": True,
+            "decision": "DELEGATE",
+            "reason": "Delegation matrix not available, defaulting to delegate",
+            "confidence": 0.5
+        }
+
+    matrix = BinaryDelegationMatrix()
+    conditions = matrix.analyze_request(user_request, context)
+    decision, reason, confidence = matrix.decide(conditions)
+
+    result = {
+        "delegate": decision == DelegationDecision.DELEGATE,
+        "decision": decision.value,
+        "reason": reason,
+        "confidence": confidence
+    }
+
+    if decision == DelegationDecision.DELEGATE:
+        if conditions.task_agent:
+            result["suggested_agent"] = conditions.task_agent
+        else:
+            router = AgentRouter()
+            agent, routing_conf, routing_reason = router.suggest_agent(user_request)
+            result["suggested_agent"] = agent
+            result["routing_confidence"] = routing_conf
+
+    return result
+
+
+# ============================================================================
+# LEGACY COMPATIBILITY (IntentClassifier, CapabilityValidator)
+# Kept for backward compatibility with tests
+# ============================================================================
+
+class IntentClassifier:
+    """Legacy intent classifier - now wraps LLM classifier."""
+    
+    def __init__(self):
+        self.intent_keywords = {
+            "infrastructure_creation": {
+                "include": ["create", "provision", "deploy", "infrastructure"],
+                "exclude": ["diagnose", "troubleshoot"],
+                "confidence_boost": 0.85
+            },
+            "infrastructure_diagnosis": {
+                "include": ["diagnose", "troubleshoot", "debug", "problem"],
+                "exclude": ["create", "provision"],
+                "confidence_boost": 0.88
+            },
+            "kubernetes_operations": {
+                "include": ["pod", "deployment", "service", "namespace", "helm", "kubectl"],
+                "exclude": [],
+                "confidence_boost": 0.82
+            },
+            "application_development": {
+                "include": ["build", "docker", "test", "npm", "python"],
+                "exclude": [],
+                "confidence_boost": 0.80
+            },
+            "feature_planning": {
+                "include": ["spec", "plan", "feature", "tasks", "specification"],
+                "exclude": [],
+                "confidence_boost": 0.92
+            },
+            "infrastructure_validation": {
+                "include": ["validate", "terraform", "lint", "syntax"],
+                "exclude": [],
+                "confidence_boost": 0.86
+            }
+        }
+
+    def classify(self, request: str) -> Tuple[Optional[str], float]:
+        """Classify intent using keyword matching."""
+        request_lower = request.lower()
+        scores = {}
+
+        for intent, keywords in self.intent_keywords.items():
+            include_matches = sum(1 for kw in keywords["include"] if kw in request_lower)
+            exclude_matches = sum(1 for kw in keywords["exclude"] if kw in request_lower)
+
+            if exclude_matches > 0:
+                scores[intent] = -1.0
+            else:
+                scores[intent] = include_matches * keywords["confidence_boost"]
+
+        valid_scores = {k: v for k, v in scores.items() if v >= 0}
+        if not valid_scores:
+            return None, 0.0
+
+        best_intent = max(valid_scores, key=valid_scores.get)
+        confidence = min(valid_scores[best_intent] / 5, 1.0)
+        return best_intent, confidence
+
+
+class CapabilityValidator:
+    """Legacy capability validator - kept for test compatibility."""
+    
+    def __init__(self):
+        self.agent_capabilities = {
+            "terraform-architect": {
+                "can_do": ["infrastructure_creation", "infrastructure_validation"],
+                "cannot_do": ["kubernetes_operations", "infrastructure_diagnosis"],
+                "requires_context": ["infrastructure", "iac"]
+            },
+            "gitops-operator": {
+                "can_do": ["kubernetes_operations", "infrastructure_diagnosis"],
+                "cannot_do": ["infrastructure_creation", "application_development"],
+                "requires_context": ["kubernetes", "gitops"]
+            },
+            "cloud-troubleshooter": {
+                "can_do": ["infrastructure_diagnosis"],
+                "cannot_do": ["infrastructure_creation", "application_development"],
+                "requires_context": ["gcp", "aws", "monitoring"]
+            },
+            "devops-developer": {
+                "can_do": ["application_development", "infrastructure_validation"],
+                "cannot_do": ["kubernetes_operations", "infrastructure_creation"],
+                "requires_context": ["application", "development"]
+            },
+            "speckit-planner": {
+                "can_do": ["feature_planning"],
+                "cannot_do": ["infrastructure_creation", "kubernetes_operations"],
+                "requires_context": ["speckit", "planning"]
+            }
+        }
+
+    def validate(self, agent: str, intent: str) -> bool:
+        if agent not in self.agent_capabilities:
+            return False
+        capabilities = self.agent_capabilities[agent]
+        if intent in capabilities["cannot_do"]:
+            return False
+        return intent in capabilities["can_do"]
+
+    def find_fallback_agent(self, intent: str, exclude: str = None) -> str:
+        for agent, capabilities in self.agent_capabilities.items():
+            if agent == exclude:
+                continue
+            if intent in capabilities["can_do"]:
+                return agent
+        return "devops-developer"
+
+
+# ============================================================================
+# CLI
+# ============================================================================
 
 def main():
     """CLI interface for testing agent router."""
     parser = argparse.ArgumentParser(description="Unified agent router for Claude Code.")
     parser.add_argument("--task-file", help="Path to tasks.md metadata file (optional).")
     parser.add_argument("--test", action="store_true", help="Run router smoke tests.")
-    parser.add_argument("--semantic", action="store_true", help="Use semantic routing (Week 1 addition).")
-    parser.add_argument("--explain", metavar="REQUEST", help="Explain routing decision for a request.")
-    parser.add_argument("--json", action="store_true", help="Output result as JSON (for programmatic parsing).")
+    parser.add_argument("--explain", metavar="REQUEST", help="Explain routing decision.")
+    parser.add_argument("--json", action="store_true", help="Output result as JSON.")
     parser.add_argument("request", nargs="*", help="Free-form request to route.")
     args = parser.parse_args()
 
@@ -778,20 +521,13 @@ def main():
             "Review Cloud SQL IAM bindings",
             "Plan infrastructure changes with terragrunt",
             "Create a spec for new authentication feature",
-            "Planificar feature de notificaciones",
-            "Generate tasks for the API migration",
         ]
 
-        if router.tasks_metadata:
-            sample_task = next(iter(router.tasks_metadata.keys()))
-            test_cases.insert(0, f"Work on {sample_task}")
-
         print("Running agent router smoke tests...\n")
-
         for request in test_cases:
-            agent, confidence, reason = router.suggest_agent(request, verbose=False)
+            agent, confidence, reason = router.suggest_agent(request)
             print(f'Request: "{request}"')
-            print(f"  -> Agent: {agent} (confidence: {confidence})")
+            print(f"  -> Agent: {agent} (confidence: {confidence}%)")
             print(f"  -> Reason: {reason}")
             print()
         return
@@ -804,90 +540,25 @@ def main():
         parser.error("Please provide a request, --test, or --explain.")
 
     request = " ".join(args.request)
+    agent, confidence, reason = router.suggest_agent(request, verbose=not args.json)
 
-    # Week 1 addition: Use semantic routing if flag is set
-    if args.semantic:
-        agent, confidence, reason = router._route_semantic(request)
-        # Normalize confidence to 0-100 for consistency with suggest_agent
-        confidence_normalized = int(confidence * 100)
-    else:
-        agent, confidence_normalized, reason = router.suggest_agent(request, verbose=not args.json)
-        confidence = confidence_normalized / 100
-
-    # JSON output for programmatic parsing
     if args.json:
         result = {
             "agent": agent,
-            "confidence": confidence_normalized,
+            "confidence": confidence,
             "reason": reason,
-            "semantic": args.semantic,
             "description": router.get_agent_description(agent),
         }
         print(json.dumps(result, indent=2))
         return
 
-    # Human-readable text output
     print()
-    routing_method = "Semantic" if args.semantic else "Keyword"
-    print(f"Suggested Agent: {agent} ({routing_method})")
-    print(f"Confidence: {confidence_normalized}")
+    print(f"Suggested Agent: {agent}")
+    print(f"Confidence: {confidence}%")
     print(f"Reason: {reason}")
-    print()
     description = router.get_agent_description(agent)
     if description:
-        print(f"Agent Description: {description}")
-
-
-# ============================================================================
-# WEEK 4: Binary Delegation Matrix Integration
-# ============================================================================
-
-def should_delegate(user_request: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-    """
-    Determine if request should be delegated to agent or executed locally.
-
-    Args:
-        user_request: User's request text
-        context: Optional context (file_count, task_agent, etc.)
-
-    Returns:
-        Dict with:
-        - delegate: bool
-        - decision: DelegationDecision enum
-        - reason: str
-        - confidence: float
-        - suggested_agent: str (if delegate=True)
-    """
-    # Import here to avoid circular dependency
-    sys.path.insert(0, str(Path(__file__).parent.parent / "0-guards"))
-    from delegation_matrix import BinaryDelegationMatrix, DelegationDecision
-
-    matrix = BinaryDelegationMatrix()
-
-    # Analyze request
-    conditions = matrix.analyze_request(user_request, context)
-    decision, reason, confidence = matrix.decide(conditions)
-
-    result = {
-        "delegate": decision == DelegationDecision.DELEGATE,
-        "decision": decision.value,
-        "reason": reason,
-        "confidence": confidence
-    }
-
-    # If delegating, suggest agent
-    if decision == DelegationDecision.DELEGATE:
-        # Use task metadata agent if available
-        if conditions.task_agent:
-            result["suggested_agent"] = conditions.task_agent
-        else:
-            # Use standard routing
-            router = AgentRouter()
-            agent, routing_conf, routing_reason = router.suggest_agent(user_request)
-            result["suggested_agent"] = agent
-            result["routing_confidence"] = routing_conf
-
-    return result
+        print(f"Description: {description}")
 
 
 if __name__ == "__main__":

@@ -888,7 +888,7 @@ class TestSecurityTiers:
                 "allowed_tiers": ["T0", "T1", "T2", "T3"],
                 "default_tier": "T2"
             },
-            "gcp-troubleshooter": {
+            "cloud-troubleshooter": {
                 "allowed_tiers": ["T0", "T1", "T2"],
                 "default_tier": "T0"
             }
@@ -897,8 +897,8 @@ class TestSecurityTiers:
         # terraform-architect can do T3 (apply changes)
         assert "T3" in agent_config["terraform-architect"]["allowed_tiers"]
         
-        # gcp-troubleshooter cannot do T3 (read-only diagnostics)
-        assert "T3" not in agent_config["gcp-troubleshooter"]["allowed_tiers"]
+        # cloud-troubleshooter cannot do T3 (read-only diagnostics)
+        assert "T3" not in agent_config["cloud-troubleshooter"]["allowed_tiers"]
 
 
 class TestProductionVsDevelopment:

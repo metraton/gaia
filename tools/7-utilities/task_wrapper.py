@@ -74,7 +74,7 @@ class TaskAuditLogger:
     def _classify_agent_tier(self, agent_type: str) -> str:
         """Classify agent by security tier"""
         # T0: Read-only agents
-        if agent_type in ["gcp-troubleshooter", "aws-troubleshooter", "Explore"]:
+        if agent_type in ["cloud-troubleshooter", "cloud-troubleshooter", "Explore"]:
             return "T0"
 
         # T1: Validation agents

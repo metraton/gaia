@@ -20,8 +20,7 @@ logger = logging.getLogger(__name__)
 AVAILABLE_AGENTS = [
     "terraform-architect",
     "gitops-operator",
-    "gcp-troubleshooter",
-    "aws-troubleshooter",
+    "cloud-troubleshooter",
     "devops-developer",
     "gaia",
     "Explore",

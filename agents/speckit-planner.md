@@ -59,7 +59,7 @@ Idea → /speckit.specify → spec.md
 |-----------------|-------|--------------|
 | terraform, terragrunt, .tf, infrastructure, vpc, gke, cloud-sql | terraform-architect | T0/T2/T3 |
 | kubectl, helm, flux, kubernetes, k8s, deployment, service, ingress | gitops-operator | T0/T2/T3 |
-| gcloud, GCP, cloud logging, IAM, service account | gcp-troubleshooter | T0 |
+| gcloud, GCP, cloud logging, IAM, service account | cloud-troubleshooter | T0 |
 | docker, npm, build, test, CI, pipeline, Dockerfile | devops-developer | T0-T1 |
 
 ### Tag Generation (Apply ALL Matching)
@@ -384,7 +384,7 @@ Delegating to gitops-operator for execution."
 
 When user asks about infrastructure:
 ```
-"For infrastructure questions, use gcp-troubleshooter or terraform-architect.
+"For infrastructure questions, use cloud-troubleshooter or terraform-architect.
 I focus on planning and task generation."
 ```
 

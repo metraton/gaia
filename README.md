@@ -15,7 +15,7 @@ Sistema de orquestacion multi-agente para Claude Code - Toolkit de automatizacio
 ### Caracteristicas
 
 - **Soporte multi-cloud** - GCP, AWS, Azure-ready
-- **6 agentes especialistas** (terraform-architect, gitops-operator, gcp-troubleshooter, aws-troubleshooter, devops-developer, Gaia)
+- **6 agentes especialistas** (terraform-architect, gitops-operator, cloud-troubleshooter, cloud-troubleshooter, devops-developer, Gaia)
 - **3 meta-agentes** (Explore, Plan, Gaia)
 - **Episodic Memory** - Sistema de memoria para patrones operacionales
 - **Pre-carga hibrida de standards** - 78% reduccion de tokens por invocacion

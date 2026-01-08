@@ -74,7 +74,7 @@ Accuracy test evaluates 26 semantic requests:
 |-------|----------|
 | terraform-architect | 95% |
 | gitops-operator | 93% |
-| gcp-troubleshooter | 90% |
+| cloud-troubleshooter | 90% |
 | devops-developer | 92% |
 
 ---

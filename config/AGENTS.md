@@ -68,8 +68,7 @@ This repository uses a **hierarchical agent system**:
 Claude Code (Orchestrator)
     ├── terraform-architect (Infrastructure)
     ├── gitops-operator (Kubernetes/Flux)
-    ├── gcp-troubleshooter (GCP diagnostics)
-    ├── aws-troubleshooter (AWS diagnostics)
+    ├── cloud-troubleshooter (GCP/AWS diagnostics)
     ├── devops-developer (Application build/test)
     ├── Gaia (System optimization)
     ├── Explore (Codebase exploration)
@@ -131,7 +130,7 @@ claude-code
 > "Analiza el estado del cluster GKE"
 
 # Orchestrator will:
-# 1. Route to gcp-troubleshooter
+# 1. Route to cloud-troubleshooter
 # 2. Provision context via context_provider.py
 # 3. Invoke agent with structured context
 # 4. Return diagnostic report

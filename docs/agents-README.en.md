@@ -30,8 +30,8 @@ User sends question
 |-------|----------|-------|
 | **terraform-architect** | Infrastructure as code | T0-T3 |
 | **gitops-operator** | Kubernetes and deployments | T0-T3 |
-| **gcp-troubleshooter** | GCP diagnostics | T0 |
-| **aws-troubleshooter** | AWS diagnostics | T0 |
+| **cloud-troubleshooter** | GCP diagnostics | T0 |
+| **cloud-troubleshooter** | AWS diagnostics | T0 |
 | **devops-developer** | Code and CI/CD | T0-T2 |
 | **speckit-planner** | Feature specification and planning | T0-T2 |
 | **gaia** | Agent system | T0-T2 |

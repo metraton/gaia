@@ -72,7 +72,7 @@ class TestPrePhase1Routing:
         return [
             "terraform-architect",
             "gitops-operator",
-            "gcp-troubleshooter",
+            "cloud-troubleshooter",
             "devops-developer",
         ]
 
@@ -322,7 +322,7 @@ class TestPrePhaseHooksIntegration:
         return [
             "terraform-architect",
             "gitops-operator", 
-            "gcp-troubleshooter",
+            "cloud-troubleshooter",
             "devops-developer",
         ]
 

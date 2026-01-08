@@ -104,15 +104,10 @@ class TestProjectAgents:
         gitops_agent = agents_dir / "gitops-operator.md"
         assert gitops_agent.exists(), "gitops-operator.md not found"
 
-    def test_gcp_troubleshooter_exists(self, agents_dir):
-        """gcp-troubleshooter.md must exist"""
-        gcp_agent = agents_dir / "gcp-troubleshooter.md"
-        assert gcp_agent.exists(), "gcp-troubleshooter.md not found"
-
-    def test_aws_troubleshooter_exists(self, agents_dir):
-        """aws-troubleshooter.md must exist"""
-        aws_agent = agents_dir / "aws-troubleshooter.md"
-        assert aws_agent.exists(), "aws-troubleshooter.md not found"
+    def test_cloud_troubleshooter_exists(self, agents_dir):
+        """cloud-troubleshooter.md must exist (unified GCP/AWS)"""
+        cloud_agent = agents_dir / "cloud-troubleshooter.md"
+        assert cloud_agent.exists(), "cloud-troubleshooter.md not found"
 
     def test_devops_developer_exists(self, agents_dir):
         """devops-developer.md must exist"""

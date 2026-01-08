@@ -74,8 +74,7 @@ class TestAgentExistence:
         project_agents = [
             "terraform-architect",
             "gitops-operator",
-            "gcp-troubleshooter",
-            "aws-troubleshooter",
+            "cloud-troubleshooter",
             "devops-developer",
         ]
         for agent in project_agents:

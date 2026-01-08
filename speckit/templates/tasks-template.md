@@ -146,11 +146,11 @@
   <!-- 🔄 Fallback: gitops-operator -->
 
 - [ ] T014 Error handling and logging
-  <!-- 🤖 Agent: gcp-troubleshooter | 👁️ T0 | ❓ 0.50 -->
+  <!-- 🤖 Agent: cloud-troubleshooter | 👁️ T0 | ❓ 0.50 -->
   <!-- 🏷️ Tags: #debug -->
-  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to gcp-troubleshooter, Security tier: T0 -->
+  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to cloud-troubleshooter, Security tier: T0 -->
   <!-- 🎯 skill: monitoring_observability (2.0) -->
-  <!-- 🔄 Fallback: aws-troubleshooter -->
+  <!-- 🔄 Fallback: cloud-troubleshooter -->
 
 
 ## Phase 3.4: Integration
@@ -169,11 +169,11 @@
   <!-- 🔄 Fallback: devops-developer -->
 
 - [ ] T017 Request/response logging
-  <!-- 🤖 Agent: gcp-troubleshooter | 👁️ T0 | ❓ 0.50 -->
+  <!-- 🤖 Agent: cloud-troubleshooter | 👁️ T0 | ❓ 0.50 -->
   <!-- 🏷️ Tags:  -->
-  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to gcp-troubleshooter, Security tier: T0 -->
+  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to cloud-troubleshooter, Security tier: T0 -->
   <!-- 🎯 skill: monitoring_observability (2.0) -->
-  <!-- 🔄 Fallback: aws-troubleshooter -->
+  <!-- 🔄 Fallback: cloud-troubleshooter -->
 
 - [ ] T018 CORS and security headers
   <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.70 -->
@@ -329,11 +329,11 @@ Task: "Integration test auth in tests/integration/test_auth.py"
   <!-- 🔄 Fallback: gitops-operator -->
 
 - [ ] T033 Health checks included before DNS exposure
-  <!-- 🤖 Agent: gcp-troubleshooter | 👁️ T0 | ❓ 0.50 -->
+  <!-- 🤖 Agent: cloud-troubleshooter | 👁️ T0 | ❓ 0.50 -->
   <!-- 🏷️ Tags: #monitoring #networking #test -->
-  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to gcp-troubleshooter, Security tier: T0 -->
+  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to cloud-troubleshooter, Security tier: T0 -->
   <!-- 🎯 skill: monitoring_observability (2.0) -->
-  <!-- 🔄 Fallback: aws-troubleshooter -->
+  <!-- 🔄 Fallback: cloud-troubleshooter -->
 
 - [ ] T034 Certificate management strategy documented
   <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->

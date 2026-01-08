@@ -84,7 +84,7 @@ Idea -> Spec -> Plan -> Tasks -> Implementation
 |-------|----------|------|
 | terraform-architect | terraform, .tf, gke | T0-T3 |
 | gitops-operator | kubectl, helm, flux | T0-T3 |
-| gcp-troubleshooter | gcloud, GCP, IAM | T0 |
+| cloud-troubleshooter | gcloud, GCP, IAM | T0 |
 | devops-developer | docker, npm, test | T0-T1 |
 
 ## Governance

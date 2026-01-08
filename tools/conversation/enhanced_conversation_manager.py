@@ -70,10 +70,10 @@ class EnhancedConversationManager:
         # Agents that support contracts
         self.contract_enabled_agents = [
             "gitops-operator",
-            "gcp-troubleshooter",
+            "cloud-troubleshooter",
             "terraform-architect",
             "devops-developer",
-            "aws-troubleshooter"
+            "cloud-troubleshooter"
         ]
 
         logger.info("Enhanced Conversation Manager initialized with contract support")

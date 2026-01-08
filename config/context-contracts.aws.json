@@ -44,7 +44,7 @@
       ]
     },
 
-    "aws-troubleshooter": {
+    "cloud-troubleshooter": {
       "contract_version": "1.0",
       "required": [
         "project_details.account_id",
