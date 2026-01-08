@@ -99,23 +99,26 @@ def test_gitops_operator_contract(temp_project_context: Path):
     assert "terraform_infrastructure" not in contract
 
 def test_progressive_disclosure_level(temp_project_context: Path):
-    """Verify progressive disclosure adjusts context based on task complexity."""
+    """Verify context provider returns metadata about context level."""
     agent = "gitops-operator"
-    
-    # Simple task should get minimal context
+
+    # Simple task
     simple_task = "check pod status"
     result = run_script(temp_project_context, agent, simple_task)
-    
-    assert "progressive_disclosure" in result
-    assert result["progressive_disclosure"]["level"] <= 2
-    
-    # Complex debugging task should get more context
+
+    # Verify metadata includes context level
+    assert "metadata" in result
+    assert "context_level" in result["metadata"]
+    assert result["metadata"]["context_level"] == 2  # Default level
+
+    # Complex debugging task
     complex_task = "debug why the backend-api is crashing with database connection errors"
     result = run_script(temp_project_context, agent, complex_task)
-    
-    assert "progressive_disclosure" in result
-    # Debugging tasks should trigger higher context level
-    assert result["progressive_disclosure"]["needs_debugging"] == True
+
+    # Should still get standard context level
+    assert "metadata" in result
+    assert "context_level" in result["metadata"]
+    assert result["metadata"]["context_level"] == 2  # Default level
 
 def test_troubleshooter_contract(temp_project_context: Path):
     """Verify troubleshooters get the right contract (required fields only)."""
@@ -194,8 +197,8 @@ def test_get_standards_dir():
     from context_provider import get_standards_dir
     
     standards_dir = get_standards_dir()
-    # Should return a Path that ends with docs/standards
-    assert str(standards_dir).endswith("docs/standards"), f"Expected path ending in docs/standards, got {standards_dir}"
+    # Should return a Path that ends with config/standards
+    assert str(standards_dir).endswith("config/standards"), f"Expected path ending in config/standards, got {standards_dir}"
 
 
 def test_read_standard_file_exists():
@@ -315,17 +318,18 @@ def test_standards_in_final_payload(temp_project_context: Path):
 # ============================================================================
 
 def test_progressive_disclosure_integration():
-    """Test progressive disclosure module integration."""
+    """Test context level analysis always returns default level 2."""
     from context_provider import analyze_query_for_context_level
-    
-    # Simple query should get low level
+
+    # All queries now return the same default level
     simple_result = analyze_query_for_context_level("check status")
     assert "recommended_level" in simple_result
-    assert simple_result["recommended_level"] <= 2
-    
-    # Debug query should get higher level
+    assert simple_result["recommended_level"] == 2
+
     debug_result = analyze_query_for_context_level("debug database connection error")
-    assert debug_result["needs_debugging"] == True or debug_result.get("fallback") == True
+    assert "recommended_level" in debug_result
+    assert debug_result["recommended_level"] == 2
+    assert debug_result["needs_debugging"] == False  # No longer analyzes complexity
 
 
 def test_filter_context_by_level():

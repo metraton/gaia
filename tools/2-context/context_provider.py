@@ -24,59 +24,33 @@ DEFAULT_CONTEXT_PATH = Path(".claude/project-context/project-context.json")
 
 
 # ============================================================================
-# PROGRESSIVE DISCLOSURE INTEGRATION
+# CONTEXT LEVEL ANALYSIS
 # ============================================================================
-
-def get_progressive_disclosure_manager():
-    """
-    Lazy import of ProgressiveDisclosureManager to avoid circular imports.
-    Returns None if module not available.
-    """
-    try:
-        # Add conversation module to path
-        conversation_path = Path(__file__).parent.parent / "conversation"
-        if conversation_path.is_dir():
-            sys.path.insert(0, str(conversation_path.parent))
-        
-        from conversation.progressive_disclosure import ProgressiveDisclosureManager
-        return ProgressiveDisclosureManager()
-    except ImportError as e:
-        print(f"Warning: ProgressiveDisclosureManager not available: {e}", file=sys.stderr)
-        return None
-
 
 def analyze_query_for_context_level(user_task: str) -> Dict[str, Any]:
     """
     Analyze user query to determine appropriate context level.
-    
-    Uses ProgressiveDisclosureManager if available, otherwise returns default.
-    
+
     Context Levels:
     - Level 1: Minimal (basic info: cluster, project_id)
-    - Level 2: Standard (key facts, recent errors summary)
+    - Level 2: Standard (key facts, recent errors summary) - DEFAULT
     - Level 3: Detailed (full errors, recent actions, analysis)
     - Level 4: Full (complete history, infrastructure details)
-    
+
     Returns:
         Dict with level, intent flags, and entities
     """
-    manager = get_progressive_disclosure_manager()
-    
-    if manager is None:
-        # Default to Level 2 (Standard) when module not available
-        return {
-            "recommended_level": 2,
-            "complexity_score": 3,
-            "confidence": 0.5,
-            "needs_debugging": False,
-            "needs_detail": False,
-            "is_simple": True,
-            "action": "custom",
-            "entities": {"namespaces": [], "resources": [], "services": []},
-            "fallback": True
-        }
-    
-    return manager.analyze_query_intent(user_task)
+    # Default to Level 2 (Standard) for all queries
+    return {
+        "recommended_level": 2,
+        "complexity_score": 2,
+        "confidence": 1.0,
+        "needs_debugging": False,
+        "needs_detail": False,
+        "is_simple": True,
+        "action": "custom",
+        "entities": {"namespaces": [], "resources": [], "services": []}
+    }
 
 
 def filter_context_by_level(
@@ -282,16 +256,16 @@ def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> 
 
 def get_standards_dir() -> Path:
     """Determines the correct standards directory based on execution context."""
-    installed_path = Path(".claude/docs/standards")
+    installed_path = Path(".claude/config/standards")
     if installed_path.is_dir():
         return installed_path
     
     script_dir = Path(__file__).parent.parent
-    package_path = script_dir.parent / "docs" / "standards"
+    package_path = script_dir.parent / "config" / "standards"
     if package_path.is_dir():
         return package_path
     
-    return Path(__file__).parent.parent.parent / "docs" / "standards"
+    return Path(__file__).parent.parent.parent / "config" / "standards"
 
 
 ALWAYS_PRELOAD_STANDARDS = {
@@ -720,15 +694,6 @@ def main():
             "standards_count": standards_context["total_standards"],
             "rules_count": len(rules_context.get("universal", [])) + len(rules_context.get("agent_specific", []))
         }
-    }
-
-    # Add progressive disclosure metadata
-    final_payload["progressive_disclosure"] = {
-        "level": context_level,
-        "needs_debugging": query_analysis.get("needs_debugging", False),
-        "needs_detail": query_analysis.get("needs_detail", False),
-        "action": query_analysis.get("action", "custom"),
-        "entities": query_analysis.get("entities", {})
     }
 
     # Add historical context if episodes found

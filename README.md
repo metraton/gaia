@@ -103,14 +103,14 @@ Este paquete sigue [Versionamiento Semantico](https://semver.org/):
 
 Version actual: **3.0.0**
 
-Ver [CHANGELOG.md](./CHANGELOG.md) para el historial de versiones.
+Ver el historial de versiones en [npm](https://www.npmjs.com/package/@jaguilar87/gaia-ops).
 
 ## Documentacion
 
-- [config/AGENTS.md](./config/AGENTS.md) - Vista general del sistema
+- [config/agent-catalog.md](./config/agent-catalog.md) - Vista general del sistema
 - [config/orchestration-workflow.md](./config/orchestration-workflow.md) - Workflow de orquestacion
 - [config/git-standards.md](./config/git-standards.md) - Estandares Git
-- [config/context-contracts.md](./config/context-contracts.md) - Contratos de contexto
+- [config/agent-catalog.md](./config/agent-catalog.md) - Contratos de contexto
 
 ## Requisitos
 

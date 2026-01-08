@@ -107,10 +107,10 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
 ## Documentation
 
-- [config/AGENTS.md](./config/AGENTS.md) - System overview
+- [config/agent-catalog.md](./config/agent-catalog.md) - System overview
 - [config/orchestration-workflow.md](./config/orchestration-workflow.md) - Orchestration workflow
 - [config/git-standards.md](./config/git-standards.md) - Git standards
-- [config/context-contracts.md](./config/context-contracts.md) - Context contracts
+- [config/agent-catalog.md](./config/agent-catalog.md) - Context contracts
 
 ## Requirements
 

@@ -43,7 +43,6 @@ Configure symlinks  Remove files
 | Script | Lines | Description |
 |--------|-------|-------------|
 | `pre-publish-validate.js` | ~400 | Pre-publish validation |
-| `cleanup-claude-install.js` | ~150 | Cleanup failed installations |
 
 ## Common Usage
 
@@ -110,4 +109,4 @@ npx gaia-init --non-interactive
 
 ---
 
-**Version:** 1.0.0 | **Updated:** 2025-12-06 | **Scripts:** 6
+**Version:** 1.0.0 | **Updated:** 2025-12-06 | **Scripts:** 5

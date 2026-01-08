@@ -720,11 +720,11 @@ async function generateClaudeMd(config) {
 
 /**
  * Generate AGENTS.md symlink
- * NOTE: AGENTS.md is already available at .claude/config/AGENTS.md via the config/ symlink
+ * NOTE: AGENTS.md is already available at .claude/config/agent-catalog.md via the config/ symlink
  * No need to create a separate symlink in the project root
  */
 async function generateAgentsMd() {
-  // AGENTS.md is accessible via .claude/config/AGENTS.md (symlinked directory)
+  // AGENTS.md is accessible via .claude/config/agent-catalog.md (symlinked directory)
   // No action needed - keeping function for backward compatibility
   return Promise.resolve();
 }
