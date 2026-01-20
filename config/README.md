@@ -1,49 +1,58 @@
-# Configuración de Gaia-Ops
+# Archivos de Configuracion de Gaia-Ops
 
 **[English version](README.en.md)**
 
-Este directorio contiene toda la configuración del sistema: archivos JSON operacionales, documentación arquitectural, guías de desarrollo y estándares.
+Configuracion central y documentacion de referencia del sistema de orquestacion.
 
-## Propósito
+## Proposito
 
-Centraliza todos los archivos de configuración y documentación que son consumidos programáticamente o referencialmente por los componentes de gaia-ops.
+Define el comportamiento del sistema, estandares y contratos entre componentes. Proporciona la "fuente de verdad" para como debe operar el sistema.
 
-## Archivos de Configuración (JSON)
+## Archivos Principales
 
-| Archivo | Propósito | Consumido por |
-|---------|-----------|---------------|
-| `clarification_rules.json` | Reglas del motor de clarificación (Phase 0) | `tools/3-clarification/engine.py` |
-| `context-contracts.aws.json` | Schema de contexto para agentes AWS | `tools/2-context/context_provider.py` |
-| `context-contracts.gcp.json` | Schema de contexto para agentes GCP | `tools/2-context/context_provider.py` |
-| `git_standards.json` | Estándares Git programáticos | `tools/4-validation/commit_validator.py` |
-| `metrics_targets.json` | Objetivos de performance del sistema | `bin/gaia-metrics.js` |
-| `universal-rules.json` | Reglas universales de orquestación | `index.js` |
+### Documentacion de Sistema
 
-## Documentación (Markdown)
+| Archivo | Lineas | Proposito |
+|---------|--------|-----------|
+| `AGENTS.md` | ~95 | Overview del sistema de agentes |
+| `orchestration-workflow.md` | ~735 | Workflow Phase 0-6 |
+| `agent-catalog.md` | ~603 | Capacidades de cada agente |
 
-### Arquitectura
+### Estandares y Convenciones
 
-| Archivo | Descripción |
-|---------|-------------|
-| `agent-catalog.md` | Catálogo completo de agentes con capacidades y ejemplos |
-| `delegation-matrix.md` | Matriz de delegación del orquestador |
-| `orchestration-workflow.md` | Flujo completo Phase 0-6 del orquestador |
+| Archivo | Lineas | Proposito |
+|---------|--------|-----------|
+| `git-standards.md` | ~682 | Commits, branching, workflow |
+| `git_standards.json` | - | Version programatica |
 
-### Guías de Desarrollo
+### Contratos de Contexto
 
-| Archivo | Descripción |
-|---------|-------------|
-| `documentation-principles.md` | Principios para escribir documentación |
-| `git-standards.md` | Estándares Git para commits y PRs |
+| Archivo | Proposito |
+|---------|-----------|
+| `context-contracts.md` | Define contexto por agente |
+| `context-contracts.gcp.json` | Schema para GCP |
+| `context-contracts.aws.json` | Schema para AWS |
 
-### Estándares (`standards/`)
+### Reglas y Politicas
 
-| Archivo | Descripción |
-|---------|-------------|
-| `standards/security-tiers.md` | Definición de tiers T0-T3 |
-| `standards/output-format.md` | Formato de salida para agentes |
-| `standards/command-execution.md` | Estándares de ejecución de comandos |
-| `standards/anti-patterns.md` | Anti-patrones a evitar |
+| Archivo | Proposito |
+|---------|-----------|
+| `clarification_rules.json` | Motor de clarificacion (Phase 0) |
+| `delegation-matrix.md` | Decisiones de delegacion |
+
+### Machine Learning
+
+| Archivo | Proposito |
+|---------|-----------|
+| `embeddings_info.json` | Metadata de embeddings |
+| `intent_embeddings.json` | Vectores de intents |
+| `intent_embeddings.npy` | NumPy para carga rapida |
+
+### Metricas
+
+| Archivo | Proposito |
+|---------|-----------|
+| `metrics_targets.json` | Objetivos de performance |
 
 ## Uso
 
@@ -51,47 +60,45 @@ Centraliza todos los archivos de configuración y documentación que son consumi
 
 ```python
 import json
-from pathlib import Path
-
-# Cargar configuración
-config_path = Path('.claude/config/git_standards.json')
-with open(config_path) as f:
+with open('.claude/config/git_standards.json') as f:
     standards = json.load(f)
 ```
 
 ### Para Desarrolladores
 
 ```bash
-# Ver configuraciones
-cat .claude/config/git_standards.json | jq .
-
-# Validar JSON
-jq empty .claude/config/*.json
-
-# Ver documentación
 cat .claude/config/orchestration-workflow.md
+cat .claude/config/git-standards.md
 ```
 
 ## Estructura
 
 ```
 config/
-├── *.json                          # 6 archivos de configuración
-├── *.md                            # 8 archivos de documentación
-└── standards/                      # Estándares del sistema
-    ├── README.md
-    ├── security-tiers.md
-    ├── output-format.md
-    ├── command-execution.md
-    └── anti-patterns.md
+├── AGENTS.md
+├── orchestration-workflow.md
+├── agent-catalog.md
+├── git-standards.md
+├── git_standards.json
+├── context-contracts.md
+├── context-contracts.gcp.json
+├── context-contracts.aws.json
+├── clarification_rules.json
+├── delegation-matrix.md
+├── embeddings_info.json
+├── intent_embeddings.json
+├── intent_embeddings.npy
+├── metrics_targets.json
+├── documentation-principles.md
+└── documentation-principles.en.md
 ```
 
 ## Referencias
 
 - [Agents](../agents/README.md)
 - [Tools](../tools/README.md)
-- [Commands](../commands/README.md)
+- [Tests](../tests/README.md)
 
 ---
 
-**Actualizado:** 2026-01-08 | **Archivos JSON:** 6 | **Archivos MD:** 8
+**Actualizado:** 2025-12-06 | **Archivos:** 17

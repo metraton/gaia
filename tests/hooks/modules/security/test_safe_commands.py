@@ -254,3 +254,131 @@ class TestEdgeCases:
         """Test kubectl apply is not safe."""
         is_safe, _ = is_read_only_command("kubectl apply -f manifest.yaml")
         assert is_safe is False
+
+
+class TestAWSDenylistApproach:
+    """Test AWS denylist approach - allow all read-only operations."""
+
+    @pytest.mark.parametrize("command", [
+        # Core services
+        "aws ec2 describe-instances",
+        "aws s3 ls s3://bucket",
+        "aws rds describe-db-instances",
+        "aws iam list-users",
+        "aws iam get-user",
+
+        # WorkMail (the original issue)
+        "aws workmail describe-organization --organization-id org-123",
+        "aws workmail list-organizations",
+        "aws workmail get-mailbox-details",
+
+        # Other services not previously listed
+        "aws lambda list-functions",
+        "aws lambda get-function --function-name my-func",
+        "aws dynamodb describe-table --table-name my-table",
+        "aws elasticache describe-cache-clusters",
+        "aws redshift describe-clusters",
+        "aws sns list-topics",
+        "aws sqs list-queues",
+        "aws cloudformation describe-stacks",
+        "aws secretsmanager list-secrets",
+        "aws cognito-idp list-user-pools",
+        "aws ecs describe-clusters",
+        "aws eks describe-cluster --name my-cluster",
+    ])
+    def test_aws_read_only_operations(self, command):
+        """Test AWS read-only operations are allowed (denylist approach)."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    @pytest.mark.parametrize("command", [
+        # Destructive operations should still be blocked
+        # Note: These are actually blocked by blocked_commands.py with higher precedence
+        "aws ec2 create-instances",
+        "aws ec2 terminate-instances",
+        "aws s3 rm s3://bucket/file",
+        "aws rds delete-db-instance",
+        "aws workmail create-organization",
+        "aws workmail delete-organization",
+    ])
+    def test_aws_destructive_operations_not_in_safe(self, command):
+        """Test AWS destructive operations are NOT in safe commands."""
+        # These commands should not match safe patterns
+        # They are blocked by blocked_commands.py, but shouldn't be safe here either
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is False, f"{command} should NOT be safe: {reason}"
+
+
+class TestGCPDenylistApproach:
+    """Test GCP denylist approach - allow all read-only operations."""
+
+    @pytest.mark.parametrize("command", [
+        "gcloud compute instances list",
+        "gcloud compute instances describe my-instance",
+        "gcloud sql instances list",
+        "gcloud workload-identity list",
+        "gcloud workload-identity describe my-identity",
+        "gcloud container clusters list",
+    ])
+    def test_gcp_read_only_operations(self, command):
+        """Test GCP read-only operations are allowed (denylist approach)."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+
+class TestSafePatternMatching:
+    """Test the new safe pattern matching functionality."""
+
+    def test_matches_safe_pattern_function_exists(self):
+        """Test matches_safe_pattern function exists."""
+        from modules.security.safe_commands import matches_safe_pattern
+        assert callable(matches_safe_pattern)
+
+    def test_aws_pattern_matches(self):
+        """Test AWS commands match safe patterns."""
+        from modules.security.safe_commands import matches_safe_pattern
+
+        matches, reason = matches_safe_pattern("aws workmail describe-organization")
+        assert matches is True
+        assert "Safe pattern" in reason
+
+    def test_aws_destructive_no_match(self):
+        """Test AWS destructive commands don't match safe patterns."""
+        from modules.security.safe_commands import matches_safe_pattern
+
+        matches, _ = matches_safe_pattern("aws workmail create-organization")
+        assert matches is False
+
+    def test_gcp_pattern_matches(self):
+        """Test GCP commands match safe patterns."""
+        from modules.security.safe_commands import matches_safe_pattern
+
+        matches, reason = matches_safe_pattern("gcloud compute instances list")
+        assert matches is True
+
+    def test_pytest_pattern_matches(self):
+        """Test pytest commands match safe patterns."""
+        from modules.security.safe_commands import matches_safe_pattern
+
+        matches, reason = matches_safe_pattern("python3 -m pytest tests/")
+        assert matches is True
+
+
+class TestNewlySafeCommands:
+    """Test newly added safe commands (cd, pytest)."""
+
+    def test_cd_command_is_safe(self):
+        """Test cd command is safe (conditional)."""
+        is_safe, reason = is_single_command_safe("cd /home/user")
+        assert is_safe is True, f"cd should be safe: {reason}"
+
+    def test_pytest_is_safe(self):
+        """Test pytest commands are safe."""
+        commands = [
+            "pytest",
+            "pytest tests/",
+            "python3 -m pytest tests/",
+        ]
+        for cmd in commands:
+            is_safe, reason = is_single_command_safe(cmd)
+            assert is_safe is True, f"{cmd} should be safe: {reason}"

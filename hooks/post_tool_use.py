@@ -19,7 +19,7 @@ import logging
 import os
 import select
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Add modules to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -72,8 +72,14 @@ class ActiveContextUpdater:
             # Append new event
             context["critical_events"].append(event_data)
 
-            # Keep only last 20 events
-            context["critical_events"] = context["critical_events"][-20:]
+            # Keep only events from last 24 hours
+            retention_hours = int(os.environ.get("SESSION_RETENTION_HOURS", "24"))
+            cutoff = datetime.now() - timedelta(hours=retention_hours)
+
+            context["critical_events"] = [
+                event for event in context["critical_events"]
+                if datetime.fromisoformat(event.get("timestamp", "")) > cutoff
+            ]
 
             # Update last_modified
             context["last_modified"] = datetime.now().isoformat()
@@ -86,40 +92,6 @@ class ActiveContextUpdater:
 
         except Exception as e:
             logger.error(f"Error updating active context: {e}")
-
-
-# ============================================================================
-# NOTIFICATION HANDLER
-# ============================================================================
-
-class NotificationHandler:
-    """Handle notifications for threshold breaches."""
-
-    def __init__(self):
-        self.thresholds = {
-            "long_execution_seconds": 60,
-            "high_failure_rate": 0.3,
-        }
-
-    def check_thresholds(self, duration: float, success: bool, tool_name: str) -> list:
-        """Check if execution crosses any notification thresholds."""
-        notifications = []
-
-        if duration > self.thresholds["long_execution_seconds"]:
-            notifications.append({
-                "type": "long_execution",
-                "message": f"Long execution detected: {tool_name} took {duration:.1f}s",
-                "severity": "warning"
-            })
-
-        if not success:
-            notifications.append({
-                "type": "command_failure",
-                "message": f"Command failed: {tool_name}",
-                "severity": "error"
-            })
-
-        return notifications
 
 
 # ============================================================================
@@ -168,12 +140,6 @@ def post_tool_use_hook(
             success=success,
             tier=tier,
         )
-
-        # Check notifications
-        notifier = NotificationHandler()
-        notifications = notifier.check_thresholds(duration, success, tool_name)
-        for notification in notifications:
-            logger.warning(f"NOTIFICATION: {notification['message']}")
 
         # Detect critical events
         events = detect_critical_event(tool_name, parameters, result, success)

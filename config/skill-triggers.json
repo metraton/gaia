@@ -1,0 +1,39 @@
+{
+  "workflow": {
+    "investigation": {
+      "phase": "start",
+      "auto_load": true,
+      "description": "Always loaded at task start for local-first analysis"
+    },
+    "approval": {
+      "phase": "approval",
+      "triggers": ["apply", "deploy", "create", "delete", "push", "commit", "destroy"],
+      "description": "Loaded when T3 operation detected"
+    },
+    "execution": {
+      "phase": "execution",
+      "triggers": ["approved", "proceed", "execute", "user approved", "yes", "do it"],
+      "description": "Loaded when user has approved operation"
+    }
+  },
+  "domain": {
+    "terraform-patterns": {
+      "triggers": ["terraform", "terragrunt", "hcl", "module", "vpc", "eks", "rds", "aws_", ".tf"],
+      "description": "Terraform/Terragrunt patterns for this project"
+    },
+    "gitops-patterns": {
+      "triggers": ["kubectl", "k8s", "kubernetes", "helm", "flux", "deploy", "pod", "service", "manifest", "helmrelease", "kustomization"],
+      "description": "GitOps and Flux CD patterns for this project"
+    },
+    "universal-protocol": {
+      "triggers": ["terraform-architect", "gitops-operator", "cloud-troubleshooter", "devops-developer"],
+      "auto_load": true,
+      "description": "Universal protocol (AGENT_STATUS, Security Tiers, Local-First) - loaded for all project agents"
+    },
+    "fast-queries": {
+      "triggers": ["health", "status", "check", "triage", "diagnose", "error", "issue", "problem", "failing", "trouble", "investigate", "debug"],
+      "auto_load": true,
+      "description": "Quick diagnostic scripts (<5 sec) for instant health checks - loaded for all infrastructure agents"
+    }
+  }
+}

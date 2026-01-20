@@ -3,11 +3,23 @@ Safe command detection and classification.
 
 Single source of truth for read-only/safe commands.
 Used by both auto-approval (bypass Claude Code ASK prompt) and tier classification.
+
+PHILOSOPHY CHANGE (v2.0 - Denylist Approach):
+--------------------------------------------
+Previous: Allowlist approach - only explicitly listed commands were safe
+Current: Denylist approach - all read-only operations safe by default, block only destructive ones
+
+For cloud providers (AWS, GCP):
+- ALLOW: describe-*, list-*, get-*, show-* operations for ALL services (regex-based)
+- BLOCK: create-*, update-*, delete-*, put-*, terminate-*, destroy-*, remove-* operations
+- Precedence: blocked_commands.py patterns checked FIRST (security first)
+
+This aligns with the principle: "Deny first, then ask, then allow" (similar to Claude's approach)
 """
 
 import re
 import logging
-from typing import Tuple, List, Set, Dict
+from typing import Tuple, List, Set, Dict, Union
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +67,9 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
 
         # Shell utilities
         "test", "time", "timeout", "sleep",
+
+        # Testing frameworks (read-only)
+        "pytest", "python3", "python",
     },
 
     # Multi-word commands that are always safe (prefix matching)
@@ -96,6 +111,29 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
         "aws iam list", "aws iam get", "aws sts get-caller-identity",
     },
 
+    # Regex patterns for safe commands (NEW in v2.0)
+    # These allow broad categories of read-only operations
+    "safe_patterns": [
+        # AWS CLI - Allow ALL describe/list/get operations for ANY service
+        # Examples: aws ec2 describe-instances, aws workmail describe-organization,
+        #          aws s3api list-buckets, aws iam get-user
+        r"^aws\s+[\w-]+\s+(describe-[\w-]+|list-[\w-]+|get-[\w-]+)",
+
+        # AWS CLI - Additional read-only patterns
+        r"^aws\s+[\w-]+\s+[\w-]+\s+(describe-[\w-]+|list-[\w-]+|get-[\w-]+)",  # service subservice describe
+        r"^aws\s+s3\s+ls",  # S3 list
+        r"^aws\s+sts\s+get-caller-identity",  # Identity check
+
+        # GCP CLI - Allow ALL describe/list/get operations for ANY service
+        # Examples: gcloud compute instances list, gcloud workload-identity describe
+        r"^gcloud\s+[\w-]+\s+[\w-]+\s+(list|describe)",
+        r"^gcloud\s+[\w-]+\s+(list|describe)",
+
+        # Python test frameworks
+        r"^python3?\s+-m\s+pytest",
+        r"^pytest",
+    ],
+
     # Commands that are read-only UNLESS certain flags are present
     "conditional_safe": {
         # sed is safe unless -i (in-place edit) is used
@@ -124,6 +162,9 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
 
         # openssl is mostly read-only
         "openssl": [],
+
+        # cd is read-only (changes directory in shell session)
+        "cd": [],
     },
 }
 
@@ -131,6 +172,26 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
 ALWAYS_SAFE_COMMANDS: Set[str] = SAFE_COMMANDS_CONFIG["always_safe"]
 ALWAYS_SAFE_MULTIWORD: Set[str] = SAFE_COMMANDS_CONFIG["always_safe_multiword"]
 CONDITIONAL_SAFE_COMMANDS: Dict[str, List[str]] = SAFE_COMMANDS_CONFIG["conditional_safe"]
+SAFE_PATTERNS: List[str] = SAFE_COMMANDS_CONFIG["safe_patterns"]
+
+
+def matches_safe_pattern(command: str) -> Tuple[bool, str]:
+    """
+    Check if command matches any safe regex pattern.
+
+    NEW in v2.0: Enables denylist approach for cloud providers.
+    Allows broad categories of read-only operations without explicit listing.
+
+    Args:
+        command: Command to check
+
+    Returns:
+        (matches, pattern) - True if matches any safe pattern, with the matched pattern
+    """
+    for pattern in SAFE_PATTERNS:
+        if re.match(pattern, command.strip(), re.IGNORECASE):
+            return True, f"Safe pattern: {pattern}"
+    return False, ""
 
 
 def is_single_command_safe(single_cmd: str) -> Tuple[bool, str]:
@@ -139,6 +200,11 @@ def is_single_command_safe(single_cmd: str) -> Tuple[bool, str]:
 
     This is the core safety check for individual commands.
     Uses SAFE_COMMANDS_CONFIG as single source of truth.
+
+    IMPORTANT: This function assumes blocked_commands.py has already been checked.
+    The validation order should be:
+    1. Check blocked_commands.py first (DENY)
+    2. Then check this function (ALLOW)
 
     Args:
         single_cmd: A single shell command (no pipes or chains)
@@ -165,6 +231,11 @@ def is_single_command_safe(single_cmd: str) -> Tuple[bool, str]:
     for safe_cmd in ALWAYS_SAFE_MULTIWORD:
         if single_cmd.startswith(safe_cmd):
             return True, f"Always-safe: {safe_cmd}"
+
+    # Check regex patterns (NEW in v2.0 - enables denylist approach)
+    matches, pattern_reason = matches_safe_pattern(single_cmd)
+    if matches:
+        return True, pattern_reason
 
     # Check single-word always safe commands
     if base_cmd in ALWAYS_SAFE_COMMANDS:
@@ -212,6 +283,7 @@ def is_read_only_command(command: str, shell_parser=None) -> Tuple[bool, str]:
         "cat file | grep foo"       -> True (all components safe)
         "ls && pwd"                 -> True (all components safe)
         "tail file || echo error"   -> True (all components safe)
+        "aws workmail describe-organization"  -> True (NEW: denylist approach)
         "ls && rm -rf /"            -> False (rm is dangerous)
         "cat file | kubectl apply"  -> False (kubectl apply is dangerous)
     """

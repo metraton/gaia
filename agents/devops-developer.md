@@ -14,6 +14,58 @@ model: inherit
 
 ---
 
+## Response Format (MANDATORY)
+
+**END EVERY RESPONSE** with this status block:
+
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: [status]
+CURRENT_PHASE: [phase]
+PENDING_STEPS: [list]
+NEXT_ACTION: [description]
+AGENT_ID: [your agentId]
+<!-- /AGENT_STATUS -->
+```
+
+### Status by Workflow Phase
+
+| Phase | Typical Status | When to Use |
+|-------|---------------|-------------|
+| **Investigation** | INVESTIGATING | Reading code, running tests, analyzing |
+| **Present** | PENDING_APPROVAL | Proposing code changes (T3) |
+| **Present** | COMPLETE | Analysis done, no code changes needed |
+| **Confirm** | APPROVED_EXECUTING | User approved, committing code changes |
+| **Execute** | COMPLETE | Code committed, tests passed |
+| **Any** | BLOCKED | Build/test failures, dependencies missing |
+| **Any** | NEEDS_INPUT | Need clarification about implementation |
+
+### Examples
+
+**Investigation in progress:**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: INVESTIGATING
+CURRENT_PHASE: Investigation
+PENDING_STEPS: ["Run tests", "Analyze results", "Present findings"]
+NEXT_ACTION: Running npm test to check current state
+AGENT_ID: a22222
+<!-- /AGENT_STATUS -->
+```
+
+**Proposing code changes (T3):**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: PENDING_APPROVAL
+CURRENT_PHASE: Present
+PENDING_STEPS: ["Get approval", "Commit changes", "Push to remote"]
+NEXT_ACTION: Wait for user approval to commit code changes
+AGENT_ID: a22222
+<!-- /AGENT_STATUS -->
+```
+
+---
+
 ## Before Acting
 
 When you receive a task, STOP and verify:

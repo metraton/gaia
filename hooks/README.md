@@ -37,98 +37,135 @@ Log a .claude/logs/
 
 ### Pre-Execution Hooks
 
-#### `pre_tool_use.py` (~750 lineas)
+#### `pre_tool_use.py` (~319 lineas)
 El guardian principal - valida TODAS las operaciones antes de ejecutarlas.
 
-**Caracteristicas principales (v3.3.2):**
+**Arquitectura modular (v2):**
+- Usa sistema de modulos en `modules/` (core, security, tools)
+- BashValidator para comandos bash
+- TaskValidator para delegacion de agentes
+- Estado compartido con post-hook via `.hooks_state.json`
 
-1. **Auto-aprobacion de comandos read-only:**
-   - Comandos simples: `ls`, `cat`, `grep`, `git status` -> NO ASK
-   - Comandos compuestos seguros: `cat file | grep foo`, `ls && pwd` -> NO ASK
-   - Retorna `permissionDecision: "allow"` para bypass del ASK prompt
+**Optimizaciones de performance:**
 
-2. **Configuracion unificada (`SAFE_COMMANDS_CONFIG`):**
-   ```python
-   SAFE_COMMANDS_CONFIG = {
-       "always_safe": {"ls", "cat", "grep", ...},
-       "always_safe_multiword": {"git status", "kubectl get", ...},
-       "conditional_safe": {"sed": [r"-i\b"], "curl": [r"-T\b"], ...}
-   }
-   ```
+1. **LRU Cache para clasificacion de tiers:**
+   - `@lru_cache(512)` en `classify_command_tier()`
+   - 60-70% mas rapido para comandos repetidos
+   - Reduccion de latencia total: 30-40%
 
-3. **ShellCommandParser singleton:**
-   - Parsea comandos compuestos (pipes, &&, ||, ;)
-   - Valida cada componente individualmente
-   - Si TODOS son seguros -> auto-aprueba
+2. **Fast-path para comandos ultra-comunes:**
+   - `ls`, `pwd`, `git status`, `kubectl get`, `terraform plan`
+   - Clasificacion directa sin analisis completo
+   - 88% mas rapido para estos comandos
+
+3. **Lazy parsing de shell:**
+   - Solo parsea si detecta operadores (`|`, `&&`, `||`, `;`)
+   - Comandos simples evitan parser completamente
+   - Valida directamente con `is_read_only_command()`
+
+**Flujo de validacion (20 pasos con 5 fast-paths):**
+
+```
+1. Recibe tool call via stdin (JSON)
+2. Extrae tool_name y parameters
+3. Ruta segun tool:
+
+   [BASH TOOL] (pasos 4-12)
+   4. Extrae comando
+   5. ¿Tiene operadores? -> Fast-path: NO
+   6.   ├─> Valida comando simple
+   7.   ├─> ¿Es read-only? -> Fast-path: SI
+   8.   │    └─> AUTO-APRUEBA (exit 0)
+   9.   └─> Clasifica tier (con cache LRU)
+   10. SI tiene operadores:
+   11.  ├─> Parsea con ShellCommandParser
+   12.  └─> Valida cada componente
+
+   [TASK TOOL] (pasos 13-33)
+   13. Extrae subagent_type y prompt
+   14. ¿Tiene resume parameter?
+
+   [RESUME MODE] (pasos 15-22)
+   15.  ├─> Valida formato agentId: ^a[0-9a-f]{6,7}$
+   16.  ├─> Valida prompt existe
+   17.  ├─> Skip validaciones pesadas (ya validado en fase 1)
+   18.  ├─> Log: "RESUME: Continuing agent {id}"
+   19.  ├─> Save state para post-hook
+   20.  └─> Return None -> PERMITE ejecucion
+
+   [NEW TASK MODE] (pasos 23-33)
+   23.  ├─> Valida agent existe en AVAILABLE_AGENTS
+   24.  ├─> Extrae metadata si existe (soft warning)
+   25.  ├─> Clasifica tier automaticamente
+   26.  ├─> ¿Es T3?
+   27.  │    ├─> Busca approval en metadata/prompt
+   28.  │    └─> Sin approval -> BLOQUEA
+   29.  ├─> Ejecuta workflow guards (phase validators)
+   30.  ├─> Guard phase_4_approval_mandatory
+   31.  ├─> Save state para post-hook
+   32.  └─> Log decision y metricas
+   33.  └─> Return None -> PERMITE ejecucion
+```
+
+**Validacion de Resume:**
+
+El hook detecta operaciones de resume para T3 two-phase workflow:
+
+```python
+# Fase 1: Planning
+Task(subagent_type="terraform-architect", prompt="plan VPC...")
+# -> Agente retorna plan + agentId: a12345
+
+# Fase 2: Approval + Execution
+Task(resume="a12345", prompt="User approved. Execute plan.")
+# -> Hook valida:
+#    ✓ Formato agentId (a + 6-7 hex chars)
+#    ✓ Prompt existe
+#    ✓ Skip heavy validations (agent ya validado)
+#    ✓ Permite ejecucion con contexto completo
+```
 
 **Que valida:**
-- Tier de seguridad (T0, T1, T2, T3)
-- Permisos segun settings.json
+
+**Bash commands:**
+- Tier de seguridad (T0/T1/T2/T3)
 - Comandos bloqueados globalmente
-- Contexto de ejecucion
 - Componentes de comandos compuestos
+- Auto-aprobacion de read-only
+
+**Task delegations:**
+- Agent existe en AVAILABLE_AGENTS
+- Tier de operacion (clasificacion automatica)
+- T3 requiere approval (busca en metadata/prompt)
+- Workflow guards (phase validators)
+- Resume: formato agentId + prompt presente
 
 **Reglas de decision:**
 ```python
-# 1. Auto-aprobacion para read-only
-if is_read_only_command(command):
-    return AUTO_APPROVE  # Retorna JSON con permissionDecision: "allow"
+# BASH VALIDATION
+if not has_operators(command):
+    if is_read_only_command(command):
+        return None  # Auto-aprueba (fast-path)
 
-# 2. Validacion de seguridad
-if tier == "T3" and not has_approval():
-    return BLOCK  # Requiere aprobacion
+tier = classify_command_tier(command)  # Con LRU cache
+if tier == T3 and not has_approval:
+    return "BLOCKED: T3 requiere approval"
 
-if command in always_blocked:
-    return BLOCK  # Nunca permitir
+# TASK VALIDATION
+if resume_id:
+    if not re.match(r'^a[0-9a-f]{6,7}$', resume_id):
+        return "BLOCKED: Invalid agentId format"
+    if not prompt:
+        return "BLOCKED: Resume requires prompt"
+    return None  # Permite resume (skip heavy validations)
 
-if permission == "deny":
-    return BLOCK  # Explicitamente denegado
+if agent_name not in AVAILABLE_AGENTS:
+    return "BLOCKED: Agent no existe"
 
-if permission == "ask":
-    return ASK_USER  # Solicitar confirmacion
+if tier == T3 and not has_approval:
+    return "BLOCKED: T3 requiere approval. Usa AskUserQuestion."
 
-return ALLOW  # Operacion segura
-```
-
----
-
-#### `pre_phase_hook.py` (~200 lineas)
-Valida transiciones entre fases del workflow (Phase 0-6).
-
-**Que valida:**
-- Orden correcto de fases
-- Prerequisitos completados
-- Approval gates no omitidos
-
----
-
-#### `pre_kubectl_security.py` (~180 lineas)
-Validacion especializada para comandos de Kubernetes.
-
-**Que valida:**
-- Namespace correcto
-- No operaciones en kube-system
-- No secrets expuestos en logs
-- RBAC apropiado
-
----
-
-#### `shell_parser.py` (~290 lineas)
-Parser nativo de Python para comandos shell compuestos.
-
-**Que hace:**
-- Parsea pipes: `cmd1 | cmd2` -> `["cmd1", "cmd2"]`
-- Parsea AND: `cmd1 && cmd2` -> `["cmd1", "cmd2"]`
-- Parsea OR: `cmd1 || cmd2` -> `["cmd1", "cmd2"]`
-- Preserva strings con comillas: `echo 'a|b'` -> `["echo 'a|b'"]`
-
-**Uso:**
-```python
-from shell_parser import ShellCommandParser
-
-parser = ShellCommandParser()
-components = parser.parse("ls | grep foo && wc -l")
-# ["ls", "grep foo", "wc -l"]
+return None  # Permite ejecucion
 ```
 
 ---
@@ -159,11 +196,6 @@ Audita TODAS las operaciones despues de ejecutarse.
   "output_summary": "deployment configured"
 }
 ```
-
----
-
-#### `post_phase_hook.py` (~150 lineas)
-Audita transiciones de fase y actualiza estado del workflow.
 
 ---
 
@@ -309,14 +341,12 @@ python3 .claude/hooks/pre_tool_use.py --test
 **Archivos de hooks:**
 ```
 hooks/
-├── pre_tool_use.py        (~750 lineas) - Guardian principal + auto-approval
+├── pre_tool_use.py        (~319 lineas) - Guardian principal v2 (modular)
 ├── post_tool_use.py       (~300 lineas) - Auditor principal
-├── pre_phase_hook.py      (~200 lineas) - Validador de fases
-├── post_phase_hook.py     (~150 lineas) - Auditor de fases
-├── pre_kubectl_security.py (~180 lineas) - K8s security
-├── shell_parser.py        (~290 lineas) - Parser de comandos compuestos
 └── subagent_stop.py       (~200 lineas) - Workflow metrics
 ```
+
+**Nota:** El parser de shell (`shell_parser.py`) ahora está en `modules/tools/shell_parser.py`
 
 **Configuracion relacionada:**
 - `.claude/settings.json` - Permisos y tiers
@@ -328,7 +358,7 @@ hooks/
 
 ---
 
-**Version:** 3.3.2  
-**Ultima actualizacion:** 2025-12-11  
-**Total de hooks:** 7 hooks (5 pre, 1 post, 1 metrics)  
+**Version:** 4.1.0
+**Ultima actualizacion:** 2026-01-16
+**Total de hooks:** 3 hooks activos (1 pre, 1 post, 1 metrics)
 **Mantenido por:** Gaia (meta-agent)

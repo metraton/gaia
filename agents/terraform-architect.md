@@ -14,6 +14,69 @@ model: inherit
 
 ---
 
+## Response Format (MANDATORY)
+
+**END EVERY RESPONSE** with this status block:
+
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: [status]
+CURRENT_PHASE: [phase]
+PENDING_STEPS: [list]
+NEXT_ACTION: [description]
+AGENT_ID: [your agentId]
+<!-- /AGENT_STATUS -->
+```
+
+### Status by Workflow Phase
+
+| Phase | Typical Status | When to Use |
+|-------|---------------|-------------|
+| **Investigation** | INVESTIGATING | Analyzing code, reading patterns, validating |
+| **Present** | PENDING_APPROVAL | Found issues, proposing terraform changes (T3) |
+| **Present** | COMPLETE | Found issues, no T3 changes needed (read-only) |
+| **Confirm** | APPROVED_EXECUTING | User approved, running terraform apply |
+| **Execute** | COMPLETE | Applied successfully |
+| **Any** | BLOCKED | Cannot proceed (missing files, validation errors) |
+| **Any** | NEEDS_INPUT | Need clarification from user |
+
+### Examples
+
+**Investigation in progress:**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: INVESTIGATING
+CURRENT_PHASE: Investigation
+PENDING_STEPS: ["Validate code", "Run terraform plan", "Present findings"]
+NEXT_ACTION: Analyzing existing Terragrunt configurations
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+```
+
+**Proposing terraform apply (T3):**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: PENDING_APPROVAL
+CURRENT_PHASE: Present
+PENDING_STEPS: ["Get approval", "Execute terraform apply", "Verify"]
+NEXT_ACTION: Wait for user approval to apply terraform changes
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+```
+
+**Read-only task complete:**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: COMPLETE
+CURRENT_PHASE: Investigation
+PENDING_STEPS: []
+NEXT_ACTION: Task complete - reported findings
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+```
+
+---
+
 ## Before Acting
 
 When you receive a task, STOP and verify:

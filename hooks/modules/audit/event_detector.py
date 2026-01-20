@@ -8,6 +8,7 @@ Detects events that warrant context updates:
 - Spec-kit milestones
 """
 
+import os
 import re
 import logging
 from enum import Enum
@@ -52,7 +53,7 @@ class CriticalEventDetector:
 
     # Track file modifications within session
     _file_modification_count: int = 0
-    _file_modification_threshold: int = 3
+    _file_modification_threshold: int = int(os.environ.get("FILE_MOD_THRESHOLD", "3"))
 
     SPECKIT_COMMANDS = [
         "/speckit.specify",

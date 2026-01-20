@@ -49,8 +49,8 @@
     "index.js"
   ],
   "scripts": {
-    "test": "echo 'No tests configured. Fixtures available in tests/fixtures/'",
-    "validate": "python3 tools/commit_validator.py",
+    "test": "python3 -m pytest tests/ -v",
+    "validate": "python3 tools/validation/commit_validator.py",
     "lint": "eslint .",
     "clean": "find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true",
     "pre-publish": "node bin/pre-publish-validate.js",

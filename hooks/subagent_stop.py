@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """
-Subagent stop hook for Claude Code Agent System
+Subagent stop hook for Claude Code Agent System (with Episodic Memory)
 
-Handles workflow metrics capture and anomaly detection when agents complete execution.
+Handles workflow metrics capture, anomaly detection, and episodic memory storage
+when agents complete execution.
 
 Responsibilities:
 1. Capture workflow execution metrics (duration, exit code, agent)
 2. Detect anomalies (slow execution, failures, consecutive failures)
 3. Signal Gaia for analysis when anomalies are detected
+4. Store workflow as episodic memory for future reference
 
 Architecture:
 - Metrics stored in .claude/memory/workflow-episodic/
+- Episodes stored in .claude/project-context/episodic-memory/
 - Anomaly signals trigger Gaia analysis
 - Minimal footprint - no bundle creation
 
 Integration:
 - Executed automatically after agent tool completes
-- Integrates with Episodic Memory for context enrichment
+- Integrates with memory/episodic.py for context enrichment
+- Integrates with agent_session for session management
 """
 
 import os
@@ -26,18 +30,16 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import hashlib
 
 # Agent session management
 try:
-    sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "4-memory"))
+    sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "memory"))
     from agent_session import finalize_session as finalize_agent_session
     AGENT_SESSION_AVAILABLE = True
 except ImportError:
-    logger.debug("agent_session module not available - session finalization disabled")
     AGENT_SESSION_AVAILABLE = False
-
 
 # Configure structured logging
 logging.basicConfig(
@@ -99,6 +101,90 @@ def _get_or_create_session_id() -> str:
     return session_id
 
 
+def get_session_events() -> Dict[str, Any]:
+    """
+    Get critical events from active session context.
+
+    Returns:
+        Dict with categorized session events (commits, pushes, file_mods, speckit)
+    """
+    context_path = Path(".claude/session/active/context.json")
+
+    if not context_path.exists():
+        logger.debug("No session context found")
+        return {}
+
+    try:
+        with open(context_path, 'r') as f:
+            context = json.load(f)
+
+        critical_events = context.get("critical_events", [])
+
+        if not critical_events:
+            return {}
+
+        # Extract git commits
+        commits = [
+            {
+                "hash": e.get("commit_hash", ""),
+                "message": e.get("commit_message", ""),
+                "timestamp": e.get("timestamp", "")
+            }
+            for e in critical_events
+            if e.get("event_type") == "git_commit" and e.get("commit_hash")
+        ]
+
+        # Extract git pushes
+        pushes = [
+            {
+                "branch": e.get("branch", ""),
+                "timestamp": e.get("timestamp", "")
+            }
+            for e in critical_events
+            if e.get("event_type") == "git_push" and e.get("branch")
+        ]
+
+        # Extract file modifications
+        file_mods = [
+            {
+                "count": e.get("modification_count", 0),
+                "timestamp": e.get("timestamp", "")
+            }
+            for e in critical_events
+            if e.get("event_type") == "file_modifications"
+        ]
+
+        # Extract spec-kit milestones
+        speckit = [
+            {
+                "command": e.get("command", ""),
+                "timestamp": e.get("timestamp", "")
+            }
+            for e in critical_events
+            if e.get("event_type") == "speckit_milestone"
+        ]
+
+        # Build result
+        result = {}
+        if commits:
+            result["git_commits"] = commits
+        if pushes:
+            result["git_pushes"] = pushes
+        if file_mods:
+            result["file_modifications"] = file_mods
+        if speckit:
+            result["speckit_milestones"] = speckit
+
+        if result:
+            logger.info(f"Found {len(critical_events)} session events")
+
+        return result
+
+    except Exception as e:
+        logger.warning(f"Failed to read session events: {e}")
+        return {}
+
+
 def capture_workflow_metrics(task_info: Dict[str, Any], agent_output: str, session_context: Dict[str, Any]) -> Dict[str, Any]:
     """
     Capture workflow execution metrics for analysis.
@@ -141,7 +227,8 @@ def capture_workflow_metrics(task_info: Dict[str, Any], agent_output: str, sessi
         "duration_ms": duration_ms,
         "exit_code": exit_code,
         "output_length": len(agent_output),
-        "tags": task_info.get("tags", [])
+        "tags": task_info.get("tags", []),
+        "prompt": task_info.get("description", ""),  # Store for episodic
     }
 
     # Save to workflow memory
@@ -263,9 +350,100 @@ def signal_gaia_analysis(anomalies: List[Dict], metrics: Dict[str, Any]):
         logger.warning(f"Could not create analysis signal: {e}")
 
 
+def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
+    """
+    Capture workflow as episodic memory.
+    
+    Args:
+        metrics: Subagent metrics from workflow
+    
+    Returns:
+        Episode ID if stored, None otherwise
+    """
+    try:
+        import importlib.util
+        
+        # Find memory module
+        candidates = [
+            Path(__file__).parent.parent / "tools" / "memory" / "episodic.py",
+            Path("/home/jaguilar/aaxis/vtr/repositories/gaia-ops/tools/memory/episodic.py"),
+            Path("/home/jaguilar/aaxis/vtr/repositories/node_modules/@jaguilar87/gaia-ops/tools/memory/episodic.py")
+        ]
+        
+        episodic_module = None
+        for path in candidates:
+            if path.exists():
+                try:
+                    spec = importlib.util.spec_from_file_location("episodic", path)
+                    if spec and spec.loader:
+                        episodic_module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(episodic_module)
+                        logger.debug(f"Loaded episodic module from {path}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Could not load episodic from {path}: {e}")
+                    continue
+        
+        if not episodic_module:
+            logger.debug("Episodic memory module not found - skipping episode capture")
+            return None
+        
+        # Initialize memory
+        memory = episodic_module.EpisodicMemory()
+        
+        # Extract from metrics
+        prompt = metrics.get("prompt", "")
+        if not prompt:
+            prompt = f"Task for {metrics.get('agent', 'unknown')}"
+        
+        subagent_type = metrics.get("agent", "unknown")
+        duration_seconds = metrics.get("duration_ms", 0) / 1000.0 if metrics.get("duration_ms") else None
+        
+        # Determine outcome from metrics
+        exit_code = metrics.get("exit_code", 0)
+        if exit_code == 0:
+            outcome = "success"
+            success = True
+        else:
+            outcome = "failed"
+            success = False
+        
+        # Tags from metrics
+        tags = metrics.get("tags", [])
+        if not tags:
+            tags = [subagent_type]
+
+        # Enrich with session events
+        session_events = get_session_events()
+        context = {"metrics": metrics}
+        if session_events:
+            context["session_events"] = session_events
+            logger.info(f"Enriched episode with session events: {list(session_events.keys())}")
+
+        # Store episode
+        episode_id = memory.store_episode(
+            prompt=prompt,
+            clarifications={},
+            enriched_prompt=prompt,
+            context=context,
+            tags=tags,
+            outcome=outcome,
+            success=success,
+            duration_seconds=duration_seconds,
+            commands_executed=[]  # TODO: extract from metrics if available
+        )
+        
+        logger.info(f"Captured episode: {episode_id} (outcome: {outcome})")
+        return episode_id
+        
+    except Exception as e:
+        logger.debug(f"Failed to capture episodic memory: {e}")
+        return None
+
+
 def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str, Any]:
     """
-    Main subagent stop hook - captures metrics and detects anomalies.
+    Main subagent stop hook - captures metrics, detects anomalies, stores episodes.
 
     Args:
         task_info: Task information including ID, description, agent, etc.
@@ -285,45 +463,49 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             "agent": task_info.get('agent', 'unknown'),
         }
 
-        # Capture workflow metrics
+        # Step 1: Capture workflow metrics
         workflow_metrics = capture_workflow_metrics(task_info, agent_output, session_context)
 
-        # Check for anomalies
+        # Step 2: Check for anomalies
         anomalies = detect_anomalies(workflow_metrics)
 
         if anomalies:
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        return {
-            "success": True,
-            "session_id": session_id,
-            "status": "metrics_captured",
-            "metrics_captured": True,
-            "anomalies_detected": len(anomalies) if anomalies else 0
-        }
-
-    except Exception as e:
-        # Finalize agent session if agent_id is provided
+        # Step 3: Capture as episodic memory
+        episode_id = capture_episodic_memory(workflow_metrics)
+        
+        # Step 4: Finalize agent session if agent_id is provided
         if AGENT_SESSION_AVAILABLE and task_info.get('agent_id'):
             try:
                 # Determine outcome from metrics
                 outcome = "completed" if workflow_metrics.get("exit_code", 0) == 0 else "failed"
                 
-                success = finalize_agent_session(
+                success_finalize = finalize_agent_session(
                     agent_id=task_info['agent_id'],
                     outcome=outcome,
                     summary=f"Agent {task_info.get('agent', 'unknown')} finished with exit code {workflow_metrics.get('exit_code', 0)}"
                 )
                 
-                if success:
+                if success_finalize:
                     logger.info(f"Finalized agent session: {task_info['agent_id']} (outcome: {outcome})")
                 else:
                     logger.warning(f"Could not finalize agent session: {task_info['agent_id']}")
             except Exception as e:
                 logger.warning(f"Error finalizing agent session: {e}")
 
-        logger.debug(f"Error in subagent_stop_hook: {e}")
+        return {
+            "success": True,
+            "session_id": session_id,
+            "status": "metrics_captured",
+            "metrics_captured": True,
+            "anomalies_detected": len(anomalies) if anomalies else 0,
+            "episode_id": episode_id
+        }
+
+    except Exception as e:
+        logger.error(f"Error in subagent_stop_hook: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e),
@@ -364,6 +546,7 @@ def main():
             print("Test completed successfully!")
             print(f"Session ID: {result['session_id']}")
             print(f"Anomalies: {result['anomalies_detected']}")
+            print(f"Episode ID: {result.get('episode_id', 'none')}")
         else:
             print(f"Test failed: {result.get('error', 'Unknown error')}")
 

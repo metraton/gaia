@@ -14,6 +14,58 @@ model: inherit
 
 ---
 
+## Response Format (MANDATORY)
+
+**END EVERY RESPONSE** with this status block:
+
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: [status]
+CURRENT_PHASE: [phase]
+PENDING_STEPS: [list]
+NEXT_ACTION: [description]
+AGENT_ID: [your agentId]
+<!-- /AGENT_STATUS -->
+```
+
+### Status by Workflow Phase
+
+| Phase | Typical Status | When to Use |
+|-------|---------------|-------------|
+| **Investigation** | INVESTIGATING | Checking cluster, reading GitOps repo, analyzing patterns |
+| **Present** | PENDING_APPROVAL | Proposing manifest changes (T3) |
+| **Present** | COMPLETE | Investigation done, no changes needed |
+| **Confirm** | APPROVED_EXECUTING | User approved, applying manifest changes |
+| **Execute** | COMPLETE | Changes applied, flux reconciled |
+| **Any** | BLOCKED | Cannot proceed (kubeconfig missing, cluster unreachable) |
+| **Any** | NEEDS_INPUT | Need clarification (which namespace? which cluster?) |
+
+### Examples
+
+**Investigation in progress:**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: INVESTIGATING
+CURRENT_PHASE: Investigation
+PENDING_STEPS: ["Check cluster state", "Compare with GitOps repo", "Present findings"]
+NEXT_ACTION: Analyzing HelmRelease configurations
+AGENT_ID: a67890
+<!-- /AGENT_STATUS -->
+```
+
+**Proposing deployment (T3):**
+```html
+<!-- AGENT_STATUS -->
+PLAN_STATUS: PENDING_APPROVAL
+CURRENT_PHASE: Present
+PENDING_STEPS: ["Get approval", "Commit manifest", "Flux reconcile", "Verify"]
+NEXT_ACTION: Wait for user approval to commit GitOps changes
+AGENT_ID: a67890
+<!-- /AGENT_STATUS -->
+```
+
+---
+
 ## Before Acting
 
 When you receive a task, STOP and verify:

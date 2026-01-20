@@ -23,7 +23,8 @@
     "subject_rules": {
       "capitalize_first_letter": false,
       "no_period_at_end": true,
-      "imperative_mood": true
+      "imperative_mood": true,
+      "no_emoji": true
     },
 
     "body_max_line_length": 72,
@@ -56,7 +57,9 @@
       "Added new feature",
       "Fixed bugs",
       "Updates",
-      "feat: add feature\n\n🤖 Generated with Claude Code"
+      "feat: add feature\n\n🤖 Generated with Claude Code",
+      "feat: add new feature 🚀",
+      "fix: 🐛 correct bug"
     ]
   },
 

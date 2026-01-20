@@ -1,5 +1,4 @@
 {
-  "system_prompt": "You are part of an intelligent DevOps agent system. Use specialized agents via the Task tool for complex operations. Development mode with tiered security: read operations allowed, destructive operations require approval, highly destructive operations blocked.",
   "hooks": {
     "PreToolUse": [
       {
@@ -171,7 +170,6 @@
       "Bash(md5sum:*)",
       "Bash(sha256sum:*)",
       "Bash(openssl:*)",
-
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -192,10 +190,8 @@
       "Bash(git reflog:*)",
       "Bash(git tag:*)",
       "Bash(git for-each-ref:*)",
-
       "Bash(aws sts:*)",
       "Bash(aws configure:*)",
-
       "Bash(aws ec2 describe-instances:*)",
       "Bash(aws ec2 describe-vpcs:*)",
       "Bash(aws ec2 describe-security-groups:*)",
@@ -235,23 +231,18 @@
       "Bash(aws ec2 get-instance-types-from-instance-requirements:*)",
       "Bash(aws ec2 get-launch-template-data:*)",
       "Bash(aws ec2 get-password-data:*)",
-
       "Bash(aws s3 ls:*)",
       "Bash(aws s3api get-:*)",
       "Bash(aws s3api list-:*)",
       "Bash(aws s3api head-:*)",
-
       "Bash(aws rds describe-:*)",
       "Bash(aws rds list-tags-for-resource:*)",
-
       "Bash(aws iam get-:*)",
       "Bash(aws iam list-:*)",
       "Bash(aws iam generate-:*)",
       "Bash(aws iam simulate-:*)",
-
       "Bash(aws lambda get-:*)",
       "Bash(aws lambda list-:*)",
-
       "Bash(aws logs describe-:*)",
       "Bash(aws logs filter-log-events:*)",
       "Bash(aws logs get-:*)",
@@ -259,17 +250,14 @@
       "Bash(aws logs start-query:*)",
       "Bash(aws logs stop-query:*)",
       "Bash(aws logs tail:*)",
-
       "Bash(aws cloudwatch describe-:*)",
       "Bash(aws cloudwatch get-:*)",
       "Bash(aws cloudwatch list-:*)",
-
       "Bash(aws cloudformation describe-:*)",
       "Bash(aws cloudformation get-:*)",
       "Bash(aws cloudformation list-:*)",
       "Bash(aws cloudformation validate-template:*)",
       "Bash(aws cloudformation estimate-template-cost:*)",
-
       "Bash(aws apigateway get-rest-apis:*)",
       "Bash(aws apigateway get-resources:*)",
       "Bash(aws apigateway get-stages:*)",
@@ -279,61 +267,69 @@
       "Bash(aws apigateway get-method:*)",
       "Bash(aws apigateway get-deployment:*)",
       "Bash(aws apigatewayv2 get-:*)",
-
       "Bash(aws elbv2 describe-:*)",
       "Bash(aws elbv2 describe-target-groups:*)",
       "Bash(aws elbv2 describe-load-balancers:*)",
       "Bash(aws elbv2 describe-rules:*)",
       "Bash(aws elbv2 describe-listeners:*)",
       "Bash(aws elb describe-:*)",
-
       "Bash(aws route53 get-:*)",
       "Bash(aws route53 list-:*)",
       "Bash(aws route53 list-resource-record-sets:*)",
       "Bash(aws route53 test-dns-answer:*)",
-
       "Bash(aws secretsmanager describe-secret:*)",
       "Bash(aws secretsmanager get-:*)",
       "Bash(aws secretsmanager list-:*)",
-
       "Bash(aws ssm describe-:*)",
       "Bash(aws ssm get-:*)",
       "Bash(aws ssm list-:*)",
-
       "Bash(aws sns get-:*)",
       "Bash(aws sns list-:*)",
-
       "Bash(aws sqs get-:*)",
       "Bash(aws sqs list-:*)",
       "Bash(aws sqs receive-message:*)",
-
       "Bash(aws workmail describe-:*)",
       "Bash(aws workmail list-:*)",
       "Bash(aws workmail get-:*)",
-
       "Bash(aws dynamodb describe-:*)",
       "Bash(aws dynamodb list-:*)",
       "Bash(aws dynamodb get-item:*)",
       "Bash(aws dynamodb query:*)",
       "Bash(aws dynamodb scan:*)",
-
       "Bash(aws ecr describe-:*)",
       "Bash(aws ecr get-:*)",
       "Bash(aws ecr list-:*)",
       "Bash(aws ecr batch-get-image:*)",
-
       "Bash(aws eks describe-:*)",
       "Bash(aws eks list-:*)",
       "Bash(aws eks get-token:*)",
-
       "Bash(aws elasticache describe-:*)",
       "Bash(aws elasticache list-:*)",
-
       "Bash(aws cloudtrail lookup-events:*)",
       "Bash(aws cloudtrail describe-:*)",
       "Bash(aws cloudtrail get-:*)",
       "Bash(aws cloudtrail list-:*)",
-
+      "Bash(aws ecs describe-:*)",
+      "Bash(aws ecs list-:*)",
+      "Bash(aws autoscaling describe-:*)",
+      "Bash(aws kms describe-:*)",
+      "Bash(aws kms get-:*)",
+      "Bash(aws kms list-:*)",
+      "Bash(aws acm describe-certificate:*)",
+      "Bash(aws acm get-certificate:*)",
+      "Bash(aws acm list-:*)",
+      "Bash(aws wafv2 describe-:*)",
+      "Bash(aws wafv2 get-:*)",
+      "Bash(aws wafv2 list-:*)",
+      "Bash(aws kinesis describe-:*)",
+      "Bash(aws kinesis get-:*)",
+      "Bash(aws kinesis list-:*)",
+      "Bash(aws stepfunctions describe-:*)",
+      "Bash(aws stepfunctions get-:*)",
+      "Bash(aws stepfunctions list-:*)",
+      "Bash(aws backup describe-:*)",
+      "Bash(aws backup get-:*)",
+      "Bash(aws backup list-:*)",
       "Bash(gcloud version:*)",
       "Bash(gcloud info:*)",
       "Bash(gcloud auth:*)",
@@ -351,7 +347,26 @@
       "Bash(gsutil cat:*)",
       "Bash(gsutil stat:*)",
       "Bash(gsutil du:*)",
-
+      "Bash(gcloud run services describe:*)",
+      "Bash(gcloud run services list:*)",
+      "Bash(gcloud run revisions describe:*)",
+      "Bash(gcloud run revisions list:*)",
+      "Bash(gcloud functions describe:*)",
+      "Bash(gcloud functions list:*)",
+      "Bash(gcloud pubsub topics describe:*)",
+      "Bash(gcloud pubsub topics list:*)",
+      "Bash(gcloud pubsub subscriptions describe:*)",
+      "Bash(gcloud pubsub subscriptions list:*)",
+      "Bash(gcloud kms keys describe:*)",
+      "Bash(gcloud kms keys list:*)",
+      "Bash(gcloud kms keyrings describe:*)",
+      "Bash(gcloud kms keyrings list:*)",
+      "Bash(gcloud secrets describe:*)",
+      "Bash(gcloud secrets list:*)",
+      "Bash(gcloud secrets versions describe:*)",
+      "Bash(gcloud secrets versions list:*)",
+      "Bash(gcloud storage buckets describe:*)",
+      "Bash(gcloud storage buckets list:*)",
       "Bash(kubectl get:*)",
       "Bash(kubectl describe:*)",
       "Bash(kubectl logs:*)",
@@ -370,7 +385,6 @@
       "Bash(kubectl label:*)",
       "Bash(kubectl annotate:*)",
       "Bash(kubectl uncordon:*)",
-
       "Bash(helm list:*)",
       "Bash(helm status:*)",
       "Bash(helm get:*)",
@@ -386,7 +400,6 @@
       "Bash(helm repo add:*)",
       "Bash(helm repo update:*)",
       "Bash(helm repo remove:*)",
-
       "Bash(flux get:*)",
       "Bash(flux check:*)",
       "Bash(flux version:*)",
@@ -397,7 +410,6 @@
       "Bash(flux events:*)",
       "Bash(flux suspend:*)",
       "Bash(flux resume:*)",
-
       "Bash(terraform version:*)",
       "Bash(terraform show:*)",
       "Bash(terraform output:*)",
@@ -408,7 +420,6 @@
       "Bash(terraform providers:*)",
       "Bash(terraform graph:*)",
       "Bash(terraform console:*)",
-
       "Bash(terragrunt version:*)",
       "Bash(terragrunt output:*)",
       "Bash(terragrunt validate:*)",
@@ -421,7 +432,6 @@
       "Bash(terragrunt graph-dependencies:*)",
       "Bash(terragrunt render-json:*)",
       "Bash(terragrunt hclfmt:*)",
-
       "Bash(docker ps:*)",
       "Bash(docker images:*)",
       "Bash(docker logs:*)",
@@ -440,7 +450,6 @@
       "Bash(docker compose ps:*)",
       "Bash(docker compose logs:*)",
       "Bash(docker compose config:*)",
-
       "Bash(python:*)",
       "Bash(python3:*)",
       "Bash(pip list:*)",
@@ -568,7 +577,6 @@
       "Bash(terragrunt destroy:*)",
       "Bash(terraform apply:*)",
       "Bash(terragrunt apply:*)",
-      
       "Bash(kubectl delete:*)",
       "Bash(kubectl apply:*)",
       "Bash(kubectl create:*)",
@@ -579,12 +587,10 @@
       "Bash(kubectl edit:*)",
       "Bash(kubectl taint:*)",
       "Bash(kubectl cordon:*)",
-
       "Bash(helm delete:*)",
       "Bash(helm uninstall:*)",
       "Bash(helm install:*)",
       "Bash(helm upgrade:*)",
-      
       "Bash(git push:*)",
       "Bash(git rebase:*)",
       "Bash(git reset:*)",
@@ -604,13 +610,17 @@
       "Bash(git stash apply:*)",
       "Bash(git clean:*)",
       "Bash(git restore:*)",
-      
       "Bash(rm:*)",
       "Bash(rmdir:*)",
       "Bash(chmod:*)",
       "Bash(chown:*)",
       "Bash(ln:*)",
-      
+      "Bash(aws workmail register-to-work-mail:*)",
+      "Bash(aws workmail reset-password:*)",
+      "Bash(aws workmail create-*:*)",
+      "Bash(aws workmail update-*:*)",
+      "Bash(aws workmail delete-*:*)",
+      "Bash(aws workmail deregister-*:*)",
       "Bash(aws cloudformation create-stack:*)",
       "Bash(aws cloudformation update-stack:*)",
       "Bash(aws ec2 create-:*)",

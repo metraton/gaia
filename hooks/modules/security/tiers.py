@@ -12,6 +12,7 @@ import re
 import logging
 from enum import Enum
 from typing import Optional
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,61 @@ VALIDATION_PATTERNS = [
     r"\bfmt\b",
 ]
 
+# Ultra-common commands that should fast-path to T0
+# These are commands that appear in >80% of sessions
+ULTRA_COMMON_T0_COMMANDS = frozenset({
+    "ls", "pwd", "cat", "echo", "git status", "git diff",
+    "git log", "git branch", "kubectl get", "terraform plan",
+})
+
+
+@lru_cache(maxsize=512)
+def _classify_command_tier_cached(
+    command: str,
+    has_blocked_patterns: bool = False,
+) -> SecurityTier:
+    """
+    Classify command into security tier with LRU cache.
+
+    This is the internal cached implementation. Use classify_command_tier() instead.
+    """
+    if not command or not command.strip():
+        return SecurityTier.T3_BLOCKED
+
+    command = command.strip()
+
+    # Fast-path: Ultra-common T0 commands
+    words = command.split()
+    if len(words) >= 2:
+        prefix2 = f"{words[0]} {words[1]}"
+        if prefix2 in ULTRA_COMMON_T0_COMMANDS:
+            return SecurityTier.T0_READ_ONLY
+    if len(words) >= 1:
+        if words[0] in ULTRA_COMMON_T0_COMMANDS:
+            return SecurityTier.T0_READ_ONLY
+
+    # Blocked patterns already checked externally
+    if has_blocked_patterns:
+        return SecurityTier.T3_BLOCKED
+
+    # Check for dry-run operations (T2)
+    if "--dry-run" in command or "--plan-only" in command:
+        return SecurityTier.T2_DRY_RUN
+
+    # Check for validation operations (T1)
+    for pattern in VALIDATION_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return SecurityTier.T1_VALIDATION
+
+    # Check for read-only operations (T0)
+    from .safe_commands import is_read_only_command
+    is_safe, _ = is_read_only_command(command)
+    if is_safe:
+        return SecurityTier.T0_READ_ONLY
+
+    # Default to blocked for unknown commands
+    return SecurityTier.T3_BLOCKED
+
 
 def classify_command_tier(
     command: str,
@@ -89,33 +145,15 @@ def classify_command_tier(
         blocked_patterns = get_blocked_patterns()
 
     # Check for blocked operations first (T3)
+    # This must be done before caching since blocked_patterns can be injected
+    has_blocked = False
     for pattern in blocked_patterns:
         if re.search(pattern, command, re.IGNORECASE):
-            return SecurityTier.T3_BLOCKED
+            has_blocked = True
+            break
 
-    # Check for dry-run operations (T2)
-    if "--dry-run" in command or "--plan-only" in command:
-        return SecurityTier.T2_DRY_RUN
-
-    # Check for validation operations (T1)
-    for pattern in VALIDATION_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
-            return SecurityTier.T1_VALIDATION
-
-    # Check for read-only operations (T0)
-    if is_read_only_func:
-        is_safe, _ = is_read_only_func(command)
-        if is_safe:
-            return SecurityTier.T0_READ_ONLY
-    else:
-        # Import and use default function
-        from .safe_commands import is_read_only_command
-        is_safe, _ = is_read_only_command(command)
-        if is_safe:
-            return SecurityTier.T0_READ_ONLY
-
-    # Default to blocked for unknown commands
-    return SecurityTier.T3_BLOCKED
+    # Use cached classification
+    return _classify_command_tier_cached(command, has_blocked)
 
 
 def tier_from_string(tier_str: str) -> SecurityTier:

@@ -62,6 +62,14 @@ class BashValidator:
         """Initialize validator."""
         self.shell_parser = get_shell_parser()
 
+    def _has_operators(self, command: str) -> bool:
+        """Quick check if command has operators (before parsing)."""
+        # Fast check for common operators outside quotes
+        # This avoids expensive parsing for 70% of commands
+        if not any(op in command for op in ['|', '&&', '||', ';', '\n']):
+            return False
+        return True
+
     def validate(self, command: str) -> BashValidationResult:
         """
         Validate a Bash command.
@@ -93,7 +101,18 @@ class BashValidator:
                 ],
             )
 
-        # Parse compound commands
+        # Validate git commit messages
+        if "git commit" in command and "-m" in command:
+            commit_validation = self._validate_commit_message(command)
+            if not commit_validation.allowed:
+                return commit_validation
+
+        # Fast-path: Check if command has operators BEFORE parsing
+        if not self._has_operators(command):
+            # Single command - validate directly
+            return self._validate_single_command(command)
+
+        # Parse compound commands only if operators detected
         components = self.shell_parser.parse(command)
 
         if len(components) > 1:
@@ -104,6 +123,15 @@ class BashValidator:
 
     def _validate_single_command(self, command: str) -> BashValidationResult:
         """Validate a single command (no operators)."""
+
+        # Fast-path: Auto-approve read-only commands
+        is_safe, reason = is_read_only_command(command)
+        if is_safe:
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T0_READ_ONLY,
+                reason=f"Auto-approved: {reason}",
+            )
 
         # Check for blocked patterns first
         blocked_result = is_blocked_command(command)
@@ -133,23 +161,15 @@ class BashValidator:
         # Classify tier
         tier = classify_command_tier(command)
 
-        if tier == SecurityTier.T3_BLOCKED:
-            return BashValidationResult(
-                allowed=False,
-                tier=tier,
-                reason=f"Command blocked by security policy",
-                suggestions=[
-                    "Use validation or read-only alternatives",
-                    "terraform plan (instead of apply)",
-                    "kubectl get/describe (instead of apply/delete)",
-                    "--dry-run flag for testing changes",
-                ],
-            )
-
+        # T3 commands that reached here already passed blocked_commands.py check
+        # Allow them to pass - settings.json will handle approval prompts (double validation)
+        # This ensures:
+        # - Truly dangerous commands blocked by blocked_commands.py (redundant layer)
+        # - Other T3 commands go to settings.json for user approval
         return BashValidationResult(
             allowed=True,
             tier=tier,
-            reason=f"Command allowed in tier {tier}",
+            reason=f"Command allowed (tier {tier})",
             requires_credentials=requires_creds,
             credential_warning=cred_warning if requires_creds else None,
         )
@@ -190,6 +210,97 @@ class BashValidator:
             if re.search(pattern, command, re.IGNORECASE):
                 return True
         return False
+
+    def _validate_commit_message(self, command: str) -> BashValidationResult:
+        """
+        Validate git commit message using commit_validator.
+
+        Args:
+            command: Git commit command to validate
+
+        Returns:
+            BashValidationResult with validation status
+        """
+        # Extract commit message from command
+        # Handles both: git commit -m "message" and git commit -m "$(cat <<'EOF'...)"
+        message = self._extract_commit_message(command)
+
+        if not message:
+            # Could not extract message - let it pass, git will handle it
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T2_DRY_RUN,
+                reason="Could not extract commit message for validation"
+            )
+
+        # Import validator (lazy import to avoid startup cost)
+        try:
+            import sys
+            from pathlib import Path
+
+            # Add tools to path
+            tools_path = Path(__file__).parent.parent.parent.parent / "tools"
+            sys.path.insert(0, str(tools_path))
+
+            from validation.commit_validator import validate_commit_message
+
+            # Validate message
+            validation = validate_commit_message(message)
+
+            if not validation.valid:
+                # Build suggestions from errors
+                suggestions = []
+                for error in validation.errors:
+                    suggestions.append(f"{error['type']}: {error['fix']}")
+
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Commit message validation failed: {validation.errors[0]['message']}",
+                    suggestions=suggestions[:3]  # Limit to 3 suggestions
+                )
+
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T2_DRY_RUN,
+                reason="Commit message validated successfully"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to validate commit message: {e}")
+            # If validation fails, allow the command (don't block on validator failure)
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T2_DRY_RUN,
+                reason=f"Commit validation skipped (validator error: {e})"
+            )
+
+    def _extract_commit_message(self, command: str) -> Optional[str]:
+        """
+        Extract commit message from git commit command.
+
+        Handles formats:
+        - git commit -m "message"
+        - git commit -m 'message'
+        - git commit -m "$(cat <<'EOF'\nmessage\nEOF\n)"
+
+        Returns:
+            Extracted message or None if cannot extract
+        """
+        # First try to detect heredoc pattern
+        if "cat <<" in command and "EOF" in command:
+            # Extract content between heredoc delimiters
+            heredoc_match = re.search(r"<<['\"]?EOF['\"]?\s*\n(.+?)\nEOF", command, re.DOTALL)
+            if heredoc_match:
+                return heredoc_match.group(1).strip()
+
+        # Pattern for -m "message" or -m 'message' (non-heredoc)
+        # Use non-greedy match but ensure we get the full quoted string
+        match = re.search(r'-m\s+(["\'])(.+?)\1', command, re.DOTALL)
+        if match:
+            return match.group(2).strip()
+
+        return None
 
     def _check_credentials_required(self, command: str) -> Tuple[bool, str]:
         """Check if command requires credentials and provide guidance."""

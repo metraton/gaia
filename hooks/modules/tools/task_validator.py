@@ -8,12 +8,19 @@ Validates Task tool invocations:
 """
 
 import logging
-from typing import Tuple, Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# ROUTER INTEGRATION - REMOVED
+# ============================================================================
+# Router suggestion removed for simplicity. Orchestrator should choose correct
+# agent based on improved descriptions in CLAUDE.md. If wrong agent selected,
+# error message shows available agents and orchestrator self-corrects.
 
 
 # Available agents for Task invocation
@@ -33,13 +40,15 @@ META_AGENTS = ["gaia", "Explore", "Plan"]
 
 # Keywords indicating T3 operations
 T3_KEYWORDS = [
-    "terraform apply",
-    "kubectl apply",
-    "git push origin main",
-    "flux reconcile",
-    "helm install",
-    "production",
-    "prod",
+      "terraform apply",
+      "terragrunt apply",
+      "kubectl apply",
+      "kubectl delete",
+      "kubectl create",
+      "git push origin main",
+      "git push origin master",
+      "helm install",
+      "helm upgrade",
 ]
 
 # Indicators that approval was received
@@ -89,14 +98,24 @@ class TaskValidator:
         prompt = parameters.get("prompt", "")
         description = parameters.get("description", "")
 
+        # Use original user task for T3 detection if available (prevents false positives from injected context)
+        user_task_for_t3_check = parameters.get("_original_user_task", prompt)
+
         logger.info(f"Task tool validation for agent: {agent_name}")
 
         # Check agent exists
         if agent_name not in self.available_agents:
+            error_msg = f"Unknown agent: '{agent_name}'\n\n"
+            error_msg += f"Available agents:\n"
+            for agent in sorted(self.available_agents):
+                error_msg += f"  - {agent}\n"
+            error_msg += "\nRefer to agent descriptions in CLAUDE.md routing decision tree.\n"
+            error_msg += f"\nCorrect usage: Task(subagent_type=\"<agent-name>\", ...)"
+
             return TaskValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
-                reason=f"Unknown agent: {agent_name}. Available: {', '.join(self.available_agents)}",
+                reason=error_msg,
                 agent_name=agent_name,
             )
 
@@ -109,8 +128,8 @@ class TaskValidator:
                 f"Orchestrator should call context_provider.py first (Phase 2)."
             )
 
-        # Check for T3 operations
-        is_t3 = self._is_t3_operation(prompt, description)
+        # Check for T3 operations (use original user task to avoid false positives from context)
+        is_t3 = self._is_t3_operation(user_task_for_t3_check, description)
         has_approval = False
 
         if is_t3:
@@ -175,6 +194,7 @@ class TaskValidator:
             "  4. Include 'User approval received' in Task prompt\n\n"
             "See CLAUDE.md Rule 5.2 for approval gate protocol."
         )
+
 
 
 def validate_task_invocation(parameters: Dict[str, Any]) -> TaskValidationResult:
