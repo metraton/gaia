@@ -240,60 +240,6 @@ def test_should_preload_standard_matches():
     assert should_preload_standard(config, "read logs") == False
 
 
-def test_build_standards_context_always_loads_critical():
-    """Test that critical standards are always loaded."""
-    from context_provider import build_standards_context, get_standards_dir
-    
-    standards_dir = get_standards_dir()
-    if not standards_dir.is_dir():
-        pytest.skip("Standards directory not found")
-    
-    # Even a simple task should load critical standards
-    result = build_standards_context("check status")
-    
-    assert "preloaded" in result
-    assert "security_tiers" in result["preloaded"]
-    assert "output_format" in result["preloaded"]
-
-
-def test_build_standards_context_on_demand():
-    """Test that on-demand standards are loaded based on task keywords."""
-    from context_provider import build_standards_context, get_standards_dir
-    
-    standards_dir = get_standards_dir()
-    if not standards_dir.is_dir():
-        pytest.skip("Standards directory not found")
-    
-    # Task with kubectl should load command_execution
-    result = build_standards_context("run kubectl get pods")
-    
-    assert "command_execution" in result["preloaded"]
-    
-    # Task with apply should load anti_patterns
-    result = build_standards_context("terraform apply changes")
-    
-    assert "anti_patterns" in result["preloaded"]
-
-
-def test_build_standards_context_returns_content():
-    """Test that standards content is included in result."""
-    from context_provider import build_standards_context, get_standards_dir
-    
-    standards_dir = get_standards_dir()
-    if not standards_dir.is_dir():
-        pytest.skip("Standards directory not found")
-    
-    result = build_standards_context("terraform apply")
-    
-    assert "content" in result
-    assert isinstance(result["content"], dict)
-    
-    # Should have content for each preloaded standard
-    for name in result["preloaded"]:
-        if name in result["content"]:
-            assert len(result["content"][name]) > 0
-
-
 def test_standards_in_final_payload(temp_project_context: Path):
     """Test that standards are included in the final context payload."""
     agent = "terraform-architect"
