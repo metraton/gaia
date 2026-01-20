@@ -21,7 +21,7 @@
       {
         "id": "U4",
         "category": "commits",
-        "rule": "For all git commits, use commit_validator.py to validate message format before committing. Run: python3 .claude/tools/0-guards/commit_validator.py --validate \"<message>\""
+        "rule": "For all git commits, validate message format before committing. Import and use: from tools.validation.commit_validator import safe_validate_before_commit; if not safe_validate_before_commit(message): return error"
       }
     ],
     "agent_specific": {

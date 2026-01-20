@@ -229,7 +229,7 @@ class PrePublishValidator {
     const criticalFiles = [
       'package.json',
       'bin/gaia-init.js',
-      'tools/1-routing/agent_router.py',
+      'tools/context/context_provider.py',
       'hooks/pre_tool_use.py',
       'templates/settings.template.json'
     ];
@@ -298,7 +298,9 @@ class PrePublishValidator {
       try {
         const pythonFiles = [
           'hooks/pre_tool_use.py',
-          'tools/1-routing/agent_router.py'
+          'hooks/post_tool_use.py',
+          'tools/validation/commit_validator.py',
+          'tools/context/context_provider.py'
         ];
 
         pythonFiles.forEach(file => {

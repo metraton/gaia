@@ -99,15 +99,11 @@ class TestToolsDirectory:
     def test_critical_tools_exist(self, tools_dir):
         """All critical tools must exist in reorganized structure"""
         critical_tools = {
-            "2-context/context_provider.py",
-            "2-context/context_section_reader.py",
-            "1-routing/agent_router.py",
-            "6-semantic/semantic_matcher.py",
-            "6-semantic/generate_embeddings.py",
-            "4-validation/approval_gate.py",
-            "4-validation/commit_validator.py",
-            "5-task-management/task_manager.py",
-            "7-utilities/agent_invoker_helper.py"
+            "context/context_provider.py",
+            "context/context_section_reader.py",
+            "validation/approval_gate.py",
+            "validation/commit_validator.py",
+            "memory/episodic.py"
         }
 
         for tool in critical_tools:
