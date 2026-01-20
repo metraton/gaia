@@ -209,5 +209,4 @@ This protocol applies to ALL agents. When working:
 ---
 
 **See Also:**
-- Full protocol: `.claude/docs/standards/universal-protocol.md`
 - Skills system: `.claude/skills/README.md`

@@ -35,5 +35,23 @@
       "auto_load": true,
       "description": "Quick diagnostic scripts (<5 sec) for instant health checks - loaded for all infrastructure agents"
     }
+  },
+  "standards": {
+    "security-tiers": {
+      "auto_load": true,
+      "description": "T0-T3 operation classification and approval requirements"
+    },
+    "output-format": {
+      "auto_load": true,
+      "description": "Global output contract and reporting standards for all agents"
+    },
+    "command-execution": {
+      "triggers": ["bash", "kubectl", "terraform", "gcloud", "command", "execute", "apply", "run"],
+      "description": "Shell security rules, timeout guidelines, and execution best practices"
+    },
+    "anti-patterns": {
+      "triggers": ["apply", "deploy", "create", "kubectl", "terraform", "gcloud", "helm", "flux", "npm", "docker", "build"],
+      "description": "Common mistakes to avoid by tool (kubectl, terraform, gcloud, helm, flux, npm, docker)"
+    }
   }
 }

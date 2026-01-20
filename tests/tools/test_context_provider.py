@@ -192,71 +192,7 @@ def test_invalid_agent(temp_project_context: Path):
 # STANDARDS PRE-LOADING TESTS
 # ============================================================================
 
-def test_get_standards_dir():
-    """Test that standards directory is correctly resolved."""
-    from context_provider import get_standards_dir
-    
-    standards_dir = get_standards_dir()
-    # Should return a Path that ends with docs/standards
-    assert str(standards_dir).endswith("docs/standards"), f"Expected path ending in docs/standards, got {standards_dir}"
-
-
-def test_read_standard_file_exists():
-    """Test reading an existing standard file."""
-    from context_provider import read_standard_file, get_standards_dir
-    
-    standards_dir = get_standards_dir()
-    if standards_dir.is_dir():
-        content = read_standard_file("security-tiers.md", standards_dir)
-        if content is not None:
-            assert "Security Tiers" in content or "T0" in content
-            assert len(content) > 100  # Should have substantial content
-
-
-def test_read_standard_file_not_exists():
-    """Test reading a non-existent standard file returns None."""
-    from context_provider import read_standard_file
-    
-    content = read_standard_file("nonexistent-file.md", Path("/tmp"))
-    assert content is None
-
-
-def test_should_preload_standard_matches():
-    """Test that trigger keywords correctly match tasks."""
-    from context_provider import should_preload_standard
-    
-    config = {
-        "file": "command-execution.md",
-        "triggers": ["kubectl", "terraform", "gcloud"]
-    }
-    
-    # Should match
-    assert should_preload_standard(config, "run kubectl get pods") == True
-    assert should_preload_standard(config, "terraform plan") == True
-    assert should_preload_standard(config, "check GCLOUD status") == True  # Case insensitive
-    
-    # Should not match
-    assert should_preload_standard(config, "check status") == False
-    assert should_preload_standard(config, "read logs") == False
-
-
-def test_standards_in_final_payload(temp_project_context: Path):
-    """Test that standards are included in the final context payload."""
-    agent = "terraform-architect"
-    task = "terraform apply to create cluster"
-    
-    result = run_script(temp_project_context, agent, task)
-    
-    # Should have metadata with standards info
-    assert "metadata" in result
-    metadata = result["metadata"]
-    
-    # Check standards metadata is present
-    assert "standards_preloaded" in metadata
-    assert "standards_count" in metadata
-    
-    # For apply task, should have loaded standards
-    # Note: depends on standards directory being available during test
+# NOTE: Standards tests removed - standards are now loaded via skills system (skills/standards/)
 
 
 # ============================================================================

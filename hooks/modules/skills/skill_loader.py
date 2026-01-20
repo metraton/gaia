@@ -98,6 +98,10 @@ class SkillLoader:
         domain_skills = self._load_domain_skills(prompt_lower, subagent_type)
         skills_to_load.update(domain_skills)
 
+        # 3. Load standards skills based on triggers and auto_load
+        standards_skills = self._load_standards_skills(prompt_lower, subagent_type)
+        skills_to_load.update(standards_skills)
+
         logger.info(f"Loaded {len(skills_to_load)} skills for phase '{phase}': {list(skills_to_load.keys())}")
         return skills_to_load
 
@@ -145,6 +149,34 @@ class SkillLoader:
                     domain_skills[skill_name] = content
 
         return domain_skills
+
+    def _load_standards_skills(self, prompt_lower: str, subagent_type: str) -> Dict[str, str]:
+        """Load standards skills based on keyword triggers and auto_load"""
+        standards_skills = {}
+        standards_config = self.triggers.get("standards", {})
+
+        for skill_name, config in standards_config.items():
+            triggers = config.get("triggers", [])
+            is_auto_load = config.get("auto_load", False)
+            should_load = False
+
+            # Check if should auto-load (standards auto-load for ALL agents, not just PROJECT_AGENTS)
+            if is_auto_load:
+                should_load = True
+                logger.debug(f"Auto-loading standards skill '{skill_name}' for all agents")
+            # Check if any trigger matches in prompt
+            elif any(trigger in prompt_lower for trigger in triggers):
+                should_load = True
+                logger.debug(f"Loading standards skill '{skill_name}' (matched triggers)")
+
+            # Load the skill if conditions met
+            if should_load:
+                skill_path = self.skills_dir / "standards" / skill_name / "SKILL.md"
+                if skill_path.exists():
+                    content = skill_path.read_text()
+                    standards_skills[skill_name] = content
+
+        return standards_skills
 
     def format_skills_for_injection(self, skills: Dict[str, str]) -> str:
         """

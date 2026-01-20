@@ -277,99 +277,6 @@ def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> 
 
 
 # ============================================================================
-# STANDARDS PRE-LOADING SYSTEM
-# ============================================================================
-
-def get_standards_dir() -> Path:
-    """Determines the correct standards directory based on execution context."""
-    installed_path = Path(".claude/docs/standards")
-    if installed_path.is_dir():
-        return installed_path
-    
-    script_dir = Path(__file__).parent.parent
-    package_path = script_dir.parent / "docs" / "standards"
-    if package_path.is_dir():
-        return package_path
-    
-    return Path(__file__).parent.parent.parent / "docs" / "standards"
-
-
-ALWAYS_PRELOAD_STANDARDS = {
-    "security_tiers": "security-tiers.md",
-    "output_format": "output-format.md",
-}
-
-ON_DEMAND_STANDARDS = {
-    "command_execution": {
-        "file": "command-execution.md",
-        "triggers": ["kubectl", "terraform", "terragrunt", "gcloud", "aws", "helm", "flux", 
-                     "apply", "plan", "deploy", "create", "execute", "run", "bash", "command"]
-    },
-    "anti_patterns": {
-        "file": "anti-patterns.md",
-        "triggers": ["create", "apply", "deploy", "delete", "destroy", "update", 
-                     "modify", "change", "push", "build", "troubleshoot", "fix", "debug"]
-    }
-}
-
-
-def read_standard_file(filename: str, standards_dir: Optional[Path] = None) -> Optional[str]:
-    """Reads a standard file from the standards directory."""
-    if standards_dir is None:
-        standards_dir = get_standards_dir()
-    
-    file_path = standards_dir / filename
-    
-    if not file_path.is_file():
-        return None
-    
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except Exception as e:
-        print(f"Warning: Could not read standard file {filename}: {e}", file=sys.stderr)
-        return None
-
-
-def should_preload_standard(standard_config: Dict[str, Any], task: str) -> bool:
-    """Determines if an on-demand standard should be pre-loaded based on task keywords."""
-    task_lower = task.lower()
-    triggers = standard_config.get("triggers", [])
-    return any(trigger in task_lower for trigger in triggers)
-
-
-def build_standards_context(task: str) -> Dict[str, Any]:
-    """Builds the standards context for a task using hybrid pre-loading strategy."""
-    standards_dir = get_standards_dir()
-    standards_content = {}
-    preloaded_list = []
-    
-    # Always load critical standards
-    for name, filename in ALWAYS_PRELOAD_STANDARDS.items():
-        content = read_standard_file(filename, standards_dir)
-        if content:
-            standards_content[name] = content
-            preloaded_list.append(name)
-    
-    # Load on-demand standards based on task
-    for name, config in ON_DEMAND_STANDARDS.items():
-        if should_preload_standard(config, task):
-            content = read_standard_file(config["file"], standards_dir)
-            if content:
-                standards_content[name] = content
-                preloaded_list.append(name)
-    
-    if preloaded_list:
-        print(f"Pre-loaded standards: {', '.join(preloaded_list)}", file=sys.stderr)
-    
-    return {
-        "content": standards_content,
-        "preloaded": preloaded_list,
-        "total_standards": len(standards_content)
-    }
-
-
-# ============================================================================
 # CLOUD PROVIDER DETECTION
 # ============================================================================
 
@@ -652,11 +559,6 @@ def main():
         help=f"Path to the project-context.json file. Defaults to '{DEFAULT_CONTEXT_PATH}'"
     )
     parser.add_argument(
-        "--no-standards",
-        action="store_true",
-        help="Disable standards pre-loading"
-    )
-    parser.add_argument(
         "--full-context",
         action="store_true",
         help="Force full context (Level 4) regardless of query complexity"
@@ -696,12 +598,6 @@ def main():
     # Load historical episodes
     historical_context = load_relevant_episodes(args.user_task)
 
-    # Build standards context
-    if not args.no_standards:
-        standards_context = build_standards_context(args.user_task)
-    else:
-        standards_context = {"content": {}, "preloaded": [], "total_standards": 0}
-
     # Load universal rules
     rules_context = load_universal_rules(args.agent_name)
 
@@ -716,8 +612,6 @@ def main():
             "context_level": context_level,
             "query_complexity": query_analysis.get("complexity_score", 0),
             "historical_episodes_count": len(historical_context.get("episodes", [])),
-            "standards_preloaded": standards_context["preloaded"],
-            "standards_count": standards_context["total_standards"],
             "rules_count": len(rules_context.get("universal", [])) + len(rules_context.get("agent_specific", []))
         }
     }
@@ -734,10 +628,6 @@ def main():
     # Add historical context if episodes found
     if historical_context:
         final_payload["historical_context"] = historical_context
-
-    # Add standards context if any were loaded
-    if standards_context["content"]:
-        final_payload["standards"] = standards_context["content"]
 
     print(json.dumps(final_payload, indent=2))
 

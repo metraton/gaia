@@ -5,6 +5,39 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-01-20
+
+### Standards Migration to Skills System
+
+Major architectural change: migrated from dual context system (standards + skills) to unified skills-based architecture.
+
+#### Added
+- **New skills directory**: `skills/standards/` with 4 standards skills:
+  - `security-tiers/` - T0-T3 operation classification (auto_load)
+  - `output-format/` - Global output contract for all agents (auto_load)
+  - `command-execution/` - Shell security rules and timeout guidelines (triggered)
+  - `anti-patterns/` - Common mistakes by tool: kubectl, terraform, gcloud, helm, flux, npm, docker (triggered)
+- **Standards loader in skill_loader.py**: New `_load_standards_skills()` method
+- **Standards config in skill-triggers.json**: New `standards` section with auto_load and triggers
+
+#### Changed
+- **Unified loading system**: All context now loaded via `skill_loader.py` (skills only)
+- **skill-triggers.json**: Added `standards` section with 4 skills configuration
+
+#### Removed
+- **build_standards_context()**: Removed 91 lines from `context_provider.py`
+- **Standards system**: Deleted `get_standards_dir()`, `read_standard_file()`, `should_preload_standard()`, `build_standards_context()`
+- **--no-standards flag**: Removed from context_provider.py (no longer needed)
+- **docs/ directory**: Eliminated symlink `.claude/docs` (standards now in skills/)
+- **Obsolete tests**: Removed 66 lines of standards-specific tests from `test_context_provider.py`
+- **Duplicate content**: Removed docs/standards reference from universal-protocol skill
+
+#### Migration Notes
+- **Breaking change**: Systems relying on `.claude/docs/standards/` must update to use skills system
+- **Skills auto-load**: `security-tiers` and `output-format` now load for ALL agents (not just PROJECT_AGENTS)
+- **No functional impact**: Same content, different delivery mechanism
+- **Benefits**: Single loading system, better versioning, no duplication
+
 ## [3.3.2] - 2025-12-11
 
 ### Read-Only Auto-Approval & Code Optimization
