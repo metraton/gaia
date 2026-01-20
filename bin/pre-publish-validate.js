@@ -299,7 +299,7 @@ class PrePublishValidator {
         const pythonFiles = [
           'hooks/pre_tool_use.py',
           'hooks/post_tool_use.py',
-          'tools/validation/commit_validator.py',
+          'hooks/modules/validation/commit_validator.py',
           'tools/context/context_provider.py'
         ];
 

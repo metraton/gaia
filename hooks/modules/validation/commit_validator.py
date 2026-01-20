@@ -57,8 +57,10 @@ class CommitMessageValidator:
         """
         if config_path is None:
             # Default path relative to this file
-            # From .claude/tools/validation/ go up to .claude/
-            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            # From hooks/modules/validation/ go up to gaia-ops root
+            # __file__ -> hooks/modules/validation/commit_validator.py
+            # dirname(dirname(dirname(dirname(__file__)))) -> gaia-ops root
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
             config_path = os.path.join(base_path, 'config', 'git_standards.json')
         else:
             # If config_path provided, derive base_path from it

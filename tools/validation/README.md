@@ -13,23 +13,11 @@ This module provides two critical validation components for the gaia-ops system:
 
 ### 1. Commit Message Validator
 
-Validates git commit messages against project standards before execution.
+**MOVED:** Commit validation has been moved to `hooks/modules/validation/commit_validator.py`
+and is now only used internally by `hooks/modules/tools/bash_validator.py`.
 
-**Files:**
-- `commit_validator.py` - Main validator
-- `test_commit_validator.py` - Test suite
-
-**Usage:**
-```python
-from tools.validation import safe_validate_before_commit
-
-# Before git commit
-if not safe_validate_before_commit(commit_message):
-    return {"status": "blocked", "reason": "Invalid commit message"}
-
-# Safe to commit
-bash(f'git commit -m "{commit_message}"')
-```
+This ensures commit validation is enforced automatically during git commit commands
+without requiring explicit imports in agent code.
 
 **What it validates:**
 - ✅ Conventional Commits format (`type(scope): description`)
@@ -125,7 +113,7 @@ This validation module works with skills in a **hybrid model**:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  .claude/config/git_standards.json (SSOT)                │
+│  config/git_standards.json (SSOT)                         │
 │  - Conventional commit types                              │
 │  - Forbidden footers                                      │
 │  - Max lengths                                            │
@@ -133,16 +121,21 @@ This validation module works with skills in a **hybrid model**:
                         │
                         ▼
 ┌──────────────────────────────────────────────────────────┐
-│  tools/validation/ (Enforcement)                          │
-│  ├─ commit_validator.py                                   │
-│  │  └─ Validates before every commit                      │
+│  hooks/modules/validation/ (Commit Validation)            │
+│  └─ commit_validator.py                                   │
+│     └─ Used by bash_validator.py only                     │
+└──────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────────────────┐
+│  tools/validation/ (Approval Enforcement)                 │
 │  └─ approval_gate.py                                      │
 │     └─ Manages T3 approval workflow                       │
 └──────────────────────────────────────────────────────────┘
                         │
                         ▼
 ┌──────────────────────────────────────────────────────────┐
-│  .claude/skills/workflow/ (Guidance)                      │
+│  skills/workflow/ (Guidance)                              │
 │  ├─ approval/SKILL.md                                     │
 │  │  └─ How to present plans                               │
 │  └─ execution/SKILL.md                                    │
@@ -151,7 +144,7 @@ This validation module works with skills in a **hybrid model**:
                         │
                         ▼
 ┌──────────────────────────────────────────────────────────┐
-│  .claude/logs/ (Audit Trail)                              │
+│  logs/ (Audit Trail)                                      │
 │  ├─ commit-violations.jsonl                               │
 │  └─ approvals.jsonl                                       │
 └──────────────────────────────────────────────────────────┘
@@ -181,10 +174,9 @@ This validation module works with skills in a **hybrid model**:
 validation/
 ├── __init__.py                    # Module exports
 ├── README.md                      # This file
-├── commit_validator.py            # Commit message validation
-├── approval_gate.py               # T3 approval workflow
-├── test_commit_validator.py       # Commit validator tests
-└── test_approval_gate.py          # Approval gate tests
+└── approval_gate.py               # T3 approval workflow
+
+Note: commit_validator.py moved to hooks/modules/validation/
 ```
 
 ---

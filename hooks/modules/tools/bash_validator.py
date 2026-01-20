@@ -238,11 +238,8 @@ class BashValidator:
             import sys
             from pathlib import Path
 
-            # Add tools to path
-            tools_path = Path(__file__).parent.parent.parent.parent / "tools"
-            sys.path.insert(0, str(tools_path))
-
-            from validation.commit_validator import validate_commit_message
+            # Import from sibling module (hooks/modules/validation)
+            from ..validation.commit_validator import validate_commit_message
 
             # Validate message
             validation = validate_commit_message(message)
