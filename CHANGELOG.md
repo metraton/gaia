@@ -5,6 +5,29 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-01-20
+
+### Refactor: Commit Validator Architecture
+
+Moved commit validation to hooks system for better encapsulation and clearer separation of concerns.
+
+#### Changed
+- **commit_validator.py location**: Moved from `tools/validation/` to `hooks/modules/validation/`
+- **bash_validator.py imports**: Updated to use relative import from sibling module
+- **Module structure**: commit_validator.py now exclusively used by bash_validator.py (no direct imports)
+- **Documentation**: Updated tools/validation/README.md to reflect new architecture
+
+#### Technical Details
+- bash_validator.py now uses relative import: `from ..validation.commit_validator import validate_commit_message`
+- commit_validator.py path resolution updated for new location (4 dirname calls instead of 3)
+- pre-publish-validate.js updated to validate new path
+- tools/validation/__init__.py no longer exports commit_validator (internal use only)
+
+#### Benefits
+- Better encapsulation: commit validation only accessible through bash_validator
+- Clearer architecture: validation logic properly contained within hooks system
+- No breaking changes: commit validation continues to work identically
+
 ## [3.6.1] - 2026-01-20
 
 ### Fix: Include skills/ directory in npm package
