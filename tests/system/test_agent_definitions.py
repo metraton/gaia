@@ -53,9 +53,10 @@ class TestAgentStructure:
             # Extended indicators to include meta-agent patterns
             capability_indicators = [
                 "## Capabilities",
-                "## Core Capabilities", 
+                "## Core Capabilities",
                 "## What I Do",
                 "## Responsibilities",
+                "## Core Responsibilities",
                 "## Knowledge Domain",  # Used by gaia.md
                 "## Your approach",     # Used by gaia.md
                 "## Scope",             # Used by gaia.md

@@ -204,14 +204,23 @@ class TestT3ApprovalRequirement:
         # terraform plan is T1, not T3
         assert result.is_t3_operation is False
 
-    def test_production_keyword_triggers_t3(self, validator):
-        """Test that 'production' keyword triggers T3 detection."""
-        params = {
-            "subagent_type": "gitops-operator",
-            "prompt": "Deploy to production environment",
+    def test_t3_keywords_trigger_detection(self, validator):
+        """Test that T3 keywords trigger T3 detection."""
+        # Test terraform apply
+        params1 = {
+            "subagent_type": "terraform-architect",
+            "prompt": "Please run terraform apply for infrastructure changes",
         }
-        result = validator.validate(params)
-        assert result.is_t3_operation is True
+        result1 = validator.validate(params1)
+        assert result1.is_t3_operation is True
+
+        # Test kubectl apply
+        params2 = {
+            "subagent_type": "gitops-operator",
+            "prompt": "Execute kubectl apply to deploy the manifest",
+        }
+        result2 = validator.validate(params2)
+        assert result2.is_t3_operation is True
 
 
 class TestValidationResult:

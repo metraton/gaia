@@ -47,10 +47,9 @@ class TestCoreDirectories:
         """Config directory should have contracts and standards"""
         config_dir = package_root / "config"
         required_files = [
-            "context-contracts.gcp.json",
-            "context-contracts.aws.json",
             "git_standards.json",
-            "universal-rules.json"
+            "universal-rules.json",
+            "skill-triggers.json"
         ]
 
         for file_name in required_files:

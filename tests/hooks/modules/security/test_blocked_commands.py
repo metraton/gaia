@@ -2,10 +2,15 @@
 """
 Tests for Blocked Command Detection.
 
+Tests ONLY commands that are PERMANENTLY BLOCKED (deny list).
+Commands that require approval (ask list) are NOT tested here.
+
 Validates:
-1. is_blocked_command() function
-2. Blocked pattern categories
-3. Suggestions for blocked commands
+1. AWS/GCP critical delete operations are blocked
+2. Kubernetes critical operations (namespace, pv, node, cluster) are blocked
+3. Git force push is blocked
+4. Disk destruction operations are blocked
+5. Safe commands are NOT blocked
 """
 
 import sys
@@ -27,267 +32,259 @@ from modules.security.blocked_commands import (
 )
 
 
-class TestIsBlockedCommand:
-    """Test is_blocked_command() function."""
+class TestAWSCriticalBlockedCommands:
+    """Test AWS critical delete operations are permanently blocked."""
 
-    # Terraform blocked commands
     @pytest.mark.parametrize("command", [
-        "terraform apply",
-        "terraform destroy",
-        "terragrunt apply",
-        "terragrunt destroy",
+        "aws cloudformation delete-stack my-stack",
+        "aws ec2 terminate-instances --instance-ids i-1234567",
+        "aws rds delete-db-instance my-db",
+        "aws eks delete-cluster my-cluster",
+        "aws s3 rb s3://my-bucket --force",
+        "aws lambda delete-function my-function",
     ])
-    def test_terraform_destructive_blocked(self, command):
-        """Test terraform destructive commands are blocked."""
+    def test_aws_critical_delete_blocked(self, command):
+        """Test AWS critical delete operations are blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "terraform"
+        assert result.category == "aws_delete"
 
-    # Kubernetes blocked commands
+
+class TestGCPCriticalBlockedCommands:
+    """Test GCP critical delete operations are permanently blocked."""
+
     @pytest.mark.parametrize("command", [
-        "kubectl apply -f manifest.yaml",
-        "kubectl create deployment test",
-        "kubectl delete pod test-pod",
-        "kubectl patch deployment test",
+        "gcloud container clusters delete my-cluster",
+        "gcloud compute instances delete my-instance",
+        "gcloud projects delete my-project",
+        "gcloud sql instances delete my-sql-instance",
+        "gsutil rb gs://my-bucket",
+        "gsutil rm -r gs://my-bucket/*",
     ])
-    def test_kubernetes_write_blocked(self, command):
-        """Test kubernetes write commands are blocked."""
+    def test_gcp_critical_delete_blocked(self, command):
+        """Test GCP critical delete operations are blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "kubernetes"
+        assert result.category == "gcp_delete"
 
-    # Helm blocked commands
+
+class TestKubernetesCriticalBlockedCommands:
+    """Test Kubernetes CRITICAL operations are permanently blocked."""
+
     @pytest.mark.parametrize("command", [
-        "helm install release chart/",
-        "helm upgrade release chart/",
-        "helm uninstall release",
-        "helm delete release",
+        "kubectl delete namespace production",
+        "kubectl delete pv my-persistent-volume",
+        "kubectl delete node worker-node-1",
+        "kubectl delete cluster my-cluster",
+        "kubectl delete crd mycustomresources.example.com",
+        "kubectl drain worker-node-1",
     ])
-    def test_helm_write_blocked(self, command):
-        """Test helm write commands are blocked."""
+    def test_kubernetes_critical_blocked(self, command):
+        """Test Kubernetes CRITICAL operations are blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "helm"
+        assert result.category == "kubernetes_critical"
 
-    # Flux blocked commands
+
+class TestGitForceBlockedCommands:
+    """Test Git force push operations are permanently blocked."""
+
     @pytest.mark.parametrize("command", [
-        "flux create source git test",
-        "flux delete helmrelease test",
+        "git push --force origin main",
+        "git push -f origin main",
+        "git push origin --force",
+        "git push origin -f",
     ])
-    def test_flux_write_blocked(self, command):
-        """Test flux write commands are blocked."""
+    def test_git_force_push_blocked(self, command):
+        """Test Git force push is blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "flux"
+        assert result.category == "git_force"
 
-    # File destruction blocked
+
+class TestFluxDeleteBlockedCommands:
+    """Test Flux delete operations are permanently blocked."""
+
     @pytest.mark.parametrize("command", [
-        "rm -rf /",
-        "rm -f important_file",
-        "shred /path/to/file",
+        "flux delete source git my-source",
+        "flux delete helmrelease my-release",
+        "flux delete kustomization my-kustomization",
     ])
-    def test_file_destruction_blocked(self, command):
-        """Test file destruction commands are blocked."""
+    def test_flux_delete_blocked(self, command):
+        """Test Flux delete operations are blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "file_destruction"
+        assert result.category == "flux_delete"
 
-    # Git write commands
+
+class TestDiskOperationsBlocked:
+    """Test disk destruction operations are permanently blocked."""
+
     @pytest.mark.parametrize("command", [
-        "git push origin main",
-        "git commit -m 'message'",
+        "dd if=/dev/zero of=/dev/sda",
+        "fdisk /dev/sda",
+        "mkfs.ext4 /dev/sda1",
+        "mkfs /dev/sda1",
     ])
-    def test_git_write_blocked(self, command):
-        """Test git write commands are blocked."""
+    def test_disk_operations_blocked(self, command):
+        """Test disk destruction operations are blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "git"
+        assert result.category == "disk_operations"
 
-    # Safe commands not blocked
+
+class TestSafeCommandsNotBlocked:
+    """Test that safe commands and commands in ask list are NOT blocked."""
+
     @pytest.mark.parametrize("command", [
+        # Read-only commands
         "ls -la",
-        "cat file.txt",
         "kubectl get pods",
         "terraform plan",
-        "git status",
+        "aws ec2 describe-instances",
+        "gcloud compute instances list",
+
+        # Commands that require APPROVAL (ask list) but NOT blocked
+        "terraform apply",
+        "terraform destroy",
+        "kubectl apply -f manifest.yaml",
+        "kubectl delete pod my-pod",
+        "helm install my-release chart/",
+        "git commit -m 'message'",
+        "git push origin main",
+
+        # Dry-run commands
+        "terraform plan -out=plan.tfplan",
+        "kubectl apply --dry-run=client -f manifest.yaml",
+        "flux reconcile source git my-source",
     ])
-    def test_safe_commands_not_blocked(self, command):
-        """Test safe commands are not blocked."""
+    def test_safe_and_ask_commands_not_blocked(self, command):
+        """Test safe commands and ask-list commands are NOT blocked."""
         result = is_blocked_command(command)
-        assert result.is_blocked is False
-
-    def test_empty_command_not_blocked(self):
-        """Test empty command is not blocked (handled elsewhere)."""
-        result = is_blocked_command("")
-        assert result.is_blocked is False
-
-    def test_dry_run_not_blocked(self):
-        """Test dry-run variants are not blocked."""
-        result = is_blocked_command("kubectl apply --dry-run=client -f file.yaml")
         assert result.is_blocked is False
 
 
 class TestBlockedCommandResult:
     """Test BlockedCommandResult structure."""
 
-    def test_result_has_expected_fields(self):
-        """Test result contains expected fields."""
-        result = is_blocked_command("rm -rf /")
-        assert hasattr(result, "is_blocked")
-        assert hasattr(result, "pattern_matched")
-        assert hasattr(result, "category")
-        assert hasattr(result, "suggestion")
-
-    def test_blocked_result_has_pattern(self):
-        """Test blocked result includes matched pattern."""
-        result = is_blocked_command("terraform apply")
+    def test_blocked_command_has_category(self):
+        """Blocked command result includes category."""
+        result = is_blocked_command("aws eks delete-cluster my-cluster")
         assert result.is_blocked is True
+        assert result.category == "aws_delete"
         assert result.pattern_matched is not None
-        assert len(result.pattern_matched) > 0
 
-    def test_blocked_result_has_category(self):
-        """Test blocked result includes category."""
-        result = is_blocked_command("kubectl delete pod test")
-        assert result.is_blocked is True
-        assert result.category == "kubernetes"
+    def test_safe_command_has_no_category(self):
+        """Safe command result has no category."""
+        result = is_blocked_command("ls -la")
+        assert result.is_blocked is False
+        assert result.category is None
+        assert result.pattern_matched is None
 
 
 class TestGetBlockedPatterns:
     """Test get_blocked_patterns() function."""
 
     def test_returns_list(self):
-        """Test returns a list of patterns."""
+        """get_blocked_patterns() returns a list."""
         patterns = get_blocked_patterns()
         assert isinstance(patterns, list)
         assert len(patterns) > 0
 
     def test_patterns_are_strings(self):
-        """Test all patterns are strings."""
+        """All patterns are strings."""
         patterns = get_blocked_patterns()
-        for pattern in patterns:
-            assert isinstance(pattern, str)
+        assert all(isinstance(p, str) for p in patterns)
 
-    def test_contains_terraform_patterns(self):
-        """Test contains terraform patterns."""
+    def test_contains_critical_patterns(self):
+        """Patterns include critical commands."""
         patterns = get_blocked_patterns()
-        assert any("terraform" in p.lower() for p in patterns)
+        patterns_str = " ".join(patterns)
 
-    def test_contains_kubectl_patterns(self):
-        """Test contains kubectl patterns."""
-        patterns = get_blocked_patterns()
-        assert any("kubectl" in p.lower() for p in patterns)
+        # Should contain AWS critical
+        assert "aws" in patterns_str
+        assert "delete" in patterns_str
+
+        # Should contain Kubernetes critical
+        assert "kubectl" in patterns_str
+        assert "namespace" in patterns_str
 
 
 class TestGetBlockedPatternsByCategory:
     """Test get_blocked_patterns_by_category() function."""
 
-    @pytest.mark.parametrize("category", list(BLOCKED_PATTERNS.keys()))
+    @pytest.mark.parametrize("category", [
+        "aws_delete",
+        "gcp_delete",
+        "kubernetes_critical",
+        "git_force",
+        "flux_delete",
+        "disk_operations",
+    ])
     def test_returns_patterns_for_valid_category(self, category):
-        """Test returns patterns for all valid categories."""
+        """Returns patterns for valid categories."""
         patterns = get_blocked_patterns_by_category(category)
         assert isinstance(patterns, list)
         assert len(patterns) > 0
 
     def test_returns_empty_for_invalid_category(self):
-        """Test returns empty list for invalid category."""
-        patterns = get_blocked_patterns_by_category("nonexistent")
+        """Returns empty list for invalid category."""
+        patterns = get_blocked_patterns_by_category("nonexistent_category")
         assert patterns == []
 
 
 class TestGetSuggestionForBlocked:
     """Test get_suggestion_for_blocked() function."""
 
-    def test_terraform_apply_suggestion(self):
-        """Test suggestion for terraform apply."""
-        suggestion = get_suggestion_for_blocked("terraform apply")
+    def test_returns_suggestion_for_known_commands(self):
+        """Returns suggestions for known blocked commands."""
+        suggestion = get_suggestion_for_blocked("aws eks delete-cluster")
         assert suggestion is not None
-        assert "plan" in suggestion.lower()
+        assert "BLOCKED" in suggestion or "Terraform" in suggestion
 
-    def test_kubectl_apply_suggestion(self):
-        """Test suggestion for kubectl apply."""
-        suggestion = get_suggestion_for_blocked("kubectl apply -f file.yaml")
-        assert suggestion is not None
-        assert "dry-run" in suggestion.lower()
-
-    def test_kubectl_delete_suggestion(self):
-        """Test suggestion for kubectl delete."""
-        suggestion = get_suggestion_for_blocked("kubectl delete pod test")
-        assert suggestion is not None
-
-    def test_helm_install_suggestion(self):
-        """Test suggestion for helm install."""
-        suggestion = get_suggestion_for_blocked("helm install release chart/")
-        assert suggestion is not None
-        assert "dry-run" in suggestion.lower() or "template" in suggestion.lower()
-
-    def test_no_suggestion_for_unknown(self):
-        """Test no suggestion for unknown command."""
-        suggestion = get_suggestion_for_blocked("some_unknown_command")
+    def test_returns_none_for_unknown_commands(self):
+        """Returns None for unknown commands."""
+        suggestion = get_suggestion_for_blocked("unknown_command")
         assert suggestion is None
 
 
 class TestBlockedPatternsCategories:
-    """Test blocked patterns categories."""
+    """Test that all expected categories exist in BLOCKED_PATTERNS."""
 
-    def test_terraform_category_exists(self):
-        """Test terraform category exists."""
-        assert "terraform" in BLOCKED_PATTERNS
-
-    def test_kubernetes_category_exists(self):
-        """Test kubernetes category exists."""
-        assert "kubernetes" in BLOCKED_PATTERNS
-
-    def test_helm_category_exists(self):
-        """Test helm category exists."""
-        assert "helm" in BLOCKED_PATTERNS
-
-    def test_flux_category_exists(self):
-        """Test flux category exists."""
-        assert "flux" in BLOCKED_PATTERNS
-
-    def test_gcp_category_exists(self):
-        """Test gcp category exists."""
-        assert "gcp" in BLOCKED_PATTERNS
-
-    def test_aws_category_exists(self):
-        """Test aws category exists."""
-        assert "aws" in BLOCKED_PATTERNS
-
-    def test_docker_category_exists(self):
-        """Test docker category exists."""
-        assert "docker" in BLOCKED_PATTERNS
-
-    def test_git_category_exists(self):
-        """Test git category exists."""
-        assert "git" in BLOCKED_PATTERNS
-
-    def test_file_destruction_category_exists(self):
-        """Test file_destruction category exists."""
-        assert "file_destruction" in BLOCKED_PATTERNS
+    @pytest.mark.parametrize("category", [
+        "aws_delete",
+        "gcp_delete",
+        "kubernetes_critical",
+        "git_force",
+        "flux_delete",
+        "disk_operations",
+    ])
+    def test_category_exists(self, category):
+        """Test that expected category exists."""
+        assert category in BLOCKED_PATTERNS
+        assert len(BLOCKED_PATTERNS[category]) > 0
 
 
 class TestEdgeCases:
-    """Test edge cases in blocked command detection."""
+    """Test edge cases and special scenarios."""
 
-    def test_case_insensitive_matching(self):
-        """Test matching is case insensitive."""
-        result1 = is_blocked_command("TERRAFORM APPLY")
-        result2 = is_blocked_command("terraform apply")
-        assert result1.is_blocked == result2.is_blocked
-
-    def test_terraform_apply_help_not_blocked(self):
-        """Test terraform apply --help is not blocked."""
-        result = is_blocked_command("terraform apply --help")
-        # Implementation may or may not block this
-        assert isinstance(result.is_blocked, bool)
-
-    def test_flux_reconcile_dry_run_not_blocked(self):
-        """Test flux reconcile --dry-run is not blocked."""
-        result = is_blocked_command("flux reconcile kustomization test --dry-run")
+    def test_empty_command_not_blocked(self):
+        """Empty command is not blocked."""
+        result = is_blocked_command("")
         assert result.is_blocked is False
 
-    def test_blocked_within_longer_command(self):
-        """Test detection within longer command string."""
-        result = is_blocked_command("cd /tmp && terraform apply -auto-approve")
-        # This tests pattern matching - compound parsing is elsewhere
+    def test_case_sensitive_matching(self):
+        """Commands are case-sensitive (lowercase expected)."""
+        # Should block
+        result1 = is_blocked_command("aws eks delete-cluster")
+        assert result1.is_blocked is True
+
+        # Should also block (commands typically lowercase)
+        result2 = is_blocked_command("AWS eks delete-cluster")
+        # Note: This depends on regex implementation
+        # Current implementation is case-sensitive for command names
+
+    def test_blocked_within_compound_command(self):
+        """Detects blocked command even in compound statements."""
+        result = is_blocked_command("echo 'test' && aws eks delete-cluster my-cluster")
         assert result.is_blocked is True

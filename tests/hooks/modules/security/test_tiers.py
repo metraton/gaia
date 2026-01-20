@@ -73,6 +73,7 @@ class TestClassifyCommandTier:
         "kubectl logs deployment/app",
         "terraform show",
         "terraform output",
+        "terraform plan",  # Optimized as ultra-common T0 command
     ])
     def test_classifies_read_only_as_t0(self, command):
         """Test read-only commands are classified as T0."""
@@ -82,7 +83,6 @@ class TestClassifyCommandTier:
     # T1 - Validation operations
     @pytest.mark.parametrize("command", [
         "terraform validate",
-        "terraform plan",
         "terraform fmt",
         "helm lint",
         "helm template chart/",

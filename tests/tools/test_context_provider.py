@@ -9,9 +9,9 @@ TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if TOOLS_DIR.is_symlink():
     TOOLS_DIR = TOOLS_DIR.resolve()
 
-# Add both TOOLS_DIR and the 2-context subdirectory for direct imports
+# Add both TOOLS_DIR and the context subdirectory for direct imports
 sys.path.insert(0, str(TOOLS_DIR))
-sys.path.insert(0, str(TOOLS_DIR / "2-context"))
+sys.path.insert(0, str(TOOLS_DIR / "context"))
 
 @pytest.fixture
 def temp_project_context(tmp_path: Path) -> Path:
@@ -47,7 +47,7 @@ def temp_project_context(tmp_path: Path) -> Path:
 
 def run_script(context_file: Path, agent: str, task: str, full_context: bool = False) -> dict:
     """Helper function to run the context_provider.py script and parse its output."""
-    script_path = TOOLS_DIR / "2-context" / "context_provider.py"
+    script_path = TOOLS_DIR / "context" / "context_provider.py"
 
     if not script_path.exists():
         pytest.fail(f"context_provider.py not found at {script_path}")
@@ -174,8 +174,8 @@ def test_invalid_agent(temp_project_context: Path):
     """Verify script rejects invalid agent names."""
     agent = "unknown-agent"
     task = "Do something."
-    
-    script_path = TOOLS_DIR / "2-context" / "context_provider.py"
+
+    script_path = TOOLS_DIR / "context" / "context_provider.py"
     process = subprocess.run(
         [sys.executable, str(script_path), agent, task, "--context-file", str(temp_project_context)],
         capture_output=True,
@@ -197,8 +197,8 @@ def test_get_standards_dir():
     from context_provider import get_standards_dir
     
     standards_dir = get_standards_dir()
-    # Should return a Path that ends with config/standards
-    assert str(standards_dir).endswith("config/standards"), f"Expected path ending in config/standards, got {standards_dir}"
+    # Should return a Path that ends with docs/standards
+    assert str(standards_dir).endswith("docs/standards"), f"Expected path ending in docs/standards, got {standards_dir}"
 
 
 def test_read_standard_file_exists():
