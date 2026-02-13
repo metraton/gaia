@@ -32,6 +32,7 @@ class BashValidationResult:
     suggestions: List[str] = None
     requires_credentials: bool = False
     credential_warning: str = None
+    modified_input: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -89,19 +90,15 @@ class BashValidator:
 
         command = command.strip()
 
-        # Check for forbidden footers
+        # Auto-strip forbidden footers from git commits (instead of blocking).
+        # Uses updatedInput to transparently clean the command before execution.
+        command_was_modified = False
         if self._detect_claude_footers(command):
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason="Command contains Claude Code attribution footers",
-                suggestions=[
-                    "Remove 'Generated with Claude Code'",
-                    "Remove 'Co-Authored-By: Claude'"
-                ],
-            )
+            command = self._strip_claude_footers(command)
+            command_was_modified = True
+            logger.info("Auto-stripped Claude Code footer from commit command")
 
-        # Validate git commit messages
+        # Validate git commit messages (on the potentially cleaned command)
         if "git commit" in command and "-m" in command:
             commit_validation = self._validate_commit_message(command)
             if not commit_validation.allowed:
@@ -109,17 +106,20 @@ class BashValidator:
 
         # Fast-path: Check if command has operators BEFORE parsing
         if not self._has_operators(command):
-            # Single command - validate directly
-            return self._validate_single_command(command)
+            result = self._validate_single_command(command)
+        else:
+            # Parse compound commands only if operators detected
+            components = self.shell_parser.parse(command)
+            if len(components) > 1:
+                result = self._validate_compound_command(components)
+            else:
+                result = self._validate_single_command(command)
 
-        # Parse compound commands only if operators detected
-        components = self.shell_parser.parse(command)
+        # Attach cleaned command for hook to emit via updatedInput
+        if command_was_modified and result.allowed:
+            result.modified_input = {"command": command}
 
-        if len(components) > 1:
-            return self._validate_compound_command(components)
-
-        # Single command validation
-        return self._validate_single_command(command)
+        return result
 
     def _validate_single_command(self, command: str) -> BashValidationResult:
         """Validate a single command (no operators)."""
@@ -211,6 +211,34 @@ class BashValidator:
                 return True
         return False
 
+    def _strip_claude_footers(self, command: str) -> str:
+        """
+        Strip Claude Code attribution footers from a command.
+
+        Removes full lines matching forbidden footer patterns.
+        Works on raw command string regardless of quoting/HEREDOC format.
+
+        Args:
+            command: Raw command string
+
+        Returns:
+            Command with footer lines removed
+        """
+        # Remove full lines that contain forbidden patterns
+        footer_line_patterns = [
+            r'\n\s*Co-Authored-By:\s+Claude[^\n]*',
+            r'\n\s*Generated with\s+\[?Claude Code\]?[^\n]*',
+            r'\n\s*🤖\s*Generated with[^\n]*',
+        ]
+        for pattern in footer_line_patterns:
+            command = re.sub(pattern, '', command, flags=re.IGNORECASE)
+
+        # Clean up trailing whitespace inside quotes/heredoc
+        # Collapse 3+ consecutive newlines to 2
+        command = re.sub(r'\n{3,}', '\n\n', command)
+
+        return command
+
     def _validate_commit_message(self, command: str) -> BashValidationResult:
         """
         Validate git commit message using commit_validator.
@@ -280,22 +308,29 @@ class BashValidator:
         - git commit -m "message"
         - git commit -m 'message'
         - git commit -m "$(cat <<'EOF'\nmessage\nEOF\n)"
+        - git commit -m "$(cat <<EOF\nmessage\nEOF\n)"
 
         Returns:
             Extracted message or None if cannot extract
         """
-        # First try to detect heredoc pattern
-        if "cat <<" in command and "EOF" in command:
-            # Extract content between heredoc delimiters
-            heredoc_match = re.search(r"<<['\"]?EOF['\"]?\s*\n(.+?)\nEOF", command, re.DOTALL)
+        # Level 1: HEREDOC pattern (most common in Claude Code)
+        # Handles: <<'EOF', <<EOF, <<"EOF" with flexible whitespace
+        if "<<" in command:
+            heredoc_match = re.search(
+                r"<<['\"]?EOF['\"]?\s*\n(.*?)\n\s*EOF",
+                command, re.DOTALL
+            )
             if heredoc_match:
                 return heredoc_match.group(1).strip()
 
-        # Pattern for -m "message" or -m 'message' (non-heredoc)
-        # Use non-greedy match but ensure we get the full quoted string
-        match = re.search(r'-m\s+(["\'])(.+?)\1', command, re.DOTALL)
+        # Level 2: Simple -m "message" or -m 'message' (non-heredoc)
+        match = re.search(r'-m\s+(["\'])(.*?)\1', command, re.DOTALL)
         if match:
-            return match.group(2).strip()
+            msg = match.group(2)
+            # Skip if it's a $(cat... wrapper — heredoc parse failed above
+            if msg.lstrip().startswith("$(cat"):
+                return None
+            return msg.strip()
 
         return None
 

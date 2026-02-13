@@ -43,18 +43,14 @@ modules/
 │   ├── bash_validator.py # Bash command validation
 │   └── task_validator.py # Task tool validation with context enforcement
 │
-├── workflow/             # Workflow phase management
-│   ├── phase_validator.py # Pre/post phase validation
-│   └── state_tracker.py   # Track current workflow phase
+├── workflow/             # Workflow support (reserved)
 │
 ├── audit/                # Logging and metrics
 │   ├── logger.py         # AuditLogger
 │   ├── metrics.py        # MetricsCollector + FUNCTIONAL generate_summary
 │   └── event_detector.py # CriticalEventDetector
 │
-└── agents/               # Subagent support
-    ├── subagent_metrics.py # Capture workflow metrics
-    └── anomaly_detector.py # Detect anomalies + signal Gaia
+└── agents/               # Subagent support (reserved)
 ```
 
 ## Key Features

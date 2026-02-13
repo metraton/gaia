@@ -3,14 +3,14 @@
 /**
  * @jaguilar87/gaia-ops - Auto-update script
  *
- * Runs automatically on npm install/update (postinstall hook)
+ * Runs automatically on npm install/update (postinstall hook).
  *
- * Purpose:
- * - Regenerate CLAUDE.md from template (OVERWRITES existing file)
- * - Regenerate settings.json from template (OVERWRITES existing file)
- * - Only runs if CLAUDE.md already exists (skip first-time install, let gaia-init handle it)
- *
- * ⚠️  WARNING: All customizations in CLAUDE.md and settings.json will be lost
+ * Behavior:
+ * - First-time install (.claude/ doesn't exist): skip silently (gaia-init handles it)
+ * - Update (.claude/ exists):
+ *   - CLAUDE.md: overwrite safely (template is static, no project data to lose)
+ *   - settings.json: MERGE new rules from template, preserve user additions
+ *   - Symlinks: recreate if missing
  *
  * Usage: Automatic (npm postinstall hook)
  */
@@ -24,53 +24,32 @@ import ora from 'ora';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// Use INIT_CWD (npm's original working directory) when available,
-// otherwise fall back to process.cwd()
 const CWD = process.env.INIT_CWD || process.cwd();
 
 /**
- * Check if .claude/ directory exists (to determine if this is first-time install)
- */
-async function isExistingInstallation() {
-  const claudeDir = join(CWD, '.claude');
-  return existsSync(claudeDir);
-}
-
-/**
- * Regenerate CLAUDE.md from template (OVERWRITES existing file)
+ * Update CLAUDE.md from template (safe overwrite - template is static).
  */
 async function updateClaudeMd() {
   const spinner = ora('Updating CLAUDE.md...').start();
 
   try {
-    // Get template path from gaia-ops package
     const templatePath = join(__dirname, '../templates/CLAUDE.template.md');
+    const claudeDir = join(CWD, '.claude');
 
     if (!existsSync(templatePath)) {
       spinner.warn('Template not found, skipping CLAUDE.md update');
       return false;
     }
 
-    const claudeMdPath = join(CWD, 'CLAUDE.md');
-    const claudeDir = join(CWD, '.claude');
-
-    // Check if .claude/ exists (indicates this is NOT first-time install)
     if (!existsSync(claudeDir)) {
-      // True first-time install - skip, let gaia-init handle it
-      spinner.info('First-time installation detected - skipping auto-update');
+      spinner.info('First-time installation detected - skipping');
       return false;
     }
 
-    // .claude/ exists, so this is an existing installation
-    // ALWAYS regenerate CLAUDE.md (whether it exists or not)
-    const fileExistedBefore = existsSync(claudeMdPath);
-    const template = await fs.readFile(templatePath, 'utf-8');
+    const claudeMdPath = join(CWD, 'CLAUDE.md');
+    await fs.copyFile(templatePath, claudeMdPath);
 
-    // Write/overwrite CLAUDE.md - ALWAYS CREATE
-    await fs.writeFile(claudeMdPath, template, 'utf-8');
-
-    const action = fileExistedBefore ? 'updated successfully (existing file overwritten)' : 'created successfully';
-    spinner.succeed(`CLAUDE.md ${action} [ALWAYS CREATED]`);
+    spinner.succeed('CLAUDE.md updated (static template)');
     return true;
   } catch (error) {
     spinner.fail(`Failed to update CLAUDE.md: ${error.message}`);
@@ -79,7 +58,14 @@ async function updateClaudeMd() {
 }
 
 /**
- * Regenerate settings.json from template (OVERWRITES existing file)
+ * Merge settings.json: add new template rules, preserve user additions.
+ *
+ * Strategy:
+ * - hooks: always replace from template (hooks are code, not config)
+ * - permissions.allow: union (template + user custom rules)
+ * - permissions.deny: union (template + user custom rules)
+ * - permissions.ask: union (template + user custom rules)
+ * - Other top-level keys: template wins (new features)
  */
 async function updateSettingsJson() {
   const spinner = ora('Updating settings.json...').start();
@@ -94,20 +80,47 @@ async function updateSettingsJson() {
       return false;
     }
 
-    // Only skip if .claude/ directory doesn't exist (true first-time install)
     if (!existsSync(claudeDir)) {
-      spinner.info('First-time installation detected - skipping auto-update');
+      spinner.info('First-time installation detected - skipping');
       return false;
     }
 
-    // If .claude/ exists, ALWAYS regenerate settings.json
-    // (even if settings.json was manually deleted)
-    const fileExistedBefore = existsSync(settingsPath);
-    const template = await fs.readFile(templatePath, 'utf-8');
-    await fs.writeFile(settingsPath, template, 'utf-8');
+    const template = JSON.parse(await fs.readFile(templatePath, 'utf-8'));
 
-    const action = fileExistedBefore ? 'updated successfully (existing file overwritten)' : 'created successfully';
-    spinner.succeed(`settings.json ${action} [ALWAYS CREATED]`);
+    // If no existing settings, just write the template
+    if (!existsSync(settingsPath)) {
+      await fs.writeFile(settingsPath, JSON.stringify(template, null, 2), 'utf-8');
+      spinner.succeed('settings.json created from template');
+      return true;
+    }
+
+    // Read existing settings
+    let existing;
+    try {
+      existing = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
+    } catch {
+      // Invalid JSON - replace with template
+      await fs.writeFile(settingsPath, JSON.stringify(template, null, 2), 'utf-8');
+      spinner.succeed('settings.json replaced (was invalid JSON)');
+      return true;
+    }
+
+    // Merge strategy
+    const merged = { ...template };
+
+    // Hooks: always from template (these are code references, not user config)
+    merged.hooks = template.hooks;
+
+    // Permissions: union of template + user custom rules
+    if (existing.permissions || template.permissions) {
+      merged.permissions = mergePermissions(
+        template.permissions || {},
+        existing.permissions || {}
+      );
+    }
+
+    await fs.writeFile(settingsPath, JSON.stringify(merged, null, 2), 'utf-8');
+    spinner.succeed('settings.json merged (new rules added, custom preserved)');
     return true;
   } catch (error) {
     spinner.fail(`Failed to update settings.json: ${error.message}`);
@@ -116,7 +129,34 @@ async function updateSettingsJson() {
 }
 
 /**
- * Recreate missing symlinks in .claude/ directory
+ * Merge permission arrays: union of template + user, template first.
+ */
+function mergePermissions(template, existing) {
+  const result = {};
+
+  const keys = new Set([...Object.keys(template), ...Object.keys(existing)]);
+
+  for (const key of keys) {
+    const tVal = template[key];
+    const eVal = existing[key];
+
+    if (Array.isArray(tVal) && Array.isArray(eVal)) {
+      // Union: template rules first, then user additions not in template
+      const templateSet = new Set(tVal);
+      const userAdditions = eVal.filter(rule => !templateSet.has(rule));
+      result[key] = [...tVal, ...userAdditions];
+    } else if (tVal !== undefined) {
+      result[key] = tVal;
+    } else {
+      result[key] = eVal;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Recreate missing symlinks in .claude/ directory.
  */
 async function recreateSymlinks() {
   const spinner = ora('Checking symlinks...').start();
@@ -124,16 +164,12 @@ async function recreateSymlinks() {
   try {
     const claudeDir = join(CWD, '.claude');
 
-    // Skip if .claude/ doesn't exist (first-time install)
     if (!existsSync(claudeDir)) {
-      spinner.info('First-time installation detected - skipping symlink check');
+      spinner.info('First-time installation detected - skipping');
       return false;
     }
 
-    // Calculate relative path from .claude/ to node_modules/@jaguilar87/gaia-ops
     const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
-
-    // Verify package exists
     if (!existsSync(packagePath)) {
       spinner.fail('Package not found in node_modules');
       return false;
@@ -142,63 +178,59 @@ async function recreateSymlinks() {
     const { relative } = await import('path');
     const relativePath = relative(claudeDir, packagePath);
 
-    // Define all symlinks that should exist
     const symlinks = [
-      { target: join(relativePath, 'agents'), link: join(claudeDir, 'agents'), name: 'agents' },
-      { target: join(relativePath, 'tools'), link: join(claudeDir, 'tools'), name: 'tools' },
-      { target: join(relativePath, 'hooks'), link: join(claudeDir, 'hooks'), name: 'hooks' },
-      { target: join(relativePath, 'commands'), link: join(claudeDir, 'commands'), name: 'commands' },
-      { target: join(relativePath, 'templates'), link: join(claudeDir, 'templates'), name: 'templates' },
-      { target: join(relativePath, 'config'), link: join(claudeDir, 'config'), name: 'config' },
-      { target: join(relativePath, 'speckit'), link: join(claudeDir, 'speckit'), name: 'speckit' },
-      { target: join(relativePath, 'CHANGELOG.md'), link: join(claudeDir, 'CHANGELOG.md'), name: 'CHANGELOG.md' }
+      'agents', 'tools', 'hooks', 'commands',
+      'templates', 'config', 'speckit'
     ];
 
     let recreated = 0;
-    for (const { target, link, name } of symlinks) {
-      // Check if symlink exists and is valid
-      if (existsSync(link)) {
-        continue; // Symlink exists, skip
-      }
 
-      // Symlink missing, recreate it
+    for (const name of symlinks) {
+      const link = join(claudeDir, name);
+      if (!existsSync(link)) {
+        try {
+          await fs.symlink(join(relativePath, name), link);
+          recreated++;
+        } catch {
+          // Skip
+        }
+      }
+    }
+
+    // CHANGELOG.md
+    const changelogLink = join(claudeDir, 'CHANGELOG.md');
+    if (!existsSync(changelogLink)) {
       try {
-        await fs.symlink(target, link);
+        await fs.symlink(join(relativePath, 'CHANGELOG.md'), changelogLink);
         recreated++;
-      } catch (error) {
-        // Ignore errors, might be permissions or already exists
+      } catch {
+        // Skip
       }
     }
 
     if (recreated > 0) {
       spinner.succeed(`Recreated ${recreated} missing symlink(s)`);
       return true;
-    } else {
-      spinner.succeed('All symlinks are valid');
-      return false;
     }
+
+    spinner.succeed('All symlinks valid');
+    return false;
   } catch (error) {
     spinner.fail(`Failed to check symlinks: ${error.message}`);
     return false;
   }
 }
 
-/**
- * Main function
- */
 async function main() {
-  console.log(chalk.cyan('\n🔄 @jaguilar87/gaia-ops auto-update\n'));
+  console.log(chalk.cyan('\n  @jaguilar87/gaia-ops auto-update\n'));
 
   try {
-    // Check if this is an update (not first-time install)
-    const isUpdate = await isExistingInstallation();
+    const claudeDir = join(CWD, '.claude');
+    const isUpdate = existsSync(claudeDir);
 
-    if (isUpdate) {
-      // Show warning before overwriting files
-      console.log(chalk.yellow('⚠️  WARNING: The following files will be OVERWRITTEN:'));
-      console.log(chalk.yellow('  • CLAUDE.md (all customizations will be lost)'));
-      console.log(chalk.yellow('  • .claude/settings.json (all customizations will be lost)'));
-      console.log(chalk.gray('\n  Files will be regenerated from templates...\n'));
+    if (!isUpdate) {
+      // First-time install - gaia-init will handle everything
+      process.exit(0);
     }
 
     const claudeUpdated = await updateClaudeMd();
@@ -206,24 +238,15 @@ async function main() {
     const symlinksRecreated = await recreateSymlinks();
 
     if (claudeUpdated || settingsUpdated || symlinksRecreated) {
-      console.log(chalk.green('\n✅ Auto-update completed\n'));
-      console.log(chalk.yellow('⚠️  IMPORTANT: Files have been overwritten from templates'));
-      console.log(chalk.gray('\nNext steps:'));
-      if (claudeUpdated) {
-        console.log(chalk.gray('  • Configure CLAUDE.md with your project paths'));
-      }
+      console.log(chalk.green('\n  Auto-update completed\n'));
       if (settingsUpdated) {
-        console.log(chalk.gray('  • Review .claude/settings.json for security rules'));
+        console.log(chalk.gray('  settings.json: new rules merged, your custom rules preserved'));
       }
-      console.log(chalk.gray('\n  Tip: Run "gaia-init" to reconfigure from scratch\n'));
-    } else {
-      // Silent exit on first-time install (gaia-init will handle it)
-      process.exit(0);
+      console.log(chalk.gray('  Run `npx gaia-doctor` to verify installation health\n'));
     }
   } catch (error) {
-    console.error(chalk.red(`\n❌ Auto-update failed: ${error.message}\n`));
-    // Don't fail npm install, just warn
-    process.exit(0);
+    console.error(chalk.red(`\n  Auto-update failed: ${error.message}\n`));
+    process.exit(0); // Don't fail npm install
   }
 }
 

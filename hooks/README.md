@@ -100,8 +100,8 @@ El guardian principal - valida TODAS las operaciones antes de ejecutarlas.
    26.  ├─> ¿Es T3?
    27.  │    ├─> Busca approval en metadata/prompt
    28.  │    └─> Sin approval -> BLOQUEA
-   29.  ├─> Ejecuta workflow guards (phase validators)
-   30.  ├─> Guard phase_4_approval_mandatory
+   29.  ├─> Ejecuta workflow guards (TaskValidator)
+   30.  ├─> Guard T3 approval required
    31.  ├─> Save state para post-hook
    32.  └─> Log decision y metricas
    33.  └─> Return None -> PERMITE ejecucion
@@ -137,7 +137,7 @@ Task(resume="a12345", prompt="User approved. Execute plan.")
 - Agent existe en AVAILABLE_AGENTS
 - Tier de operacion (clasificacion automatica)
 - T3 requiere approval (busca en metadata/prompt)
-- Workflow guards (phase validators)
+- Workflow guards (T3 approval via TaskValidator)
 - Resume: formato agentId + prompt presente
 
 **Reglas de decision:**

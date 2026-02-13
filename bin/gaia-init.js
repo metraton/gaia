@@ -1,55 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Installer CLI
+ * @jaguilar87/gaia-ops - Installer CLI v2
  *
- * Interactive installer for Gaia-Ops agent system
+ * Scan-Confirm-Install flow: auto-detects everything, asks only gaps.
  *
  * Usage:
- *   npx @jaguilar87/gaia-ops init                # Interactive mode
- *   npx @jaguilar87/gaia-ops init --non-interactive  # Non-interactive mode
- *   gaia-init                                     # If installed globally
+ *   npx gaia-init                              # Interactive (scan + confirm)
+ *   npx gaia-init --non-interactive             # CI/CD mode (scan + auto-accept)
+ *   npx gaia-init --non-interactive --cluster my-cluster  # Override detected values
  *
  * CLI Options:
- *   --non-interactive          Skip interactive prompts, use defaults or provided values
- *   --gitops <path>            GitOps directory path (relative or absolute)
- *   --terraform <path>         Terraform directory path (relative or absolute)
- *   --app-services <path>      App services directory path (relative or absolute)
- *   --project-id <id>          GCP Project ID
- *   --region <region>          Primary region (default: us-central1)
- *   --cluster <name>           Cluster name
- *   --skip-claude-install      Skip Claude Code installation
- *   --project-context-repo <url>  Git repository URL for project context
+ *   --non-interactive, -y     Accept detected values without confirmation
+ *   --gitops <path>           Override GitOps directory
+ *   --terraform <path>        Override Terraform directory
+ *   --app-services <path>     Override App Services directory
+ *   --project-id <id>         Override cloud project ID (GCP or AWS)
+ *   --region <region>         Override primary region
+ *   --cluster <name>          Override cluster name
+ *   --skip-claude-install     Skip Claude Code installation (not recommended)
+ *   --project-context-repo <url>  Git repository with existing project-context.json
  *
- * Examples:
- *   # With relative paths
- *   npx gaia-init --non-interactive --gitops ./gitops --terraform ./terraform
- *
- *   # With absolute paths (recommended for clarity)
- *   npx gaia-init --non-interactive \
- *     --gitops /home/user/projects/my-app/gitops \
- *     --terraform /home/user/projects/my-app/terraform \
- *     --app-services /home/user/projects/my-app/services \
- *     --project-id my-gcp-project \
- *     --region us-east-1 \
- *     --cluster prod-cluster \
- *     --project-context-repo git@bitbucket.org:org/project-context.git
- *
- * Environment Variables:
- *   CLAUDE_GITOPS_DIR          GitOps directory path
- *   CLAUDE_TERRAFORM_DIR       Terraform directory path
- *   CLAUDE_APP_SERVICES_DIR    App services directory path
- *   CLAUDE_PROJECT_ID          GCP Project ID
- *   CLAUDE_REGION              Primary region
- *   CLAUDE_CLUSTER_NAME        Cluster name
- *   CLAUDE_PROJECT_CONTEXT_REPO Project context git repository URL
- *
- * Features:
- * - Auto-detects project structure (GitOps, Terraform, AppServices)
- * - Installs Claude Code if not present
- * - Generates CLAUDE.md with correct paths
- * - Creates .claude/ symlinks to npm package
- * - Non-invasive: works from any directory
+ * Environment Variables (override detected values):
+ *   CLAUDE_GITOPS_DIR, CLAUDE_TERRAFORM_DIR, CLAUDE_APP_SERVICES_DIR,
+ *   CLAUDE_PROJECT_ID, CLAUDE_REGION, CLAUDE_CLUSTER_NAME,
+ *   CLAUDE_PROJECT_CONTEXT_REPO
  */
 
 import { fileURLToPath } from 'url';
@@ -63,7 +38,6 @@ import chalk from 'chalk';
 import ora from 'ora';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { PACKAGE_ROOT, getTemplatePath } from '@jaguilar87/gaia-ops';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -71,647 +45,517 @@ const __dirname = dirname(__filename);
 
 const CWD = process.cwd();
 
+// Package root: relative to this bin/ file
+const PACKAGE_ROOT = resolve(__dirname, '..');
+
+function getTemplatePath(name) {
+  return join(PACKAGE_ROOT, 'templates', name);
+}
+
 // ============================================================================
-// Auto-detection logic
+// Phase 1: Silent Scan
 // ============================================================================
 
 /**
- * Detect project structure by scanning for common directories
+ * Run all detection in parallel, return unified scan result.
  */
-async function detectProjectStructure() {
-  const spinner = ora('Detecting project structure...').start();
-
-  const detected = {
-    gitops: null,
-    terraform: null,
-    appServices: null,
-    git: null
-  };
+async function runScan() {
+  const spinner = ora('Scanning project structure...').start();
 
   try {
-    const entries = await fs.readdir(CWD);
+    const [dirs, cloud, gitRemotes, claudeCode] = await Promise.all([
+      scanDirectories(),
+      scanCloudProvider(),
+      scanGitRemotes(),
+      scanClaudeCode()
+    ]);
 
-    // GitOps candidates
-    const gitopsCandidates = [
-      'gitops',
-      'non-prod-rnd-gke-gitops',
-      'k8s',
-      'kubernetes',
-      'manifests',
-      'deployments'
-    ];
-    for (const candidate of gitopsCandidates) {
-      if (entries.includes(candidate)) {
-        detected.gitops = `./${candidate}`;
-        break;
-      }
-    }
+    spinner.succeed('Project scanned');
 
-    // Terraform candidates
-    const terraformCandidates = [
-      'terraform',
-      'tf',
-      'infrastructure',
-      'iac',
-      'infra'
-    ];
-    for (const candidate of terraformCandidates) {
-      if (entries.includes(candidate)) {
-        detected.terraform = `./${candidate}`;
-        break;
-      }
-    }
-
-    // AppServices candidates
-    const appServicesCandidates = [
-      'app-services',
-      'services',
-      'apps',
-      'applications',
-      'src'
-    ];
-    for (const candidate of appServicesCandidates) {
-      if (entries.includes(candidate)) {
-        detected.appServices = `./${candidate}`;
-        break;
-      }
-    }
-
-    // Git root
-    if (entries.includes('.git')) {
-      detected.git = '.';
-    }
-
-    spinner.succeed('Project structure detected');
+    return { dirs, cloud, gitRemotes, claudeCode };
   } catch (error) {
-    spinner.fail('Failed to detect project structure');
+    spinner.fail('Scan failed');
     throw error;
   }
-
-  return detected;
 }
 
 /**
- * Check if Claude Code is installed
+ * Detect directory structure by scanning CWD for known patterns.
  */
-async function checkClaudeCodeInstalled() {
+async function scanDirectories() {
+  const result = { gitops: null, terraform: null, appServices: null };
+
+  let entries;
   try {
-    // Try 'claude' command first (common alias)
-    await execAsync('claude --version');
-    return true;
+    entries = await fs.readdir(CWD);
   } catch {
-    try {
-      // Fallback to 'claude-code' command
-      await execAsync('claude-code --version');
-      return true;
-    } catch {
-      return false;
+    return result;
+  }
+
+  const candidates = {
+    gitops: ['gitops', 'k8s', 'kubernetes', 'manifests', 'deployments'],
+    terraform: ['terraform', 'tf', 'infrastructure', 'iac', 'infra'],
+    appServices: ['app-services', 'services', 'apps', 'applications', 'src']
+  };
+
+  for (const [key, patterns] of Object.entries(candidates)) {
+    for (const pattern of patterns) {
+      if (entries.includes(pattern)) {
+        result[key] = `./${pattern}`;
+        break;
+      }
     }
   }
-}
 
-// ============================================================================
-// CLI Argument Parsing
-// ============================================================================
-
-/**
- * Parse CLI arguments
- */
-function parseCliArguments() {
-  return yargs(hideBin(process.argv))
-    .usage('Usage: $0 [options]')
-    .option('non-interactive', {
-      alias: 'y',
-      type: 'boolean',
-      description: 'Skip interactive prompts, use defaults or provided values',
-      default: false
-    })
-    .option('gitops', {
-      type: 'string',
-      description: 'GitOps directory path (relative or absolute)'
-    })
-    .option('terraform', {
-      type: 'string',
-      description: 'Terraform directory path (relative or absolute)'
-    })
-    .option('app-services', {
-      type: 'string',
-      description: 'App services directory path (relative or absolute)'
-    })
-    .option('project-id', {
-      type: 'string',
-      description: 'GCP Project ID'
-    })
-    .option('region', {
-      type: 'string',
-      description: 'Primary region (default: us-central1)',
-      default: 'us-central1'
-    })
-    .option('cluster', {
-      type: 'string',
-      description: 'Cluster name'
-    })
-    .option('skip-claude-install', {
-      type: 'boolean',
-      description: 'Skip Claude Code installation',
-      default: false
-    })
-    .option('project-context-repo', {
-      type: 'string',
-      description: 'Git repository URL for project context (e.g., git@bitbucket.org:org/repo.git)'
-    })
-    .help('h')
-    .alias('h', 'help')
-    .version('1.0.0')
-    .alias('v', 'version')
-    .parse();
+  return result;
 }
 
 /**
- * Normalize path to be relative to CWD
- * Accepts both absolute and relative paths
- * Returns path relative to CWD for consistency
+ * Detect cloud provider, project ID, and region from terraform files.
+ * Scans terraform/**/*.tf for provider blocks.
  */
-function normalizePath(userPath) {
-  if (!userPath) return null;
-  
-  // If absolute path, return as-is (user knows what they want)
-  if (isAbsolute(userPath)) {
-    return userPath;
+async function scanCloudProvider() {
+  const result = { provider: null, projectId: null, region: null };
+
+  // Find terraform directory first
+  const tfCandidates = ['terraform', 'tf', 'infrastructure', 'iac', 'infra'];
+  let tfDir = null;
+
+  for (const candidate of tfCandidates) {
+    const path = join(CWD, candidate);
+    if (existsSync(path)) {
+      tfDir = path;
+      break;
+    }
   }
-  
-  // If relative path, ensure it's relative to CWD
-  return userPath.startsWith('./') ? userPath : `./${userPath}`;
+
+  if (!tfDir) return result;
+
+  // Recursively find .tf files (max 3 levels deep to avoid huge scans)
+  const tfFiles = await findFiles(tfDir, '.tf', 3);
+
+  let hasGoogle = false;
+  let hasAws = false;
+
+  for (const file of tfFiles) {
+    try {
+      const content = await fs.readFile(file, 'utf-8');
+
+      // Detect providers
+      if (/provider\s+"google(?:-beta)?"/.test(content)) hasGoogle = true;
+      if (/provider\s+"aws"/.test(content)) hasAws = true;
+
+      // Extract GCP project ID
+      if (!result.projectId && hasGoogle) {
+        const projectMatch = content.match(/project\s*=\s*"([^"]+)"/);
+        if (projectMatch) result.projectId = projectMatch[1];
+      }
+
+      // Extract AWS account (from provider or data source)
+      if (!result.projectId && hasAws) {
+        const accountMatch = content.match(/account_id\s*=\s*"(\d{12})"/);
+        if (accountMatch) result.projectId = accountMatch[1];
+      }
+
+      // Extract region
+      if (!result.region) {
+        const regionMatch = content.match(/region\s*=\s*"([a-z]+-[a-z]+-?\d*)"/);
+        if (regionMatch) result.region = regionMatch[1];
+      }
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  if (hasGoogle && hasAws) result.provider = 'multi-cloud';
+  else if (hasGoogle) result.provider = 'gcp';
+  else if (hasAws) result.provider = 'aws';
+
+  return result;
 }
 
 /**
- * Get configuration from CLI args, environment variables, and detected values
+ * Detect git remotes from repositories in subdirectories.
+ * Returns list of {path, remote} objects.
  */
-function getConfiguration(detected, args) {
-  // Priority: CLI args > Environment variables > Detected values > Defaults
+async function scanGitRemotes() {
+  const remotes = [];
 
-  const config = {
-    gitops: normalizePath(args.gitops || process.env.CLAUDE_GITOPS_DIR || detected.gitops) || './gitops',
-    terraform: normalizePath(args.terraform || process.env.CLAUDE_TERRAFORM_DIR || detected.terraform) || './terraform',
-    appServices: normalizePath(args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || detected.appServices) || './app-services',
-    projectId: args.projectId || process.env.CLAUDE_PROJECT_ID || '',
-    region: args.region || process.env.CLAUDE_REGION || 'us-central1',
+  // Check root
+  if (existsSync(join(CWD, '.git'))) {
+    const remote = await getGitRemote(CWD);
+    if (remote) remotes.push({ path: '.', remote });
+  }
+
+  // Check 1 level deep
+  let entries;
+  try {
+    entries = await fs.readdir(CWD, { withFileTypes: true });
+  } catch {
+    return remotes;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+
+    const subDir = join(CWD, entry.name);
+    if (existsSync(join(subDir, '.git'))) {
+      const remote = await getGitRemote(subDir);
+      if (remote) remotes.push({ path: `./${entry.name}`, remote });
+      continue;
+    }
+
+    // Check 2 levels deep (e.g., gitops/qxo-monorepo/.git)
+    try {
+      const subEntries = await fs.readdir(subDir, { withFileTypes: true });
+      for (const subEntry of subEntries) {
+        if (!subEntry.isDirectory() || subEntry.name.startsWith('.') || subEntry.name === 'node_modules') continue;
+        const deepDir = join(subDir, subEntry.name);
+        if (existsSync(join(deepDir, '.git'))) {
+          const remote = await getGitRemote(deepDir);
+          if (remote) remotes.push({ path: `./${entry.name}/${subEntry.name}`, remote });
+        }
+      }
+    } catch {
+      // Skip unreadable subdirs
+    }
+  }
+
+  return remotes;
+}
+
+/**
+ * Check if Claude Code CLI is installed.
+ */
+async function scanClaudeCode() {
+  try {
+    const { stdout } = await execAsync('claude --version 2>/dev/null || claude-code --version 2>/dev/null');
+    const version = stdout.trim().split('\n')[0];
+    return { installed: true, version };
+  } catch {
+    return { installed: false, version: null };
+  }
+}
+
+// ============================================================================
+// Phase 2: Display Results + Confirm
+// ============================================================================
+
+/**
+ * Build unified config from scan results + CLI overrides + env vars.
+ * Priority: CLI args > env vars > scan results > defaults
+ */
+function buildConfig(scan, args) {
+  return {
+    gitops: args.gitops || process.env.CLAUDE_GITOPS_DIR || scan.dirs.gitops || './gitops',
+    terraform: args.terraform || process.env.CLAUDE_TERRAFORM_DIR || scan.dirs.terraform || './terraform',
+    appServices: args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || scan.dirs.appServices || './app-services',
+    cloudProvider: scan.cloud.provider || 'gcp',
+    projectId: args.projectId || process.env.CLAUDE_PROJECT_ID || scan.cloud.projectId || '',
+    region: args.region || process.env.CLAUDE_REGION || scan.cloud.region || '',
     clusterName: args.cluster || process.env.CLAUDE_CLUSTER_NAME || '',
-    installClaudeCode: !args.skipClaudeInstall,
-    projectContextRepo: args.projectContextRepo || process.env.CLAUDE_PROJECT_CONTEXT_REPO || ''
+    projectContextRepo: args.projectContextRepo || process.env.CLAUDE_PROJECT_CONTEXT_REPO || '',
+    claudeCode: scan.claudeCode,
+    gitRemotes: scan.gitRemotes
   };
+}
+
+/**
+ * Display scan results and ask for confirmation.
+ * Returns final config (possibly edited by user).
+ */
+async function displayAndConfirm(config) {
+  // Banner
+  console.log(chalk.cyan(`
+  ██████╗  █████╗ ██╗ █████╗      ██████╗ ██████╗ ███████╗
+ ██╔════╝ ██╔══██╗██║██╔══██╗    ██╔═══██╗██╔══██╗██╔════╝
+ ██║  ███╗███████║██║███████║    ██║   ██║██████╔╝███████╗
+ ██║   ██║██╔══██║██║██╔══██║    ██║   ██║██╔═══╝ ╚════██║
+ ╚██████╔╝██║  ██║██║██║  ██║    ╚██████╔╝██║     ███████║
+  ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝     ╚═════╝ ╚═╝     ╚══════╝
+  `));
+
+  // Detected config display
+  console.log(chalk.cyan.bold('  Detected Configuration\n'));
+
+  // Paths
+  console.log(chalk.white('  Paths'));
+  printField('GitOps', config.gitops, existsSync(resolve(CWD, config.gitops)));
+  printField('Terraform', config.terraform, existsSync(resolve(CWD, config.terraform)));
+  printField('App Services', config.appServices, existsSync(resolve(CWD, config.appServices)));
+
+  // Cloud
+  console.log(chalk.white('\n  Cloud'));
+  printField('Provider', config.cloudProvider?.toUpperCase() || null, !!config.cloudProvider);
+  printField('Project ID', config.projectId || null, !!config.projectId);
+  printField('Region', config.region || null, !!config.region);
+  printField('Cluster', config.clusterName || null, !!config.clusterName);
+
+  // Git remotes (informational)
+  if (config.gitRemotes.length > 0) {
+    console.log(chalk.white('\n  Git Repositories'));
+    for (const { path, remote } of config.gitRemotes.slice(0, 5)) {
+      console.log(chalk.gray(`    ${path} → ${remote}`));
+    }
+    if (config.gitRemotes.length > 5) {
+      console.log(chalk.gray(`    ... and ${config.gitRemotes.length - 5} more`));
+    }
+  }
+
+  // Claude Code
+  console.log(chalk.white('\n  Claude Code'));
+  if (config.claudeCode.installed) {
+    console.log(chalk.green(`    ${config.claudeCode.version}  ✓`));
+  } else {
+    console.log(chalk.yellow('    Not installed (will be installed automatically)'));
+  }
+
+  console.log('');
+
+  // Identify gaps (items that need user input)
+  const gaps = [];
+  if (!config.projectId) gaps.push('projectId');
+  if (!config.region) gaps.push('region');
+  if (!config.clusterName) gaps.push('clusterName');
+
+  return { config, gaps };
+}
+
+function printField(label, value, found) {
+  const padded = label.padEnd(14);
+  if (value && found) {
+    console.log(chalk.green(`    ${padded} ${value}  ✓`));
+  } else if (value) {
+    console.log(chalk.yellow(`    ${padded} ${value}  (will be created)`));
+  } else {
+    console.log(chalk.yellow(`    ${padded} (not detected)  ?`));
+  }
+}
+
+/**
+ * Ask user to confirm or edit the detected configuration.
+ * Returns final config.
+ */
+async function confirmOrEdit(config, gaps) {
+  // If there are gaps, ask for them first
+  if (gaps.length > 0) {
+    console.log(chalk.yellow(`  ${gaps.length} item(s) need your input:\n`));
+
+    const gapQuestions = [];
+
+    if (gaps.includes('projectId')) {
+      gapQuestions.push({
+        type: 'text',
+        name: 'projectId',
+        message: config.cloudProvider === 'aws' ? '  AWS Account ID:' : '  Cloud Project ID:',
+        initial: '',
+        validate: v => v.trim().length > 0 || 'Required for agent operations'
+      });
+    }
+
+    if (gaps.includes('region')) {
+      gapQuestions.push({
+        type: 'text',
+        name: 'region',
+        message: '  Primary Region:',
+        initial: config.cloudProvider === 'gcp' ? 'us-central1' : 'us-east-1'
+      });
+    }
+
+    if (gaps.includes('clusterName')) {
+      gapQuestions.push({
+        type: 'text',
+        name: 'clusterName',
+        message: '  Cluster Name (empty to skip):',
+        initial: ''
+      });
+    }
+
+    const gapAnswers = await prompts(gapQuestions, {
+      onCancel: () => { console.log(chalk.yellow('\n  Installation cancelled.\n')); process.exit(0); }
+    });
+
+    // Merge gap answers into config
+    if (gapAnswers.projectId) config.projectId = gapAnswers.projectId;
+    if (gapAnswers.region) config.region = gapAnswers.region;
+    if (gapAnswers.clusterName !== undefined) config.clusterName = gapAnswers.clusterName;
+  }
+
+  // Confirmation
+  const { action } = await prompts({
+    type: 'select',
+    name: 'action',
+    message: 'Proceed with this configuration?',
+    choices: [
+      { title: 'Accept and install', value: 'accept' },
+      { title: 'Edit configuration', value: 'edit' },
+      { title: 'Cancel', value: 'cancel' }
+    ],
+    initial: 0
+  }, {
+    onCancel: () => { console.log(chalk.yellow('\n  Installation cancelled.\n')); process.exit(0); }
+  });
+
+  if (action === 'cancel') {
+    console.log(chalk.yellow('\n  Installation cancelled.\n'));
+    process.exit(0);
+  }
+
+  if (action === 'edit') {
+    return await editConfig(config);
+  }
 
   return config;
 }
 
 /**
- * Validate required configuration values
+ * Let user edit all config fields.
  */
-function validateConfiguration(config, nonInteractive) {
-  const errors = [];
+async function editConfig(config) {
+  console.log(chalk.gray('\n  Edit any field (press Enter to keep current value):\n'));
 
-  if (!config.projectId && nonInteractive) {
-    errors.push('--project-id is required in non-interactive mode');
-  }
-
-  if (!config.clusterName && nonInteractive) {
-    errors.push('--cluster is required in non-interactive mode');
-  }
-
-  if (errors.length > 0) {
-    console.error(chalk.red('\n❌ Configuration errors:\n'));
-    errors.forEach(error => console.error(chalk.red(`  - ${error}`)));
-    console.error(chalk.gray('\nProvide values via CLI args or environment variables.\n'));
-    process.exit(1);
-  }
-
-  return true;
-}
-
-// ============================================================================
-// Interactive prompts
-// ============================================================================
-
-/**
- * Sanitize git repo URL input
- * Handles cases where user pastes "git clone <url>" instead of just "<url>"
- */
-function sanitizeGitUrl(input) {
-  if (!input || typeof input !== 'string') return '';
-
-  // Trim whitespace
-  let sanitized = input.trim();
-
-  // Remove "git clone" prefix if present
-  if (sanitized.toLowerCase().startsWith('git clone ')) {
-    sanitized = sanitized.substring('git clone '.length).trim();
-  }
-
-  // Remove quotes if present
-  sanitized = sanitized.replace(/^["']|["']$/g, '');
-
-  return sanitized;
-}
-
-/**
- * Try to clone project context repo early and parse config
- * Returns parsed config or null if clone fails
- */
-async function tryCloneProjectContext(repoUrl) {
-  if (!repoUrl || repoUrl.trim() === '') {
-    return null;
-  }
-
-  const sanitizedUrl = sanitizeGitUrl(repoUrl);
-
-  const spinner = ora('Cloning project context repository...').start();
-
-  try {
-    const tempDir = join(CWD, '.claude-temp-context');
-
-    // Remove temp dir if exists
-    if (existsSync(tempDir)) {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-
-    // Clone to temp directory
-    await execAsync(`git clone ${sanitizedUrl} ${tempDir}`, { timeout: 30000 });
-
-    // Try to read project-context.json
-    const contextPath = join(tempDir, 'project-context.json');
-
-    if (existsSync(contextPath)) {
-      const contextData = JSON.parse(await fs.readFile(contextPath, 'utf-8'));
-
-      // Clean up temp dir
-      await fs.rm(tempDir, { recursive: true, force: true });
-
-      spinner.succeed('Project context loaded successfully');
-      console.log(chalk.green('  ✓ Auto-populated configuration from project context\n'));
-
-      return {
-        contextData,
-        repoUrl: sanitizedUrl
-      };
-    } else {
-      // No project-context.json found
-      await fs.rm(tempDir, { recursive: true, force: true });
-      spinner.warn('Repository cloned but no project-context.json found');
-      return null;
-    }
-  } catch (error) {
-    spinner.fail('Failed to clone project context repository');
-    console.log(chalk.yellow(`\n⚠️  Error: ${error.message}`));
-    console.log(chalk.gray('  Continuing with manual configuration...\n'));
-    return null;
-  }
-}
-
-/**
- * Present interactive wizard to user
- */
-async function runInteractiveWizard(detected) {
-  // ASCII Art banner
-  console.log(chalk.cyan(`
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║   ██████╗  █████╗ ██╗ █████╗      ██████╗ ██████╗ ███████╗   ║
-║  ██╔════╝ ██╔══██╗██║██╔══██╗    ██╔═══██╗██╔══██╗██╔════╝   ║
-║  ██║  ███╗███████║██║███████║    ██║   ██║██████╔╝███████╗   ║
-║  ██║   ██║██╔══██║██║██╔══██║    ██║   ██║██╔═══╝ ╚════██║   ║
-║  ╚██████╔╝██║  ██║██║██║  ██║    ╚██████╔╝██║     ███████║   ║
-║   ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝     ╚═════╝ ╚═╝     ╚══════╝   ║
-║                                                               ║
-║        Multi-Agent DevOps Orchestration System                ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
-  `));
-
-  console.log(chalk.gray('This wizard will set up the Gaia-Ops agent system for your project.\n'));
-
-  // =========================================================================
-  // STEP 1: Ask for directory paths FIRST (always required)
-  // =========================================================================
-  console.log(chalk.yellow('📍 Directory Configuration'));
-  console.log(chalk.gray('Where do you keep your code?\n'));
-
-  const pathQuestions = await prompts([
+  const answers = await prompts([
+    { type: 'text', name: 'gitops', message: 'GitOps directory:', initial: config.gitops },
+    { type: 'text', name: 'terraform', message: 'Terraform directory:', initial: config.terraform },
+    { type: 'text', name: 'appServices', message: 'App Services directory:', initial: config.appServices },
     {
-      type: 'text',
-      name: 'gitops',
-      message: '📦 GitOps directory:',
-      initial: detected.gitops || './gitops',
-      validate: value => value.trim().length > 0
+      type: 'select', name: 'cloudProvider', message: 'Cloud provider:',
+      choices: [
+        { title: 'GCP', value: 'gcp' },
+        { title: 'AWS', value: 'aws' },
+        { title: 'Multi-cloud', value: 'multi-cloud' }
+      ],
+      initial: config.cloudProvider === 'aws' ? 1 : config.cloudProvider === 'multi-cloud' ? 2 : 0
     },
-    {
-      type: 'text',
-      name: 'terraform',
-      message: '🔧 Terraform directory:',
-      initial: detected.terraform || './terraform',
-      validate: value => value.trim().length > 0
-    },
-    {
-      type: 'text',
-      name: 'appServices',
-      message: '🚀 App Services directory:',
-      initial: detected.appServices || './app-services',
-      validate: value => value.trim().length > 0
-    }
+    { type: 'text', name: 'projectId', message: 'Project/Account ID:', initial: config.projectId },
+    { type: 'text', name: 'region', message: 'Primary region:', initial: config.region },
+    { type: 'text', name: 'clusterName', message: 'Cluster name:', initial: config.clusterName },
+    { type: 'text', name: 'projectContextRepo', message: 'Project context repo (empty to skip):', initial: config.projectContextRepo }
   ], {
-    onCancel: () => {
-      console.log(chalk.yellow('\n⚠️  Installation cancelled by user\n'));
-      process.exit(0);
-    }
+    onCancel: () => { console.log(chalk.yellow('\n  Installation cancelled.\n')); process.exit(0); }
   });
 
-  // =========================================================================
-  // STEP 2: Ask for project context repo (optional)
-  // =========================================================================
-  console.log(chalk.yellow('\n🔗 Project Context (Optional)'));
-  console.log(chalk.gray('If you have an existing project context repo, provide it here.\n'));
-  console.log(chalk.gray('If not, we\'ll ask a few questions to create a basic one.\n'));
-
-  const contextQuestion = await prompts({
-    type: 'text',
-    name: 'projectContextRepo',
-    message: '📦 Project context repo (leave empty if you don\'t have one):',
-    initial: ''
-  }, {
-    onCancel: () => {
-      console.log(chalk.yellow('\n⚠️  Installation cancelled by user\n'));
-      process.exit(0);
-    }
-  });
-
-  // Try to clone and parse project context
-  let projectContext = null;
-  let configFromContext = null;
-
-  if (contextQuestion.projectContextRepo && contextQuestion.projectContextRepo.trim() !== '') {
-    projectContext = await tryCloneProjectContext(contextQuestion.projectContextRepo);
-
-    if (projectContext) {
-      // Extract config from context
-      configFromContext = {
-        cloudProvider: projectContext.contextData.sections?.project_details?.cloud_provider || projectContext.contextData.cloud_provider || 'gcp',
-        gcpProjectId: projectContext.contextData.sections?.project_details?.project_id || projectContext.contextData.project_id_gcp || '',
-        awsAccountId: projectContext.contextData.sections?.project_details?.aws_account || projectContext.contextData.aws_account || '',
-        region: projectContext.contextData.sections?.project_details?.region || projectContext.contextData.primary_region || 'us-central1',
-        clusterName: projectContext.contextData.sections?.project_details?.cluster_name || projectContext.contextData.infrastructure?.clusters?.primary?.name || ''
-      };
-
-      console.log(chalk.green('\n✅ Configuration loaded from project context:'));
-      console.log(chalk.gray(`  • Cloud: ${configFromContext.cloudProvider.toUpperCase()}`));
-      if (configFromContext.gcpProjectId) console.log(chalk.gray(`  • GCP Project: ${configFromContext.gcpProjectId}`));
-      if (configFromContext.awsAccountId) console.log(chalk.gray(`  • AWS Account: ${configFromContext.awsAccountId}`));
-      if (configFromContext.region) console.log(chalk.gray(`  • Region: ${configFromContext.region}`));
-      if (configFromContext.clusterName) console.log(chalk.gray(`  • Cluster: ${configFromContext.clusterName}`));
-      console.log(chalk.gray('\nUsing this configuration. Installation will continue...\n'));
-    }
-  }
-
-  // =========================================================================
-  // STEP 3: If NO project context, ask basic questions to create one
-  // =========================================================================
-  let additionalConfig = {};
-
-  if (!projectContext) {
-    console.log(chalk.yellow('📝 Project Configuration'));
-    console.log(chalk.gray('Let\'s gather some basic info to create your project context.\n'));
-    console.log(chalk.gray('You can leave fields empty if you don\'t have the info yet.\n'));
-
-    const configQuestions = await prompts([
-      {
-        type: 'select',
-        name: 'cloudProvider',
-        message: '☁️  Cloud provider:',
-        choices: [
-          { title: 'GCP (Google Cloud Platform)', value: 'gcp' },
-          { title: 'AWS (Amazon Web Services)', value: 'aws' },
-          { title: 'Multi-cloud (AWS + GCP)', value: 'multi-cloud' }
-        ],
-        initial: 0
-      },
-      {
-        type: (prev) => ['gcp', 'multi-cloud'].includes(prev) ? 'text' : null,
-        name: 'gcpProjectId',
-        message: '🌐 GCP Project ID (optional):',
-        initial: ''
-      },
-      {
-        type: (prev, values) => ['aws', 'multi-cloud'].includes(values.cloudProvider) ? 'text' : null,
-        name: 'awsAccountId',
-        message: '🌐 AWS Account ID (optional):',
-        initial: ''
-      },
-      {
-        type: 'text',
-        name: 'region',
-        message: '🌍 Primary Region (optional):',
-        initial: ''
-      },
-      {
-        type: 'text',
-        name: 'clusterName',
-        message: '☸️  Cluster Name (optional):',
-        initial: ''
-      }
-    ], {
-      onCancel: () => {
-        console.log(chalk.yellow('\n⚠️  Installation cancelled by user\n'));
-        process.exit(0);
-      }
-    });
-
-    additionalConfig = configQuestions;
-  }
-
-  // =========================================================================
-  // STEP 4: Ask if should install Claude Code
-  // =========================================================================
-  const claudeCodeQuestion = await prompts({
-    type: 'confirm',
-    name: 'installClaudeCode',
-    message: '📥 Install Claude Code if not present?',
-    initial: true
-  }, {
-    onCancel: () => {
-      console.log(chalk.yellow('\n⚠️  Installation cancelled by user\n'));
-      process.exit(0);
-    }
-  });
-
-  // =========================================================================
-  // Build final configuration
-  // =========================================================================
-  const finalConfig = {
-    // Paths (always from user input)
-    gitops: pathQuestions.gitops,
-    terraform: pathQuestions.terraform,
-    appServices: pathQuestions.appServices,
-
-    // Config (from context OR from user input)
-    ...(projectContext ? configFromContext : additionalConfig),
-
-    // Claude Code installation preference
-    installClaudeCode: claudeCodeQuestion.installClaudeCode,
-
-    // Context repo info
-    projectContextRepo: contextQuestion.projectContextRepo || '',
-    projectContextAlreadyCloned: !!projectContext
+  return {
+    ...config,
+    ...answers
   };
-
-  // Set defaults for empty values
-  if (!finalConfig.cloudProvider) finalConfig.cloudProvider = 'gcp';
-  if (!finalConfig.gcpProjectId) finalConfig.gcpProjectId = '';
-  if (!finalConfig.awsAccountId) finalConfig.awsAccountId = '';
-  if (!finalConfig.region) finalConfig.region = 'us-central1';
-  if (!finalConfig.clusterName) finalConfig.clusterName = '';
-
-  return finalConfig;
 }
 
 // ============================================================================
-// Installation steps
+// Phase 3 & 4: Install
 // ============================================================================
 
 /**
- * Install Claude Code CLI
+ * Install Claude Code if not present (mandatory).
  */
-async function installClaudeCode() {
-  const spinner = ora('Installing Claude Code...').start();
+async function ensureClaudeCode(claudeCodeStatus, skipInstall = false) {
+  if (claudeCodeStatus.installed) return;
+
+  if (skipInstall) {
+    console.log(chalk.yellow('\n  ⚠️  Claude Code not installed (--skip-claude-install used)'));
+    console.log(chalk.gray('  Install manually: npm install -g @anthropic-ai/claude-code\n'));
+    return;
+  }
+
+  const spinner = ora('Installing Claude Code (mandatory)...').start();
 
   try {
-    await execAsync('npm install -g @anthropic-ai/claude-code');
-    spinner.succeed('Claude Code installed successfully');
+    await execAsync('npm install -g @anthropic-ai/claude-code', { timeout: 120000 });
+    spinner.succeed('Claude Code installed');
   } catch (error) {
     spinner.fail('Failed to install Claude Code');
-    console.error(chalk.red('\nError:'), error.message);
-    console.log(chalk.yellow('\nPlease install Claude Code manually:'));
-    console.log(chalk.gray('  npm install -g @anthropic-ai/claude-code\n'));
+    console.log(chalk.red(`\n  Error: ${error.message}`));
+    console.log(chalk.yellow('  Install manually: npm install -g @anthropic-ai/claude-code\n'));
+    // Don't throw - continue installation
+  }
+}
+
+/**
+ * Ensure @jaguilar87/gaia-ops is installed as npm dependency.
+ */
+async function ensureGaiaOpsPackage() {
+  const spinner = ora('Setting up @jaguilar87/gaia-ops...').start();
+
+  try {
+    const packageJsonPath = join(CWD, 'package.json');
+
+    // Check if already installed in node_modules
+    const pkgPath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops', 'package.json');
+    if (existsSync(pkgPath)) {
+      spinner.succeed('@jaguilar87/gaia-ops already installed');
+      return;
+    }
+
+    // Create package.json if missing
+    if (!existsSync(packageJsonPath)) {
+      await fs.writeFile(packageJsonPath, JSON.stringify({
+        name: 'my-project',
+        version: '1.0.0',
+        private: true,
+        dependencies: {}
+      }, null, 2), 'utf-8');
+    }
+
+    await execAsync('npm install @jaguilar87/gaia-ops', { timeout: 120000 });
+    spinner.succeed('@jaguilar87/gaia-ops installed');
+  } catch (error) {
+    spinner.fail(`Failed to install package: ${error.message}`);
     throw error;
   }
 }
 
 /**
- * Create .claude/ directory structure with symlinks
+ * Create .claude/ directory with symlinks to npm package.
  */
 async function createClaudeDirectory() {
   const spinner = ora('Creating .claude/ directory...').start();
 
   try {
     const claudeDir = join(CWD, '.claude');
-
-    // Create base directory
     await fs.mkdir(claudeDir, { recursive: true });
 
-    // Calculate relative path from .claude/ to node_modules/@jaguilar87/gaia-ops
     const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
     const relativePath = relative(claudeDir, packagePath);
 
-    // Create symlinks to npm package
     const symlinks = [
-      { target: join(relativePath, 'agents'), link: join(claudeDir, 'agents') },
-      { target: join(relativePath, 'tools'), link: join(claudeDir, 'tools') },
-      { target: join(relativePath, 'hooks'), link: join(claudeDir, 'hooks') },
-      { target: join(relativePath, 'commands'), link: join(claudeDir, 'commands') },
-      { target: join(relativePath, 'templates'), link: join(claudeDir, 'templates') },
-      { target: join(relativePath, 'config'), link: join(claudeDir, 'config') },
-      { target: join(relativePath, 'speckit'), link: join(claudeDir, 'speckit') },
-      { target: join(relativePath, 'CHANGELOG.md'), link: join(claudeDir, 'CHANGELOG.md') }
+      'agents', 'tools', 'hooks', 'commands',
+      'templates', 'config', 'speckit'
     ];
 
-    for (const { target, link } of symlinks) {
-      // Remove existing symlink if present
-      if (existsSync(link)) {
-        await fs.unlink(link);
-      }
-      await fs.symlink(target, link);
+    for (const name of symlinks) {
+      const link = join(claudeDir, name);
+      if (existsSync(link)) await fs.unlink(link);
+      await fs.symlink(join(relativePath, name), link);
     }
 
-    // Create project-specific directories (NOT symlinked)
+    // CHANGELOG.md symlink
+    const changelogLink = join(claudeDir, 'CHANGELOG.md');
+    if (existsSync(changelogLink)) await fs.unlink(changelogLink);
+    await fs.symlink(join(relativePath, 'CHANGELOG.md'), changelogLink);
+
+    // Project-specific directories (NOT symlinked)
     await fs.mkdir(join(claudeDir, 'logs'), { recursive: true });
     await fs.mkdir(join(claudeDir, 'tests'), { recursive: true });
     await fs.mkdir(join(claudeDir, 'project-context'), { recursive: true });
 
-    spinner.succeed('.claude/ directory created with symlinks');
+    spinner.succeed('.claude/ directory created');
   } catch (error) {
-    spinner.fail('Failed to create .claude/ directory');
+    spinner.fail('Failed to create .claude/');
     throw error;
   }
 }
 
 /**
- * Generate settings.json from template
+ * Copy static CLAUDE.md from template (no placeholders to replace).
  */
-async function generateSettingsJson() {
-  const spinner = ora('Generating .claude/settings.json...').start();
-
-  try {
-    const settingsPath = join(CWD, '.claude', 'settings.json');
-    const templatePath = getTemplatePath('settings.template.json');
-
-    // Read template
-    const template = await fs.readFile(templatePath, 'utf-8');
-
-    // Write settings.json (no placeholders to replace)
-    await fs.writeFile(settingsPath, template, 'utf-8');
-
-    spinner.succeed('.claude/settings.json generated');
-  } catch (error) {
-    spinner.fail('Failed to generate settings.json');
-    throw error;
-  }
-}
-
-/**
- * Generate CLAUDE.md from template
- */
-async function generateClaudeMd(config) {
+async function copyClaudeMd() {
   const spinner = ora('Generating CLAUDE.md...').start();
 
   try {
-    // Read template
     const templatePath = getTemplatePath('CLAUDE.template.md');
-    let template = await fs.readFile(templatePath, 'utf-8');
-
-    // Build project configuration section based on cloud provider
-    let projectConfig = '';
-
-    if (config.cloudProvider === 'gcp') {
-      projectConfig = `- **Cloud Provider:** GCP
-- **GCP Project ID:** ${config.gcpProjectId}
-- **Region:** ${config.region}
-- **Cluster:** ${config.clusterName}`;
-    } else if (config.cloudProvider === 'aws') {
-      projectConfig = `- **Cloud Provider:** AWS
-- **AWS Account ID:** ${config.awsAccountId}
-- **Region:** ${config.region}
-- **Cluster:** ${config.clusterName}`;
-    } else if (config.cloudProvider === 'multi-cloud') {
-      projectConfig = `- **Cloud Provider:** Multi-cloud (AWS + GCP)`;
-      if (config.gcpProjectId) {
-        projectConfig += `\n- **GCP Project ID:** ${config.gcpProjectId}`;
-      }
-      if (config.awsAccountId) {
-        projectConfig += `\n- **AWS Account ID:** ${config.awsAccountId}`;
-      }
-      projectConfig += `\n- **Primary Region:** ${config.region}
-- **Cluster:** ${config.clusterName}`;
-    }
-
-    // Replace placeholders
-    template = template.replace(/{{TIMESTAMP}}/g, new Date().toISOString().split('T')[0]);
-    template = template.replace(/{{PROJECT_CONFIG}}/g, projectConfig);
-    template = template.replace(/{{GITOPS_PATH}}/g, config.gitops);
-    template = template.replace(/{{TERRAFORM_PATH}}/g, config.terraform);
-    template = template.replace(/{{APP_SERVICES_PATH}}/g, config.appServices);
-
-    // Write to current directory
-    const claudeMdPath = join(CWD, 'CLAUDE.md');
-    await fs.writeFile(claudeMdPath, template, 'utf-8');
-
-    spinner.succeed('CLAUDE.md generated');
+    const destPath = join(CWD, 'CLAUDE.md');
+    await fs.copyFile(templatePath, destPath);
+    spinner.succeed('CLAUDE.md generated (static)');
   } catch (error) {
     spinner.fail('Failed to generate CLAUDE.md');
     throw error;
@@ -719,77 +563,47 @@ async function generateClaudeMd(config) {
 }
 
 /**
- * Generate AGENTS.md symlink
- * NOTE: AGENTS.md is already available at .claude/config/agent-catalog.md via the config/ symlink
- * No need to create a separate symlink in the project root
+ * Copy settings.json from template.
  */
-async function generateAgentsMd() {
-  // AGENTS.md is accessible via .claude/config/agent-catalog.md (symlinked directory)
-  // No action needed - keeping function for backward compatibility
-  return Promise.resolve();
-}
+async function copySettingsJson() {
+  const spinner = ora('Generating settings.json...').start();
 
-/**
- * Validate and setup project paths (gitops, terraform, app-services)
- * Creates directories automatically if they don't exist
- * Accepts both absolute and relative paths
- */
-async function validateAndSetupProjectPaths(config) {
-  console.log(chalk.cyan('\n📁 Setting up project directories...\n'));
-
-  const paths = {
-    gitops: { path: config.gitops, name: 'GitOps' },
-    terraform: { path: config.terraform, name: 'Terraform' },
-    appServices: { path: config.appServices, name: 'App Services' }
-  };
-
-  for (const [, { path: userPath, name }] of Object.entries(paths)) {
-    // Handle both absolute and relative paths
-    const absPath = isAbsolute(userPath) ? userPath : resolve(CWD, userPath);
-
-    // Check if path exists
-    if (existsSync(absPath)) {
-      console.log(chalk.gray(`  ✓ ${name}: ${userPath} (exists)`));
-      continue;
-    }
-
-    // Create directory automatically
-    await fs.mkdir(absPath, { recursive: true });
-    console.log(chalk.green(`  ✓ ${name}: ${userPath} (created)`));
+  try {
+    const templatePath = getTemplatePath('settings.template.json');
+    const destPath = join(CWD, '.claude', 'settings.json');
+    await fs.copyFile(templatePath, destPath);
+    spinner.succeed('settings.json generated');
+  } catch (error) {
+    spinner.fail('Failed to generate settings.json');
+    throw error;
   }
-
-  console.log('');
 }
 
 /**
- * Generate project-context.json
+ * Generate project-context.json from detected + user config.
  */
 async function generateProjectContext(config) {
   const spinner = ora('Generating project-context.json...').start();
 
   try {
-    // Build metadata section based on cloud provider
     const metadata = {
       version: '1.0',
       last_updated: new Date().toISOString(),
-      project_root: '.',  // Reference point: where CLAUDE.md is located
+      project_root: '.',
       created_by: 'gaia-init',
       cloud_provider: config.cloudProvider,
       environment: 'non-prod',
       primary_region: config.region
     };
 
-    // Add cloud-specific metadata
-    if (config.cloudProvider === 'gcp') {
-      metadata.project_id = config.gcpProjectId;
-    } else if (config.cloudProvider === 'aws') {
-      metadata.aws_account = config.awsAccountId;
-    } else if (config.cloudProvider === 'multi-cloud') {
-      if (config.gcpProjectId) metadata.project_id = config.gcpProjectId;
-      if (config.awsAccountId) metadata.aws_account = config.awsAccountId;
+    // Cloud-specific metadata
+    if (['gcp', 'multi-cloud'].includes(config.cloudProvider) && config.projectId) {
+      metadata.project_id = config.projectId;
+    }
+    if (['aws', 'multi-cloud'].includes(config.cloudProvider) && config.projectId) {
+      metadata.aws_account = config.projectId;
     }
 
-    // Build project_details section
     const projectDetails = {
       region: config.region,
       environment: 'non-prod',
@@ -797,28 +611,24 @@ async function generateProjectContext(config) {
       cloud_provider: config.cloudProvider
     };
 
-    // Add provider-specific fields (matching contract expectations)
-    if (config.gcpProjectId) {
-      projectDetails.project_id = config.gcpProjectId;  // GCP contract expects project_id
+    if (config.cloudProvider === 'gcp' || config.cloudProvider === 'multi-cloud') {
+      projectDetails.project_id = config.projectId;
     }
-    if (config.awsAccountId) {
-      projectDetails.account_id = config.awsAccountId;  // AWS contract expects account_id
+    if (config.cloudProvider === 'aws' || config.cloudProvider === 'multi-cloud') {
+      projectDetails.account_id = config.projectId;
     }
 
-    // Build provider_credentials section
+    // Build provider credentials
     const providerCredentials = {};
-    if (config.gcpProjectId) {
-      providerCredentials.gcp = {
-        project: config.gcpProjectId,
-        region: config.region
-      };
+    if (['gcp', 'multi-cloud'].includes(config.cloudProvider) && config.projectId) {
+      providerCredentials.gcp = { project: config.projectId, region: config.region };
     }
-    if (config.awsAccountId) {
-      providerCredentials.aws = {
-        account_id: config.awsAccountId,
-        region: config.region
-      };
+    if (['aws', 'multi-cloud'].includes(config.cloudProvider) && config.projectId) {
+      providerCredentials.aws = { account_id: config.projectId, region: config.region };
     }
+
+    // Detect gitops platform from files
+    const gitopsPlatform = await detectGitopsPlatform(config.gitops);
 
     const projectContext = {
       metadata,
@@ -839,10 +649,7 @@ async function generateProjectContext(config) {
         gitops_configuration: {
           repository: {
             path: config.gitops,
-            platform: 'flux'
-          },
-          flux_details: {
-            namespaces: []
+            platform: gitopsPlatform
           }
         },
         application_services: {
@@ -859,10 +666,10 @@ async function generateProjectContext(config) {
       }
     };
 
-    const projectContextPath = join(CWD, '.claude', 'project-context', 'project-context.json');
-    await fs.writeFile(projectContextPath, JSON.stringify(projectContext, null, 2), 'utf-8');
+    const destPath = join(CWD, '.claude', 'project-context', 'project-context.json');
+    await fs.writeFile(destPath, JSON.stringify(projectContext, null, 2), 'utf-8');
 
-    spinner.succeed('project-context/project-context.json generated');
+    spinner.succeed('project-context.json generated');
   } catch (error) {
     spinner.fail('Failed to generate project-context.json');
     throw error;
@@ -870,234 +677,316 @@ async function generateProjectContext(config) {
 }
 
 /**
- * Install @jaguilar87/gaia-ops as dependency
+ * Ensure project directories exist (create if missing).
  */
-async function installClaudeAgentsPackage() {
-  const spinner = ora('Installing @jaguilar87/gaia-ops package...').start();
+async function ensureProjectDirs(config) {
+  const dirs = [
+    { path: config.gitops, name: 'GitOps' },
+    { path: config.terraform, name: 'Terraform' },
+    { path: config.appServices, name: 'App Services' }
+  ];
 
-  try {
-    // Check if package.json exists
-    const packageJsonPath = join(CWD, 'package.json');
-    if (!existsSync(packageJsonPath)) {
-      // Create minimal package.json
-      const packageJson = {
-        name: 'my-project',
-        version: '1.0.0',
-        private: true,
-        dependencies: {}
-      };
-      await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf-8');
+  for (const { path: dirPath, name } of dirs) {
+    const absPath = isAbsolute(dirPath) ? dirPath : resolve(CWD, dirPath);
+    if (!existsSync(absPath)) {
+      await fs.mkdir(absPath, { recursive: true });
+      console.log(chalk.gray(`  Created ${name}: ${dirPath}`));
     }
-
-    // Install @jaguilar87/gaia-ops
-    // NOTE: In production, this would install from npm registry
-    // For now, we'll use local path
-    await execAsync('npm install @jaguilar87/gaia-ops');
-
-    spinner.succeed('@jaguilar87/gaia-ops package installed');
-  } catch (error) {
-    spinner.fail('Failed to install @jaguilar87/gaia-ops');
-    throw error;
   }
 }
 
 /**
- * Clone project context repository (optional)
- * If already cloned during wizard, skip clone and just set it up in final location
+ * Clone project context repo if provided.
  */
-async function cloneProjectContextRepo(repoUrl, alreadyCloned = false) {
-  if (!repoUrl || repoUrl.trim() === '') {
-    console.log(chalk.gray('\n✓ Skipping project context repo clone (not provided)\n'));
-    return;
-  }
+async function cloneProjectContextRepo(repoUrl) {
+  if (!repoUrl || repoUrl.trim() === '') return;
 
-  const sanitizedUrl = sanitizeGitUrl(repoUrl);
-
-  if (alreadyCloned) {
-    // Context was already cloned during wizard, just re-clone to final location
-    const spinner = ora('Setting up project context...').start();
-
-    try {
-      const projectContextDir = join(CWD, '.claude', 'project-context');
-
-      // Remove the generated project-context.json as it will be replaced by the cloned repo
-      const generatedFile = join(projectContextDir, 'project-context.json');
-      if (existsSync(generatedFile)) {
-        await fs.unlink(generatedFile);
-      }
-
-      // Clone fresh to final location (we already validated it works)
-      const tempDir = `${projectContextDir}-temp`;
-      await execAsync(`git clone ${sanitizedUrl} ${tempDir}`, { timeout: 30000 });
-
-      // Move contents from temp to project-context
-      const files = await fs.readdir(tempDir);
-      for (const file of files) {
-        const src = join(tempDir, file);
-        const dest = join(projectContextDir, file);
-        await fs.rename(src, dest);
-      }
-
-      // Remove temp directory
-      await fs.rm(tempDir, { recursive: true, force: true });
-
-      spinner.succeed('Project context repository configured');
-      console.log(chalk.green(`  → Location: .claude/project-context/\n`));
-    } catch (error) {
-      spinner.fail('Failed to setup project context repository');
-      console.log(chalk.yellow(`\n⚠️  You can clone it manually with:`));
-      console.log(chalk.gray(`  cd .claude`));
-      console.log(chalk.gray(`  rm -rf project-context`));
-      console.log(chalk.gray(`  git clone ${sanitizedUrl} project-context\n`));
-      // Don't throw - allow installation to continue
-    }
-    return;
-  }
-
-  // Not cloned yet during wizard, try to clone now
+  const sanitized = sanitizeGitUrl(repoUrl);
   const spinner = ora('Cloning project context repository...').start();
 
   try {
-    const projectContextDir = join(CWD, '.claude', 'project-context');
+    const contextDir = join(CWD, '.claude', 'project-context');
+    const tempDir = `${contextDir}-temp`;
 
-    // Remove the generated project-context.json as it will be replaced by the cloned repo
-    const generatedFile = join(projectContextDir, 'project-context.json');
-    if (existsSync(generatedFile)) {
-      await fs.unlink(generatedFile);
-    }
+    if (existsSync(tempDir)) await fs.rm(tempDir, { recursive: true, force: true });
 
-    // Clone repo
-    const tempDir = `${projectContextDir}-temp`;
-    await execAsync(`git clone ${sanitizedUrl} ${tempDir}`, { timeout: 30000 });
+    await execAsync(`git clone ${sanitized} ${tempDir}`, { timeout: 30000 });
 
-    // Move contents from temp to project-context
+    // Move contents to project-context/
     const files = await fs.readdir(tempDir);
     for (const file of files) {
-      const src = join(tempDir, file);
-      const dest = join(projectContextDir, file);
-      await fs.rename(src, dest);
+      await fs.rename(join(tempDir, file), join(contextDir, file));
     }
-
-    // Remove temp directory
     await fs.rm(tempDir, { recursive: true, force: true });
 
-    spinner.succeed('Project context repository cloned');
-    console.log(chalk.green(`  → Cloned from: ${sanitizedUrl}`));
-    console.log(chalk.gray(`  → Location: .claude/project-context/\n`));
+    spinner.succeed('Project context cloned');
   } catch (error) {
-    spinner.fail('Failed to clone project context repository');
-    console.log(chalk.yellow(`\n⚠️  Error: ${error.message}`));
-    console.log(chalk.gray('\n  Common issues:'));
-    console.log(chalk.gray('  • Check SSH keys are configured: ssh -T git@bitbucket.org'));
-    console.log(chalk.gray('  • Verify repository URL is correct'));
-    console.log(chalk.gray('  • Ensure you have access to the repository\n'));
-    console.log(chalk.yellow(`  You can clone it manually later with:`));
-    console.log(chalk.gray(`    cd .claude`));
-    console.log(chalk.gray(`    rm -rf project-context`));
-    console.log(chalk.gray(`    git clone ${sanitizedUrl} project-context\n`));
-    // Don't throw - allow installation to continue
+    spinner.fail(`Failed to clone: ${error.message}`);
+    console.log(chalk.gray(`  Clone manually: cd .claude && git clone ${sanitized} project-context\n`));
   }
 }
 
 // ============================================================================
-// Main installer flow
+// Verification (inline gaia-doctor)
+// ============================================================================
+
+/**
+ * Run post-install verification checks.
+ */
+async function runVerification() {
+  console.log(chalk.cyan('\n  Verifying installation...\n'));
+
+  const checks = [
+    { name: 'Symlinks', fn: checkSymlinks },
+    { name: 'CLAUDE.md', fn: checkClaudeMd },
+    { name: 'settings.json', fn: checkSettingsJson },
+    { name: 'project-context', fn: checkProjectContext },
+    { name: 'Python', fn: checkPython },
+    { name: 'Hooks', fn: checkHooks }
+  ];
+
+  let allPassed = true;
+
+  for (const { name, fn } of checks) {
+    try {
+      const result = await fn();
+      if (result.ok) {
+        console.log(chalk.green(`    ✓ ${name.padEnd(18)} ${result.detail || ''}`));
+      } else {
+        console.log(chalk.yellow(`    ⚠ ${name.padEnd(18)} ${result.detail}`));
+        if (result.fix) console.log(chalk.gray(`      Fix: ${result.fix}`));
+        allPassed = false;
+      }
+    } catch {
+      console.log(chalk.red(`    ✗ ${name.padEnd(18)} Check failed`));
+      allPassed = false;
+    }
+  }
+
+  console.log('');
+  return allPassed;
+}
+
+async function checkSymlinks() {
+  const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'CHANGELOG.md'];
+  let valid = 0;
+  for (const name of names) {
+    if (existsSync(join(CWD, '.claude', name))) valid++;
+  }
+  return { ok: valid === names.length, detail: `${valid}/${names.length} valid` };
+}
+
+async function checkClaudeMd() {
+  const path = join(CWD, 'CLAUDE.md');
+  if (!existsSync(path)) return { ok: false, detail: 'Missing', fix: 'Run gaia-init' };
+  const content = await fs.readFile(path, 'utf-8');
+  if (content.includes('{{')) return { ok: false, detail: 'Contains raw placeholders', fix: 'Run gaia-init to regenerate' };
+  return { ok: true, detail: 'Valid' };
+}
+
+async function checkSettingsJson() {
+  const path = join(CWD, '.claude', 'settings.json');
+  if (!existsSync(path)) return { ok: false, detail: 'Missing', fix: 'Run gaia-init' };
+  try {
+    JSON.parse(await fs.readFile(path, 'utf-8'));
+    return { ok: true, detail: 'Valid JSON' };
+  } catch {
+    return { ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-init' };
+  }
+}
+
+async function checkProjectContext() {
+  const path = join(CWD, '.claude', 'project-context', 'project-context.json');
+  if (!existsSync(path)) return { ok: false, detail: 'Missing', fix: 'Run gaia-init or /speckit.init' };
+  try {
+    const data = JSON.parse(await fs.readFile(path, 'utf-8'));
+    const sections = Object.keys(data.sections || {}).length;
+    return { ok: sections >= 3, detail: `${sections} sections` };
+  } catch {
+    return { ok: false, detail: 'Invalid JSON', fix: 'Regenerate with /speckit.init' };
+  }
+}
+
+async function checkPython() {
+  try {
+    const { stdout } = await execAsync('python3 --version');
+    const version = stdout.trim();
+    return { ok: true, detail: version };
+  } catch {
+    return { ok: false, detail: 'Not found', fix: 'Install Python 3.9+' };
+  }
+}
+
+async function checkHooks() {
+  const hookPath = join(CWD, '.claude', 'hooks', 'pre_tool_use.py');
+  if (!existsSync(hookPath)) return { ok: false, detail: 'pre_tool_use.py missing' };
+  return { ok: true, detail: 'pre_tool_use.py found' };
+}
+
+// ============================================================================
+// Utility functions
+// ============================================================================
+
+async function getGitRemote(dir) {
+  try {
+    const { stdout } = await execAsync('git remote get-url origin', { cwd: dir, timeout: 5000 });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+async function findFiles(dir, extension, maxDepth, currentDepth = 0) {
+  if (currentDepth >= maxDepth) return [];
+
+  const results = [];
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const nested = await findFiles(fullPath, extension, maxDepth, currentDepth + 1);
+        results.push(...nested);
+      } else if (entry.name.endsWith(extension)) {
+        results.push(fullPath);
+      }
+    }
+  } catch {
+    // Skip unreadable directories
+  }
+  return results;
+}
+
+async function detectGitopsPlatform(gitopsPath) {
+  const absPath = isAbsolute(gitopsPath) ? gitopsPath : resolve(CWD, gitopsPath);
+  if (!existsSync(absPath)) return 'flux';
+
+  try {
+    const files = await findFiles(absPath, '.yaml', 3);
+    for (const file of files) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        if (content.includes('kind: Kustomization') && content.includes('toolkit.fluxcd.io')) return 'flux';
+        if (content.includes('kind: Application') && content.includes('argoproj.io')) return 'argocd';
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // Default
+  }
+  return 'flux';
+}
+
+function sanitizeGitUrl(input) {
+  if (!input || typeof input !== 'string') return '';
+  let sanitized = input.trim();
+  if (sanitized.toLowerCase().startsWith('git clone ')) {
+    sanitized = sanitized.substring('git clone '.length).trim();
+  }
+  return sanitized.replace(/^["']|["']$/g, '');
+}
+
+// ============================================================================
+// CLI Argument Parsing
+// ============================================================================
+
+function parseCliArguments() {
+  return yargs(hideBin(process.argv))
+    .usage('Usage: $0 [options]')
+    .option('non-interactive', { alias: 'y', type: 'boolean', description: 'Accept detected values', default: false })
+    .option('gitops', { type: 'string', description: 'GitOps directory path' })
+    .option('terraform', { type: 'string', description: 'Terraform directory path' })
+    .option('app-services', { type: 'string', description: 'App services directory path' })
+    .option('project-id', { type: 'string', description: 'Cloud project/account ID' })
+    .option('region', { type: 'string', description: 'Primary region' })
+    .option('cluster', { type: 'string', description: 'Cluster name' })
+    .option('skip-claude-install', { type: 'boolean', description: 'Skip Claude Code install', default: false })
+    .option('project-context-repo', { type: 'string', description: 'Git repo with project context' })
+    .help('h').alias('h', 'help')
+    .version('2.0.0').alias('v', 'version')
+    .parse();
+}
+
+// ============================================================================
+// Main
 // ============================================================================
 
 async function main() {
   try {
-    // Parse CLI arguments
     const args = parseCliArguments();
 
-    // Clear console unless in non-interactive mode
-    if (!args.nonInteractive) {
-      console.clear();
-    }
+    // Phase 1: Scan
+    const scan = await runScan();
 
-    // Step 1: Check Claude Code installation
-    const claudeCodeInstalled = await checkClaudeCodeInstalled();
-    if (!claudeCodeInstalled) {
-      console.log(chalk.yellow('⚠️  Claude Code is not installed\n'));
-    } else {
-      console.log(chalk.green('✅ Claude Code is already installed\n'));
-    }
+    // Build config from scan + overrides
+    let config = buildConfig(scan, args);
 
-    // Step 2: Auto-detect project structure
-    const detected = await detectProjectStructure();
-
-    // Step 3: Get configuration (CLI args, env vars, detected, or interactive)
-    let config;
     if (args.nonInteractive) {
-      // Non-interactive mode: use CLI args, env vars, and detected values
-      config = getConfiguration(detected, args);
-      validateConfiguration(config, true);
-
-      // Display configuration being used
-      console.log(chalk.cyan('\n📋 Configuration:\n'));
-      console.log(chalk.gray(`  GitOps:       ${config.gitops}`));
-      console.log(chalk.gray(`  Terraform:    ${config.terraform}`));
-      console.log(chalk.gray(`  App Services: ${config.appServices}`));
-      console.log(chalk.gray(`  Project ID:   ${config.projectId}`));
-      console.log(chalk.gray(`  Region:       ${config.region}`));
-      console.log(chalk.gray(`  Cluster:      ${config.clusterName}\n`));
+      // Non-interactive: show what was detected and proceed
+      console.log(chalk.cyan('\n  Configuration (auto-detected + overrides):\n'));
+      console.log(chalk.gray(`    GitOps:       ${config.gitops}`));
+      console.log(chalk.gray(`    Terraform:    ${config.terraform}`));
+      console.log(chalk.gray(`    App Services: ${config.appServices}`));
+      console.log(chalk.gray(`    Cloud:        ${config.cloudProvider?.toUpperCase()}`));
+      console.log(chalk.gray(`    Project ID:   ${config.projectId || '(none)'}`));
+      console.log(chalk.gray(`    Region:       ${config.region || '(none)'}`));
+      console.log(chalk.gray(`    Cluster:      ${config.clusterName || '(none)'}\n`));
     } else {
-      // Interactive mode: run wizard with pre-filled detected values
-      config = await runInteractiveWizard(detected);
+      // Phase 2: Display + Confirm
+      const { gaps } = await displayAndConfirm(config);
+
+      // Phase 3: Fill gaps + get confirmation
+      config = await confirmOrEdit(config, gaps);
     }
 
-    // Step 4: Install Claude Code only if requested AND not already installed
-    if (config.installClaudeCode) {
-      if (claudeCodeInstalled) {
-        console.log(chalk.green('✓ Claude Code already installed, skipping reinstall\n'));
-      } else {
-        await installClaudeCode();
-      }
-    } else {
-      console.log(chalk.gray('✓ Claude Code installation skipped\n'));
-    }
+    // Phase 4: Install
+    console.log(chalk.cyan('\n  Installing...\n'));
 
-    // Step 5: Install @jaguilar87/gaia-ops package
-    await installClaudeAgentsPackage();
+    // 4.1 Claude Code (mandatory)
+    await ensureClaudeCode(config.claudeCode, args.skipClaudeInstall);
 
-    // Step 5.5: Validate and setup project paths (gitops, terraform, app-services)
-    await validateAndSetupProjectPaths(config);
+    // 4.2 npm package
+    await ensureGaiaOpsPackage();
 
-    // Step 6: Create .claude/ directory with symlinks
+    // 4.3 Project directories
+    await ensureProjectDirs(config);
+
+    // 4.4 .claude/ directory with symlinks
     await createClaudeDirectory();
 
-    // Step 6.5: Generate settings.json
-    await generateSettingsJson();
+    // 4.5 Static CLAUDE.md
+    await copyClaudeMd();
 
-    // Step 7: Generate CLAUDE.md
-    await generateClaudeMd(config);
+    // 4.6 Settings.json
+    await copySettingsJson();
 
-    // Step 8: Generate AGENTS.md symlink
-    await generateAgentsMd();
-
-    // Step 9: Generate project-context.json
+    // 4.7 Project context
     await generateProjectContext(config);
 
-    // Step 10: Clone project context repository (optional)
+    // 4.8 Clone context repo (optional)
     if (config.projectContextRepo) {
-      await cloneProjectContextRepo(config.projectContextRepo, config.projectContextAlreadyCloned);
+      await cloneProjectContextRepo(config.projectContextRepo);
     }
 
-    // Success message
-    console.log(chalk.green.bold('\n✅ Installation complete!\n'));
-    console.log(chalk.gray('Next steps:'));
-    console.log(chalk.gray('  1. Review CLAUDE.md and adjust paths if needed'));
-    if (!config.projectContextRepo) {
-      console.log(chalk.gray('  2. Update .claude/project-context/project-context.json with your services'));
-      console.log(chalk.gray('     OR clone your project context repo:'));
-      console.log(chalk.gray('     cd .claude && git clone <your-repo> project-context'));
-    } else {
-      console.log(chalk.gray('  2. Your project context has been cloned to .claude/project-context/'));
+    // Verification
+    const healthy = await runVerification();
+
+    // Success
+    console.log(chalk.green.bold('  ✓ Installation complete!\n'));
+
+    if (!healthy) {
+      console.log(chalk.yellow('  Some checks have warnings. Run `npx gaia-doctor` for details.\n'));
     }
-    console.log(chalk.gray('  3. Start Claude Code: claude-code\n'));
-    console.log(chalk.cyan('📚 Documentation: .claude/config/\n'));
+
+    console.log(chalk.gray('  Next steps:'));
+    console.log(chalk.gray('    1. Start Claude Code: claude'));
+    console.log(chalk.gray('    2. Enrich context:    /speckit.init'));
+    console.log(chalk.gray('    3. Verify health:     npx gaia-doctor\n'));
 
   } catch (error) {
-    console.error(chalk.red('\n❌ Installation failed\n'));
-    console.error(error);
+    console.error(chalk.red(`\n  ✗ Installation failed: ${error.message}\n`));
     process.exit(1);
   }
 }

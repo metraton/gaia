@@ -431,7 +431,7 @@ def _inject_session_events(parameters: dict) -> dict:
 # MAIN HOOK LOGIC
 # ============================================================================
 
-def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | None:
+def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
     """
     Pre-tool use hook implementation.
 
@@ -440,7 +440,9 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | None:
         parameters: Tool parameters
 
     Returns:
-        None if allowed, error message if blocked
+        None: allowed (no modification)
+        str: blocked (error message, triggers exit 2)
+        dict: allowed with modification (JSON with updatedInput, exit 0)
     """
     logger.info(f"Hook invoked: tool={tool_name}, params={json.dumps(parameters)[:200]}")
 
@@ -476,8 +478,15 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | None:
         return f"Error during security validation: {str(e)}"
 
 
-def _handle_bash(tool_name: str, parameters: dict) -> str | None:
-    """Handle Bash tool validation."""
+def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
+    """
+    Handle Bash tool validation.
+
+    Returns:
+        None: allowed (no modification)
+        str: blocked (error message)
+        dict: allowed with modification (hookSpecificOutput JSON)
+    """
     command = parameters.get("command", "")
     if not command:
         return "Error: Bash tool requires a command"
@@ -491,13 +500,26 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | None:
         return _format_blocked_message(result)
 
     # Save state for post-hook (ONLY for allowed commands)
+    effective_command = result.modified_input.get("command", command) if result.modified_input else command
     state = create_pre_hook_state(
         tool_name=tool_name,
-        command=command,
+        command=effective_command,
         tier=str(result.tier),
-        allowed=True,  # Always true here
+        allowed=True,
     )
     save_hook_state(state)
+
+    # If validator modified the command (e.g., stripped footer), emit updatedInput
+    if result.modified_input:
+        logger.info(f"MODIFIED: {command[:80]} → stripped footer - tier={result.tier}")
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": result.reason,
+                "updatedInput": result.modified_input
+            }
+        }
 
     logger.info(f"ALLOWED: {command[:100]} - tier={result.tier}")
     return None
@@ -696,13 +718,19 @@ if __name__ == "__main__":
 
             # Standard validation (auto-approval handled in BashValidator)
             result = pre_tool_use_hook(tool_name, tool_input)
-            if result:
-                # Exit code 2 = BLOCKING error - Claude MUST stop execution
-                # Exit code 1 = Non-blocking error - Claude may continue (WRONG for security blocks)
+            if isinstance(result, dict):
+                # Dict = allowed with modification (updatedInput)
+                # Output JSON so Claude Code applies the modified parameters
+                print(json.dumps(result))
+                sys.exit(0)
+            elif isinstance(result, str):
+                # String = BLOCKING error - Claude MUST stop execution
+                # Exit code 2 = blocking, exit code 1 = non-blocking
                 # See: https://docs.anthropic.com/en/docs/claude-code/hooks
                 print(result)
                 sys.exit(2)
             else:
+                # None = allowed, no modification
                 sys.exit(0)
 
         except json.JSONDecodeError as e:

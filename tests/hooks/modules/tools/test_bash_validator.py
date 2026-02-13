@@ -131,19 +131,40 @@ class TestCompoundCommandValidation:
         assert result.tier == SecurityTier.T3_BLOCKED
 
 
-class TestClaudeFooterDetection:
-    """Test detection of Claude-generated commit footers."""
+class TestClaudeFooterStripping:
+    """Test auto-stripping of Claude-generated commit footers via updatedInput."""
 
-    def test_blocks_generated_with_claude_code(self, validator):
-        """Test blocks commit with 'Generated with Claude Code' footer."""
-        result = validator.validate('git commit -m "test\n\nGenerated with Claude Code"')
-        assert result.allowed is False
-        assert "claude" in result.reason.lower() or "footer" in result.reason.lower()
+    def test_strips_generated_with_claude_code(self, validator):
+        """Test strips 'Generated with Claude Code' footer instead of blocking."""
+        result = validator.validate('git commit -m "feat(test): add feature\n\nGenerated with Claude Code"')
+        assert result.allowed is True
+        assert result.modified_input is not None
+        assert "Generated with Claude Code" not in result.modified_input["command"]
 
-    def test_blocks_co_authored_by_claude(self, validator):
-        """Test blocks commit with 'Co-Authored-By: Claude' footer."""
-        result = validator.validate('git commit -m "test\n\nCo-Authored-By: Claude Sonnet"')
-        assert result.allowed is False
+    def test_strips_co_authored_by_claude(self, validator):
+        """Test strips 'Co-Authored-By: Claude' footer instead of blocking."""
+        result = validator.validate('git commit -m "feat(test): add feature\n\nCo-Authored-By: Claude Opus 4.6"')
+        assert result.allowed is True
+        assert result.modified_input is not None
+        assert "Co-Authored-By" not in result.modified_input["command"]
+
+    def test_stripped_command_preserves_message(self, validator):
+        """Test that the commit message content is preserved after stripping."""
+        result = validator.validate('git commit -m "feat(api): add endpoint\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"')
+        assert result.allowed is True
+        assert "feat(api): add endpoint" in result.modified_input["command"]
+
+    def test_no_modified_input_for_clean_commits(self, validator):
+        """Test that clean commits don't have modified_input."""
+        result = validator.validate('git commit -m "feat(api): add endpoint"')
+        assert result.allowed is True
+        assert result.modified_input is None
+
+    def test_no_modified_input_for_non_commit_commands(self, validator):
+        """Test that non-commit commands don't have modified_input."""
+        result = validator.validate("ls -la")
+        assert result.allowed is True
+        assert result.modified_input is None
 
 
 class TestCredentialRequirement:

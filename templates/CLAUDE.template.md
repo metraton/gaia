@@ -218,19 +218,39 @@ Use `resume="agentId"` to continue with an agent that already has context.
 - Requires credentials (GCP, AWS, K8s)
 - Complex troubleshooting
 
+## Git Commits
+
+Commit messages MUST follow Conventional Commits: `type(scope): description`
+
+**What hooks enforce automatically:**
+- Format validation (type, scope, length, no period)
+- Claude Code footers (`Co-Authored-By`, `Generated with Claude Code`) are **auto-stripped** — you don't need to worry about removing them, the hook cleans them transparently
+- Blocked commands (deny list) are prevented at execution level
+
+**What you must do:**
+- Use `git commit -m "type(scope): description"` format
+- Do NOT add `Co-Authored-By` or `Generated with Claude Code` footers
+- Allowed types: feat, fix, refactor, docs, test, chore, ci, perf, style, build
+
+## Hook Enforcement (Automatic)
+
+These are enforced by hooks — you don't need to call them manually:
+
+| What | Enforcement | How |
+|------|-------------|-----|
+| Blocked commands | `pre_tool_use` hook blocks permanently | deny list in settings.json |
+| T3 approval for Tasks | `task_validator` blocks T3 without "User approved" | keyword detection |
+| Commit message format | `bash_validator` validates before execution | commit_validator module |
+| Claude footers in commits | `bash_validator` auto-strips via `updatedInput` | transparent to you |
+| Project context for agents | `pre_tool_use` auto-injects from project-context.json | context_provider |
+| Agent existence | `task_validator` blocks unknown subagent_type | AVAILABLE_AGENTS list |
+
 ## System Paths
 
 | Path | Purpose |
 |------|---------|
 | `.claude/project-context/project-context.json` | Project config (SSOT) |
 | `.claude/agents/` | Agent definitions |
-
-## Project Configuration
-
-{{PROJECT_CONFIG}}
-- GitOps: {{GITOPS_PATH}}
-- Terraform: {{TERRAFORM_PATH}}
-- App Services: {{APP_SERVICES_PATH}}
 
 ---
 
