@@ -21,7 +21,7 @@ Sistema de orquestacion multi-agente para Claude Code - Toolkit de automatizacio
 - **Pre-carga hibrida de standards** - 78% reduccion de tokens por invocacion
 - **Puertas de aprobacion** para operaciones T3
 - **Validacion de commits Git** con Conventional Commits
-- **505 tests** al 100% pasando
+- **669 tests** al 100% pasando
 
 ## Instalacion
 
@@ -81,7 +81,7 @@ node_modules/@jaguilar87/gaia-ops/
 ├── config/              # Configuracion y documentacion
 ├── templates/           # Templates de instalacion
 ├── speckit/             # Metodologia Spec-Kit
-└── tests/               # Suite de tests (505 tests)
+└── tests/               # Suite de tests (669 tests)
 ```
 
 ## API
@@ -101,7 +101,7 @@ Este paquete sigue [Versionamiento Semantico](https://semver.org/):
 - **MINOR:** Nuevas caracteristicas
 - **PATCH:** Correcciones de bugs
 
-Version actual: **3.7.0**
+Version actual: **3.8.0**
 
 Ver el historial de versiones en [npm](https://www.npmjs.com/package/@jaguilar87/gaia-ops).
 

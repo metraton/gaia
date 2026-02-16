@@ -4,14 +4,14 @@
 
 Suite de tests para validar el sistema de orquestacion de agentes Claude.
 
-## Metricas (2026-02-13)
+## Metricas (2026-02-16)
 
 | Metrica | Valor |
 |---------|-------|
-| **Total Tests** | 505 |
+| **Total Tests** | 669 |
 | **Pass Rate** | 100% |
-| **Tiempo** | ~0.9s |
-| **Archivos de test** | 15 |
+| **Tiempo** | ~1.2s |
+| **Archivos de test** | 18 |
 
 ## Estructura
 
@@ -20,12 +20,12 @@ tests/
 ├── fixtures/         # JSON fixtures (project-context AWS/GCP/full)
 ├── hooks/            # Tests de hooks y modulos de seguridad
 │   └── modules/
-│       ├── security/ # safe_commands, blocked_commands, tiers
+│       ├── security/ # safe_commands, blocked_commands, tiers, gitops_validator
 │       ├── tools/    # bash_validator, shell_parser, task_validator
 │       ├── core/     # config_loader, paths, state
-│       └── skills/   # (pendiente: skill_loader)
+│       └── skills/   # skill_loader
 ├── system/           # Tests de estructura, permisos, agentes, configuracion
-└── tools/            # Tests de context_provider
+└── tools/            # Tests de context_provider, episodic
 ```
 
 ## Ejecutar Tests
@@ -51,9 +51,12 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 | `test_blocked_commands.py` | 67 | Security |
 | `test_tiers.py` | 54 | Security |
 | `test_permissions_system.py` | 52 | System |
+| `test_episodic.py` | 46 | Tools |
+| `test_gitops_validator.py` | 42 | Security |
 | `test_task_validator.py` | 41 | Tools |
 | `test_shell_parser.py` | 39 | Tools |
 | `test_bash_validator.py` | 37 | Tools |
+| `test_skill_loader.py` | 36 | Skills |
 | `test_state.py` | 20 | Core |
 | `test_config_loader.py` | 18 | Core |
 | `test_paths.py` | 17 | Core |
@@ -66,9 +69,6 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 ## Cobertura Pendiente
 
 Modulos sin tests dedicados:
-- `hooks/modules/skills/skill_loader.py` (313 lineas)
-- `hooks/modules/security/gitops_validator.py`
-- `tools/memory/episodic.py`
 - `hooks/modules/audit/event_detector.py`, `logger.py`, `metrics.py`
 
 ## Dependencias
@@ -79,4 +79,4 @@ pip install pytest pytest-cov
 
 ---
 
-**Actualizado:** 2026-02-13 | **Tests:** 505
+**Actualizado:** 2026-02-16 | **Tests:** 669

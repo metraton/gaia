@@ -21,7 +21,7 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 - **Hybrid standards pre-loading** - 78% token reduction per invocation
 - **Approval gates** for T3 operations
 - **Git commit validation** with Conventional Commits
-- **505 tests** at 100% passing
+- **669 tests** at 100% passing
 
 ## Installation
 
@@ -81,7 +81,7 @@ node_modules/@jaguilar87/gaia-ops/
 ├── config/              # Configuration and documentation
 ├── templates/           # Installation templates
 ├── speckit/             # Spec-Kit methodology
-└── tests/               # Test suite (505 tests)
+└── tests/               # Test suite (669 tests)
 ```
 
 ## API
@@ -101,7 +101,7 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **3.7.0**
+Current version: **3.8.0**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
