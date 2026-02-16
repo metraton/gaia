@@ -229,8 +229,8 @@ Una vez instalado, tienes acceso a **documentación completa** en cada directori
 ```
 .claude/
 ├── agents/README.md              Sistema de 6 agentes especialistas
-├── commands/README.md            11 comandos slash disponibles
-├── config/README.md              17 archivos de configuración
+├── commands/README.md            7 comandos speckit disponibles
+├── config/README.md              3 archivos de configuración (+ 2 READMEs)
 ├── hooks/README.md               7 hooks de seguridad
 ├── tools/README.md               Herramientas de orquestación
 └── templates/README.md           Templates de instalación
@@ -274,7 +274,7 @@ ls -la .claude/
 cat CLAUDE.md
 
 # Ver project-context.json
-cat .claude/project-context.json
+cat .claude/project-context/project-context.json
 
 # Ajusta paths si es necesario
 ```
@@ -308,7 +308,7 @@ Cuando actualizas `@jaguilar87/gaia-ops`, estos archivos se **regeneran desde te
 |---------|----------------|-------------------|
 | `CLAUDE.md` | ⚠️ **Se sobrescribe** | Haz backup si personalizas |
 | `.claude/settings.json` | ⚠️ **Se sobrescribe** | Haz backup si personalizas |
-| `.claude/project-context.json` | ✅ **Se preserva** | Seguro |
+| `.claude/project-context/project-context.json` | ✅ **Se preserva** | Seguro |
 | `.claude/logs/` | ✅ **Se preserva** | Seguro |
 | Otros archivos en `.claude/` | ✅ **Auto-actualizados via symlinks** | Seguro |
 
@@ -487,10 +487,10 @@ Error parsing project-context.json
 **Solución:**
 ```bash
 # Validar JSON
-cat .claude/project-context.json | jq .
+cat .claude/project-context/project-context.json | jq .
 
 # Si es inválido, regenerar
-rm .claude/project-context.json
+rm .claude/project-context/project-context.json
 npx gaia-init
 ```
 
@@ -564,7 +564,7 @@ du -sh .claude/
 # Validar estructura
 test -L .claude/agents && echo "✅ Agents OK" || echo "❌ Agents missing"
 test -f CLAUDE.md && echo "✅ CLAUDE.md OK" || echo "❌ CLAUDE.md missing"
-test -f .claude/project-context.json && echo "✅ Context OK" || echo "❌ Context missing"
+test -f .claude/project-context/project-context.json && echo "✅ Context OK" || echo "❌ Context missing"
 ```
 
 ---

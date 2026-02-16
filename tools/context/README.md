@@ -106,6 +106,6 @@ python3 context_provider.py terraform-architect "Create a VPC" \
 
 ## See Also
 
-- `.claude/config/context-contracts.md` - Full contract specifications
+- `context_provider.py` (`load_provider_contracts`) - Contract loading logic
 - `tools/__init__.py` - Package re-exports
 - `tests/tools/test_context_provider.py` - Test suite

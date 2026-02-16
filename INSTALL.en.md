@@ -210,8 +210,8 @@ Once installed, you have access to **complete documentation** in each directory:
 ```
 .claude/
 ├── agents/README.md              6 specialist agents system
-├── commands/README.md            11 available slash commands
-├── config/README.md              17 configuration files
+├── commands/README.md            7 available speckit commands
+├── config/README.md              3 configuration files (+ 2 READMEs)
 ├── hooks/README.md               7 security hooks
 ├── tools/README.md               Orchestration tools
 └── templates/README.md           Installation templates
@@ -258,7 +258,7 @@ ls -la .claude/
 cat CLAUDE.md
 
 # View project-context.json
-cat .claude/project-context.json
+cat .claude/project-context/project-context.json
 ```
 
 ### 3. Start Claude Code
@@ -290,7 +290,7 @@ When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templ
 |------|----------|-------------------|
 | `CLAUDE.md` | ⚠️ **Overwritten** | Backup if you customize |
 | `.claude/settings.json` | ⚠️ **Overwritten** | Backup if you customize |
-| `.claude/project-context.json` | ✅ **Preserved** | Safe |
+| `.claude/project-context/project-context.json` | ✅ **Preserved** | Safe |
 | `.claude/logs/` | ✅ **Preserved** | Safe |
 | Other `.claude/` files | ✅ **Auto-updated via symlinks** | Safe |
 

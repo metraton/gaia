@@ -544,7 +544,7 @@ jq --version
 ### Internal Documentation
 
 - `.claude/README.md` - Complete agent system documentation
-- `.claude/project-context.json` - Project-specific context
+- `.claude/project-context/project-context.json` - Project-specific context
 - `CLAUDE.md` - Repository guidance for Claude Code
 - `spec-kit-tcm-plan/constitution.md` - Project principles
 

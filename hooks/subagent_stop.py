@@ -20,7 +20,6 @@ Architecture:
 Integration:
 - Executed automatically after agent tool completes
 - Integrates with memory/episodic.py for context enrichment
-- Session management (placeholder for future agent_session module)
 """
 
 import os
@@ -32,9 +31,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import hashlib
-
-# Agent session management — module not yet implemented
-AGENT_SESSION_AVAILABLE = False
 
 # Configure structured logging
 logging.basicConfig(

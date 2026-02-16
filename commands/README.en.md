@@ -28,29 +28,6 @@ Result to user
 
 ## Available Commands
 
-### Meta-Analysis Commands
-
-#### `/gaia`
-Invokes Gaia, the meta-agent that analyzes and optimizes the orchestration system.
-
-**When to use:**
-- Analyze system logs
-- Investigate routing problems
-- Optimize workflows
-- Improve documentation
-
-**Example:**
-```bash
-/gaia Analyze why routing failed in the last 10 requests
-```
-
-**Expected output:**
-- Detailed event analysis
-- Pattern identification
-- Improvement recommendations
-
----
-
 ### Spec-Kit Commands
 
 The Spec-Kit framework provides a structured workflow from idea -> implementation.
@@ -215,7 +192,6 @@ Commands validate arguments and give clear feedback if information is missing
 
 | Natural Language | Slash Command |
 |------------------|---------------|
-| "Analyze system logs" | `/gaia Analyze logs` |
 | "Create a spec for OAuth authentication" | `/speckit.specify auth-spec Add OAuth2` |
 
 **Advantages of slash commands:**

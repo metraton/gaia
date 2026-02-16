@@ -110,7 +110,7 @@ class LazyContextLoader:
             context_file: Path to project-context.json
             max_tokens: Maximum tokens to load initially
         """
-        self.context_file = context_file or Path(".claude/project-context.json")
+        self.context_file = context_file or Path(".claude/project-context/project-context.json")
         self.max_tokens = max_tokens
         self.loaded_sections: Dict[str, ContextSection] = {}
         self.usage_history: List[str] = []  # Track what gets used

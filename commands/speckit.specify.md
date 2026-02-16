@@ -78,7 +78,7 @@ Given those arguments, do this:
    **IMPORTANT** You must only ever run this script once. The JSON is provided in the terminal as output - always refer to it to get the actual content you're looking for.
 
 4. **Load project-context.json (MANDATORY)**:
-   Read `.claude/project-context.json` to auto-fill infrastructure placeholders.
+   Read `.claude/project-context/project-context.json` to auto-fill infrastructure placeholders.
 
    **If project-context.json EXISTS**:
    - Extract: `project_details.id`, `project_details.region`, `project_details.cluster_name`
