@@ -21,7 +21,7 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 - **Hybrid standards pre-loading** - 78% token reduction per invocation
 - **Approval gates** for T3 operations
 - **Git commit validation** with Conventional Commits
-- **359 tests** at 100% passing
+- **505 tests** at 100% passing
 
 ## Installation
 
@@ -81,7 +81,7 @@ node_modules/@jaguilar87/gaia-ops/
 ├── config/              # Configuration and documentation
 ├── templates/           # Installation templates
 ├── speckit/             # Spec-Kit methodology
-└── tests/               # Test suite (359 tests)
+└── tests/               # Test suite (505 tests)
 ```
 
 ## API
@@ -101,16 +101,16 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **3.0.0**
+Current version: **3.7.0**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
 ## Documentation
 
-- [config/agent-catalog.md](./config/agent-catalog.md) - System overview
-- [config/orchestration-workflow.md](./config/orchestration-workflow.md) - Orchestration workflow
-- [config/git-standards.md](./config/git-standards.md) - Git standards
-- [config/agent-catalog.md](./config/agent-catalog.md) - Context contracts
+- [config/](./config/) - Configuration (git standards, skill triggers, universal rules)
+- [agents/](./agents/) - Specialist agent definitions
+- [commands/](./commands/) - Slash commands (spec-kit)
+- [hooks/](./hooks/) - Hook system (security, validation)
 
 ## Requirements
 

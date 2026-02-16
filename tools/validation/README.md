@@ -237,7 +237,7 @@ Example entry:
 
 ## See Also
 
-- `.claude/config/git-standards.md` - Full git standards documentation
+- `.claude/config/git_standards.json` - Git standards configuration
 - `.claude/skills/workflow/approval/SKILL.md` - Approval workflow patterns
 - `.claude/skills/workflow/execution/SKILL.md` - Execution workflow patterns
 - `CLAUDE.md` - Orchestrator protocol with T3 workflow

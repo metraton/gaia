@@ -21,7 +21,7 @@ Sistema de orquestacion multi-agente para Claude Code - Toolkit de automatizacio
 - **Pre-carga hibrida de standards** - 78% reduccion de tokens por invocacion
 - **Puertas de aprobacion** para operaciones T3
 - **Validacion de commits Git** con Conventional Commits
-- **359 tests** al 100% pasando
+- **505 tests** al 100% pasando
 
 ## Instalacion
 
@@ -81,7 +81,7 @@ node_modules/@jaguilar87/gaia-ops/
 ├── config/              # Configuracion y documentacion
 ├── templates/           # Templates de instalacion
 ├── speckit/             # Metodologia Spec-Kit
-└── tests/               # Suite de tests (359 tests)
+└── tests/               # Suite de tests (505 tests)
 ```
 
 ## API
@@ -101,16 +101,16 @@ Este paquete sigue [Versionamiento Semantico](https://semver.org/):
 - **MINOR:** Nuevas caracteristicas
 - **PATCH:** Correcciones de bugs
 
-Version actual: **3.0.0**
+Version actual: **3.7.0**
 
 Ver el historial de versiones en [npm](https://www.npmjs.com/package/@jaguilar87/gaia-ops).
 
 ## Documentacion
 
-- [config/agent-catalog.md](./config/agent-catalog.md) - Vista general del sistema
-- [config/orchestration-workflow.md](./config/orchestration-workflow.md) - Workflow de orquestacion
-- [config/git-standards.md](./config/git-standards.md) - Estandares Git
-- [config/agent-catalog.md](./config/agent-catalog.md) - Contratos de contexto
+- [config/](./config/) - Configuracion (git standards, skill triggers, reglas universales)
+- [agents/](./agents/) - Definiciones de agentes especialistas
+- [commands/](./commands/) - Slash commands (spec-kit)
+- [hooks/](./hooks/) - Sistema de hooks (seguridad, validacion)
 
 ## Requisitos
 

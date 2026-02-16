@@ -21,7 +21,7 @@ Initialize Spec-Kit for a new feature or bootstrap the project configuration. Th
 
 ### 1. Validate project-context.json
 
-Check if `.claude/project-context.json` exists:
+Check if `.claude/project-context/project-context.json` exists:
 
 **If EXISTS**:
 - Read and validate structure
@@ -67,13 +67,13 @@ Example: tcm-gke-non-prod
 **Question 4: GitOps Repository Path**
 ```
 What is the ABSOLUTE path to your GitOps repository?
-Example: /home/jaguilar/aaxis/rnd/repositories/gitops
+Example: /path/to/your/gitops-repo
 ```
 
 **Question 5: Terraform Repository Path**
 ```
 What is the ABSOLUTE path to your Terraform repository?
-Example: /home/jaguilar/aaxis/rnd/repositories/terraform
+Example: /path/to/your/terraform-repo
 ```
 
 **Question 6: PostgreSQL Instance (Optional)**
@@ -128,7 +128,7 @@ After collecting answers, generate `project-context.json`:
 }
 ```
 
-Write file to `.claude/project-context.json` and report success.
+Write file to `.claude/project-context/project-context.json` and report success.
 
 ### 2. Feature Directory Bootstrap (Optional)
 
@@ -218,7 +218,7 @@ Fix the JSON syntax or delete the file to regenerate.
 
 **Permission issues**:
 ```
-❌ ERROR: Cannot write to .claude/project-context.json
+❌ ERROR: Cannot write to .claude/project-context/project-context.json
 Check directory permissions for .claude/
 ```
 

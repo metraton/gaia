@@ -97,7 +97,6 @@ class EpisodicMemory:
             # Try to find the best location
             candidates = [
                 Path(".claude/project-context/episodic-memory"),
-                Path("/home/jaguilar/aaxis/vtr/repositories/.claude/project-context/episodic-memory")
             ]
 
             # Use first existing or first candidate

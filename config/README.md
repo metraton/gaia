@@ -2,57 +2,19 @@
 
 **[English version](README.en.md)**
 
-Configuracion central y documentacion de referencia del sistema de orquestacion.
+Configuracion central del sistema de orquestacion.
 
 ## Proposito
 
-Define el comportamiento del sistema, estandares y contratos entre componentes. Proporciona la "fuente de verdad" para como debe operar el sistema.
+Define estandares de git, triggers de skills y reglas universales para el comportamiento del sistema.
 
-## Archivos Principales
-
-### Documentacion de Sistema
-
-| Archivo | Lineas | Proposito |
-|---------|--------|-----------|
-| `AGENTS.md` | ~95 | Overview del sistema de agentes |
-| `orchestration-workflow.md` | ~735 | Workflow Phase 0-6 |
-| `agent-catalog.md` | ~603 | Capacidades de cada agente |
-
-### Estandares y Convenciones
-
-| Archivo | Lineas | Proposito |
-|---------|--------|-----------|
-| `git-standards.md` | ~682 | Commits, branching, workflow |
-| `git_standards.json` | - | Version programatica |
-
-### Contratos de Contexto
+## Archivos
 
 | Archivo | Proposito |
 |---------|-----------|
-| `context-contracts.md` | Define contexto por agente |
-| `context-contracts.gcp.json` | Schema para GCP |
-| `context-contracts.aws.json` | Schema para AWS |
-
-### Reglas y Politicas
-
-| Archivo | Proposito |
-|---------|-----------|
-| `clarification_rules.json` | Motor de clarificacion (Phase 0) |
-| `delegation-matrix.md` | Decisiones de delegacion |
-
-### Machine Learning
-
-| Archivo | Proposito |
-|---------|-----------|
-| `embeddings_info.json` | Metadata de embeddings |
-| `intent_embeddings.json` | Vectores de intents |
-| `intent_embeddings.npy` | NumPy para carga rapida |
-
-### Metricas
-
-| Archivo | Proposito |
-|---------|-----------|
-| `metrics_targets.json` | Objetivos de performance |
+| `git_standards.json` | Estandares de commits (Conventional Commits), branching, validacion |
+| `skill-triggers.json` | Mapeo de triggers a skills para carga on-demand |
+| `universal-rules.json` | Reglas universales aplicables a todos los agentes |
 
 ## Uso
 
@@ -67,30 +29,19 @@ with open('.claude/config/git_standards.json') as f:
 ### Para Desarrolladores
 
 ```bash
-cat .claude/config/orchestration-workflow.md
-cat .claude/config/git-standards.md
+cat .claude/config/git_standards.json
+cat .claude/config/skill-triggers.json
 ```
 
 ## Estructura
 
 ```
 config/
-├── AGENTS.md
-├── orchestration-workflow.md
-├── agent-catalog.md
-├── git-standards.md
 ├── git_standards.json
-├── context-contracts.md
-├── context-contracts.gcp.json
-├── context-contracts.aws.json
-├── clarification_rules.json
-├── delegation-matrix.md
-├── embeddings_info.json
-├── intent_embeddings.json
-├── intent_embeddings.npy
-├── metrics_targets.json
-├── documentation-principles.md
-└── documentation-principles.en.md
+├── skill-triggers.json
+├── universal-rules.json
+├── README.md
+└── README.en.md
 ```
 
 ## Referencias
@@ -101,4 +52,4 @@ config/
 
 ---
 
-**Actualizado:** 2025-12-06 | **Archivos:** 17
+**Actualizado:** 2026-02-13 | **Archivos:** 3 (+ 2 READMEs)

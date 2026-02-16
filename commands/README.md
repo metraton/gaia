@@ -251,34 +251,35 @@ usage: Sintaxis de uso
 
 ```
 commands/
-├── gaia.md                  (~100 lineas)
-├── speckit.init.md          (~90 lineas)
-├── speckit.specify.md       (~120 lineas)
-├── speckit.plan.md          (~150 lineas)
-├── speckit.tasks.md         (~140 lineas)
-├── speckit.implement.md     (~180 lineas)
-├── speckit.add-task.md      (~70 lineas)
-└── speckit.analyze-task.md  (~85 lineas)
+├── speckit.init.md
+├── speckit.specify.md
+├── speckit.plan.md
+├── speckit.tasks.md
+├── speckit.implement.md
+├── speckit.add-task.md
+└── speckit.analyze-task.md
 ```
 
-**Total:** 8 comandos (1 meta + 7 speckit)
+**Total:** 7 comandos speckit
+
+> **Nota:** El meta-agente Gaia se invoca directamente via el agent `gaia` (ver [agents/gaia.md](../agents/gaia.md)), no como comando slash.
 
 ## Referencias
 
 **Documentacion relacionada:**
-- [Orchestration Workflow](../config/orchestration-workflow.md) - Como el orquestador procesa comandos
 - [Spec-Kit Framework](../speckit/README.md) - Detalles completos de Spec-Kit
 - [Gaia Agent](../agents/gaia.md) - El meta-agente
-- [Episodic Memory](../tools/4-memory/episodic.py) - Sistema de memoria de contexto
+- [Episodic Memory](../tools/memory/episodic.py) - Sistema de memoria de contexto
+- [Config](../config/) - Configuracion del sistema
 
 **Herramientas subyacentes:**
-- Task manager: `tools/5-task-management/task_manager.py`
-- Episodic memory: `tools/4-memory/episodic.py`
+- Context provider: `tools/context/context_provider.py`
+- Episodic memory: `tools/memory/episodic.py`
 - Spec-Kit scripts: `speckit/scripts/`
 
 ---
 
 **Version:** 2.0.0  
 **Ultima actualizacion:** 2025-12-06  
-**Total de comandos:** 8 (1 meta, 7 spec-kit)  
+**Total de comandos:** 7 spec-kit
 **Mantenido por:** Gaia (meta-agent)

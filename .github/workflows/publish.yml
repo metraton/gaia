@@ -26,8 +26,7 @@ jobs:
         run: npm ci
 
       - name: Run validation
-        run: npm run validate
-        continue-on-error: true
+        run: npm run pre-publish:validate
 
       - name: Clean build artifacts
         run: npm run clean

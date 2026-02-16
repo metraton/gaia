@@ -88,7 +88,7 @@ class TestIsSingleCommandSafe:
         "curl -X POST https://api.example.com/",  # POST method
         "curl --data '{\"key\":\"value\"}' url",  # Has --data
         "find . -delete",  # Has -delete
-        "find . -exec rm {} \;",  # Has -exec rm
+        r"find . -exec rm {} \;",  # Has -exec rm
     ])
     def test_conditional_unsafe_commands(self, command):
         """Test conditional commands with dangerous flags."""

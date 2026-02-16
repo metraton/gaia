@@ -20,7 +20,7 @@ Architecture:
 Integration:
 - Executed automatically after agent tool completes
 - Integrates with memory/episodic.py for context enrichment
-- Integrates with agent_session for session management
+- Session management (placeholder for future agent_session module)
 """
 
 import os
@@ -33,13 +33,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import hashlib
 
-# Agent session management
-try:
-    sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "memory"))
-    from agent_session import finalize_session as finalize_agent_session
-    AGENT_SESSION_AVAILABLE = True
-except ImportError:
-    AGENT_SESSION_AVAILABLE = False
+# Agent session management — module not yet implemented
+AGENT_SESSION_AVAILABLE = False
 
 # Configure structured logging
 logging.basicConfig(
@@ -366,8 +361,7 @@ def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
         # Find memory module
         candidates = [
             Path(__file__).parent.parent / "tools" / "memory" / "episodic.py",
-            Path("/home/jaguilar/aaxis/vtr/repositories/gaia-ops/tools/memory/episodic.py"),
-            Path("/home/jaguilar/aaxis/vtr/repositories/node_modules/@jaguilar87/gaia-ops/tools/memory/episodic.py")
+            Path(".claude/tools/memory/episodic.py"),
         ]
         
         episodic_module = None
@@ -476,25 +470,6 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         # Step 3: Capture as episodic memory
         episode_id = capture_episodic_memory(workflow_metrics)
         
-        # Step 4: Finalize agent session if agent_id is provided
-        if AGENT_SESSION_AVAILABLE and task_info.get('agent_id'):
-            try:
-                # Determine outcome from metrics
-                outcome = "completed" if workflow_metrics.get("exit_code", 0) == 0 else "failed"
-                
-                success_finalize = finalize_agent_session(
-                    agent_id=task_info['agent_id'],
-                    outcome=outcome,
-                    summary=f"Agent {task_info.get('agent', 'unknown')} finished with exit code {workflow_metrics.get('exit_code', 0)}"
-                )
-                
-                if success_finalize:
-                    logger.info(f"Finalized agent session: {task_info['agent_id']} (outcome: {outcome})")
-                else:
-                    logger.warning(f"Could not finalize agent session: {task_info['agent_id']}")
-            except Exception as e:
-                logger.warning(f"Error finalizing agent session: {e}")
-
         return {
             "success": True,
             "session_id": session_id,

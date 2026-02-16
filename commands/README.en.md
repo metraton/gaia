@@ -251,34 +251,35 @@ usage: Usage syntax
 
 ```
 commands/
-├── gaia.md                  (~100 lines)
-├── speckit.init.md          (~90 lines)
-├── speckit.specify.md       (~120 lines)
-├── speckit.plan.md          (~150 lines)
-├── speckit.tasks.md         (~140 lines)
-├── speckit.implement.md     (~180 lines)
-├── speckit.add-task.md      (~70 lines)
-└── speckit.analyze-task.md  (~85 lines)
+├── speckit.init.md
+├── speckit.specify.md
+├── speckit.plan.md
+├── speckit.tasks.md
+├── speckit.implement.md
+├── speckit.add-task.md
+└── speckit.analyze-task.md
 ```
 
-**Total:** 8 commands (1 meta + 7 spec-kit)
+**Total:** 7 speckit commands
+
+> **Note:** The Gaia meta-agent is invoked directly via the `gaia` agent (see [agents/gaia.md](../agents/gaia.md)), not as a slash command.
 
 ## References
 
 **Related documentation:**
-- [Orchestration Workflow](../config/orchestration-workflow.md) - How the orchestrator processes commands
 - [Spec-Kit Framework](../speckit/README.md) - Complete Spec-Kit details
 - [Gaia Agent](../agents/gaia.md) - The meta-agent
-- [Episodic Memory](../tools/4-memory/episodic.py) - Context memory system
+- [Episodic Memory](../tools/memory/episodic.py) - Context memory system
+- [Config](../config/) - System configuration
 
 **Underlying tools:**
-- Task manager: `tools/5-task-management/task_manager.py`
-- Episodic memory: `tools/4-memory/episodic.py`
+- Context provider: `tools/context/context_provider.py`
+- Episodic memory: `tools/memory/episodic.py`
 - Spec-Kit scripts: `speckit/scripts/`
 
 ---
 
 **Version:** 2.0.0  
 **Last updated:** 2025-12-06  
-**Total commands:** 8 (1 meta, 7 spec-kit)  
+**Total commands:** 7 spec-kit
 **Maintained by:** Gaia (meta-agent)

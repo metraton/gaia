@@ -15,28 +15,18 @@ Proporcionan una base consistente para archivos de configuracion, permitiendo pe
         |
 Lee template/
         |
-Reemplaza placeholders
+Copia estatica (CLAUDE.md) o merge (settings.json)
         |
 Genera archivo final
 ```
 
 ## Templates Disponibles
 
-### CLAUDE.template.md (~200 lineas)
+### CLAUDE.template.md (~260 lineas)
 
-Template principal para generar el archivo del orquestador.
+Template estatico para el archivo del orquestador. Se copia tal cual por `gaia-init` y `gaia-update` — no tiene placeholders de interpolacion.
 
-**Placeholders:**
-```
-{{GITOPS_PATH}}        - Path GitOps
-{{TERRAFORM_PATH}}     - Path Terraform
-{{APP_SERVICES_PATH}}  - Path app services
-{{GCP_PROJECT_ID}}     - ID proyecto GCP
-{{GCP_REGION}}         - Region GCP
-{{CLUSTER_NAME}}       - Nombre cluster
-{{AWS_ACCOUNT_ID}}     - ID cuenta AWS
-{{AWS_REGION}}         - Region AWS
-```
+Contiene: routing table, security tiers, T3 protocol, communication style, hook enforcement, system paths.
 
 **Salida:** `./CLAUDE.md`
 
@@ -71,17 +61,11 @@ node node_modules/@jaguilar87/gaia-ops/bin/gaia-update.js
 npx gaia-init --force
 ```
 
-## Versionamiento
-
-- **MAJOR:** Cambios incompatibles en placeholders
-- **MINOR:** Nuevos placeholders opcionales
-- **PATCH:** Correcciones de texto
-
 ## Referencias
 
-- [bin/](../bin/README.md) - Scripts de instalacion
-- [INSTALL.md](../INSTALL.md) - Guia de instalacion
+- `bin/gaia-init.js` - Instalador
+- `bin/gaia-update.js` - Actualizador
 
 ---
 
-**Actualizado:** 2025-12-06 | **Templates:** 2
+**Actualizado:** 2026-02-13 | **Templates:** 2

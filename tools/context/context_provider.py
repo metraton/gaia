@@ -360,7 +360,7 @@ def resolve_path(relative_path: str, project_root: Optional[Path] = None) -> Pat
     return (project_root / path).resolve()
 
 
-def validate_project_paths(project_context: Dict[str, Any], auto_create: bool = True) -> List[str]:
+def validate_project_paths(project_context: Dict[str, Any], auto_create: bool = False) -> List[str]:
     """Validates that all critical paths in project-context.json exist."""
     warnings = []
     project_root = get_project_root()
@@ -461,7 +461,6 @@ def load_relevant_episodes(user_task: str, max_episodes: int = 2) -> Dict[str, A
     try:
         memory_paths = [
             Path(".claude/project-context/episodic-memory"),
-            Path("/home/jaguilar/aaxis/vtr/repositories/.claude/project-context/episodic-memory")
         ]
 
         index_file = None
@@ -574,7 +573,7 @@ def main():
     provider_contracts = load_provider_contracts(cloud_provider)
 
     # Validate paths
-    validate_project_paths(project_context, auto_create=True)
+    validate_project_paths(project_context)
 
     # Analyze query for context level (Progressive Disclosure)
     query_analysis = analyze_query_for_context_level(args.user_task)

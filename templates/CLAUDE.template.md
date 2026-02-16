@@ -13,11 +13,10 @@ jq '{
   project: .metadata.project_name,
   cloud: .metadata.cloud_provider,
   region: .metadata.primary_region,
-  clusters: (.sections.infrastructure_topology.clusters | keys),
-  namespaces: ([.sections.infrastructure_topology.clusters[].primary_namespaces[]] | unique),
-  services: [.sections.application_architecture.active_services[].name],
-  terraform_base: .sections.terraform_infrastructure.config.base_path,
-  gitops_repos: [.sections.gitops_configuration.active_repositories[].name]
+  cluster: .sections.project_details.cluster_name,
+  terraform_base: .sections.terraform_infrastructure.layout.base_path,
+  gitops_repo: .sections.gitops_configuration.repository.path,
+  app_services: .sections.application_services.base_path
 }' .claude/project-context/project-context.json
 ```
 

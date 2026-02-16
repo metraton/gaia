@@ -238,20 +238,6 @@ Una vez instalado, tienes acceso a **documentación completa** en cada directori
 
 **Todos con versión en inglés:** `.../README.en.md`
 
-### Documentación Especial
-
-- **Principios de Documentación:** `.claude/config/documentation-principles.md`
-  - Cómo está escrita toda la documentación
-  - Estándares para crear nuevos docs
-  
-- **Orchestration Workflow:** `.claude/config/orchestration-workflow.md`
-  - Flujo completo Phase 0-6
-  - Cómo funciona el sistema
-  
-- **Agent Catalog:** `.claude/config/agent-catalog.md`
-  - Capacidades de cada agente
-  - Cuándo usar cada uno
-
 ### ¿Cómo Navegar la Documentación?
 
 ```bash
@@ -263,9 +249,6 @@ cat .claude/commands/README.md
 
 # Ver configuración del sistema
 cat .claude/config/README.md
-
-# Ver workflow completo
-cat .claude/config/orchestration-workflow.md
 ```
 
 ---

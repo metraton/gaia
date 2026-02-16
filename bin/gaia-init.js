@@ -28,7 +28,7 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join, relative, resolve, isAbsolute } from 'path';
+import { basename, dirname, join, relative, resolve, isAbsolute } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { exec } from 'child_process';
@@ -112,7 +112,7 @@ async function scanDirectories() {
 
 /**
  * Detect cloud provider, project ID, and region from terraform files.
- * Scans terraform/**/*.tf for provider blocks.
+ * Scans terraform/**\/*.tf and *.hcl for provider blocks.
  */
 async function scanCloudProvider() {
   const result = { provider: null, projectId: null, region: null };
@@ -131,13 +131,15 @@ async function scanCloudProvider() {
 
   if (!tfDir) return result;
 
-  // Recursively find .tf files (max 3 levels deep to avoid huge scans)
+  // Recursively find .tf and .hcl files (max 3 levels deep to avoid huge scans)
   const tfFiles = await findFiles(tfDir, '.tf', 3);
+  const hclFiles = await findFiles(tfDir, '.hcl', 3);
+  const allFiles = [...tfFiles, ...hclFiles];
 
   let hasGoogle = false;
   let hasAws = false;
 
-  for (const file of tfFiles) {
+  for (const file of allFiles) {
     try {
       const content = await fs.readFile(file, 'utf-8');
 
@@ -145,21 +147,30 @@ async function scanCloudProvider() {
       if (/provider\s+"google(?:-beta)?"/.test(content)) hasGoogle = true;
       if (/provider\s+"aws"/.test(content)) hasAws = true;
 
-      // Extract GCP project ID
+      // Extract GCP project ID — scoped to provider block context
       if (!result.projectId && hasGoogle) {
-        const projectMatch = content.match(/project\s*=\s*"([^"]+)"/);
-        if (projectMatch) result.projectId = projectMatch[1];
+        const providerBlock = extractProviderBlock(content, 'google');
+        if (providerBlock) {
+          const projectMatch = providerBlock.match(/project\s*=\s*"([^"]+)"/);
+          if (projectMatch) result.projectId = projectMatch[1];
+        }
       }
 
-      // Extract AWS account (from provider or data source)
+      // Extract AWS account (from provider block or data.aws_caller_identity)
       if (!result.projectId && hasAws) {
-        const accountMatch = content.match(/account_id\s*=\s*"(\d{12})"/);
-        if (accountMatch) result.projectId = accountMatch[1];
+        const providerBlock = extractProviderBlock(content, 'aws');
+        if (providerBlock) {
+          const accountMatch = providerBlock.match(/account_id\s*=\s*"(\d{12})"/);
+          if (accountMatch) result.projectId = accountMatch[1];
+        }
       }
 
-      // Extract region
+      // Extract region — scoped to provider block, supports multi-segment regions (us-gov-west-1)
       if (!result.region) {
-        const regionMatch = content.match(/region\s*=\s*"([a-z]+-[a-z]+-?\d*)"/);
+        const providerName = hasGoogle ? 'google' : (hasAws ? 'aws' : null);
+        const providerBlock = providerName ? extractProviderBlock(content, providerName) : null;
+        const source = providerBlock || content;
+        const regionMatch = source.match(/region\s*=\s*"([a-z]+-[a-z0-9]+(?:-[a-z0-9]+)*)"/);
         if (regionMatch) result.region = regionMatch[1];
       }
     } catch {
@@ -172,6 +183,27 @@ async function scanCloudProvider() {
   else if (hasAws) result.provider = 'aws';
 
   return result;
+}
+
+/**
+ * Extract the content of a provider block from HCL/TF content.
+ * Handles nested braces to find the correct closing brace.
+ */
+function extractProviderBlock(content, providerName) {
+  const pattern = new RegExp(`provider\\s+"${providerName}(?:-beta)?"\\s*\\{`);
+  const match = content.match(pattern);
+  if (!match) return null;
+
+  let depth = 1;
+  let start = match.index + match[0].length;
+
+  for (let i = start; i < content.length && depth > 0; i++) {
+    if (content[i] === '{') depth++;
+    else if (content[i] === '}') depth--;
+    if (depth === 0) return content.slice(start, i);
+  }
+
+  return null;
 }
 
 /**
@@ -589,6 +621,7 @@ async function generateProjectContext(config) {
     const metadata = {
       version: '1.0',
       last_updated: new Date().toISOString(),
+      project_name: config.projectName || basename(CWD),
       project_root: '.',
       created_by: 'gaia-init',
       cloud_provider: config.cloudProvider,

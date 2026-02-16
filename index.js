@@ -7,7 +7,7 @@
  *   import { getAgentPath, getToolPath, getConfigPath } from '@jaguilar87/gaia-ops';
  *   const agentPath = getAgentPath('gitops-operator');
  *   const toolPath = getToolPath('context_provider.py');
- *   const configPath = getConfigPath('orchestration-workflow.md');
+ *   const configPath = getConfigPath('git_standards.json');
  */
 
 import { fileURLToPath } from 'url';

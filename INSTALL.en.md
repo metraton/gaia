@@ -221,9 +221,7 @@ Once installed, you have access to **complete documentation** in each directory:
 
 ### Special Documentation
 
-- **Documentation Principles:** `.claude/config/documentation-principles.md`
-- **Orchestration Workflow:** `.claude/config/orchestration-workflow.md`
-- **Agent Catalog:** `.claude/config/agent-catalog.md`
+- **Config:** `.claude/config/` - Git standards, skill triggers, universal rules
 
 ### How to Navigate Documentation?
 

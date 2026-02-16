@@ -4,23 +4,28 @@
 
 Test suite to validate the Claude agent orchestration system.
 
-## Metrics (2025-12-06)
+## Metrics (2026-02-13)
 
 | Metric | Value |
 |--------|-------|
-| **Total Tests** | 359 |
+| **Total Tests** | 505 |
 | **Pass Rate** | 100% |
-| **Time** | ~2.2s |
-| **Routing Accuracy** | 92.7% |
+| **Time** | ~0.9s |
+| **Test Files** | 15 |
 
 ## Structure
 
 ```
 tests/
-├── system/           # Structure and integrity tests
-├── tools/            # Routing and context tests
-├── validators/       # Approval and commit tests
-└── integration/      # End-to-end hook tests
+├── fixtures/         # JSON fixtures (project-context AWS/GCP/full)
+├── hooks/            # Hook and security module tests
+│   └── modules/
+│       ├── security/ # safe_commands, blocked_commands, tiers
+│       ├── tools/    # bash_validator, shell_parser, task_validator
+│       ├── core/     # config_loader, paths, state
+│       └── skills/   # (pending: skill_loader)
+├── system/           # Structure, permissions, agents, configuration, schema compat
+└── tools/            # context_provider tests
 ```
 
 ## Running Tests
@@ -31,34 +36,40 @@ python3 -m pytest tests/ -v
 
 # By category
 python3 -m pytest tests/system/ -v
+python3 -m pytest tests/hooks/ -v
 python3 -m pytest tests/tools/ -v
-python3 -m pytest tests/validators/ -v
-python3 -m pytest tests/integration/ -v
 
 # With coverage
-python3 -m pytest tests/ --cov=.claude/tools --cov-report=term
+python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 ```
 
-## Test Categories
+## Tests by File
 
-### system/ (~10 tests)
-- Directory structure
-- Agent definitions
-- Configuration files
+| File | Tests | Category |
+|------|-------|----------|
+| `test_safe_commands.py` | 111 | Security |
+| `test_blocked_commands.py` | 67 | Security |
+| `test_tiers.py` | 54 | Security |
+| `test_permissions_system.py` | 52 | System |
+| `test_task_validator.py` | 41 | Tools |
+| `test_shell_parser.py` | 39 | Tools |
+| `test_bash_validator.py` | 37 | Tools |
+| `test_state.py` | 20 | Core |
+| `test_config_loader.py` | 18 | Core |
+| `test_paths.py` | 17 | Core |
+| `test_directory_structure.py` | 14 | System |
+| `test_context_provider.py` | 11 | Tools |
+| `test_agent_definitions.py` | 11 | System |
+| `test_configuration_files.py` | 9 | System |
+| `test_schema_compatibility.py` | 4 | System |
 
-### tools/ (~15 tests)
-- Agent router (semantic routing)
-- Context provider (context generation)
+## Pending Coverage
 
-### validators/ (~10 tests)
-- Approval gate (approval workflow)
-- Commit validator (Conventional Commits)
-
-### integration/ (~74 tests)
-- Pre/post hook validation
-- PolicyEngine command classification
-- GitOps security
-- Settings permission matching
+Modules without dedicated tests:
+- `hooks/modules/skills/skill_loader.py` (313 lines)
+- `hooks/modules/security/gitops_validator.py`
+- `tools/memory/episodic.py`
+- `hooks/modules/audit/event_detector.py`, `logger.py`, `metrics.py`
 
 ## Dependencies
 
@@ -66,17 +77,6 @@ python3 -m pytest tests/ --cov=.claude/tools --cov-report=term
 pip install pytest pytest-cov
 ```
 
-## Routing Golden Set
-
-Accuracy test evaluates 26 semantic requests:
-
-| Agent | Accuracy |
-|-------|----------|
-| terraform-architect | 95% |
-| gitops-operator | 93% |
-| cloud-troubleshooter | 90% |
-| devops-developer | 92% |
-
 ---
 
-**Updated:** 2025-12-06 | **Tests:** 359
+**Updated:** 2026-02-13 | **Tests:** 505
