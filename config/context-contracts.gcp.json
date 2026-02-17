@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "provider": "gcp",
+  "agents": {
+    "cloud-troubleshooter": {
+      "read": ["project_details", "cluster_details", "infrastructure_topology",
+               "terraform_infrastructure", "gitops_configuration",
+               "application_services", "monitoring_observability"],
+      "write": ["cluster_details", "infrastructure_topology"]
+    },
+    "gitops-operator": {
+      "read": ["project_details", "gitops_configuration", "cluster_details",
+               "operational_guidelines"],
+      "write": ["gitops_configuration", "cluster_details"]
+    },
+    "terraform-architect": {
+      "read": ["project_details", "terraform_infrastructure",
+               "infrastructure_topology", "operational_guidelines"],
+      "write": ["terraform_infrastructure", "infrastructure_topology"]
+    },
+    "devops-developer": {
+      "read": ["project_details", "application_services",
+               "application_architecture", "development_standards",
+               "operational_guidelines"],
+      "write": ["application_services"]
+    }
+  }
+}

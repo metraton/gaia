@@ -437,6 +437,11 @@ def extract_and_store_discoveries(
     """
     Extract structural discoveries from agent output and store as pending updates.
 
+    .. deprecated:: 002-progressive-context-enrichment
+        Replaced by ``_process_context_updates()`` (Step 5). Agents now emit
+        CONTEXT_UPDATE blocks processed by context_writer. This function will
+        be removed in a future release.
+
     Only processes agents in PROJECT_AGENTS list. Failures are logged but never
     propagated — this function must NEVER break the existing subagent_stop flow.
 
@@ -526,6 +531,78 @@ def extract_and_store_discoveries(
         return []
 
 
+def _process_context_updates(agent_output: str, task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Process CONTEXT_UPDATE blocks from agent output via context_writer.
+
+    Loads the context_writer module dynamically and calls process_agent_output()
+    to apply progressive enrichment to project-context.json.
+
+    This function MUST NOT break the existing hook flow -- all errors are caught
+    and logged, returning None on failure.
+
+    Args:
+        agent_output: Complete output from agent execution
+        task_info: Task metadata (agent, description, task_id)
+
+    Returns:
+        Result dict from context_writer.process_agent_output, or None on error
+    """
+    try:
+        import importlib.util
+
+        # Load context_writer module
+        writer_path = Path(__file__).parent / "modules" / "context" / "context_writer.py"
+        if not writer_path.exists():
+            logger.debug("context_writer module not found, skipping context updates")
+            return None
+
+        spec = importlib.util.spec_from_file_location("context_writer", writer_path)
+        if not spec or not spec.loader:
+            return None
+        writer_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(writer_mod)
+
+        # Find project-context.json via _find_claude_dir
+        claude_dir = _find_claude_dir()
+        context_path = claude_dir / "project-context" / "project-context.json"
+
+        if not context_path.exists():
+            logger.debug("project-context.json not found at %s, skipping context updates", context_path)
+            return None
+
+        # Determine config_dir (sibling to .claude at repo root)
+        repo_root = claude_dir.parent
+        config_dir = repo_root / "config"
+
+        # Build task_info dict for context_writer
+        agent_type = task_info.get("agent", "unknown")
+        task_info_for_writer = {
+            "agent_type": agent_type,
+            "context_path": str(context_path),
+            "config_dir": str(config_dir),
+        }
+
+        result = writer_mod.process_agent_output(agent_output, task_info_for_writer)
+
+        if result and result.get("updated"):
+            logger.info(
+                "Context updated by %s: sections=%s",
+                agent_type, result.get("sections_updated", []),
+            )
+        if result and result.get("rejected"):
+            logger.debug(
+                "Context sections rejected for %s: %s",
+                agent_type, result.get("rejected", []),
+            )
+
+        return result
+
+    except Exception as e:
+        logger.debug("Context update processing failed (non-fatal): %s", e)
+        return None
+
+
 def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str, Any]:
     """
     Main subagent stop hook - captures metrics, detects anomalies, stores episodes.
@@ -561,8 +638,12 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         # Step 3: Capture as episodic memory
         episode_id = capture_episodic_memory(workflow_metrics)
 
-        # Step 4: Extract and store structural discoveries (never blocks)
+        # Step 4: Extract and store structural discoveries (DEPRECATED — replaced by Step 5)
+        # Kept for backward compatibility; will be removed in a future release.
         discovery_ids = extract_and_store_discoveries(agent_output, task_info, episode_id)
+
+        # Step 5: Process context updates (progressive enrichment)
+        context_update_result = _process_context_updates(agent_output, task_info)
 
         return {
             "success": True,
@@ -572,6 +653,7 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             "anomalies_detected": len(anomalies) if anomalies else 0,
             "episode_id": episode_id,
             "discoveries": len(discovery_ids),
+            "context_updated": context_update_result.get("updated", False) if context_update_result else False,
         }
 
     except Exception as e:

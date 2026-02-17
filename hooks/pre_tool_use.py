@@ -284,14 +284,7 @@ def _inject_project_context(parameters: dict) -> dict:
 
 {json.dumps(context_payload, indent=2)}
 
-{skills_content}{pending_warning}# Discovery Protocol
-When you find resources (namespaces, services, endpoints, configurations) that are NOT listed in the Project Context above, explicitly report the difference using phrases like:
-- "Found namespace 'X' exists but not in project context"
-- "Discovered new service 'Y' running in namespace 'Z'"
-- "Drift detected: actual value is 'A' but context says 'B'"
-This helps keep the project context up to date.
-
----
+{skills_content}{pending_warning}---
 
 # User Task
 

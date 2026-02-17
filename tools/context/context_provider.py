@@ -164,7 +164,6 @@ def _get_agent_primary_sections(agent_name: str) -> List[str]:
         "terraform-architect": ["terraform_infrastructure"],
         "gitops-operator": ["gitops_configuration", "cluster_details"],
         "cloud-troubleshooter": ["terraform_infrastructure", "gitops_configuration"],
-        "cloud-troubleshooter": ["terraform_infrastructure", "gitops_configuration"],
         "devops-developer": ["application_architecture", "development_standards"],
         "speckit-planner": ["application_architecture"]
     }
@@ -210,14 +209,6 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
         "infrastructure_topology",
         "cluster_details",
         "operational_guidelines",
-    ],
-    "cloud-troubleshooter": [
-        "project_details",
-        "infrastructure_topology",
-        "terraform_infrastructure",
-        "gitops_configuration",
-        "application_services",
-        "monitoring_observability",
     ],
     "cloud-troubleshooter": [
         "project_details",
@@ -309,7 +300,15 @@ def detect_cloud_provider(project_context: Dict[str, Any]) -> str:
 
 
 def load_provider_contracts(cloud_provider: str, contracts_dir: Path = DEFAULT_CONTRACTS_DIR) -> Dict[str, Any]:
-    """Loads provider-specific context contracts from JSON file."""
+    """
+    Loads provider-specific context contracts from JSON file.
+
+    The contract JSON files use 'read' and 'write' keys per agent.
+    This function extracts the 'read' lists and normalizes them into
+    the 'required' key that get_contract_context() expects.
+
+    Falls back to LEGACY_AGENT_CONTRACTS if the contract file is missing.
+    """
     contract_file = contracts_dir / f"context-contracts.{cloud_provider}.json"
 
     if not contract_file.is_file():
@@ -320,7 +319,20 @@ def load_provider_contracts(cloud_provider: str, contracts_dir: Path = DEFAULT_C
         with open(contract_file, 'r', encoding='utf-8') as f:
             contracts = json.load(f)
             print(f"Loaded {cloud_provider.upper()} contracts from {contract_file}", file=sys.stderr)
-            return contracts
+
+        # Normalize: extract 'read' lists into 'required' for get_contract_context()
+        normalized = {
+            "version": contracts.get("version", "unknown"),
+            "provider": contracts.get("provider", cloud_provider),
+            "agents": {}
+        }
+
+        for agent_name, agent_contract in contracts.get("agents", {}).items():
+            normalized["agents"][agent_name] = {
+                "required": agent_contract.get("read", [])
+            }
+
+        return normalized
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in {contract_file}: {e}", file=sys.stderr)
         sys.exit(1)

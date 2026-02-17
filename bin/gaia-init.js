@@ -699,6 +699,27 @@ async function generateProjectContext(config) {
       }
     };
 
+    // Enrich sections from contract file (progressive context enrichment)
+    try {
+      const provider = config.cloudProvider === 'multi-cloud' ? 'gcp' : config.cloudProvider;
+      const contractPath = join(PACKAGE_ROOT, 'config', `context-contracts.${provider}.json`);
+      if (existsSync(contractPath)) {
+        const contracts = JSON.parse(await fs.readFile(contractPath, 'utf-8'));
+        const contractSections = new Set();
+        for (const agent of Object.values(contracts.agents || {})) {
+          for (const s of (agent.read || [])) contractSections.add(s);
+          for (const s of (agent.write || [])) contractSections.add(s);
+        }
+        for (const section of contractSections) {
+          if (!projectContext.sections[section]) {
+            projectContext.sections[section] = {};
+          }
+        }
+      }
+    } catch (err) {
+      // Fall back to hardcoded sections — contract file not required
+    }
+
     const destPath = join(CWD, '.claude', 'project-context', 'project-context.json');
     await fs.writeFile(destPath, JSON.stringify(projectContext, null, 2), 'utf-8');
 

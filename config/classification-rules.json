@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "description": "Rules for classifying agent output as structural vs operational discoveries",
+  "description": "DEPRECATED (002-progressive-context-enrichment): Replaced by context-contracts.{provider}.json and context_writer module. This file is retained for backward compatibility only.",
   "rules": [
     {
       "id": "rule_new_namespace",

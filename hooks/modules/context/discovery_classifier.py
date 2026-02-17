@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Discovery Classifier Module
+Discovery Classifier Module (DEPRECATED)
+
+.. deprecated:: 002-progressive-context-enrichment
+    Replaced by context_writer module. Agents now use CONTEXT_UPDATE blocks
+    instead of passive discovery classification. See context_writer.py.
 
 Classifies agent output to detect structural infrastructure discoveries.
 
@@ -38,10 +42,18 @@ import json
 import re
 import logging
 import hashlib
+import warnings
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
+
+warnings.warn(
+    "DiscoveryClassifier is deprecated. Use context_writer "
+    "(002-progressive-context-enrichment).",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 logger = logging.getLogger(__name__)
 

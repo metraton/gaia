@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "provider": "aws",
+  "agents": {
+    "cloud-troubleshooter": {
+      "read": ["project_details", "cluster_details", "infrastructure_topology",
+               "terraform_infrastructure", "gitops_configuration",
+               "application_services", "monitoring_observability",
+               "vpc_mapping", "load_balancers"],
+      "write": ["cluster_details", "infrastructure_topology", "vpc_mapping"]
+    },
+    "gitops-operator": {
+      "read": ["project_details", "gitops_configuration", "cluster_details",
+               "operational_guidelines"],
+      "write": ["gitops_configuration", "cluster_details"]
+    },
+    "terraform-architect": {
+      "read": ["project_details", "terraform_infrastructure",
+               "infrastructure_topology", "operational_guidelines",
+               "vpc_mapping", "load_balancers", "api_gateway"],
+      "write": ["terraform_infrastructure", "infrastructure_topology",
+                "vpc_mapping", "load_balancers", "api_gateway"]
+    },
+    "devops-developer": {
+      "read": ["project_details", "application_services",
+               "application_architecture", "development_standards",
+               "operational_guidelines"],
+      "write": ["application_services"]
+    }
+  }
+}
