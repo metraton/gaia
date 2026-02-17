@@ -561,7 +561,7 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
     return None
 
 
-def _handle_task(tool_name: str, parameters: dict) -> str | None:
+def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     """
     Handle Task tool validation with resume support.
 
@@ -569,10 +569,12 @@ def _handle_task(tool_name: str, parameters: dict) -> str | None:
     Resume operations skip heavy validations since agent was already validated.
 
     NEW: Automatically injects project context for project agents.
+    Returns updatedInput when prompt is modified so Claude Code applies changes.
     """
     # ========================================================================
     # PROJECT CONTEXT INJECTION (for new tasks only, not resume)
     # ========================================================================
+    original_prompt = parameters.get("prompt", "")
     if not parameters.get("resume"):
         parameters = _inject_project_context(parameters)
         parameters = _inject_session_events(parameters)
@@ -651,6 +653,20 @@ def _handle_task(tool_name: str, parameters: dict) -> str | None:
     save_hook_state(state)
 
     logger.info(f"ALLOWED Task: {result.agent_name}")
+
+    # Return updatedInput if prompt was modified by context/skills injection
+    if parameters.get("prompt", "") != original_prompt:
+        updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
+        logger.info(f"Returning updatedInput for {result.agent_name} (prompt enriched)")
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": f"Context and skills injected for {result.agent_name}",
+                "updatedInput": updated_input
+            }
+        }
+
     return None
 
 
