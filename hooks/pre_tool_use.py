@@ -152,6 +152,75 @@ def _load_agent_skills(subagent_type: str) -> str:
     return "\n\n---\n\n".join(parts) if parts else ""
 
 
+def _build_context_update_reminder(subagent_type: str) -> str:
+    """
+    Check which writable sections are empty and build a reminder.
+
+    Reads the context contracts to find writable sections for this agent,
+    then checks project-context.json to see which are empty.
+
+    Returns:
+        Reminder string or empty string if no empty sections.
+    """
+    if subagent_type not in PROJECT_AGENTS:
+        return ""
+
+    # Load contracts to find writable sections
+    contracts_paths = [
+        Path(".claude/config/context-contracts.gcp.json"),
+        Path(".claude/config/context-contracts.aws.json"),
+        Path(__file__).parent.parent / "config" / "context-contracts.gcp.json",
+        Path(__file__).parent.parent / "config" / "context-contracts.aws.json",
+    ]
+
+    writable = []
+    for cp in contracts_paths:
+        if cp.exists():
+            try:
+                data = json.loads(cp.read_text())
+                agent_perms = data.get("agents", {}).get(subagent_type, {})
+                writable = agent_perms.get("write", [])
+                if writable:
+                    break
+            except Exception:
+                continue
+
+    if not writable:
+        return ""
+
+    # Load project-context.json to find empty sections
+    pc_paths = [
+        Path(".claude/project-context/project-context.json"),
+        Path("project-context.json"),
+    ]
+
+    sections = {}
+    for pp in pc_paths:
+        if pp.exists():
+            try:
+                pc = json.loads(pp.read_text())
+                sections = pc.get("sections", {})
+                break
+            except Exception:
+                continue
+
+    # Find empty writable sections
+    empty = []
+    for section_name in writable:
+        section_data = sections.get(section_name, {})
+        if not section_data or section_data == {}:
+            empty.append(section_name)
+
+    if not empty:
+        return ""
+
+    empty_list = ", ".join(f"`{s}`" for s in empty)
+    return (
+        f"\n**CONTEXT_UPDATE REQUIRED:** Your writable sections {empty_list} "
+        f"are currently EMPTY. After completing your task, you MUST emit a "
+        f"CONTEXT_UPDATE block with any data you discovered. "
+        f"See \"Context Updater Protocol\" above for the format.\n\n"
+    )
 
 
 def _should_inject_on_resume(parameters: dict) -> bool:
@@ -339,13 +408,16 @@ def _inject_project_context(parameters: dict) -> dict:
         skills_content = _load_agent_skills(subagent_type)
         skills_section = f"\n\n---\n\n# Agent Skills (Auto-Injected)\n\n{skills_content}" if skills_content else ""
 
+        # Build context update reminder for empty writable sections
+        update_reminder = _build_context_update_reminder(subagent_type)
+
         # Inject context and skills into prompt
         enriched_prompt = f"""# Project Context (Auto-Injected)
 
 {json.dumps(context_payload, indent=2)}
 
 {pending_warning}---{skills_section}
-
+{update_reminder}
 # User Task
 
 {prompt}
