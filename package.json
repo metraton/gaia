@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "3.9.5",
+  "version": "3.9.6",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -50,6 +50,7 @@
     "README.en.md",
     "README.md",
     "PRE_PUBLISH_WORKFLOW.md",
+    "CHANGELOG.md",
     "index.js"
   ],
   "scripts": {
