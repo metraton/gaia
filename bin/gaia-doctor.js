@@ -29,7 +29,7 @@ const CWD = process.cwd();
 // ============================================================================
 
 async function checkSymlinks() {
-  const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'CHANGELOG.md'];
+  const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills', 'CHANGELOG.md'];
   const results = [];
   let valid = 0;
 
@@ -261,7 +261,7 @@ async function autoFix() {
     const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
     if (existsSync(packagePath)) {
       const relPath = relative(claudeDir, packagePath);
-      const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit'];
+      const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills'];
 
       for (const name of names) {
         const link = join(claudeDir, name);

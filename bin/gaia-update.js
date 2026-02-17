@@ -179,7 +179,7 @@ async function updateSymlinks() {
     }
 
     const relativePath = relative(claudeDir, packagePath);
-    const symlinks = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit'];
+    const symlinks = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills'];
     let fixed = 0;
 
     for (const name of symlinks) {

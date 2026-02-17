@@ -551,7 +551,7 @@ async function createClaudeDirectory() {
 
     const symlinks = [
       'agents', 'tools', 'hooks', 'commands',
-      'templates', 'config', 'speckit'
+      'templates', 'config', 'speckit', 'skills'
     ];
 
     for (const name of symlinks) {
