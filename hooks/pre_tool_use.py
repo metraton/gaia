@@ -66,6 +66,92 @@ PROJECT_AGENTS = [
 ]
 
 
+def _load_agent_skills(subagent_type: str) -> str:
+    """
+    Load skill content for a project agent by reading its frontmatter.
+
+    Reads the agent definition to find 'skills:' list, then loads each
+    SKILL.md file and returns concatenated content.
+
+    Args:
+        subagent_type: Agent name (e.g. 'cloud-troubleshooter')
+
+    Returns:
+        Concatenated skill content or empty string
+    """
+    # Find agent definition
+    agent_paths = [
+        Path(f".claude/agents/{subagent_type}.md"),
+        Path(__file__).parent.parent / "agents" / f"{subagent_type}.md",
+    ]
+
+    agent_file = None
+    for p in agent_paths:
+        if p.exists():
+            agent_file = p
+            break
+
+    if not agent_file:
+        return ""
+
+    # Parse frontmatter to extract skills list
+    try:
+        text = agent_file.read_text()
+        if not text.startswith("---"):
+            return ""
+        end = text.index("---", 3)
+        frontmatter = text[3:end]
+
+        skills = []
+        in_skills = False
+        for line in frontmatter.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("skills:"):
+                in_skills = True
+                continue
+            if in_skills:
+                if stripped.startswith("- "):
+                    skills.append(stripped[2:].strip())
+                else:
+                    break
+    except Exception:
+        return ""
+
+    if not skills:
+        return ""
+
+    # Load each skill file
+    skills_dir_paths = [
+        Path(".claude/skills"),
+        Path(__file__).parent.parent / "skills",
+    ]
+
+    skills_dir = None
+    for p in skills_dir_paths:
+        if p.is_dir():
+            skills_dir = p
+            break
+
+    if not skills_dir:
+        return ""
+
+    parts = []
+    for skill_name in skills:
+        skill_file = skills_dir / skill_name / "SKILL.md"
+        if skill_file.exists():
+            content = skill_file.read_text().strip()
+            # Strip frontmatter from skill content
+            if content.startswith("---"):
+                try:
+                    end_idx = content.index("---", 3)
+                    content = content[end_idx + 3:].strip()
+                except ValueError:
+                    pass
+            parts.append(content)
+
+    return "\n\n---\n\n".join(parts) if parts else ""
+
+
 
 
 def _should_inject_on_resume(parameters: dict) -> bool:
@@ -249,12 +335,16 @@ def _inject_project_context(parameters: dict) -> dict:
         # Check pending update count (non-blocking, fast path)
         pending_warning = _check_pending_updates_threshold()
 
-        # Inject context into prompt (skills now loaded natively via agent frontmatter)
+        # Load skills content for this agent
+        skills_content = _load_agent_skills(subagent_type)
+        skills_section = f"\n\n---\n\n# Agent Skills (Auto-Injected)\n\n{skills_content}" if skills_content else ""
+
+        # Inject context and skills into prompt
         enriched_prompt = f"""# Project Context (Auto-Injected)
 
 {json.dumps(context_payload, indent=2)}
 
-{pending_warning}---
+{pending_warning}---{skills_section}
 
 # User Task
 
@@ -271,8 +361,9 @@ def _inject_project_context(parameters: dict) -> dict:
         context_level = context_payload.get("metadata", {}).get("context_level", "unknown")
         standards_count = context_payload.get("metadata", {}).get("standards_count", 0)
 
+        skills_loaded = bool(skills_content)
         logger.info(
-            f"✅ Context injected for {subagent_type} "
+            f"✅ Context{'+ skills' if skills_loaded else ''} injected for {subagent_type} "
             f"(level={context_level}, standards={standards_count})"
         )
 
