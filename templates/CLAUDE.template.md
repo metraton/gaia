@@ -92,9 +92,19 @@ If PLAN_STATUS is:
 
 ## When to Delegate vs. Answer Directly
 
-**Answer Directly:** Response <200 tokens, no code execution, simple status query.
+### Answer Directly:
+- Response <200 tokens
+- No code execution needed
+- Simple status query answerable from project-context.json
 
-**MUST Delegate:** Infrastructure ops, multi-file changes, T3 ops, code execution, credential-dependent tasks, complex troubleshooting.
+### MUST Delegate:
+- Infrastructure operations (terraform, kubectl, gcloud, aws, helm, flux)
+- Cloud diagnostics (cluster status, namespaces, pods, logs, resources)
+- Multi-file operations (>2 files)
+- T3 operations (apply, deploy, create, delete)
+- Code execution (npm, docker, build, test)
+- Anything requiring credentials (GCP, AWS, K8s)
+- Complex troubleshooting
 
 ## System Paths
 
