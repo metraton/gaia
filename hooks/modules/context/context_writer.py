@@ -136,6 +136,22 @@ def parse_context_update(agent_output: str) -> Optional[dict]:
     if not remaining:
         return None
 
+    # Strip markdown code fences — LLMs reading SKILL.md documentation
+    # often wrap the JSON in ```json ... ``` or ``` ... ``` blocks.
+    if remaining.startswith("```"):
+        fence_lines = remaining.split("\n")
+        # Remove opening fence (```json, ```JSON, ```, etc.)
+        fence_lines.pop(0)
+        # Remove closing fence if present
+        for i in range(len(fence_lines) - 1, -1, -1):
+            if fence_lines[i].strip() == "```":
+                fence_lines.pop(i)
+                break
+        remaining = "\n".join(fence_lines).strip()
+
+    if not remaining:
+        return None
+
     # Use raw_decode to extract the first complete JSON value, ignoring
     # any trailing text (summaries, AGENT_STATUS blocks, etc.)
     decoder = json.JSONDecoder()

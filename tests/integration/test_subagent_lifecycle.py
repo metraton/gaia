@@ -273,6 +273,74 @@ CONTEXT_UPDATE:
         result = parse_context_update(agent_output)
         assert result is None
 
+    def test_parse_context_update_with_markdown_code_fence(self):
+        """Real LLM output: CONTEXT_UPDATE JSON wrapped in ```json fence.
+
+        This test reproduces the exact bug observed in production on 2026-02-17.
+        The cloud-troubleshooter agent emitted CONTEXT_UPDATE with markdown
+        code fences, causing parse_context_update() to fail with:
+          'Malformed JSON in CONTEXT_UPDATE block: Expecting value: line 1 column 1 (char 0)'
+        """
+        from context_writer import parse_context_update
+
+        # Exact format from real transcript (agent-af097c4.jsonl)
+        agent_output = (
+            "INVESTIGATION COMPLETE\n"
+            "\n"
+            "**Cluster:** oci-pos-dev-cluster-01\n"
+            "**Namespace:** test\n"
+            "\n"
+            "**Pod Count:** 1\n"
+            "\n"
+            "| Pod Name | Ready | Status | Restarts | Age |\n"
+            "|----------|-------|--------|----------|-----|\n"
+            "| nginx-deployment-6fbb6bcf74-8g9gn | 2/2 | Running | 0 | 8h |\n"
+            "\n"
+            "**Summary:**\n"
+            "- There is **1 pod** running in the `test` namespace.\n"
+            "\n"
+            "CONTEXT_UPDATE:\n"
+            "```json\n"
+            "{\n"
+            '  "cluster_details": {\n'
+            '    "cluster_name": "oci-pos-dev-cluster-01",\n'
+            '    "namespaces_inspected": {\n'
+            '      "test": {\n'
+            '        "pod_count": 1,\n'
+            '        "pods": [\n'
+            "          {\n"
+            '            "name": "nginx-deployment-6fbb6bcf74-8g9gn",\n'
+            '            "ready": "2/2",\n'
+            '            "status": "Running",\n'
+            '            "restarts": 0\n'
+            "          }\n"
+            "        ],\n"
+            '        "last_checked": "2026-02-17"\n'
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+            "```\n"
+            "\n"
+            "<!-- AGENT_STATUS -->\n"
+            "PLAN_STATUS: COMPLETE\n"
+            "CURRENT_PHASE: Complete\n"
+            "PENDING_STEPS: None\n"
+            "NEXT_ACTION: None - task complete\n"
+            "AGENT_ID: cloud-troubleshooter\n"
+            "<!-- /AGENT_STATUS -->"
+        )
+        result = parse_context_update(agent_output)
+
+        assert result is not None, (
+            "parse_context_update must handle ```json fenced code blocks — "
+            "this is the exact format from a real cloud-troubleshooter transcript"
+        )
+        assert result["cluster_details"]["cluster_name"] == "oci-pos-dev-cluster-01"
+        pods = result["cluster_details"]["namespaces_inspected"]["test"]["pods"]
+        assert len(pods) == 1
+        assert pods[0]["name"] == "nginx-deployment-6fbb6bcf74-8g9gn"
+
 
 # ============================================================================
 # PHASE 3: Permission Validation

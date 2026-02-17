@@ -231,6 +231,87 @@ class TestParseContextUpdate:
         assert result["cluster_details"]["version"] == "1.29"
         assert result["cluster_details"]["node_pool"] == "default-pool"
 
+    def test_parse_markdown_json_fenced(self):
+        """LLMs often wrap CONTEXT_UPDATE JSON in ```json code fences."""
+        agent_output = (
+            "## Investigation Complete\n"
+            "\n"
+            "CONTEXT_UPDATE:\n"
+            "```json\n"
+            "{\n"
+            '  "cluster_details": {\n'
+            '    "node_count": 3,\n'
+            '    "status": "RUNNING"\n'
+            "  }\n"
+            "}\n"
+            "```\n"
+            "\n"
+            "<!-- AGENT_STATUS -->\n"
+            "PLAN_STATUS: COMPLETE\n"
+            "<!-- /AGENT_STATUS -->\n"
+        )
+        result = parse_context_update(agent_output)
+        assert result is not None, (
+            "Parser must handle ```json fenced code blocks — "
+            "this is the format LLMs actually produce"
+        )
+        assert result["cluster_details"]["node_count"] == 3
+        assert result["cluster_details"]["status"] == "RUNNING"
+
+    def test_parse_markdown_plain_fenced(self):
+        """LLMs may also use plain ``` fences without language specifier."""
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            "```\n"
+            '{"cluster_details": {"version": "1.28"}}\n'
+            "```\n"
+        )
+        result = parse_context_update(agent_output)
+        assert result is not None, (
+            "Parser must handle plain ``` fenced code blocks"
+        )
+        assert result["cluster_details"]["version"] == "1.28"
+
+    def test_parse_markdown_fenced_multiline_with_agent_status(self):
+        """Realistic LLM output: markdown table + fenced JSON + AGENT_STATUS."""
+        agent_output = (
+            "**Cluster:** oci-pos-dev-cluster-01\n"
+            "**Namespace:** test\n"
+            "\n"
+            "| Pod Name | Ready | Status |\n"
+            "|----------|-------|--------|\n"
+            "| nginx-6fbb6bcf74-8g9gn | 2/2 | Running |\n"
+            "\n"
+            "CONTEXT_UPDATE:\n"
+            "```json\n"
+            "{\n"
+            '  "cluster_details": {\n'
+            '    "cluster_name": "oci-pos-dev-cluster-01",\n'
+            '    "namespaces_inspected": {\n'
+            '      "test": {\n'
+            '        "pod_count": 1\n'
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+            "```\n"
+            "\n"
+            "<!-- AGENT_STATUS -->\n"
+            "PLAN_STATUS: COMPLETE\n"
+            "CURRENT_PHASE: Complete\n"
+            "PENDING_STEPS: None\n"
+            "NEXT_ACTION: None - task complete\n"
+            "AGENT_ID: cloud-troubleshooter\n"
+            "<!-- /AGENT_STATUS -->\n"
+        )
+        result = parse_context_update(agent_output)
+        assert result is not None, (
+            "Parser must handle realistic LLM output with markdown "
+            "tables, ```json fences, and AGENT_STATUS blocks"
+        )
+        assert result["cluster_details"]["cluster_name"] == "oci-pos-dev-cluster-01"
+        assert result["cluster_details"]["namespaces_inspected"]["test"]["pod_count"] == 1
+
 
 # ============================================================================
 # 2. validate_permissions tests (5)

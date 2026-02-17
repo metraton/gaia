@@ -540,3 +540,108 @@ class TestSkillFileExists:
             "SKILL.md must document the CONTEXT_UPDATE format "
             "that agents use to emit context updates."
         )
+
+
+# ============================================================================
+# Scenario 9: LLM-realistic output with markdown code fences
+# ============================================================================
+
+class TestLLMRealisticOutput:
+    """Scenario 9: LLMs wrap CONTEXT_UPDATE JSON in markdown code fences.
+
+    Real agent transcripts show that LLMs reading the SKILL.md documentation
+    (which shows the format inside ``` blocks) emit their own JSON wrapped
+    in ```json ... ``` fences. The parser must handle this."""
+
+    def test_markdown_json_fence_enrichment(self, setup_context):
+        """CONTEXT_UPDATE with ```json fence must be parsed and applied."""
+        process_agent_output = _import_process_agent_output()
+        project_root, context_dir, config_dir = setup_context
+
+        initial_context = {
+            "metadata": {
+                "version": "1.0",
+                "cloud_provider": "gcp"
+            },
+            "sections": {
+                "project_details": {"project_id": "my-project"},
+                "cluster_details": {}
+            }
+        }
+        context_file = context_dir / "project-context.json"
+        write_context(context_file, initial_context)
+
+        # This is what a real LLM produces — note the ```json fence
+        agent_output = (
+            "## Investigation Complete\n\n"
+            "Found 1 pod in test namespace.\n\n"
+            "CONTEXT_UPDATE:\n"
+            "```json\n"
+            "{\n"
+            '  "cluster_details": {\n'
+            '    "cluster_name": "oci-pos-dev-cluster-01",\n'
+            '    "namespaces_inspected": {\n'
+            '      "test": {\n'
+            '        "pod_count": 1\n'
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+            "```\n\n"
+            "<!-- AGENT_STATUS -->\n"
+            "PLAN_STATUS: COMPLETE\n"
+            "<!-- /AGENT_STATUS -->\n"
+        )
+
+        result = process_agent_output(
+            agent_output,
+            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+        )
+
+        assert result["updated"] is True, (
+            "CONTEXT_UPDATE with ```json fence must be parsed — "
+            "this is the actual format LLMs produce"
+        )
+        assert "cluster_details" in result["sections_updated"]
+
+        updated = read_context(context_file)
+        cd = updated["sections"]["cluster_details"]
+        assert cd["cluster_name"] == "oci-pos-dev-cluster-01"
+        assert cd["namespaces_inspected"]["test"]["pod_count"] == 1
+
+    def test_markdown_plain_fence_enrichment(self, setup_context):
+        """CONTEXT_UPDATE with plain ``` fence must also be handled."""
+        process_agent_output = _import_process_agent_output()
+        project_root, context_dir, config_dir = setup_context
+
+        initial_context = {
+            "metadata": {
+                "version": "1.0",
+                "cloud_provider": "gcp"
+            },
+            "sections": {
+                "project_details": {"project_id": "my-project"},
+                "cluster_details": {}
+            }
+        }
+        context_file = context_dir / "project-context.json"
+        write_context(context_file, initial_context)
+
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            "```\n"
+            '{"cluster_details": {"status": "RUNNING"}}\n'
+            "```\n"
+        )
+
+        result = process_agent_output(
+            agent_output,
+            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+        )
+
+        assert result["updated"] is True, (
+            "CONTEXT_UPDATE with plain ``` fence must be parsed"
+        )
+
+        updated = read_context(context_file)
+        assert updated["sections"]["cluster_details"]["status"] == "RUNNING"
