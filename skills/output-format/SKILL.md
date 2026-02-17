@@ -8,8 +8,6 @@ user-invocable: false
 
 ## Report Structure
 
-All agent outputs follow a consistent structure:
-
 ```
 [STATUS ICON] [PHASE] COMPLETE
 
@@ -18,7 +16,6 @@ All agent outputs follow a consistent structure:
 - Key finding 2
 
 [Details Section - if needed]
-Specific information relevant to the task
 
 [Next Steps]
 - Recommended action 1
@@ -35,24 +32,7 @@ Specific information relevant to the task
 | `✓` | Step completed |
 | `✗` | Step failed |
 
-## Escalation Protocol
-
-When an issue is outside your scope, use this format:
-
-```
-⚠️ DELEGATION REQUIRED
-
-Issue: [Brief description]
-Recommended Agent: [agent-name]
-Reason: [Why this agent should handle it]
-
-Suggested Action:
-[Specific command or task for the other agent]
-```
-
 ## Error Reporting
-
-When reporting errors:
 
 ```
 ❌ ERROR: [Brief title]
@@ -68,9 +48,9 @@ Suggested Fix:
 
 ## Finding Classification
 
-Report findings by severity tier:
-
-- **Tier 1 (CRITICAL):** Blocks operation - report immediately
-- **Tier 2 (DEVIATION):** Works but non-standard - mention in report
-- **Tier 3 (IMPROVEMENT):** Minor optimization - omit from report
-- **Tier 4 (PATTERN):** Detected pattern to replicate - auto-apply
+| Tier | Severity | Action |
+|------|----------|--------|
+| **Tier 1 (CRITICAL)** | Blocks operation | Report immediately |
+| **Tier 2 (DEVIATION)** | Works but non-standard | Mention in report |
+| **Tier 3 (IMPROVEMENT)** | Minor optimization | Omit from report |
+| **Tier 4 (PATTERN)** | Detected pattern to replicate | Document for consistency |

@@ -14,8 +14,7 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 ├── fast-queries/          # Quick diagnostic scripts
 ├── terraform-patterns/    # Terraform/Terragrunt patterns
 ├── gitops-patterns/       # GitOps/Flux patterns
-├── command-execution/     # Shell security rules
-├── anti-patterns/         # Common mistakes by tool
+├── command-execution/     # Defensive execution, timeout protection, safe shell patterns
 ├── investigation/         # Local-first analysis methodology
 ├── approval/              # T3 plan presentation workflow
 └── execution/             # Post-approval execution workflow
@@ -35,6 +34,7 @@ skills:
   - agent-protocol
   - context-updater
   - fast-queries
+  - command-execution
 ---
 ```
 
@@ -42,7 +42,7 @@ skills:
 
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
-| cloud-troubleshooter | security-tiers, output-format, agent-protocol, context-updater | fast-queries |
+| cloud-troubleshooter | security-tiers, output-format, agent-protocol, context-updater | fast-queries, command-execution |
 | terraform-architect | security-tiers, output-format, agent-protocol, context-updater | terraform-patterns, command-execution |
 | gitops-operator | security-tiers, output-format, agent-protocol, context-updater | gitops-patterns, command-execution |
 | devops-developer | security-tiers, output-format, agent-protocol, context-updater | command-execution |

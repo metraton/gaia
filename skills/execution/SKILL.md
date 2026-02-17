@@ -31,45 +31,9 @@ Before executing ANY approved operation:
 
 If ANY check fails → STOP and report with `PLAN_STATUS: BLOCKED`
 
-## Automatic Commit Message Validation
+## Commit Standards
 
-**CRITICAL:** All commit messages are automatically validated before execution.
-
-Before running `git commit`, the commit message MUST pass validation:
-
-```python
-from tools.validation.commit_validator import safe_validate_before_commit
-
-# Validate before committing
-if not safe_validate_before_commit(commit_message):
-    # Validation failed - Agent receives clear error
-    return {
-        "status": "blocked",
-        "reason": "Commit message validation failed",
-        "plan_status": "BLOCKED"
-    }
-
-# Safe to commit
-git commit -m "$(cat <<'EOF'
-[validated commit message]
-EOF
-)"
-```
-
-**What is validated:**
-- ✅ Conventional Commits format (`type(scope): description`)
-- ✅ Allowed types: feat, fix, refactor, docs, test, chore, ci, perf, style, build
-- ✅ Subject line rules (max 72 chars, no period at end)
-- ✅ Forbidden footers (no "Generated with" footers)
-
-**If validation fails:**
-- Agent receives detailed error with fix instructions
-- Execution is BLOCKED (`PLAN_STATUS: BLOCKED`)
-- Agent must fix message format and retry
-- Violations are logged to `.claude/logs/commit-violations.jsonl`
-
-**Standards source:** `.claude/config/git_standards.json`
-**Validator:** `.claude/tools/validation/commit_validator.py`
+Follow `git-conventions` skill. Commits are auto-validated by hooks — format violations block execution.
 
 ## Execution Protocol by Operation Type
 
@@ -173,8 +137,7 @@ gh pr checks [PR-number]
    - Verify with `git diff --staged`
 
 2. **Commit**
-   - Use conventional commit format
-   - Include Co-Authored-By footer
+   - Use conventional commit format (see git-conventions skill)
    - Keep message concise but descriptive
 
 3. **Push**
@@ -341,23 +304,9 @@ AGENT_ID: [agentId]
 <!-- /AGENT_STATUS -->
 ```
 
-## Integration with AGENT_STATUS
+## AGENT_STATUS
 
-During execution, emit:
-
-```html
-<!-- AGENT_STATUS -->
-PLAN_STATUS: APPROVED_EXECUTING
-CURRENT_PHASE: Execute
-PENDING_STEPS: ["Apply changes", "Verify success", "Report results"]
-NEXT_ACTION: Executing [operation]
-AGENT_ID: [agentId]
-<!-- /AGENT_STATUS -->
-```
-
-When complete:
-- Success → `PLAN_STATUS: COMPLETE`
-- Failure → `PLAN_STATUS: BLOCKED`
+Emit per agent-protocol skill: `APPROVED_EXECUTING` during execution, `COMPLETE` on success, `BLOCKED` on failure.
 
 ## Examples
 
@@ -492,9 +441,6 @@ AGENT_ID: a12345
 
 ❌ **Ignoring errors**
 - If terraform/kubectl fails, STOP and report as BLOCKED
-
-❌ **Missing Co-Authored-By footer**
-- Always include in commit messages
 
 ## Security Considerations
 

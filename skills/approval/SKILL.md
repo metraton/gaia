@@ -303,30 +303,6 @@ AGENT_ID: a67890
 <!-- /AGENT_STATUS -->
 ```
 
-## Integration with AskUserQuestion
-
-When presenting for approval, use `AskUserQuestion`:
-
-```python
-AskUserQuestion(
-    questions=[{
-        "question": "Approve [operation]?",
-        "header": "Approval",
-        "multiSelect": false,
-        "options": [
-            {
-                "label": "Yes, proceed (Recommended)",
-                "description": "Execute the plan as presented"
-            },
-            {
-                "label": "No, review needed",
-                "description": "Need more information or changes"
-            }
-        ]
-    }]
-)
-```
-
 ## After Approval
 
 When user approves, orchestrator will resume with:
@@ -350,43 +326,6 @@ At that point, switch to **execution-skill** mode.
 ❌ **Wrong risk level**
 - Be honest about risks, don't minimize production changes
 
-## Commit Message Standards
+## Commit Standards
 
-Follow conventional commits format:
-
-```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer]
-```
-
-**Types:**
-- `feat`: New feature
-- `fix`: Bug fix
-- `chore`: Maintenance (updates, refactors)
-- `docs`: Documentation
-- `test`: Tests
-- `ci`: CI/CD changes
-
-**Scopes:**
-- `infra`: Infrastructure (terraform)
-- `k8s`: Kubernetes manifests
-- `graphql`: GraphQL service
-- `mobile`: Mobile backend
-
-## Automatic Validation
-
-**Commit messages are automatically validated** during execution phase.
-
-The system enforces:
-- ✅ Conventional Commits format
-- ✅ Forbidden footer detection
-- ✅ Subject/body length rules
-
-**Standards:** `.claude/config/git_standards.json` (SSOT)
-**Validator:** `.claude/tools/validation/commit_validator.py`
-**Logging:** Violations logged to `.claude/logs/commit-violations.jsonl`
-
-This validation happens automatically during execution (see `execution-skill` for details).
+Follow `git-conventions` skill for commit format. Commits are auto-validated by hooks.

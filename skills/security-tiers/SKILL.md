@@ -6,50 +6,37 @@ user-invocable: false
 
 # Security Tiers
 
-Operations are classified into four security tiers that govern what actions agents can perform.
+## Classification Principle
+
+Before executing any command, classify it by asking:
+
+1. **Does it modify live state?** (create, update, delete, apply, push) → **T3**
+2. **Does it simulate changes?** (plan, diff, dry-run) → **T2**
+3. **Does it validate locally?** (validate, lint, fmt, check) → **T1**
+4. **Is it read-only?** (get, list, describe, show, logs) → **T0**
 
 ## Tier Definitions
 
-| Tier | Name | Description | Approval Required |
-|------|------|-------------|-------------------|
-| **T0** | Read-Only | Query state without side effects | No |
-| **T1** | Validation | Local validation, syntax checks | No |
-| **T2** | Simulation | Dry-run, plan, diff operations | No |
-| **T3** | Realization | Apply changes to infrastructure/cluster | **Yes** |
+| Tier | Name | Side Effects | Approval |
+|------|------|-------------|----------|
+| **T0** | Read-Only | None | No |
+| **T1** | Validation | None (local only) | No |
+| **T2** | Simulation | None (dry-run) | No |
+| **T3** | Realization | **Modifies infrastructure** | **Yes** |
 
-## Operations by Tier
+## Examples (anchors, not exhaustive)
 
-### T0 (Read-Only)
-- `kubectl get`, `describe`, `logs`
-- `terraform show`, `output`, `state list`
-- `gcloud list`, `describe`
-- `helm list`, `status`
-- `flux get`
-- File reading operations
-
-### T1 (Validation)
-- `terraform init`, `validate`, `fmt -check`
-- `helm lint`, `template`
-- `kustomize build`
-- `tflint`, `eslint`, `ruff check`
-
-### T2 (Simulation)
-- `terraform plan`
-- `kubectl apply --dry-run=server`, `kubectl diff`
-- `helm upgrade --dry-run`
-- Code generation and proposals
-
-### T3 (Realization) - REQUIRES APPROVAL
-- `terraform apply`
-- `kubectl apply` (without dry-run)
-- `git push` to main/protected branches
-- `flux reconcile` with write operations
-- Any operation that modifies live infrastructure
+- **T0**: `kubectl get`, `terraform show`, `gcloud describe`, `helm status`, `flux get`
+- **T1**: `terraform validate`, `helm lint`, `tflint`, `kustomize build`
+- **T2**: `terraform plan`, `kubectl diff`, `helm upgrade --dry-run`
+- **T3**: `terraform apply`, `kubectl apply`, `git push main`, `flux reconcile` (write)
 
 ## Approval Protocol
 
 For T3 operations:
-1. Agent generates realization package (code + plan)
-2. User reviews proposed changes
-3. User explicitly approves: "Yes, proceed" or "Approved"
-4. Agent executes only after validation["approved"] == True
+1. Agent generates plan with changes summary and risk assessment
+2. Set `PLAN_STATUS: PENDING_APPROVAL` (see agent-protocol skill)
+3. User explicitly approves
+4. Agent executes only after approval
+
+For approval/execution workflows, read `approval/SKILL.md` and `execution/SKILL.md`.
