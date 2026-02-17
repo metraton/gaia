@@ -10,7 +10,8 @@
     "gaia-cleanup": "bin/gaia-cleanup.js",
     "gaia-uninstall": "bin/gaia-uninstall.js",
     "gaia-metrics": "bin/gaia-metrics.js",
-    "gaia-review": "bin/gaia-review.js"
+    "gaia-review": "bin/gaia-review.js",
+    "gaia-update": "bin/gaia-update.js"
   },
   "keywords": [
     "claude-code",
