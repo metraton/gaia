@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "3.10.3",
+  "version": "3.11.0",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -54,7 +54,12 @@
     "index.js"
   ],
   "scripts": {
-    "test": "python3 -m pytest tests/ -v",
+    "test": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e",
+    "test:layer1": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e",
+    "test:layer2": "python3 -m pytest tests/layer2_llm_evaluation/ -v -m llm",
+    "test:layer3": "python3 -m pytest tests/layer3_e2e/ -v -m e2e",
+    "test:all": "python3 -m pytest tests/ -v -m ''",
+    "test:promptfoo": "npx promptfoo eval --config tests/promptfoo.yaml",
     "lint": "eslint .",
     "clean": "find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true",
     "pre-publish": "node bin/pre-publish-validate.js",
