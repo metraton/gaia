@@ -40,6 +40,9 @@ coverage/
 # This should NOT exist in the package - only in consuming projects
 .claude/
 
+# Spec-Kit specs (local design artifacts, not shipped)
+specs/
+
 # Distribution
 dist/
 build/

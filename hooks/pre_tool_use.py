@@ -163,6 +163,40 @@ def _should_inject_on_resume(parameters: dict) -> bool:
     logger.debug("Standard resume - skipping context injection")
     return False
 
+def _check_pending_updates_threshold() -> str:
+    """
+    Check if pending updates count exceeds threshold and return warning text.
+
+    Returns warning string to inject into prompt, or empty string if below threshold.
+    Must NEVER block or slow down context injection (target: <50ms).
+    """
+    try:
+        threshold = int(os.environ.get("PENDING_UPDATE_THRESHOLD", "10"))
+
+        # Fast path: try to read index directly (no module import)
+        index_path = Path(".claude/project-context/pending-updates/pending-index.json")
+        if not index_path.exists():
+            return ""
+
+        with open(index_path, 'r') as f:
+            index_data = json.load(f)
+
+        pending_count = index_data.get("pending_count", 0)
+        if pending_count < threshold:
+            return ""
+
+        logger.info(f"Pending updates threshold reached: {pending_count} >= {threshold}")
+        return (
+            f"\n# Pending Context Updates Warning\n"
+            f"There are {pending_count} pending context update suggestions awaiting review. "
+            f"Run `gaia-review` or `python3 tools/review/review_engine.py list` to review them.\n\n"
+        )
+
+    except Exception as e:
+        logger.debug(f"Pending updates check failed (non-fatal): {e}")
+        return ""
+
+
 def _inject_project_context(parameters: dict) -> dict:
     """
     Inject project context for project agents.
@@ -242,13 +276,15 @@ def _inject_project_context(parameters: dict) -> dict:
         # Load skills on-demand based on prompt
         skills_content = _load_skills_for_task(prompt, subagent_type)
 
+        # Check pending update count (non-blocking, fast path)
+        pending_warning = _check_pending_updates_threshold()
+
         # Inject context + skills into prompt
         enriched_prompt = f"""# Project Context (Auto-Injected)
 
 {json.dumps(context_payload, indent=2)}
 
-{skills_content}
----
+{skills_content}{pending_warning}---
 
 # User Task
 

@@ -431,6 +431,101 @@ def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+def extract_and_store_discoveries(
+    agent_output: str, task_info: Dict[str, Any], episode_id: Optional[str] = None
+) -> List[str]:
+    """
+    Extract structural discoveries from agent output and store as pending updates.
+
+    Only processes agents in PROJECT_AGENTS list. Failures are logged but never
+    propagated — this function must NEVER break the existing subagent_stop flow.
+
+    Args:
+        agent_output: Complete output from agent execution
+        task_info: Task metadata (agent, description, task_id)
+        episode_id: Optional episode ID to link discoveries to
+
+    Returns:
+        List of created/deduplicated update IDs (empty on error or no discoveries)
+    """
+    PROJECT_AGENTS = [
+        "terraform-architect", "gitops-operator",
+        "cloud-troubleshooter", "devops-developer"
+    ]
+
+    agent_type = task_info.get("agent", "unknown")
+    if agent_type not in PROJECT_AGENTS:
+        logger.debug(f"Skipping discovery extraction for non-project agent: {agent_type}")
+        return []
+
+    try:
+        import importlib.util
+
+        # Load discovery classifier
+        classifier_path = Path(__file__).parent / "modules" / "context" / "discovery_classifier.py"
+        if not classifier_path.exists():
+            logger.debug("Discovery classifier not found, skipping extraction")
+            return []
+
+        spec = importlib.util.spec_from_file_location("discovery_classifier", classifier_path)
+        if not spec or not spec.loader:
+            return []
+        classifier_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(classifier_mod)
+
+        # Load pending update store
+        store_path = Path(__file__).parent.parent / "tools" / "context" / "pending_updates.py"
+        if not store_path.exists():
+            logger.debug("PendingUpdateStore not found, skipping extraction")
+            return []
+
+        store_spec = importlib.util.spec_from_file_location("pending_updates", store_path)
+        if not store_spec or not store_spec.loader:
+            return []
+        store_mod = importlib.util.module_from_spec(store_spec)
+        store_mod.sys = sys
+        store_spec.loader.exec_module(store_mod)
+
+        # Classify agent output
+        user_task = task_info.get("description", task_info.get("prompt", ""))
+        discoveries = classifier_mod.classify_output(agent_output, agent_type, user_task)
+
+        if not discoveries:
+            logger.debug(f"No structural discoveries found in {agent_type} output")
+            return []
+
+        # Store each discovery as a pending update
+        store = store_mod.PendingUpdateStore()
+        update_ids = []
+
+        for disc in discoveries:
+            try:
+                dr = store_mod.DiscoveryResult(
+                    category=disc.category.value if hasattr(disc.category, 'value') else str(disc.category),
+                    target_section=disc.target_section,
+                    proposed_change=disc.proposed_change,
+                    summary=disc.summary,
+                    confidence=disc.confidence,
+                    source_agent=agent_type,
+                    source_task=user_task[:200],
+                    source_episode_id=episode_id or "",
+                )
+                uid = store.create(dr)
+                update_ids.append(uid)
+            except Exception as e:
+                logger.debug(f"Failed to store discovery: {e}")
+                continue
+
+        if update_ids:
+            logger.info(f"Stored {len(update_ids)} discoveries from {agent_type}")
+
+        return update_ids
+
+    except Exception as e:
+        logger.debug(f"Discovery extraction failed (non-fatal): {e}")
+        return []
+
+
 def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str, Any]:
     """
     Main subagent stop hook - captures metrics, detects anomalies, stores episodes.
@@ -465,14 +560,18 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
 
         # Step 3: Capture as episodic memory
         episode_id = capture_episodic_memory(workflow_metrics)
-        
+
+        # Step 4: Extract and store structural discoveries (never blocks)
+        discovery_ids = extract_and_store_discoveries(agent_output, task_info, episode_id)
+
         return {
             "success": True,
             "session_id": session_id,
             "status": "metrics_captured",
             "metrics_captured": True,
             "anomalies_detected": len(anomalies) if anomalies else 0,
-            "episode_id": episode_id
+            "episode_id": episode_id,
+            "discoveries": len(discovery_ids),
         }
 
     except Exception as e:
