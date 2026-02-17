@@ -27,6 +27,7 @@ import sys
 import json
 import logging
 import re
+import select
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -571,9 +572,8 @@ def _process_context_updates(agent_output: str, task_info: Dict[str, Any]) -> Op
             logger.debug("project-context.json not found at %s, skipping context updates", context_path)
             return None
 
-        # Determine config_dir (sibling to .claude at repo root)
-        repo_root = claude_dir.parent
-        config_dir = repo_root / "config"
+        # Determine config_dir (inside .claude directory)
+        config_dir = claude_dir / "config"
 
         # Build task_info dict for context_writer
         agent_type = task_info.get("agent", "unknown")
@@ -665,6 +665,75 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         }
 
 
+def _read_transcript(transcript_path: str) -> str:
+    """Read agent transcript from file path provided by Claude Code.
+
+    Claude Code provides ``agent_transcript_path`` pointing to a JSONL file
+    with the subagent's conversation messages.  We extract text content from
+    assistant messages to reconstruct the agent output.
+
+    Falls back to empty string on any error so the hook never crashes.
+    """
+    try:
+        path = Path(transcript_path)
+        if not path.exists():
+            logger.debug("Transcript file not found: %s", transcript_path)
+            return ""
+
+        lines = path.read_text().strip().splitlines()
+        text_parts: List[str] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+                # Extract text from assistant messages
+                role = msg.get("role", "")
+                if role == "assistant":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        text_parts.append(content)
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                            elif isinstance(block, str):
+                                text_parts.append(block)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        return "\n".join(text_parts)
+
+    except Exception as e:
+        logger.debug("Failed to read transcript from %s: %s", transcript_path, e)
+        return ""
+
+
+def _build_task_info_from_hook_data(hook_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a task_info dict from the Claude Code SubagentStop stdin payload.
+
+    Claude Code sends these fields for SubagentStop:
+      - hook_event_name: "SubagentStop"
+      - session_id: str
+      - agent_type: str  (e.g. "cloud-troubleshooter")
+      - agent_id: str
+      - transcript_path: str  (session-level JSONL)
+      - agent_transcript_path: str  (subagent JSONL)
+      - cwd: str
+      - stop_hook_active: bool
+      - permission_mode: str
+
+    We map these to the task_info format expected by subagent_stop_hook().
+    """
+    return {
+        "task_id": hook_data.get("agent_id", "unknown"),
+        "description": f"SubagentStop for {hook_data.get('agent_type', 'unknown')}",
+        "agent": hook_data.get("agent_type", "unknown"),
+        "tier": "T0",  # SubagentStop is always a read/audit operation
+        "tags": [],
+    }
+
+
 def main():
     """CLI interface for testing metrics capture"""
 
@@ -706,5 +775,58 @@ def main():
         print("Unknown command. Use --test to run test.")
 
 
+def has_stdin_data() -> bool:
+    """Check if there's data available on stdin."""
+    if sys.stdin.isatty():
+        return False
+    try:
+        readable, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(readable)
+    except Exception:
+        return not sys.stdin.isatty()
+
+
+# ============================================================================
+# STDIN HANDLER (Claude Code integration)
+# ============================================================================
+
 if __name__ == "__main__":
-    main()
+    # Check if running from CLI with arguments
+    if len(sys.argv) > 1:
+        main()
+    elif has_stdin_data():
+        try:
+            stdin_data = sys.stdin.read()
+            if not stdin_data.strip():
+                print("Error: Empty stdin data")
+                sys.exit(1)
+
+            hook_data = json.loads(stdin_data)
+
+            logger.info(f"Hook event: {hook_data.get('hook_event_name')}")
+
+            # Build task_info from Claude Code SubagentStop payload
+            task_info = _build_task_info_from_hook_data(hook_data)
+
+            # Extract agent output from transcript file
+            transcript_path = hook_data.get("agent_transcript_path", "")
+            agent_output = _read_transcript(transcript_path) if transcript_path else ""
+
+            # Run the full processing chain
+            result = subagent_stop_hook(task_info, agent_output)
+
+            # Output result as JSON for Claude Code
+            print(json.dumps(result))
+            sys.exit(0)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON from stdin: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error processing hook: {e}", exc_info=True)
+            sys.exit(1)
+    else:
+        # No args and no stdin - show usage
+        print("Usage: python subagent_stop.py --test")
+        print("       echo '{...}' | python subagent_stop.py  (stdin mode)")
+        sys.exit(1)
