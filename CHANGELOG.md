@@ -5,6 +5,51 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] - 2026-02-17
+
+### Refactor: Principle-First Skills & Agent Deduplication
+
+Major redesign of skills and agents. Skills now teach principles instead of enumerating commands. Agents delegate process knowledge to skills, keeping only domain identity.
+
+#### Removed
+- **`skills/anti-patterns/`** - Merged into `command-execution` skill as defensive execution principles
+
+#### Changed
+- **`skills/command-execution/SKILL.md`** - Complete rewrite with defensive execution framework
+  - Timeout hierarchy (tool-native → shell wrapper → abort)
+  - Pre-flight checklist ("Can this hang?" / "Do I know the timeout?")
+  - 7 numbered rules: no pipes, one command per step, Claude Code tools over bash, validate before mutate, absolute paths, files over inline data, quote variables
+- **`skills/security-tiers/SKILL.md`** - Changed from command enumeration to decision framework
+  - Classification by question: "Does it modify live state?" → T3
+- **`skills/terraform-patterns/SKILL.md`** - Split into slim SKILL.md (86 lines) + reference.md
+- **`skills/gitops-patterns/SKILL.md`** - Split into slim SKILL.md (94 lines) + reference.md
+- **`skills/fast-queries/SKILL.md`** - Cut from 256 to 41 lines (essentials only)
+- **`skills/investigation/SKILL.md`** - Fixed to use Glob/Grep/Read tools, removed duplicated content
+- **`skills/output-format/SKILL.md`** - Removed dead escalation protocol
+- **`skills/execution/SKILL.md`** - Consolidated commit format to git-conventions reference
+- **`skills/approval/SKILL.md`** - Removed duplicated commit standards and AskUserQuestion section
+- **All 6 agents** - Removed duplicated Before Acting, Investigation Protocol, Pre-loaded Standards, and command enumeration tier tables
+
+#### Added
+- **`skills/reference.md`** - Agent template and npm release checklist (moved from gaia agent)
+- **`skills/terraform-patterns/reference.md`** - Full HCL examples
+- **`skills/gitops-patterns/reference.md`** - Full YAML examples
+- **`investigation` skill** assigned to cloud-troubleshooter, terraform-architect, gitops-operator, devops-developer, gaia
+- **`git-conventions` skill** assigned to terraform-architect, gitops-operator, devops-developer
+- **`agent-protocol` + `security-tiers` skills** assigned to speckit-planner
+
+#### Metrics
+- Skills: 1,865 → 725 lines (-61%)
+- Agents: 1,914 → 1,007 lines (-47%)
+- Total injected tokens significantly reduced
+- All 882 tests pass
+
+## [3.11.0] - 2026-02-16
+
+### feat: 3-Layer E2E Testing System
+
+Added Layer 1 prompt regression tests (86 tests) validating agent frontmatter, prompt content, skill cross-references, context contracts, security tier consistency, routing table, and skill content rules.
+
 ## [3.7.0] - 2026-01-20
 
 ### Refactor: Commit Validator Architecture
@@ -277,7 +322,7 @@ Inspired by [memory-graph](https://github.com/gregorydickson/memory-graph) analy
 
 - **NEW:** Hybrid pre-loading in `context_provider.py`
   - Always loads: security-tiers, output-format
-  - On-demand: command-execution, anti-patterns
+  - On-demand: command-execution
   - **78% token reduction** per agent invocation
 
 - **NEW:** QuickTriage scripts
@@ -286,7 +331,7 @@ Inspired by [memory-graph](https://github.com/gregorydickson/memory-graph) analy
 
 ### Changed - Agent Optimization
 
-- **agents/*.md** - All 5 agents reduced by 78%
+- **agents/*.md** - All 6 agents reduced by 78%
   - terraform-architect: 916 → 183 lines
   - gitops-operator: 1,238 → 217 lines
   - gcp-troubleshooter: 600 → 156 lines
