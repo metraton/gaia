@@ -339,12 +339,15 @@ class TestStdinHandler:
         """Simulate Claude Code SubagentStop: pipe JSON via stdin with transcript."""
         context_file = project_env["context_file"]
 
-        # Create a fake transcript JSONL file
+        # Create a fake transcript JSONL file (Claude Code format: content inside "message")
         transcript_path = tmp_path / "agent_transcript.jsonl"
         transcript_lines = [
             json.dumps({
-                "role": "assistant",
-                "content": AGENT_OUTPUT_WITH_CONTEXT_UPDATE,
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": AGENT_OUTPUT_WITH_CONTEXT_UPDATE}],
+                },
             }),
         ]
         transcript_path.write_text("\n".join(transcript_lines))
@@ -463,23 +466,26 @@ class TestStdinHandler:
         """Verify handling of transcript with content as list of blocks."""
         context_file = project_env["context_file"]
 
-        # Create transcript with content as list (Claude API format)
+        # Create transcript with content as list (Claude Code transcript format)
         transcript_path = tmp_path / "agent_transcript_blocks.jsonl"
         transcript_lines = [
             json.dumps({
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "## Namespace Validation Report\n\n20 namespaces found.\n\n"},
-                    {"type": "text", "text": "CONTEXT_UPDATE:\n"},
-                    {"type": "text", "text": json.dumps({
-                        "cluster_details": {
-                            "namespaces": {
-                                "application": ["adm", "dev"],
-                                "system": ["kube-system"],
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "## Namespace Validation Report\n\n20 namespaces found.\n\n"},
+                        {"type": "text", "text": "CONTEXT_UPDATE:\n"},
+                        {"type": "text", "text": json.dumps({
+                            "cluster_details": {
+                                "namespaces": {
+                                    "application": ["adm", "dev"],
+                                    "system": ["kube-system"],
+                                }
                             }
-                        }
-                    })},
-                ],
+                        })},
+                    ],
+                },
             }),
         ]
         transcript_path.write_text("\n".join(transcript_lines))
@@ -528,25 +534,33 @@ class TestReadTranscript:
     """Unit tests for the _read_transcript helper."""
 
     def test_read_string_content(self, tmp_path):
+        """Claude Code transcript format with string content inside message."""
         mod = _import_subagent_stop()
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text(json.dumps({
-            "role": "assistant",
-            "content": "Hello world",
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": "Hello world",
+            },
         }))
 
         result = mod._read_transcript(str(transcript))
         assert "Hello world" in result
 
     def test_read_list_content(self, tmp_path):
+        """Claude Code transcript format with list content blocks."""
         mod = _import_subagent_stop()
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text(json.dumps({
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Part 1"},
-                {"type": "text", "text": "Part 2"},
-            ],
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Part 1"},
+                    {"type": "text", "text": "Part 2"},
+                ],
+            },
         }))
 
         result = mod._read_transcript(str(transcript))
@@ -554,17 +568,31 @@ class TestReadTranscript:
         assert "Part 2" in result
 
     def test_skips_user_messages(self, tmp_path):
+        """Only assistant messages are extracted, user/progress entries are skipped."""
         mod = _import_subagent_stop()
         transcript = tmp_path / "transcript.jsonl"
         lines = [
-            json.dumps({"role": "user", "content": "user message"}),
-            json.dumps({"role": "assistant", "content": "assistant message"}),
+            json.dumps({"type": "user", "message": {"role": "user", "content": "user message"}}),
+            json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "assistant message"}}),
+            json.dumps({"type": "progress", "message": {}}),
         ]
         transcript.write_text("\n".join(lines))
 
         result = mod._read_transcript(str(transcript))
         assert "user message" not in result
         assert "assistant message" in result
+
+    def test_fallback_simple_format(self, tmp_path):
+        """Fallback: if no 'message' key, treat entry itself as the message."""
+        mod = _import_subagent_stop()
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(json.dumps({
+            "role": "assistant",
+            "content": "simple format",
+        }))
+
+        result = mod._read_transcript(str(transcript))
+        assert "simple format" in result
 
     def test_missing_file_returns_empty(self, tmp_path):
         mod = _import_subagent_stop()

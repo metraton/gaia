@@ -33,10 +33,22 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import hashlib
 
-# Configure structured logging
+# Configure structured logging with file handler (matching pre_tool_use.py pattern)
+try:
+    from modules.core.paths import get_logs_dir
+    _log_dir = get_logs_dir()
+except ImportError:
+    _log_dir = Path.cwd() / ".claude" / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+
+_log_file = _log_dir / f"subagent_stop-{os.getenv('USER', 'unknown')}.log"
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(_log_file),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -668,41 +680,52 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
 def _read_transcript(transcript_path: str) -> str:
     """Read agent transcript from file path provided by Claude Code.
 
-    Claude Code provides ``agent_transcript_path`` pointing to a JSONL file
-    with the subagent's conversation messages.  We extract text content from
-    assistant messages to reconstruct the agent output.
+    Claude Code provides ``agent_transcript_path`` pointing to a JSONL file.
+    Each line has the structure:
+        {"type": "assistant", "message": {"role": "assistant", "content": [...]}, ...}
+    The role/content are nested inside the ``message`` field.
 
     Falls back to empty string on any error so the hook never crashes.
     """
     try:
-        path = Path(transcript_path)
+        # Expand ~ to home directory (Claude Code may use ~ in paths)
+        path = Path(transcript_path).expanduser()
+        logger.debug("Reading transcript from: %s", path)
+
         if not path.exists():
-            logger.debug("Transcript file not found: %s", transcript_path)
+            logger.warning("Transcript file not found: %s", path)
             return ""
 
         lines = path.read_text().strip().splitlines()
+
         text_parts: List[str] = []
         for line in lines:
             if not line.strip():
                 continue
             try:
-                msg = json.loads(line)
-                # Extract text from assistant messages
+                entry = json.loads(line)
+
+                # Claude Code transcript format: content is inside entry["message"]
+                msg = entry.get("message", entry)  # fallback to entry itself for simple format
                 role = msg.get("role", "")
-                if role == "assistant":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        text_parts.append(content)
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
-                            elif isinstance(block, str):
-                                text_parts.append(block)
+                if role != "assistant":
+                    continue
+
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
             except (json.JSONDecodeError, TypeError):
                 continue
 
-        return "\n".join(text_parts)
+        result = "\n".join(text_parts)
+        logger.debug("Extracted %d text parts, total length: %d chars", len(text_parts), len(result))
+        return result
 
     except Exception as e:
         logger.debug("Failed to read transcript from %s: %s", transcript_path, e)
@@ -803,7 +826,7 @@ if __name__ == "__main__":
 
             hook_data = json.loads(stdin_data)
 
-            logger.info(f"Hook event: {hook_data.get('hook_event_name')}")
+            logger.info(f"Hook event: {hook_data.get('hook_event_name')}, agent: {hook_data.get('agent_type', 'unknown')}")
 
             # Build task_info from Claude Code SubagentStop payload
             task_info = _build_task_info_from_hook_data(hook_data)
@@ -811,6 +834,7 @@ if __name__ == "__main__":
             # Extract agent output from transcript file
             transcript_path = hook_data.get("agent_transcript_path", "")
             agent_output = _read_transcript(transcript_path) if transcript_path else ""
+            logger.info(f"Agent output: {len(agent_output)} chars from transcript")
 
             # Run the full processing chain
             result = subagent_stop_hook(task_info, agent_output)
