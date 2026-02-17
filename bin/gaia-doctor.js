@@ -12,7 +12,8 @@
  *   npx gaia-doctor --json       # Output as JSON (for CI)
  */
 
-import { join, relative } from 'path';
+import { fileURLToPath } from 'url';
+import { dirname, join, relative } from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { exec } from 'child_process';
@@ -22,11 +23,22 @@ import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
 const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const CWD = process.cwd();
 
 // ============================================================================
 // Health Checks
 // ============================================================================
+
+async function checkGaiaVersion() {
+  try {
+    const pkg = JSON.parse(await fs.readFile(join(__dirname, '..', 'package.json'), 'utf-8'));
+    return { name: 'Gaia-Ops', ok: true, detail: `v${pkg.version}` };
+  } catch {
+    return { name: 'Gaia-Ops', ok: false, detail: 'Version unknown', fix: 'Reinstall @jaguilar87/gaia-ops' };
+  }
+}
 
 async function checkSymlinks() {
   const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills', 'CHANGELOG.md'];
@@ -324,11 +336,12 @@ async function main() {
     .option('fix', { type: 'boolean', description: 'Attempt auto-fix for common issues', default: false })
     .option('json', { type: 'boolean', description: 'Output as JSON', default: false })
     .help('h').alias('h', 'help')
-    .version('1.0.0')
+    .version(false)
     .parse();
 
   // Run all checks
   const checks = [
+    checkGaiaVersion,
     checkClaudeCode,
     checkSymlinks,
     checkClaudeMd,
@@ -356,7 +369,10 @@ async function main() {
   }
 
   // Human-readable output
-  console.log(chalk.cyan('\n  Gaia-Ops Health Check\n'));
+  // Extract version for header
+  const gaiaCheck = results.find(r => r.name === 'Gaia-Ops');
+  const versionTag = gaiaCheck?.ok ? chalk.gray(` (${gaiaCheck.detail})`) : '';
+  console.log(chalk.cyan(`\n  Gaia-Ops Health Check${versionTag}\n`));
 
   let allOk = true;
 
