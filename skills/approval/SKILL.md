@@ -1,8 +1,7 @@
 ---
 name: approval
 description: How to present plans for T3 approval - structured plan presentation and risk communication
-phase: approval
-triggers: [apply, deploy, create, delete, push, commit]
+user-invocable: false
 ---
 
 # Approval Skill

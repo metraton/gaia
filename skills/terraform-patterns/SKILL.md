@@ -1,7 +1,7 @@
 ---
 name: terraform-patterns
 description: Terraform and Terragrunt patterns specific to this project
-triggers: [terraform, terragrunt, hcl, module, vpc, eks, rds]
+user-invocable: false
 ---
 
 # Terraform Patterns for This Project

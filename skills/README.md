@@ -1,154 +1,81 @@
 # Skills System
 
-Skills are on-demand knowledge modules loaded based on context triggers. They reduce token duplication and improve maintainability.
+Skills are knowledge modules that extend agent capabilities. They use Claude Code's native skill system for automatic discovery and injection.
 
 ## Architecture
 
 ```
 .claude/skills/
-├── workflow/          # How to work (process patterns)
-│   ├── investigation/
-│   ├── approval/
-│   └── execution/
-└── domain/            # What patterns to use (technical patterns)
-    ├── terraform-patterns/
-    ├── gitops-patterns/
-    └── universal-protocol/
-```
-
-## Skill Categories
-
-| Category | Purpose | When Loaded | Example |
-|----------|---------|-------------|---------|
-| **Workflow** | Process/methodology | By workflow phase | investigation-skill: how to investigate before acting |
-| **Domain** | Technical patterns | By keywords in task | terraform-patterns: HCL patterns for this project |
-
-## Trigger Mechanism
-
-Skills are loaded when:
-1. **Workflow phase changes** (automatic) - investigation → approval → execution
-2. **Task contains trigger keywords** (see `skill-triggers.json`)
-
-## Skill Structure
-
-Each skill is a directory containing:
-
-```
-skill-name/
-└── SKILL.md          # Core skill content
-```
-
-### SKILL.md Format
-
-```markdown
----
-name: skill-name
-description: Brief description
-triggers: [keyword1, keyword2]  # For domain skills
-phase: start|investigation|approval|execution  # For workflow skills
----
-
-# Skill Name
-
-[Content that agents will read when skill is loaded]
+├── agent-protocol/        # AGENT_STATUS, local-first, error handling
+├── security-tiers/        # T0-T3 classification
+├── output-format/         # Report structure and icons
+├── context-updater/       # CONTEXT_UPDATE format
+├── git-conventions/       # Conventional commits
+├── fast-queries/          # Quick diagnostic scripts
+├── terraform-patterns/    # Terraform/Terragrunt patterns
+├── gitops-patterns/       # GitOps/Flux patterns
+├── command-execution/     # Shell security rules
+├── anti-patterns/         # Common mistakes by tool
+├── investigation/         # Local-first analysis methodology
+├── approval/              # T3 plan presentation workflow
+└── execution/             # Post-approval execution workflow
 ```
 
 ## How Skills Work
 
-1. **Hook intercepts Task tool call**
-   ```python
-   # pre_tool_use.py
-   if is_project_agent:
-       skills = skill_loader.load_skills(task_prompt, workflow_phase)
-   ```
+Skills are assigned to agents via the `skills:` field in agent frontmatter (`.claude/agents/<name>.md`). Claude Code injects the full skill content at subagent startup.
 
-2. **skill_loader.py determines which skills to load**
-   ```python
-   # Load workflow skill based on phase
-   if phase == "start":
-       load("workflow/investigation")
-
-   # Load domain skills based on keywords
-   if "terraform" in prompt:
-       load("domain/terraform-patterns")
-   ```
-
-3. **Skills are injected into prompt**
-   ```
-   # Project Context (Auto-Injected)
-   {...context...}
-
-   # Active Skills
-   ## investigation-skill
-   [content of investigation SKILL.md]
-
-   ## terraform-patterns
-   [content of terraform-patterns SKILL.md]
-
-   ---
-   # User Task
-   {original prompt}
-   ```
-
-## Benefits
-
-| Metric | Before Skills | After Skills |
-|--------|---------------|--------------|
-| Token duplication | ~6000 tokens repeated in 4 agents | ~1500 tokens in skills, loaded once |
-| Agent size | ~280 lines each | ~180 lines each |
-| Maintenance | Update 4 files | Update 1 skill |
-| Consistency | Can drift | Guaranteed consistent |
-
-## Usage Example
-
-**User request:** "Create a new VPC in terraform"
-
-**Skills loaded:**
-1. `workflow/investigation` (phase: start)
-2. `domain/terraform-patterns` (trigger: "terraform")
-3. `domain/universal-protocol` (auto_load for project agents)
-
-**Agent receives:**
-- Full project context (~3000 tokens)
-- Investigation skill (~500 tokens) - how to discover patterns first
-- Terraform patterns skill (~600 tokens) - HCL patterns for this project
-- Universal protocol skill (~400 tokens) - AGENT_STATUS format, Security Tiers
-
-**Total:** ~4500 tokens vs ~6000 without skills
-
-## Skill Development Guidelines
-
-### Do's
-- ✅ Keep skills focused and specific
-- ✅ Use concrete examples
-- ✅ Include decision trees when applicable
-- ✅ Update skills when patterns change
-
-### Don'ts
-- ❌ Duplicate information across skills
-- ❌ Make skills too generic (defeats the purpose)
-- ❌ Include project-specific credentials/secrets
-- ❌ Create skills for one-time operations
-
-## Testing Skills
-
-Test that skills load correctly:
-
-```bash
-# Test skill loader with agent and prompt
-python3 .claude/hooks/modules/skills/skill_loader.py \
-  --test \
-  --prompt "terraform apply vpc" \
-  --agent "terraform-architect"
-
-# Expected output:
-# Loaded skills:
-# - workflow/investigation (phase: start)
-# - domain/terraform-patterns (trigger: terraform)
-# - domain/universal-protocol (auto_load)
+```yaml
+# Example: agents/cloud-troubleshooter.md
+---
+name: cloud-troubleshooter
+skills:
+  - security-tiers
+  - output-format
+  - agent-protocol
+  - context-updater
+  - fast-queries
+---
 ```
 
-## Version History
+## Skill Assignment Matrix
 
-- v1.0 (2026-01-15): Initial skills system with workflow + domain categories
-- v1.1 (2026-01-15): Added universal-protocol skill for all project agents
+| Agent | Core Skills | Domain Skills |
+|-------|-------------|---------------|
+| cloud-troubleshooter | security-tiers, output-format, agent-protocol, context-updater | fast-queries |
+| terraform-architect | security-tiers, output-format, agent-protocol, context-updater | terraform-patterns, command-execution |
+| gitops-operator | security-tiers, output-format, agent-protocol, context-updater | gitops-patterns, command-execution |
+| devops-developer | security-tiers, output-format, agent-protocol, context-updater | command-execution |
+| gaia | security-tiers, output-format, agent-protocol | git-conventions |
+| speckit-planner | output-format | |
+
+## Skill Types
+
+| Type | Injection | Examples |
+|------|-----------|----------|
+| **Core** | Always via `skills:` | agent-protocol, security-tiers, output-format |
+| **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns |
+| **Workflow** | On-demand (agent reads file) | investigation, approval, execution |
+
+Workflow skills are large (200-500 lines) and loaded on-demand. Agents read them from disk when needed rather than receiving them at startup.
+
+## SKILL.md Format
+
+```yaml
+---
+name: skill-name
+description: When Claude should use this skill
+user-invocable: false  # Background knowledge, not a slash command
+---
+
+# Skill Content
+
+Instructions and patterns the agent follows.
+```
+
+## Development Guidelines
+
+- Keep skills focused and specific
+- Use `user-invocable: false` for background knowledge
+- Keep injected skills under 100 lines (move details to supporting files)
+- Reference workflow skills as readable files, not injected content

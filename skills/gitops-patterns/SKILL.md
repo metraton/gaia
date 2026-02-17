@@ -1,7 +1,7 @@
 ---
 name: gitops-patterns
 description: GitOps, Kubernetes, and Flux CD patterns specific to this project
-triggers: [kubectl, k8s, kubernetes, helm, flux, deploy, pod, service, manifest]
+user-invocable: false
 ---
 
 # GitOps Patterns for This Project

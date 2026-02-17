@@ -26,17 +26,7 @@ from datetime import datetime
 
 # Add modules to path
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent / "modules" / "skills"))
-
 from modules.core.paths import get_logs_dir
-
-# Import skill loader
-try:
-    from skill_loader import load_skills_for_task
-except ImportError:
-    # Fallback if skill_loader not available
-    def load_skills_for_task(prompt: str, subagent_type: str) -> str:
-        return ""
 
 # Import context exhaustion detector
 try:
@@ -75,23 +65,6 @@ PROJECT_AGENTS = [
     "devops-developer"
 ]
 
-
-def _load_skills_for_task(prompt: str, subagent_type: str) -> str:
-    """
-    Load skills on-demand for task
-
-    Args:
-        prompt: Task prompt
-        subagent_type: Agent type
-
-    Returns:
-        Formatted skills content (empty string if loader unavailable)
-    """
-    try:
-        return load_skills_for_task(prompt, subagent_type)
-    except Exception as e:
-        logger.warning(f"Failed to load skills: {e}")
-        return ""
 
 
 
@@ -273,18 +246,15 @@ def _inject_project_context(parameters: dict) -> dict:
             logger.error(f"Failed to parse context JSON: {e}")
             return parameters
 
-        # Load skills on-demand based on prompt
-        skills_content = _load_skills_for_task(prompt, subagent_type)
-
         # Check pending update count (non-blocking, fast path)
         pending_warning = _check_pending_updates_threshold()
 
-        # Inject context + skills into prompt
+        # Inject context into prompt (skills now loaded natively via agent frontmatter)
         enriched_prompt = f"""# Project Context (Auto-Injected)
 
 {json.dumps(context_payload, indent=2)}
 
-{skills_content}{pending_warning}---
+{pending_warning}---
 
 # User Task
 
@@ -657,12 +627,12 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     # Return updatedInput if prompt was modified by context/skills injection
     if parameters.get("prompt", "") != original_prompt:
         updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
-        logger.info(f"Returning updatedInput for {result.agent_name} (prompt enriched)")
+        logger.info(f"Returning updatedInput for {result.agent_name} (context injected)")
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
-                "permissionDecisionReason": f"Context and skills injected for {result.agent_name}",
+                "permissionDecisionReason": f"Context injected for {result.agent_name}",
                 "updatedInput": updated_input
             }
         }

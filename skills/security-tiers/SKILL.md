@@ -1,7 +1,7 @@
 ---
 name: security-tiers
-description: T0-T3 operation classification and approval requirements
-auto_load: true
+description: T0-T3 operation classification and approval requirements for infrastructure operations
+user-invocable: false
 ---
 
 # Security Tiers

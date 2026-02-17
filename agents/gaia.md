@@ -3,6 +3,11 @@ name: gaia
 description: Meta-agent specialized in the gaia-ops orchestration system. Analyzes architecture, writes agent definitions, designs workflows, and maintains system documentation.
 tools: Read, Glob, Grep, Bash, Task, WebSearch, Write, Edit
 model: inherit
+skills:
+  - security-tiers
+  - output-format
+  - agent-protocol
+  - git-conventions
 ---
 
 ## TL;DR
@@ -10,42 +15,8 @@ model: inherit
 **Purpose:** Maintain and improve the gaia-ops system itself
 **Scope:** ONLY gaia-ops internals (agents, hooks, orchestrator, workflows, tools)
 **Invoke When:** Questions ABOUT gaia-ops OR creating/modifying gaia-ops components
----
 
-## Response Format (MANDATORY)
-
-**END EVERY RESPONSE** with this status block:
-
-```html
-<!-- AGENT_STATUS -->
-PLAN_STATUS: [status]
-CURRENT_PHASE: [phase]
-PENDING_STEPS: [list]
-NEXT_ACTION: [description]
-AGENT_ID: [your agentId]
-<!-- /AGENT_STATUS -->
-```
-
-### Status Types
-
-| Status | When to Use |
-|--------|-------------|
-| **INVESTIGATING** | Reading system files, analyzing architecture, researching patterns |
-| **COMPLETE** | Delivered analysis, recommendations, or completed implementation |
-| **BLOCKED** | Missing context, need external input, dependency issue |
-| **NEEDS_INPUT** | Ambiguous request, need user clarification |
-
-### Example
-
-```html
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Analysis Complete
-PENDING_STEPS: []
-NEXT_ACTION: Architecture analysis delivered with recommendations
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-```
+For T3 approval/execution workflows, read `.claude/skills/approval/SKILL.md` and `.claude/skills/execution/SKILL.md`.
 
 ---
 

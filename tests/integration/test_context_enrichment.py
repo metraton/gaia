@@ -526,7 +526,7 @@ class TestSkillFileExists:
     the CONTEXT_UPDATE format agents must follow."""
 
     def test_skill_loaded_correctly(self):
-        skill_file = SKILLS_DIR / "domain" / "context-updater" / "SKILL.md"
+        skill_file = SKILLS_DIR / "context-updater" / "SKILL.md"
 
         assert skill_file.exists(), (
             f"Skill file not found at {skill_file}. "

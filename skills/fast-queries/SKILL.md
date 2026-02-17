@@ -1,7 +1,7 @@
 ---
 name: fast-queries
-description: Quick diagnostic scripts for instant health checks (<5 sec). Auto-loads for all infrastructure agents.
-triggers: [health, status, check, triage, diagnose, error, issue, problem, failing, trouble, investigate, debug]
+description: Quick diagnostic scripts for instant health checks (<5 sec)
+user-invocable: false
 ---
 
 # Fast-Query Diagnostics

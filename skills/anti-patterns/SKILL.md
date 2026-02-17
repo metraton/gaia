@@ -1,7 +1,7 @@
 ---
 name: anti-patterns
 description: Common mistakes to avoid by tool (kubectl, terraform, gcloud, helm, flux, npm, docker)
-triggers: [apply, deploy, create, kubectl, terraform, gcloud, helm, flux, npm, docker, build]
+user-invocable: false
 ---
 
 # Command Anti-Patterns

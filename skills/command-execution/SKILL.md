@@ -1,7 +1,7 @@
 ---
 name: command-execution
 description: Shell security rules, timeout guidelines, and execution best practices
-triggers: [bash, kubectl, terraform, gcloud, command, execute, apply, run]
+user-invocable: false
 ---
 
 # Command Execution Standards

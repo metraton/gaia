@@ -1,7 +1,7 @@
 ---
 name: output-format
 description: Global output contract and reporting standards for all agents
-auto_load: true
+user-invocable: false
 ---
 
 # Output Format Standards

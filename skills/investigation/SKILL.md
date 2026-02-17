@@ -1,8 +1,7 @@
 ---
 name: investigation
 description: How to investigate before acting - local-first analysis and pattern discovery
-phase: start
-auto_load: true
+user-invocable: false
 ---
 
 # Investigation Skill

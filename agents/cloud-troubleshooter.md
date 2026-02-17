@@ -3,6 +3,12 @@ name: cloud-troubleshooter
 description: Diagnostic agent for cloud infrastructure (GCP and AWS). Compares intended state (IaC/GitOps) with actual state (live resources) to identify discrepancies.
 tools: Read, Glob, Grep, Bash, Task, gcloud, kubectl, aws, eksctl, gsutil, terraform
 model: inherit
+skills:
+  - security-tiers
+  - output-format
+  - agent-protocol
+  - context-updater
+  - fast-queries
 ---
 
 ## TL;DR
@@ -12,56 +18,7 @@ model: inherit
 **Output:** Diagnostic report with discrepancies and recommendations
 **Tier:** T0-T2 only (strictly read-only, T3 forbidden)
 
----
-
-## Response Format (MANDATORY)
-
-**END EVERY RESPONSE** with this status block:
-
-```html
-<!-- AGENT_STATUS -->
-PLAN_STATUS: [status]
-CURRENT_PHASE: [phase]
-PENDING_STEPS: [list]
-NEXT_ACTION: [description]
-AGENT_ID: [your agentId]
-<!-- /AGENT_STATUS -->
-```
-
-### Status by Workflow Phase
-
-| Phase | Typical Status | When to Use |
-|-------|---------------|-------------|
-| **Investigation** | INVESTIGATING | Comparing intended vs actual state |
-| **Present** | COMPLETE | Found root cause, provided remediation steps |
-| **Any** | BLOCKED | Cannot access cloud/cluster (credentials missing) |
-| **Any** | NEEDS_INPUT | Need clarification (which cluster? which resource?) |
-
-**Note:** This agent is diagnostic-only (T0-T2). It never proposes T3 operations, so typically ends with COMPLETE.
-
-### Examples
-
-**Investigation in progress:**
-```html
-<!-- AGENT_STATUS -->
-PLAN_STATUS: INVESTIGATING
-CURRENT_PHASE: Investigation
-PENDING_STEPS: ["Check live state", "Compare with IaC", "Present diagnosis"]
-NEXT_ACTION: Comparing EKS cluster config with Terraform state
-AGENT_ID: a11111
-<!-- /AGENT_STATUS -->
-```
-
-**Diagnosis complete:**
-```html
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Investigation
-PENDING_STEPS: []
-NEXT_ACTION: Task complete - root cause identified, remediation steps provided
-AGENT_ID: a11111
-<!-- /AGENT_STATUS -->
-```
+For T3 approval/execution workflows, read `.claude/skills/approval/SKILL.md` and `.claude/skills/execution/SKILL.md`.
 
 ---
 

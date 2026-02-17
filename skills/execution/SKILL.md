@@ -1,8 +1,7 @@
 ---
 name: execution
 description: How to execute after approval - post-approval execution with verification
-phase: execution
-triggers: [approved, proceed, execute, "user approved"]
+user-invocable: false
 ---
 
 # Execution Skill
