@@ -325,6 +325,34 @@ def _check_pending_updates_threshold() -> str:
         return ""
 
 
+def _consume_anomaly_flag(enriched_prompt: str) -> str:
+    """Read and delete the needs_analysis.flag if it exists, appending a warning.
+
+    The flag is created by subagent_stop.py when workflow anomalies are
+    detected.  Reading it once and deleting ensures the warning is shown
+    exactly once.  Must not slow down context injection -- returns
+    immediately if the file does not exist.
+    """
+    flag_path = Path(".claude/memory/workflow-episodic/signals/needs_analysis.flag")
+    if not flag_path.exists():
+        return enriched_prompt
+    try:
+        signal_data = json.loads(flag_path.read_text())
+        anomalies = signal_data.get("anomalies", [])
+        summary = "; ".join(a.get("message", "") for a in anomalies if a.get("message"))
+        if summary:
+            enriched_prompt += (
+                f"\n# Anomaly Alert\n"
+                f"Recent anomalies detected: {summary}. "
+                f"Consider investigating with /gaia.\n"
+            )
+        flag_path.unlink()
+        logger.info("Consumed anomaly flag and injected warning")
+    except Exception as e:
+        logger.debug(f"Failed to consume anomaly flag (non-fatal): {e}")
+    return enriched_prompt
+
+
 def _inject_project_context(parameters: dict) -> dict:
     """
     Inject project context for project agents.
@@ -429,6 +457,10 @@ def _inject_project_context(parameters: dict) -> dict:
         # Add metadata for TaskValidator to know the original user task
         # This prevents T3 keyword detection in injected context
         parameters["_original_user_task"] = prompt
+
+        # Check for anomaly signal flag created by subagent_stop.py
+        enriched_prompt = _consume_anomaly_flag(enriched_prompt)
+        parameters["prompt"] = enriched_prompt
 
         context_level = context_payload.get("metadata", {}).get("context_level", "unknown")
         standards_count = context_payload.get("metadata", {}).get("standards_count", 0)

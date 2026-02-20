@@ -201,26 +201,14 @@ def capture_workflow_metrics(task_info: Dict[str, Any], agent_output: str, sessi
     Returns:
         Dict with duration, exit_code, agent, tier, etc.
     """
-    # Try to extract duration from agent output
-    duration_match = re.search(r"Duration:\s*(\d+)\s*ms", agent_output)
-    if not duration_match:
-        # Alternative pattern
-        duration_match = re.search(r"took\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)", agent_output)
-        if duration_match:
-            duration_ms = int(float(duration_match.group(1)) * 1000)
-        else:
-            duration_ms = None
-    else:
-        duration_ms = int(duration_match.group(1))
+    # Duration cannot be reliably measured from within this hook because
+    # it fires only at agent completion (no start timestamp available).
+    # The previous regex-based extraction almost never matched real output.
+    duration_ms = None
 
-    # Try to extract exit code
-    exit_code = 0  # Default to success
-    if "error" in agent_output.lower() or "failed" in agent_output.lower():
-        exit_code_match = re.search(r"exit\s+code:?\s*(\d+)", agent_output.lower())
-        if exit_code_match:
-            exit_code = int(exit_code_match.group(1))
-        else:
-            exit_code = 1  # Generic error
+    # Use exit_code from task_info (derived from AGENT_STATUS block) instead
+    # of naive text matching which gives false positives on "No errors found".
+    exit_code = task_info.get("exit_code", 0)
 
     metrics = {
         "timestamp": session_context["timestamp"],
@@ -444,106 +432,6 @@ def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
         return None
 
 
-def extract_and_store_discoveries(
-    agent_output: str, task_info: Dict[str, Any], episode_id: Optional[str] = None
-) -> List[str]:
-    """
-    Extract structural discoveries from agent output and store as pending updates.
-
-    .. deprecated:: 002-progressive-context-enrichment
-        Replaced by ``_process_context_updates()`` (Step 5). Agents now emit
-        CONTEXT_UPDATE blocks processed by context_writer. This function will
-        be removed in a future release.
-
-    Only processes agents in PROJECT_AGENTS list. Failures are logged but never
-    propagated — this function must NEVER break the existing subagent_stop flow.
-
-    Args:
-        agent_output: Complete output from agent execution
-        task_info: Task metadata (agent, description, task_id)
-        episode_id: Optional episode ID to link discoveries to
-
-    Returns:
-        List of created/deduplicated update IDs (empty on error or no discoveries)
-    """
-    PROJECT_AGENTS = [
-        "terraform-architect", "gitops-operator",
-        "cloud-troubleshooter", "devops-developer"
-    ]
-
-    agent_type = task_info.get("agent", "unknown")
-    if agent_type not in PROJECT_AGENTS:
-        logger.debug(f"Skipping discovery extraction for non-project agent: {agent_type}")
-        return []
-
-    try:
-        import importlib.util
-
-        # Load discovery classifier
-        classifier_path = Path(__file__).parent / "modules" / "context" / "discovery_classifier.py"
-        if not classifier_path.exists():
-            logger.debug("Discovery classifier not found, skipping extraction")
-            return []
-
-        spec = importlib.util.spec_from_file_location("discovery_classifier", classifier_path)
-        if not spec or not spec.loader:
-            return []
-        classifier_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(classifier_mod)
-
-        # Load pending update store
-        store_path = Path(__file__).parent.parent / "tools" / "context" / "pending_updates.py"
-        if not store_path.exists():
-            logger.debug("PendingUpdateStore not found, skipping extraction")
-            return []
-
-        store_spec = importlib.util.spec_from_file_location("pending_updates", store_path)
-        if not store_spec or not store_spec.loader:
-            return []
-        store_mod = importlib.util.module_from_spec(store_spec)
-        store_mod.sys = sys
-        store_spec.loader.exec_module(store_mod)
-
-        # Classify agent output
-        user_task = task_info.get("description", task_info.get("prompt", ""))
-        discoveries = classifier_mod.classify_output(agent_output, agent_type, user_task)
-
-        if not discoveries:
-            logger.debug(f"No structural discoveries found in {agent_type} output")
-            return []
-
-        # Store each discovery as a pending update
-        store = store_mod.PendingUpdateStore()
-        update_ids = []
-
-        for disc in discoveries:
-            try:
-                dr = store_mod.DiscoveryResult(
-                    category=disc.category.value if hasattr(disc.category, 'value') else str(disc.category),
-                    target_section=disc.target_section,
-                    proposed_change=disc.proposed_change,
-                    summary=disc.summary,
-                    confidence=disc.confidence,
-                    source_agent=agent_type,
-                    source_task=user_task[:200],
-                    source_episode_id=episode_id or "",
-                )
-                uid = store.create(dr)
-                update_ids.append(uid)
-            except Exception as e:
-                logger.debug(f"Failed to store discovery: {e}")
-                continue
-
-        if update_ids:
-            logger.info(f"Stored {len(update_ids)} discoveries from {agent_type}")
-
-        return update_ids
-
-    except Exception as e:
-        logger.debug(f"Discovery extraction failed (non-fatal): {e}")
-        return []
-
-
 def _process_context_updates(agent_output: str, task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Process CONTEXT_UPDATE blocks from agent output via context_writer.
@@ -650,11 +538,7 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         # Step 3: Capture as episodic memory
         episode_id = capture_episodic_memory(workflow_metrics)
 
-        # Step 4: Extract and store structural discoveries (DEPRECATED — replaced by Step 5)
-        # Kept for backward compatibility; will be removed in a future release.
-        discovery_ids = extract_and_store_discoveries(agent_output, task_info, episode_id)
-
-        # Step 5: Process context updates (progressive enrichment)
+        # Step 4: Process context updates (progressive enrichment)
         context_update_result = _process_context_updates(agent_output, task_info)
 
         return {
@@ -664,7 +548,6 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             "metrics_captured": True,
             "anomalies_detected": len(anomalies) if anomalies else 0,
             "episode_id": episode_id,
-            "discoveries": len(discovery_ids),
             "context_updated": context_update_result.get("updated", False) if context_update_result else False,
         }
 
@@ -732,7 +615,27 @@ def _read_transcript(transcript_path: str) -> str:
         return ""
 
 
-def _build_task_info_from_hook_data(hook_data: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_exit_code_from_output(agent_output: str) -> int:
+    """Derive exit code from the LAST AGENT_STATUS block in agent output.
+
+    Looks for PLAN_STATUS in the final assistant message.  If the status
+    contains COMPLETE -> 0, BLOCKED or ERROR -> 1.  Falls back to 0 when
+    no AGENT_STATUS is found (optimistic default).
+    """
+    # Find the last AGENT_STATUS block
+    status_match = None
+    for m in re.finditer(r"PLAN_STATUS:\s*(\S+)", agent_output):
+        status_match = m
+    if status_match:
+        status_value = status_match.group(1).upper()
+        if "COMPLETE" in status_value:
+            return 0
+        if "BLOCKED" in status_value or "ERROR" in status_value:
+            return 1
+    return 0
+
+
+def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str = "") -> Dict[str, Any]:
     """Build a task_info dict from the Claude Code SubagentStop stdin payload.
 
     Claude Code sends these fields for SubagentStop:
@@ -747,13 +650,17 @@ def _build_task_info_from_hook_data(hook_data: Dict[str, Any]) -> Dict[str, Any]
       - permission_mode: str
 
     We map these to the task_info format expected by subagent_stop_hook().
+    The exit_code is derived from the agent's AGENT_STATUS block when
+    agent_output is available.
     """
+    exit_code = _extract_exit_code_from_output(agent_output) if agent_output else 0
     return {
         "task_id": hook_data.get("agent_id", "unknown"),
         "description": f"SubagentStop for {hook_data.get('agent_type', 'unknown')}",
         "agent": hook_data.get("agent_type", "unknown"),
         "tier": "T0",  # SubagentStop is always a read/audit operation
         "tags": [],
+        "exit_code": exit_code,
     }
 
 
@@ -828,13 +735,14 @@ if __name__ == "__main__":
 
             logger.info(f"Hook event: {hook_data.get('hook_event_name')}, agent: {hook_data.get('agent_type', 'unknown')}")
 
-            # Build task_info from Claude Code SubagentStop payload
-            task_info = _build_task_info_from_hook_data(hook_data)
-
             # Extract agent output from transcript file
             transcript_path = hook_data.get("agent_transcript_path", "")
             agent_output = _read_transcript(transcript_path) if transcript_path else ""
             logger.info(f"Agent output: {len(agent_output)} chars from transcript")
+
+            # Build task_info from Claude Code SubagentStop payload
+            # (needs agent_output to derive exit_code from AGENT_STATUS)
+            task_info = _build_task_info_from_hook_data(hook_data, agent_output)
 
             # Run the full processing chain
             result = subagent_stop_hook(task_info, agent_output)

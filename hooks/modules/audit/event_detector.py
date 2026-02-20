@@ -4,11 +4,9 @@ Critical event detection.
 Detects events that warrant context updates:
 - Git commits
 - Git pushes
-- File modification batches
 - Spec-kit milestones
 """
 
-import os
 import re
 import logging
 from enum import Enum
@@ -50,10 +48,6 @@ class CriticalEvent:
 
 class CriticalEventDetector:
     """Detect critical events that warrant context updates."""
-
-    # Track file modifications within session
-    _file_modification_count: int = 0
-    _file_modification_threshold: int = int(os.environ.get("FILE_MOD_THRESHOLD", "3"))
 
     SPECKIT_COMMANDS = [
         "/speckit.specify",
@@ -140,21 +134,6 @@ class CriticalEventDetector:
             }
         )
 
-    def detect_file_modifications(self, tool_name: str) -> Optional[CriticalEvent]:
-        """Check if file modification count crosses threshold."""
-        if tool_name.lower() in ["edit", "write", "notebookedit"]:
-            CriticalEventDetector._file_modification_count += 1
-
-            if CriticalEventDetector._file_modification_count >= self._file_modification_threshold:
-                count = CriticalEventDetector._file_modification_count
-                CriticalEventDetector._file_modification_count = 0
-
-                return CriticalEvent(
-                    event_type=EventType.FILE_MODIFICATIONS,
-                    data={"modification_count": count}
-                )
-        return None
-
     def detect_speckit_milestone(
         self,
         tool_name: str,
@@ -190,11 +169,6 @@ class CriticalEventDetector:
 
         # Git push
         event = self.detect_git_push(tool_name, parameters, result, success)
-        if event:
-            events.append(event)
-
-        # File modifications
-        event = self.detect_file_modifications(tool_name)
         if event:
             events.append(event)
 

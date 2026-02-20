@@ -166,17 +166,10 @@ def project_env(tmp_path, monkeypatch):
     if real_contracts.exists():
         shutil.copy(real_contracts, config_dir / "context-contracts.gcp.json")
 
-    # Create pending-updates directory (needed by extract_and_store_discoveries)
+    # Create pending-updates directory
     pending_dir = context_dir / "pending-updates"
     pending_dir.mkdir(parents=True)
     (pending_dir / "applied").mkdir()
-
-    # Copy classification rules
-    rules_src = CONFIG_DIR / "classification-rules.json"
-    if rules_src.exists():
-        project_config_dir = tmp_path / "config"
-        project_config_dir.mkdir(exist_ok=True)
-        shutil.copy(rules_src, project_config_dir / "classification-rules.json")
 
     return {
         "tmp_path": tmp_path,
@@ -628,6 +621,7 @@ class TestBuildTaskInfoFromHookData:
         assert task_info["agent"] == "cloud-troubleshooter"
         assert task_info["tier"] == "T0"
         assert "SubagentStop" in task_info["description"]
+        assert task_info["exit_code"] == 0  # default when no agent_output
 
     def test_handles_missing_fields(self):
         mod = _import_subagent_stop()
@@ -635,3 +629,11 @@ class TestBuildTaskInfoFromHookData:
 
         assert task_info["task_id"] == "unknown"
         assert task_info["agent"] == "unknown"
+        assert task_info["exit_code"] == 0
+
+    def test_exit_code_from_agent_output(self):
+        mod = _import_subagent_stop()
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a789"}
+        output = "Checking...\nPLAN_STATUS: BLOCKED\nCannot reach cluster"
+        task_info = mod._build_task_info_from_hook_data(hook_data, output)
+        assert task_info["exit_code"] == 1

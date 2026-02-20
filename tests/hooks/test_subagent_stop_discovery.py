@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Integration tests for discovery extraction in subagent_stop hook.
+Integration tests for subagent_stop hook after extract_and_store_discoveries removal.
 
 Validates:
-1. Structural agent output creates pending updates
-2. Operational-only output creates no pending updates
-3. Non-project agents are skipped
-4. Failures in discovery extraction don't break the hook
-5. Episode references discovery if one was created
+1. _extract_exit_code_from_output correctly parses AGENT_STATUS
+2. _build_task_info_from_hook_data passes exit_code through
+3. subagent_stop_hook no longer returns 'discoveries' key
 """
 
 import sys
@@ -23,7 +21,11 @@ TOOLS_DIR = Path(__file__).parent.parent.parent / "tools"
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(TOOLS_DIR))
 
-from subagent_stop import extract_and_store_discoveries, subagent_stop_hook
+from subagent_stop import (
+    _extract_exit_code_from_output,
+    _build_task_info_from_hook_data,
+    subagent_stop_hook,
+)
 
 
 # ============================================================================
@@ -36,39 +38,9 @@ def isolate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKFLOW_MEMORY_BASE_PATH", str(tmp_path))
     monkeypatch.chdir(tmp_path)
 
-    # Create pending-updates directory structure
-    pending_dir = tmp_path / ".claude" / "project-context" / "pending-updates"
-    pending_dir.mkdir(parents=True)
-    (pending_dir / "applied").mkdir()
-
-    # Create classification rules config
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    rules_src = Path(__file__).parent.parent.parent / "config" / "classification-rules.json"
-    if rules_src.exists():
-        import shutil
-        shutil.copy(rules_src, config_dir / "classification-rules.json")
-
-    # Copy required modules to tmp_path so imports work
-    # Create hooks/modules/context structure
-    hooks_ctx = tmp_path / "hooks" / "modules" / "context"
-    hooks_ctx.mkdir(parents=True)
-    classifier_src = HOOKS_DIR / "modules" / "context" / "discovery_classifier.py"
-    if classifier_src.exists():
-        import shutil
-        shutil.copy(classifier_src, hooks_ctx / "discovery_classifier.py")
-        (hooks_ctx / "__init__.py").write_text("")
-        (tmp_path / "hooks" / "modules" / "__init__.py").write_text("")
-        (tmp_path / "hooks" / "__init__.py").write_text("")
-
-    # Create tools/context structure
-    tools_ctx = tmp_path / "tools" / "context"
-    tools_ctx.mkdir(parents=True)
-    store_src = TOOLS_DIR / "context" / "pending_updates.py"
-    if store_src.exists():
-        import shutil
-        shutil.copy(store_src, tools_ctx / "pending_updates.py")
-        (tools_ctx / "__init__.py").write_text("")
+    # Create minimal directory structure
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture
@@ -83,77 +55,70 @@ def structural_task_info():
     }
 
 
-@pytest.fixture
-def non_project_task_info():
-    """Task info for a non-project agent."""
-    return {
-        "task_id": "T002",
-        "description": "Explore codebase",
-        "agent": "Explore",
-        "tier": "T0",
-    }
+# ============================================================================
+# Test _extract_exit_code_from_output
+# ============================================================================
+
+class TestExtractExitCode:
+    """Test AGENT_STATUS-based exit code extraction."""
+
+    def test_complete_status_returns_zero(self):
+        output = "Some text\nPLAN_STATUS: COMPLETE\nMore text"
+        assert _extract_exit_code_from_output(output) == 0
+
+    def test_blocked_status_returns_one(self):
+        output = "Some text\nPLAN_STATUS: BLOCKED\nMore text"
+        assert _extract_exit_code_from_output(output) == 1
+
+    def test_no_status_returns_zero(self):
+        output = "Agent output with no status block"
+        assert _extract_exit_code_from_output(output) == 0
+
+    def test_last_status_wins(self):
+        output = "PLAN_STATUS: BLOCKED\nRetried...\nPLAN_STATUS: COMPLETE"
+        assert _extract_exit_code_from_output(output) == 0
+
+    def test_no_false_positive_on_error_text(self):
+        """Text like 'No errors found' should not trigger exit_code=1."""
+        output = "No errors found. All checks passed.\nPLAN_STATUS: COMPLETE"
+        assert _extract_exit_code_from_output(output) == 0
 
 
 # ============================================================================
-# Test extract_and_store_discoveries
+# Test _build_task_info_from_hook_data
 # ============================================================================
 
-class TestExtractAndStoreDiscoveries:
-    """Test the discovery extraction function."""
+class TestBuildTaskInfoExitCode:
+    """Test that _build_task_info_from_hook_data includes exit_code."""
 
-    def test_structural_output_creates_pending_update(self, structural_task_info):
-        output = (
-            "Investigation complete. Found that the WI binding "
-            "references wrong project 'old-proj' but should be 'new-proj'."
-        )
-        ids = extract_and_store_discoveries(output, structural_task_info)
-        assert len(ids) > 0
+    def test_exit_code_from_complete_output(self):
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
+        output = "PLAN_STATUS: COMPLETE"
+        task_info = _build_task_info_from_hook_data(hook_data, output)
+        assert task_info["exit_code"] == 0
 
-    def test_operational_output_creates_no_updates(self, structural_task_info):
-        output = (
-            "$ kubectl get pods -n common\n"
-            "NAME                     READY   STATUS    RESTARTS   AGE\n"
-            "auth-api-7f8d9c-abc12    1/1     Running   0          5d\n"
-            "CPU usage: 45% average.\n"
-        )
-        ids = extract_and_store_discoveries(output, structural_task_info)
-        assert len(ids) == 0
+    def test_exit_code_from_blocked_output(self):
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
+        output = "PLAN_STATUS: BLOCKED"
+        task_info = _build_task_info_from_hook_data(hook_data, output)
+        assert task_info["exit_code"] == 1
 
-    def test_non_project_agent_skipped(self, non_project_task_info):
-        output = "Discovered new service 'payment-api' running in namespace 'payments'."
-        ids = extract_and_store_discoveries(output, non_project_task_info)
-        assert len(ids) == 0
-
-    def test_failure_returns_empty_list(self, structural_task_info):
-        """Discovery extraction must never raise — returns [] on error."""
-        # Pass None output to trigger internal error
-        ids = extract_and_store_discoveries(None, structural_task_info)
-        assert ids == []
-
-    def test_episode_id_linked_to_discovery(self, structural_task_info, tmp_path):
-        output = "Discovered new service 'payment-api' running in namespace 'payments'."
-        ids = extract_and_store_discoveries(output, structural_task_info, episode_id="ep-test-123")
-        assert len(ids) > 0
-
-        # Read the index to verify episode_id was stored
-        index_path = tmp_path / ".claude" / "project-context" / "pending-updates" / "pending-index.json"
-        if index_path.exists():
-            index = json.loads(index_path.read_text())
-            for uid, data in index.get("updates", {}).items():
-                if uid in ids:
-                    assert data.get("source_episode_id") == "ep-test-123"
+    def test_exit_code_default_without_output(self):
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
+        task_info = _build_task_info_from_hook_data(hook_data)
+        assert task_info["exit_code"] == 0
 
 
 # ============================================================================
 # Test subagent_stop_hook integration
 # ============================================================================
 
-class TestSubagentStopHookDiscovery:
-    """Test that subagent_stop_hook includes discovery extraction."""
+class TestSubagentStopHookPostRemoval:
+    """Test that subagent_stop_hook works after extract_and_store_discoveries removal."""
 
     @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
-    def test_hook_returns_discoveries_count(self, mock_episodic, structural_task_info):
-        output = "Discovered new service 'api-gw' running in namespace 'gateway'."
+    def test_hook_no_longer_returns_discoveries(self, mock_episodic, structural_task_info):
+        output = "All checks passed.\nPLAN_STATUS: COMPLETE"
         result = subagent_stop_hook(structural_task_info, output)
         assert result["success"] is True
-        assert "discoveries" in result
+        assert "discoveries" not in result
