@@ -63,16 +63,19 @@ async function runScan() {
   const spinner = ora('Scanning project structure...').start();
 
   try {
-    const [dirs, cloud, gitRemotes, claudeCode] = await Promise.all([
+    const [dirs, cloud, tfvars, gitRemotes, k8s, identity, claudeCode] = await Promise.all([
       scanDirectories(),
       scanCloudProvider(),
+      scanTfVars(),
       scanGitRemotes(),
+      scanKubernetesFiles(),
+      scanProjectIdentity(),
       scanClaudeCode()
     ]);
 
     spinner.succeed('Project scanned');
 
-    return { dirs, cloud, gitRemotes, claudeCode };
+    return { dirs, cloud, tfvars, gitRemotes, k8s, identity, claudeCode };
   } catch (error) {
     spinner.fail('Scan failed');
     throw error;
@@ -186,6 +189,218 @@ async function scanCloudProvider() {
 }
 
 /**
+ * Scan tfvars and terragrunt.hcl files for project ID, region, and cluster name.
+ * Falls back to these when provider blocks don't contain the values directly.
+ */
+async function scanTfVars() {
+  const result = { projectId: null, region: null, clusterName: null };
+
+  // Find terraform directory
+  const tfCandidates = ['terraform', 'tf', 'infrastructure', 'iac', 'infra'];
+  let tfDir = null;
+
+  for (const candidate of tfCandidates) {
+    const path = join(CWD, candidate);
+    if (existsSync(path)) {
+      tfDir = path;
+      break;
+    }
+  }
+
+  if (!tfDir) return result;
+
+  // Collect tfvars and terragrunt.hcl files (max 3 levels deep)
+  const tfvarsFiles = await findFiles(tfDir, '.tfvars', 3);
+  const hclFiles = await findFiles(tfDir, '.hcl', 3);
+
+  // Filter hcl to only terragrunt.hcl files
+  const terragruntFiles = hclFiles.filter(f => basename(f) === 'terragrunt.hcl');
+  const allFiles = [...tfvarsFiles, ...terragruntFiles];
+
+  // Variable name patterns to match
+  const projectPatterns = ['project', 'project_id', 'gcp_project', 'google_project', 'aws_account_id'];
+  const regionPatterns = ['region', 'gcp_region', 'aws_region', 'location'];
+  const clusterPatterns = ['cluster_name', 'cluster', 'gke_cluster_name', 'eks_cluster_name'];
+
+  for (const file of allFiles) {
+    try {
+      const content = await fs.readFile(file, 'utf-8');
+
+      // Parse simple key=value assignments: key = "value"
+      // Matches both top-level and inside inputs/locals blocks
+      const assignmentRegex = /^\s*(\w+)\s*=\s*"([^"]+)"/gm;
+      let match;
+
+      while ((match = assignmentRegex.exec(content)) !== null) {
+        const [, key, value] = match;
+        const keyLower = key.toLowerCase();
+
+        if (!result.projectId && projectPatterns.includes(keyLower)) {
+          result.projectId = value;
+        }
+        if (!result.region && regionPatterns.includes(keyLower)) {
+          result.region = value;
+        }
+        if (!result.clusterName && clusterPatterns.includes(keyLower)) {
+          result.clusterName = value;
+        }
+      }
+
+      // Stop early if all values found
+      if (result.projectId && result.region && result.clusterName) break;
+    } catch {
+      // Skip unreadable files
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Scan Kubernetes/GitOps manifests for cluster name references.
+ * Looks at Flux Kustomization files and cluster-related YAML.
+ */
+async function scanKubernetesFiles() {
+  const result = { clusterName: null };
+
+  // Find gitops directory
+  const gitopsCandidates = ['gitops', 'k8s', 'kubernetes', 'manifests', 'deployments'];
+  let gitopsDir = null;
+
+  for (const candidate of gitopsCandidates) {
+    const path = join(CWD, candidate);
+    if (existsSync(path)) {
+      gitopsDir = path;
+      break;
+    }
+  }
+
+  if (!gitopsDir) return result;
+
+  try {
+    // Look for cluster directories under gitops/ (e.g., gitops/clusters/<cluster-name>/)
+    // Also check for directories whose name contains "cluster"
+    const entries = await fs.readdir(gitopsDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+
+      // Check if directory name itself indicates a cluster
+      if (entry.name === 'clusters') {
+        try {
+          const clusterEntries = await fs.readdir(join(gitopsDir, entry.name), { withFileTypes: true });
+          for (const clusterEntry of clusterEntries) {
+            if (clusterEntry.isDirectory() && !clusterEntry.name.startsWith('.')) {
+              result.clusterName = clusterEntry.name;
+              return result;
+            }
+          }
+        } catch {
+          // Skip unreadable
+        }
+      }
+
+      // Scan YAML files for Flux Kustomization spec.path referencing cluster
+      const subDir = join(gitopsDir, entry.name);
+      try {
+        const yamlFiles = await findFiles(subDir, '.yaml', 3);
+        for (const file of yamlFiles) {
+          try {
+            const content = await fs.readFile(file, 'utf-8');
+
+            // Flux gotk-sync.yaml: path: ./clusters/<cluster-name>
+            const pathMatch = content.match(/path:\s*\.\/clusters\/([^\s/]+)/);
+            if (pathMatch && !result.clusterName) {
+              result.clusterName = pathMatch[1];
+              return result;
+            }
+
+            // Look for cluster name in Kustomization metadata
+            if (content.includes('kind: Kustomization') && content.includes('toolkit.fluxcd.io')) {
+              const nameMatch = content.match(/name:\s+([^\s]+cluster[^\s]*)/i);
+              if (nameMatch && !result.clusterName) {
+                result.clusterName = nameMatch[1];
+                return result;
+              }
+            }
+          } catch {
+            // Skip unreadable files
+          }
+        }
+      } catch {
+        // Skip unreadable subdirectories
+      }
+    }
+  } catch {
+    // Skip if gitops dir not readable
+  }
+
+  return result;
+}
+
+/**
+ * Detect project identity: project name, git platform, and CI/CD platform.
+ * Uses only local file scanning (no external CLI calls).
+ */
+async function scanProjectIdentity() {
+  const result = { projectName: null, gitPlatform: null, ciPlatform: null };
+
+  // 1. Project name from package.json or directory name
+  try {
+    const pkgPath = join(CWD, 'package.json');
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf-8'));
+      if (pkg.name && !pkg.name.startsWith('@') && pkg.name !== 'my-project') {
+        result.projectName = pkg.name;
+      } else if (pkg.name && pkg.name.startsWith('@')) {
+        // Scoped package: extract the package part after /
+        const parts = pkg.name.split('/');
+        if (parts.length > 1 && parts[1] !== 'my-project') {
+          result.projectName = parts[1];
+        }
+      }
+    }
+  } catch {
+    // Skip
+  }
+
+  if (!result.projectName) {
+    result.projectName = basename(CWD);
+  }
+
+  // 2. Git platform from remote URLs
+  try {
+    if (existsSync(join(CWD, '.git'))) {
+      const remote = await getGitRemote(CWD);
+      if (remote) {
+        if (remote.includes('gitlab.com') || remote.includes('gitlab.')) result.gitPlatform = 'gitlab';
+        else if (remote.includes('github.com')) result.gitPlatform = 'github';
+        else if (remote.includes('bitbucket.org') || remote.includes('bitbucket.')) result.gitPlatform = 'bitbucket';
+      }
+    }
+  } catch {
+    // Skip
+  }
+
+  // 3. CI/CD platform from config files
+  try {
+    if (existsSync(join(CWD, '.gitlab-ci.yml'))) {
+      result.ciPlatform = 'gitlab-ci';
+    } else if (existsSync(join(CWD, '.github', 'workflows'))) {
+      result.ciPlatform = 'github-actions';
+    } else if (existsSync(join(CWD, 'Jenkinsfile'))) {
+      result.ciPlatform = 'jenkins';
+    } else if (existsSync(join(CWD, '.circleci'))) {
+      result.ciPlatform = 'circleci';
+    }
+  } catch {
+    // Skip
+  }
+
+  return result;
+}
+
+/**
  * Extract the content of a provider block from HCL/TF content.
  * Handles nested braces to find the correct closing brace.
  */
@@ -283,9 +498,12 @@ function buildConfig(scan, args) {
     terraform: args.terraform || process.env.CLAUDE_TERRAFORM_DIR || scan.dirs.terraform || './terraform',
     appServices: args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || scan.dirs.appServices || './app-services',
     cloudProvider: scan.cloud.provider || 'gcp',
-    projectId: args.projectId || process.env.CLAUDE_PROJECT_ID || scan.cloud.projectId || '',
-    region: args.region || process.env.CLAUDE_REGION || scan.cloud.region || '',
-    clusterName: args.cluster || process.env.CLAUDE_CLUSTER_NAME || '',
+    projectId: args.projectId || process.env.CLAUDE_PROJECT_ID || scan.cloud.projectId || scan.tfvars.projectId || '',
+    region: args.region || process.env.CLAUDE_REGION || scan.cloud.region || scan.tfvars.region || '',
+    clusterName: args.cluster || process.env.CLAUDE_CLUSTER_NAME || scan.tfvars.clusterName || scan.k8s.clusterName || '',
+    projectName: scan.identity.projectName || basename(CWD),
+    gitPlatform: scan.identity.gitPlatform || null,
+    ciPlatform: scan.identity.ciPlatform || null,
     projectContextRepo: args.projectContextRepo || process.env.CLAUDE_PROJECT_CONTEXT_REPO || '',
     claudeCode: scan.claudeCode,
     gitRemotes: scan.gitRemotes
@@ -322,6 +540,12 @@ async function displayAndConfirm(config) {
   printField('Project ID', config.projectId || null, !!config.projectId);
   printField('Region', config.region || null, !!config.region);
   printField('Cluster', config.clusterName || null, !!config.clusterName);
+
+  // Identity
+  console.log(chalk.white('\n  Identity'));
+  printField('Project Name', config.projectName || null, !!config.projectName);
+  printField('Git Platform', config.gitPlatform || null, !!config.gitPlatform);
+  printField('CI/CD', config.ciPlatform || null, !!config.ciPlatform);
 
   // Git remotes (informational)
   if (config.gitRemotes.length > 0) {
@@ -379,9 +603,10 @@ async function confirmOrEdit(config, gaps) {
       gapQuestions.push({
         type: 'text',
         name: 'projectId',
-        message: config.cloudProvider === 'aws' ? '  AWS Account ID:' : '  Cloud Project ID:',
-        initial: '',
-        validate: v => v.trim().length > 0 || 'Required for agent operations'
+        message: config.cloudProvider === 'aws'
+          ? '  AWS Account ID (Enter to skip):'
+          : '  Cloud Project ID (Enter to skip):',
+        initial: ''
       });
     }
 
@@ -389,7 +614,7 @@ async function confirmOrEdit(config, gaps) {
       gapQuestions.push({
         type: 'text',
         name: 'region',
-        message: '  Primary Region:',
+        message: '  Primary Region (Enter to skip):',
         initial: config.cloudProvider === 'gcp' ? 'us-central1' : 'us-east-1'
       });
     }
@@ -398,7 +623,7 @@ async function confirmOrEdit(config, gaps) {
       gapQuestions.push({
         type: 'text',
         name: 'clusterName',
-        message: '  Cluster Name (empty to skip):',
+        message: '  Cluster Name (Enter to skip):',
         initial: ''
       });
     }
@@ -649,6 +874,12 @@ async function generateProjectContext(config) {
     }
     if (config.cloudProvider === 'aws' || config.cloudProvider === 'multi-cloud') {
       projectDetails.account_id = config.projectId;
+    }
+    if (config.gitPlatform) {
+      projectDetails.git_platform = config.gitPlatform;
+    }
+    if (config.ciPlatform) {
+      projectDetails.ci_platform = config.ciPlatform;
     }
 
     // Build provider credentials
@@ -986,7 +1217,10 @@ async function main() {
       console.log(chalk.gray(`    Cloud:        ${config.cloudProvider?.toUpperCase()}`));
       console.log(chalk.gray(`    Project ID:   ${config.projectId || '(none)'}`));
       console.log(chalk.gray(`    Region:       ${config.region || '(none)'}`));
-      console.log(chalk.gray(`    Cluster:      ${config.clusterName || '(none)'}\n`));
+      console.log(chalk.gray(`    Cluster:      ${config.clusterName || '(none)'}`));
+      console.log(chalk.gray(`    Project Name: ${config.projectName || '(none)'}`));
+      console.log(chalk.gray(`    Git Platform: ${config.gitPlatform || '(none)'}`));
+      console.log(chalk.gray(`    CI/CD:        ${config.ciPlatform || '(none)'}\n`));
     } else {
       // Phase 2: Display + Confirm
       const { gaps } = await displayAndConfirm(config);
