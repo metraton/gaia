@@ -66,7 +66,7 @@ async function runScan() {
     const [dirs, cloud, tfvars, gitRemotes, k8s, identity, claudeCode] = await Promise.all([
       scanDirectories(),
       scanCloudProvider(),
-      scanTfVars(),
+      scanCloudValues(),
       scanGitRemotes(),
       scanKubernetesFiles(),
       scanProjectIdentity(),
@@ -84,6 +84,7 @@ async function runScan() {
 
 /**
  * Detect directory structure by scanning CWD for known patterns.
+ * Falls back to subdirectories that contain .git if not found at CWD level.
  */
 async function scanDirectories() {
   const result = { gitops: null, terraform: null, appServices: null };
@@ -101,12 +102,40 @@ async function scanDirectories() {
     appServices: ['app-services', 'services', 'apps', 'applications', 'src']
   };
 
+  // First pass: check CWD level
   for (const [key, patterns] of Object.entries(candidates)) {
     for (const pattern of patterns) {
       if (entries.includes(pattern)) {
         result[key] = `./${pattern}`;
         break;
       }
+    }
+  }
+
+  // Second pass: for any still-null paths, check subdirectories with .git
+  const missingKeys = Object.keys(candidates).filter(k => result[k] === null);
+  if (missingKeys.length > 0) {
+    const repos = await findSubdirRepos();
+    for (const repo of repos) {
+      let repoEntries;
+      try {
+        repoEntries = await fs.readdir(repo.path);
+      } catch {
+        continue;
+      }
+
+      for (const key of missingKeys) {
+        if (result[key] !== null) continue;
+        for (const pattern of candidates[key]) {
+          if (repoEntries.includes(pattern)) {
+            result[key] = `./${repo.name}/${pattern}`;
+            break;
+          }
+        }
+      }
+
+      // Stop early if all found
+      if (Object.values(result).every(v => v !== null)) break;
     }
   }
 
@@ -120,18 +149,8 @@ async function scanDirectories() {
 async function scanCloudProvider() {
   const result = { provider: null, projectId: null, region: null };
 
-  // Find terraform directory first
-  const tfCandidates = ['terraform', 'tf', 'infrastructure', 'iac', 'infra'];
-  let tfDir = null;
-
-  for (const candidate of tfCandidates) {
-    const path = join(CWD, candidate);
-    if (existsSync(path)) {
-      tfDir = path;
-      break;
-    }
-  }
-
+  // Find terraform directory (CWD first, then subdirs with .git)
+  const tfDir = await findTerraformDir();
   if (!tfDir) return result;
 
   // Recursively find .tf and .hcl files (max 3 levels deep to avoid huge scans)
@@ -189,71 +208,242 @@ async function scanCloudProvider() {
 }
 
 /**
- * Scan tfvars and terragrunt.hcl files for project ID, region, and cluster name.
- * Falls back to these when provider blocks don't contain the values directly.
+ * Global cloud value scanner. Searches ALL files recursively across the entire
+ * workspace (CWD + subdirectory repos) for project ID, region, and cluster name.
+ *
+ * Uses four extraction strategies:
+ *   A) HCL/TF key=value assignments (tfvars, terragrunt.hcl, .tf files)
+ *   B) CI/CD YAML variables (.gitlab-ci*.yml, .github/workflows/*.yml)
+ *   C) GCP Artifact Registry URLs (region-docker.pkg.dev/project/...)
+ *   D) GKE/EKS resource path references (projects/P/locations/R/clusters/C)
+ *
+ * Returns the most frequently found value for each field.
  */
-async function scanTfVars() {
-  const result = { projectId: null, region: null, clusterName: null };
+async function scanCloudValues() {
+  const candidates = {
+    projectId: new Map(),  // value -> { count, sources: Set }
+    region: new Map(),
+    clusterName: new Map()
+  };
 
-  // Find terraform directory
-  const tfCandidates = ['terraform', 'tf', 'infrastructure', 'iac', 'infra'];
-  let tfDir = null;
-
-  for (const candidate of tfCandidates) {
-    const path = join(CWD, candidate);
-    if (existsSync(path)) {
-      tfDir = path;
-      break;
+  /**
+   * Record a candidate value with its source file.
+   */
+  function record(field, value, source) {
+    if (!value || typeof value !== 'string') return;
+    // Basic sanity: skip template/variable references
+    if (value.includes('${') || value.includes('var.') || value.includes('local.')) return;
+    const map = candidates[field];
+    if (!map) return;
+    const existing = map.get(value);
+    if (existing) {
+      existing.count++;
+      existing.sources.add(source);
+    } else {
+      map.set(value, { count: 1, sources: new Set([source]) });
     }
   }
 
-  if (!tfDir) return result;
+  // ---- Collect all searchable directories: CWD + subdirectory repos ----
+  const searchRoots = [CWD];
+  const repos = await findSubdirRepos();
+  for (const repo of repos) {
+    searchRoots.push(repo.path);
+  }
 
-  // Collect tfvars and terragrunt.hcl files (max 3 levels deep)
-  const tfvarsFiles = await findFiles(tfDir, '.tfvars', 3);
-  const hclFiles = await findFiles(tfDir, '.hcl', 3);
+  // ---- Gather all relevant files across every root ----
+  const relevantExtensions = [
+    '.tfvars', '.hcl', '.tf',
+    '.yml', '.yaml'
+  ];
 
-  // Filter hcl to only terragrunt.hcl files
-  const terragruntFiles = hclFiles.filter(f => basename(f) === 'terragrunt.hcl');
-  const allFiles = [...tfvarsFiles, ...terragruntFiles];
+  const skipDirs = new Set([
+    'node_modules', '.git', '.terraform', 'vendor', 'dist',
+    'build', '__pycache__', '.next', '.cache', '.venv', 'venv'
+  ]);
 
-  // Variable name patterns to match
+  const allFiles = await findAllFiles(searchRoots, relevantExtensions, skipDirs, 8, 500);
+
+  // ---- HCL key=value patterns ----
   const projectPatterns = ['project', 'project_id', 'gcp_project', 'google_project', 'aws_account_id'];
   const regionPatterns = ['region', 'gcp_region', 'aws_region', 'location'];
   const clusterPatterns = ['cluster_name', 'cluster', 'gke_cluster_name', 'eks_cluster_name'];
 
+  // ---- CI/CD YAML variable patterns (case-insensitive substring match) ----
+  const ciProjectPatterns = ['project_id', 'project-id', 'gcp_project', 'account_id'];
+  const ciRegionPatterns = ['region'];
+  const ciClusterPatterns = ['cluster_name', 'cluster-name'];
+
+  // ---- Regex for GCP Artifact Registry URLs ----
+  // Matches: us-east4-docker.pkg.dev/oci-pos-dev-471216/registry-name
+  const artifactRegistryRegex = /([a-z]+-[a-z0-9]+(?:-[a-z0-9]+)*)-docker\.pkg\.dev\/([^/\s"']+)/g;
+
+  // ---- Regex for GKE/EKS full resource paths ----
+  // Matches: projects/PROJECT/locations/REGION/clusters/CLUSTER
+  const gkePathRegex = /projects\/([^/\s"']+)\/locations\/([^/\s"']+)\/clusters\/([^/\s"']+)/g;
+
   for (const file of allFiles) {
     try {
       const content = await fs.readFile(file, 'utf-8');
+      const ext = file.substring(file.lastIndexOf('.'));
+      const base = basename(file);
 
-      // Parse simple key=value assignments: key = "value"
-      // Matches both top-level and inside inputs/locals blocks
-      const assignmentRegex = /^\s*(\w+)\s*=\s*"([^"]+)"/gm;
-      let match;
-
-      while ((match = assignmentRegex.exec(content)) !== null) {
-        const [, key, value] = match;
-        const keyLower = key.toLowerCase();
-
-        if (!result.projectId && projectPatterns.includes(keyLower)) {
-          result.projectId = value;
-        }
-        if (!result.region && regionPatterns.includes(keyLower)) {
-          result.region = value;
-        }
-        if (!result.clusterName && clusterPatterns.includes(keyLower)) {
-          result.clusterName = value;
+      // ----- Strategy A: HCL/TF key=value assignments -----
+      if (ext === '.tfvars' || ext === '.tf' || base === 'terragrunt.hcl') {
+        const assignmentRegex = /^\s*(\w+)\s*=\s*"([^"]+)"/gm;
+        let m;
+        while ((m = assignmentRegex.exec(content)) !== null) {
+          const keyLower = m[1].toLowerCase();
+          const value = m[2];
+          if (projectPatterns.includes(keyLower)) record('projectId', value, file);
+          if (regionPatterns.includes(keyLower)) record('region', value, file);
+          if (clusterPatterns.includes(keyLower)) record('clusterName', value, file);
         }
       }
 
-      // Stop early if all values found
-      if (result.projectId && result.region && result.clusterName) break;
+      // ----- Strategy B: CI/CD YAML variables -----
+      if (ext === '.yml' || ext === '.yaml') {
+        // Match patterns like: KEY: value  or  KEY: "value"
+        const yamlKvRegex = /^\s*([\w-]+)\s*:\s*["']?([^"'\s#][^"'\n#]*)["']?\s*$/gm;
+        let m;
+        while ((m = yamlKvRegex.exec(content)) !== null) {
+          const keyLower = m[1].toLowerCase();
+          const value = m[2].trim();
+          // Skip template references and multiline indicators
+          if (value.startsWith('{') || value.startsWith('|') || value.startsWith('>')) continue;
+
+          if (ciProjectPatterns.some(p => keyLower.includes(p))) record('projectId', value, file);
+          if (ciRegionPatterns.some(p => keyLower.includes(p))) record('region', value, file);
+          if (ciClusterPatterns.some(p => keyLower.includes(p))) record('clusterName', value, file);
+        }
+      }
+
+      // ----- Strategy C: GCP Artifact Registry URLs (any file type) -----
+      {
+        let m;
+        artifactRegistryRegex.lastIndex = 0;
+        while ((m = artifactRegistryRegex.exec(content)) !== null) {
+          record('region', m[1], file);
+          record('projectId', m[2], file);
+        }
+      }
+
+      // ----- Strategy D: GKE/EKS resource path references (any file type) -----
+      {
+        let m;
+        gkePathRegex.lastIndex = 0;
+        while ((m = gkePathRegex.exec(content)) !== null) {
+          record('projectId', m[1], file);
+          record('region', m[2], file);
+          record('clusterName', m[3], file);
+        }
+      }
     } catch {
       // Skip unreadable files
     }
   }
 
-  return result;
+  // ---- Pick the most frequently found value for each field ----
+  function pickTop(map) {
+    if (map.size === 0) return null;
+    let topValue = null;
+    let topCount = 0;
+    for (const [value, { count }] of map) {
+      if (count > topCount) {
+        topCount = count;
+        topValue = value;
+      }
+    }
+    return topValue;
+  }
+
+  return {
+    projectId: pickTop(candidates.projectId),
+    region: pickTop(candidates.region),
+    clusterName: pickTop(candidates.clusterName)
+  };
+}
+
+/**
+ * Recursively walk multiple root directories collecting files that match
+ * any of the given extensions. Respects a skip-list of directory names,
+ * a maximum depth, and a maximum total file count.
+ *
+ * @param {string[]} roots       - Absolute paths to start searching from
+ * @param {string[]} extensions  - File extensions to include (e.g. ['.tf', '.yml'])
+ * @param {Set<string>} skipDirs - Directory names to skip
+ * @param {number} maxDepth      - Maximum recursion depth per root
+ * @param {number} maxFiles      - Stop collecting after this many files
+ * @returns {Promise<string[]>}  - Array of absolute file paths
+ */
+async function findAllFiles(roots, extensions, skipDirs, maxDepth, maxFiles) {
+  const results = [];
+  const visited = new Set(); // prevent scanning the same directory twice
+
+  async function walk(dir, depth) {
+    if (depth > maxDepth || results.length >= maxFiles) return;
+
+    const realDir = resolve(dir);
+    if (visited.has(realDir)) return;
+    visited.add(realDir);
+
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) return;
+
+      const name = entry.name;
+      if (name.startsWith('.') && name !== '.gitlab-ci.yml' && !name.startsWith('.gitlab-ci') && !name.startsWith('.github')) {
+        // Skip hidden files/dirs except CI config patterns
+        if (entry.isDirectory()) continue;
+        if (!name.startsWith('.gitlab-ci')) continue;
+      }
+
+      const fullPath = join(dir, name);
+
+      if (entry.isDirectory()) {
+        if (skipDirs.has(name)) continue;
+        await walk(fullPath, depth + 1);
+      } else {
+        // Check if file is too large (skip >1MB)
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.size > 1048576) continue;
+        } catch {
+          continue;
+        }
+
+        // Check extension match
+        const matches = extensions.some(ext => name.endsWith(ext));
+        if (matches) {
+          // Quick binary check: read first 512 bytes for null bytes
+          try {
+            const fd = await fs.open(fullPath, 'r');
+            const buf = Buffer.alloc(512);
+            await fd.read(buf, 0, 512, 0);
+            await fd.close();
+            if (buf.includes(0)) continue; // binary file
+          } catch {
+            continue;
+          }
+
+          results.push(fullPath);
+        }
+      }
+    }
+  }
+
+  for (const root of roots) {
+    if (results.length >= maxFiles) break;
+    await walk(root, 0);
+  }
+
+  return results;
 }
 
 /**
@@ -263,18 +453,8 @@ async function scanTfVars() {
 async function scanKubernetesFiles() {
   const result = { clusterName: null };
 
-  // Find gitops directory
-  const gitopsCandidates = ['gitops', 'k8s', 'kubernetes', 'manifests', 'deployments'];
-  let gitopsDir = null;
-
-  for (const candidate of gitopsCandidates) {
-    const path = join(CWD, candidate);
-    if (existsSync(path)) {
-      gitopsDir = path;
-      break;
-    }
-  }
-
+  // Find gitops directory (CWD first, then subdirs with .git)
+  const gitopsDir = await findGitopsDir();
   if (!gitopsDir) return result;
 
   try {
@@ -345,23 +525,33 @@ async function scanKubernetesFiles() {
 async function scanProjectIdentity() {
   const result = { projectName: null, gitPlatform: null, ciPlatform: null };
 
+  // Collect dirs to check: CWD first, then subdirs with .git
+  const dirsToCheck = [CWD];
+  const repos = await findSubdirRepos();
+  for (const repo of repos) {
+    dirsToCheck.push(repo.path);
+  }
+
   // 1. Project name from package.json or directory name
-  try {
-    const pkgPath = join(CWD, 'package.json');
-    if (existsSync(pkgPath)) {
-      const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf-8'));
-      if (pkg.name && !pkg.name.startsWith('@') && pkg.name !== 'my-project') {
-        result.projectName = pkg.name;
-      } else if (pkg.name && pkg.name.startsWith('@')) {
-        // Scoped package: extract the package part after /
-        const parts = pkg.name.split('/');
-        if (parts.length > 1 && parts[1] !== 'my-project') {
-          result.projectName = parts[1];
+  for (const dir of dirsToCheck) {
+    if (result.projectName) break;
+    try {
+      const pkgPath = join(dir, 'package.json');
+      if (existsSync(pkgPath)) {
+        const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf-8'));
+        if (pkg.name && !pkg.name.startsWith('@') && pkg.name !== 'my-project') {
+          result.projectName = pkg.name;
+        } else if (pkg.name && pkg.name.startsWith('@')) {
+          // Scoped package: extract the package part after /
+          const parts = pkg.name.split('/');
+          if (parts.length > 1 && parts[1] !== 'my-project') {
+            result.projectName = parts[1];
+          }
         }
       }
+    } catch {
+      // Skip
     }
-  } catch {
-    // Skip
   }
 
   if (!result.projectName) {
@@ -369,32 +559,38 @@ async function scanProjectIdentity() {
   }
 
   // 2. Git platform from remote URLs
-  try {
-    if (existsSync(join(CWD, '.git'))) {
-      const remote = await getGitRemote(CWD);
-      if (remote) {
-        if (remote.includes('gitlab.com') || remote.includes('gitlab.')) result.gitPlatform = 'gitlab';
-        else if (remote.includes('github.com')) result.gitPlatform = 'github';
-        else if (remote.includes('bitbucket.org') || remote.includes('bitbucket.')) result.gitPlatform = 'bitbucket';
+  for (const dir of dirsToCheck) {
+    if (result.gitPlatform) break;
+    try {
+      if (existsSync(join(dir, '.git'))) {
+        const remote = await getGitRemote(dir);
+        if (remote) {
+          if (remote.includes('gitlab.com') || remote.includes('gitlab.')) result.gitPlatform = 'gitlab';
+          else if (remote.includes('github.com')) result.gitPlatform = 'github';
+          else if (remote.includes('bitbucket.org') || remote.includes('bitbucket.')) result.gitPlatform = 'bitbucket';
+        }
       }
+    } catch {
+      // Skip
     }
-  } catch {
-    // Skip
   }
 
   // 3. CI/CD platform from config files
-  try {
-    if (existsSync(join(CWD, '.gitlab-ci.yml'))) {
-      result.ciPlatform = 'gitlab-ci';
-    } else if (existsSync(join(CWD, '.github', 'workflows'))) {
-      result.ciPlatform = 'github-actions';
-    } else if (existsSync(join(CWD, 'Jenkinsfile'))) {
-      result.ciPlatform = 'jenkins';
-    } else if (existsSync(join(CWD, '.circleci'))) {
-      result.ciPlatform = 'circleci';
+  for (const dir of dirsToCheck) {
+    if (result.ciPlatform) break;
+    try {
+      if (existsSync(join(dir, '.gitlab-ci.yml'))) {
+        result.ciPlatform = 'gitlab-ci';
+      } else if (existsSync(join(dir, '.github', 'workflows'))) {
+        result.ciPlatform = 'github-actions';
+      } else if (existsSync(join(dir, 'Jenkinsfile'))) {
+        result.ciPlatform = 'jenkins';
+      } else if (existsSync(join(dir, '.circleci'))) {
+        result.ciPlatform = 'circleci';
+      }
+    } catch {
+      // Skip
     }
-  } catch {
-    // Skip
   }
 
   return result;
@@ -494,9 +690,9 @@ async function scanClaudeCode() {
  */
 function buildConfig(scan, args) {
   return {
-    gitops: args.gitops || process.env.CLAUDE_GITOPS_DIR || scan.dirs.gitops || './gitops',
-    terraform: args.terraform || process.env.CLAUDE_TERRAFORM_DIR || scan.dirs.terraform || './terraform',
-    appServices: args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || scan.dirs.appServices || './app-services',
+    gitops: args.gitops || process.env.CLAUDE_GITOPS_DIR || scan.dirs.gitops || '',
+    terraform: args.terraform || process.env.CLAUDE_TERRAFORM_DIR || scan.dirs.terraform || '',
+    appServices: args.appServices || process.env.CLAUDE_APP_SERVICES_DIR || scan.dirs.appServices || '',
     cloudProvider: scan.cloud.provider || 'gcp',
     projectId: args.projectId || process.env.CLAUDE_PROJECT_ID || scan.cloud.projectId || scan.tfvars.projectId || '',
     region: args.region || process.env.CLAUDE_REGION || scan.cloud.region || scan.tfvars.region || '',
@@ -530,9 +726,9 @@ async function displayAndConfirm(config) {
 
   // Paths
   console.log(chalk.white('  Paths'));
-  printField('GitOps', config.gitops, existsSync(resolve(CWD, config.gitops)));
-  printField('Terraform', config.terraform, existsSync(resolve(CWD, config.terraform)));
-  printField('App Services', config.appServices, existsSync(resolve(CWD, config.appServices)));
+  printField('GitOps', config.gitops || null, config.gitops ? existsSync(resolve(CWD, config.gitops)) : false);
+  printField('Terraform', config.terraform || null, config.terraform ? existsSync(resolve(CWD, config.terraform)) : false);
+  printField('App Services', config.appServices || null, config.appServices ? existsSync(resolve(CWD, config.appServices)) : false);
 
   // Cloud
   console.log(chalk.white('\n  Cloud'));
@@ -570,6 +766,9 @@ async function displayAndConfirm(config) {
 
   // Identify gaps (items that need user input)
   const gaps = [];
+  if (!config.gitops) gaps.push('gitops');
+  if (!config.terraform) gaps.push('terraform');
+  if (!config.appServices) gaps.push('appServices');
   if (!config.projectId) gaps.push('projectId');
   if (!config.region) gaps.push('region');
   if (!config.clusterName) gaps.push('clusterName');
@@ -598,6 +797,33 @@ async function confirmOrEdit(config, gaps) {
     console.log(chalk.yellow(`  ${gaps.length} item(s) need your input:\n`));
 
     const gapQuestions = [];
+
+    if (gaps.includes('gitops')) {
+      gapQuestions.push({
+        type: 'text',
+        name: 'gitops',
+        message: '  GitOps directory (Enter to skip):',
+        initial: ''
+      });
+    }
+
+    if (gaps.includes('terraform')) {
+      gapQuestions.push({
+        type: 'text',
+        name: 'terraform',
+        message: '  Terraform directory (Enter to skip):',
+        initial: ''
+      });
+    }
+
+    if (gaps.includes('appServices')) {
+      gapQuestions.push({
+        type: 'text',
+        name: 'appServices',
+        message: '  App Services directory (Enter to skip):',
+        initial: ''
+      });
+    }
 
     if (gaps.includes('projectId')) {
       gapQuestions.push({
@@ -633,6 +859,9 @@ async function confirmOrEdit(config, gaps) {
     });
 
     // Merge gap answers into config
+    if (gapAnswers.gitops) config.gitops = gapAnswers.gitops;
+    if (gapAnswers.terraform) config.terraform = gapAnswers.terraform;
+    if (gapAnswers.appServices) config.appServices = gapAnswers.appServices;
     if (gapAnswers.projectId) config.projectId = gapAnswers.projectId;
     if (gapAnswers.region) config.region = gapAnswers.region;
     if (gapAnswers.clusterName !== undefined) config.clusterName = gapAnswers.clusterName;
@@ -972,6 +1201,8 @@ async function ensureProjectDirs(config) {
   ];
 
   for (const { path: dirPath, name } of dirs) {
+    // Skip dirs where path is empty/falsy — only create when actually detected or user-provided
+    if (!dirPath) continue;
     const absPath = isAbsolute(dirPath) ? dirPath : resolve(CWD, dirPath);
     if (!existsSync(absPath)) {
       await fs.mkdir(absPath, { recursive: true });
@@ -1112,6 +1343,85 @@ async function checkHooks() {
 // Utility functions
 // ============================================================================
 
+/**
+ * Find subdirectories of CWD that contain .git (they are repos).
+ * Returns array of {name, path} where path is the absolute path.
+ */
+async function findSubdirRepos() {
+  const repos = [];
+  try {
+    const entries = await fs.readdir(CWD, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const subDir = join(CWD, entry.name);
+      if (existsSync(join(subDir, '.git'))) {
+        repos.push({ name: entry.name, path: subDir });
+      }
+    }
+  } catch { /* skip */ }
+  return repos;
+}
+
+/**
+ * Find the terraform directory, checking CWD then subdirectories with .git.
+ * Returns absolute path or null.
+ */
+async function findTerraformDir() {
+  const candidates = ['terraform', 'tf', 'infrastructure', 'iac', 'infra'];
+
+  // Check CWD first
+  for (const c of candidates) {
+    const p = join(CWD, c);
+    if (existsSync(p)) return p;
+  }
+
+  // Check subdirectories that have .git (repos)
+  const repos = await findSubdirRepos();
+  for (const repo of repos) {
+    for (const c of candidates) {
+      const p = join(repo.path, c);
+      if (existsSync(p)) return p;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find the gitops directory, checking CWD then subdirectories with .git.
+ * Returns absolute path or null.
+ */
+async function findGitopsDir() {
+  const candidates = ['gitops', 'k8s', 'kubernetes', 'manifests', 'deployments'];
+
+  // Check CWD first
+  for (const c of candidates) {
+    const p = join(CWD, c);
+    if (existsSync(p)) return p;
+  }
+
+  // Check subdirectories that have .git (repos)
+  const repos = await findSubdirRepos();
+  for (const repo of repos) {
+    for (const c of candidates) {
+      const p = join(repo.path, c);
+      if (existsSync(p)) return p;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Convert an absolute path to a CWD-relative path prefixed with ./
+ */
+function toRelativePath(absPath) {
+  if (!absPath) return null;
+  const rel = relative(CWD, absPath);
+  if (!rel) return '.';
+  return rel.startsWith('.') ? rel : `./${rel}`;
+}
+
 async function getGitRemote(dir) {
   try {
     const { stdout } = await execAsync('git remote get-url origin', { cwd: dir, timeout: 5000 });
@@ -1144,6 +1454,7 @@ async function findFiles(dir, extension, maxDepth, currentDepth = 0) {
 }
 
 async function detectGitopsPlatform(gitopsPath) {
+  if (!gitopsPath) return 'flux';
   const absPath = isAbsolute(gitopsPath) ? gitopsPath : resolve(CWD, gitopsPath);
   if (!existsSync(absPath)) return 'flux';
 
@@ -1211,9 +1522,9 @@ async function main() {
     if (args.nonInteractive) {
       // Non-interactive: show what was detected and proceed
       console.log(chalk.cyan('\n  Configuration (auto-detected + overrides):\n'));
-      console.log(chalk.gray(`    GitOps:       ${config.gitops}`));
-      console.log(chalk.gray(`    Terraform:    ${config.terraform}`));
-      console.log(chalk.gray(`    App Services: ${config.appServices}`));
+      console.log(chalk.gray(`    GitOps:       ${config.gitops || '(not detected)'}`));
+      console.log(chalk.gray(`    Terraform:    ${config.terraform || '(not detected)'}`));
+      console.log(chalk.gray(`    App Services: ${config.appServices || '(not detected)'}`));
       console.log(chalk.gray(`    Cloud:        ${config.cloudProvider?.toUpperCase()}`));
       console.log(chalk.gray(`    Project ID:   ${config.projectId || '(none)'}`));
       console.log(chalk.gray(`    Region:       ${config.region || '(none)'}`));
