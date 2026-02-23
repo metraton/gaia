@@ -22,6 +22,7 @@ type(scope): short description (max 72 chars, no period)
 - Do NOT add `Co-Authored-By` or `Generated with Claude Code` footers (hooks auto-strip these)
 - Scope should reflect the module/area changed
 - Description starts lowercase, imperative mood
+- **Never use `git -C <path>`** — run git from the working directory directly. The permission system matches command prefixes; `git -C` breaks all `git <subcommand>:*` allow rules and triggers approval prompts for safe read-only operations.
 
 ## Hook Enforcement (Automatic)
 
