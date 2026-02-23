@@ -11,26 +11,26 @@ Proporcionan una base consistente para archivos de configuracion, permitiendo pe
 ## Como Funciona
 
 ```
-[gaia-init] recopila datos
+[gaia-init] recopila datos del proyecto
         |
 Lee template/
         |
-Copia estatica (CLAUDE.md) o merge (settings.json)
+Copia estatica (CLAUDE.md) o merge (settings.json) o interpolacion (governance.template.md)
         |
-Genera archivo final
+Genera archivo final en el proyecto del usuario
 ```
 
 ## Templates Disponibles
 
-### CLAUDE.template.md (~260 lineas)
+### CLAUDE.template.md (~66 lineas)
 
 Template estatico para el archivo del orquestador. Se copia tal cual por `gaia-init` y `gaia-update` — no tiene placeholders de interpolacion.
 
-Contiene: routing table, security tiers, T3 protocol, communication style, hook enforcement, system paths.
+Contiene: identity, routing table, descripciones de agentes, sintaxis del Task tool, work unit rule, processing agent responses.
 
 **Salida:** `./CLAUDE.md`
 
-### settings.template.json (~220 lineas)
+### settings.template.json (~727 lineas)
 
 Template para configuracion de permisos y seguridad.
 
@@ -41,6 +41,19 @@ Template para configuracion de permisos y seguridad.
 - Reglas GitOps security
 
 **Salida:** `./.claude/settings.json`
+
+### governance.template.md
+
+Template para el documento de governance del proyecto. Contiene placeholders que se rellenan con los valores del `project-context.json` generado por `gaia-init`.
+
+**Contiene:**
+- Stack Definition con placeholders: `[CLOUD_PROVIDER]`, `[PRIMARY_REGION]`, `[PROJECT_ID]`, `[CLUSTER_NAME]`, `[GITOPS_PATH]`, `[TERRAFORM_PATH]`, `[POSTGRES_INSTANCE]`, `[CONTAINER_REGISTRY]`
+- 6 principios arquitectonicos inmutables (Code-First, GitOps SSOT, Security Tiers, Conventional Commits, Workload Identity, Resource Limits)
+- Proceso de ADRs y evolucion de standards
+
+**Generado por:** `speckit.init` skill (via agente en el primer uso de speckit, o manualmente)
+**Sincronizado por:** agente `speckit-planner` al inicio de cada sesion (Step 0 automatico)
+**Salida:** `<speckit-root>/governance.md`
 
 ## Uso
 
@@ -68,4 +81,4 @@ npx gaia-init --force
 
 ---
 
-**Actualizado:** 2026-02-13 | **Templates:** 2
+**Actualizado:** 2026-02-23 | **Templates:** 3

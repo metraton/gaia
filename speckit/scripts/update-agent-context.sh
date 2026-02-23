@@ -34,9 +34,9 @@
 #    - Can update single agents or all existing agent files
 #    - Creates default Claude file if no agent files exist
 #
-# Usage: ./update-agent-context.sh [agent_type]
+# Usage: ./update-agent-context.sh <speckit-root> <feature-name> [agent_type]
 # Agent types: claude|gemini|copilot|cursor|qwen|opencode|codex|windsurf
-# Leave empty to update all existing agent files
+# Leave agent_type empty to update all existing agent files
 
 set -e
 
@@ -52,14 +52,22 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-# Load Spec-Kit configuration
-load_config
+# Parse arguments: <speckit-root> <feature-name> [agent_type]
+SPECKIT_ROOT_ARG="${1:-}"
+FEATURE_NAME_ARG="${2:-}"
+AGENT_TYPE="${3:-}"
 
-# Get all paths and variables from common functions
-eval $(get_feature_paths)
+if [[ -z "$SPECKIT_ROOT_ARG" ]] || [[ -z "$FEATURE_NAME_ARG" ]]; then
+    echo "ERROR: <speckit-root> and <feature-name> are required" >&2
+    echo "Usage: $0 <speckit-root> <feature-name> [agent_type]" >&2
+    echo "Example: $0 spec-kit-tcm-plan 004-project-guidance-deployment claude" >&2
+    exit 1
+fi
+
+# Get all paths and variables from explicit arguments
+eval $(get_feature_paths "$SPECKIT_ROOT_ARG" "$FEATURE_NAME_ARG")
 
 NEW_PLAN="$IMPL_PLAN"  # Alias for compatibility with existing code
-AGENT_TYPE="${1:-}"
 
 # Agent-specific file paths  
 CLAUDE_FILE="$REPO_ROOT/CLAUDE.md"
@@ -664,7 +672,7 @@ print_summary() {
     fi
     
     echo
-    log_info "Usage: $0 [claude|gemini|copilot|cursor|qwen|opencode|codex|windsurf|kilocode|auggie|roo]"
+    log_info "Usage: $0 <speckit-root> <feature-name> [claude|gemini|copilot|cursor|qwen|opencode|codex|windsurf|kilocode|auggie|roo]"
 }
 
 #==============================================================================

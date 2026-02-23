@@ -62,7 +62,7 @@ get_feature_paths() {
     # Derive all paths from these two arguments
     local specs_dir="$speckit_root/specs"
     local feature_dir="$specs_dir/$feature_name"
-    local constitution_path="$speckit_root/constitution.md"
+    local constitution_path="$speckit_root/governance.md"
     local templates_dir="$repo_root/.claude/speckit/templates"
     local scripts_dir="$repo_root/.claude/speckit/scripts"
 
@@ -106,9 +106,9 @@ validate_speckit_root() {
         return 1
     fi
 
-    # Optionally warn if constitution doesn't exist
-    if [[ ! -f "$speckit_root/constitution.md" ]]; then
-        echo "WARNING: constitution.md not found at $speckit_root/constitution.md" >&2
+    # Optionally warn if governance document doesn't exist
+    if [[ ! -f "$speckit_root/governance.md" ]]; then
+        echo "WARNING: governance.md not found at $speckit_root/governance.md" >&2
         echo "Consider creating it for project governance." >&2
     fi
 

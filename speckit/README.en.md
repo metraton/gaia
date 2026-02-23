@@ -2,16 +2,15 @@
 
 **[🇪🇸 Versión en Español](README.md)**
 
-Structured workflow framework for specification-driven feature development. Spec-Kit is an open-source framework that we've integrated and modified as agentic functionality for Claude Code, providing templates, scripts, and commands that guide features from initial specification through complete implementation with automatic routing to specialized agents.
+Structured workflow framework for specification-driven feature development. Spec-Kit is an open-source framework integrated as agentic functionality for Claude Code. It provides templates, scripts, and a lean agent (`speckit-planner`) that detects the current workflow phase from existing artifacts and loads the corresponding skill — no slash commands needed. governance.md is auto-generated on first use and kept in sync with `project-context.json` on every session.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Architecture](#architecture)
 - [Installation](#installation)
-- [Commands Reference](#commands-reference)
+- [Skills Reference](#skills-reference)
 - [Scripts Reference](#scripts-reference)
-- [Templates](#templates)
 - [Auto-Enrichment](#auto-enrichment)
 - [Agent Routing](#agent-routing)
 - [Troubleshooting](#troubleshooting)
@@ -30,11 +29,16 @@ Spec-Kit provides structured workflow for feature development:
 4. **Tasks** - Generate actionable task lists with metadata
 5. **Analyze** - Validate consistency across artifacts
 6. **Implement** - Execute tasks with automatic risk analysis
-7. **Constitution** - Maintain project governance principles
+7. **Status** - Inspect current feature state and get the exact next command
+8. **Validate** - Detect drift between declared and real completion
+9. **Governance** - Maintain project governance principles
 
 ### Key Features
 
-- ✅ **Explicit arguments** - Zero setup, everything via parameters
+- ✅ **Natural language** - No slash commands; describe what you need in plain language
+- ✅ **Phase auto-detection** - Agent reads artifacts and knows which skill to apply
+- ✅ **Governance auto-sync** - governance.md generated on first use, kept in sync with project-context on every session
+- ✅ **GOVERNANCE_UPDATE** - specify and plan skills detect new technologies and update governance.md automatically
 - ✅ **Multi-project** - Work with multiple spec-kits simultaneously
 - ✅ **Portable** - Works with any project structure
 - ✅ **Auto-enrichment** - Tasks automatically tagged with agent routing metadata
@@ -42,6 +46,8 @@ Spec-Kit provides structured workflow for feature development:
 - ✅ **Agent routing** - Tasks routed to specialized agents automatically
 - ✅ **Git-agnostic** - User controls Git workflow independently
 - ✅ **Template-based** - Consistent structure across features
+- ✅ **State machine** - Always know where you are and what to run next
+- ✅ **Drift detection** - Verify declared completions against real code evidence
 
 ## Architecture
 
@@ -64,14 +70,19 @@ Spec-Kit provides structured workflow for feature development:
 │   ├── adr-template.md      # Architecture Decision Record template
 │   └── agent-file-template.md  # Agent context file template
 
-.claude/commands/            # 7 /speckit.* commands
-├── speckit.specify.md       # Create specification
-├── speckit.init.md          # Initialize Spec-Kit structure
-├── speckit.plan.md          # Create implementation plan
-├── speckit.tasks.md         # Generate task list
-├── speckit.analyze-task.md  # Analyze specific task (deep-dive)
-├── speckit.implement.md     # Execute implementation
-└── speckit.add-task.md      # Add ad-hoc task (with auto-validation)
+.claude/agents/
+└── speckit-planner.md       # Lean agent — phase detection + skill dispatch
+
+.claude/skills/              # 9 speckit skills (one per workflow phase)
+├── speckit.init/SKILL.md        # Bootstrap project-context.json
+├── speckit.specify/SKILL.md     # Parse description, write spec.md
+├── speckit.plan/SKILL.md        # Generate plan.md + design artifacts
+├── speckit.tasks/SKILL.md       # Generate enriched tasks.md
+├── speckit.implement/SKILL.md   # Execute tasks with agents
+├── speckit.add-task/SKILL.md    # Add ad-hoc task with enrichment
+├── speckit.analyze-task/SKILL.md # Deep-dive before executing risky tasks
+├── speckit.status/SKILL.md      # State detection + next step
+└── speckit.validate/SKILL.md    # Drift detection
 
 .claude/tools/               # Python utilities
 ├── agent_router.py          # Route tasks to agents
@@ -79,7 +90,7 @@ Spec-Kit provides structured workflow for feature development:
 └── clarify_engine.py        # Ambiguity detection
 
 <project-root>/              # User-specified root (e.g., spec-kit-tcm-plan/)
-├── constitution.md          # Project governance principles
+├── governance.md            # Auto-generated by gaia-init, synced from project-context.json
 └── specs/                   # Feature specifications
     ├── 001-feature-name/
     │   ├── spec.md          # Feature specification
@@ -95,11 +106,11 @@ Spec-Kit provides structured workflow for feature development:
 
 | Component | Responsibility | Used By |
 |-----------|---------------|---------|
-| **Scripts** | Automation and validation | Commands via Bash |
-| **Templates** | Consistent feature structure | Scripts during creation |
-| **Commands** | User-facing workflow steps | Claude orchestrator |
-| **Tools** | Auto-enrichment, routing | Commands automatically |
-| **Constitution** | Project governance | All planning commands |
+| **speckit-planner** | Phase detection, skill dispatch | Claude orchestrator |
+| **Skills** | Per-phase process and protocol | Agent automatically |
+| **Scripts** | Automation and path resolution | Agent via Bash |
+| **Templates** | Consistent artifact structure | Scripts during creation |
+| **Governance** | Project governance principles | All planning skills |
 
 ## Installation
 
@@ -110,48 +121,47 @@ Spec-Kit provides structured workflow for feature development:
 mkdir -p spec-kit-tcm-plan/specs
 ```
 
-**Step 2: Initialize Spec-Kit structure**
-```bash
-/speckit.init spec-kit-tcm-plan
+**Step 2: Bootstrap project context** (natural language)
+```
+"initialize speckit for this project"
+"bootstrap spec-kit-tcm-plan"
 ```
 
-**Ready!** Commands are available immediately. Example:
+**Ready!** The `speckit-planner` agent detects the phase automatically. Example conversation:
 
-```bash
-/speckit.specify spec-kit-tcm-plan "Add dark mode"
-/speckit.plan spec-kit-tcm-plan 001-add-dark
-/speckit.tasks spec-kit-tcm-plan 001-add-dark
-/speckit.implement spec-kit-tcm-plan 001-add-dark
+```
+"I want to add dark mode to the settings page"
+→ Agent detects: no spec.md → runs speckit.specify skill → writes spec.md
+
+"plan the dark mode feature"
+→ Agent detects: spec.md exists, no plan.md → runs speckit.plan skill → writes plan.md
+
+"generate tasks for 001-dark-mode"
+→ Agent detects: plan.md exists, no tasks.md → runs speckit.tasks skill → writes tasks.md
+
+"implement 001-dark-mode"
+→ Agent detects: tasks.md exists → runs speckit.implement skill
 ```
 
 ---
 
-## Commands Reference
+## Skills Reference
 
-| Command | Syntax | Purpose | When to Use |
-|---------|--------|---------|-------------|
-| **init** | `/speckit.init <root>` | Bootstrap Spec-Kit structure | Initial project setup |
-| **specify** | `/speckit.specify <root> "description"` | Create new feature specification | Start of workflow |
-| **plan** | `/speckit.plan <root> <feature>` | Create technical implementation plan | After specify |
-| **tasks** | `/speckit.tasks <root> <feature>` | Generate task list with metadata | After plan |
-| **implement** | `/speckit.implement <root> <feature>` | Execute tasks with automatic routing | After tasks |
-| **add-task** | `/speckit.add-task <root> <feature> "desc"` | Add ad-hoc task with validation | During implement |
-| **analyze-task** | `/speckit.analyze-task <root> <feature> T###` | Deep analysis of specific task | Before executing risky tasks |
+The `speckit-planner` agent loads the appropriate skill based on phase detection. Users interact in natural language — no slash commands.
 
-### Usage Examples
+| Skill | Phase | Purpose | Trigger phrase examples |
+|-------|-------|---------|------------------------|
+| **speckit.init** | Step 0 (automatic) | Verify prerequisites, generate/sync governance.md | Runs silently — user does not invoke directly |
+| **speckit.specify** | Specify | Parse description, write spec.md | "I want to add X", "create spec for Y" |
+| **speckit.plan** | Plan | Generate plan.md + design artifacts | "plan feature X", "generate implementation plan" |
+| **speckit.tasks** | Tasks | Generate enriched tasks.md | "generate tasks for X", "create task list" |
+| **speckit.implement** | Implement | Execute tasks with agents | "implement X", "execute task plan" |
+| **speckit.add-task** | Ad-hoc | Add task with auto-enrichment | "add a task for X", "I need a task to fix Y" |
+| **speckit.analyze-task** | Analysis | Deep-dive before executing risky task | "analyze T042", "what does T015 do" |
+| **speckit.status** | Orientation | State detection + exact next step | "where are we with feature X", "what's next" |
+| **speckit.validate** | Verification | Detect drift between tasks.md and code | "validate feature X", "check completion" |
 
-```bash
-# Basic complete workflow
-/speckit.init spec-kit-tcm-plan
-/speckit.specify spec-kit-tcm-plan "Project Guidance Deployment"
-/speckit.plan spec-kit-tcm-plan 004-project-guidance-deployment
-/speckit.tasks spec-kit-tcm-plan 004-project-guidance-deployment
-/speckit.implement spec-kit-tcm-plan 004-project-guidance-deployment
-
-# During implementation
-/speckit.add-task spec-kit-tcm-plan 004-project-guidance-deployment "Fix config error"
-/speckit.analyze-task spec-kit-tcm-plan 004-project-guidance-deployment T042
-```
+> **speckit.init** runs automatically as Step 0 before any agent action. It generates `governance.md` on first use and syncs it with `project-context.json` on subsequent sessions — silently unless changes are made.
 
 ---
 
@@ -166,18 +176,6 @@ Location: `.claude/speckit/scripts/`
 - `update-agent-context.sh`: Syncs agent context
 
 ---
-**Purpose:** Task list template
-
-**Location:** `.claude/speckit/templates/tasks-template.md`
-
-**Format:**
-```markdown
-- [ ] T001 Task description
-```
-
-**Used by:** `/speckit.tasks`
-
----
 
 ## Auto-Enrichment
 
@@ -188,10 +186,10 @@ Automatic injection of metadata into tasks for agent routing and risk assessment
 ### When Does It Happen?
 
 **Automatic enrichment:**
-- ✨ `/speckit.tasks` - All tasks enriched when generated
-- ✨ `/speckit.add-task` - New task enriched when added
+- ✨ Tasks phase (`speckit.tasks` skill) — all tasks enriched when generated
+- ✨ Add-task phase (`speckit.add-task` skill) — new task enriched when added
 
-**No manual `/enrich` step needed**
+**No manual enrichment step needed**
 
 ### Enrichment Process
 
@@ -252,9 +250,15 @@ Alternative if primary fails
 **High-risk warning:**
 ```
 ⚠️ HIGH RISK: Analyze before execution
-💡 Suggested: /speckit.analyze-task T001
+💡 Suggested: analyze task T001
 ```
-For T2/T3 tasks only
+For T2/T3 tasks only. The implement skill triggers analysis automatically.
+
+**Low-confidence warning** (score < 0.5):
+```
+⚠️ LOW_CONFIDENCE: score=0.3 — review agent routing manually
+```
+Emitted automatically when routing confidence falls below `MIN_CONFIDENCE: 0.5`
 
 ### Enrichment Benefits
 
@@ -263,6 +267,8 @@ For T2/T3 tasks only
 - [x] Execution safety
 - [x] Audit trail
 - [x] Team coordination
+- [x] Confidence threshold warnings (MIN_CONFIDENCE: 0.5)
+- [x] Machine-readable dependency graph (YAML) in tasks.md
 
 ## Agent Routing
 
@@ -343,32 +349,25 @@ python3 .claude/tools/agent_router.py --test
 
 **Error:**
 ```
-ERROR: Spec-Kit not initialized. Run: /speckit.init --root <directory>
+ERROR: project-context.json not found
 ```
 
 **Solution:**
-```bash
-# Initialize Spec-Kit first
-/speckit.init --root spec-kit-tcm-plan
-
-# Verify config created
-cat .claude/speckit/config.json
-```
+Ask the agent to initialize: "initialize speckit for this project" or "bootstrap spec-kit-tcm-plan". The agent will ask for project details interactively.
 
 ---
 
-### Constitution Not Found
+### Governance File Not Found
 
-**Error:**
+**This should not happen in normal operation.** The agent generates governance.md automatically as Step 0 on first use.
+
+**If it occurs:**
 ```
-WARNING: constitution.md not found at spec-kit-tcm-plan/constitution.md
+WARNING: governance.md not found at spec-kit-tcm-plan/governance.md
 ```
 
 **Solution:**
-```bash
-# Create constitution
-# Create governance document manually if needed
-```
+Ask the agent: "initialize speckit". The speckit.init skill will generate governance.md from your project-context.json values. Alternatively, ensure `paths.speckit_root` is set in `.claude/project-context/project-context.json`.
 
 ---
 
@@ -377,14 +376,10 @@ WARNING: constitution.md not found at spec-kit-tcm-plan/constitution.md
 **Error:**
 ```
 ERROR: Feature directory not found
-Run /specify first to create the feature structure.
 ```
 
 **Solution:**
-```bash
-# Create new feature
-/speckit.specify "Feature description"
-```
+Ask the agent to create the feature: "I want to specify a new feature for dark mode". The agent will run the specify skill and create the directory.
 
 ---
 
@@ -393,14 +388,10 @@ Run /specify first to create the feature structure.
 **Error:**
 ```
 ERROR: plan.md not found in spec-kit-tcm-plan/specs/003-feature-name
-Run /plan first to create the implementation plan.
 ```
 
 **Solution:**
-```bash
-# Create plan
-/speckit.plan "Architecture decisions"
-```
+Ask the agent: "plan feature 003-feature-name". The agent detects the missing plan.md and runs the plan skill.
 
 ---
 
@@ -412,11 +403,10 @@ Run /plan first to create the implementation plan.
 - No risk tiers
 
 **Solution:**
-Tasks are automatically enriched by `/speckit.tasks` and `/speckit.add-task`. No manual action needed.
+Tasks are automatically enriched by the tasks skill and add-task skill. No manual action needed.
 
 **Verify enrichment:**
 ```bash
-# Check tasks.md for metadata
 grep "🤖 Agent:" spec-kit-tcm-plan/specs/003-feature-name/tasks.md
 ```
 
@@ -426,18 +416,10 @@ grep "🤖 Agent:" spec-kit-tcm-plan/specs/003-feature-name/tasks.md
 
 **Symptoms:**
 - Task routed to incorrect agent
-- Low confidence score (<0.5)
+- Low confidence score (<0.5) with `⚠️ LOW_CONFIDENCE` warning
 
 **Solution:**
-```bash
-# Manually test routing
-python3 .claude/tools/agent_router.py --explain "Task description"
-
-# Check suggested agent and confidence
-# Edit tasks.md metadata if needed
-```
-
-**Manual override:**
+Edit the metadata comment in tasks.md manually:
 ```markdown
 - [ ] T001 Task description
   <!-- 🤖 Agent: correct-agent | ✅ T1 | ❓ 0.85 -->
@@ -449,37 +431,14 @@ python3 .claude/tools/agent_router.py --explain "Task description"
 
 **Symptoms:**
 - Task marked with ⚠️ HIGH RISK
-- `/speckit.implement` requests confirmation
+- Agent requests confirmation before proceeding
 
 **This is expected behavior for T2/T3 tasks**
 
 **Solution:**
-1. Review task carefully
-2. Run `/speckit.analyze-task T001`
-3. Confirm if safe to proceed
-4. If not safe, modify approach
-
----
-
-### Paths Hardcoded in Old Code
-
-**Symptoms:**
-- Scripts fail to find files
-- Errors about missing `specs/` directory
-
-**Solution:**
-Verify all scripts load config:
-
-```bash
-# Check scripts source common.sh and call load_config
-grep -n "load_config" .claude/speckit/scripts/*.sh
-
-# Should see in:
-# - create-new-feature.sh
-# - check-prerequisites.sh
-# - setup-plan.sh
-# - update-agent-context.sh
-```
+1. Review the analysis the agent presents automatically
+2. Confirm "yes" to proceed or "no" to skip
+3. If not safe, ask the agent to modify the approach
 
 ---
 
@@ -506,22 +465,23 @@ jq --version
 
 ### Configuration Management
 
-- ✅ Run `/speckit.init` once per project
-- ✅ Commit config.json to git
-- ✅ Keep constitution in project root (not .claude/)
+- ✅ Run `npx gaia-init` once per project to generate project-context.json and governance.md
+- ✅ Set `paths.speckit_root` in project-context.json so the agent knows where governance.md lives
 - ✅ Don't hardcode paths in custom scripts
+- ✅ Trust governance auto-sync — don't edit governance.md manually for stack values
 
 ### Feature Development
 
+- ✅ Ask "where are we with feature X?" to orient yourself at any time
+- ✅ Let the agent detect the phase — don't force a specific skill
 - ✅ Follow workflow order (specify → plan → tasks → implement)
-- ✅ Use clarify_engine.py for ambiguity detection (automatic)
-- ✅ Run `/speckit.analyze-task` for high-risk tasks before execution
 - ✅ Let auto-enrichment handle metadata (don't edit manually)
+- ✅ Ask "validate feature X" after implementation to confirm real completion
 
 ### Risk Management
 
 - ✅ Always analyze T2/T3 tasks before execution
-- ✅ Review agent assignments for high-risk tasks
+- ✅ Review agent assignments for tasks with LOW_CONFIDENCE warnings (score < 0.5)
 - ✅ Keep confidence scores >0.7 for critical operations
 - ✅ Use fallback agents when primary confidence is low
 
@@ -534,7 +494,7 @@ jq --version
 
 ### Documentation
 
-- ✅ Keep constitution up-to-date with learnings
+- ✅ Keep governance.md up-to-date with learnings
 - ✅ Document architecture decisions in plan.md
 - ✅ Create research.md for investigation notes
 - ✅ Use contracts/ for API specifications
@@ -546,18 +506,22 @@ jq --version
 - `.claude/README.md` - Complete agent system documentation
 - `.claude/project-context/project-context.json` - Project-specific context
 - `CLAUDE.md` - Repository guidance for Claude Code
-- `spec-kit-tcm-plan/constitution.md` - Project principles
+- `spec-kit-tcm-plan/governance.md` - Project governance principles
 
-### Command Files
+### Agent and Skills
 
-All commands in `.claude/commands/speckit.*.md`:
-- speckit.init.md
-- speckit.specify.md
-- speckit.plan.md
-- speckit.tasks.md
-- speckit.analyze-task.md
-- speckit.implement.md
-- speckit.add-task.md
+Agent: `.claude/agents/speckit-planner.md`
+
+Skills in `.claude/skills/speckit.*/SKILL.md`:
+- speckit.init
+- speckit.specify
+- speckit.plan
+- speckit.tasks
+- speckit.analyze-task
+- speckit.implement
+- speckit.add-task
+- speckit.status
+- speckit.validate
 
 ### Tool Files
 
@@ -570,8 +534,8 @@ All commands in `.claude/commands/speckit.*.md`:
 
 Spec-Kit is an open-source framework adapted as agentic functionality for Claude Code. Main modifications:
 
-- ✅ Explicit arguments - No centralized configuration
-- ✅ Zero setup - No initialization required
+- ✅ Natural language interaction - No slash commands
+- ✅ Governance auto-sync - governance.md generated and kept in sync automatically
 - ✅ Auto-enrichment - Tasks with routing metadata
 - ✅ Risk analysis - T0-T3 with automatic validation
 - ✅ Multi-project - Simultaneous spec support
@@ -582,18 +546,19 @@ Spec-Kit is an open-source framework adapted as agentic functionality for Claude
 ## Support
 
 **For Claude orchestrator:**
-- Read this file when user mentions "speckit" or "spec-kit"
-- Reference specific sections as needed
-- Use commands, not direct file manipulation
+- Route to `speckit-planner` when user mentions "speckit", "spec-kit", "feature planning", or "create spec"
+- The agent detects the phase and loads the correct skill automatically
+- Do not invoke specific skills directly — let the agent dispatch
 
 **For users:**
-- **Zero setup** - No initialization needed
-- Create project directory: `mkdir -p spec-kit-tcm-plan/specs`
-- Use explicit arguments: `<speckit-root> <feature-name>`
-- Follow workflow phases in order
+- Describe what you need in natural language
+- Create project directory first: `mkdir -p spec-kit-tcm-plan/specs`
+- Ask "where are we?" or "what's next?" at any point to orient yourself
 - Trust auto-enrichment (don't edit metadata manually)
-- Analyze high-risk tasks before execution
+- The agent will ask for confirmation before any high-risk task
 
 **For Spanish documentation:** Ver [README.md](README.md)
 
 ---
+
+**Version:** 2.3.0 | **Updated:** 2026-02-23

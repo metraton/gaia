@@ -1,5 +1,12 @@
 # Tasks: [FEATURE NAME]
 
+<!-- AUTO-ENRICHMENT CONFIG
+  MIN_CONFIDENCE: 0.5
+  When routing confidence score < MIN_CONFIDENCE, the agent MUST emit a LOW_CONFIDENCE warning:
+    <!-- ⚠️ LOW_CONFIDENCE: score=0.3 — review agent routing manually -->
+  Tasks with score >= MIN_CONFIDENCE proceed normally.
+-->
+
 **Input**: Design documents from `/specs/[###-feature-name]/`
 **Prerequisites**: plan.md (required), research.md, data-model.md, contracts/
 
@@ -60,6 +67,7 @@
   <!-- 🧠 Reasoning: Defaulted to devops-developer (no specific skill match) -->
   <!-- 🎯 default: devops-developer -->
   <!-- 🔄 Fallback: devops-developer -->
+  <!-- ⚠️ LOW_CONFIDENCE: score=0.00 — review agent routing manually -->
 
 - [ ] T003 [P] Configure linting and formatting tools
   - verify: `npm run lint` exits with code 0
@@ -348,3 +356,36 @@ Task: "Integration test auth in tests/integration/test_auth.py"
   <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 3.0), Routed to devops-developer, Security tier: T3 -->
   <!-- 🎯 skill: application_development (3.0) -->
   <!-- 🔄 Fallback: gitops-operator -->
+
+## Dependency Graph
+<!-- AGENT INSTRUCTION: Fill this section when generating tasks.md.
+     Replace the example entries below with the actual task dependencies for this feature.
+     - dependencies: maps each task to the list of tasks it requires to be complete first
+     - parallel_groups: lists sets of tasks that can run simultaneously (all share no file conflicts)
+     Omit a task from 'dependencies' if it has no prerequisites.
+     This section is machine-readable — keep it valid YAML inside the fenced block.
+-->
+```yaml
+dependencies:
+  T002: [T001]
+  T003: [T001]
+  T008: [T004, T005, T006, T007]
+  T009: [T008]
+  T010: [T008]
+  T011: [T009]
+  T012: [T009]
+  T013: [T011, T012]
+  T014: [T011, T012]
+  T015: [T008]
+  T016: [T015]
+  T018: [T016]
+  T019: [T013]
+  T020: [T013]
+  T021: [T011, T012]
+  T022: [T019, T020]
+  T023: [T022]
+parallel_groups:
+  - [T004, T005, T006, T007]
+  - [T008, T010]
+  - [T019, T021]
+```

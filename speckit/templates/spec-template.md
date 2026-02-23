@@ -100,6 +100,30 @@ When creating this spec from a user prompt:
 - [ ] Scope is clearly bounded
 - [ ] Dependencies and assumptions identified
 
+## Domain Checklists *(opcional — completar si aplica)*
+
+### Security *(incluir si la feature maneja autenticacion, autorizacion o datos sensibles)*
+- [ ] Roles y permisos definidos: quien puede realizar cada accion
+- [ ] Datos sensibles identificados (PII, credenciales, tokens)
+- [ ] Inputs no confiables del usuario especificados (formularios, APIs, uploads)
+- [ ] Requisitos de autenticacion definidos (quien debe estar autenticado)
+- [ ] Politica de exposicion de errores: que informacion puede ver el usuario final
+- [ ] Requisitos de auditoria o registro de eventos de seguridad
+
+### UX *(incluir si la feature tiene interfaz de usuario o interacciones visibles)*
+- [ ] Estado de error definido: mensaje y accion sugerida al usuario
+- [ ] Estado vacio definido: que ve el usuario cuando no hay datos
+- [ ] Feedback de operaciones largas: indicador de progreso o confirmacion
+- [ ] Accesibilidad basica: navegacion por teclado, contraste, textos alternativos
+- [ ] Comportamiento en dispositivos moviles o pantallas pequeñas (si aplica)
+
+### Performance *(incluir si la feature tiene requisitos de carga, latencia o escala)*
+- [ ] Latencia objetivo definida (ej. p95 < 200ms)
+- [ ] Throughput esperado (ej. N requests/segundo, N usuarios concurrentes)
+- [ ] Volumen de datos esperado (ej. N registros, tamaño maximo por operacion)
+- [ ] Estrategia de caching definida (si aplica)
+- [ ] Comportamiento bajo carga maxima: degradacion aceptable o fallo explicito
+
 ---
 
 ## Execution Status
