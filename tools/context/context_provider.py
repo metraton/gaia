@@ -301,41 +301,83 @@ def detect_cloud_provider(project_context: Dict[str, Any]) -> str:
 
 def load_provider_contracts(cloud_provider: str, contracts_dir: Path = DEFAULT_CONTRACTS_DIR) -> Dict[str, Any]:
     """
-    Loads provider-specific context contracts from JSON file.
+    Loads context contracts using the base+cloud merge strategy.
 
-    The contract JSON files use 'read' and 'write' keys per agent.
-    This function extracts the 'read' lists and normalizes them into
-    the 'required' key that get_contract_context() expects.
+    Strategy (in priority order):
+    1. Load base contracts from context-contracts.json (cloud-agnostic)
+    2. Load cloud overrides from cloud/{provider}.json and merge (extend) read/write lists
+    3. Fallback: if context-contracts.json missing, try legacy context-contracts.{provider}.json
+    4. Final fallback: LEGACY_AGENT_CONTRACTS hardcoded dict
 
-    Falls back to LEGACY_AGENT_CONTRACTS if the contract file is missing.
+    The merged result is normalized: 'read' lists become 'required' for get_contract_context().
     """
-    contract_file = contracts_dir / f"context-contracts.{cloud_provider}.json"
+    base_file = contracts_dir / "context-contracts.json"
+    cloud_file = contracts_dir / "cloud" / f"{cloud_provider}.json"
+    legacy_file = contracts_dir / f"context-contracts.{cloud_provider}.json"
 
-    if not contract_file.is_file():
-        print(f"Contract file not found: {contract_file}, using legacy contracts", file=sys.stderr)
-        return {"agents": {name: {"required": fields} for name, fields in LEGACY_AGENT_CONTRACTS.items()}}
+    # --- Step 1: Load base contracts ---
+    base_contracts = None
+    if base_file.is_file():
+        try:
+            with open(base_file, 'r', encoding='utf-8') as f:
+                base_contracts = json.load(f)
+            print(f"Loaded base contracts from {base_file}", file=sys.stderr)
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in {base_file}: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    try:
-        with open(contract_file, 'r', encoding='utf-8') as f:
-            contracts = json.load(f)
-            print(f"Loaded {cloud_provider.upper()} contracts from {contract_file}", file=sys.stderr)
+    # --- Step 2: Fallback to legacy per-provider file if no base exists ---
+    if base_contracts is None:
+        if legacy_file.is_file():
+            try:
+                with open(legacy_file, 'r', encoding='utf-8') as f:
+                    base_contracts = json.load(f)
+                print(f"Loaded legacy {cloud_provider.upper()} contracts from {legacy_file}", file=sys.stderr)
+            except json.JSONDecodeError as e:
+                print(f"Error: Invalid JSON in {legacy_file}: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(f"No contract files found in {contracts_dir}, using hardcoded legacy contracts", file=sys.stderr)
+            return {"agents": {name: {"required": fields} for name, fields in LEGACY_AGENT_CONTRACTS.items()}}
 
-        # Normalize: extract 'read' lists into 'required' for get_contract_context()
-        normalized = {
-            "version": contracts.get("version", "unknown"),
-            "provider": contracts.get("provider", cloud_provider),
-            "agents": {}
+    # --- Step 3: Merge cloud-specific overrides ---
+    if cloud_file.is_file():
+        try:
+            with open(cloud_file, 'r', encoding='utf-8') as f:
+                cloud_overrides = json.load(f)
+            print(f"Loaded {cloud_provider.upper()} cloud overrides from {cloud_file}", file=sys.stderr)
+
+            for agent_name, agent_overrides in cloud_overrides.get("agents", {}).items():
+                if agent_name in base_contracts.get("agents", {}):
+                    # Extend existing agent: append cloud-specific sections (dedup)
+                    existing_read = base_contracts["agents"][agent_name].get("read", [])
+                    existing_write = base_contracts["agents"][agent_name].get("write", [])
+                    extra_read = [s for s in agent_overrides.get("read", []) if s not in existing_read]
+                    extra_write = [s for s in agent_overrides.get("write", []) if s not in existing_write]
+                    base_contracts["agents"][agent_name]["read"] = existing_read + extra_read
+                    base_contracts["agents"][agent_name]["write"] = existing_write + extra_write
+                else:
+                    # New agent only in cloud overrides (edge case): add it directly
+                    base_contracts["agents"][agent_name] = agent_overrides
+
+        except json.JSONDecodeError as e:
+            print(f"Warning: Invalid JSON in {cloud_file}: {e} — skipping cloud overrides", file=sys.stderr)
+    else:
+        print(f"No cloud overrides found at {cloud_file}, using base contracts only", file=sys.stderr)
+
+    # --- Step 4: Normalize — extract 'read' lists into 'required' for get_contract_context() ---
+    normalized = {
+        "version": base_contracts.get("version", "unknown"),
+        "provider": cloud_provider,
+        "agents": {}
+    }
+
+    for agent_name, agent_contract in base_contracts.get("agents", {}).items():
+        normalized["agents"][agent_name] = {
+            "required": agent_contract.get("read", [])
         }
 
-        for agent_name, agent_contract in contracts.get("agents", {}).items():
-            normalized["agents"][agent_name] = {
-                "required": agent_contract.get("read", [])
-            }
-
-        return normalized
-    except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in {contract_file}: {e}", file=sys.stderr)
-        sys.exit(1)
+    return normalized
 
 
 def load_project_context(context_path: Path) -> Dict[str, Any]:

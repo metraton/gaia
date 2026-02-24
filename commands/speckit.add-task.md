@@ -39,7 +39,7 @@ Use this command to append or insert a **single** task in the currently active S
 
 2. **Load context**:
    - Read `tasks.md` to understand current phases, ordering, and existing task IDs.
-   - Read `plan.md` and `.claude/speckit/governance.md` to keep the new task aligned with architectural and governance rules.
+   - Read `plan.md` and `<speckit-root>/governance.md` (from `paths.speckit_root` in project-context.json) to keep the new task aligned with architectural and governance rules.
 
 3. **Gather missing details**:
    - If the command arguments do not include the task ID, phase, or `[P]` marker, explicitly ask the user.

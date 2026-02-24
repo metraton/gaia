@@ -290,11 +290,13 @@ def apply_update(
 # ============================================================================
 
 def load_contracts(provider: str, config_dir: Path) -> dict:
-    """Load agent contracts from config file, with caching and legacy fallback.
+    """Load agent contracts using the base+cloud merge strategy, with caching.
 
-    Attempts to load ``config/context-contracts.{provider}.json`` from
-    *config_dir*. Falls back to generating a contract structure from
-    ``LEGACY_AGENT_CONTRACTS`` if the file is missing or unreadable.
+    Strategy (in priority order):
+    1. Load base contracts from context-contracts.json (cloud-agnostic)
+    2. Merge cloud overrides from cloud/{provider}.json (extend read/write lists)
+    3. Fallback: try legacy context-contracts.{provider}.json
+    4. Final fallback: LEGACY_AGENT_CONTRACTS hardcoded dict (write = read)
 
     Results are cached by provider string.
     """
@@ -304,31 +306,69 @@ def load_contracts(provider: str, config_dir: Path) -> dict:
     if provider in _contracts_cache:
         return _contracts_cache[provider]
 
-    contracts_path = config_dir / f"context-contracts.{provider}.json"
+    result = _merge_base_and_cloud(provider, config_dir)
+    _contracts_cache[provider] = result
+    return result
 
-    if contracts_path.exists():
+
+def _merge_base_and_cloud(provider: str, config_dir: Path) -> dict:
+    """Load and merge base + cloud/{provider}.json contracts.
+
+    Returns a merged contracts dict with 'agents' keyed by agent name,
+    each containing 'read' and 'write' lists.
+    """
+    base_file = config_dir / "context-contracts.json"
+    cloud_file = config_dir / "cloud" / f"{provider}.json"
+    legacy_file = config_dir / f"context-contracts.{provider}.json"
+
+    # Step 1: Load base contracts
+    base_contracts = None
+    if base_file.exists():
         try:
-            contracts = json.loads(contracts_path.read_text())
-            _contracts_cache[provider] = contracts
-            return contracts
+            base_contracts = json.loads(base_file.read_text())
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning(
-                "Failed to load contracts from %s: %s. Using legacy fallback.",
-                contracts_path, exc,
-            )
+            logger.warning("Failed to load base contracts from %s: %s", base_file, exc)
 
-    # Generate fallback from LEGACY_AGENT_CONTRACTS (write = read)
-    contracts = {
-        "version": "legacy",
-        "provider": provider,
-        "agents": {
-            agent: {"read": sections, "write": list(sections)}
-            for agent, sections in LEGACY_AGENT_CONTRACTS.items()
-        },
-    }
+    # Step 2: Fallback to legacy per-provider file
+    if base_contracts is None:
+        if legacy_file.exists():
+            try:
+                base_contracts = json.loads(legacy_file.read_text())
+                logger.info("Using legacy contracts from %s", legacy_file)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to load legacy contracts from %s: %s", legacy_file, exc)
 
-    _contracts_cache[provider] = contracts
-    return contracts
+    # Step 3: Final fallback to hardcoded LEGACY_AGENT_CONTRACTS
+    if base_contracts is None:
+        logger.warning("No contract files found in %s, using hardcoded legacy contracts", config_dir)
+        return {
+            "version": "legacy",
+            "provider": provider,
+            "agents": {
+                agent: {"read": sections, "write": list(sections)}
+                for agent, sections in LEGACY_AGENT_CONTRACTS.items()
+            },
+        }
+
+    # Step 4: Merge cloud-specific overrides
+    if cloud_file.exists():
+        try:
+            cloud_overrides = json.loads(cloud_file.read_text())
+            for agent_name, agent_overrides in cloud_overrides.get("agents", {}).items():
+                if agent_name in base_contracts.get("agents", {}):
+                    existing_read = base_contracts["agents"][agent_name].get("read", [])
+                    existing_write = base_contracts["agents"][agent_name].get("write", [])
+                    extra_read = [s for s in agent_overrides.get("read", []) if s not in existing_read]
+                    extra_write = [s for s in agent_overrides.get("write", []) if s not in existing_write]
+                    base_contracts["agents"][agent_name]["read"] = existing_read + extra_read
+                    base_contracts["agents"][agent_name]["write"] = existing_write + extra_write
+                else:
+                    base_contracts["agents"][agent_name] = agent_overrides
+            logger.info("Merged %s cloud overrides from %s", provider.upper(), cloud_file)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load cloud overrides from %s: %s — skipping", cloud_file, exc)
+
+    return base_contracts
 
 
 # ============================================================================
@@ -407,23 +447,6 @@ def _load_contracts_with_dir(provider: str, config_dir: Path) -> dict:
 
     This ensures each call with a different config_dir gets fresh results
     while still allowing load_contracts to cache for repeated calls with
-    the same provider.
+    the same provider. Uses the same base+cloud merge strategy as load_contracts.
     """
-    config_dir = Path(config_dir)
-    contracts_path = config_dir / f"context-contracts.{provider}.json"
-
-    if contracts_path.exists():
-        try:
-            return json.loads(contracts_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Fall back to legacy
-    return {
-        "version": "legacy",
-        "provider": provider,
-        "agents": {
-            agent: {"read": sections, "write": list(sections)}
-            for agent, sections in LEGACY_AGENT_CONTRACTS.items()
-        },
-    }
+    return _merge_base_and_cloud(provider, Path(config_dir))

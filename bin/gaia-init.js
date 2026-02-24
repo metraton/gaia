@@ -1214,6 +1214,7 @@ async function generateProjectContext(config) {
     if (config.ciPlatform) {
       projectDetails.ci_platform = config.ciPlatform;
     }
+    projectDetails.speckit_root = config.speckitRoot || '.claude/project-context/speckit-project-specs';
 
     // Build provider credentials
     const providerCredentials = {};
@@ -1232,8 +1233,7 @@ async function generateProjectContext(config) {
       paths: {
         gitops: config.gitops,
         terraform: config.terraform,
-        app_services: config.appServices,
-        speckit_root: config.speckitRoot || '.claude/project-context/speckit-project-specs'
+        app_services: config.appServices
       },
       sections: {
         project_details: projectDetails,

@@ -1,0 +1,76 @@
+{
+  "version": "2.0",
+  "description": "Base context contracts — cloud-agnostic sections for all agents. Cloud-specific extensions live in cloud/{provider}.json.",
+  "agents": {
+    "cloud-troubleshooter": {
+      "read": [
+        "project_details",
+        "cluster_details",
+        "infrastructure_topology",
+        "terraform_infrastructure",
+        "gitops_configuration",
+        "application_services",
+        "monitoring_observability",
+        "security",
+        "dynamic_queries"
+      ],
+      "write": [
+        "cluster_details",
+        "infrastructure_topology",
+        "application_services",
+        "monitoring_observability"
+      ]
+    },
+    "gitops-operator": {
+      "read": [
+        "project_details",
+        "gitops_configuration",
+        "cluster_details",
+        "operational_guidelines",
+        "application_services"
+      ],
+      "write": [
+        "gitops_configuration",
+        "cluster_details",
+        "application_services"
+      ]
+    },
+    "terraform-architect": {
+      "read": [
+        "project_details",
+        "terraform_infrastructure",
+        "infrastructure_topology",
+        "operational_guidelines",
+        "security"
+      ],
+      "write": [
+        "terraform_infrastructure",
+        "infrastructure_topology"
+      ]
+    },
+    "devops-developer": {
+      "read": [
+        "project_details",
+        "application_services",
+        "application_architecture",
+        "development_standards",
+        "operational_guidelines"
+      ],
+      "write": [
+        "application_services",
+        "application_architecture",
+        "development_standards"
+      ]
+    },
+    "speckit-planner": {
+      "read": [
+        "project_details",
+        "operational_guidelines",
+        "application_architecture",
+        "development_standards",
+        "application_services"
+      ],
+      "write": []
+    }
+  }
+}

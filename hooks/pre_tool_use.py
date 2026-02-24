@@ -53,7 +53,8 @@ PROJECT_AGENTS = [
     "terraform-architect",
     "gitops-operator",
     "cloud-troubleshooter",
-    "devops-developer"
+    "devops-developer",
+    "speckit-planner"
 ]
 
 
@@ -70,25 +71,71 @@ def _build_context_update_reminder(subagent_type: str) -> str:
     if subagent_type not in PROJECT_AGENTS:
         return ""
 
-    # Load contracts to find writable sections
-    contracts_paths = [
-        Path(".claude/config/context-contracts.gcp.json"),
-        Path(".claude/config/context-contracts.aws.json"),
-        Path(__file__).parent.parent / "config" / "context-contracts.gcp.json",
-        Path(__file__).parent.parent / "config" / "context-contracts.aws.json",
+    # Load contracts to find writable sections.
+    # Strategy: load context-contracts.json (base) then merge cloud/{provider}.json.
+    # Fallback to legacy per-provider files for backward compatibility.
+    # We detect the cloud provider from project-context.json first.
+    cloud_provider = "gcp"  # default
+    pc_paths_for_provider = [
+        Path(".claude/project-context/project-context.json"),
+        Path("project-context.json"),
+    ]
+    for pp in pc_paths_for_provider:
+        if pp.exists():
+            try:
+                pc_data = json.loads(pp.read_text())
+                detected = (
+                    pc_data.get("metadata", {}).get("cloud_provider", "")
+                    or pc_data.get("sections", {}).get("project_details", {}).get("cloud_provider", "")
+                )
+                if detected:
+                    cloud_provider = detected.lower()
+                break
+            except Exception:
+                continue
+
+    # Candidate config directories (installed project first, package fallback)
+    config_dirs = [
+        Path(".claude/config"),
+        Path(__file__).parent.parent / "config",
     ]
 
     writable = []
-    for cp in contracts_paths:
-        if cp.exists():
-            try:
-                data = json.loads(cp.read_text())
-                agent_perms = data.get("agents", {}).get(subagent_type, {})
-                writable = agent_perms.get("write", [])
-                if writable:
+    for config_dir in config_dirs:
+        if not config_dir.is_dir():
+            continue
+        # Try new base+cloud system first
+        base_file = config_dir / "context-contracts.json"
+        cloud_file = config_dir / "cloud" / f"{cloud_provider}.json"
+        legacy_file = config_dir / f"context-contracts.{cloud_provider}.json"
+
+        merged_agents = {}
+        for contract_file in [base_file, legacy_file]:
+            if contract_file.exists():
+                try:
+                    data = json.loads(contract_file.read_text())
+                    merged_agents = data.get("agents", {})
                     break
+                except Exception:
+                    continue
+
+        # Merge cloud overrides
+        if merged_agents and cloud_file.exists():
+            try:
+                cloud_data = json.loads(cloud_file.read_text())
+                agent_cloud = cloud_data.get("agents", {}).get(subagent_type, {})
+                base_write = merged_agents.get(subagent_type, {}).get("write", [])
+                extra_write = [s for s in agent_cloud.get("write", []) if s not in base_write]
+                if subagent_type in merged_agents:
+                    merged_agents[subagent_type]["write"] = base_write + extra_write
             except Exception:
-                continue
+                pass
+
+        if merged_agents:
+            agent_perms = merged_agents.get(subagent_type, {})
+            writable = agent_perms.get("write", [])
+            if writable:
+                break
 
     if not writable:
         return ""

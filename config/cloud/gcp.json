@@ -1,0 +1,144 @@
+{
+  "version": "2.0",
+  "provider": "gcp",
+  "description": "GCP-specific context extensions. Merged on top of context-contracts.json at runtime by context_provider.py.",
+  "agents": {
+    "cloud-troubleshooter": {
+      "read": [
+        "gcp_services",
+        "workload_identity",
+        "static_ips"
+      ],
+      "write": [
+        "gcp_services",
+        "workload_identity",
+        "static_ips"
+      ]
+    },
+    "terraform-architect": {
+      "read": [
+        "gcp_services",
+        "workload_identity",
+        "static_ips"
+      ],
+      "write": [
+        "gcp_services",
+        "workload_identity",
+        "static_ips"
+      ]
+    },
+    "gitops-operator": {
+      "read": [
+        "workload_identity"
+      ],
+      "write": []
+    },
+    "devops-developer": {
+      "read": [
+        "gcp_services"
+      ],
+      "write": []
+    },
+    "speckit-planner": {
+      "read": [
+        "gcp_services"
+      ],
+      "write": []
+    }
+  },
+  "section_schemas": {
+    "gcp_services": {
+      "_description": "GCP-managed services used by the project (Artifact Registry, Cloud SQL, Memorystore, etc.)",
+      "artifact_registry": {
+        "repositories": [
+          {
+            "name": "",
+            "location": "",
+            "format": "DOCKER",
+            "project": "",
+            "url": ""
+          }
+        ]
+      },
+      "cloud_sql": {
+        "instances": [
+          {
+            "name": "",
+            "version": "POSTGRES_15",
+            "tier": "db-f1-micro",
+            "region": "",
+            "database_flags": {},
+            "status": ""
+          }
+        ]
+      },
+      "memorystore": {
+        "instances": [
+          {
+            "name": "",
+            "tier": "BASIC",
+            "memory_size_gb": 1,
+            "region": "",
+            "status": ""
+          }
+        ]
+      },
+      "cloud_storage": {
+        "buckets": [
+          {
+            "name": "",
+            "location": "",
+            "storage_class": "STANDARD",
+            "purpose": ""
+          }
+        ]
+      },
+      "secret_manager": {
+        "enabled": true,
+        "secrets": []
+      },
+      "pubsub": {
+        "topics": [],
+        "subscriptions": []
+      },
+      "cloud_nat": {
+        "name": "",
+        "router": "",
+        "region": "",
+        "status": ""
+      }
+    },
+    "workload_identity": {
+      "_description": "GCP Workload Identity bindings: Kubernetes ServiceAccount -> GCP ServiceAccount with IAM roles",
+      "_example": {
+        "my-service-sa": {
+          "kubernetes_sa": "my-service-sa",
+          "namespace": "my-namespace",
+          "gcp_sa": "my-service-sa@project-id.iam.gserviceaccount.com",
+          "iam_roles": [
+            "roles/cloudsql.client",
+            "roles/secretmanager.secretAccessor",
+            "roles/artifactregistry.reader"
+          ],
+          "purpose": "Describe what this service account does"
+        }
+      }
+    },
+    "static_ips": {
+      "_description": "GCP global and regional static IP addresses used for Ingress and services",
+      "_example": {
+        "my-service-ip": {
+          "name": "my-service-ip",
+          "address": "34.x.x.x",
+          "type": "global",
+          "purpose": "Ingress for my-service",
+          "dns_records": [
+            "my-service.example.com"
+          ],
+          "ssl_certificates": "Active until YYYY-MM-DD",
+          "status": ""
+        }
+      }
+    }
+  }
+}

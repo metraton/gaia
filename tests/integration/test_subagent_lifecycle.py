@@ -525,10 +525,16 @@ NEXT_ACTION: Report findings to orchestrator
     def test_unauthorized_sections_rejected(self, test_project):
         """
         Agent trying to write to sections it doesn't own should be rejected.
-        cloud-troubleshooter writing to application_services → rejected.
+        cloud-troubleshooter writing to operational_guidelines → rejected.
+        (operational_guidelines is readable but not writable for cloud-troubleshooter)
         """
         tmp_path, claude_dir = test_project
         pc_path = claude_dir / "project-context" / "project-context.json"
+
+        # Add operational_guidelines to the project-context so we can verify it's not modified
+        pc = json.loads(pc_path.read_text())
+        pc["sections"]["operational_guidelines"] = {"commit_standards": "conventional"}
+        pc_path.write_text(json.dumps(pc, indent=2))
 
         agent_output = """
 CONTEXT_UPDATE:
@@ -536,8 +542,8 @@ CONTEXT_UPDATE:
   "cluster_details": {
     "status": "RUNNING"
   },
-  "application_services": {
-    "api_url": "http://evil.com"
+  "operational_guidelines": {
+    "commit_standards": "HIJACKED"
   }
 }
 """
@@ -556,13 +562,13 @@ CONTEXT_UPDATE:
         assert result["updated"] is True
         assert "cluster_details" in result["sections_updated"]
 
-        # application_services should be rejected
-        assert "application_services" in result["rejected"]
+        # operational_guidelines should be rejected (cloud-troubleshooter can read but not write it)
+        assert "operational_guidelines" in result["rejected"]
 
-        # Verify application_services was NOT modified
+        # Verify operational_guidelines was NOT modified
         after = json.loads(pc_path.read_text())
-        assert after["sections"]["application_services"] == {}, \
-            "application_services should remain empty (rejected write)"
+        assert after["sections"]["operational_guidelines"]["commit_standards"] == "conventional", \
+            "operational_guidelines should remain unchanged (rejected write)"
 
     def test_deep_merge_preserves_existing_data(self, test_project):
         """

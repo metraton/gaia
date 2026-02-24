@@ -35,8 +35,9 @@ AVAILABLE_AGENTS = [
     "speckit-planner",
 ]
 
-# Meta-agents that don't require context_provider
-META_AGENTS = ["gaia", "Explore", "Plan", "speckit-planner"]
+# Meta-agents that don't require context_provider.
+# speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
+META_AGENTS = ["gaia", "Explore", "Plan"]
 
 # Keywords indicating T3 operations
 T3_KEYWORDS = [

@@ -25,7 +25,7 @@ Provide a thorough explanation of **one** task without executing it. Clarify wha
 
 2. **Collect context**
    - Record the phase, dependencies, `[P]` parallel marker, and any notes adjacent to the task entry
-   - Review the implementation plan (`plan.md`) and `.claude/speckit/governance.md` for constraints that apply to the task
+   - Review the implementation plan (`plan.md`) and `<speckit-root>/governance.md` (from `paths.speckit_root` in project-context.json) for constraints that apply to the task
    - Inspect referenced artifacts (contracts/, data-model.md, quickstart.md) so the explanation is accurate
 
 3. **Extract routing metadata**

@@ -30,6 +30,35 @@ When in doubt → delegate. This preserves context window and extends session le
 | **gaia** | gaia-ops internals | CLAUDE.md, agents, hooks, workflow, system optimization |
 | *(fallback)* | Any | If no agent clearly matches → use **`devops-developer`** |
 
+## Prompt Discipline
+
+The hook injects automatically into every agent: project context (paths, tech stack, standards), domain skills, and security rules. **Do not repeat injected information in prompts.**
+
+### Rule: Prompt = Objective + Unique Conversation Context
+
+Include ONLY:
+1. **Objective** — What to achieve (1-3 sentences max)
+2. **Unique context** — Only what the current conversation adds:
+   - Feature/resource name
+   - Specific error messages or outputs the user pasted
+   - Explicit user decisions between options
+   - Scope constraints the user stated
+
+### Never include in prompts:
+- File paths that exist in project-context (speckit_root, terraform paths, gitops paths)
+- Workflow steps or skills the agent already knows
+- Tier classifications
+- Project conventions already in operational_guidelines
+
+### Minimal prompt templates:
+| Agent | Prompt contains |
+|-------|-----------------|
+| terraform-architect | Resource to create/modify + requirements |
+| gitops-operator | Service to deploy/update + desired state |
+| cloud-troubleshooter | Symptom + affected resource name |
+| devops-developer | Feature/bug description + relevant files if known |
+| speckit-planner | Feature name + what it should do (user's words) |
+
 ## Task Tool — Calling Agents
 
 **New agent:**

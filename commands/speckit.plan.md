@@ -62,7 +62,7 @@ Given the implementation details provided as an argument, do this:
    - Any technical constraints or dependencies mentioned
 
 5. Read governance.md to understand architectural principles and standards:
-   - Path: `.claude/speckit/governance.md` (project-wide standards)
+   - Path: `<speckit-root>/governance.md` (resolved from `paths.speckit_root` in project-context.json)
    - Extract: Code-First Protocol, GitOps principles, security tiers, commit standards
 
 4. Execute the implementation plan template:

@@ -134,7 +134,7 @@ $ARGUMENTS
       - spec.md: Functional/Non-functional requirements, User Stories, Edge Cases
       - plan.md: Architecture, Data Model, Technical constraints
       - tasks.md: All generated tasks with metadata
-      - governance.md: Architectural principles and standards
+      - `<speckit-root>/governance.md`: Architectural principles and standards
 
    b) **Detection passes** (automated):
       - **Duplication**: Flag near-duplicate requirements or tasks

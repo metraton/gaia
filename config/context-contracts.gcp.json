@@ -23,6 +23,11 @@
                "application_architecture", "development_standards",
                "operational_guidelines"],
       "write": ["application_services"]
+    },
+    "speckit-planner": {
+      "read": ["project_details", "operational_guidelines",
+               "application_architecture", "development_standards"],
+      "write": []
     }
   }
 }
