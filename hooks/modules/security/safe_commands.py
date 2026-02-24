@@ -62,14 +62,11 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
         # Encoding utilities (read-only)
         "base64", "md5sum", "sha256sum", "sha1sum",
 
-        # Archive listing (read-only)
-        "tar", "gzip", "gunzip", "zip", "unzip",
-
         # Shell utilities
         "test", "time", "timeout", "sleep",
 
         # Testing frameworks (read-only)
-        "pytest", "python3", "python",
+        "pytest",
     },
 
     # Multi-word commands that are always safe (prefix matching)
@@ -81,8 +78,8 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
 
         # Terraform read-only
         "terraform version", "terraform validate", "terraform fmt",
-        "terraform show", "terraform output", "terraform plan",
-        "terragrunt plan", "terragrunt output", "terragrunt validate",
+        "terraform show", "terraform output",
+        "terragrunt output", "terragrunt validate",
 
         # Kubernetes read-only
         "kubectl get", "kubectl describe", "kubectl logs", "kubectl explain",

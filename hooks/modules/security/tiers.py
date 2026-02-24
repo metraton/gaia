@@ -3,8 +3,8 @@ Security tier definitions and classification.
 
 Tiers:
 - T0: Read-only operations
-- T1: Validation operations (plan, lint, check)
-- T2: Dry-run operations
+- T1: Validation operations (validate, lint, fmt, check) — local only
+- T2: Simulation operations (plan, diff, dry-run) — may contact remote APIs
 - T3: Destructive/state-modifying operations (require approval)
 """
 
@@ -21,8 +21,8 @@ class SecurityTier(str, Enum):
     """Security tier classification for commands."""
 
     T0_READ_ONLY = "T0"      # describe, get, show, list operations
-    T1_VALIDATION = "T1"     # validate, plan, template, lint operations
-    T2_DRY_RUN = "T2"        # --dry-run, --plan-only operations
+    T1_VALIDATION = "T1"     # validate, lint, fmt, check (local only)
+    T2_DRY_RUN = "T2"        # plan, diff, dry-run, template (simulation)
     T3_BLOCKED = "T3"        # apply, reconcile, deploy operations (require approval)
 
     def __str__(self) -> str:
@@ -45,21 +45,26 @@ class SecurityTier(str, Enum):
         return descriptions.get(self, "Unknown tier")
 
 
-# Validation patterns for T1 classification
-VALIDATION_PATTERNS = [
+# T1: Local validation (no remote API calls)
+T1_PATTERNS = [
     r"\bvalidate\b",
-    r"\bplan\b",
-    r"\btemplate\b",
     r"\blint\b",
     r"\bcheck\b",
     r"\bfmt\b",
+]
+
+# T2: Simulation (may contact remote APIs, but no state changes)
+T2_PATTERNS = [
+    r"\bplan\b",
+    r"\btemplate\b",
+    r"\bdiff\b",
 ]
 
 # Ultra-common commands that should fast-path to T0
 # These are commands that appear in >80% of sessions
 ULTRA_COMMON_T0_COMMANDS = frozenset({
     "ls", "pwd", "cat", "echo", "git status", "git diff",
-    "git log", "git branch", "kubectl get", "terraform plan",
+    "git log", "git branch", "kubectl get",
 })
 
 
@@ -96,8 +101,13 @@ def _classify_command_tier_cached(
     if "--dry-run" in command or "--plan-only" in command:
         return SecurityTier.T2_DRY_RUN
 
-    # Check for validation operations (T1)
-    for pattern in VALIDATION_PATTERNS:
+    # Check for simulation operations (T2: plan, diff, template)
+    for pattern in T2_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return SecurityTier.T2_DRY_RUN
+
+    # Check for local validation operations (T1: validate, lint, fmt, check)
+    for pattern in T1_PATTERNS:
         if re.search(pattern, command, re.IGNORECASE):
             return SecurityTier.T1_VALIDATION
 
@@ -121,8 +131,8 @@ def classify_command_tier(
 
     Classification order:
     1. Check for blocked operations (T3)
-    2. Check for dry-run operations (T2)
-    3. Check for validation operations (T1)
+    2. Check for dry-run/simulation operations (T2)
+    3. Check for local validation operations (T1)
     4. Check for read-only operations (T0)
     5. Default to T3 (blocked) for unknown commands
 

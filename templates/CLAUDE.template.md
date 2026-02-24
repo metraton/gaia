@@ -58,8 +58,10 @@ Parse it to decide your next action:
 | Agent PLAN_STATUS | Your Action |
 |-------------------|-------------|
 | `INVESTIGATING` | Relay agent output to user → `AskUserQuestion` if user input is needed to continue. |
-| `PENDING_APPROVAL` | Show plan to user → `AskUserQuestion` → Resume with "User approved..." |
+| `PLANNING` | Agent is building/refining plan details. Wait for next status (often `PENDING_APPROVAL` or `NEEDS_INPUT`). |
+| `PENDING_APPROVAL` | Show plan to user → `AskUserQuestion` → Resume with `User approval received`. |
 | `APPROVED_EXECUTING` | Wait. Agent is executing. Do not intervene. |
+| `FIXING` | Agent is applying recoverable fixes after failed verification. Wait for `COMPLETE`, `BLOCKED`, or `NEEDS_INPUT`. |
 | `COMPLETE` | Summarize result to user. Task done. |
 | `BLOCKED` | Report blocker to user, offer alternatives → `AskUserQuestion` with options. |
 | `NEEDS_INPUT` | Ask user for missing info → Resume with the answer. Offer `AskUserQuestion` when multiple options exist. |

@@ -4,7 +4,7 @@ Critical event detection.
 Detects events that warrant context updates:
 - Git commits
 - Git pushes
-- Spec-kit milestones
+- File modifications
 """
 
 import re
@@ -24,7 +24,6 @@ class EventType(str, Enum):
     GIT_COMMIT = "git_commit"
     GIT_PUSH = "git_push"
     FILE_MODIFICATIONS = "file_modifications"
-    SPECKIT_MILESTONE = "speckit_milestone"
 
 
 @dataclass
@@ -48,14 +47,6 @@ class CriticalEvent:
 
 class CriticalEventDetector:
     """Detect critical events that warrant context updates."""
-
-    SPECKIT_COMMANDS = [
-        "/speckit.specify",
-        "/speckit.plan",
-        "/speckit.tasks",
-        "/speckit.implement",
-        "/speckit.constitution",
-    ]
 
     def detect_git_commit(
         self,
@@ -134,24 +125,6 @@ class CriticalEventDetector:
             }
         )
 
-    def detect_speckit_milestone(
-        self,
-        tool_name: str,
-        parameters: Dict[str, Any]
-    ) -> Optional[CriticalEvent]:
-        """Detect spec-kit milestone commands."""
-        if tool_name.lower() != "slashcommand":
-            return None
-
-        command = parameters.get("command", "")
-        for speckit_cmd in self.SPECKIT_COMMANDS:
-            if speckit_cmd in command:
-                return CriticalEvent(
-                    event_type=EventType.SPECKIT_MILESTONE,
-                    data={"command": speckit_cmd}
-                )
-        return None
-
     def detect_all(
         self,
         tool_name: str,
@@ -169,11 +142,6 @@ class CriticalEventDetector:
 
         # Git push
         event = self.detect_git_push(tool_name, parameters, result, success)
-        if event:
-            events.append(event)
-
-        # Speckit milestone
-        event = self.detect_speckit_milestone(tool_name, parameters)
         if event:
             events.append(event)
 

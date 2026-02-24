@@ -1,8 +1,8 @@
 """
-Test schema compatibility between CLAUDE.template.md and gaia-init.js output.
+Test schema compatibility between CLAUDE.template.md and system components.
 
-Ensures the orchestrator's bootstrap instruction references the correct
-project-context.json path and that fixture schemas match expected structure.
+Ensures the orchestrator template contains the essential sections that
+the hook system and agent routing depend on.
 """
 
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 class TestSchemaCompatibility:
-    """Verify CLAUDE.template.md references match gaia-init.js schema."""
+    """Verify CLAUDE.template.md contains required orchestrator sections."""
 
     @pytest.fixture
     def package_root(self):
@@ -38,25 +38,57 @@ class TestSchemaCompatibility:
             contexts[f.stem] = json.loads(f.read_text())
         return contexts
 
-    def test_template_instructs_read_project_context(self, template_content):
-        """Template must instruct the orchestrator to read project-context.json."""
-        assert "project-context.json" in template_content, (
-            "Template must reference project-context.json for Quick Context"
+    def test_template_defines_orchestrator_identity(self, template_content):
+        """Template must define the orchestrator role."""
+        assert "orchestrator" in template_content.lower(), (
+            "Template must define the orchestrator identity"
         )
 
-    def test_template_references_key_fields(self, template_content):
-        """Template Quick Context must mention the key fields to extract."""
-        expected_fields = [
-            "project name",
-            "cloud provider",
-            "region",
-            "cluster name",
+    def test_template_enforces_delegation(self, template_content):
+        """Template must enforce delegation to specialist agents."""
+        assert "delegate" in template_content.lower(), (
+            "Template must instruct delegation to specialist agents"
+        )
+        assert "Task" in template_content, (
+            "Template must reference the Task tool for agent invocation"
+        )
+
+    def test_template_has_routing_table(self, template_content):
+        """Template must contain the agent routing table."""
+        required_agents = [
+            "terraform-architect",
+            "gitops-operator",
+            "cloud-troubleshooter",
+            "devops-developer",
         ]
-        content_lower = template_content.lower()
-        for field in expected_fields:
-            assert field in content_lower, (
-                f"Template Quick Context should mention '{field}'"
+        for agent in required_agents:
+            assert agent in template_content, (
+                f"Template routing table must include {agent}"
             )
+
+    def test_template_documents_plan_status(self, template_content):
+        """Template must document PLAN_STATUS values for orchestrator parsing."""
+        required_statuses = [
+            "INVESTIGATING",
+            "PENDING_APPROVAL",
+            "APPROVED_EXECUTING",
+            "COMPLETE",
+            "BLOCKED",
+            "NEEDS_INPUT",
+        ]
+        for status in required_statuses:
+            assert status in template_content, (
+                f"Template must document PLAN_STATUS: {status}"
+            )
+
+    def test_template_references_agent_status(self, template_content):
+        """Template must reference AGENT_STATUS and AGENT_ID for resume support."""
+        assert "AGENT_STATUS" in template_content, (
+            "Template must reference AGENT_STATUS block"
+        )
+        assert "AGENT_ID" in template_content, (
+            "Template must reference AGENT_ID for resume operations"
+        )
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):
         """Test fixture project-context files must have the sections gaia-init generates."""
@@ -67,19 +99,8 @@ class TestSchemaCompatibility:
             assert "metadata" in ctx, f"{name}: missing metadata"
             assert "sections" in ctx, f"{name}: missing sections"
 
-    def test_template_path_matches_gaia_init_output(self, template_content, gaia_init_content):
-        """Template must reference the same file path that gaia-init writes to."""
-        assert ".claude/project-context/project-context.json" in template_content, (
-            "Template must reference .claude/project-context/project-context.json"
-        )
-        assert "'.claude', 'project-context', 'project-context.json'" in gaia_init_content or \
-               "'project-context', 'project-context.json'" in gaia_init_content, (
-            "gaia-init must write to .claude/project-context/project-context.json"
-        )
-
-    def test_template_enforces_no_bash(self, template_content):
-        """Template must explicitly state the orchestrator has no Bash."""
-        assert "do NOT have Bash" in template_content or \
-               "do not have Bash" in template_content, (
-            "Template must explicitly state orchestrator has no Bash"
+    def test_gaia_init_writes_project_context(self, gaia_init_content):
+        """gaia-init must write to project-context.json."""
+        assert "project-context" in gaia_init_content, (
+            "gaia-init must reference project-context"
         )

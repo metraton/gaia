@@ -30,7 +30,6 @@ Every response MUST end with this block:
 ```html
 <!-- AGENT_STATUS -->
 PLAN_STATUS: [INVESTIGATING|PLANNING|PENDING_APPROVAL|APPROVED_EXECUTING|FIXING|COMPLETE|BLOCKED|NEEDS_INPUT]
-CURRENT_PHASE: [Investigation|Planning|Execution|Complete]
 PENDING_STEPS: [List of remaining steps]
 NEXT_ACTION: [Specific next step]
 AGENT_ID: [Your agent ID from Claude Code]
@@ -53,28 +52,28 @@ AGENT_ID: [Your agent ID from Claude Code]
 ### State Flow
 
 ```
-INVESTIGATING -> PLANNING -> PENDING_APPROVAL -> APPROVED_EXECUTING -> COMPLETE
+INVESTIGATING -> PLANNING -> PENDING_APPROVAL -> APPROVED_EXECUTING -> COMPLETE  (T3)
+INVESTIGATING -> COMPLETE                                                        (T0/T1/T2)
 APPROVED_EXECUTING -> FIXING (recoverable failure, max 2 cycles)
 FIXING -> APPROVED_EXECUTING (retry after fix)
 FIXING -> BLOCKED (after 2 cycles or non-recoverable error)
-INVESTIGATING -> COMPLETE (T0/T1 tasks)
 INVESTIGATING -> BLOCKED
 INVESTIGATING -> NEEDS_INPUT
 PLANNING -> NEEDS_INPUT
+PENDING_APPROVAL -> PLANNING (user requests modifications)
 ```
 
 ## State-Changing Operation Workflow
 
-Triggered when the task requires approval (see `security-tiers`: apply, deploy, create, delete, push, commit).
+Triggered when the task requires T3 operations (mutations per `security-tiers`).
 
 ### Phase 1 — Investigate
 Follow the `investigation` skill. Surface options when multiple approaches exist.
 
 ### Phase 2 — Plan
-Complexity: Simple (≤3 changes, clear scope) → inline plan. Complex (multi-service, architecture) → suggest speckit.
+Set status: `PLANNING`. Complexity: Simple (≤3 changes, clear scope) → inline plan. Complex (multi-service, architecture) → suggest speckit.
 
-Read `.claude/skills/approval/SKILL.md` for plan format and presentation requirements.
-Set status: `PENDING_APPROVAL`. Wait for orchestrator to resume with "User approved..."
+Follow the `approval` skill for plan format and presentation. Set status: `PENDING_APPROVAL`. Wait for orchestrator to resume with approval.
 
 ### Phase 3 — Execute & Verify
 Read `.claude/skills/execution/SKILL.md`. Execute all plan steps, then run the Verification Criteria.

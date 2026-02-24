@@ -29,8 +29,7 @@ modules/
 ├── __init__.py           # Package marker
 ├── core/                 # Shared utilities
 │   ├── paths.py          # find_claude_dir() - single source of truth
-│   ├── state.py          # Pre/post hook state sharing
-│   └── config_loader.py  # JSON config loading
+│   └── state.py          # Pre/post hook state sharing
 │
 ├── security/             # Security classification
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
@@ -119,3 +118,16 @@ print(f"Success rate: {summary['success_rate']:.1%}")
 The modular architecture maintains full backward compatibility with Claude Code's hook interface (stdin JSON format).
 
 All security rules (safe commands, blocked patterns, tiers) are hardcoded in the Python modules for performance and simplicity - no external JSON config files needed.
+
+### Validation Order (Defense-in-Depth)
+bash_validator checks commands in this order:
+1. **Blocked commands** (deny first) — permanently blocked destructive operations
+2. **Safe commands** (allow) — auto-approve read-only operations
+3. **GitOps validation** — kubectl/helm/flux policy enforcement
+4. **Tier classification** — T0/T1/T2/T3 for logging and metrics
+
+### Tier Classification
+- **T0**: Read-only (get, list, describe, show)
+- **T1**: Local validation (validate, lint, fmt, check)
+- **T2**: Simulation (plan, template, diff, --dry-run)
+- **T3**: State-modifying (apply, delete, push, commit)

@@ -5,6 +5,51 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.1] - 2026-02-24
+
+### Fix: Cross-Layer Consistency & Dead Code Cleanup
+
+Comprehensive audit of skills, hooks, and security modules. Fixed inconsistencies between layers that caused silent failures (tests pass but system broken).
+
+#### Fixed
+- **bash_validator**: Check blocked commands BEFORE safe commands (defense-in-depth order was inverted)
+- **tiers.py**: Split `VALIDATION_PATTERNS` into `T1_PATTERNS` (validate, lint, fmt, check) and `T2_PATTERNS` (plan, template, diff) — aligns with security-tiers skill
+- **tiers.py**: Removed `terraform plan` from `ULTRA_COMMON_T0_COMMANDS` fast-path (was T0, should be T2)
+- **safe_commands.py**: Removed `terraform plan`/`terragrunt plan` from `ALWAYS_SAFE_MULTIWORD` (simulation, not read-only)
+- **safe_commands.py**: Removed `python3`, `python` from `always_safe` (can execute arbitrary code)
+- **safe_commands.py**: Removed `tar`, `gzip`, `gunzip`, `zip`, `unzip` from `always_safe` (modify filesystem)
+- **task_validator.py**: Removed legacy `APPROVAL_INDICATORS` (`'validation["approved"] == True'`, `"Phase 5: Realization"`)
+- **task_validator.py**: Added `speckit-planner` to `META_AGENTS`
+- **pre_tool_use.py**: Resume regex `{6,7}` → `{5,}` to accept real Claude Code agent IDs
+- **pre_tool_use.py**: Session events now inject BEFORE `# User Task` marker (was after)
+- **post_tool_use.py**: Added `fcntl.flock` to prevent race conditions on `context.json`
+- **post_tool_use.py**: Guard empty timestamps in retention filter
+- **subagent_stop.py**: Fixed indentation bug in consecutive failure detection
+- **subagent_stop.py**: Use `deque(f, maxlen=7)` instead of `f.readlines()` for metrics.jsonl
+- **settings.json**: Moved 7 T3 commands from `allow` → `ask`: kubectl exec/label/annotate/uncordon, helm rollback, flux suspend/resume
+- **settings.json**: Added `flux create` to `ask` list (was unprotected)
+- **agent-protocol skill**: Removed `CURRENT_PHASE` from AGENT_STATUS (redundant with `PLAN_STATUS`)
+- **agent-protocol skill**: `PLANNING` state now explicitly emitted in Phase 2
+- **execution skill**: Scope clarified as T3-only (was accidentally broadened to T2)
+- All 3 hooks: Removed `logging.StreamHandler()` (was sending noise to stderr)
+
+#### Removed
+- **`config_loader.py`** — Dead code, never imported by any module
+- **`discovery_classifier.py`** — Deprecated, replaced by context_writer.py (609 lines)
+- **`exhaustion_detector.py`** — Never worked (wrong glob pattern, wrong file format parsing, 200K thresholds obsolete with 1M context)
+- **`detect_speckit_milestone()`** in event_detector.py — Dead code (post_hook only runs for Bash, not Skill)
+- **`SPECKIT_MILESTONE`** enum value from EventType
+- **`test_config_loader.py`** — Tests for deleted module
+- **`test_discovery_classifier.py`** — Tests for deleted module
+- Slow execution detection in subagent_stop.py (duration_ms always None)
+
+#### Added
+- **`test_cross_layer_consistency.py`** — 24 tests validating consistency between settings.json ↔ safe_commands ↔ blocked_commands ↔ tiers ↔ skills ↔ task_validator
+
+#### Metrics
+- Dead code removed: ~1,500 lines (config_loader + discovery_classifier + exhaustion_detector + dead test files)
+- All 890 tests pass, 0 failures
+
 ## [3.12.0] - 2026-02-17
 
 ### Refactor: Principle-First Skills & Agent Deduplication

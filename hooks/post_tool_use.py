@@ -17,6 +17,7 @@ import sys
 import json
 import logging
 import os
+import fcntl
 import select
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -37,7 +38,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_file),
-        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -56,37 +56,47 @@ class ActiveContextUpdater:
     def update_context(self, event_data: dict) -> None:
         """Update active context with event data."""
         try:
-            # Load existing context
-            context = {}
-            if self.context_path.exists():
-                with open(self.context_path, 'r') as f:
-                    context = json.load(f)
+            self.context_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Initialize events list if not exists
-            if "critical_events" not in context:
-                context["critical_events"] = []
+            # File lock to prevent race conditions from parallel tool calls
+            lock_path = self.context_path.with_suffix('.lock')
+            with open(lock_path, 'w') as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    # Load existing context
+                    context = {}
+                    if self.context_path.exists():
+                        with open(self.context_path, 'r') as f:
+                            context = json.load(f)
 
-            # Add timestamp to event
-            event_data["timestamp"] = datetime.now().isoformat()
+                    # Initialize events list if not exists
+                    if "critical_events" not in context:
+                        context["critical_events"] = []
 
-            # Append new event
-            context["critical_events"].append(event_data)
+                    # Add timestamp to event
+                    event_data["timestamp"] = datetime.now().isoformat()
 
-            # Keep only events from last 24 hours
-            retention_hours = int(os.environ.get("SESSION_RETENTION_HOURS", "24"))
-            cutoff = datetime.now() - timedelta(hours=retention_hours)
+                    # Append new event
+                    context["critical_events"].append(event_data)
 
-            context["critical_events"] = [
-                event for event in context["critical_events"]
-                if datetime.fromisoformat(event.get("timestamp", "")) > cutoff
-            ]
+                    # Keep only events from last 24 hours
+                    retention_hours = int(os.environ.get("SESSION_RETENTION_HOURS", "24"))
+                    cutoff = datetime.now() - timedelta(hours=retention_hours)
 
-            # Update last_modified
-            context["last_modified"] = datetime.now().isoformat()
+                    context["critical_events"] = [
+                        event for event in context["critical_events"]
+                        if event.get("timestamp")
+                        and datetime.fromisoformat(event["timestamp"]) > cutoff
+                    ]
 
-            # Write back
-            with open(self.context_path, 'w') as f:
-                json.dump(context, f, indent=2)
+                    # Update last_modified
+                    context["last_modified"] = datetime.now().isoformat()
+
+                    # Write back
+                    with open(self.context_path, 'w') as f:
+                        json.dump(context, f, indent=2)
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
             logger.info(f"Updated context with event: {event_data.get('event_type', 'unknown')}")
 

@@ -81,8 +81,8 @@ Hooks read `.claude/settings.json` for decisions:
 | Tier | Operation Type | Requires Approval | Hook Validation |
 |------|----------------|-------------------|-----------------|
 | **T0** | Read-only (get, list) | No | pre_tool_use |
-| **T1** | Validation (validate, dry-run) | No | pre_tool_use |
-| **T2** | Planning (plan, simulate) | No | pre_tool_use |
+| **T1** | Local validation (validate, lint, fmt, check) | No | pre_tool_use |
+| **T2** | Simulation (plan, template, diff, --dry-run) | No | pre_tool_use |
 | **T3** | Execution (apply, delete) | **Yes** | pre_tool_use |
 
 ## File Structure
@@ -98,7 +98,7 @@ hooks/
 
 ---
 
-**Version:** 4.1.0
-**Last updated:** 2026-01-16
+**Version:** 4.2.0
+**Last updated:** 2026-02-24
 **Total hooks:** 3 active hooks (1 pre, 1 post, 1 metrics)
 **Maintained by:** Gaia (meta-agent)

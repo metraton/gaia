@@ -4,12 +4,10 @@ Core module - Shared utilities for all hook modules.
 Provides:
 - paths: Unified path resolution (find_claude_dir)
 - state: Pre/post hook state sharing
-- config_loader: JSON configuration loading
 """
 
 from .paths import find_claude_dir, get_logs_dir, get_metrics_dir, get_memory_dir
 from .state import HookState, get_hook_state, save_hook_state, clear_hook_state
-from .config_loader import ConfigLoader, get_config
 
 __all__ = [
     # Paths
@@ -22,7 +20,4 @@ __all__ = [
     "get_hook_state",
     "save_hook_state",
     "clear_hook_state",
-    # Config
-    "ConfigLoader",
-    "get_config",
 ]

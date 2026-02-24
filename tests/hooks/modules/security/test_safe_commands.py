@@ -59,7 +59,6 @@ class TestIsSingleCommandSafe:
         "kubectl get pods",
         "kubectl describe pod test-pod",
         "kubectl logs deployment/app",
-        "terraform plan",
         "terraform validate",
         "helm list",
         "flux get all",

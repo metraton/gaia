@@ -20,7 +20,8 @@ from modules.security.tiers import (
     SecurityTier,
     classify_command_tier,
     tier_from_string,
-    VALIDATION_PATTERNS,
+    T1_PATTERNS,
+    T2_PATTERNS,
 )
 
 
@@ -73,25 +74,34 @@ class TestClassifyCommandTier:
         "kubectl logs deployment/app",
         "terraform show",
         "terraform output",
-        "terraform plan",  # Optimized as ultra-common T0 command
     ])
     def test_classifies_read_only_as_t0(self, command):
         """Test read-only commands are classified as T0."""
         tier = classify_command_tier(command)
         assert tier == SecurityTier.T0_READ_ONLY, f"{command} should be T0"
 
-    # T1 - Validation operations
+    # T1 - Local validation operations
     @pytest.mark.parametrize("command", [
         "terraform validate",
         "terraform fmt",
         "helm lint",
-        "helm template chart/",
-        # "kubectl apply --dry-run=client -f file.yaml",  # Now T2
     ])
     def test_classifies_validation_as_t1(self, command):
-        """Test validation commands are classified as T1."""
+        """Test local validation commands are classified as T1."""
         tier = classify_command_tier(command)
         assert tier == SecurityTier.T1_VALIDATION, f"{command} should be T1"
+
+    # T2 - Simulation operations (plan, template, diff)
+    @pytest.mark.parametrize("command", [
+        "terraform plan",
+        "terragrunt plan",
+        "helm template chart/",
+        "kubectl diff -f file.yaml",
+    ])
+    def test_classifies_simulation_as_t2(self, command):
+        """Test simulation commands are classified as T2."""
+        tier = classify_command_tier(command)
+        assert tier == SecurityTier.T2_DRY_RUN, f"{command} should be T2"
 
     # T2 - Dry-run operations
     @pytest.mark.parametrize("command", [
@@ -166,27 +176,30 @@ class TestTierFromString:
         assert result == SecurityTier.T3_BLOCKED
 
 
-class TestValidationPatterns:
-    """Test validation pattern detection."""
+class TestTierPatterns:
+    """Test T1/T2 pattern detection."""
 
-    def test_validation_patterns_exist(self):
-        """Test that validation patterns are defined."""
-        assert len(VALIDATION_PATTERNS) > 0
+    def test_t1_patterns_exist(self):
+        """Test that T1 patterns are defined."""
+        assert len(T1_PATTERNS) > 0
 
-    @pytest.mark.parametrize("keyword", [
-        "validate",
-        "plan",
-        "template",
-        "lint",
-        "check",
-        "fmt",
-    ])
-    def test_validation_keywords_detected(self, keyword):
-        """Test validation keywords are detected."""
+    def test_t2_patterns_exist(self):
+        """Test that T2 patterns are defined."""
+        assert len(T2_PATTERNS) > 0
+
+    @pytest.mark.parametrize("keyword", ["validate", "lint", "check", "fmt"])
+    def test_t1_keywords_detected(self, keyword):
+        """Test T1 (local validation) keywords are detected."""
         command = f"tool {keyword} arguments"
         tier = classify_command_tier(command)
-        # Should be T1 or lower (some may be T0 if also read-only)
-        assert tier in [SecurityTier.T0_READ_ONLY, SecurityTier.T1_VALIDATION]
+        assert tier == SecurityTier.T1_VALIDATION, f"'{keyword}' should classify as T1"
+
+    @pytest.mark.parametrize("keyword", ["plan", "template", "diff"])
+    def test_t2_keywords_detected(self, keyword):
+        """Test T2 (simulation) keywords are detected."""
+        command = f"tool {keyword} arguments"
+        tier = classify_command_tier(command)
+        assert tier == SecurityTier.T2_DRY_RUN, f"'{keyword}' should classify as T2"
 
 
 class TestEdgeCases:
@@ -199,10 +212,10 @@ class TestEdgeCases:
         # dry-run should give T1 or T2, not T3
         assert tier in [SecurityTier.T1_VALIDATION, SecurityTier.T2_DRY_RUN]
 
-    def test_terraform_plan_is_not_blocked(self):
-        """Test terraform plan is validation, not blocked."""
+    def test_terraform_plan_is_t2(self):
+        """Test terraform plan is simulation (T2), not blocked."""
         tier = classify_command_tier("terraform plan")
-        assert tier != SecurityTier.T3_BLOCKED
+        assert tier == SecurityTier.T2_DRY_RUN
 
     def test_kubectl_get_with_output_still_t0(self):
         """Test kubectl get with -o flag is still T0."""

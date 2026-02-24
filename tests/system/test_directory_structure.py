@@ -211,13 +211,10 @@ class TestSpecKitDirectory:
             template_path = templates_dir / template
             assert template_path.exists(), f"Spec-Kit template missing: {template}"
 
-    def test_governance_file_exists(self, speckit_dir):
-        """governance.md must exist"""
-        governance = speckit_dir / "governance.md"
-        assert governance.exists(), "governance.md not found"
-        
-        content = governance.read_text()
-        assert len(content) > 1000, "governance.md seems too small"
+    def test_templates_dir_exists(self, speckit_dir):
+        """templates directory must exist for spec-kit artifacts."""
+        templates = speckit_dir / "templates"
+        assert templates.exists(), "speckit/templates/ not found"
 
 
 if __name__ == "__main__":

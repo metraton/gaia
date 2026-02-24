@@ -8,7 +8,7 @@ user-invocable: false
 
 Use when user has approved a T3 operation and you need to execute the plan.
 
-**Trigger:** orchestrator resumes with confirmation of user approval.
+**Trigger:** Orchestrator resumes with confirmation of user approval.
 
 **Iron Law: No completion claims without fresh verification evidence.**
 Emit `COMPLETE` only after Verification Criteria pass — not when commands finish.
@@ -17,7 +17,7 @@ Emit `COMPLETE` only after Verification Criteria pass — not when commands fini
 
 Before executing ANY approved operation:
 
-- [ ] User explicitly approved (check prompt contains "approved")
+- [ ] User explicitly approved (prompt contains exact token: `User approval received`)
 - [ ] Git status clean (no uncommitted changes in the way)
 - [ ] Plan still valid (no drift since plan was created)
 - [ ] Credentials available (can access cloud/cluster)
@@ -104,3 +104,11 @@ Always verify:
 - User approved the EXACT operation being executed
 - Correct environment (dev vs prod)
 - Changes match the approved plan — no side effects
+
+## Approval Token (Canonical)
+
+The canonical approval token is:
+
+`User approval received`
+
+If the resume prompt does not include this exact phrase, do not execute T3 operations.

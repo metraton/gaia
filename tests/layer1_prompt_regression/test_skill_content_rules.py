@@ -89,15 +89,16 @@ class TestAgentProtocolSkill:
         assert "PLAN_STATUS" in content, \
             "agent-protocol must document PLAN_STATUS"
 
-    def test_has_current_phase(self, content):
-        """Must document CURRENT_PHASE."""
-        assert "CURRENT_PHASE" in content, \
-            "agent-protocol must document CURRENT_PHASE"
+    def test_has_pending_steps(self, content):
+        """Must document PENDING_STEPS."""
+        assert "PENDING_STEPS" in content, \
+            "agent-protocol must document PENDING_STEPS"
 
     def test_documents_all_valid_statuses(self, content):
         """Must document all valid PLAN_STATUS values."""
-        statuses = ["INVESTIGATING", "PENDING_APPROVAL", "APPROVED_EXECUTING",
-                     "COMPLETE", "BLOCKED", "NEEDS_INPUT"]
+        statuses = ["INVESTIGATING", "PLANNING", "PENDING_APPROVAL",
+                    "APPROVED_EXECUTING", "FIXING", "COMPLETE",
+                    "BLOCKED", "NEEDS_INPUT"]
         for status in statuses:
             assert status in content, \
                 f"agent-protocol should document PLAN_STATUS '{status}'"

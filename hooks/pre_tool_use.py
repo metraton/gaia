@@ -28,14 +28,6 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 
-# Import context exhaustion detector
-try:
-    from modules.context.exhaustion_detector import check_context_health
-except ImportError:
-    # Fallback if exhaustion_detector not available
-    def check_context_health(session_id: str):
-        return None
-
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.tiers import SecurityTier, classify_command_tier
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
@@ -48,7 +40,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_file),
-        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -64,92 +55,6 @@ PROJECT_AGENTS = [
     "cloud-troubleshooter",
     "devops-developer"
 ]
-
-
-def _load_agent_skills(subagent_type: str) -> str:
-    """
-    Load skill content for a project agent by reading its frontmatter.
-
-    Reads the agent definition to find 'skills:' list, then loads each
-    SKILL.md file and returns concatenated content.
-
-    Args:
-        subagent_type: Agent name (e.g. 'cloud-troubleshooter')
-
-    Returns:
-        Concatenated skill content or empty string
-    """
-    # Find agent definition
-    agent_paths = [
-        Path(f".claude/agents/{subagent_type}.md"),
-        Path(__file__).parent.parent / "agents" / f"{subagent_type}.md",
-    ]
-
-    agent_file = None
-    for p in agent_paths:
-        if p.exists():
-            agent_file = p
-            break
-
-    if not agent_file:
-        return ""
-
-    # Parse frontmatter to extract skills list
-    try:
-        text = agent_file.read_text()
-        if not text.startswith("---"):
-            return ""
-        end = text.index("---", 3)
-        frontmatter = text[3:end]
-
-        skills = []
-        in_skills = False
-        for line in frontmatter.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("skills:"):
-                in_skills = True
-                continue
-            if in_skills:
-                if stripped.startswith("- "):
-                    skills.append(stripped[2:].strip())
-                else:
-                    break
-    except Exception:
-        return ""
-
-    if not skills:
-        return ""
-
-    # Load each skill file
-    skills_dir_paths = [
-        Path(".claude/skills"),
-        Path(__file__).parent.parent / "skills",
-    ]
-
-    skills_dir = None
-    for p in skills_dir_paths:
-        if p.is_dir():
-            skills_dir = p
-            break
-
-    if not skills_dir:
-        return ""
-
-    parts = []
-    for skill_name in skills:
-        skill_file = skills_dir / skill_name / "SKILL.md"
-        if skill_file.exists():
-            content = skill_file.read_text().strip()
-            # Strip frontmatter from skill content
-            if content.startswith("---"):
-                try:
-                    end_idx = content.index("---", 3)
-                    content = content[end_idx + 3:].strip()
-                except ValueError:
-                    pass
-            parts.append(content)
-
-    return "\n\n---\n\n".join(parts) if parts else ""
 
 
 def _build_context_update_reminder(subagent_type: str) -> str:
@@ -248,6 +153,7 @@ def _should_inject_on_resume(parameters: dict) -> bool:
     # Case 1: Post-approval execution - NO injection needed
     # These are simple "go ahead" instructions
     approval_indicators = [
+        "user approval received",
         "user approved",
         "approved. execute",
         "approved, execute", 
@@ -432,19 +338,16 @@ def _inject_project_context(parameters: dict) -> dict:
         # Check pending update count (non-blocking, fast path)
         pending_warning = _check_pending_updates_threshold()
 
-        # Load skills content for this agent
-        skills_content = _load_agent_skills(subagent_type)
-        skills_section = f"\n\n---\n\n# Agent Skills (Auto-Injected)\n\n{skills_content}" if skills_content else ""
-
         # Build context update reminder for empty writable sections
         update_reminder = _build_context_update_reminder(subagent_type)
 
-        # Inject context and skills into prompt
+        # Inject context into prompt (skills are injected natively by Claude Code
+        # via the 'skills:' field in the agent's frontmatter)
         enriched_prompt = f"""# Project Context (Auto-Injected)
 
 {json.dumps(context_payload, indent=2)}
 
-{pending_warning}---{skills_section}
+{pending_warning}---
 {update_reminder}
 # User Task
 
@@ -465,9 +368,8 @@ def _inject_project_context(parameters: dict) -> dict:
         context_level = context_payload.get("metadata", {}).get("context_level", "unknown")
         standards_count = context_payload.get("metadata", {}).get("standards_count", 0)
 
-        skills_loaded = bool(skills_content)
         logger.info(
-            f"✅ Context{'+ skills' if skills_loaded else ''} injected for {subagent_type} "
+            f"✅ Context injected for {subagent_type} "
             f"(level={context_level}, standards={standards_count})"
         )
 
@@ -609,10 +511,20 @@ def _inject_session_events(parameters: dict) -> dict:
         # Format events summary
         events_summary = _format_events_summary(filtered)
 
-        # Inject into prompt
+        # Inject into prompt (before # User Task marker if present)
         prompt = parameters.get("prompt", "")
+        marker = "# User Task"
 
-        enriched_prompt = f"""{prompt}
+        if marker in prompt:
+            idx = prompt.index(marker)
+            enriched_prompt = (
+                f"{prompt[:idx]}"
+                f"# Recent Session Events (Auto-Injected, Last 24h)\n"
+                f"{events_summary}\n\n"
+                f"{prompt[idx:]}"
+            )
+        else:
+            enriched_prompt = f"""{prompt}
 
 # Recent Session Events (Auto-Injected, Last 24h)
 {events_summary}
@@ -653,17 +565,6 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
             return "Error: Invalid tool name"
         if not isinstance(parameters, dict):
             return "Error: Invalid parameters"
-
-        # ====================================================================
-        # CONTEXT EXHAUSTION CHECK (Phase 4)
-        # ====================================================================
-        # Check if context is approaching limits
-        # Uses "default" session for now - could be enhanced with actual session ID
-        context_warning = check_context_health("default")
-        if context_warning:
-            logger.warning(f"Context exhaustion detected: {context_warning}")
-            # Log warning but don't block - let operation continue
-            # The warning will appear in logs for monitoring/debugging
 
         # Route to appropriate validator
         if tool_name.lower() == "bash":
@@ -754,14 +655,14 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
 
         # Step 24: Validate agentId format
         # Pattern: a###### where # is 0-9 or a-f (6-7 chars after 'a')
-        if not re.match(r'^a[0-9a-f]{6,7}$', resume_id):
+        if not re.match(r'^a[0-9a-f]{5,}$', resume_id):
             logger.warning(f"BLOCKED Resume: Invalid agentId format '{resume_id}'")
             return (
                 f"❌ Invalid resume ID format: '{resume_id}'\n\n"
-                "Agent ID should match pattern: a######\n"
-                "Example: a12345f or a123456\n\n"
+                "Agent ID should be 'a' followed by hex characters.\n"
+                "Example: a12345f or a51a0cbbf6afb831d\n\n"
                 "The agent ID is returned at the end of agent responses.\n"
-                "Look for: 'agentId: a12345' in the previous agent output."
+                "Look for: 'agentId: a...' in the previous agent output."
             )
 
         # Step 25: Validate that prompt exists

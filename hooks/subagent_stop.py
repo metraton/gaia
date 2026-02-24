@@ -47,7 +47,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(_log_file),
-        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -250,14 +249,6 @@ def detect_anomalies(metrics: Dict[str, Any]) -> List[Dict[str, str]]:
     """
     anomalies = []
 
-    # Check duration (if available)
-    if metrics.get("duration_ms") and metrics["duration_ms"] > 120000:
-        anomalies.append({
-            "type": "slow_execution",
-            "severity": "warning",
-            "message": f"Agent {metrics['agent']} took {metrics['duration_ms']/1000:.1f}s (threshold: 120s)"
-        })
-
     # Check exit code
     if metrics.get("exit_code", 0) != 0:
         anomalies.append({
@@ -272,28 +263,26 @@ def detect_anomalies(metrics: Dict[str, Any]) -> List[Dict[str, str]]:
         metrics_file = workflow_memory_dir / "metrics.jsonl"
 
         if metrics_file.exists():
+            from collections import deque
             with open(metrics_file) as f:
-                lines = f.readlines()
-                # Get last 5 metrics (excluding current)
-                if len(lines) >= 5:
-                    last_5 = [json.loads(line) for line in lines[-6:-1]]
-                else:
-                    last_5 = [json.loads(line) for line in lines[:-1]] if len(lines) > 1 else []
+                recent = list(deque(f, maxlen=7))
+            # Get last 5 metrics (excluding current which is the last line)
+            last_5 = [json.loads(line) for line in recent[:-1]][-5:] if len(recent) > 1 else []
 
-                # Count recent failures for same agent
-                agent = metrics["agent"]
-                recent_failures = [
-                    m for m in last_5
-                    if m.get("agent") == agent and m.get("exit_code", 0) != 0
-                ]
+            # Count recent failures for same agent
+            agent = metrics["agent"]
+            recent_failures = [
+                m for m in last_5
+                if m.get("agent") == agent and m.get("exit_code", 0) != 0
+            ]
 
-                # If current also failed and we have 2+ previous failures
-                if metrics.get("exit_code", 0) != 0 and len(recent_failures) >= 2:
-                    anomalies.append({
-                        "type": "consecutive_failures",
-                        "severity": "critical",
-                        "message": f"Agent {agent} has failed {len(recent_failures) + 1} times consecutively"
-                    })
+            # If current also failed and we have 2+ previous failures
+            if metrics.get("exit_code", 0) != 0 and len(recent_failures) >= 2:
+                anomalies.append({
+                    "type": "consecutive_failures",
+                    "severity": "critical",
+                    "message": f"Agent {agent} has failed {len(recent_failures) + 1} times consecutively"
+                })
     except Exception as e:
         logger.debug(f"Could not check consecutive failures: {e}")
 

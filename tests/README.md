@@ -4,14 +4,14 @@
 
 Suite de tests para validar el sistema de orquestacion de agentes Claude.
 
-## Metricas (2026-02-16)
+## Metricas (2026-02-24)
 
 | Metrica | Valor |
 |---------|-------|
-| **Total Tests** | 669 |
+| **Total Tests** | 890 |
 | **Pass Rate** | 100% |
-| **Tiempo** | ~1.2s |
-| **Archivos de test** | 18 |
+| **Tiempo** | ~2.3s |
+| **Archivos de test** | 46 |
 
 ## Estructura
 
@@ -22,10 +22,13 @@ tests/
 │   └── modules/
 │       ├── security/ # safe_commands, blocked_commands, tiers, gitops_validator
 │       ├── tools/    # bash_validator, shell_parser, task_validator
-│       ├── core/     # config_loader, paths, state
-│       └── skills/   # skill_loader
+│       └── core/     # paths, state
+├── integration/      # Tests E2E de context enrichment y subagent lifecycle
+├── layer1_prompt_regression/ # Tests de regresion de prompts y skills
 ├── system/           # Tests de estructura, permisos, agentes, configuracion
-└── tools/            # Tests de context_provider, episodic
+├── tools/            # Tests de context_provider, episodic, pending_updates
+├── test_cross_layer_consistency.py  # Consistencia entre capas
+└── conftest.py       # Fixtures y markers compartidos
 ```
 
 ## Ejecutar Tests
@@ -58,18 +61,18 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 | `test_bash_validator.py` | 37 | Tools |
 | `test_skill_loader.py` | 36 | Skills |
 | `test_state.py` | 20 | Core |
-| `test_config_loader.py` | 18 | Core |
+| `test_cross_layer_consistency.py` | 24 | Cross-Layer |
 | `test_paths.py` | 17 | Core |
 | `test_directory_structure.py` | 14 | System |
 | `test_context_provider.py` | 11 | Tools |
 | `test_agent_definitions.py` | 11 | System |
 | `test_configuration_files.py` | 9 | System |
-| `test_schema_compatibility.py` | 4 | System |
+| `test_schema_compatibility.py` | 7 | System |
 
 ## Cobertura Pendiente
 
 Modulos sin tests dedicados:
-- `hooks/modules/audit/event_detector.py`, `logger.py`, `metrics.py`
+- `hooks/modules/audit/logger.py`, `metrics.py`
 
 ## Dependencias
 
@@ -79,4 +82,4 @@ pip install pytest pytest-cov
 
 ---
 
-**Actualizado:** 2026-02-16 | **Tests:** 669
+**Actualizado:** 2026-02-24 | **Tests:** 890

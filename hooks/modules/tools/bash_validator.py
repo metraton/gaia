@@ -124,16 +124,7 @@ class BashValidator:
     def _validate_single_command(self, command: str) -> BashValidationResult:
         """Validate a single command (no operators)."""
 
-        # Fast-path: Auto-approve read-only commands
-        is_safe, reason = is_read_only_command(command)
-        if is_safe:
-            return BashValidationResult(
-                allowed=True,
-                tier=SecurityTier.T0_READ_ONLY,
-                reason=f"Auto-approved: {reason}",
-            )
-
-        # Check for blocked patterns first
+        # Check for blocked patterns FIRST (deny before allow)
         blocked_result = is_blocked_command(command)
         if blocked_result.is_blocked:
             suggestion = get_suggestion_for_blocked(command)
@@ -142,6 +133,15 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Command blocked by security policy: {blocked_result.category}",
                 suggestions=[suggestion] if suggestion else [],
+            )
+
+        # Fast-path: Auto-approve read-only commands
+        is_safe, reason = is_read_only_command(command)
+        if is_safe:
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T0_READ_ONLY,
+                reason=f"Auto-approved: {reason}",
             )
 
         # Check GitOps commands

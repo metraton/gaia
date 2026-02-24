@@ -36,10 +36,12 @@ AVAILABLE_AGENTS = [
 ]
 
 # Meta-agents that don't require context_provider
-META_AGENTS = ["gaia", "Explore", "Plan"]
+META_AGENTS = ["gaia", "Explore", "Plan", "speckit-planner"]
 
 # Keywords indicating T3 operations
 T3_KEYWORDS = [
+      "git commit",
+      "git push",
       "terraform apply",
       "terragrunt apply",
       "kubectl apply",
@@ -53,10 +55,8 @@ T3_KEYWORDS = [
 
 # Indicators that approval was received
 APPROVAL_INDICATORS = [
-    "approved by user",
     "user approval received",
-    'validation["approved"] == True',
-    "Phase 5: Realization",
+    "approved by user",
 ]
 
 
@@ -191,7 +191,7 @@ class TaskValidator:
             "  1. Call approval_gate.request_approval()\n"
             "  2. Get user approval via AskUserQuestion\n"
             "  3. Validate with approval_gate.process_approval_response()\n"
-            "  4. Include 'User approval received' in Task prompt\n\n"
+            "  4. Include exact token 'User approval received' in Task prompt\n\n"
             "See CLAUDE.md Rule 5.2 for approval gate protocol."
         )
 
