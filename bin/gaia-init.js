@@ -1024,6 +1024,7 @@ async function createClaudeDirectory() {
     await fs.mkdir(join(claudeDir, 'tests'), { recursive: true });
     await fs.mkdir(join(claudeDir, 'project-context'), { recursive: true });
     await fs.mkdir(join(claudeDir, 'project-context', 'workflow-episodic-memory'), { recursive: true });
+    await fs.mkdir(join(claudeDir, 'approvals'), { recursive: true });
 
     spinner.succeed('.claude/ directory created');
   } catch (error) {

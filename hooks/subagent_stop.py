@@ -518,6 +518,43 @@ def _process_context_updates(agent_output: str, task_info: Dict[str, Any]) -> Op
         return None
 
 
+def _consume_approval_file(agent_type: str) -> bool:
+    """
+    Delete .claude/approvals/pending.json if it exists and matches agent_type.
+
+    The orchestrator writes this file when resuming an approved T3 operation.
+    Consuming it here confirms the approval was used and prevents reuse.
+
+    Returns:
+        True if a matching approval file was consumed, False otherwise.
+    """
+    try:
+        approval_path = Path(".claude/approvals/pending.json")
+        if not approval_path.exists():
+            return False
+
+        data = json.loads(approval_path.read_text())
+        if data.get("agent") == agent_type:
+            approval_path.unlink()
+            logger.info(
+                "Consumed approval for agent '%s' (operation: %s)",
+                agent_type,
+                data.get("operation", "unknown"),
+            )
+            return True
+
+        # File exists but for a different agent — leave it alone
+        logger.debug(
+            "Approval file exists for agent '%s', not '%s' — leaving intact",
+            data.get("agent"),
+            agent_type,
+        )
+        return False
+    except Exception as e:
+        logger.debug("Failed to consume approval file (non-fatal): %s", e)
+        return False
+
+
 def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str, Any]:
     """
     Main subagent stop hook - captures metrics, detects anomalies, stores episodes.
@@ -531,13 +568,17 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
     """
     try:
         session_id = _get_or_create_session_id()
+        agent_type = task_info.get("agent", "unknown")
+
+        # Step 0: Consume approval file if present for this agent
+        _consume_approval_file(agent_type)
 
         # Create session context for metrics
         session_context = {
             "timestamp": datetime.now().isoformat(),
             "session_id": session_id,
             "task_id": task_info.get('task_id', 'unknown'),
-            "agent": task_info.get('agent', 'unknown'),
+            "agent": agent_type,
         }
 
         # Step 1: Capture workflow metrics

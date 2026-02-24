@@ -6,6 +6,7 @@ Provides:
 - safe_commands: Read-only command detection
 - blocked_commands: Dangerous pattern matching
 - gitops_validator: kubectl/helm/flux validation
+- approval_constants: Canonical APPROVAL_INDICATORS list
 """
 
 from .tiers import SecurityTier, classify_command_tier
@@ -20,6 +21,7 @@ from .blocked_commands import (
     BlockedCommandResult,
 )
 from .gitops_validator import validate_gitops_workflow, GitOpsValidationResult
+from .approval_constants import APPROVAL_INDICATORS
 
 __all__ = [
     # Tiers
@@ -36,4 +38,6 @@ __all__ = [
     # GitOps
     "validate_gitops_workflow",
     "GitOpsValidationResult",
+    # Approval
+    "APPROVAL_INDICATORS",
 ]

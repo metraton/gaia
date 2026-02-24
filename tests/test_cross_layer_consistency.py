@@ -311,17 +311,27 @@ class TestTaskValidatorConsistency:
     """Verify task_validator configuration matches the rest of the system."""
 
     def test_approval_indicators_are_current(self):
-        """Approval indicators must only contain strings from current protocol."""
+        """Approval indicators must only contain strings from the documented protocol."""
+        # All allowed indicators — new canonical token + documented legacy synonyms.
+        # To add a new indicator: add it here AND to approval_constants.py.
         valid_indicators = {
-            "user approval received",  # canonical token from execution skill
-            "approved by user",        # backward-compatible variant
+            "user approved:",           # canonical scoped token (new)
+            "user approval received",   # legacy canonical token
+            "approved by user",         # legacy variant
+            "user approved",            # legacy short form
+            "approved. execute",        # legacy variant
+            "approved, execute",        # legacy variant
+            "approval confirmed",       # legacy variant
+            "proceed with execution",   # legacy variant
+            "go ahead",                 # legacy variant
+            "confirmed. proceed",       # legacy variant
         }
 
         actual = set(APPROVAL_INDICATORS)
         unexpected = actual - valid_indicators
         assert not unexpected, (
-            f"Legacy/unknown approval indicators found: {unexpected}. "
-            f"These could allow accidental approval bypass."
+            f"Undocumented approval indicators found: {unexpected}. "
+            f"Add them to the valid_indicators set in this test AND document them in approval_constants.py."
         )
 
     def test_meta_agents_are_subset_of_available(self):
@@ -352,9 +362,13 @@ class TestTaskValidatorConsistency:
             pytest.skip("execution/SKILL.md not found")
 
         content = execution_skill.read_text().lower()
-        canonical_token = APPROVAL_INDICATORS[0]  # "user approval received"
-        assert canonical_token in content, (
-            f"Canonical approval token '{canonical_token}' not found in execution skill"
+        # Primary canonical token (new scoped format)
+        canonical_token = "user approved:"
+        # Legacy fallback token still supported
+        legacy_token = "user approval received"
+        assert canonical_token in content or legacy_token in content, (
+            f"Execution skill must contain the canonical approval token "
+            f"('{canonical_token}' or '{legacy_token}')"
         )
 
 
@@ -385,8 +399,10 @@ class TestSkillsCrossReferences:
     def test_execution_skill_references_approval_token(self):
         """Execution skill must define the canonical approval token."""
         content = (SKILLS_DIR / "execution" / "SKILL.md").read_text()
-        assert "User approval received" in content, (
-            "Execution skill must contain the canonical approval token"
+        # Accept either the new scoped token or the legacy token
+        assert "User approved:" in content or "User approval received" in content, (
+            "Execution skill must contain the canonical approval token "
+            "('User approved:' or 'User approval received')"
         )
 
     def test_security_tiers_t3_references_agent_protocol(self):

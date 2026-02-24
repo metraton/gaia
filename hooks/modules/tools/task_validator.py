@@ -7,11 +7,13 @@ Validates Task tool invocations:
 - T3 operation approval requirement
 """
 
+import re
 import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
+from ..security.approval_constants import APPROVAL_INDICATORS
 
 logger = logging.getLogger(__name__)
 
@@ -41,23 +43,39 @@ META_AGENTS = ["gaia", "Explore", "Plan"]
 
 # Keywords indicating T3 operations
 T3_KEYWORDS = [
-      "git commit",
-      "git push",
-      "terraform apply",
-      "terragrunt apply",
-      "kubectl apply",
-      "kubectl delete",
-      "kubectl create",
-      "git push origin main",
-      "git push origin master",
-      "helm install",
-      "helm upgrade",
+    "git commit",
+    "git push",
+    "terraform apply",
+    "terragrunt apply",
+    "terragrunt run-all apply",
+    "kubectl apply",
+    "kubectl delete",
+    "kubectl create",
+    "kubectl rollout restart",
+    "kubectl scale",
+    "kubectl set image",
+    "git push origin main",
+    "git push origin master",
+    "helm install",
+    "helm upgrade",
+    "flux reconcile",
+    "npm publish",
+    "docker push",
+    "gcloud sql import",
+    "gcloud storage cp",
+    "gcloud storage rsync",
 ]
 
-# Indicators that approval was received
-APPROVAL_INDICATORS = [
-    "user approval received",
-    "approved by user",
+# Re-export from canonical source so tests that import from here keep working.
+# Do NOT define indicators here — edit approval_constants.py instead.
+__all__ = [
+    "TaskValidator",
+    "TaskValidationResult",
+    "validate_task_invocation",
+    "AVAILABLE_AGENTS",
+    "META_AGENTS",
+    "T3_KEYWORDS",
+    "APPROVAL_INDICATORS",
 ]
 
 
@@ -135,12 +153,13 @@ class TaskValidator:
 
         if is_t3:
             has_approval = self._check_approval(prompt)
+            matched_keyword = self._matched_t3_keyword(user_task_for_t3_check, description)
 
             if not has_approval:
                 return TaskValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
-                    reason=self._get_approval_required_message(),
+                    reason=self._get_approval_required_message(agent_name, matched_keyword),
                     agent_name=agent_name,
                     has_context=has_context,
                     is_t3_operation=True,
@@ -178,22 +197,56 @@ class TaskValidator:
         combined = f"{description.lower()} {prompt.lower()}"
         return any(keyword in combined for keyword in T3_KEYWORDS)
 
+    def _matched_t3_keyword(self, prompt: str, description: str) -> str:
+        """Return the first T3 keyword found in the prompt/description, or empty string."""
+        combined = f"{description.lower()} {prompt.lower()}"
+        for keyword in T3_KEYWORDS:
+            if keyword in combined:
+                return keyword
+        return ""
+
     def _check_approval(self, prompt: str) -> bool:
         """Check if approval was received."""
         prompt_lower = prompt.lower()
         return any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS)
 
-    def _get_approval_required_message(self) -> str:
-        """Get the approval required error message."""
+    def _extract_approval_scope(self, prompt: str) -> str:
+        """
+        Extract the scope from a scoped approval token.
+
+        Looks for: 'User approved: <scope>'
+        Returns the scope string or empty if not found / scope is generic.
+        """
+        match = re.search(r"user approved:\s*(.+)", prompt, re.IGNORECASE)
+        if not match:
+            return ""
+        scope = match.group(1).strip()
+        # Warn on generic/empty scopes but don't block
+        generic_scopes = {"the changes", "everything", "all", "yes", "ok", "proceed"}
+        if scope.lower() in generic_scopes:
+            logger.warning(
+                "Approval scope '%s' is generic — consider describing the operation "
+                "(e.g. 'User approved: terraform apply prod/vpc')", scope
+            )
+        return scope
+
+    def _get_approval_required_message(self, agent_name: str = "", matched_keyword: str = "") -> str:
+        """Get the approval required error message with detected operation details."""
+        detected_line = (
+            f'Detected: "{matched_keyword}" in agent prompt\n'
+            if matched_keyword
+            else "Detected: T3 operation in agent prompt\n"
+        )
+        agent_line = f"Agent: {agent_name}\n" if agent_name else ""
+
         return (
-            "T3 operation detected without approval indication.\n\n"
-            "Phase 4 (Approval Gate) is MANDATORY before Task invocation.\n"
-            "Orchestrator must:\n"
-            "  1. Call approval_gate.request_approval()\n"
-            "  2. Get user approval via AskUserQuestion\n"
-            "  3. Validate with approval_gate.process_approval_response()\n"
-            "  4. Include exact token 'User approval received' in Task prompt\n\n"
-            "See CLAUDE.md Rule 5.2 for approval gate protocol."
+            "❌ T3 Operation Blocked — Approval Required\n\n"
+            f"{detected_line}"
+            f"{agent_line}"
+            "\nTo proceed, the orchestrator must:\n"
+            "  1. Present the plan to the user (AskUserQuestion)\n"
+            f'  2. Resume with: "User approved: {matched_keyword or "<operation> [scope]"}"\n'
+            "\nThis operation requires explicit user approval before execution."
         )
 
 

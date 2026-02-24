@@ -112,6 +112,21 @@ Then emit AGENT_STATUS with `PLAN_STATUS: PENDING_APPROVAL`.
 **Note:** Partial approval is not supported by the current approval gate implementation.
 If user wants scope reduction, treat it as **Requests modifications** and present a new plan.
 
+## Resume Token (Orchestrator Responsibility)
+
+When the user approves, the orchestrator resumes the agent with:
+
+```
+User approved: <operation description>
+```
+
+The scope must describe the specific operation approved. Examples:
+- `User approved: terraform apply prod/vpc`
+- `User approved: git push origin feature/my-branch`
+- `User approved: kubectl apply namespace payment-service`
+
+The hook validates this token before allowing the Task tool to proceed.
+
 ## Anti-Patterns
 
 ❌ **Asking for approval without showing the plan** — always present full plan first

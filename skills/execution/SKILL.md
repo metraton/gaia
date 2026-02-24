@@ -17,7 +17,7 @@ Emit `COMPLETE` only after Verification Criteria pass — not when commands fini
 
 Before executing ANY approved operation:
 
-- [ ] User explicitly approved (prompt contains exact token: `User approval received`)
+- [ ] User explicitly approved (prompt contains token: `User approved: <operation>`)
 - [ ] Git status clean (no uncommitted changes in the way)
 - [ ] Plan still valid (no drift since plan was created)
 - [ ] Credentials available (can access cloud/cluster)
@@ -109,6 +109,13 @@ Always verify:
 
 The canonical approval token is:
 
-`User approval received`
+`User approved: <operation description>`
 
-If the resume prompt does not include this exact phrase, do not execute T3 operations.
+Examples:
+- `User approved: terraform apply prod/vpc`
+- `User approved: git push origin feature/my-branch`
+- `User approved: kubectl apply namespace payment-service`
+
+The scope after the colon must describe the specific operation. Generic scopes ("the changes", "everything") are accepted but discouraged.
+
+If the resume prompt does not include this token (or a legacy synonym), do not execute T3 operations.

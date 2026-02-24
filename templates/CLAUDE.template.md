@@ -68,7 +68,7 @@ Every agent response ends with an `AGENT_STATUS` block containing `PLAN_STATUS` 
 
 | Agent PLAN_STATUS | Your action |
 |---|---|
-| `PENDING_APPROVAL` | Show plan to user → AskUserQuestion → resume with "User approval received" |
+| `PENDING_APPROVAL` | Show plan to user → AskUserQuestion → resume with `"User approved: <operation> [scope]"` |
 | `NEEDS_INPUT` | Ask user for missing info → resume with the answer |
 | `COMPLETE` | Summarize result to user. Task done. |
 | `BLOCKED` | Report blocker to user, offer alternatives → AskUserQuestion with options |

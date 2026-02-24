@@ -30,6 +30,7 @@ from modules.core.paths import get_logs_dir
 
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.tiers import SecurityTier, classify_command_tier
+from modules.security.approval_constants import APPROVAL_INDICATORS
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
 from modules.tools.task_validator import TaskValidator
 
@@ -199,17 +200,7 @@ def _should_inject_on_resume(parameters: dict) -> bool:
     
     # Case 1: Post-approval execution - NO injection needed
     # These are simple "go ahead" instructions
-    approval_indicators = [
-        "user approval received",
-        "user approved",
-        "approved. execute",
-        "approved, execute", 
-        "approval confirmed",
-        "proceed with execution",
-        "go ahead",
-        "confirmed. proceed"
-    ]
-    if any(indicator in prompt_lower for indicator in approval_indicators):
+    if any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS):
         logger.debug("Resume with approval indicator - skipping context injection")
         return False
     
