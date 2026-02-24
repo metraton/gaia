@@ -12,6 +12,8 @@
     "gaia-uninstall": "bin/gaia-uninstall.js",
     "gaia-metrics": "bin/gaia-metrics.js",
     "gaia-review": "bin/gaia-review.js",
+    "gaia-status": "bin/gaia-status.js",
+    "gaia-history": "bin/gaia-history.js",
     "gaia-update": "bin/gaia-update.js"
   },
   "keywords": [

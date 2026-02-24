@@ -1,7 +1,9 @@
 """
 Audit logger for tool executions.
 
-Logs all tool executions to session and daily log files.
+Logs all tool executions to daily audit log files.
+Note: session-<id>.jsonl was removed — it duplicated the daily audit log
+with no additional value (session_id was always "default").
 """
 
 import os
@@ -97,11 +99,7 @@ class AuditLogger:
             "output_preview": output_preview,
         }
 
-        # Write to session log
-        session_log_file = self.log_dir / f"session-{self.session_id}.jsonl"
-        self._write_record(session_log_file, audit_record)
-
-        # Write to daily audit log
+        # Write to daily audit log (session log removed — was always "session-default.jsonl")
         daily_log_file = self.log_dir / f"audit-{datetime.now().strftime('%Y-%m-%d')}.jsonl"
         self._write_record(daily_log_file, audit_record)
 

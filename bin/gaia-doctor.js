@@ -231,6 +231,49 @@ async function checkHooks() {
   return { name: 'Hooks', ok: true, detail: `${valid}/${hooks.length} found` };
 }
 
+async function checkMemoryDirs() {
+  const checks = [
+    {
+      path: join(CWD, '.claude', 'project-context', 'speckit-project-specs'),
+      label: 'speckit-project-specs',
+      fix: 'Run gaia-init or /speckit.init'
+    },
+    {
+      path: join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md'),
+      label: 'governance.md',
+      fix: 'Run /speckit.init to generate governance.md'
+    },
+    {
+      path: join(CWD, '.claude', 'project-context', 'workflow-episodic-memory'),
+      label: 'workflow-episodic-memory',
+      fix: 'Run gaia-init to create workflow memory directory'
+    },
+    {
+      path: join(CWD, '.claude', 'project-context', 'episodic-memory'),
+      label: 'episodic-memory',
+      fix: 'Directory is created automatically on first agent run'
+    },
+  ];
+
+  const issues = [];
+  let found = 0;
+  for (const { path, label, fix } of checks) {
+    if (existsSync(path)) {
+      found++;
+    } else {
+      issues.push({ label, fix });
+    }
+  }
+
+  if (issues.length > 0) {
+    const detail = issues.map(i => `${i.label} missing`).join('; ');
+    const fix = issues[0].fix;
+    return { name: 'Memory dirs', ok: false, detail, fix };
+  }
+
+  return { name: 'Memory dirs', ok: true, detail: `${found}/${checks.length} present` };
+}
+
 async function checkProjectDirs() {
   const contextPath = join(CWD, '.claude', 'project-context', 'project-context.json');
   if (!existsSync(contextPath)) {
@@ -349,7 +392,8 @@ async function main() {
     checkProjectContext,
     checkPython,
     checkHooks,
-    checkProjectDirs
+    checkProjectDirs,
+    checkMemoryDirs
   ];
 
   const results = [];

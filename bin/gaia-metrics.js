@@ -113,13 +113,13 @@ async function readMetricsLogs() {
 }
 
 /**
- * Read workflow episodic metrics from .claude/memory/workflow-episodic/metrics.jsonl
+ * Read workflow episodic metrics from .claude/project-context/workflow-episodic-memory/metrics.jsonl
  * Fields: timestamp, agent, exit_code, output_length, task_id, session_id
  * Note: entries with agent === "" are SubagentStop events without a named agent (skip them).
  */
 async function readWorkflowMetrics() {
   try {
-    const path = join(CWD, '.claude', 'memory', 'workflow-episodic', 'metrics.jsonl');
+    const path = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
     if (!existsSync(path)) return [];
 
     const content = await fs.readFile(path, 'utf-8');
@@ -410,6 +410,59 @@ function calculateAgentInvocations(workflowMetrics) {
 }
 
 /**
+ * Agent outcome distribution from plan_status field.
+ * Counts COMPLETE, BLOCKED, NEEDS_INPUT, PLANNING, and others.
+ * Returns null if no entries have the plan_status field (older data).
+ */
+function calculateAgentOutcomes(workflowMetrics) {
+  const withStatus = workflowMetrics.filter(r => r.plan_status && r.plan_status !== '');
+  if (withStatus.length === 0) return null;
+
+  const counts = {};
+  for (const entry of withStatus) {
+    const status = entry.plan_status.toUpperCase();
+    counts[status] = (counts[status] || 0) + 1;
+  }
+
+  const total = withStatus.length;
+  const distribution = Object.entries(counts)
+    .map(([status, count]) => ({ status, count, percentage: (count / total) * 100 }))
+    .sort((a, b) => b.count - a.count);
+
+  return { distribution, total };
+}
+
+/**
+ * Token usage approximation from output_tokens_approx field.
+ * Groups by agent, computes total and average.
+ * Returns null if no entries have the field (older data).
+ */
+function calculateTokenUsage(workflowMetrics) {
+  const withTokens = workflowMetrics.filter(r => typeof r.output_tokens_approx === 'number');
+  if (withTokens.length === 0) return null;
+
+  const agentMap = {};
+  for (const entry of withTokens) {
+    const name = entry.agent || 'unknown';
+    if (!agentMap[name]) agentMap[name] = { total: 0, count: 0 };
+    agentMap[name].total += entry.output_tokens_approx;
+    agentMap[name].count++;
+  }
+
+  const grandTotal = withTokens.reduce((s, r) => s + r.output_tokens_approx, 0);
+  const agents = Object.entries(agentMap)
+    .map(([name, { total, count }]) => ({
+      name,
+      total,
+      avg: count > 0 ? Math.round(total / count) : 0,
+      count,
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  return { agents, grandTotal, entryCount: withTokens.length };
+}
+
+/**
  * Extract audit log entries that fall within the time window of a given
  * agent session. Uses the session timestamp as the end boundary, and
  * the previous named-agent session as the start boundary (approximation).
@@ -432,9 +485,19 @@ function correlateAuditLogsToSession(auditLogs, sessionEnd, sessionStart) {
 // ─────────────────────────────────────────────────────────────
 
 /**
+ * Format token count as human-readable (e.g. "6.9k", "1.2M").
+ */
+function formatTokens(n) {
+  if (n === null || n === undefined) return 'n/a';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+}
+
+/**
  * Display the main dashboard metrics.
  */
-function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditTotal) {
+function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditTotal, agentOutcomes, tokenUsage) {
   const SEP = chalk.gray('═'.repeat(52));
 
   console.log(chalk.cyan('\n📊 Gaia-Ops System Metrics'));
@@ -514,6 +577,28 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
       );
     }
     console.log(chalk.gray(`  💡 tip: npx gaia-metrics --agent <name>  for detail view`));
+  }
+
+  // ── Agent Outcomes ───────────────────────────────────
+  if (agentOutcomes) {
+    console.log(chalk.bold(`\n📋 Agent Outcomes  (${agentOutcomes.total} sessions with status)`));
+    const outcomeColor = { COMPLETE: chalk.green, BLOCKED: chalk.red, NEEDS_INPUT: chalk.yellow, PLANNING: chalk.cyan };
+    for (const { status, count, percentage } of agentOutcomes.distribution) {
+      const bar = makeBar(percentage, 10);
+      const pct = percentage.toFixed(1).padStart(5);
+      const color = outcomeColor[status] || chalk.gray;
+      console.log(color(`  ${status.padEnd(16)} ${count.toString().padStart(3)}  ${bar.padEnd(10)}  ${pct}%`));
+    }
+  }
+
+  // ── Token Usage (approx) ─────────────────────────────
+  if (tokenUsage) {
+    console.log(chalk.bold(`\n🪙 Token Usage (approx)  total: ~${formatTokens(tokenUsage.grandTotal)}`));
+    for (const { name, total, avg, count } of tokenUsage.agents) {
+      const totalFmt = formatTokens(total).padStart(6);
+      const avgFmt = formatTokens(avg).padStart(6);
+      console.log(`  ${name.padEnd(24)} ${count.toString().padStart(3)} sessions  total ${totalFmt}  avg ${avgFmt}`);
+    }
   }
 
   // ── Activity Today ───────────────────────────────────
@@ -739,13 +824,15 @@ async function main() {
       await displayAgentDetail(agentName, workflowMetrics, auditLogs);
     } else {
       // Full dashboard
-      const tiers           = calculateTierUsage(auditLogs);
-      const cmdTypes        = calculateCommandTypeBreakdown(auditLogs, metricsLogs);
-      const topCmds         = calculateTopCommands(auditLogs);
+      const tiers            = calculateTierUsage(auditLogs);
+      const cmdTypes         = calculateCommandTypeBreakdown(auditLogs, metricsLogs);
+      const topCmds          = calculateTopCommands(auditLogs);
       const agentInvocations = calculateAgentInvocations(workflowMetrics);
-      const errorStats      = calculateErrorRate(auditLogs);
+      const errorStats       = calculateErrorRate(auditLogs);
+      const agentOutcomes    = calculateAgentOutcomes(workflowMetrics);
+      const tokenUsage       = calculateTokenUsage(workflowMetrics);
 
-      displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditLogs.length);
+      displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditLogs.length, agentOutcomes, tokenUsage);
     }
 
   } catch (error) {

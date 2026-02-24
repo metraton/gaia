@@ -24,7 +24,7 @@ Step 0 of the Spec-Kit workflow. Executed automatically by the `speckit-planner`
 ### 0. Governance Sync (ejecutar siempre, antes de cualquier otra accion)
 
 1. Leer `.claude/project-context/project-context.json`
-2. Obtener `paths.speckit_root` del JSON — si no existe, usar default `spec-kit-tcm-plan`
+2. Obtener `paths.speckit_root` del JSON — si no existe, usar default `.claude/project-context/speckit-project-specs`
 3. Determinar destino: `<speckit-root>/governance.md`
 4. Ejecutar `updateGovernance(projectContext)`:
    - Leer template `.claude/templates/governance.template.md`
@@ -70,8 +70,8 @@ If `[feature-name]` argument provided:
 
 a) **Determine Spec-Kit root**:
    - Read `paths.speckit_root` from project-context.json
-   - If not set, check if directory `spec-kit-tcm-plan` exists in current directory
-   - If not found, ask user: "Spec-Kit root directory name? (default: spec-kit-tcm-plan)"
+   - If not set, use default `.claude/project-context/speckit-project-specs`
+   - If that directory doesn't exist yet, it will be created automatically
 
 b) **Create feature directory structure**:
    ```

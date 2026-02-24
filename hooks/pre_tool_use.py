@@ -33,11 +33,11 @@ from modules.security.tiers import SecurityTier, classify_command_tier
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
 from modules.tools.task_validator import TaskValidator
 
-# Configure logging
-log_file = get_logs_dir() / f"pre_tool_use_v2-{os.getenv('USER', 'unknown')}.log"
+# Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
+log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [pre_tool_use] %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_file),
     ]
@@ -239,7 +239,7 @@ def _consume_anomaly_flag(enriched_prompt: str) -> str:
     exactly once.  Must not slow down context injection -- returns
     immediately if the file does not exist.
     """
-    flag_path = Path(".claude/memory/workflow-episodic/signals/needs_analysis.flag")
+    flag_path = Path(".claude/project-context/workflow-episodic-memory/signals/needs_analysis.flag")
     if not flag_path.exists():
         return enriched_prompt
     try:
@@ -831,7 +831,7 @@ if __name__ == "__main__":
 
             logger.info(f"Hook event: {hook_data.get('hook_event_name')}")
 
-            tool_name = hook_data.get("tool_name", "")
+            tool_name = hook_data.get("tool_name") or ""
             tool_input = hook_data.get("tool_input", {})
 
             # Standard validation (auto-approval handled in BashValidator)

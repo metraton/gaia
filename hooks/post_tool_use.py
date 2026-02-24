@@ -31,11 +31,11 @@ from modules.audit.logger import log_execution
 from modules.audit.metrics import record_metric
 from modules.audit.event_detector import detect_critical_event
 
-# Configure logging
-log_file = get_logs_dir() / f"post_tool_use_v2-{os.getenv('USER', 'unknown')}.log"
+# Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
+log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [post_tool_use] %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_file),
     ]

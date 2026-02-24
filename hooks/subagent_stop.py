@@ -12,7 +12,7 @@ Responsibilities:
 4. Store workflow as episodic memory for future reference
 
 Architecture:
-- Metrics stored in .claude/memory/workflow-episodic/
+- Metrics stored in .claude/project-context/workflow-episodic-memory/
 - Episodes stored in .claude/project-context/episodic-memory/
 - Anomaly signals trigger Gaia analysis
 - Minimal footprint - no bundle creation
@@ -41,10 +41,10 @@ except ImportError:
     _log_dir = Path.cwd() / ".claude" / "logs"
     _log_dir.mkdir(parents=True, exist_ok=True)
 
-_log_file = _log_dir / f"subagent_stop-{os.getenv('USER', 'unknown')}.log"
+_log_file = _log_dir / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [subagent_stop] %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(_log_file),
     ]
@@ -57,12 +57,12 @@ def get_workflow_memory_dir() -> Path:
     Get workflow memory directory path.
 
     Supports override via WORKFLOW_MEMORY_BASE_PATH env var for testing.
-    In production, uses .claude/memory/workflow-episodic relative to CWD.
+    In production, uses .claude/project-context/workflow-episodic-memory relative to CWD.
     """
     base_path = os.environ.get("WORKFLOW_MEMORY_BASE_PATH")
     if base_path:
-        return Path(base_path) / "memory" / "workflow-episodic"
-    return Path(".claude/memory/workflow-episodic")
+        return Path(base_path) / "project-context" / "workflow-episodic-memory"
+    return Path(".claude/project-context/workflow-episodic-memory")
 
 
 def _find_claude_dir() -> Path:
@@ -209,15 +209,20 @@ def capture_workflow_metrics(task_info: Dict[str, Any], agent_output: str, sessi
     # of naive text matching which gives false positives on "No errors found".
     exit_code = task_info.get("exit_code", 0)
 
+    # Approximate token count: 4 chars per token is a reliable heuristic for LLM output
+    output_tokens_approx = len(agent_output) // 4
+
     metrics = {
         "timestamp": session_context["timestamp"],
         "session_id": session_context["session_id"],
         "task_id": task_info.get("task_id", "unknown"),
         "agent": task_info.get("agent", "unknown"),
-        "tier": task_info.get("tier", "unknown"),
+        "tier": task_info.get("tier", "T0"),
         "duration_ms": duration_ms,
         "exit_code": exit_code,
+        "plan_status": task_info.get("plan_status", ""),
         "output_length": len(agent_output),
+        "output_tokens_approx": output_tokens_approx,
         "tags": task_info.get("tags", []),
         "prompt": task_info.get("description", ""),  # Store for episodic
     }
@@ -331,25 +336,29 @@ def signal_gaia_analysis(anomalies: List[Dict], metrics: Dict[str, Any]):
         logger.warning(f"Could not create analysis signal: {e}")
 
 
-def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
+def capture_episodic_memory(
+    metrics: Dict[str, Any],
+    anomalies: Optional[List[Dict[str, str]]] = None,
+) -> Optional[str]:
     """
     Capture workflow as episodic memory.
-    
+
     Args:
-        metrics: Subagent metrics from workflow
-    
+        metrics: Subagent metrics from workflow (includes plan_status, tier, task description)
+        anomalies: Detected anomalies from detect_anomalies(), stored in episode context
+
     Returns:
         Episode ID if stored, None otherwise
     """
     try:
         import importlib.util
-        
+
         # Find memory module
         candidates = [
             Path(__file__).parent.parent / "tools" / "memory" / "episodic.py",
             Path(".claude/tools/memory/episodic.py"),
         ]
-        
+
         episodic_module = None
         for path in candidates:
             if path.exists():
@@ -363,42 +372,59 @@ def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
                 except Exception as e:
                     logger.debug(f"Could not load episodic from {path}: {e}")
                     continue
-        
+
         if not episodic_module:
             logger.debug("Episodic memory module not found - skipping episode capture")
             return None
-        
+
         # Initialize memory
         memory = episodic_module.EpisodicMemory()
-        
-        # Extract from metrics
+
+        # Use the real task description captured from the transcript.
+        # metrics["prompt"] now holds the first user message (task description)
+        # rather than the generic "SubagentStop for <agent>".
         prompt = metrics.get("prompt", "")
         if not prompt:
             prompt = f"Task for {metrics.get('agent', 'unknown')}"
-        
+
         subagent_type = metrics.get("agent", "unknown")
         duration_seconds = metrics.get("duration_ms", 0) / 1000.0 if metrics.get("duration_ms") else None
-        
-        # Determine outcome from metrics
+
+        # Determine outcome: prefer plan_status string, fall back to exit_code
+        plan_status = metrics.get("plan_status", "")
         exit_code = metrics.get("exit_code", 0)
-        if exit_code == 0:
+        if plan_status:
+            if "COMPLETE" in plan_status:
+                outcome = "success"
+                success = True
+            elif "BLOCKED" in plan_status or "ERROR" in plan_status:
+                outcome = "failed"
+                success = False
+            else:
+                # INVESTIGATING, PLANNING, NEEDS_INPUT → partial
+                outcome = "partial"
+                success = None
+        elif exit_code == 0:
             outcome = "success"
             success = True
         else:
             outcome = "failed"
             success = False
-        
+
         # Tags from metrics
         tags = metrics.get("tags", [])
         if not tags:
             tags = [subagent_type]
 
-        # Enrich with session events
+        # Enrich with session events and anomalies
         session_events = get_session_events()
         context = {"metrics": metrics}
         if session_events:
             context["session_events"] = session_events
             logger.info(f"Enriched episode with session events: {list(session_events.keys())}")
+        if anomalies:
+            context["anomalies"] = anomalies
+            logger.info(f"Episode has {len(anomalies)} anomaly/anomalies")
 
         # Store episode
         episode_id = memory.store_episode(
@@ -410,12 +436,12 @@ def capture_episodic_memory(metrics: Dict[str, Any]) -> Optional[str]:
             outcome=outcome,
             success=success,
             duration_seconds=duration_seconds,
-            commands_executed=[]  # TODO: extract from metrics if available
+            commands_executed=[]
         )
-        
-        logger.info(f"Captured episode: {episode_id} (outcome: {outcome})")
+
+        logger.info(f"Captured episode: {episode_id} (outcome: {outcome}, plan_status: {plan_status})")
         return episode_id
-        
+
     except Exception as e:
         logger.debug(f"Failed to capture episodic memory: {e}")
         return None
@@ -524,8 +550,8 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        # Step 3: Capture as episodic memory
-        episode_id = capture_episodic_memory(workflow_metrics)
+        # Step 3: Capture as episodic memory (include anomalies for context)
+        episode_id = capture_episodic_memory(workflow_metrics, anomalies=anomalies if anomalies else None)
 
         # Step 4: Process context updates (progressive enrichment)
         context_update_result = _process_context_updates(agent_output, task_info)
@@ -604,6 +630,83 @@ def _read_transcript(transcript_path: str) -> str:
         return ""
 
 
+def _extract_task_description_from_transcript(transcript_path: str) -> str:
+    """Read the first user message from the subagent transcript JSONL.
+
+    Claude Code's agent_transcript_path contains the full subagent conversation.
+    The first ``role: "user"`` entry is the task prompt sent by the orchestrator —
+    which is the most meaningful description of what the agent was asked to do.
+
+    Returns empty string on any error so the hook never crashes.
+    """
+    if not transcript_path:
+        return ""
+    try:
+        path = Path(transcript_path).expanduser()
+        if not path.exists():
+            return ""
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    # Format: {"type": "user", "message": {"role": "user", "content": ...}}
+                    msg = entry.get("message", entry)
+                    if msg.get("role") != "user":
+                        continue
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        text = content.strip()
+                        # Pattern 2: pre_tool_use injected project context before the real prompt.
+                        # The injected block ends with "\n\n---\n\n# User Task\n\n" followed by
+                        # the actual task description sent by the orchestrator.
+                        if text.startswith("# Project Context (Auto-Injected)"):
+                            sep_full = "\n\n---\n\n# User Task\n\n"
+                            sep_bare = "\n\n---\n\n"
+                            pos = text.find(sep_full)
+                            if pos != -1:
+                                text = text[pos + len(sep_full):].strip()
+                            else:
+                                pos = text.find(sep_bare)
+                                if pos != -1:
+                                    text = text[pos + len(sep_bare):].strip()
+                                else:
+                                    text = ""  # Cannot extract real prompt
+                        # Pattern 1: content is already the clean orchestrator prompt — no change
+                    elif isinstance(content, list):
+                        # content blocks: [{"type": "text", "text": "..."}]
+                        text = " ".join(
+                            b.get("text", "") for b in content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ).strip()
+                    else:
+                        continue
+                    if text:
+                        # Truncate to 500 chars — enough context, not too much
+                        return text[:500]
+                except (json.JSONDecodeError, TypeError):
+                    continue
+    except Exception as e:
+        logger.debug("Failed to extract task description from transcript: %s", e)
+    return ""
+
+
+def _extract_plan_status_from_output(agent_output: str) -> str:
+    """Extract the PLAN_STATUS string from the last AGENT_STATUS block.
+
+    Returns the raw status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT")
+    or empty string if not found.
+    """
+    status_match = None
+    for m in re.finditer(r"PLAN_STATUS:\s*(\S+)", agent_output):
+        status_match = m
+    if status_match:
+        return status_match.group(1).upper().rstrip(".,;")
+    return ""
+
+
 def _extract_exit_code_from_output(agent_output: str) -> int:
     """Derive exit code from the LAST AGENT_STATUS block in agent output.
 
@@ -611,12 +714,8 @@ def _extract_exit_code_from_output(agent_output: str) -> int:
     contains COMPLETE -> 0, BLOCKED or ERROR -> 1.  Falls back to 0 when
     no AGENT_STATUS is found (optimistic default).
     """
-    # Find the last AGENT_STATUS block
-    status_match = None
-    for m in re.finditer(r"PLAN_STATUS:\s*(\S+)", agent_output):
-        status_match = m
-    if status_match:
-        status_value = status_match.group(1).upper()
+    status_value = _extract_plan_status_from_output(agent_output)
+    if status_value:
         if "COMPLETE" in status_value:
             return 0
         if "BLOCKED" in status_value or "ERROR" in status_value:
@@ -634,22 +733,42 @@ def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str
       - agent_id: str
       - transcript_path: str  (session-level JSONL)
       - agent_transcript_path: str  (subagent JSONL)
+      - last_assistant_message: str  (final agent response text, no I/O needed)
       - cwd: str
       - stop_hook_active: bool
       - permission_mode: str
 
     We map these to the task_info format expected by subagent_stop_hook().
-    The exit_code is derived from the agent's AGENT_STATUS block when
-    agent_output is available.
+    The exit_code is derived from the agent's AGENT_STATUS block.
+    task_description is extracted from the first user message in the transcript.
+    tier_real is parsed from the AGENT_STATUS block (not hardcoded T0).
     """
     exit_code = _extract_exit_code_from_output(agent_output) if agent_output else 0
+    plan_status = _extract_plan_status_from_output(agent_output) if agent_output else ""
+
+    # Extract tier from agent output (e.g. agents report tier in their context)
+    # Look for explicit tier references in agent output: T0, T1, T2, T3
+    tier_real = "T0"
+    if agent_output:
+        tier_match = re.search(r"\bT([0-3])\b", agent_output)
+        if tier_match:
+            tier_real = f"T{tier_match.group(1)}"
+
+    # Extract real task description from the first user message in the transcript
+    transcript_path = hook_data.get("agent_transcript_path", "")
+    task_description = _extract_task_description_from_transcript(transcript_path)
+    agent_type = hook_data.get("agent_type", "unknown")
+    if not task_description:
+        task_description = f"SubagentStop for {agent_type}"
+
     return {
         "task_id": hook_data.get("agent_id", "unknown"),
-        "description": f"SubagentStop for {hook_data.get('agent_type', 'unknown')}",
-        "agent": hook_data.get("agent_type", "unknown"),
-        "tier": "T0",  # SubagentStop is always a read/audit operation
+        "description": task_description,
+        "agent": agent_type,
+        "tier": tier_real,
         "tags": [],
         "exit_code": exit_code,
+        "plan_status": plan_status,
     }
 
 
@@ -724,10 +843,15 @@ if __name__ == "__main__":
 
             logger.info(f"Hook event: {hook_data.get('hook_event_name')}, agent: {hook_data.get('agent_type', 'unknown')}")
 
-            # Extract agent output from transcript file
-            transcript_path = hook_data.get("agent_transcript_path", "")
-            agent_output = _read_transcript(transcript_path) if transcript_path else ""
-            logger.info(f"Agent output: {len(agent_output)} chars from transcript")
+            # Use last_assistant_message directly — no transcript I/O needed for AGENT_STATUS parsing.
+            # Falls back to reading the transcript if last_assistant_message is absent (older Claude Code).
+            agent_output = hook_data.get("last_assistant_message", "")
+            if not agent_output:
+                transcript_path = hook_data.get("agent_transcript_path", "")
+                agent_output = _read_transcript(transcript_path) if transcript_path else ""
+                logger.info(f"Agent output: {len(agent_output)} chars from transcript (fallback)")
+            else:
+                logger.info(f"Agent output: {len(agent_output)} chars from last_assistant_message")
 
             # Build task_info from Claude Code SubagentStop payload
             # (needs agent_output to derive exit_code from AGENT_STATUS)

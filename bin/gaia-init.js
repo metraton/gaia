@@ -1023,6 +1023,7 @@ async function createClaudeDirectory() {
     await fs.mkdir(join(claudeDir, 'logs'), { recursive: true });
     await fs.mkdir(join(claudeDir, 'tests'), { recursive: true });
     await fs.mkdir(join(claudeDir, 'project-context'), { recursive: true });
+    await fs.mkdir(join(claudeDir, 'project-context', 'workflow-episodic-memory'), { recursive: true });
 
     spinner.succeed('.claude/ directory created');
   } catch (error) {
@@ -1033,6 +1034,8 @@ async function createClaudeDirectory() {
 
 /**
  * Copy static CLAUDE.md from template (no placeholders to replace).
+ * Always overwrites — CLAUDE.md is core orchestrator config and must stay
+ * in sync with the installed package version.
  */
 async function copyClaudeMd() {
   const spinner = ora('Generating CLAUDE.md...').start();
@@ -1041,7 +1044,7 @@ async function copyClaudeMd() {
     const templatePath = getTemplatePath('CLAUDE.template.md');
     const destPath = join(CWD, 'CLAUDE.md');
     await fs.copyFile(templatePath, destPath);
-    spinner.succeed('CLAUDE.md generated (static)');
+    spinner.succeed('CLAUDE.md synced from package');
   } catch (error) {
     spinner.fail('Failed to generate CLAUDE.md');
     throw error;
@@ -1049,7 +1052,12 @@ async function copyClaudeMd() {
 }
 
 /**
- * Copy settings.json from template.
+ * Generate or merge settings.json from template.
+ *
+ * Behavior:
+ * - If settings.json does NOT exist: copy template as-is.
+ * - If settings.json EXISTS: deep-merge template into existing, preserving
+ *   user customizations (permissions, allowed tools, etc.).
  */
 async function copySettingsJson() {
   const spinner = ora('Generating settings.json...').start();
@@ -1057,8 +1065,43 @@ async function copySettingsJson() {
   try {
     const templatePath = getTemplatePath('settings.template.json');
     const destPath = join(CWD, '.claude', 'settings.json');
-    await fs.copyFile(templatePath, destPath);
-    spinner.succeed('settings.json generated');
+
+    if (!existsSync(destPath)) {
+      await fs.copyFile(templatePath, destPath);
+      spinner.succeed('settings.json generated');
+      return;
+    }
+
+    // File exists — merge: template is the base, existing values win on conflict
+    let templateData, existingData;
+    try {
+      templateData = JSON.parse(await fs.readFile(templatePath, 'utf-8'));
+      existingData = JSON.parse(await fs.readFile(destPath, 'utf-8'));
+    } catch {
+      // Corrupt existing — overwrite safely
+      await fs.copyFile(templatePath, destPath);
+      spinner.succeed('settings.json regenerated (previous file was invalid)');
+      return;
+    }
+
+    // Shallow merge: template keys as base, existing keys override
+    // For array keys (permissions, allowedTools), union both sets
+    const merged = { ...templateData };
+    for (const [key, val] of Object.entries(existingData)) {
+      if (Array.isArray(val) && Array.isArray(merged[key])) {
+        // Union arrays, preserving order (existing first)
+        const combined = [...val];
+        for (const item of merged[key]) {
+          if (!combined.includes(item)) combined.push(item);
+        }
+        merged[key] = combined;
+      } else {
+        merged[key] = val;
+      }
+    }
+
+    await fs.writeFile(destPath, JSON.stringify(merged, null, 2), 'utf-8');
+    spinner.succeed('settings.json updated (template merged, existing preserved)');
   } catch (error) {
     spinner.fail('Failed to generate settings.json');
     throw error;
@@ -1066,19 +1109,29 @@ async function copySettingsJson() {
 }
 
 /**
- * Generate or update governance.md from governance.template.md + project context.
+ * Generate governance.md from governance.template.md + project context.
  *
  * Behavior:
  * - If governance.md does NOT exist: write the full interpolated template.
- * - If governance.md EXISTS: update ONLY the "## Stack Definition" section,
- *   preserving all other content (Architectural Principles, ADRs, etc.).
- *
- * This mirrors the project-context.json pattern: always sync from source of truth.
+ * - If governance.md EXISTS: skip — managed by speckit.init (runs every agent session).
  */
 async function generateGovernanceMd(config, speckitRoot) {
-  const spinner = ora('Syncing governance.md...').start();
+  const spinner = ora('Checking governance.md...').start();
 
   try {
+    // governance.md lives in speckit-root (resolved from project-context.json paths.speckit_root)
+    const resolvedRoot = isAbsolute(speckitRoot)
+      ? speckitRoot
+      : join(CWD, speckitRoot);
+    await fs.mkdir(resolvedRoot, { recursive: true });
+
+    const destPath = join(resolvedRoot, 'governance.md');
+
+    if (existsSync(destPath)) {
+      spinner.info('governance.md already exists — skipping (managed by speckit.init)');
+      return true;
+    }
+
     const templatePath = getTemplatePath('governance.template.md');
     if (!existsSync(templatePath)) {
       spinner.warn('governance.template.md not found — skipping');
@@ -1106,44 +1159,8 @@ async function generateGovernanceMd(config, speckitRoot) {
       .replace(/\[K8S_PLATFORM\]/g, k8sPlatform)
       .replace(/\[DATE\]/g, today);
 
-    // Ensure speckit root directory exists
-    const absSpeckitRoot = isAbsolute(speckitRoot) ? speckitRoot : resolve(CWD, speckitRoot);
-    await fs.mkdir(absSpeckitRoot, { recursive: true });
-
-    const destPath = join(absSpeckitRoot, 'governance.md');
-
-    if (!existsSync(destPath)) {
-      // First time: write full file
-      await fs.writeFile(destPath, interpolated, 'utf-8');
-      spinner.succeed(`governance.md created at ${speckitRoot}/governance.md`);
-    } else {
-      // File exists: update ONLY the Stack Definition section
-      const existing = await fs.readFile(destPath, 'utf-8');
-
-      // Extract new Stack Definition section from interpolated template
-      const stackDefMatch = interpolated.match(/^## Stack Definition\n[\s\S]*?(?=\n## |\n---|\Z)/m);
-      const newStackDef = stackDefMatch ? stackDefMatch[0] : null;
-
-      if (!newStackDef) {
-        // Template format unexpected — overwrite safely
-        await fs.writeFile(destPath, interpolated, 'utf-8');
-        spinner.succeed('governance.md updated (full rewrite — template format changed)');
-        return true;
-      }
-
-      // Replace Stack Definition section in existing file, preserve the rest
-      const updatedContent = existing.replace(
-        /^## Stack Definition\n[\s\S]*?(?=\n## |\n---)/m,
-        newStackDef
-      );
-
-      if (updatedContent === existing) {
-        spinner.succeed('governance.md already up to date');
-      } else {
-        await fs.writeFile(destPath, updatedContent, 'utf-8');
-        spinner.succeed('governance.md Stack Definition synced');
-      }
-    }
+    await fs.writeFile(destPath, interpolated, 'utf-8');
+    spinner.succeed(`governance.md created at ${join(speckitRoot, 'governance.md')}`);
 
     return true;
   } catch (error) {
@@ -1216,7 +1233,7 @@ async function generateProjectContext(config) {
         gitops: config.gitops,
         terraform: config.terraform,
         app_services: config.appServices,
-        speckit_root: config.speckitRoot || 'spec-kit-tcm-plan'
+        speckit_root: config.speckitRoot || '.claude/project-context/speckit-project-specs'
       },
       sections: {
         project_details: projectDetails,
@@ -1322,26 +1339,7 @@ async function generateProjectContext(config) {
   }
 }
 
-/**
- * Ensure project directories exist (create if missing).
- */
-async function ensureProjectDirs(config) {
-  const dirs = [
-    { path: config.gitops, name: 'GitOps' },
-    { path: config.terraform, name: 'Terraform' },
-    { path: config.appServices, name: 'App Services' }
-  ];
-
-  for (const { path: dirPath, name } of dirs) {
-    // Skip dirs where path is empty/falsy — only create when actually detected or user-provided
-    if (!dirPath) continue;
-    const absPath = isAbsolute(dirPath) ? dirPath : resolve(CWD, dirPath);
-    if (!existsSync(absPath)) {
-      await fs.mkdir(absPath, { recursive: true });
-      console.log(chalk.gray(`  Created ${name}: ${dirPath}`));
-    }
-  }
-}
+// ensureProjectDirs removed: gaia-init detects existing directories, it does not create them.
 
 /**
  * Clone project context repo if provided.
@@ -1681,8 +1679,7 @@ async function main() {
     // 4.2 npm package
     await ensureGaiaOpsPackage();
 
-    // 4.3 Project directories
-    await ensureProjectDirs(config);
+    // 4.3 (removed) — gaia-init detects directories, does not create them
 
     // 4.4 .claude/ directory with symlinks
     await createClaudeDirectory();
@@ -1697,7 +1694,7 @@ async function main() {
     await generateProjectContext(config);
 
     // 4.8 Governance.md (always sync from project-context)
-    const speckitRoot = config.speckitRoot || 'spec-kit-tcm-plan';
+    const speckitRoot = config.speckitRoot || '.claude/project-context/speckit-project-specs';
     await generateGovernanceMd(config, speckitRoot);
 
     // 4.9 Clone context repo (optional)
