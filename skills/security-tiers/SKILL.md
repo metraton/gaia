@@ -26,17 +26,15 @@ Before executing any command, classify it by asking:
 
 ## Examples (anchors, not exhaustive)
 
-- **T0**: `kubectl get`, `terraform show`, `gcloud describe`, `helm status`, `flux get`
+- **T0**: `kubectl get`, `terraform show`, `gcloud describe`, `gcloud sql instances describe`, `gcloud container clusters list`, `helm status`, `flux get`
 - **T1**: `terraform validate`, `helm lint`, `tflint`, `kustomize build`
 - **T2**: `terraform plan`, `kubectl diff`, `helm upgrade --dry-run`
-- **T3**: `terraform apply`, `kubectl apply`, `git push main`, `flux reconcile` (write)
+- **T3**: `terraform apply`, `kubectl apply`, `git commit`, `git push` (any branch), `flux reconcile` (write)
 
-## Approval Protocol
+## T3 Workflow
 
-For T3 operations:
-1. Agent generates plan with changes summary and risk assessment
-2. Set `PLAN_STATUS: PENDING_APPROVAL` (see agent-protocol skill)
-3. User explicitly approves
-4. Agent executes only after approval
+For T3 operations, follow the state flow in `agent-protocol`: PLANNING → PENDING_APPROVAL → APPROVED_EXECUTING → COMPLETE.
 
-For approval/execution workflows, read `approval/SKILL.md` and `execution/SKILL.md`.
+On-demand workflow skills (read from disk when needed):
+- `.claude/skills/approval/SKILL.md` — plan format and presentation
+- `.claude/skills/execution/SKILL.md` — post-approval execution protocol

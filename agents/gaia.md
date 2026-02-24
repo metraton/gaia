@@ -9,6 +9,7 @@ skills:
   - agent-protocol
   - git-conventions
   - investigation
+  - command-execution
 ---
 
 ## TL;DR

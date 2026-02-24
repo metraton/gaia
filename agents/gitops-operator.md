@@ -12,6 +12,7 @@ skills:
   - command-execution
   - investigation
   - git-conventions
+  - fast-queries
 ---
 
 ## TL;DR

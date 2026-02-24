@@ -1,102 +1,73 @@
 ---
 name: investigation
-description: How to investigate before acting - local-first analysis and pattern discovery
+description: How to diagnose problems, analyze patterns, and build reliable findings
 user-invocable: false
+type: core
 ---
 
 # Investigation Skill
 
-## Core Principle: Local First, Cloud Second
+Investigation is about understanding a problem well enough to propose a correct solution.
+**How to search** is defined in `agent-protocol`. This skill defines **how to think**.
 
-**ALWAYS start with local analysis before querying cloud resources.**
+## 1. Decompose First
 
-```
-1. LOCAL FIRST   - Glob, Grep, Read tools to analyze code
-2. VALIDATION    - Read-only commands (terraform validate, kubectl get)
-3. LIVE STATE    - Only if local analysis insufficient
-```
+Before searching anything, define what you need to know:
+- What is the expected state vs what might be wrong or missing?
+- What are the knowns (injected context) vs the unknowns?
+- What evidence would confirm or disprove my hypothesis?
 
-## Investigation Checklist (MANDATORY)
+Starting a search without a clear question produces noise, not findings.
 
-### 1. Freshen Repository
-```bash
-git fetch && git status
-```
-- If behind remote → `git pull --ff-only`
-- If diverged → STOP, report to user
+## 2. Gather Evidence
 
-### 2. Discover Existing Patterns
+Follow the local-first order from `agent-protocol`. For each area of investigation:
+- Read 2-3 similar existing resources to understand what is already implemented
+- Extract: naming conventions, directory structure, dependencies, config patterns
 
-Use Claude Code tools (not shell commands):
+## 3. Pattern Analysis
 
-```
-# Find similar resources
-Glob("terraform/**/*.hcl")     # Not: find terraform/ -name "*.hcl"
-Glob("gitops/**/*.yaml")       # Not: find gitops/ -name "*.yaml"
+Compare what you find against your injected domain skill:
+- `terraform-patterns` — infrastructure
+- `gitops-patterns` — Kubernetes/Flux
+- `developer-patterns` — application code (when available)
 
-# Search content
-Grep("google_compute", path="terraform/")   # Not: grep -r "google_compute"
+Apply **Pattern Authority**:
 
-# Read examples
-Read("terraform/vpc/terragrunt.hcl")        # Not: cat terraform/vpc/terragrunt.hcl
-```
+**FOLLOW** — Codebase pattern wins over your training. Consistency beats preference.
+**COPY** — Names, paths, IDs are contracts. Match existing schema exactly.
+**ALERT** — Problematic pattern → DEVIATION or CRITICAL, propose alternative, let
+user decide. Never silently follow or fix.
+**DOCUMENT** — New discovery not in project-context → CONTEXT_UPDATE per `context-updater`.
 
-Read 2-3 similar resources. Extract: directory structure, naming, dependencies.
+## 4. Validate Your Hypothesis
 
-### 3. Pattern Extraction Template
+Before treating findings as fact:
+- Does local code agree with project-context? If not → investigate drift first
+- Unfamiliar resource, API, or behavior? → search official documentation
+- Uncertain about correctness? → run one more read-only validation step
 
-```markdown
-## Patterns Found
-- **Structure:** [Where similar resources live]
-- **Naming:** [Pattern: e.g., {env}-{service}-{resource}]
-- **Config:** [How configs are structured]
-- **Dependencies:** [What other resources are referenced]
-```
+Never plan on assumptions. If in doubt, validate.
 
-### 4. Validation (Before Changes)
+## 5. Surface Options
 
-| Technology | Command | Expected |
-|------------|---------|----------|
-| Terraform | `terraform validate` | Success |
-| Terragrunt | `terragrunt hclfmt --check` | No changes |
-| Kubernetes | `kubectl apply --dry-run=client -f file.yaml` | Created (dry run) |
-| Node.js | `npm run lint` or `tsc --noEmit` | No errors |
+When multiple valid approaches exist:
+- List them explicitly: **Option A** (trade-offs), **Option B** (trade-offs)
+- Evaluate each against existing project patterns and constraints
+- Do NOT pick silently — surface them and set status: `NEEDS_INPUT`
 
-### 5. Comparison: Intended vs Actual
+## 6. Qualify Confidence Before Proposing
 
-```markdown
-## State Comparison
-- **Intended** (from code): [What IaC says]
-- **Actual** (from cloud): [What exists]
-- **Discrepancies:** [Differences found]
-```
+Before findings feed into a plan, explicitly state:
+- What is **confirmed** (seen in code, validated by CLI or docs)
+- What is **assumed** (inferred but not yet validated)
 
-## Decision Tree
-
-```
-Start Investigation
-    │
-    ├─> git fetch, git status
-    │   └─> Behind? → Pull before analyzing
-    │
-    ├─> Find similar resources (Glob)
-    │   └─> Read 2-3 examples (Read)
-    │       └─> Extract patterns
-    │
-    ├─> Run validation (T0)
-    │   └─> Errors? → Report as Critical
-    │
-    ├─> Need live state?
-    │   ├─> YES → Run fast-queries first, then targeted commands
-    │   └─> NO → Propose based on patterns
-    │
-    └─> Present findings with AGENT_STATUS per agent-protocol skill
-```
+If critical gaps remain → run another validation round. Never propose on shaky ground.
 
 ## Anti-Patterns
 
-- Generating code without reading examples first
-- Going to cloud before checking local files
-- Proposing solutions before understanding current state
-- Skipping validation
-- Using `find`, `grep`, `cat` shell commands instead of Glob, Grep, Read tools
+- Searching before knowing what question you're trying to answer
+- Planning before all critical unknowns are resolved
+- Picking an approach without surfacing alternatives
+- Treating your training's preference as the correct codebase pattern
+- Assuming instead of validating with a read-only check
