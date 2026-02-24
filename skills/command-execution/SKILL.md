@@ -6,59 +6,45 @@ user-invocable: false
 
 # Command Execution
 
-## Principle: Defend Against Hanging
+## Timeouts First
 
-External systems (clusters, APIs, cloud services) may be unreachable, slow, or unresponsive.
-**Never assume a command will complete.** Before executing any network/cloud command, ask:
+External systems may hang. Apply before any network/cloud command:
 
-1. **Can this hang?** (network, I/O, external API) → Apply timeout protection
-2. **Do I know the timeout mechanism?** → Use tool-native flag if available, otherwise wrap with `timeout`
+| Operation | Timeout |
+|-----------|---------|
+| Read / query | 30s |
+| Validation (lint, fmt) | 30s |
+| Simulation (plan, diff) | 300s |
+| Realization (apply, deploy) | 600s |
+| Flux reconcile | 90s |
 
-### Timeout Hierarchy (always apply from top to bottom)
+Use tool-native flag first (`kubectl get pods --request-timeout=30s`), fall back to `timeout 30s <cmd>`. If still unreachable → report and abort.
 
-```
-PREFERRED  →  Tool-native flag     →  kubectl get pods --request-timeout=30s
-FALLBACK   →  Shell timeout wrapper →  timeout 30s terraform show
-LAST       →  Report and abort     →  "Target unreachable, check connectivity"
-```
+## Rule 1: No Pipes
 
-You already know each tool's timeout flags from your training. Use them.
-If unsure, check `<tool> --help | grep -i timeout` before running the command.
-
-### Timeout by Operation Type
-
-| Operation | Timeout | Rationale |
-|-----------|---------|-----------|
-| Read/query (get, list, describe) | 30s | Should respond in <5s; 30s catches network issues |
-| Validation (validate, lint, fmt) | 30s | Local or fast remote operations |
-| Simulation (plan, diff, dry-run) | 300s | May process large state files |
-| Realization (apply, deploy) | 600s | Long-running but bounded |
-| Reconciliation (flux) | 90s | Must stay under Bash tool 120s default |
-
-## Rule 1: No Pipes — Use Native Output
-
-Pipes trigger unnecessary permission prompts, hide exit codes, and break error detection.
-**Always use the tool's native output/filter flags instead.**
+Pipes hide exit codes and trigger extra permission prompts. Use native output flags.
 
 ```bash
-# BAD — pipe hides kubectl failure, triggers extra permission check
+# BAD
 kubectl get pods -o json | jq '.items[0].metadata.name'
-gcloud compute instances list | grep running | awk '{print $1}'
-
-# GOOD — native output, single command, clean exit code
+# GOOD
 kubectl get pods -o jsonpath='{.items[0].metadata.name}'
+
+# BAD
+gcloud compute instances list | grep running | awk '{print $1}'
+# GOOD
 gcloud compute instances list --filter='status:RUNNING' --format='value(name)'
 ```
 
 ## Rule 2: One Command Per Step
 
-Never chain with `&&` or `;`. Each command runs separately so failures are visible.
+Never chain with `&&` or `;`. Chained commands can trigger interactive prompts
+(`Do you want to proceed? y/n`) mid-execution, blocking Claude Code.
 
 ```bash
-# BAD — if init fails silently, plan runs against stale state
+# BAD — interactive prompt mid-chain blocks execution
 terraform init && terraform validate && terraform plan
-
-# GOOD — each step verified independently
+# GOOD
 terraform init
 terraform validate
 terraform plan -out=/tmp/tfplan
@@ -66,69 +52,49 @@ terraform plan -out=/tmp/tfplan
 
 ## Rule 3: Use Claude Code Tools Over Bash
 
-| Instead of... | Use... |
-|---------------|--------|
+| Instead of | Use |
+|------------|-----|
 | `cat`, `head`, `tail` | Read tool |
-| `echo "..." >`, heredocs | Write tool |
+| `echo >`, heredocs | Write tool |
 | `sed -i`, `awk` | Edit tool |
 | `grep -r`, `rg` | Grep tool |
 | `find` | Glob tool |
 
-Heredocs fail in batch/CLI contexts. **Never use heredocs** (exception: git commit messages).
+**Never use heredocs** — they fail in batch contexts. Exception: `git commit -m "$(cat <<'EOF' ...)"`.
 
-## Rule 4: Validate Before Mutate
+## Rule 4: Absolute Paths
 
-Never apply without validating first. Always: dry-run → diff → apply.
+Avoid `cd` and relative paths. Use absolute paths or tool-native chdir flags.
+For unbounded outputs always set limits (`--limit=50 --freshness=1h`).
 
 ```bash
-# BAD — silent partial failures
-kubectl apply -f manifest.yaml
+# BAD
+cd ../../shared/vpc && terraform plan
+# GOOD
+terraform plan -chdir="/abs/path/to/terraform/shared/vpc"
+```
 
-# GOOD — validate, then apply
+## Rule 5: Validate Before Mutate
+
+Always dry-run → diff → apply before any mutation.
+
+```bash
 kubectl apply -f manifest.yaml --dry-run=server
 kubectl diff -f manifest.yaml
 kubectl apply -f manifest.yaml
 ```
 
-## Rule 5: Absolute Paths and Explicit Scope
-
-```bash
-# BAD — relative paths depend on unknown current directory
-cd ../../shared/vpc && terraform plan
-
-# GOOD — absolute, self-contained
-terraform plan -chdir="/path/to/terraform/shared/vpc"
-```
-
-For logs and large outputs, always set limits:
-```bash
-# BAD — unbounded, may return millions of lines
-gcloud logging read "resource.type=gke_cluster"
-
-# GOOD — scoped and limited
-gcloud logging read "resource.type=gke_cluster" --limit=50 --freshness=1h
-```
-
 ## Rule 6: Files Over Inline Data
 
-Never embed JSON/YAML/HCL inline in shell commands. Write to file first.
+Never embed JSON/YAML/HCL inline in commands — write to a temp file first.
 
 ```bash
-# BAD — escaping conflicts with YAML
+# BAD
 helm upgrade app chart --set "config={key: value, nested: {foo: bar}}"
-
-# GOOD — Write tool creates file, then reference it
+# GOOD — use Write tool to create /tmp/values.yaml, then reference it
 helm upgrade app chart -f /tmp/values.yaml
 ```
 
 ## Rule 7: Quote Variables
 
-Always `"${VAR}"` to prevent word splitting.
-
-```bash
-# BAD
-kubectl get pods -n $NAMESPACE
-
-# GOOD
-kubectl get pods -n "${NAMESPACE}"
-```
+Always `"${VAR}"` to prevent word splitting: `kubectl get pods -n "${NAMESPACE}"`

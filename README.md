@@ -70,6 +70,14 @@ claude-code
 
 Claude Code cargara automaticamente `CLAUDE.md` y tendra acceso a todos los agentes via `.claude/`.
 
+Diagnostico de skills e inyeccion:
+
+```bash
+npx gaia-skills-diagnose
+# o con probe de tests:
+npx gaia-skills-diagnose --run-tests
+```
+
 ## Estructura del Proyecto
 
 ```

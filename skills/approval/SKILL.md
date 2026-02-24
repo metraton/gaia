@@ -108,7 +108,9 @@ Then emit AGENT_STATUS with `PLAN_STATUS: PENDING_APPROVAL`.
 | **Approves** | Read `.claude/skills/execution/SKILL.md` and execute | `APPROVED_EXECUTING` |
 | **Rejects** | Acknowledge. Ask if they want to abandon or re-investigate | `NEEDS_INPUT` |
 | **Requests modifications** | Revise plan per feedback, re-run simulation, present updated plan | `PLANNING` |
-| **Partial approval** | Split into approved steps (execute now) and deferred steps (new plan later) | `APPROVED_EXECUTING` |
+
+**Note:** Partial approval is not supported by the current approval gate implementation.
+If user wants scope reduction, treat it as **Requests modifications** and present a new plan.
 
 ## Anti-Patterns
 

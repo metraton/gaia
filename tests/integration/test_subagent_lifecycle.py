@@ -3,8 +3,9 @@
 Integration test: Full subagent lifecycle.
 
 Validates the complete hook-driven lifecycle:
-  1. pre_tool_use hook injects project context + skills into Task prompt
-  2. Subagent loads skills and produces output with CONTEXT_UPDATE block
+  1. pre_tool_use hook injects project context into Task prompt
+  2. Skills are injected natively by Claude from agent frontmatter (`skills:`)
+  3. Subagent produces output with CONTEXT_UPDATE block
   3. subagent_stop hook processes the output and updates project-context.json
 
 This tests the REAL hook code (no mocks) against a temporary project
@@ -63,7 +64,7 @@ def test_project(tmp_path):
     # Copy config (contracts)
     shutil.copytree(REPO_ROOT / "config", claude_dir / "config")
 
-    # Copy hooks (needed for _load_agent_skills path resolution)
+    # Copy hooks
     shutil.copytree(REPO_ROOT / "hooks", claude_dir / "hooks")
 
     # Copy tools inside .claude/ (context_writer resolves deep_merge
@@ -97,112 +98,144 @@ def test_project(tmp_path):
 
 
 # ============================================================================
-# PHASE 1: Skills Loading via _load_agent_skills()
+# PHASE 1: Skills Contract + Prompt Injection
 # ============================================================================
 
 class TestPhase1SkillsInjection:
-    """Validate that _load_agent_skills() correctly loads skill content."""
+    """Validate modern skills contract (frontmatter + native injection model)."""
 
-    def test_load_skills_for_project_agent(self, test_project):
-        """_load_agent_skills() must return concatenated skill content."""
-        tmp_path, claude_dir = test_project
+    @staticmethod
+    def _parse_frontmatter(text: str) -> dict:
+        """Minimal frontmatter parser for test assertions."""
+        if not text.startswith("---"):
+            return {}
 
-        # Save current dir, chdir to project (hooks expect relative paths)
-        original_cwd = os.getcwd()
-        os.chdir(tmp_path)
         try:
-            # Import the function from the COPIED hooks
-            import importlib.util
-            pre_hook_path = claude_dir / "hooks" / "pre_tool_use.py"
-            spec = importlib.util.spec_from_file_location("pre_tool_use_test", str(pre_hook_path))
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            end = text.index("---", 3)
+        except ValueError:
+            return {}
 
-            # Load skills for cloud-troubleshooter
-            skills_content = mod._load_agent_skills("cloud-troubleshooter")
+        fm = text[3:end]
+        result = {}
+        current_key = None
+        current_list = None
 
-            # Must have content
-            assert len(skills_content) > 100, \
-                f"Skills content too short: {len(skills_content)} chars"
+        for line in fm.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
 
-            # Must contain content from known skills
-            assert "Security Tiers" in skills_content, \
-                "Should contain security-tiers skill content"
-            assert "AGENT_STATUS" in skills_content, \
-                "Should contain agent-protocol skill content (AGENT_STATUS)"
-            assert "CONTEXT_UPDATE" in skills_content, \
-                "Should contain context-updater skill content"
+            if stripped.startswith("- ") and current_key and current_list is not None:
+                current_list.append(stripped[2:].strip())
+                continue
 
-        finally:
-            os.chdir(original_cwd)
+            if ":" in stripped:
+                if current_key and current_list is not None:
+                    result[current_key] = current_list
 
-    def test_load_skills_for_terraform_architect(self, test_project):
-        """terraform-architect should load terraform-specific skills."""
+                key, _, value = stripped.partition(":")
+                key = key.strip()
+                value = value.strip()
+
+                if value:
+                    result[key] = value
+                    current_key = key
+                    current_list = None
+                else:
+                    current_key = key
+                    current_list = []
+
+        if current_key and current_list is not None:
+            result[current_key] = current_list
+
+        return result
+
+    def test_project_agent_declares_skills_in_frontmatter(self, test_project):
+        """Project agents must declare skills via frontmatter (native injection model)."""
         tmp_path, claude_dir = test_project
 
-        original_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            import importlib.util
-            pre_hook_path = claude_dir / "hooks" / "pre_tool_use.py"
-            spec = importlib.util.spec_from_file_location("pre_tool_use_test2", str(pre_hook_path))
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+        agent_file = claude_dir / "agents" / "cloud-troubleshooter.md"
+        assert agent_file.exists(), "cloud-troubleshooter.md must exist"
 
-            skills_content = mod._load_agent_skills("terraform-architect")
+        fm = self._parse_frontmatter(agent_file.read_text())
+        skills = fm.get("skills", [])
 
-            assert len(skills_content) > 100
-            # terraform-architect has terraform-patterns skill
-            assert "terraform" in skills_content.lower(), \
-                "Should contain terraform-patterns skill content"
+        assert isinstance(skills, list) and len(skills) > 0, \
+            "cloud-troubleshooter must declare skills in frontmatter"
+        assert "security-tiers" in skills
+        assert "agent-protocol" in skills
+        assert "context-updater" in skills
 
-        finally:
-            os.chdir(original_cwd)
+    def test_terraform_architect_declares_terraform_patterns_skill(self, test_project):
+        """terraform-architect frontmatter must include terraform-patterns."""
+        _, claude_dir = test_project
 
-    def test_load_skills_returns_empty_for_meta_agent(self, test_project):
-        """Meta-agents like Explore or Plan should return empty (no agent file)."""
-        tmp_path, claude_dir = test_project
+        agent_file = claude_dir / "agents" / "terraform-architect.md"
+        assert agent_file.exists(), "terraform-architect.md must exist"
 
-        original_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            import importlib.util
-            pre_hook_path = claude_dir / "hooks" / "pre_tool_use.py"
-            spec = importlib.util.spec_from_file_location("pre_tool_use_test3", str(pre_hook_path))
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+        fm = self._parse_frontmatter(agent_file.read_text())
+        skills = fm.get("skills", [])
+        assert "terraform-patterns" in skills, \
+            "terraform-architect should reference terraform-patterns skill"
 
-            # Explore doesn't have a .md file in agents/
-            skills_content = mod._load_agent_skills("Explore")
-            assert skills_content == "", \
-                "Meta-agent Explore should not load any skills"
-
-        finally:
-            os.chdir(original_cwd)
-
-    def test_all_project_agents_load_skills(self, test_project):
-        """Every project agent must successfully load skills."""
-        tmp_path, claude_dir = test_project
+    def test_all_project_agents_reference_existing_skill_files(self, test_project):
+        """
+        Every non-meta agent must reference existing skill directories.
+        This validates the native Claude `skills:` loading contract.
+        """
+        _, claude_dir = test_project
         project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
 
+        for agent in project_agents:
+            agent_file = claude_dir / "agents" / f"{agent}.md"
+            if not agent_file.exists():
+                continue
+
+            fm = self._parse_frontmatter(agent_file.read_text())
+            skills = fm.get("skills", [])
+            assert isinstance(skills, list) and len(skills) > 0, \
+                f"Agent '{agent}' should declare at least one skill in frontmatter"
+
+            for skill in skills:
+                skill_md = claude_dir / "skills" / skill / "SKILL.md"
+                assert skill_md.exists(), \
+                    f"Agent '{agent}' references missing skill file: {skill_md}"
+                content = skill_md.read_text().strip()
+                assert len(content) > 100, \
+                    f"Skill '{skill}' content too short for agent '{agent}'"
+
+    def test_pre_tool_use_injects_context_but_not_inline_skill_text(self, test_project):
+        """
+        pre_tool_use should inject project context only.
+        Skill text is not concatenated by hook; Claude loads skills natively.
+        """
+        tmp_path, claude_dir = test_project
+
         original_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
             import importlib.util
             pre_hook_path = claude_dir / "hooks" / "pre_tool_use.py"
-            spec = importlib.util.spec_from_file_location("pre_tool_use_test4", str(pre_hook_path))
+            spec = importlib.util.spec_from_file_location("pre_tool_use_contract", str(pre_hook_path))
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            for agent in project_agents:
-                agent_file = claude_dir / "agents" / f"{agent}.md"
-                if not agent_file.exists():
-                    continue  # speckit-planner may not be a "project agent" per pre_tool_use
+            result = mod.pre_tool_use_hook(
+                "Task",
+                {
+                    "subagent_type": "cloud-troubleshooter",
+                    "prompt": "Diagnose pod health in namespace test",
+                },
+            )
 
-                skills_content = mod._load_agent_skills(agent)
-                assert len(skills_content) > 0, \
-                    f"Agent '{agent}' should load at least one skill"
+            assert isinstance(result, dict), "Task call should return updatedInput when context is injected"
+            updated = result["hookSpecificOutput"]["updatedInput"]["prompt"]
 
+            assert "# Project Context (Auto-Injected)" in updated
+            assert "# User Task" in updated
+            assert "Diagnose pod health in namespace test" in updated
+            assert "AGENT_STATUS" not in updated, \
+                "Hook should not inline agent-protocol skill text into prompt"
         finally:
             os.chdir(original_cwd)
 

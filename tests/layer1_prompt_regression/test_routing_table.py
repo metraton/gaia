@@ -61,8 +61,10 @@ class TestPlanStatusDocumentation:
 
     VALID_STATUSES = [
         "INVESTIGATING",
+        "PLANNING",
         "PENDING_APPROVAL",
         "APPROVED_EXECUTING",
+        "FIXING",
         "COMPLETE",
         "BLOCKED",
         "NEEDS_INPUT",

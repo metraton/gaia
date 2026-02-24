@@ -1,0 +1,162 @@
+# Reporte de Validación de Skills
+
+## 1. Análisis de Inyección
+Las skills se inyectan de forma nativa por Claude Code a través del campo 'skills:' en el frontmatter del agente (según pre_tool_use.py).
+
+## 2. Skills Encontradas (54)
+- **approval** (.claude/skills/approval/SKILL.md): ✅ OK
+- **gitops-patterns** (.claude/skills/gitops-patterns/SKILL.md): ✅ OK
+- **fast-queries** (.claude/skills/fast-queries/SKILL.md): ✅ OK
+- **security-tiers** (.claude/skills/security-tiers/SKILL.md): ✅ OK
+- **investigation** (.claude/skills/investigation/SKILL.md): ✅ OK
+- **context-updater** (.claude/skills/context-updater/SKILL.md): ✅ OK
+- **command-execution** (.claude/skills/command-execution/SKILL.md): ✅ OK
+- **output-format** (.claude/skills/output-format/SKILL.md): ✅ OK
+- **agent-protocol** (.claude/skills/agent-protocol/SKILL.md): ✅ OK
+- **git-conventions** (.claude/skills/git-conventions/SKILL.md): ✅ OK
+- **execution** (.claude/skills/execution/SKILL.md): ✅ OK
+- **terraform-patterns** (.claude/skills/terraform-patterns/SKILL.md): ✅ OK
+- **agent-factory** (conductor-orchestrator/skills/agent-factory/SKILL.md): ✅ OK
+- **writing-skills** (conductor-orchestrator/skills/writing-skills/SKILL.md): ✅ OK
+- **requesting-code-review** (conductor-orchestrator/skills/requesting-code-review/SKILL.md): ✅ OK
+- **eval-code-quality** (conductor-orchestrator/skills/eval-code-quality/SKILL.md): ✅ OK
+- **writing-plans** (conductor-orchestrator/skills/writing-plans/SKILL.md): ✅ OK
+- **executing-plans** (conductor-orchestrator/skills/executing-plans/SKILL.md): ✅ OK
+- **using-git-worktrees** (conductor-orchestrator/skills/using-git-worktrees/SKILL.md): ✅ OK
+- **board-of-directors** (conductor-orchestrator/skills/board-of-directors/SKILL.md): ✅ OK
+- **eval-business-logic** (conductor-orchestrator/skills/eval-business-logic/SKILL.md): ✅ OK
+- **eval-ui-ux** (conductor-orchestrator/skills/eval-ui-ux/SKILL.md): ✅ OK
+- **business-docs-sync** (conductor-orchestrator/skills/business-docs-sync/SKILL.md): ✅ OK
+- **subagent-driven-development** (conductor-orchestrator/skills/subagent-driven-development/SKILL.md): ✅ OK
+- **context-driven-development** (conductor-orchestrator/skills/context-driven-development/SKILL.md): ✅ OK
+- **context-loader** (conductor-orchestrator/skills/context-loader/SKILL.md): ✅ OK
+- **track-manager** (conductor-orchestrator/skills/track-manager/SKILL.md): ✅ OK
+- **loop-plan-evaluator** (conductor-orchestrator/skills/loop-plan-evaluator/SKILL.md): ✅ OK
+- **loop-executor** (conductor-orchestrator/skills/loop-executor/SKILL.md): ✅ OK
+- **receiving-code-review** (conductor-orchestrator/skills/receiving-code-review/SKILL.md): ✅ OK
+- **plan-critiquer** (conductor-orchestrator/skills/plan-critiquer/SKILL.md): ✅ OK
+- **message-bus** (conductor-orchestrator/skills/message-bus/SKILL.md): ✅ OK
+- **systematic-debugging** (conductor-orchestrator/skills/systematic-debugging/SKILL.md): ✅ OK
+- **cto-plan-reviewer** (conductor-orchestrator/skills/cto-plan-reviewer/SKILL.md): ✅ OK
+- **parallel-dispatch** (conductor-orchestrator/skills/parallel-dispatch/SKILL.md): ✅ OK
+- **using-superpowers** (conductor-orchestrator/skills/using-superpowers/SKILL.md): ✅ OK
+- **loop-planner** (conductor-orchestrator/skills/loop-planner/SKILL.md): ✅ OK
+- **loop-fixer** (conductor-orchestrator/skills/loop-fixer/SKILL.md): ✅ OK
+- **test-driven-development** (conductor-orchestrator/skills/test-driven-development/SKILL.md): ✅ OK
+- **brainstorming** (conductor-orchestrator/skills/brainstorming/SKILL.md): ✅ OK
+- **go** (conductor-orchestrator/skills/go/SKILL.md): ✅ OK
+- **loop-execution-evaluator** (conductor-orchestrator/skills/loop-execution-evaluator/SKILL.md): ✅ OK
+- **verification-before-completion** (conductor-orchestrator/skills/verification-before-completion/SKILL.md): ✅ OK
+- **cto-advisor** (conductor-orchestrator/skills/cto-advisor/SKILL.md): ✅ OK
+- **eval-integration** (conductor-orchestrator/skills/eval-integration/SKILL.md): ✅ OK
+- **dispatching-parallel-agents** (conductor-orchestrator/skills/dispatching-parallel-agents/SKILL.md): ✅ OK
+- **finishing-a-development-branch** (conductor-orchestrator/skills/finishing-a-development-branch/SKILL.md): ✅ OK
+- **conductor-orchestrator** (conductor-orchestrator/skills/conductor-orchestrator/SKILL.md): ✅ OK
+- **knowledge-manager** (conductor-orchestrator/skills/knowledge/knowledge-manager/SKILL.md): ✅ OK
+- **retrospective-agent** (conductor-orchestrator/skills/knowledge/retrospective-agent/SKILL.md): ✅ OK
+- **qa-lead** (conductor-orchestrator/skills/leads/qa-lead/SKILL.md): ✅ OK
+- **tech-lead** (conductor-orchestrator/skills/leads/tech-lead/SKILL.md): ✅ OK
+- **product-lead** (conductor-orchestrator/skills/leads/product-lead/SKILL.md): ✅ OK
+- **architecture-lead** (conductor-orchestrator/skills/leads/architecture-lead/SKILL.md): ✅ OK
+
+## 3. Uso de Skills por Agentes
+- **gaia**: 6 skills declaradas. (Menciona en texto sin declarar: approval, execution)
+- **cloud-troubleshooter**: 7 skills declaradas. (Menciona en texto sin declarar: approval, execution, go)
+- **devops-developer**: 7 skills declaradas. (Menciona en texto sin declarar: approval, execution, go)
+- **terraform-architect**: 9 skills declaradas. (Menciona en texto sin declarar: approval, execution)
+- **gitops-operator**: 9 skills declaradas. (Menciona en texto sin declarar: approval, execution)
+- **speckit-planner**: 3 skills declaradas. (Menciona en texto sin declarar: execution, go)
+- **parallel-dispatcher**: 0 skills declaradas. (Menciona en texto sin declarar: execution, message-bus)
+- **ux-designer**: 0 skills declaradas. (Menciona en texto sin declarar: go)
+- **loop-planner**: 0 skills declaradas. (Menciona en texto sin declarar: execution)
+- **cto**: 0 skills declaradas. (Menciona en texto sin declarar: go)
+- **board-meeting**: 0 skills declaradas. (Menciona en texto sin declarar: approval, message-bus)
+- **cmo**: 0 skills declaradas. (Menciona en texto sin declarar: go)
+- **task-worker**: 0 skills declaradas. (Menciona en texto sin declarar: execution)
+- **ceo**: 0 skills declaradas.
+- **code-reviewer**: 0 skills declaradas. (Menciona en texto sin declarar: go)
+- **conductor-orchestrator**: 0 skills declaradas. (Menciona en texto sin declarar: execution, writing-plans, executing-plans, loop-plan-evaluator, loop-executor, message-bus, systematic-debugging, loop-planner, loop-fixer, brainstorming, go, loop-execution-evaluator)
+- **loop-execution-evaluator**: 0 skills declaradas. (Menciona en texto sin declarar: eval-code-quality, eval-business-logic, eval-ui-ux, go, eval-integration)
+- **name-picker**: 0 skills declaradas. (Menciona en texto sin declarar: go)
+- **loop-fixer**: 0 skills declaradas.
+- **loop-executor**: 0 skills declaradas. (Menciona en texto sin declarar: execution)
+- **loop-plan-evaluator**: 0 skills declaradas. (Menciona en texto sin declarar: execution)
+
+## 4. Gaps Identificados
+### Skills no utilizadas (Huérfanas)
+- agent-factory
+- architecture-lead
+- board-of-directors
+- business-docs-sync
+- conductor-orchestrator
+- context-driven-development
+- context-loader
+- cto-advisor
+- cto-plan-reviewer
+- dispatching-parallel-agents
+- finishing-a-development-branch
+- knowledge-manager
+- parallel-dispatch
+- plan-critiquer
+- product-lead
+- qa-lead
+- receiving-code-review
+- requesting-code-review
+- retrospective-agent
+- subagent-driven-development
+- tech-lead
+- test-driven-development
+- track-manager
+- using-git-worktrees
+- using-superpowers
+- verification-before-completion
+- writing-skills
+
+### Skills declaradas pero no encontradas (Faltantes)
+- Ninguna. Todas las skills declaradas por los agentes existen.
+
+### Skills mencionadas en el texto pero NO declaradas en 'skills:'
+- **gaia** menciona 'approval' en su cuerpo pero no está en la lista de inyección.
+- **gaia** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **cloud-troubleshooter** menciona 'approval' en su cuerpo pero no está en la lista de inyección.
+- **cloud-troubleshooter** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **cloud-troubleshooter** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **devops-developer** menciona 'approval' en su cuerpo pero no está en la lista de inyección.
+- **devops-developer** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **devops-developer** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **terraform-architect** menciona 'approval' en su cuerpo pero no está en la lista de inyección.
+- **terraform-architect** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **gitops-operator** menciona 'approval' en su cuerpo pero no está en la lista de inyección.
+- **gitops-operator** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **speckit-planner** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **speckit-planner** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **parallel-dispatcher** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **parallel-dispatcher** menciona 'message-bus' en su cuerpo pero no está en la lista de inyección.
+- **ux-designer** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **loop-planner** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **cto** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **board-meeting** menciona 'approval' en su cuerpo pero no está en la lista de inyección.
+- **board-meeting** menciona 'message-bus' en su cuerpo pero no está en la lista de inyección.
+- **cmo** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **task-worker** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **code-reviewer** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'writing-plans' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'executing-plans' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'loop-plan-evaluator' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'loop-executor' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'message-bus' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'systematic-debugging' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'loop-planner' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'loop-fixer' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'brainstorming' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **conductor-orchestrator** menciona 'loop-execution-evaluator' en su cuerpo pero no está en la lista de inyección.
+- **loop-execution-evaluator** menciona 'eval-code-quality' en su cuerpo pero no está en la lista de inyección.
+- **loop-execution-evaluator** menciona 'eval-business-logic' en su cuerpo pero no está en la lista de inyección.
+- **loop-execution-evaluator** menciona 'eval-ui-ux' en su cuerpo pero no está en la lista de inyección.
+- **loop-execution-evaluator** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **loop-execution-evaluator** menciona 'eval-integration' en su cuerpo pero no está en la lista de inyección.
+- **name-picker** menciona 'go' en su cuerpo pero no está en la lista de inyección.
+- **loop-executor** menciona 'execution' en su cuerpo pero no está en la lista de inyección.
+- **loop-plan-evaluator** menciona 'execution' en su cuerpo pero no está en la lista de inyección.

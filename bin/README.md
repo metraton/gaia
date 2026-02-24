@@ -43,6 +43,7 @@ Configura symlinks  Remueve archivos
 | Script | Lineas | Descripcion |
 |--------|--------|-------------|
 | `pre-publish-validate.js` | ~400 | Valida antes de publicar |
+| `gaia-skills-diagnose.js` | ~700 | Diagnostica skills, inyeccion y gaps de contrato |
 
 ## Uso Comun
 
@@ -88,10 +89,24 @@ Definidos en `package.json`:
 {
   "bin": {
     "gaia-init": "bin/gaia-init.js",
+    "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
     "gaia-cleanup": "bin/gaia-cleanup.js",
     "gaia-uninstall": "bin/gaia-uninstall.js"
   }
 }
+```
+
+### Diagnostico de Skills e Inyeccion
+
+```bash
+# Diagnostico rapido (estructura + wiring + gaps conocidos)
+npx gaia-skills-diagnose
+
+# Incluye corrida de pytest focalizada para skills/inyeccion
+npx gaia-skills-diagnose --run-tests
+
+# Salida JSON para CI
+npx gaia-skills-diagnose --json --strict
 ```
 
 ## Variables de Entorno
@@ -109,4 +124,4 @@ npx gaia-init --non-interactive
 
 ---
 
-**Version:** 1.0.0 | **Actualizado:** 2025-12-06 | **Scripts:** 5
+**Version:** 1.1.0 | **Actualizado:** 2026-02-24 | **Scripts:** 6

@@ -48,9 +48,10 @@ Suggested Fix:
 
 ## Finding Classification
 
-| Tier | Severity | Action |
-|------|----------|--------|
-| **Tier 1 (CRITICAL)** | Blocks operation | Report immediately |
-| **Tier 2 (DEVIATION)** | Works but non-standard | Mention in report |
-| **Tier 3 (IMPROVEMENT)** | Minor optimization | Omit from report |
-| **Tier 4 (PATTERN)** | Detected pattern to replicate | Document for consistency |
+**CRITICAL** — blocks the operation. Report immediately, stop execution.
+
+**DEVIATION** — works but non-standard. Always mention in report.
+
+**IMPROVEMENT** — minor optimization. Omit unless directly relevant to the task.
+
+**PATTERN** — detected reusable pattern. Document for consistency, don't interrupt flow.

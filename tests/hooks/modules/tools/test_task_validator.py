@@ -222,6 +222,34 @@ class TestT3ApprovalRequirement:
         result2 = validator.validate(params2)
         assert result2.is_t3_operation is True
 
+    def test_git_commit_is_t3(self, validator):
+        """git commit must be treated as T3."""
+        params = {
+            "subagent_type": "devops-developer",
+            "prompt": "Run git commit -m 'feat: update deployment config'",
+        }
+        result = validator.validate(params)
+        assert result.is_t3_operation is True
+
+    def test_git_push_any_branch_is_t3(self, validator):
+        """git push should be T3 regardless of branch name."""
+        params = {
+            "subagent_type": "devops-developer",
+            "prompt": "Run git push origin feature/hotfix-auth",
+        }
+        result = validator.validate(params)
+        assert result.is_t3_operation is True
+
+    def test_t3_requires_canonical_approval_token(self, validator):
+        """Canonical approval token should allow T3 execution."""
+        params = {
+            "subagent_type": "devops-developer",
+            "prompt": "User approval received. Run git push origin feature/test",
+        }
+        result = validator.validate(params)
+        assert result.allowed is True
+        assert result.has_approval is True
+
 
 class TestValidationResult:
     """Test TaskValidationResult structure."""

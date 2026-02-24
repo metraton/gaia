@@ -1,86 +1,97 @@
 ---
 name: terraform-patterns
-description: Terraform and Terragrunt patterns specific to this project
+description: Terraform and Terragrunt patterns for infrastructure as code
 user-invocable: false
 ---
 
 # Terraform Patterns
 
 Project-specific conventions. For HCL examples, read `reference.md` in this directory.
+Use values from your injected project-context — never hardcode project IDs, regions, or account identifiers.
 
-## Project Structure
+## Directory Structure
 
 ```
 terraform/
-├── vpc/           (terragrunt.hcl + main.tf)
-├── eks/           (terragrunt.hcl + main.tf)
-└── [resource]/    (same pattern)
+└── [module-name]/
+    ├── main.tf        # Resource definitions
+    ├── variables.tf   # Input variables
+    ├── outputs.tf     # Output values (snake_case, with descriptions)
+    └── provider.tf    # Provider config (if module-level)
+
+features/infra/[env]/
+├── terragrunt.hcl           # Root: remote state config
+└── [component]/
+    └── terragrunt.hcl       # Component: inputs + dependency references
 ```
 
-## Naming Conventions
+## Naming Convention
 
-| Resource | Pattern | Example |
-|----------|---------|---------|
-| VPC | `{env}-vpc` | `prod-vpc` |
-| EKS | `digital-eks-{env}` | `digital-eks-prod` |
-| RDS | `{env}-{service}-{db}` | `prod-graphql-postgres` |
-| S3 | `vtr-{purpose}-{env}` | `vtr-terraform-state` |
-| IAM | `{service}-{env}-role` | `graphql-prod-role` |
+| Resource | Pattern | Notes |
+|----------|---------|-------|
+| Network/VPC | `{app}-{env}-vpc` | From context: project + env |
+| Cluster | `{app}-{env}-cluster-{n}` | Match context cluster_name |
+| Database | `{app}-{env}-{engine}-instance` | Engine: postgres, mysql |
+| Secret | `{service}-secret` | Matches app service name |
+| Service Account | `{resource}-sa` | Scope: resource it serves |
 
-## AWS Conventions
+## Remote State
 
-- **Primary region:** us-east-1
-- **Production account:** 929914624686
-- **Dev account:** 059588584554
-- **Production VPC CIDR:** 10.0.0.0/16
-
-## State Backend
-
-S3 bucket `vtr-terraform-state`, DynamoDB `terraform-locks`, encryption enabled.
-Key pattern: `{path_relative_to_include()}/terraform.tfstate`
-
-## Module Usage
-
-- Always use official AWS modules: `terraform-aws-modules/{module}/aws`
-- Always pin exact versions: `version=5.0.0`
-- Never use `latest` or unpinned versions
-
-## Required Tags
+Configure in root `terragrunt.hcl`. Backend type from `cloud_provider` in context (`gcs`/`s3`/`azurerm`):
 
 ```hcl
-tags = {
-  Environment = local.env
-  ManagedBy   = "Terraform"
-  Project     = "VTR Digital"
-  Owner       = "Platform Team"
-}
-```
-
-## EKS Patterns
-
-- Managed node groups (not self-managed)
-- ON_DEMAND for prod, SPOT for dev
-- Instance type: t3.medium minimum
-- IRSA enabled for service accounts
-
-## Key Rules
-
-1. **Terragrunt over Terraform** — always `terragrunt` commands, never raw `terraform`
-2. **Dependencies via `dependency` blocks** — never hardcode IDs
-3. **Version pinning** — exact versions for modules, `~>` for providers
-4. **Tags on everything** — all resources get the standard tag block
-5. **snake_case outputs** — descriptive names with descriptions
-
-## Provider Versions
-
-```hcl
-terraform {
-  required_version = ">= 1.5.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
+remote_state {
+  backend = "gcs"
+  config = {
+    bucket   = "{project_id}-terraform-state"
+    prefix   = "${path_relative_to_include()}/terraform.tfstate"
+    project  = "{project_id}"      # from project-context
+    location = "{primary_region}"  # from project-context
   }
 }
 ```
+
+## Component Pattern (Terragrunt)
+
+```hcl
+include "root" { path = find_in_parent_folders() }
+terraform { source = "../../../../../terraform//{module-name}" }
+
+dependency "vpc" {
+  config_path = "../vpc"
+  mock_outputs = { network_id = "mock-network" }
+  mock_outputs_allowed_terraform_commands = ["validate", "plan"]
+}
+inputs = {
+  project_id = "{project_id}"      # from project-context
+  region     = "{primary_region}"  # from project-context
+  network_id = dependency.vpc.outputs.network_id
+}
+```
+
+## Module Sourcing
+
+- **Local modules** (preferred for GCP): `../../../../../terraform//{module-name}`
+- **Registry modules** (preferred for AWS): `tfr:///terraform-aws-modules/{module}/aws?version=x.y.z`
+- **Always pin exact versions** — never `latest`, never unpinned
+
+## Required Tags/Labels
+
+Every resource must include a standard label block using project-context values:
+
+```hcl
+labels = {
+  environment = "{env}"         # from project-context
+  managed_by  = "terraform"
+  project     = "{project_id}"  # from project-context
+}
+```
+
+## Key Rules
+
+1. **Terragrunt CLI only** — always `terragrunt` commands, never raw `terraform`
+2. **Dependencies via blocks** — never hardcode IDs, always `dependency.x.outputs.y`
+3. **Version pinning** — exact versions for modules, `~>` for providers
+4. **Tags on everything** — all resources get the standard label block
+5. **snake_case outputs** — descriptive names with `description` field
+6. **mock_outputs on dependencies** — required for `validate` and `plan` to work offline

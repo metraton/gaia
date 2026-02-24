@@ -22,7 +22,8 @@ type(scope): short description (max 72 chars, no period)
 - Do NOT add `Co-Authored-By` or `Generated with Claude Code` footers (hooks auto-strip these)
 - Scope should reflect the module/area changed
 - Description starts lowercase, imperative mood
-- **Never use git path flags** — do not use `git -C <path>`, `git --git-dir=<path>`, or `git --work-tree=<path>`. The permission system matches command prefixes; these flags break all `git <subcommand>:*` allow/deny rules. Instead, `cd` to the repository root first and run git commands from there.
+- **Never use git path flags** — do not use `git -C <path>`, `git --git-dir=<path>`, or `git --work-tree=<path>`. The permission system matches command prefixes; these flags break all `git <subcommand>:*` allow/deny rules. Instead, `cd` to the repository root first and run git commands from there. (`cd` is acceptable here — git requires being in the repo. This is an explicit exception to command-execution Rule 4.)
+- **Push to the feature branch by default.** Only push directly to `main` if explicitly instructed or the plan is already on main. Never force-push (`git push --force`).
 
 ## Hook Enforcement (Automatic)
 

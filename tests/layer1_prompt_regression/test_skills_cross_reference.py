@@ -112,7 +112,7 @@ class TestAgentSkillReferences:
 
 
 class TestSkillContentLoading:
-    """Simulate _load_agent_skills() to validate content loading."""
+    """Validate content volume for frontmatter-referenced skills."""
 
     def test_skill_content_is_substantial(self, all_agent_files, skills_dir):
         """Simulated skill loading must produce >100 chars per skill."""
@@ -127,7 +127,7 @@ class TestSkillContentLoading:
                 if not skill_md.exists():
                     continue
                 content = skill_md.read_text().strip()
-                # Strip frontmatter (simulating _load_agent_skills)
+                # Strip frontmatter to approximate runtime skill body payload
                 if content.startswith("---"):
                     try:
                         end_idx = content.index("---", 3)
