@@ -74,8 +74,30 @@ Given those arguments, do this:
    [Clarification - service_ambiguity]: tcm-api"
    ```
 
-3. Run the script `.claude/speckit/scripts/create-new-feature.sh --json <speckit-root> <feature-description>` from repo root and parse its JSON output for FEATURE_NAME, SPEC_FILE, FEATURE_DIR, and FEATURE_NUM. All file paths must be absolute.
-   **IMPORTANT** You must only ever run this script once. The JSON is provided in the terminal as output - always refer to it to get the actual content you're looking for.
+3. **Resolve paths and auto-number the feature**:
+
+   a) Resolve `<speckit-root>` to an absolute path:
+      - If it starts with `/`, use it as-is.
+      - Otherwise, resolve relative to the repository root (locate it with Glob or treat the working directory as root).
+
+   b) Determine the next feature number:
+      - Use Glob to list all directories matching `<speckit-root>/specs/*/`.
+      - For each directory basename, extract the leading number (e.g., `004` → 4).
+      - Set `FEATURE_NUM` to the highest number found + 1, zero-padded to 3 digits (e.g., `005`).
+      - If no directories exist yet, start at `001`.
+
+   c) Generate the feature slug from the description:
+      - Lowercase the description, replace non-alphanumeric characters with `-`, collapse consecutive dashes, strip leading/trailing dashes.
+      - Take the first 3 meaningful words joined with `-`.
+      - Combine: `FEATURE_NAME = "<FEATURE_NUM>-<slug>"` (e.g., `005-add-dark-mode`).
+
+   d) Derive all paths:
+      ```
+      SPECKIT_ROOT   = <resolved absolute path>
+      SPECS_DIR      = <SPECKIT_ROOT>/specs
+      FEATURE_DIR    = <SPECS_DIR>/<FEATURE_NAME>
+      SPEC_FILE      = <FEATURE_DIR>/spec.md
+      ```
 
 4. **Load project-context.json (MANDATORY)**:
    Read `.claude/project-context/project-context.json` to auto-fill infrastructure placeholders.
@@ -99,33 +121,36 @@ Given those arguments, do this:
    - Store answers temporarily for this spec
    - Recommend running /init after to persist configuration
 
-5. Load `.claude/speckit/templates/spec-template.md` to understand required sections.
+5. **Create the feature directory and spec file**:
 
-6. Write the specification to SPEC_FILE using the template structure:
-   - Replace **infrastructure placeholders** with project-context.json values:
-     - `[PROJECT_ID]` → `project_details.id`
-     - `[REGION]` → `project_details.region`
-     - `[CLUSTER]` → `project_details.cluster_name`
-     - `[GITOPS_PATH]` → `gitops_configuration.repository.path`
-     - `[TERRAFORM_PATH]` → `terraform_infrastructure.layout.base_path`
-     - `[POSTGRES_INSTANCE]` → `databases.postgres.instance` (if applicable)
+   a) Use the Write tool to create `<FEATURE_DIR>/spec.md`:
+      - Read `.claude/speckit/templates/spec-template.md` to get the template content.
+      - Replace infrastructure placeholders with project-context.json values:
+        - `[PROJECT_ID]` → `project_details.id`
+        - `[REGION]` → `project_details.region`
+        - `[CLUSTER]` → `project_details.cluster_name`
+        - `[GITOPS_PATH]` → `gitops_configuration.repository.path`
+        - `[TERRAFORM_PATH]` → `terraform_infrastructure.layout.base_path`
+        - `[POSTGRES_INSTANCE]` → `databases.postgres.instance` (if applicable)
+      - Replace feature placeholders with derived content from feature description:
+        - `[FEATURE NAME]` → `FEATURE_NAME`
+        - `[###-feature-name]` → `FEATURE_NAME`
+        - `[DATE]` → today's date (YYYY-MM-DD)
+        - `[FEATURE_DESCRIPTION]` → user's feature description
+        - `[FUNCTIONAL_REQUIREMENTS]` → analyze description for requirements
+        - `[USER_STORIES]` → generate user stories from description
+        - `[TECHNICAL_CONSTRAINTS]` → infer from description (or mark TBD)
+      - Preserve section order and headings from template.
+      - Flag any placeholders that could not be auto-filled.
 
-   - Replace **feature placeholders** with derived content from feature description:
-     - `[FEATURE_NAME]` → Extracted from arguments
-     - `[FEATURE_DESCRIPTION]` → User's feature description
-     - `[FUNCTIONAL_REQUIREMENTS]` → Analyze description for requirements
-     - `[USER_STORIES]` → Generate user stories from description
-     - `[TECHNICAL_CONSTRAINTS]` → Infer from description (or mark TBD)
+   b) `<FEATURE_DIR>/plan.md`, `<FEATURE_DIR>/tasks.md`, and `<FEATURE_DIR>/contracts/` do NOT need to be created here; they are created by later commands.
 
-   - Preserve section order and headings from template
-   - Flag any placeholders that could not be auto-filled (these will need manual completion)
-
-7. **Auto-context verification**:
+6. **Auto-context verification**:
    - List which placeholders were auto-filled from project-context.json
    - List which placeholders need manual completion
    - If >5 manual placeholders remain, suggest running /clarify after
 
-8. Report completion with feature name, spec file path, feature directory, and auto-filled context summary:
+7. Report completion with feature name, spec file path, feature directory, and auto-filled context summary:
    ```markdown
    ✅ Feature specification created: <FEATURE_NAME>
 
@@ -149,4 +174,4 @@ Given those arguments, do this:
    2. Run: /speckit.plan <speckit-root> <feature-name>
    ```
 
-Note: The script creates the feature directory (specs/###-feature-name/) and initializes the spec file. Git workflow is managed separately by the user.
+Note: Git workflow is managed separately by the user.

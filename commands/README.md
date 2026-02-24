@@ -251,7 +251,6 @@ commands/
 **Herramientas subyacentes:**
 - Context provider: `tools/context/context_provider.py`
 - Episodic memory: `tools/memory/episodic.py`
-- Spec-Kit scripts: `speckit/scripts/`
 
 ---
 

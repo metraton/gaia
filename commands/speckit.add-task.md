@@ -31,15 +31,39 @@ Use this command to append or insert a **single** task in the currently active S
 5. **Dependencies / notes** (optional): If the task introduces new dependencies, capture them in the `## Dependencies` or checklist section.
 
 ## Procedure
-1. **Run prerequisite discovery** (repo root):
-   ```bash
-   .claude/speckit/scripts/check-prerequisites.sh --json --require-tasks --include-tasks
-   ```
-   Parse `FEATURE_DIR` and ensure `tasks.md` exists.
+
+1. **Resolve prerequisites** (no script needed):
+
+   a) Extract `<speckit-root>` and `<feature-name>` from $ARGUMENTS.
+      - If either is missing, ERROR and show usage example.
+
+   b) Resolve `<speckit-root>` to an absolute path:
+      - If it starts with `/`, use it as-is.
+      - Otherwise, treat it as relative to the repository root.
+
+   c) Derive paths:
+      ```
+      SPECKIT_ROOT = <resolved absolute speckit-root>
+      FEATURE_DIR  = <SPECKIT_ROOT>/specs/<feature-name>
+      TASKS        = <FEATURE_DIR>/tasks.md
+      IMPL_PLAN    = <FEATURE_DIR>/plan.md
+      ```
+
+   d) Use Read to verify `<TASKS>` exists. If it does not exist:
+      ```
+      ❌ ERROR: tasks.md not found at <TASKS>
+      Run /speckit.tasks <speckit-root> <feature-name> first to create the task list.
+      ```
+
+   e) Use Read to check which optional documents exist (for context):
+      - `<FEATURE_DIR>/research.md`
+      - `<FEATURE_DIR>/data-model.md`
+      - `<FEATURE_DIR>/contracts/` (use Glob: `<FEATURE_DIR>/contracts/*`)
+      - `<FEATURE_DIR>/quickstart.md`
 
 2. **Load context**:
    - Read `tasks.md` to understand current phases, ordering, and existing task IDs.
-   - Read `plan.md` and `<speckit-root>/governance.md` (from `paths.speckit_root` in project-context.json) to keep the new task aligned with architectural and governance rules.
+   - Read `plan.md` and `<SPECKIT_ROOT>/governance.md` (from `paths.speckit_root` in project-context.json) to keep the new task aligned with architectural and governance rules.
 
 3. **Gather missing details**:
    - If the command arguments do not include the task ID, phase, or `[P]` marker, explicitly ask the user.
@@ -88,6 +112,8 @@ Use this command to append or insert a **single** task in the currently active S
      <!-- 🎯 skill: terraform_infrastructure (12.0) -->
    ```
 
+   Use the Edit tool to insert the new task into `tasks.md` at the correct position within the chosen phase.
+
 5. **Update supporting sections** (if required):
    - `## Dependencies`: reflect any new blocking relationships.
    - `## Validation Checklist` / Governance Compliance: add or adjust items to keep requirements accurate.
@@ -131,7 +157,7 @@ Use this command to append or insert a **single** task in the currently active S
 # 1. Ask for task ID (e.g., T042)
 # 2. Ask for phase (e.g., Integration)
 # 3. Ask if parallel (e.g., yes, different file)
-# 4. Insert task with inline metadata
+# 4. Insert task with inline metadata using Edit tool
 # 5. Auto-analyze task (quality gate)
 # 6. Show enriched result
 ```
