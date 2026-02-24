@@ -1066,6 +1066,93 @@ async function copySettingsJson() {
 }
 
 /**
+ * Generate or update governance.md from governance.template.md + project context.
+ *
+ * Behavior:
+ * - If governance.md does NOT exist: write the full interpolated template.
+ * - If governance.md EXISTS: update ONLY the "## Stack Definition" section,
+ *   preserving all other content (Architectural Principles, ADRs, etc.).
+ *
+ * This mirrors the project-context.json pattern: always sync from source of truth.
+ */
+async function generateGovernanceMd(config, speckitRoot) {
+  const spinner = ora('Syncing governance.md...').start();
+
+  try {
+    const templatePath = getTemplatePath('governance.template.md');
+    if (!existsSync(templatePath)) {
+      spinner.warn('governance.template.md not found — skipping');
+      return false;
+    }
+
+    const template = await fs.readFile(templatePath, 'utf-8');
+
+    // Derive k8s platform from cloud provider
+    const k8sPlatform = config.cloudProvider === 'aws' ? 'EKS'
+      : config.cloudProvider === 'gcp' ? 'GKE'
+      : 'Kubernetes';
+
+    // Interpolate all placeholders
+    const today = new Date().toISOString().split('T')[0];
+    const interpolated = template
+      .replace(/\[CLOUD_PROVIDER\]/g, (config.cloudProvider || 'gcp').toUpperCase())
+      .replace(/\[PRIMARY_REGION\]/g, config.region || 'N/A')
+      .replace(/\[PROJECT_ID\]/g, config.projectId || 'N/A')
+      .replace(/\[CLUSTER_NAME\]/g, config.clusterName || 'N/A')
+      .replace(/\[GITOPS_PATH\]/g, config.gitops || 'N/A')
+      .replace(/\[TERRAFORM_PATH\]/g, config.terraform || 'N/A')
+      .replace(/\[POSTGRES_INSTANCE\]/g, 'N/A')
+      .replace(/\[CONTAINER_REGISTRY\]/g, 'N/A')
+      .replace(/\[K8S_PLATFORM\]/g, k8sPlatform)
+      .replace(/\[DATE\]/g, today);
+
+    // Ensure speckit root directory exists
+    const absSpeckitRoot = isAbsolute(speckitRoot) ? speckitRoot : resolve(CWD, speckitRoot);
+    await fs.mkdir(absSpeckitRoot, { recursive: true });
+
+    const destPath = join(absSpeckitRoot, 'governance.md');
+
+    if (!existsSync(destPath)) {
+      // First time: write full file
+      await fs.writeFile(destPath, interpolated, 'utf-8');
+      spinner.succeed(`governance.md created at ${speckitRoot}/governance.md`);
+    } else {
+      // File exists: update ONLY the Stack Definition section
+      const existing = await fs.readFile(destPath, 'utf-8');
+
+      // Extract new Stack Definition section from interpolated template
+      const stackDefMatch = interpolated.match(/^## Stack Definition\n[\s\S]*?(?=\n## |\n---|\Z)/m);
+      const newStackDef = stackDefMatch ? stackDefMatch[0] : null;
+
+      if (!newStackDef) {
+        // Template format unexpected — overwrite safely
+        await fs.writeFile(destPath, interpolated, 'utf-8');
+        spinner.succeed('governance.md updated (full rewrite — template format changed)');
+        return true;
+      }
+
+      // Replace Stack Definition section in existing file, preserve the rest
+      const updatedContent = existing.replace(
+        /^## Stack Definition\n[\s\S]*?(?=\n## |\n---)/m,
+        newStackDef
+      );
+
+      if (updatedContent === existing) {
+        spinner.succeed('governance.md already up to date');
+      } else {
+        await fs.writeFile(destPath, updatedContent, 'utf-8');
+        spinner.succeed('governance.md Stack Definition synced');
+      }
+    }
+
+    return true;
+  } catch (error) {
+    spinner.fail(`governance.md: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Generate project-context.json from detected + user config.
  */
 async function generateProjectContext(config) {
@@ -1128,7 +1215,8 @@ async function generateProjectContext(config) {
       paths: {
         gitops: config.gitops,
         terraform: config.terraform,
-        app_services: config.appServices
+        app_services: config.appServices,
+        speckit_root: config.speckitRoot || 'spec-kit-tcm-plan'
       },
       sections: {
         project_details: projectDetails,
@@ -1181,9 +1269,53 @@ async function generateProjectContext(config) {
     }
 
     const destPath = join(CWD, '.claude', 'project-context', 'project-context.json');
-    await fs.writeFile(destPath, JSON.stringify(projectContext, null, 2), 'utf-8');
 
-    spinner.succeed('project-context.json generated');
+    if (!existsSync(destPath)) {
+      // First-time install: write the full generated context
+      await fs.writeFile(destPath, JSON.stringify(projectContext, null, 2), 'utf-8');
+      spinner.succeed('project-context.json generated');
+    } else {
+      // File already exists — merge to preserve agent-enriched sections
+      let existing;
+      try {
+        existing = JSON.parse(await fs.readFile(destPath, 'utf-8'));
+      } catch {
+        // Existing file is corrupt — overwrite safely
+        await fs.writeFile(destPath, JSON.stringify(projectContext, null, 2), 'utf-8');
+        spinner.succeed('project-context.json regenerated (previous file was invalid)');
+        return;
+      }
+
+      // Merge strategy:
+      // - metadata.*  : replace field-by-field from new scan (always reflects current state)
+      // - paths.*     : replace field-by-field from new scan (filesystem-derived, always current)
+      // - sections.*  : preserve existing content; add new sections from scan if absent
+      const merged = {
+        metadata: {
+          ...existing.metadata,
+          ...projectContext.metadata,
+          last_updated: new Date().toISOString()
+        },
+        paths: {
+          ...existing.paths,
+          ...projectContext.paths
+        },
+        sections: {
+          // Start from new scan's sections as the schema base,
+          // then override with existing sections that have content
+          ...projectContext.sections,
+          ...Object.fromEntries(
+            Object.entries(existing.sections || {}).filter(([, v]) => {
+              // Preserve existing section if it has any content
+              return v !== null && typeof v === 'object' && Object.keys(v).length > 0;
+            })
+          )
+        }
+      };
+
+      await fs.writeFile(destPath, JSON.stringify(merged, null, 2), 'utf-8');
+      spinner.succeed('project-context.json updated (metadata + paths synced, sections preserved)');
+    }
   } catch (error) {
     spinner.fail('Failed to generate project-context.json');
     throw error;
@@ -1564,7 +1696,11 @@ async function main() {
     // 4.7 Project context
     await generateProjectContext(config);
 
-    // 4.8 Clone context repo (optional)
+    // 4.8 Governance.md (always sync from project-context)
+    const speckitRoot = config.speckitRoot || 'spec-kit-tcm-plan';
+    await generateGovernanceMd(config, speckitRoot);
+
+    // 4.9 Clone context repo (optional)
     if (config.projectContextRepo) {
       await cloneProjectContextRepo(config.projectContextRepo);
     }

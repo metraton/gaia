@@ -1,5 +1,5 @@
 ---
-description: Bootstrap Spec-Kit structure and validate/create project-context.json
+description: Bootstrap Spec-Kit structure — syncs governance.md and verifies project-context.json.
 ---
 
 **USAGE**: `/speckit.init [feature-name]`
@@ -7,136 +7,71 @@ description: Bootstrap Spec-Kit structure and validate/create project-context.js
 **Examples**:
 ```
 /speckit.init 005-new-feature
-/speckit.init  # Without feature name - just validates project-context.json
+/speckit.init  # Without feature name - just validates and syncs governance
 ```
 
 ## Purpose
 
-Initialize Spec-Kit for a new feature or bootstrap the project configuration. This command:
-1. Validates that `project-context.json` exists and is properly configured
-2. If missing, interactively creates `project-context.json` from user input
+Step 0 of the Spec-Kit workflow. Executed automatically by the `speckit-planner` agent before any action. This command:
+1. Syncs `governance.md` from `project-context.json` (always)
+2. Verifies `project-context.json` exists and has required fields (never creates it)
 3. Optionally creates feature directory structure with templates
+
+**If `project-context.json` is missing**: report the error and stop — the user must run `gaia-init` first.
 
 ## Execution Steps
 
-### 1. Validate project-context.json
+### 0. Governance Sync (ejecutar siempre, antes de cualquier otra accion)
+
+1. Leer `.claude/project-context/project-context.json`
+2. Obtener `paths.speckit_root` del JSON — si no existe, usar default `spec-kit-tcm-plan`
+3. Determinar destino: `<speckit-root>/governance.md`
+4. Ejecutar `updateGovernance(projectContext)`:
+   - Leer template `.claude/templates/governance.template.md`
+   - Interpolar placeholders con valores de project-context.json:
+     - `[CLOUD_PROVIDER]` → `metadata.cloud_provider` (uppercase)
+     - `[PRIMARY_REGION]` → `metadata.primary_region`
+     - `[PROJECT_ID]` → `metadata.project_id`
+     - `[CLUSTER_NAME]` → `sections.project_details.cluster_name`
+     - `[GITOPS_PATH]` → `paths.gitops`
+     - `[TERRAFORM_PATH]` → `paths.terraform`
+     - `[POSTGRES_INSTANCE]` → `sections.databases.postgres.instance` o `N/A`
+     - `[CONTAINER_REGISTRY]` → `N/A` si no definido
+     - `[K8S_PLATFORM]` → derivar del cloud provider (GCP→GKE, AWS→EKS, otro→Kubernetes)
+     - `[DATE]` → fecha actual ISO (YYYY-MM-DD)
+   - **Si governance.md NO EXISTE**: crear el directorio `<speckit-root>/` si falta, escribir el archivo completo interpolado
+   - **Si governance.md EXISTE**: actualizar SOLO la seccion `## Stack Definition`, preservar el resto (principios y ADRs pueden tener ediciones del usuario)
+5. Reportar: `governance.md sincronizado en <speckit-root>/governance.md`
+
+### 1. Verify project-context.json
 
 Check if `.claude/project-context/project-context.json` exists:
+
+**If NOT EXISTS**:
+```
+❌ BLOCKED: project-context.json not found.
+
+```
 
 **If EXISTS**:
 - Read and validate structure
 - Check required fields:
-  - `project_details.id`
-  - `project_details.region`
-  - `project_details.cluster_name`
-  - `gitops_configuration.repository.path`
-  - `terraform_infrastructure.layout.base_path`
+  - `metadata.project_id` or `sections.project_details.project_id`
+  - `metadata.primary_region` or `sections.project_details.region`
+  - `sections.project_details.cluster_name`
+  - `paths.gitops` or `sections.gitops_configuration.repository.path`
+  - `paths.terraform` or `sections.terraform_infrastructure.layout.base_path`
+- If a required field is missing: warn but continue (gaia-init may have generated a partial context)
 - Report validation results
-- If missing critical fields, offer to fix interactively
-
-**If NOT EXISTS**:
-- Inform user that project-context.json is missing
-- Offer to create it interactively
-- Ask the following questions:
-
-#### Interactive Project Context Creation
-
-**Question 1: GCP Project ID**
-```
-What is your GCP project ID?
-Example: aaxis-rnd-general-project
-```
-
-**Question 2: GCP Region**
-```
-What is your primary GCP region?
-Options:
-- us-central1
-- us-east1
-- us-west1
-- europe-west1
-- Other (specify)
-```
-
-**Question 3: GKE Cluster Name**
-```
-What is your GKE cluster name?
-Example: tcm-gke-non-prod
-```
-
-**Question 4: GitOps Repository Path**
-```
-What is the ABSOLUTE path to your GitOps repository?
-Example: /path/to/your/gitops-repo
-```
-
-**Question 5: Terraform Repository Path**
-```
-What is the ABSOLUTE path to your Terraform repository?
-Example: /path/to/your/terraform-repo
-```
-
-**Question 6: PostgreSQL Instance (Optional)**
-```
-PostgreSQL Cloud SQL instance name (or skip):
-Example: tcm-postgres-non-prod
-[Press Enter to skip]
-```
-
-After collecting answers, generate `project-context.json`:
-
-```json
-{
-  "version": "2.0.0",
-  "last_updated": "YYYY-MM-DD",
-  "project_details": {
-    "id": "<answer1>",
-    "region": "<answer2>",
-    "environment": "non-prod",
-    "cluster_name": "<answer3>"
-  },
-  "gitops_configuration": {
-    "repository": {
-      "path": "<answer4>",
-      "structure": "flux-standard"
-    },
-    "flux_details": {
-      "version": "v2",
-      "reconciliation_interval": "5m"
-    }
-  },
-  "terraform_infrastructure": {
-    "layout": {
-      "base_path": "<answer5>",
-      "structure": "terragrunt-hierarchical"
-    },
-    "provider_credentials": {
-      "auth_method": "gcloud-default"
-    }
-  },
-  "databases": {
-    "postgres": {
-      "instance": "<answer6>",
-      "type": "cloud-sql"
-    }
-  },
-  "operational_guidelines": {
-    "commit_standards": "conventional-commits",
-    "gitops_principles": "flux-cd",
-    "security_tiers": ["T0", "T1", "T2", "T3"]
-  }
-}
-```
-
-Write file to `.claude/project-context/project-context.json` and report success.
 
 ### 2. Feature Directory Bootstrap (Optional)
 
 If `[feature-name]` argument provided:
 
 a) **Determine Spec-Kit root**:
-   - Check if directory `spec-kit-tcm-plan` exists in current directory
-   - If not, ask user: "Spec-Kit root directory name? (default: spec-kit-tcm-plan)"
+   - Read `paths.speckit_root` from project-context.json
+   - If not set, check if directory `spec-kit-tcm-plan` exists in current directory
+   - If not found, ask user: "Spec-Kit root directory name? (default: spec-kit-tcm-plan)"
 
 b) **Create feature directory structure**:
    ```
@@ -150,11 +85,11 @@ b) **Create feature directory structure**:
 c) **Initialize spec.md with project context**:
    - Copy spec-template.md to feature directory
    - **AUTO-FILL** placeholders using project-context.json:
-     - `[PROJECT_ID]` → `project_details.id`
-     - `[REGION]` → `project_details.region`
-     - `[CLUSTER]` → `project_details.cluster_name`
-     - `[GITOPS_PATH]` → `gitops_configuration.repository.path`
-     - `[TERRAFORM_PATH]` → `terraform_infrastructure.layout.base_path`
+     - `[PROJECT_ID]` → `metadata.project_id` or `sections.project_details.project_id`
+     - `[REGION]` → `metadata.primary_region` or `sections.project_details.region`
+     - `[CLUSTER]` → `sections.project_details.cluster_name`
+     - `[GITOPS_PATH]` → `paths.gitops`
+     - `[TERRAFORM_PATH]` → `paths.terraform`
 
 d) **Report feature initialization**:
    ```markdown
@@ -177,35 +112,35 @@ d) **Report feature initialization**:
 Always output validation summary:
 
 ```markdown
-## Project Context Validation
+## Spec-Kit Status
 
-✅ project-context.json exists
-✅ All required fields present
-✅ GitOps path exists: <path>
-✅ Terraform path exists: <path>
+✅ governance.md synced: <speckit-root>/governance.md
+✅ project-context.json valid
+✅ GitOps path: <path>
+✅ Terraform path: <path>
 
 **Configuration**:
 - Project ID: <id>
 - Region: <region>
 - Cluster: <cluster-name>
-- GitOps: <path>
-- Terraform: <path>
-
-**Spec-Kit Status**:
-- Governance: .claude/speckit/governance.md
-- ADR Template: .claude/speckit/templates/adr-template.md
-- Commands: /specify, /plan, /tasks, /implement, /init
+- Speckit Root: <speckit-root>
 
 **You're ready to use Spec-Kit!**
 ```
 
 ## Error Handling
 
-**Missing paths**:
+**project-context.json missing**:
 ```
-⚠️ WARNING: GitOps path does not exist: <path>
+❌ BLOCKED: project-context.json not found.
+Run `npx gaia-init` to initialize the project, then retry.
+```
+
+**Missing paths in project-context**:
+```
+⚠️ WARNING: GitOps path not set in project-context.json
 This may cause issues with gitops-operator agent.
-Recommendation: Create directory or update project-context.json
+Recommendation: Run `npx gaia-init` to regenerate project-context.json
 ```
 
 **Invalid JSON**:
@@ -213,25 +148,20 @@ Recommendation: Create directory or update project-context.json
 ❌ ERROR: project-context.json is malformed
 <JSON parse error>
 
-Fix the JSON syntax or delete the file to regenerate.
-```
-
-**Permission issues**:
-```
-❌ ERROR: Cannot write to .claude/project-context/project-context.json
-Check directory permissions for .claude/
+Fix the JSON syntax or delete the file and run `npx gaia-init` to regenerate.
 ```
 
 ## Notes
 
-- **Run once per project** to create project-context.json
-- **Run per feature** to bootstrap new feature directory
-- **Idempotent**: Safe to run multiple times (won't overwrite existing files)
+- **Automatic**: `speckit-planner` runs this as Step 0 before every action — the user rarely needs to invoke it directly
+- **Read-only for project-context**: this command NEVER creates or modifies `project-context.json`
+- **Always syncs governance**: governance.md is always updated to reflect the current project-context values
+- **Idempotent**: safe to run multiple times
 - **No config.json**: Spec-Kit 2.0 uses project-context.json + explicit arguments
-- **No constitution.md**: Replaced with governance.md (project-wide, not versioned per feature)
 
 ## See Also
 
-- `/speckit.specify` - Create feature specification (uses project-context.json)
+- `npx gaia-init` - Create and configure project-context.json (run once per project)
+- `/speckit.specify` - Create feature specification
 - `/speckit.plan` - Generate implementation plan
-- `.claude/speckit/governance.md` - Project governance principles
+- `<speckit-root>/governance.md` - Project governance principles

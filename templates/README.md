@@ -51,9 +51,9 @@ Template para el documento de governance del proyecto. Contiene placeholders que
 - 6 principios arquitectonicos inmutables (Code-First, GitOps SSOT, Security Tiers, Conventional Commits, Workload Identity, Resource Limits)
 - Proceso de ADRs y evolucion de standards
 
-**Generado por:** `speckit.init` skill (via agente en el primer uso de speckit, o manualmente)
-**Sincronizado por:** agente `speckit-planner` al inicio de cada sesion (Step 0 automatico)
-**Salida:** `<speckit-root>/governance.md`
+**Generado por:** `gaia-init` (paso 4.8, automatico al instalar). Actualizado por: `speckit.init` (Paso 0, siempre al ejecutarse).
+**Logica:** Si no existe → crea el archivo completo. Si existe → actualiza solo `## Stack Definition`, preserva principios y ADRs.
+**Salida:** `<speckit-root>/governance.md` (speckit-root definido en `project-context.json` bajo `paths.speckit_root`)
 
 ## Uso
 
