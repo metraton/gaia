@@ -19,6 +19,7 @@ from ..security.safe_commands import is_read_only_command
 from ..security.blocked_commands import is_blocked_command, get_suggestion_for_blocked
 from ..security.gitops_validator import validate_gitops_workflow
 from .shell_parser import get_shell_parser
+from .cloud_pipe_validator import validate_cloud_pipe
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,10 @@ class BashValidationResult:
     requires_credentials: bool = False
     credential_warning: str = None
     modified_input: Optional[Dict[str, Any]] = None
+    # When set, the caller should return this dict (exit 0) instead of a
+    # plain error string (exit 2).  Used for structured block responses that
+    # should correct the agent rather than terminate execution.
+    block_response: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -103,6 +108,21 @@ class BashValidator:
             commit_validation = self._validate_commit_message(command)
             if not commit_validation.allowed:
                 return commit_validation
+
+        # Cloud pipe/redirect/chaining check — runs before tier classification.
+        # Returns a structured block response dict if a violation is found.
+        # block_response is set so the caller emits JSON and exits 0 (corrective),
+        # not a plain string with exit 2 (which would terminate the agent).
+        pipe_block = validate_cloud_pipe(command)
+        if pipe_block is not None:
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=pipe_block["hookSpecificOutput"]["permissionDecisionReason"],
+                suggestions=[],
+                modified_input=None,
+                block_response=pipe_block,
+            )
 
         # Fast-path: Check if command has operators BEFORE parsing
         if not self._has_operators(command):

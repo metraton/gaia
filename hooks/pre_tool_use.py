@@ -637,6 +637,11 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
 
     if not result.allowed:
         logger.warning(f"BLOCKED: {command[:100]} - {result.reason}")
+        # Structured block responses (e.g. cloud pipe violations) must be returned
+        # as a JSON dict (exit 0) so the agent receives the correction message
+        # and adjusts — not as a plain string (exit 2) which terminates the agent.
+        if result.block_response is not None:
+            return result.block_response
         return _format_blocked_message(result)
 
     # Save state for post-hook (ONLY for allowed commands)

@@ -95,3 +95,12 @@ labels = {
 4. **Tags on everything** — all resources get the standard label block
 5. **snake_case outputs** — descriptive names with `description` field
 6. **mock_outputs on dependencies** — required for `validate` and `plan` to work offline
+
+## Reference Docs
+
+Use `WebFetch` when a resource or attribute is unknown or ambiguous. Do not use WebFetch to discover patterns — the codebase always wins over external docs.
+
+| Need | URL |
+|------|-----|
+| Google provider resources | `https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/{resource}` |
+| Terragrunt config blocks | `https://terragrunt.gruntwork.io/docs/reference/config-blocks-and-attributes` |
