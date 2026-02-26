@@ -57,7 +57,11 @@ class TestRoutingTableAgents:
 
 
 class TestPlanStatusDocumentation:
-    """Validate CLAUDE.md documents all valid PLAN_STATUS values."""
+    """Validate agent-protocol skill documents all valid PLAN_STATUS values.
+
+    The full state machine lives in agent-protocol/SKILL.md.
+    CLAUDE.md only handles orchestrator-visible terminal states.
+    """
 
     VALID_STATUSES = [
         "INVESTIGATING",
@@ -70,11 +74,16 @@ class TestPlanStatusDocumentation:
         "NEEDS_INPUT",
     ]
 
+    @pytest.fixture
+    def agent_protocol_content(self):
+        skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        return (skills_dir / "agent-protocol" / "SKILL.md").read_text()
+
     @pytest.mark.parametrize("status", VALID_STATUSES)
-    def test_plan_status_documented(self, status, claude_md_content):
-        """Each valid PLAN_STATUS must appear in CLAUDE.md."""
-        assert status in claude_md_content, \
-            f"PLAN_STATUS '{status}' not documented in CLAUDE.md"
+    def test_plan_status_documented(self, status, agent_protocol_content):
+        """Each valid PLAN_STATUS must appear in agent-protocol skill."""
+        assert status in agent_protocol_content, \
+            f"PLAN_STATUS '{status}' not documented in agent-protocol/SKILL.md"
 
 
 class TestSystemPaths:

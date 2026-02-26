@@ -75,17 +75,16 @@ class TestCloudTroubleshooter:
 class TestAllAgentsCommon:
     """Common requirements for all agent prompts."""
 
-    def test_all_agents_have_tldr(self, all_agent_files):
-        """All project agents should have a TL;DR section."""
-        # speckit-planner may not have TL;DR, so we check project agents
+    def test_all_agents_have_identity(self, all_agent_files):
+        """All project agents should have an Identity section."""
         project_agents = {"terraform-architect", "gitops-operator",
                           "cloud-troubleshooter", "devops-developer"}
         for agent_file in all_agent_files:
             if agent_file.stem not in project_agents:
                 continue
             content = agent_file.read_text()
-            assert "TL;DR" in content or "tl;dr" in content.lower(), \
-                f"{agent_file.name} should have a TL;DR section"
+            assert "## Identity" in content, \
+                f"{agent_file.name} should have an ## Identity section"
 
     def test_all_agents_mention_tiers(self, all_agent_files):
         """All agents should reference security tiers."""

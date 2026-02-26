@@ -59,6 +59,8 @@ prompt:  "Continue: [next instruction or user response]"
 
 Every agent response ends with an `AGENT_STATUS` block containing `PLAN_STATUS` and `AGENT_ID`.
 
+Valid PLAN_STATUS values: `INVESTIGATING` | `PLANNING` | `PENDING_APPROVAL` | `APPROVED_EXECUTING` | `FIXING` | `COMPLETE` | `BLOCKED` | `NEEDS_INPUT`
+
 | Agent PLAN_STATUS | Your action |
 |---|---|
 | `PENDING_APPROVAL` | Show plan to user → AskUserQuestion → resume with `"User approved: <operation> [scope]"` |

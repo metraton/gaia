@@ -109,7 +109,7 @@ class TestT3KeywordsConsistency:
         """cloud-troubleshooter doc says T0-T2 and task_validator enforces it."""
         content = (agents_dir / "cloud-troubleshooter.md").read_text()
         # Check doc says T0-T2
-        assert "T0-T2" in content or "T3 forbidden" in content.lower(), \
+        assert "T0-T2" in content or "T3 forbidden" in content, \
             "cloud-troubleshooter should document T0-T2 restriction"
 
 

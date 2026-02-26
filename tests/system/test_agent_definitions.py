@@ -40,7 +40,7 @@ class TestAgentStructure:
             content = agent_file.read_text()
             # Check for role-related sections or keywords
             role_indicators = [
-                "## Role", "## Primary Role", "## Core Identity",
+                "## Role", "## Primary Role", "## Core Identity", "## Identity",
                 "role", "responsibility", "specialize"
             ]
             has_role = any(indicator.lower() in content.lower() for indicator in role_indicators)
