@@ -1034,6 +1034,53 @@ async function createClaudeDirectory() {
 }
 
 /**
+ * Install native git hooks (commit-msg) to all detected git repositories.
+ *
+ * These hooks run at the git level, catching commits made outside Claude Code
+ * (manual terminal, IDE, etc.). Complements the Claude Code PreToolUse hook
+ * which only intercepts commits made through Claude Code's Bash tool.
+ */
+async function installGitHooks() {
+  const spinner = ora('Installing git hooks...').start();
+
+  try {
+    const hookSource = join(PACKAGE_ROOT, 'git-hooks', 'commit-msg');
+    if (!existsSync(hookSource)) {
+      spinner.warn('git-hooks/commit-msg not found in package, skipping');
+      return;
+    }
+
+    // Find git repos: check CWD and common subdirectories
+    const candidates = [CWD];
+    const entries = await fs.readdir(CWD, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        candidates.push(join(CWD, entry.name));
+      }
+    }
+
+    let installed = 0;
+    for (const dir of candidates) {
+      const gitHooksDir = join(dir, '.git', 'hooks');
+      if (!existsSync(gitHooksDir)) continue;
+
+      const dest = join(gitHooksDir, 'commit-msg');
+      await fs.copyFile(hookSource, dest);
+      await fs.chmod(dest, 0o755);
+      installed++;
+    }
+
+    if (installed > 0) {
+      spinner.succeed(`Git commit-msg hook installed in ${installed} repo(s)`);
+    } else {
+      spinner.info('No git repositories found, skipping git hooks');
+    }
+  } catch (error) {
+    spinner.warn(`Git hooks installation failed (non-fatal): ${error.message}`);
+  }
+}
+
+/**
  * Copy static CLAUDE.md from template (no placeholders to replace).
  * Always overwrites — CLAUDE.md is core orchestrator config and must stay
  * in sync with the installed package version.
@@ -1690,6 +1737,9 @@ async function main() {
 
     // 4.6 Settings.json
     await copySettingsJson();
+
+    // 4.6.1 Git commit-msg hook (strips Claude Code footers at git level)
+    await installGitHooks();
 
     // 4.7 Project context
     await generateProjectContext(config);

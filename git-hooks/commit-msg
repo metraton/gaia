@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# commit-msg hook: strip Claude Code attribution footers from commit messages.
+#
+# This hook runs at the git level, catching ALL commits regardless of whether
+# they originate from Claude Code's Bash tool, a subagent, or the user's terminal.
+#
+# Patterns match those in hooks/modules/tools/bash_validator.py _strip_claude_footers()
+# to maintain a single source of truth for what constitutes a forbidden footer.
+#
+# Installation:
+#   cp git-hooks/commit-msg .git/hooks/commit-msg
+#   chmod +x .git/hooks/commit-msg
+#
+# Or via gaia-init (automatic).
+
+COMMIT_MSG_FILE="$1"
+
+if [ ! -f "${COMMIT_MSG_FILE}" ]; then
+    exit 0
+fi
+
+# Create a temp file for the cleaned message
+TEMP_FILE=$(mktemp)
+trap 'rm -f "${TEMP_FILE}"' EXIT
+
+# Read the commit message and strip forbidden footer lines:
+#   - Co-Authored-By: containing "Claude" (any case)
+#   - "Generated with Claude Code" or "[Claude Code]" (any case)
+#   - Emoji-prefixed "Generated with" lines
+sed -E \
+    -e '/^[[:space:]]*[Cc][Oo]-[Aa][Uu][Tt][Hh][Oo][Rr][Ee][Dd]-[Bb][Yy]:.*[Cc][Ll][Aa][Uu][Dd][Ee]/d' \
+    -e '/^[[:space:]]*[Gg][Ee][Nn][Ee][Rr][Aa][Tt][Ee][Dd] [Ww][Ii][Tt][Hh].*[Cc][Ll][Aa][Uu][Dd][Ee] [Cc][Oo][Dd][Ee]/d' \
+    -e '/^[[:space:]]*..?[[:space:]]*[Gg][Ee][Nn][Ee][Rr][Aa][Tt][Ee][Dd] [Ww][Ii][Tt][Hh]/d' \
+    "${COMMIT_MSG_FILE}" > "${TEMP_FILE}"
+
+# Remove trailing blank lines (collapse to single trailing newline)
+# This prevents empty trailers after stripping
+sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "${TEMP_FILE}" > "${COMMIT_MSG_FILE}"
+
+exit 0
