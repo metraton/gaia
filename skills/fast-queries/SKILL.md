@@ -1,6 +1,6 @@
 ---
 name: fast-queries
-description: Quick diagnostic scripts for instant health checks (<15 sec)
+description: Use when diagnosing an issue, checking system health, or validating infrastructure state before starting a task
 user-invocable: false
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: git-conventions
-description: Conventional commits format and git workflow rules
+description: Use when creating a git commit or preparing changes for a pull request
 user-invocable: false
 ---
 

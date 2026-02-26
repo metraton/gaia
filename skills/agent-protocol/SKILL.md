@@ -1,6 +1,6 @@
 ---
 name: agent-protocol
-description: Core agent protocol - AGENT_STATUS format, local-first investigation, error handling
+description: Use when starting any agent task, reporting status, or handling errors — defines AGENT_STATUS format, state machine, and local-first protocol
 user-invocable: false
 ---
 

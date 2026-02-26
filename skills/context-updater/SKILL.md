@@ -1,6 +1,6 @@
 ---
 name: context-updater
-description: CONTEXT_UPDATE format for enriching project-context.json progressively
+description: Use when investigation reveals data that is missing from or differs from project-context.json
 user-invocable: false
 ---
 

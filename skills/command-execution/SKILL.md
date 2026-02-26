@@ -1,10 +1,15 @@
 ---
 name: command-execution
-description: Defensive command execution - timeout protection, pipe avoidance, and safe shell patterns
+description: Use when executing any bash command, cloud CLI (gcloud, kubectl, terraform), or shell operation
 user-invocable: false
 ---
 
 # Command Execution
+
+```
+NO PIPES. NO CHAINS. NO REDIRECTS.
+One command. One result. One exit code.
+```
 
 ## Mental Model
 
@@ -30,7 +35,7 @@ Use tool-native flag first (`kubectl get pods --request-timeout=30s`), fall back
 
 ## Rule 1: No Pipes
 
-The CLI already has the flag you're looking for. Pipes hide exit codes, split the atomic contract, and trigger extra permission prompts for the second process.
+The CLI already has the flag you're looking for. Pipes hide exit codes, split the atomic contract, and trigger extra permission prompts for the second process. For unbounded outputs, use native limit flags (`--limit=50`, `--freshness=1h`) — never pipe to `head`.
 
 ```bash
 # BAD
@@ -82,11 +87,9 @@ cd ../../shared/vpc && terraform plan
 terraform plan -chdir="/abs/path/to/terraform/shared/vpc"
 ```
 
-For unbounded outputs always set limits (`--limit=50 --freshness=1h`).
-
 ## Rule 5: Validate Before Mutate
 
-Mutations are irreversible. Always dry-run → diff → apply. Each step is a separate, atomic confirmation.
+Mutations are irreversible. Always dry-run → diff → apply. Each step is a separate, atomic confirmation — skipping any one of them is a violation.
 
 ```bash
 kubectl apply -f manifest.yaml --dry-run=server
@@ -110,3 +113,41 @@ helm upgrade app chart -f /tmp/values.yaml
 Variable expansion without quotes breaks the atomic contract through word-splitting: a variable containing spaces becomes multiple arguments.
 
 Always `"${VAR}"` to prevent word splitting: `kubectl get pods -n "${NAMESPACE}"`
+
+---
+
+## Red Flags — Stop Before Executing
+
+If you're forming any of these thoughts, stop. You're about to violate the atomic contract:
+
+- *"This command is quick, it won't hang"* → Timeouts: apply it anyway — external systems hang for reasons unrelated to complexity
+- *"I'll use `|` just to limit the output"* → Rule 1: use `--limit` or `--format` flag
+- *"I'll pipe to `grep`/`awk`/`jq` to filter"* → Rule 1: use `--filter` and `--format`
+- *"I'll chain with `&&` because these steps always go together"* → Rule 2: run separately, verify each exit code
+- *"Let me save the output with `>`"* → Rule 3: use the Write tool
+- *"Let me `cat` this file to check it quickly"* → Rule 3: use the Read tool
+- *"Let me `cd` first, then run the command"* → Rule 4: use absolute path with `-chdir` or equivalent
+- *"The dry-run passed, I can apply directly"* → Rule 5: dry-run → diff → apply are three required steps, not one
+- *"It's a simple value, I'll put it inline"* → Rule 6: write to temp file first
+- *"This variable won't have spaces"* → Rule 7: always quote — it will eventually, and it will break silently
+
+## Rationalization Table
+
+| Rationalization | Reality | Rule |
+|----------------|---------|------|
+| "This command is fast, no timeout needed" | External systems hang for reasons unrelated to command complexity | Timeouts |
+| "It's just to filter output, not a real pipe" | Pipes hide exit codes and split the atomic contract regardless of intent | 1 |
+| "I need `grep` to find what I'm looking for" | `gcloud`/`kubectl` `--filter` finds it natively, without a subprocess | 1 |
+| "These steps always run together, chaining is fine" | Each command needs its own exit code verification — chaining loses that | 2 |
+| "I need to persist the output for later analysis" | Use the Write tool — redirects in bash break the hook's structured output | 3 |
+| "It's faster to use `cat` than the Read tool" | Bash subprocesses lose structured output and create unnecessary permission prompts | 3 |
+| "The relative path should work here" | Working directory is not reliable across tool calls — it will break | 4 |
+| "Dry-run passed so apply is safe" | dry-run and diff are separate validations — skip either and you miss drift | 5 |
+| "The inline value is simple enough" | Shell quoting breaks at spaces, special chars, and nested quotes — always | 6 |
+| "This variable definitely won't have spaces" | It will, eventually — and when it does, it breaks silently and is hard to debug | 7 |
+
+## Anti-Patterns
+
+Pipe as shortcut · Chain as convenience · Redirect as persistence · `cd` before command · Inline complex data
+
+All covered in Red Flags and Rationalization Table above.

@@ -1,6 +1,6 @@
 ---
 name: gitops-patterns
-description: GitOps, Kubernetes, and Flux CD patterns for cluster management
+description: Use when creating, modifying, or reviewing Kubernetes manifests, HelmReleases, or Flux configuration
 user-invocable: false
 ---
 

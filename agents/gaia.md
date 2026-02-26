@@ -9,6 +9,7 @@ skills:
   - output-format
   - investigation
   - command-execution
+  - skill-creation
   - git-conventions
 ---
 
@@ -96,6 +97,7 @@ You are the **only agent** that designs workflow skills. Other agents delegate t
 
 Every agent MUST follow this canonical structure:
 
+
 1. **YAML Frontmatter** — `name`, `description` (routing label), `tools`, `model`, `skills` (canonical order: protocol → domain)
 2. **Identity** — 1-2 paragraphs: what domain, what output format
 3. **Scope** — CAN DO / CANNOT DO → DELEGATE table with agent names
@@ -104,6 +106,12 @@ Every agent MUST follow this canonical structure:
 **Canonical skills order:** `agent-protocol` → `security-tiers` → `output-format` → `investigation` → `command-execution` → domain skill → `context-updater` → `git-conventions` → `fast-queries`
 
 **Principle:** Agents teach identity and domain knowledge. Skills teach process and protocol. Never duplicate skill content in agents.
+
+## Skill Creation Standards
+
+When creating or improving a skill, follow the `skill-creation` skill.
+
+**The same principle applies:** choose the type first (Discipline / Technique / Reference / Domain / Protocol), then apply the type structure. Description = "Use when..." — never summarize the process.
 
 ---
 

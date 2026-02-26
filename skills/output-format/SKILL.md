@@ -1,6 +1,6 @@
 ---
 name: output-format
-description: Global output contract and reporting standards for all agents
+description: Use when reporting findings, errors, or results to the user — defines report structure, status icons, and finding classification
 user-invocable: false
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: terraform-patterns
-description: Terraform and Terragrunt patterns for infrastructure as code
+description: Use when creating, modifying, or reviewing Terraform or Terragrunt configuration files
 user-invocable: false
 ---
 

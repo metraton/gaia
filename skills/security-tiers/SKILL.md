@@ -1,6 +1,6 @@
 ---
 name: security-tiers
-description: T0-T3 operation classification and approval requirements for infrastructure operations
+description: Use when classifying any operation before executing it, or deciding whether user approval is required
 user-invocable: false
 ---
 
