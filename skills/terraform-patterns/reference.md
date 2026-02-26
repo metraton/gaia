@@ -1,146 +1,93 @@
-# Terraform Patterns - Reference Examples
+# Terraform Patterns — HCL Reference
 
-Full HCL examples for common operations. Read on-demand, not injected.
+Structural patterns for Terraform and Terragrunt. Cloud-agnostic — use values from project-context, never hardcode.
 
-## Standard terragrunt.hcl Structure
+For cloud-specific resource examples (VPCs, clusters, databases), discover patterns from the existing codebase using the `investigation` skill.
+
+---
+
+## Remote State (root terragrunt.hcl)
 
 ```hcl
-include "root" {
-  path = find_in_parent_folders()
-}
-
-terraform {
-  source = "tfr:///terraform-aws-modules/[module]/aws?version=x.y.z"
-}
-
-dependency "vpc" {
-  config_path = "../vpc"
-}
-
-inputs = {
-  name = "${local.env}-${local.resource_name}"
-}
-
-locals {
-  env = "prod"
-  resource_name = "vpc"
+remote_state {
+  backend = "gcs"                          # gcs | s3 | azurerm — from cloud_provider in context
+  config = {
+    bucket   = "{project_id}-terraform-state"
+    prefix   = "${path_relative_to_include()}/terraform.tfstate"
+    project  = "{project_id}"              # from project-context
+    location = "{primary_region}"          # from project-context
+  }
 }
 ```
 
-## Dependency with Mock Outputs
+## Component (terragrunt.hcl)
 
 ```hcl
+include "root" { path = find_in_parent_folders() }
+terraform { source = "../../../../../terraform//{module-name}" }
+
 dependency "vpc" {
   config_path = "../vpc"
-
-  mock_outputs = {
-    vpc_id = "vpc-mock123"
-  }
+  mock_outputs = { network_id = "mock-network" }
   mock_outputs_allowed_terraform_commands = ["validate", "plan"]
 }
 
 inputs = {
-  vpc_id = dependency.vpc.outputs.vpc_id
+  project_id = "{project_id}"              # from project-context
+  region     = "{primary_region}"          # from project-context
+  network_id = dependency.vpc.outputs.network_id
 }
 ```
 
-## VPC Module Example
+## Required Labels
+
+Every resource must include:
 
 ```hcl
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "5.0.0"
-
-  name = "${local.env}-vpc"
-  cidr = "10.0.0.0/16"
-
-  azs             = ["us-east-1a", "us-east-1b", "us-east-1c"]
-  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
-  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
-
-  enable_nat_gateway   = true
-  single_nat_gateway   = false
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = local.common_tags
+labels = {
+  environment = "{env}"                    # from project-context
+  managed_by  = "terraform"
+  project     = "{project_id}"            # from project-context
 }
-```
-
-## EKS Module Example
-
-```hcl
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "19.15.0"
-
-  cluster_name    = "digital-eks-${local.env}"
-  cluster_version = "1.28"
-
-  vpc_id     = dependency.vpc.outputs.vpc_id
-  subnet_ids = dependency.vpc.outputs.private_subnets
-
-  cluster_endpoint_public_access  = true
-  cluster_endpoint_private_access = true
-  enable_irsa = true
-
-  eks_managed_node_groups = {
-    default = {
-      min_size       = 2
-      max_size       = 5
-      desired_size   = 3
-      instance_types = ["t3.medium"]
-      capacity_type  = "ON_DEMAND"
-    }
-  }
-
-  tags = local.common_tags
-}
-```
-
-## Security Group Pattern
-
-```hcl
-name = "${local.env}-${local.service}-sg"
-
-ingress_rules = [
-  {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
-    description = "HTTPS from VPC"
-  }
-]
 ```
 
 ## Outputs Pattern
 
 ```hcl
-output "vpc_id" {
-  description = "VPC ID"
-  value       = module.vpc.vpc_id
-}
-
-output "private_subnets" {
-  description = "Private subnet IDs"
-  value       = module.vpc.private_subnets
+output "resource_id" {
+  description = "Description of what this output represents"
+  value       = resource_type.name.id
 }
 ```
+
+Always: snake_case name, non-empty description, no sensitive values unless `sensitive = true`.
+
+## Module Sourcing
+
+```hcl
+# Local module (GCP preferred)
+terraform { source = "../../../../../terraform//{module-name}" }
+
+# Registry module (AWS preferred)
+terraform { source = "tfr:///terraform-aws-modules/{module}/aws?version=x.y.z" }
+```
+
+Always pin exact versions — never `latest`, never unpinned.
 
 ## State Operations
 
 ```bash
 terragrunt state list
-terragrunt state show module.vpc.aws_vpc.this
-terragrunt import aws_vpc.this vpc-abc123
+terragrunt state show {resource_type}.{name}
+terragrunt import {resource_type}.{name} {live_id}
 ```
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| State lock | Check DynamoDB `terraform-locks` table |
+| State lock | Check state backend lock table, wait or force-unlock with caution |
 | Module not found | Run `terragrunt init` |
-| Dependency cycle | Review dependency declarations |
-| Invalid CIDR | Verify no overlaps with existing VPCs |
+| Dependency cycle | Review dependency `config_path` declarations |
+| Mock outputs mismatch | Update `mock_outputs` to match actual output types |
+| Plan shows unexpected destroy | Check for naming drift between code and live state |

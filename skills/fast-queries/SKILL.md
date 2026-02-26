@@ -10,6 +10,8 @@ user-invocable: false
 
 ## Available Scripts
 
+Run from project root. Use absolute path if calling from a different directory.
+
 | Script | Command | Duration |
 |--------|---------|----------|
 | **All systems** | `bash .claude/tools/fast-queries/run_triage.sh [domain]` | 8-15s |

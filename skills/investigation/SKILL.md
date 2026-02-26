@@ -27,17 +27,24 @@ Follow the local-first order from `agent-protocol`. For each area of investigati
 
 ## 3. Pattern Analysis
 
-Compare what you find against your injected domain skill:
+Apply this hierarchy — in order, without skipping levels:
+
+**Level 1 — Codebase (always first)**
+Search for 2-3 existing resources of the same type. If found → FOLLOW them. Codebase pattern wins over your training and over your domain skill. Consistency beats preference.
+
+**Level 2 — Domain skill (fallback when no codebase pattern exists)**
+If no existing pattern is found in the codebase, use your injected domain skill:
 - `terraform-patterns` — infrastructure
 - `gitops-patterns` — Kubernetes/Flux
 - `developer-patterns` — application code (when available)
 
-Apply **Pattern Authority**:
+**Level 3 — Training best practices (last resort)**
+If neither codebase nor domain skill has a pattern for what you need, use your training knowledge. Always mark the result explicitly: *"No existing pattern found — applying best practices. Recommend reviewing before merging."*
 
-**FOLLOW** — Codebase pattern wins over your training. Consistency beats preference.
+**Pattern Authority (applies at all levels):**
+
 **COPY** — Names, paths, IDs are contracts. Match existing schema exactly.
-**ALERT** — Problematic pattern → DEVIATION or CRITICAL, propose alternative, let
-user decide. Never silently follow or fix.
+**ALERT** — Problematic pattern → DEVIATION or CRITICAL, propose alternative, let user decide. Never silently follow or fix.
 **DOCUMENT** — New discovery not in project-context → CONTEXT_UPDATE per `context-updater`.
 
 ## 4. Validate Your Hypothesis

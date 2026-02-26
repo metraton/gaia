@@ -1,20 +1,24 @@
-# GitOps Patterns - Reference Examples
+# GitOps Patterns — YAML Reference
 
-Full YAML examples for common operations. Read on-demand, not injected.
+Structural patterns for Kubernetes and Flux. Use placeholders — replace with values from project-context.
 
-## HelmRelease Example
+For cloud-specific resource examples, discover patterns from the existing codebase using the `investigation` skill.
+
+---
+
+## HelmRelease
 
 ```yaml
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
-  name: graphql-server
-  namespace: common
+  name: {service-name}
+  namespace: {namespace}
 spec:
-  interval: 1m
+  interval: 5m
   chart:
     spec:
-      chart: app-chart
+      chart: {chart-name}
       version: '>=1.0.0'
       sourceRef:
         kind: GitRepository
@@ -23,16 +27,8 @@ spec:
       interval: 1m
   values:
     image:
-      repository: ghcr.io/vtr/graphql-server
-      tag: v1.0.176
-    service:
-      type: LoadBalancer
-      port: 3000
-      annotations:
-        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-        service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-    env:
-      NODE_ENV: "prod"
+      repository: {registry}/{service-name}
+      tag: v1.0.0
     resources:
       requests:
         memory: "256Mi"
@@ -42,108 +38,70 @@ spec:
         cpu: "500m"
 ```
 
-## Namespace Example
+## Namespace
 
 ```yaml
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: common
+  name: {namespace}
   labels:
-    name: common
-    environment: production
+    name: {namespace}
+    environment: {env}
 ```
 
-## ConfigMap Example
+## ConfigMap
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: graphql-server-config
-  namespace: common
+  name: {service-name}-config
+  namespace: {namespace}
 data:
-  NODE_ENV: "prod"
-  LOG_LEVEL: "info"
-  API_TIMEOUT: "30000"
+  KEY: "value"
 ```
 
-## Sealed Secret Example
+## SealedSecret
 
 ```yaml
 apiVersion: bitnami.com/v1alpha1
 kind: SealedSecret
 metadata:
-  name: graphql-server-secret
-  namespace: common
+  name: {service-name}-secret
+  namespace: {namespace}
 spec:
   encryptedData:
-    DATABASE_URL: AgB...  # Encrypted
+    SECRET_KEY: AgB...  # Encrypted with kubeseal
 ```
 
-## Load Balancer (NLB) Annotations
-
-```yaml
-service:
-  type: LoadBalancer
-  annotations:
-    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
-    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
-    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
-```
-
-## Ingress (Nginx) Example
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: mobile-backend
-  namespace: mobile-backend
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
-spec:
-  ingressClassName: nginx
-  rules:
-  - host: mobile-apps.prod.cloud.vtr.cl
-    http:
-      paths:
-      - path: /bff(/|$)(.*)
-        pathType: ImplementationSpecific
-        backend:
-          service:
-            name: mobile-backend-for-frontend
-            port:
-              number: 3000
-```
-
-## Kustomization Example
+## Kustomization
 
 ```yaml
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: apps
+  name: {scope}-{env}
   namespace: flux-system
 spec:
   interval: 1m
-  path: ./clusters/prod-digital-eks
+  path: ./clusters/{cluster-name}
   prune: true
   sourceRef:
     kind: GitRepository
     name: flux-system
 ```
 
-## Image Automation Policy
+## ImagePolicy
 
 ```yaml
 apiVersion: image.toolkit.fluxcd.io/v1beta1
 kind: ImagePolicy
 metadata:
-  name: graphql-server
+  name: {service-name}
 spec:
   imageRepositoryRef:
-    name: graphql-server
+    name: {service-name}
   policy:
     semver:
       range: '>=1.0.0'
@@ -155,7 +113,7 @@ spec:
 livenessProbe:
   httpGet:
     path: /health
-    port: 3000
+    port: {port}
   initialDelaySeconds: 30
   periodSeconds: 10
   timeoutSeconds: 5
@@ -163,7 +121,7 @@ livenessProbe:
 readinessProbe:
   httpGet:
     path: /ready
-    port: 3000
+    port: {port}
   initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
@@ -174,16 +132,17 @@ readinessProbe:
 
 | Issue | Check | Solution |
 |-------|-------|----------|
-| Pod not starting | `kubectl describe pod` | Check events, limits, image pull |
-| HelmRelease failed | `flux get helmrelease` | Check chart version, values syntax |
-| Image not found | `kubectl describe pod` | Verify image exists, check tag |
-| LoadBalancer pending | `kubectl get svc` | Check AWS quotas, subnet tags |
+| Pod not starting | `kubectl describe pod {name} -n {ns}` | Check events, resource limits, image pull |
+| HelmRelease failed | `flux get helmrelease {name} -n {ns}` | Check chart version, values syntax |
+| Image not found | `kubectl describe pod {name} -n {ns}` | Verify image exists in registry, check tag |
+| Service pending | `kubectl get svc -n {ns}` | Check cloud quotas, subnet/network config |
+| Flux not reconciling | `flux get kustomizations` | Check source sync, path exists |
 
 ## Debug Commands
 
 ```bash
-flux get helmrelease graphql-server -n common --verbose
-kubectl logs -n common deployment/graphql-server --tail=100
-kubectl get events -n common --sort-by='.lastTimestamp'
-kubectl top pods -n common
+flux get helmrelease {service-name} -n {namespace} --verbose
+kubectl logs -n {namespace} deployment/{service-name} --tail=100
+kubectl get events -n {namespace} --sort-by='.lastTimestamp'
+kubectl top pods -n {namespace}
 ```

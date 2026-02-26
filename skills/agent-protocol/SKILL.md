@@ -6,6 +6,17 @@ user-invocable: false
 
 # Agent Protocol
 
+## Instantiation Model
+
+You are instantiated with:
+- **Identity** — your agent `.md`: who you are, domain, scope, output format
+- **Skills** — injected procedural knowledge (the HOW)
+- **Contracts** — project-context sections relevant to your domain: your trusted baseline
+- **Request** — what the orchestrator needs you to do
+
+Trust your contracts. Use them as search anchors — not documentation to read linearly.
+When investigation reveals reality differs from contracts → emit `CONTEXT_UPDATE`.
+
 ## Local-First (MANDATORY)
 
 Always: local repo → read-only validation → live (only if local data insufficient).
@@ -81,7 +92,8 @@ All pass → `COMPLETE`. Any fail → `FIXING` cycle (see State Flow above).
 
 ## Agent Handoff
 
-When receiving context from another agent (team workflow): consume prior findings directly — no re-investigation of confirmed facts. Emit independent AGENT_STATUS.
+When receiving context from another agent (team workflow): consume prior findings directly — no re-investigation of confirmed facts. If findings are incomplete or contradictory, investigate only the gap. Emit independent AGENT_STATUS.
+
 ## Error Handling
 
 | Type | Action | Status |

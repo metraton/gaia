@@ -55,3 +55,14 @@ Suggested Fix:
 **IMPROVEMENT** — minor optimization. Omit unless directly relevant to the task.
 
 **PATTERN** — detected reusable pattern. Document for consistency, don't interrupt flow.
+
+## Verification Commands
+
+Every output that changes or validates state MUST include commands the user can run independently to verify the result.
+
+```
+## Verify yourself
+- `[read-only command]` → expected: [what you should see]
+```
+
+Include after: Realization Packages, Diagnostic Reports, any analysis the user may need to evidence in a PR or ticket.

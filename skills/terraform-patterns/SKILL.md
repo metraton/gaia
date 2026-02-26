@@ -6,8 +6,9 @@ user-invocable: false
 
 # Terraform Patterns
 
-Project-specific conventions. For HCL examples, read `reference.md` in this directory.
-Use values from your injected project-context — never hardcode project IDs, regions, or account identifiers.
+Project-specific conventions. Use values from your injected project-context — never hardcode project IDs, regions, or account identifiers.
+
+For HCL examples (remote state, component structure, labels, outputs), read `reference.md` in this directory.
 
 ## Directory Structure
 
@@ -35,57 +36,11 @@ features/infra/[env]/
 | Secret | `{service}-secret` | Matches app service name |
 | Service Account | `{resource}-sa` | Scope: resource it serves |
 
-## Remote State
-
-Configure in root `terragrunt.hcl`. Backend type from `cloud_provider` in context (`gcs`/`s3`/`azurerm`):
-
-```hcl
-remote_state {
-  backend = "gcs"
-  config = {
-    bucket   = "{project_id}-terraform-state"
-    prefix   = "${path_relative_to_include()}/terraform.tfstate"
-    project  = "{project_id}"      # from project-context
-    location = "{primary_region}"  # from project-context
-  }
-}
-```
-
-## Component Pattern (Terragrunt)
-
-```hcl
-include "root" { path = find_in_parent_folders() }
-terraform { source = "../../../../../terraform//{module-name}" }
-
-dependency "vpc" {
-  config_path = "../vpc"
-  mock_outputs = { network_id = "mock-network" }
-  mock_outputs_allowed_terraform_commands = ["validate", "plan"]
-}
-inputs = {
-  project_id = "{project_id}"      # from project-context
-  region     = "{primary_region}"  # from project-context
-  network_id = dependency.vpc.outputs.network_id
-}
-```
-
 ## Module Sourcing
 
 - **Local modules** (preferred for GCP): `../../../../../terraform//{module-name}`
 - **Registry modules** (preferred for AWS): `tfr:///terraform-aws-modules/{module}/aws?version=x.y.z`
 - **Always pin exact versions** — never `latest`, never unpinned
-
-## Required Tags/Labels
-
-Every resource must include a standard label block using project-context values:
-
-```hcl
-labels = {
-  environment = "{env}"         # from project-context
-  managed_by  = "terraform"
-  project     = "{project_id}"  # from project-context
-}
-```
 
 ## Key Rules
 

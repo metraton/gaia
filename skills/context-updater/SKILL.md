@@ -55,7 +55,7 @@ CONTEXT_UPDATE:
 | `terraform-architect` | `terraform_infrastructure`, `infrastructure_topology` |
 | `devops-developer` | `application_services`, `application_architecture`, `development_standards` |
 
-Writing to a section you don't own will be rejected.
+Writing to a section you don't own will be rejected by the hook.
 `gaia` and `speckit-planner` do not write to project-context — they manage gaia-ops internals and specs respectively.
 
-For examples, see [examples.md](examples.md).
+For concrete examples, read `examples.md` in this directory.
