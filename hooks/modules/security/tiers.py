@@ -84,7 +84,10 @@ def _classify_command_tier_cached(
     command = command.strip()
 
     # Fast-path: Ultra-common T0 commands
-    words = command.split()
+    # Normalize git commands so "git -C /path log" matches "git log"
+    from .safe_commands import _normalize_git_command
+    normalized = _normalize_git_command(command)
+    words = normalized.split()
     if len(words) >= 2:
         prefix2 = f"{words[0]} {words[1]}"
         if prefix2 in ULTRA_COMMON_T0_COMMANDS:

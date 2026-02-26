@@ -172,6 +172,77 @@ CONDITIONAL_SAFE_COMMANDS: Dict[str, List[str]] = SAFE_COMMANDS_CONFIG["conditio
 SAFE_PATTERNS: List[str] = SAFE_COMMANDS_CONFIG["safe_patterns"]
 
 
+# Git global flags that take a value argument and appear before the subcommand.
+# These must be stripped to normalize "git -C /path log" into "git log".
+# Format: (flag, consumes_next_arg)
+#   consumes_next_arg=True  -> flag and next token are both removed (e.g., -C /path)
+#   consumes_next_arg=False -> only the flag token is removed (e.g., --bare)
+_GIT_GLOBAL_FLAGS_WITH_VALUE = {
+    "-C": True,
+    "-c": True,
+    "--git-dir": True,
+    "--work-tree": True,
+    "--namespace": True,
+}
+# Flags in --key=value form (the = makes them a single token)
+_GIT_GLOBAL_LONG_FLAGS = {"--git-dir", "--work-tree", "--namespace"}
+# Boolean global flags (no value argument)
+_GIT_GLOBAL_BOOL_FLAGS = {"--bare", "--no-pager", "--no-replace-objects", "--literal-pathspecs"}
+
+
+def _normalize_git_command(cmd: str) -> str:
+    """
+    Normalize a git command by stripping global flags that appear before the subcommand.
+
+    Transforms "git -C /path log --oneline" into "git log --oneline" so that
+    prefix-based safe-command matching (startswith("git log")) works correctly.
+
+    Only processes commands that start with "git". Returns the command unchanged
+    for non-git commands.
+
+    Args:
+        cmd: A single shell command string
+
+    Returns:
+        Normalized command with git global flags removed
+    """
+    parts = cmd.split()
+    if not parts or parts[0] != "git":
+        return cmd
+
+    # Walk tokens after "git", consuming global flags until we hit the subcommand
+    result = ["git"]
+    i = 1
+    while i < len(parts):
+        token = parts[i]
+
+        # --key=value form (single token)
+        if "=" in token:
+            key = token.split("=", 1)[0]
+            if key in _GIT_GLOBAL_LONG_FLAGS:
+                i += 1
+                continue
+
+        # -C /path or -c key=value form (two tokens)
+        if token in _GIT_GLOBAL_FLAGS_WITH_VALUE:
+            i += 2  # skip flag and its value
+            continue
+
+        # Boolean global flags (single token, no value)
+        if token in _GIT_GLOBAL_BOOL_FLAGS:
+            i += 1
+            continue
+
+        # Not a global flag -- this token and everything after is the subcommand + args
+        result.extend(parts[i:])
+        break
+    else:
+        # Consumed all tokens (edge case: "git -C /path" with no subcommand)
+        pass
+
+    return " ".join(result)
+
+
 def matches_safe_pattern(command: str) -> Tuple[bool, str]:
     """
     Check if command matches any safe regex pattern.
@@ -224,9 +295,12 @@ def is_single_command_safe(single_cmd: str) -> Tuple[bool, str]:
     if '/' in base_cmd:
         base_cmd = base_cmd.split('/')[-1]
 
+    # Normalize git commands: strip global flags so "git -C /path log" matches "git log"
+    normalized_cmd = _normalize_git_command(single_cmd)
+
     # Check multi-word commands first (more specific)
     for safe_cmd in ALWAYS_SAFE_MULTIWORD:
-        if single_cmd.startswith(safe_cmd):
+        if normalized_cmd.startswith(safe_cmd):
             return True, f"Always-safe: {safe_cmd}"
 
     # Check regex patterns (NEW in v2.0 - enables denylist approach)
