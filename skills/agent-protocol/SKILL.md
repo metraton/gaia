@@ -1,6 +1,6 @@
 ---
 name: agent-protocol
-description: Use when starting any agent task, reporting status, or handling errors — defines AGENT_STATUS format, state machine, and local-first protocol
+description: Use when starting any agent task, reporting status, or handling errors — defines AGENT_STATUS format, state machine, and search protocol
 user-invocable: false
 ---
 
@@ -17,22 +17,28 @@ You are instantiated with:
 Trust your contracts. Use them as search anchors — not documentation to read linearly.
 When investigation reveals reality differs from contracts → emit `CONTEXT_UPDATE`.
 
-## Local-First (MANDATORY)
-
-Always: local repo → read-only validation → live (only if local data insufficient).
+## Search Protocol
 
 ```
-1. LOCAL    → Use project-context paths and values for targeted searches.
-              Known path? Target it. Known name/ID? Search for it. Broad globs last resort.
-2. VALIDATE → Read-only state checks (never mutating):
-              Infrastructure:    terraform plan, terraform state show
-              Kubernetes/GitOps: kubectl apply --dry-run, helm diff, flux diff
-              Cloud:             gcloud describe, gsutil stat, fast-queries scripts
-3. LIVE     → Query live APIs only if validation shows drift or task requires it
-4. REPORT   → End every response with AGENT_STATUS block
+CONTRACTS → LOCAL → LIVE → REPORT
 ```
 
-For investigation methodology, follow the `investigation` skill.
+**CONTRACTS** — Start here. Your injected project-context is your trusted baseline.
+Use its values as search anchors: known path? target it. Known name/ID? search for it.
+Broad globs are last resort.
+
+**LOCAL** — Read code and config files. Compare against contracts.
+- Match → confirmed, proceed.
+- Mismatch → drift detected. Note for `CONTEXT_UPDATE`. May require LIVE verification.
+
+**LIVE** — Only if drift is suspected or task explicitly requires live state.
+Run `fast-queries` triage first (<15s). Deep-dive with domain CLIs only if triage flags issues.
+Mismatch found → update your map, continue investigating with the new reality.
+Only escalate (`BLOCKED`/`NEEDS_INPUT`) if the mismatch is CRITICAL to completing the task.
+
+**REPORT** — Every response ends with AGENT_STATUS block.
+
+For investigation methodology and pattern hierarchy, follow the `investigation` skill.
 
 ## AGENT_STATUS Format (MANDATORY)
 
@@ -74,15 +80,15 @@ PLANNING -> NEEDS_INPUT
 PENDING_APPROVAL -> PLANNING (user requests modifications)
 ```
 
-## State-Changing Operation Workflow
+## T3 Operation Workflow
 
-Triggered when the task requires T3 operations (mutations per `security-tiers`).
+**T3 only.** For T0/T1/T2, investigation leads directly to `COMPLETE`.
 
 ### Phase 1 — Investigate
 Follow the `investigation` skill. Surface options when multiple approaches exist.
 
 ### Phase 2 — Plan
-Set status: `PLANNING`. Complexity: Simple (≤3 changes, clear scope) → inline plan. Complex (multi-service, architecture) → suggest speckit.
+Set status: `PLANNING`. Simple (≤3 changes, clear scope) → inline plan. Complex (multi-service, architecture) → suggest speckit.
 
 Follow the `approval` skill for plan format and presentation. Set status: `PENDING_APPROVAL`. Wait for orchestrator to resume with approval.
 
