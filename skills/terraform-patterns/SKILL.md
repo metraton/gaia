@@ -44,7 +44,7 @@ features/infra/[env]/
 
 ## Key Rules
 
-1. **Terragrunt CLI only** — always `terragrunt` commands, never raw `terraform`
+1. **Prefer Terragrunt** — prefer `terragrunt` commands for all environment operations; raw `terraform` is acceptable for module development and testing only
 2. **Dependencies via blocks** — never hardcode IDs, always `dependency.x.outputs.y`
 3. **Version pinning** — exact versions for modules, `~>` for providers
 4. **Tags on everything** — all resources get the standard label block

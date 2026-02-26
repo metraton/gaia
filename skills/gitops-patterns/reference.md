@@ -138,6 +138,22 @@ readinessProbe:
 | Service pending | `kubectl get svc -n {ns}` | Check cloud quotas, subnet/network config |
 | Flux not reconciling | `flux get kustomizations` | Check source sync, path exists |
 
+## Post-Push Verification
+
+After pushing manifests to Git (T3), verify Flux reconciled successfully. Run each command separately:
+
+```bash
+flux reconcile helmrelease {name} -n {namespace} --timeout=30s
+```
+
+```bash
+kubectl wait --for=condition=Ready helmrelease/{name} -n {namespace} --timeout=120s
+```
+
+```bash
+kubectl get helmrelease {name} -n {namespace} -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+```
+
 ## Debug Commands
 
 ```bash
@@ -145,4 +161,23 @@ flux get helmrelease {service-name} -n {namespace} --verbose
 kubectl logs -n {namespace} deployment/{service-name} --tail=100
 kubectl get events -n {namespace} --sort-by='.lastTimestamp'
 kubectl top pods -n {namespace}
+```
+
+## Resource Limits
+
+Always set both requests AND limits:
+
+| Size | CPU Req | CPU Lim | Mem Req | Mem Lim |
+|------|---------|---------|---------|---------|
+| Small | 100m | 500m | 256Mi | 512Mi |
+| Medium | 250m | 1000m | 512Mi | 1Gi |
+| Large | 500m | 2000m | 1Gi | 2Gi |
+
+## Secrets Management
+
+```
+Preference order:
+1. SealedSecrets (Bitnami) — encrypted in Git, decrypted in cluster
+2. External Secrets — from cloud secret store (Secret Manager, Vault)
+3. NEVER plain Kubernetes Secrets in Git
 ```

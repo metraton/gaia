@@ -10,9 +10,7 @@
         "terraform_infrastructure",
         "gitops_configuration",
         "application_services",
-        "monitoring_observability",
-        "security",
-        "dynamic_queries"
+        "monitoring_observability"
       ],
       "write": [
         "cluster_details",
@@ -40,8 +38,7 @@
         "project_details",
         "terraform_infrastructure",
         "infrastructure_topology",
-        "operational_guidelines",
-        "security"
+        "operational_guidelines"
       ],
       "write": [
         "terraform_infrastructure",
@@ -69,6 +66,13 @@
         "application_architecture",
         "development_standards",
         "application_services"
+      ],
+      "write": []
+    },
+    "gaia": {
+      "read": [
+        "application_architecture",
+        "development_standards"
       ],
       "write": []
     }

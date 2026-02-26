@@ -49,24 +49,7 @@ Use values from your injected project-context — never hardcode cluster names, 
 - **NEVER:** `latest`, `main`, `master`, `dev`, `staging`
 - Flux ImagePolicy uses `semver.range: '>=1.0.0'`
 
-## Resource Limits
-
-Always set both requests AND limits:
-
-| Size | CPU Req | CPU Lim | Mem Req | Mem Lim |
-|------|---------|---------|---------|---------|
-| Small | 100m | 500m | 256Mi | 512Mi |
-| Medium | 250m | 1000m | 512Mi | 1Gi |
-| Large | 500m | 2000m | 1Gi | 2Gi |
-
-## Secrets Management
-
-```
-Preference order:
-1. SealedSecrets (Bitnami) — encrypted in Git, decrypted in cluster
-2. External Secrets — from cloud secret store (Secret Manager, Vault)
-3. NEVER plain Kubernetes Secrets in Git
-```
+For resource limit defaults and secrets management strategy, see `reference.md`.
 
 ## Per-Namespace Structure
 
@@ -85,3 +68,4 @@ Each namespace directory contains:
 5. **Always set resource limits** — Both requests and limits required
 6. **Verify cluster context** — `kubectl config current-context` before any operation
 7. **Use project-context** — cluster_name, gitops_repo_path, environment from injected context
+8. **Post-push verification (T3 MANDATORY)** — After pushing manifests, verify Flux reconciled successfully. See `reference.md` "Post-Push Verification" for the exact command sequence

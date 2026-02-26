@@ -23,16 +23,23 @@ When investigation reveals reality differs from contracts → emit `CONTEXT_UPDA
 CONTRACTS → LOCAL → LIVE → REPORT
 ```
 
-**CONTRACTS** — Start here. Your injected project-context is your trusted baseline.
-Use its values as search anchors: known path? target it. Known name/ID? search for it.
+**CONTRACTS** — Start here. If you have injected project-context, use its values as
+search anchors: known path? target it. Known name/ID? search for it.
+If no project-context was injected, start directly at LOCAL.
 Broad globs are last resort.
+Before running LIVE commands, check if contracts indicate resource accessibility
+(e.g., `kubectl_accessible`, endpoint reachability). If a resource is marked
+unreachable, skip live commands for it and note the limitation in your report.
 
 **LOCAL** — Read code and config files. Compare against contracts.
 - Match → confirmed, proceed.
 - Mismatch → drift detected. Note for `CONTEXT_UPDATE`. May require LIVE verification.
 
 **LIVE** — Only if drift is suspected or task explicitly requires live state.
-Run `fast-queries` triage first (<15s). Deep-dive with domain CLIs only if triage flags issues.
+If you have the `fast-queries` skill, run triage first (<15s). Otherwise, use
+domain-appropriate read-only commands.
+If your identity restricts you to local/code-only operations, skip LIVE entirely
+— report what you found in LOCAL.
 Mismatch found → update your map, continue investigating with the new reality.
 Only escalate (`BLOCKED`/`NEEDS_INPUT`) if the mismatch is CRITICAL to completing the task.
 
@@ -80,21 +87,13 @@ PLANNING -> NEEDS_INPUT
 PENDING_APPROVAL -> PLANNING (user requests modifications)
 ```
 
-## T3 Operation Workflow
+## T3 Operations
 
-**T3 only.** For T0/T1/T2, investigation leads directly to `COMPLETE`.
+**T3 only.** If your identity restricts you to read-only operations (T0/T1/T2),
+skip this section entirely -- investigation leads directly to `COMPLETE`.
 
-### Phase 1 — Investigate
-Follow the `investigation` skill. Surface options when multiple approaches exist.
-
-### Phase 2 — Plan
-Set status: `PLANNING`. Simple (≤3 changes, clear scope) → inline plan. Complex (multi-service, architecture) → suggest speckit.
-
-Follow the `approval` skill for plan format and presentation. Set status: `PENDING_APPROVAL`. Wait for orchestrator to resume with approval.
-
-### Phase 3 — Execute & Verify
-Read `.claude/skills/execution/SKILL.md`. Execute all plan steps, then run the Verification Criteria.
-All pass → `COMPLETE`. Any fail → `FIXING` cycle (see State Flow above).
+For T3 operations, read `.claude/skills/approval/SKILL.md` and follow the workflow there.
+Post-approval execution protocol is in `.claude/skills/execution/SKILL.md`.
 
 ## Agent Handoff
 
