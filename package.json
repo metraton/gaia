@@ -50,8 +50,8 @@
     "speckit/",
     "skills/",
     "tests/",
-    "README.en.md",
     "README.md",
+    "INSTALL.md",
     "PRE_PUBLISH_WORKFLOW.md",
     "CHANGELOG.md",
     "index.js"

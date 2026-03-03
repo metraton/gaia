@@ -403,12 +403,12 @@ def _inject_project_context(parameters: dict) -> dict:
         enriched_prompt = _consume_anomaly_flag(enriched_prompt)
         parameters["prompt"] = enriched_prompt
 
-        context_level = context_payload.get("metadata", {}).get("context_level", "unknown")
-        standards_count = context_payload.get("metadata", {}).get("standards_count", 0)
+        sections_count = len(context_payload.get("contract", {}))
+        rules_count = context_payload.get("metadata", {}).get("rules_count", 0)
 
         logger.info(
             f"✅ Context injected for {subagent_type} "
-            f"(level={context_level}, standards={standards_count})"
+            f"(sections={sections_count}, rules={rules_count})"
         )
 
         return parameters
@@ -607,7 +607,7 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
         # Route to appropriate validator
         if tool_name.lower() == "bash":
             return _handle_bash(tool_name, parameters)
-        elif tool_name.lower() == "task":
+        elif tool_name.lower() in ("task", "agent"):
             return _handle_task(tool_name, parameters)
         else:
             # Other tools pass through

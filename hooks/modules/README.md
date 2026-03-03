@@ -42,6 +42,12 @@ modules/
 │   ├── bash_validator.py # Bash command validation
 │   └── task_validator.py # Task tool validation with context enforcement
 │
+├── context/              # Context management
+│   └── context_writer.py # Write context updates
+│
+├── validation/           # Commit validation
+│   └── commit_validator.py # Conventional Commits enforcement
+│
 ├── workflow/             # Workflow support (reserved)
 │
 ├── audit/                # Logging and metrics

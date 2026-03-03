@@ -4,51 +4,49 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/node/v/@jaguilar87/gaia-ops.svg)](https://nodejs.org)
 
-**[English version](README.en.md)**
+Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 
-Sistema de orquestacion multi-agente para Claude Code - Toolkit de automatizacion DevOps.
+## Overview
 
-## Descripcion General
+**Gaia-Ops** provides a complete agent orchestration system for Claude Code, enabling intelligent automation of DevOps workflows through specialized AI agents.
 
-**Gaia-Ops** proporciona un sistema completo de orquestacion de agentes para Claude Code, habilitando automatizacion inteligente de workflows DevOps a traves de agentes IA especializados.
+### Features
 
-### Caracteristicas
+- **Multi-cloud support** - GCP, AWS, Azure-ready
+- **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, devops-developer, speckit-planner, gaia (meta-agent)
+- **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
+- **Episodic Memory** - Persistent memory system for operational patterns
+- **Approval gates** for T3 operations
+- **Git commit validation** with Conventional Commits
+- **17 skills** - Injected procedural knowledge modules for agents
+- **897 tests** at 100% passing
 
-- **Soporte multi-cloud** - GCP, AWS, Azure-ready
-- **6 agentes especialistas** (terraform-architect, gitops-operator, cloud-troubleshooter, cloud-troubleshooter, devops-developer, Gaia)
-- **3 meta-agentes** (Explore, Plan, Gaia)
-- **Episodic Memory** - Sistema de memoria para patrones operacionales
-- **Pre-carga hibrida de standards** - 78% reduccion de tokens por invocacion
-- **Puertas de aprobacion** para operaciones T3
-- **Validacion de commits Git** con Conventional Commits
-- **669 tests** al 100% pasando
+## Installation
 
-## Instalacion
-
-### Inicio Rapido
+### Quick Start
 
 ```bash
-# Ejecutar directamente con npx
+# Run directly with npx
 npx gaia-init
 
-# O instalacion global
+# Or install globally
 npm install -g @jaguilar87/gaia-ops
 gaia-init
 ```
 
-Esto hara:
-1. Auto-detectar tu estructura de proyecto (GitOps, Terraform, AppServices)
-2. Instalar Claude Code si no esta presente
-3. Crear directorio `.claude/` con symlinks a este paquete
-4. Generar `CLAUDE.md` y `project-context.json`
+This will:
+1. Auto-detect your project structure (GitOps, Terraform, AppServices)
+2. Install Claude Code if not present
+3. Create `.claude/` directory with symlinks to this package
+4. Generate `CLAUDE.md` and `project-context.json`
 
-### Instalacion Manual
+### Manual Installation
 
 ```bash
 npm install @jaguilar87/gaia-ops
 ```
 
-Luego crea los symlinks:
+Then create symlinks:
 
 ```bash
 mkdir -p .claude && cd .claude
@@ -58,38 +56,42 @@ ln -s ../node_modules/@jaguilar87/gaia-ops/hooks hooks
 ln -s ../node_modules/@jaguilar87/gaia-ops/commands commands
 ln -s ../node_modules/@jaguilar87/gaia-ops/config config
 ln -s ../node_modules/@jaguilar87/gaia-ops/templates templates
+ln -s ../node_modules/@jaguilar87/gaia-ops/skills skills
+ln -s ../node_modules/@jaguilar87/gaia-ops/speckit speckit
 ```
 
-## Uso
+## Usage
 
-Una vez instalado, el sistema de agentes esta listo:
+Once installed, the agent system is ready:
 
 ```bash
 claude-code
 ```
 
-Claude Code cargara automaticamente `CLAUDE.md` y tendra acceso a todos los agentes via `.claude/`.
+Claude Code will automatically load `CLAUDE.md` and have access to all agents via `.claude/`.
 
-Diagnostico de skills e inyeccion:
+Skills and injection diagnosis:
 
 ```bash
 npx gaia-skills-diagnose
-# o con probe de tests:
+# or with test probe:
 npx gaia-skills-diagnose --run-tests
 ```
 
-## Estructura del Proyecto
+## Project Structure
 
 ```
 node_modules/@jaguilar87/gaia-ops/
-├── agents/              # Definiciones de agentes
-├── tools/               # Herramientas de orquestacion
-├── hooks/               # Hooks de Claude Code
-├── commands/            # Comandos slash
-├── config/              # Configuracion y documentacion
-├── templates/           # Templates de instalacion
-├── speckit/             # Metodologia Spec-Kit
-└── tests/               # Suite de tests (669 tests)
+├── agents/              # Agent definitions (6 agents)
+├── skills/              # Skill modules (17 skills)
+├── tools/               # Orchestration tools
+├── hooks/               # Claude Code hooks (modular architecture)
+├── commands/            # Slash commands (7 speckit commands)
+├── config/              # Configuration (contracts, git standards, rules)
+├── templates/           # Installation templates
+├── speckit/             # Spec-Kit framework (scripts + templates)
+├── bin/                 # CLI utilities (10 scripts)
+└── tests/               # Test suite (897 tests)
 ```
 
 ## API
@@ -101,47 +103,52 @@ const agentPath = getAgentPath('gitops-operator');
 const toolPath = getToolPath('context_provider.py');
 ```
 
-## Versionamiento
+## Versioning
 
-Este paquete sigue [Versionamiento Semantico](https://semver.org/):
+This package follows [Semantic Versioning](https://semver.org/):
 
-- **MAJOR:** Cambios que rompen compatibilidad
-- **MINOR:** Nuevas caracteristicas
-- **PATCH:** Correcciones de bugs
+- **MAJOR:** Breaking changes
+- **MINOR:** New features
+- **PATCH:** Bug fixes
 
-Version actual: **3.8.0**
+Current version: **4.0.0**
 
-Ver el historial de versiones en [npm](https://www.npmjs.com/package/@jaguilar87/gaia-ops).
+See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
-## Documentacion
+## Documentation
 
-- [config/](./config/) - Configuracion (git standards, skill triggers, reglas universales)
-- [agents/](./agents/) - Definiciones de agentes especialistas
+- [INSTALL.md](./INSTALL.md) - Installation guide
+- [config/](./config/) - Configuration (contracts, git standards, universal rules)
+- [agents/](./agents/) - Agent definitions
+- [skills/](./skills/) - Skill modules
 - [commands/](./commands/) - Slash commands (spec-kit)
-- [hooks/](./hooks/) - Sistema de hooks (seguridad, validacion)
+- [hooks/](./hooks/) - Hook system (security, validation, audit)
+- [speckit/](./speckit/) - Spec-Kit framework
+- [bin/](./bin/) - CLI utilities
+- [tests/](./tests/) - Test suite
 
-## Requisitos
+## Requirements
 
 - **Node.js:** >=18.0.0
 - **Python:** >=3.9
-- **Claude Code:** Ultima version
+- **Claude Code:** Latest version
 - **Git:** >=2.30
 
-## Gestion de Contexto de Proyecto
+## Project Context Management
 
-Gaia-Ops usa un contexto de proyecto versionado como SSOT:
+Gaia-Ops uses a versioned project context as SSOT:
 
 ```bash
 cd .claude
-git clone git@bitbucket.org:tuorg/tu-project-context.git project-context
+git clone git@bitbucket.org:yourorg/your-project-context.git project-context
 ```
 
-## Soporte
+## Support
 
 - **Issues:** [GitHub Issues](https://github.com/metraton/gaia-ops/issues)
-- **Repositorio:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
-- **Autor:** Jorge Aguilar <jaguilar1897@gmail.com>
+- **Repository:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
+- **Author:** Jorge Aguilar <jaguilar1897@gmail.com>
 
-## Licencia
+## License
 
-MIT License - Ver [LICENSE](./LICENSE) para detalles.
+MIT License - See [LICENSE](./LICENSE) for details.

@@ -5,6 +5,34 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-03-03
+
+### Breaking: Contracts as Single Source of Truth
+
+Contracts now fully control what context each agent receives. Removed the progressive disclosure layer that was silently overriding contract definitions, and cleaned up ~400 lines of dead code from context_provider.py.
+
+#### Changed
+- **context_provider.py**: Contracts are the single source of truth -- removed progressive disclosure filtering that overrode contract-defined sections
+- **context_provider.py**: Simplified output payload -- removed `enrichment` and `progressive_disclosure` keys from response
+- **contracts/terraform-architect.json**: Now reads `cluster_details` and `application_services` sections
+- **contracts/gitops-operator.json**: Now reads `gcp_services` section (GCP overlay)
+- **pre_tool_use.py**: Updated log message to show sections count and rules count
+- **templates/CLAUDE.template.md**: Synced agent routing descriptions with CLAUDE.md
+
+#### Fixed
+- **context_provider.py `get_contracts_dir()`**: Path traversal went up 2 levels instead of 3, producing wrong directory -- masked by legacy fallback that silently compensated
+
+#### Removed
+- **context_provider.py**: ~400 lines of dead code:
+  - Progressive disclosure engine (section filtering, phase-based visibility)
+  - `LEGACY_AGENT_CONTRACTS` dictionary (hardcoded fallback contracts)
+  - Semantic enrichment pipeline
+  - `validate_project_paths()` function
+  - Path resolution utility functions
+
+#### Tests
+- **tests/tools/test_context_provider.py**: Complete rewrite -- 8 tests covering all 6 agents, payload structure, and invalid agent handling
+
 ## [3.15.1] - 2026-02-24
 
 ### Fix: Cross-Layer Consistency & Dead Code Cleanup

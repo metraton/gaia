@@ -1,63 +1,60 @@
-# Configuracion de Gaia-Ops
+# Gaia-Ops Configuration Files
 
-**[English version](README.en.md)**
+Central configuration for the orchestration system. Contracts are the SSOT for agent context provisioning.
 
-Configuracion central del sistema de orquestacion.
+## Files
 
-## Archivos
+| File | Purpose | Read by |
+|------|---------|---------|
+| `context-contracts.json` | Base cloud-agnostic contracts: `read`/`write` sections per agent | `context_provider.py`, `context_writer.py`, `pre_tool_use.py` |
+| `cloud/gcp.json` | GCP extensions: `gcp_services`, `workload_identity`, `static_ips` | Same trio, merged at runtime |
+| `cloud/aws.json` | AWS extensions: `vpc_mapping`, `load_balancers`, `api_gateway`, `irsa_bindings`, `aws_accounts` | Same trio, merged at runtime |
+| `context-contracts.gcp.json` | **Legacy** -- kept for backward compatibility | Fallback if `context-contracts.json` not found |
+| `context-contracts.aws.json` | **Legacy** -- kept for backward compatibility | Fallback if `context-contracts.json` not found |
+| `git_standards.json` | Commit standards (Conventional Commits), allowed types, forbidden footers | `hooks/modules/validation/commit_validator.py` |
+| `universal-rules.json` | Behavior rules injected into all agents | `context_provider.py` |
 
-| Archivo | Proposito | Leido por |
-|---------|-----------|-----------|
-| `context-contracts.json` | Contratos base cloud-agnosticos: secciones `read`/`write` por agente | `context_provider.py`, `context_writer.py`, `pre_tool_use.py` |
-| `cloud/gcp.json` | Extensiones GCP: `gcp_services`, `workload_identity`, `static_ips` | Mismo trio, merged en runtime |
-| `cloud/aws.json` | Extensiones AWS: `vpc_mapping`, `load_balancers`, `api_gateway`, `irsa_bindings`, `aws_accounts` | Mismo trio, merged en runtime |
-| `context-contracts.gcp.json` | **Legado** — conservado para compatibilidad hacia atras | Fallback si `context-contracts.json` no existe |
-| `context-contracts.aws.json` | **Legado** — conservado para compatibilidad hacia atras | Fallback si `context-contracts.json` no existe |
-| `git_standards.json` | Estandares de commits (Conventional Commits), tipos permitidos, footers prohibidos | `commit_validator.py` |
-| `universal-rules.json` | Reglas de comportamiento inyectadas a todos los agentes | `context_provider.py` |
+## How the base+cloud merge works
 
-## Como funciona el merge base+cloud
-
-En runtime, `context_provider.py` ejecuta la siguiente logica:
+At runtime, `tools/context/context_provider.py` executes the following logic:
 
 ```
-1. Leer context-contracts.json         <- secciones agnósticas (todos los clouds)
-2. Detectar cloud_provider del project-context.json
-3. Leer cloud/{provider}.json          <- secciones especificas del cloud
-4. Merge: extender las listas read/write por agente (sin duplicados)
-5. Resultado: contrato completo para el agente en ese cloud
+1. Read context-contracts.json         <- cloud-agnostic sections (all clouds)
+2. Detect cloud_provider from project-context.json
+3. Read cloud/{provider}.json          <- cloud-specific sections
+4. Merge: extend read/write lists per agent (no duplicates)
+5. Result: complete contract for the agent on that cloud
 ```
 
-Fallback si `context-contracts.json` no existe: usa `context-contracts.{provider}.json` (legado).
+Fallback if `context-contracts.json` not found: uses `context-contracts.{provider}.json` (legacy).
 
-## Estructura
+## Structure
 
 ```
 config/
-├── context-contracts.json        <- base agnóstico (todos los agentes)
+├── context-contracts.json        <- agnostic base (all agents)
 ├── cloud/
-│   ├── gcp.json                  <- extensiones GCP + section_schemas
-│   └── aws.json                  <- extensiones AWS + section_schemas
-├── context-contracts.gcp.json    <- legado (fallback)
-├── context-contracts.aws.json    <- legado (fallback)
+│   ├── gcp.json                  <- GCP extensions + section_schemas
+│   └── aws.json                  <- AWS extensions + section_schemas
+├── context-contracts.gcp.json    <- legacy (fallback)
+├── context-contracts.aws.json    <- legacy (fallback)
 ├── git_standards.json
 ├── universal-rules.json
-├── README.md
-└── README.en.md
+└── README.md
 ```
 
-## Agregar soporte para un nuevo cloud (Azure, etc.)
+## Adding support for a new cloud (Azure, etc.)
 
-1. Crear `cloud/azure.json` con el mismo schema que `cloud/gcp.json`
-2. Definir los agentes y sus secciones especificas de Azure
-3. No hay cambios de codigo necesarios — `context_provider.py` lo detecta automaticamente
+1. Create `cloud/azure.json` with the same schema as `cloud/gcp.json`
+2. Define agents and their Azure-specific sections
+3. No code changes needed -- `context_provider.py` detects it automatically
 
-## Referencias
+## References
 
-- [Agents](../agents/README.md)
-- [Tools](../tools/README.md)
-- [Tests](../tests/README.md)
+- [Hooks](../hooks/) - Security hooks (use contracts for validation)
+- [Tools](../tools/) - Context provisioning tools
+- [Tests](../tests/) - Test suite
 
 ---
 
-**Actualizado:** 2026-02-24 | **Contratos activos:** base + 2 clouds (GCP, AWS)
+**Updated:** 2026-03-03 | **Active contracts:** base + 2 clouds (GCP, AWS)

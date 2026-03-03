@@ -38,7 +38,9 @@
         "project_details",
         "terraform_infrastructure",
         "infrastructure_topology",
-        "operational_guidelines"
+        "operational_guidelines",
+        "cluster_details",
+        "application_services"
       ],
       "write": [
         "terraform_infrastructure",

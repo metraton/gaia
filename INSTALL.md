@@ -1,443 +1,367 @@
-# Guía de Instalación de Gaia-Ops
+# Gaia-Ops Installation Guide
 
-**[🇺🇸 English version](INSTALL.en.md)**
+This guide will help you install and configure Gaia-Ops in your project. The process is automatic and takes less than 5 minutes.
 
-Esta guía te ayudará a instalar y configurar Gaia-Ops en tu proyecto. El proceso es automático y toma menos de 5 minutos.
+## 🎯 What is Gaia-Ops?
 
-## 🎯 ¿Qué es Gaia-Ops?
-
-Gaia-Ops es un sistema de agentes IA especializados que automatizan tareas DevOps. Piensa en ello como tener un equipo de expertos (Terraform, Kubernetes, GCP, AWS) trabajando juntos, coordinados por un orquestador inteligente.
+Gaia-Ops is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
 ---
 
-## 🚀 Instalación Rápida (Recomendado)
+## 🚀 Quick Installation (Recommended)
 
-### Opción 1: Instalación Interactiva
+### Option 1: Interactive Installation
 
-La forma más fácil - el instalador te guiará paso a paso:
+The easiest way - the installer will guide you step by step:
 
 ```bash
 npx gaia-init
 ```
 
-Esto te hará preguntas como:
-- ¿Dónde están tus archivos de GitOps?
-- ¿Dónde está tu código Terraform?
-- ¿Cuál es tu proyecto GCP?
+It will ask questions like:
+- Where are your GitOps files?
+- Where is your Terraform code?
+- What is your GCP project?
 
-### Opción 2: Instalación No-Interactiva
+### Option 2: Non-Interactive Installation
 
-Para scripts CI/CD o si ya sabes los valores:
+For CI/CD scripts or if you already know the values:
 
 ```bash
 npx gaia-init --non-interactive \
   --gitops ./gitops \
   --terraform ./terraform \
   --app-services ./app-services \
-  --project-id mi-proyecto-gcp \
-  --cluster mi-cluster-gke
+  --project-id my-gcp-project \
+  --cluster my-gke-cluster
 ```
 
 ---
 
-## 🔄 Cómo Funciona la Instalación
+## 🔄 How Installation Works
 
-### Flujo de Instalación
+### Installation Flow
 
 ```
-Usuario ejecuta: npx gaia-init
+User runs: npx gaia-init
         ↓
-[Detector] escanea tu proyecto
+[Detector] scans your project
         ↓
-   Encuentra automáticamente:
-   - Directorio GitOps
-   - Directorio Terraform
-   - Directorio de apps
+   Finds automatically:
+   - GitOps directory
+   - Terraform directory
+   - Apps directory
         ↓
-[Instalador] pregunta datos faltantes:
+[Installer] asks for missing data:
    - GCP Project ID
-   - Región
-   - Nombre del cluster
+   - Region
+   - Cluster name
         ↓
-[Instalador] verifica Claude Code
+[Installer] checks Claude Code
         ↓
-    ¿Ya instalado?
+    Already installed?
     ┌────┴────┐
     ↓         ↓
-   SÍ        NO
+  YES        NO
     ↓         ↓
-  Usa el  Instala
- existente  nuevo
+  Use     Install
+ existing    new
     ↓         ↓
     └────┬────┘
          ↓
-Crea estructura .claude/
+Creates .claude/ structure
          ↓
-Crea symlinks a gaia-ops:
+Creates symlinks to gaia-ops:
   .claude/agents → node_modules/.../agents
   .claude/tools → node_modules/.../tools
   .claude/hooks → node_modules/.../hooks
   .claude/commands → node_modules/.../commands
   .claude/config → node_modules/.../config
+  .claude/skills → node_modules/.../skills
+  .claude/speckit → node_modules/.../speckit
+  .claude/templates → node_modules/.../templates
          ↓
-Genera archivos de configuración:
-  - CLAUDE.md (orquestador)
-  - AGENTS.md (symlink)
+Generates config files:
+  - CLAUDE.md (orchestrator)
   - project-context.json
   - settings.json
          ↓
-Valida instalación:
-  ✅ Symlinks correctos
-  ✅ Claude Code disponible
-  ✅ Configuración válida
+Validates installation:
+  ✅ Symlinks correct
+  ✅ Claude Code available
+  ✅ Valid configuration
          ↓
-¡Listo! Puedes usar: claude-code
+Ready! You can use: claude-code
 ```
 
-### Ejemplo Real de Instalación
+### Real Installation Example
 
 ```
-Ejemplo: Instalación en proyecto con GitOps y Terraform
+Example: Installation in project with GitOps and Terraform
 
-1. Usuario: npx gaia-init
+1. User: npx gaia-init
    ↓
-2. Detector encuentra:
-   ✅ ./gitops (52 archivos YAML detectados)
-   ✅ ./terraform (15 archivos .tf detectados)
-   ❌ ./app-services (no encontrado)
+2. Detector finds:
+   ✅ ./gitops (52 YAML files detected)
+   ✅ ./terraform (15 .tf files detected)
+   ❌ ./app-services (not found)
    ↓
-3. Instalador pregunta:
+3. Installer asks:
    ? GCP Project ID: → aaxis-rnd-general-project
    ? Primary region: → us-central1
    ? Cluster name: → tcm-gke-non-prod
    ↓
-4. Verifica Claude Code:
-   ✅ Claude Code ya instalado en /usr/local/bin/claude
-   ⏭️  Omitiendo reinstalación
+4. Checks Claude Code:
+   ✅ Claude Code already installed at /usr/local/bin/claude
+   ⏭️  Skipping reinstall
    ↓
-5. Crea estructura:
-   ✅ .claude/ creado
-   ✅ 6 symlinks creados
-   ✅ CLAUDE.md generado (196 líneas)
-   ✅ project-context.json creado
+5. Creates structure:
+   ✅ .claude/ created
+   ✅ 6 symlinks created
+   ✅ CLAUDE.md generated (196 lines)
+   ✅ project-context.json created
    ↓
-6. Resultado:
+6. Result:
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ✅ Gaia-Ops instalado exitosamente!
+   ✅ Gaia-Ops installed successfully!
    
-   📚 Documentación disponible:
+   📚 Documentation available:
    - .claude/agents/README.md
    - .claude/config/README.md
    - .claude/commands/README.md
    
-   🚀 Próximos pasos:
-   1. Ejecuta: claude-code
-   2. Pregunta: "Muéstrame los clusters GKE"
-   3. O usa: /gaia para explorar el sistema
+   🚀 Next steps:
+   1. Run: claude-code
+   2. Ask: "Show me GKE clusters"
+   3. Or use: /gaia to explore the system
 ```
 
 ---
 
-## ⚙️ Opciones de Instalación
+## ⚙️ Installation Options
 
-### Variables de Entorno
+### Environment Variables
 
-Configura antes de instalar para evitar preguntas:
+Configure before installing to avoid questions:
 
 ```bash
-# Configurar paths
+# Configure paths
 export CLAUDE_GITOPS_DIR="./gitops"
 export CLAUDE_TERRAFORM_DIR="./terraform"
 export CLAUDE_APP_SERVICES_DIR="./app-services"
 
-# Configurar proyecto
-export CLAUDE_PROJECT_ID="mi-proyecto-gcp"
+# Configure project
+export CLAUDE_PROJECT_ID="my-gcp-project"
 export CLAUDE_REGION="us-central1"
-export CLAUDE_CLUSTER_NAME="mi-cluster-gke"
+export CLAUDE_CLUSTER_NAME="my-gke-cluster"
 
-# Instalar sin preguntas
+# Install without questions
 npx gaia-init --non-interactive
 ```
 
-### Opciones CLI Completas
+### Complete CLI Options
 
 ```
-gaia-init [opciones]
+gaia-init [options]
 
-Opciones:
-  --non-interactive          No hacer preguntas, usar valores provistos o defaults
-  --gitops <path>           Path del directorio GitOps
-  --terraform <path>        Path del directorio Terraform
-  --app-services <path>     Path del directorio de aplicaciones
-  --project-id <id>         ID del proyecto GCP
-  --region <region>         Región principal (default: us-central1)
-  --cluster <name>          Nombre del cluster
-  --skip-claude-install     Omitir instalación de Claude Code
-```
-
-### Instalación Global
-
-Si prefieres tener `gaia-init` disponible globalmente:
-
-```bash
-npm install -g @jaguilar87/gaia-ops
-gaia-init
+Options:
+  --non-interactive          Skip prompts, use provided values or defaults
+  --gitops <path>           GitOps directory path
+  --terraform <path>        Terraform directory path
+  --app-services <path>     Applications directory path
+  --project-id <id>         GCP project ID
+  --region <region>         Primary region (default: us-central1)
+  --cluster <name>          Cluster name
+  --skip-claude-install     Skip Claude Code installation
 ```
 
 ---
 
-## 📦 ¿Qué se Instala?
+## 📦 What Gets Installed?
 
-### Estructura Creada
+### Created Structure
 
 ```
-tu-proyecto/
-├── .claude/                    ← Nuevo directorio
-│   ├── agents/ (symlink)       → Agentes especializados
-│   ├── tools/ (symlink)        → Herramientas de orquestación
-│   ├── hooks/ (symlink)        → Validaciones de seguridad
-│   ├── commands/ (symlink)     → Comandos slash
-│   ├── config/ (symlink)       → Configuración y docs
-│   ├── templates/ (symlink)    → Templates de instalación
-│   ├── project-context.json    ← Tu configuración
-│   ├── logs/                   ← Logs de auditoría
-│   └── tests/                  ← Tests del sistema
-├── CLAUDE.md                   ← Orquestador principal
-├── AGENTS.md (symlink)         ← Overview del sistema
+your-project/
+├── .claude/                    ← New directory
+│   ├── agents/ (symlink)       → Agent definitions
+│   ├── skills/ (symlink)       → Skill modules
+│   ├── tools/ (symlink)        → Orchestration tools
+│   ├── hooks/ (symlink)        → Security validations
+│   ├── commands/ (symlink)     → Slash commands
+│   ├── config/ (symlink)       → Configuration (contracts, rules)
+│   ├── templates/ (symlink)    → Installation templates
+│   ├── speckit/ (symlink)      → Spec-Kit framework
+│   ├── project-context/        ← Your project context (SSOT)
+│   ├── logs/                   ← Audit logs
+│   └── settings.json           ← Security configuration
+├── CLAUDE.md                   ← Main orchestrator
 └── node_modules/
-    └── @jaguilar87/gaia-ops/   ← Paquete npm
+    └── @jaguilar87/gaia-ops/   ← npm package
 ```
-
-### Archivos Generados
-
-| Archivo | Descripción | Personalizado |
-|---------|-------------|---------------|
-| `.claude/` | Directorio principal | ✅ |
-| `CLAUDE.md` | Instrucciones del orquestador | ✅ Con tus paths |
-| `AGENTS.md` | Symlink a documentación | ❌ |
-| `project-context.json` | Tu configuración de proyecto | ✅ Con tus datos |
-| `settings.json` | Configuración de seguridad | ✅ |
 
 ---
 
-## 📚 Documentación Disponible Después de Instalar
+## 📚 Documentation Available After Installation
 
-Una vez instalado, tienes acceso a **documentación completa** en cada directorio:
+Once installed, you have access to **complete documentation** in each directory:
 
-### READMEs de Directorios
+### Directory READMEs
 
 ```
 .claude/
-├── agents/README.md              Sistema de 6 agentes especialistas
-├── commands/README.md            7 comandos speckit disponibles
-├── config/README.md              3 archivos de configuración (+ 2 READMEs)
-├── hooks/README.md               7 hooks de seguridad
-├── tools/README.md               Herramientas de orquestación
-└── templates/README.md           Templates de instalación
-```
-
-**Todos con versión en inglés:** `.../README.en.md`
-
-### ¿Cómo Navegar la Documentación?
-
-```bash
-# Ver documentación de agentes
-cat .claude/agents/README.md
-
-# Ver comandos disponibles
-cat .claude/commands/README.md
-
-# Ver configuración del sistema
-cat .claude/config/README.md
+├── agents/               6 agents (terraform-architect, gitops-operator, etc.)
+├── skills/README.md      17 skill modules
+├── commands/README.md    7 speckit slash commands
+├── config/README.md      Contracts, git standards, universal rules
+├── hooks/README.md       3 hooks (pre, post, metrics)
+├── tools/                Context, memory, validation, review
+├── speckit/README.md     Spec-Kit framework
+├── templates/README.md   Installation templates
+└── bin/README.md         CLI utilities
 ```
 
 ---
 
-## ✅ Post-Instalación
+## ✅ Post-Installation
 
-### 1. Verifica la Instalación
+### 1. Verify Installation
 
 ```bash
-# Verifica estructura creada
+# Check created structure
 ls -la .claude/
 
-# Debe mostrar symlinks:
+# Should show symlinks:
 # agents -> ../node_modules/@jaguilar87/gaia-ops/agents
 # tools -> ../node_modules/@jaguilar87/gaia-ops/tools
-# ...
 ```
 
-### 2. Revisa Configuración Generada
+### 2. Review Generated Configuration
 
 ```bash
-# Ver CLAUDE.md generado
+# View generated CLAUDE.md
 cat CLAUDE.md
 
-# Ver project-context.json
+# View project-context.json
 cat .claude/project-context/project-context.json
-
-# Ajusta paths si es necesario
 ```
 
-### 3. Inicia Claude Code
+### 3. Start Claude Code
 
 ```bash
 claude-code
 ```
 
-### 4. Prueba el Sistema
+### 4. Test the System
 
 ```bash
-# En Claude Code, prueba con:
-"Muéstrame los clusters GKE"
-"Lista los deployments en el namespace production"
+# In Claude Code, try:
+"Show me GKE clusters"
+"List deployments in production namespace"
 
-# O usa comandos slash:
-/gaia Explica cómo funciona el routing
+# Or use slash commands:
+/gaia Explain how routing works
 ```
 
 ---
 
-## 🔄 Actualizaciones del Paquete
+## 🔄 Package Updates
 
-### ⚠️ Archivos que se Sobrescriben
+### ⚠️ Files That Get Overwritten
 
-Cuando actualizas `@jaguilar87/gaia-ops`, estos archivos se **regeneran desde templates**:
+When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templates**:
 
-| Archivo | Comportamiento | Acción Recomendada |
-|---------|----------------|-------------------|
-| `CLAUDE.md` | ⚠️ **Se sobrescribe** | Haz backup si personalizas |
-| `.claude/settings.json` | ⚠️ **Se sobrescribe** | Haz backup si personalizas |
-| `.claude/project-context/project-context.json` | ✅ **Se preserva** | Seguro |
-| `.claude/logs/` | ✅ **Se preserva** | Seguro |
-| Otros archivos en `.claude/` | ✅ **Auto-actualizados via symlinks** | Seguro |
+| File | Behavior | Recommended Action |
+|------|----------|-------------------|
+| `CLAUDE.md` | ⚠️ **Overwritten** | Backup if you customize |
+| `.claude/settings.json` | ⚠️ **Overwritten** | Backup if you customize |
+| `.claude/project-context/project-context.json` | ✅ **Preserved** | Safe |
+| `.claude/logs/` | ✅ **Preserved** | Safe |
+| Other `.claude/` files | ✅ **Auto-updated via symlinks** | Safe |
 
-### Proceso de Actualización
+### Update Process
 
 ```bash
-# 1. Backup (opcional, si personalizaste)
+# 1. Backup (optional, if you customized)
 cp CLAUDE.md CLAUDE.md.backup
 cp .claude/settings.json .claude/settings.json.backup
 
-# 2. Actualizar paquete
+# 2. Update package
 npm install @jaguilar87/gaia-ops@latest
 
-# 3. El postinstall hook regenera automáticamente:
+# 3. Postinstall hook automatically regenerates:
 #    - CLAUDE.md
 #    - .claude/settings.json
 
-# 4. Si hiciste backup, compara y fusiona cambios
+# 4. If you made backup, compare and merge changes
 diff CLAUDE.md CLAUDE.md.backup
 ```
 
-### ¿Por qué se Sobrescriben?
-
-Los archivos se regeneran para:
-- ✅ Incorporar mejoras del sistema
-- ✅ Agregar nuevos agentes/comandos
-- ✅ Actualizar configuración de seguridad
-- ✅ Mantener sincronización con el paquete
-
-**Tu configuración en `project-context.json` SIEMPRE se preserva.**
-
 ---
 
-## 🛠️ Gestión de Claude Code
+## 🛠️ Claude Code Management
 
-### Evitando Instalaciones Múltiples
+### Avoiding Multiple Installations
 
-Gaia-Ops **detecta automáticamente** si ya tienes Claude Code instalado y **NO lo reinstala**.
+Gaia-Ops **automatically detects** if you already have Claude Code installed and **does NOT reinstall it**.
 
-#### Verificación de Instalación
+#### Installation Verification
 
 ```bash
-# Ver dónde está instalado Claude Code
+# See where Claude Code is installed
 which claude-code
 
-# Debe mostrar UNA ubicación:
-# ✅ /usr/local/bin/claude-code (nativo - recomendado)
-# ⚠️ /home/user/.npm-packages/bin/claude-code (npm global)
+# Should show ONE location:
+# ✅ /usr/local/bin/claude-code (native - recommended)
 ```
 
-#### Si Tienes Múltiples Instalaciones
+#### If You Have Multiple Installations
 
-**Opción 1: Cleanup Automático**
+**Option 1: Automatic Cleanup**
 ```bash
 npx gaia-cleanup
 ```
 
-**Opción 2: Cleanup Manual**
+**Option 2: Manual Cleanup**
 ```bash
-# Remover instalación npm global (si existe)
+# Remove npm global installation (if exists)
 npm -g uninstall @anthropic-ai/claude-code
 
-# Verificar que quedó solo una
+# Verify only one remains
 which claude-code
 claude-code --version
 ```
-
-### Tabla de Comportamientos
-
-| Escenario | Comportamiento |
-|-----------|----------------|
-| Claude Code instalado (nativo) | ✅ Usa el existente, no reinstala |
-| Claude Code no instalado | ✅ Instala versión nativa |
-| `--skip-claude-install` provisto | ✅ Omite instalación completamente |
-| npm global + nativo | ⚠️ Ejecuta cleanup automático |
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Problema: Claude Code No Encontrado
+### Problem: Claude Code Not Found
 
-**Síntoma:**
+**Solution:**
 ```bash
-$ claude-code
-bash: claude-code: command not found
-```
-
-**Solución:**
-```bash
-# Verifica instalación
+# Verify installation
 which claude-code
 
-# Si no está, instala manualmente
+# If not found, install manually
 npm install -g @anthropic-ai/claude-code
-
-# O instala versión nativa (recomendado)
-curl -fsSL https://install.anthropic.com | bash
 ```
 
 ---
 
-### Problema: Múltiples Instalaciones de Claude Code
+### Problem: Multiple Claude Code Installations
 
-**Síntoma:**
-```
-Warning: Multiple Claude Code installations detected
-```
-
-**Solución:**
+**Solution:**
 ```bash
-# Opción 1: Script automático
+# Automatic cleanup
 npx gaia-cleanup
-
-# Opción 2: Manual
-npm -g uninstall @anthropic-ai/claude-code
-npm list -g @anthropic-ai/claude-code  # Debe dar error (no encontrado)
 ```
 
 ---
 
-### Problema: Permisos Denegados en npm global
+### Problem: Permission Denied on npm global
 
-**Síntoma:**
-```
-EACCES: permission denied
-```
-
-**Solución 1: Fix de permisos npm (recomendado)**
+**Solution (recommended):**
 ```bash
 mkdir ~/.npm-global
 npm config set prefix '~/.npm-global'
@@ -445,167 +369,83 @@ export PATH=~/.npm-global/bin:$PATH
 echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 ```
 
-**Solución 2: Usar sudo (no recomendado)**
-```bash
-sudo npm install -g @jaguilar87/gaia-ops --unsafe-perm
-```
-
 ---
 
-### Problema: Symlinks No Creados
+### Problem: Symlinks Not Created
 
-**Síntoma:**
-```
-ls .claude/agents
-# Error: No such file or directory
-```
-
-**Solución:**
+**Solution:**
 ```bash
-# Re-ejecutar instalación
+# Re-run installation
 npx gaia-init --force
-
-# O crear manualmente
-cd .claude
-ln -s ../node_modules/@jaguilar87/gaia-ops/agents agents
-ln -s ../node_modules/@jaguilar87/gaia-ops/tools tools
-ln -s ../node_modules/@jaguilar87/gaia-ops/hooks hooks
-ln -s ../node_modules/@jaguilar87/gaia-ops/commands commands
-ln -s ../node_modules/@jaguilar87/gaia-ops/config config
-ln -s ../node_modules/@jaguilar87/gaia-ops/templates templates
 ```
 
 ---
 
-### Problema: project-context.json Inválido
+## 🧹 Uninstallation
 
-**Síntoma:**
-```
-Error parsing project-context.json
-```
-
-**Solución:**
-```bash
-# Validar JSON
-cat .claude/project-context/project-context.json | jq .
-
-# Si es inválido, regenerar
-rm .claude/project-context/project-context.json
-npx gaia-init
-```
-
----
-
-## 🧹 Desinstalación
-
-### Desinstalación Completa
+### Complete Uninstallation
 
 ```bash
-# Opción 1: Script interactivo (recomendado)
+# Interactive script (recommended)
 npx gaia-uninstall
 
-# Te preguntará si quieres preservar:
-# - project-context.json
-# - Logs históricos
-
-# Opción 2: Desinstalación forzada (sin preguntas)
+# Forced uninstall (no questions)
 npx gaia-uninstall --force --remove-all
 ```
 
-### Desinstalación Manual
+### Manual Uninstallation
 
 ```bash
-# 1. Remover directorio .claude/
+# 1. Remove .claude/ directory
 rm -rf .claude/
 
-# 2. Remover archivos generados
+# 2. Remove generated files
 rm CLAUDE.md AGENTS.md
 
-# 3. Desinstalar paquete npm
+# 3. Uninstall npm package
 npm uninstall @jaguilar87/gaia-ops
 ```
 
 ---
 
-## 🎓 Comandos Útiles Post-Instalación
+## 💡 Design Principles
 
-### Explorar el Sistema
+Gaia-Ops is designed with these principles:
 
-```bash
-# Ver estructura instalada
-tree .claude/ -L 2
-
-# Ver documentación disponible
-find .claude -name "README.md" -o -name "README.en.md"
-
-# Ver agentes disponibles
-ls .claude/agents/
-
-# Ver comandos disponibles
-ls .claude/commands/
-```
-
-### Gestión de Limpieza
-
-```bash
-# Limpiar caches y temporales
-npx gaia-cleanup
-
-# Limpiar logs antiguos (>30 días)
-npx gaia-cleanup --deep
-
-# Ver tamaño de .claude/
-du -sh .claude/
-```
-
-### Validación
-
-```bash
-# Validar estructura
-test -L .claude/agents && echo "✅ Agents OK" || echo "❌ Agents missing"
-test -f CLAUDE.md && echo "✅ CLAUDE.md OK" || echo "❌ CLAUDE.md missing"
-test -f .claude/project-context/project-context.json && echo "✅ Context OK" || echo "❌ Context missing"
-```
+✅ **Minimal** - Only creates what's needed, no duplicates  
+✅ **Adaptive** - Auto-detects existing installations  
+✅ **Non-invasive** - Works from any directory  
+✅ **Safe** - Validates paths and skips reinstalls  
+✅ **Clear** - Explicit feedback on each step  
+✅ **Documented** - Complete documentation in each directory  
 
 ---
 
-## 💡 Principios de Diseño
+## 📞 Support
 
-Gaia-Ops está diseñado con estos principios:
+### Resources
 
-✅ **Mínimal** - Solo crea lo necesario, sin duplicados  
-✅ **Adaptativo** - Auto-detecta instalaciones existentes  
-✅ **No-invasivo** - Funciona desde cualquier directorio  
-✅ **Seguro** - Valida paths y omite reinstalaciones  
-✅ **Claro** - Feedback explícito en cada paso  
-✅ **Documentado** - Documentación completa en cada directorio  
-
----
-
-## 📞 Soporte
-
-### Recursos
-
-- **Documentación:** Dentro de `.claude/*/README.md`
+- **Documentation:** Inside `.claude/*/README.md`
 - **Issues:** https://github.com/metraton/gaia-ops/issues
 - **Email:** jaguilar1897@gmail.com
 
-### Preguntas Frecuentes
+### Frequently Asked Questions
 
-**P: ¿Puedo usar gaia-ops en múltiples proyectos?**  
-R: Sí. Instala en cada proyecto y cada uno tendrá su propio `project-context.json`.
+**Q: Can I use gaia-ops in multiple projects?**  
+A: Yes. Install in each project and each will have its own `project-context.json`.
 
-**P: ¿Los symlinks funcionan en Windows?**  
-R: Sí, pero requieres habilitar modo desarrollador o ejecutar como administrador.
+**Q: Do symlinks work on Windows?**  
+A: Yes, but you need to enable developer mode or run as administrator.
 
-**P: ¿Puedo personalizar CLAUDE.md sin que se sobrescriba?**  
-R: No directamente. Mejor: contribuye cambios al template en el repositorio.
+**Q: Can I customize CLAUDE.md without it being overwritten?**  
+A: Not directly. Better: contribute changes to the template in the repository.
 
-**P: ¿Cómo actualizo solo la documentación sin cambiar código?**  
-R: `npm update @jaguilar87/gaia-ops` - los symlinks apuntan a la nueva versión automáticamente.
+**Q: How do I update only documentation without changing code?**  
+A: `npm update @jaguilar87/gaia-ops` - symlinks point to the new version automatically.
 
 ---
 
-**Versión:** 2.6.0  
-**Última actualización:** 2025-11-14  
-**Mantenido por:** Jorge Aguilar + Gaia (meta-agent)
+**Version:** 4.0.0
+**Last updated:** 2026-03-03
+**Maintained by:** Jorge Aguilar + Gaia (meta-agent)
+

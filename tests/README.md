@@ -1,55 +1,64 @@
-# Claude Agent System - Test Suite
+# Gaia-Ops Test Suite
 
-**[English version](README.en.md)**
+Test suite to validate the Claude agent orchestration system.
 
-Suite de tests para validar el sistema de orquestacion de agentes Claude.
+## Metrics (2026-03-03)
 
-## Metricas (2026-02-24)
-
-| Metrica | Valor |
-|---------|-------|
-| **Total Tests** | 890 |
+| Metric | Value |
+|--------|-------|
+| **Total Tests** | 897 |
 | **Pass Rate** | 100% |
-| **Tiempo** | ~2.3s |
-| **Archivos de test** | 46 |
+| **Time** | ~0.6s (collection) |
+| **Test Files** | 36 |
 
-## Estructura
+## Structure
 
 ```
 tests/
-├── fixtures/         # JSON fixtures (project-context AWS/GCP/full)
-├── hooks/            # Tests de hooks y modulos de seguridad
+├── fixtures/              # JSON fixtures (project-context AWS/GCP/full)
+├── hooks/                 # Hook and security module tests
 │   └── modules/
-│       ├── security/ # safe_commands, blocked_commands, tiers, gitops_validator
-│       ├── tools/    # bash_validator, shell_parser, task_validator
-│       └── core/     # paths, state
-├── integration/      # Tests E2E de context enrichment y subagent lifecycle
-├── layer1_prompt_regression/ # Tests de regresion de prompts y skills
-├── system/           # Tests de estructura, permisos, agentes, configuracion
-├── tools/            # Tests de context_provider, episodic, pending_updates
-├── test_cross_layer_consistency.py  # Consistencia entre capas
-└── conftest.py       # Fixtures y markers compartidos
+│       ├── security/      # safe_commands, blocked_commands, tiers, gitops_validator
+│       ├── tools/         # bash_validator, shell_parser, task_validator
+│       ├── core/          # paths, state
+│       └── context/       # context_writer
+├── integration/           # E2E tests for context enrichment and subagent lifecycle
+├── layer1_prompt_regression/ # Prompt and skill regression tests
+├── layer2_llm_evaluation/ # LLM evaluation tests (run separately)
+├── layer3_e2e/            # End-to-end tests (run separately)
+├── performance/           # Performance benchmarks
+├── system/                # Structure, permissions, agents, configuration, schema compat
+├── tools/                 # context_provider, episodic, pending_updates tests
+├── test_cross_layer_consistency.py  # Cross-layer consistency validation
+├── conftest.py            # Shared fixtures and markers
+└── promptfoo.yaml         # Promptfoo evaluation config
 ```
 
-## Ejecutar Tests
+## Running Tests
 
 ```bash
-# Todos los tests
-python3 -m pytest tests/ -v
+# Layer 1 tests (default, fast)
+python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
 
-# Por categoria
+# By category
 python3 -m pytest tests/system/ -v
 python3 -m pytest tests/hooks/ -v
 python3 -m pytest tests/tools/ -v
 
-# Con cobertura
+# Layer 2 (LLM evaluation)
+python3 -m pytest tests/layer2_llm_evaluation/ -v -m llm
+
+# Layer 3 (end-to-end)
+python3 -m pytest tests/layer3_e2e/ -v -m e2e
+
+# With coverage
 python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 ```
 
-## Tests por Archivo
+## Tests by File
 
-| Archivo | Tests | Categoria |
-|---------|-------|-----------|
+| File | Tests | Category |
+|------|-------|----------|
 | `test_safe_commands.py` | 111 | Security |
 | `test_blocked_commands.py` | 67 | Security |
 | `test_tiers.py` | 54 | Security |
@@ -60,8 +69,8 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 | `test_shell_parser.py` | 39 | Tools |
 | `test_bash_validator.py` | 37 | Tools |
 | `test_skill_loader.py` | 36 | Skills |
-| `test_state.py` | 20 | Core |
 | `test_cross_layer_consistency.py` | 24 | Cross-Layer |
+| `test_state.py` | 20 | Core |
 | `test_paths.py` | 17 | Core |
 | `test_directory_structure.py` | 14 | System |
 | `test_context_provider.py` | 11 | Tools |
@@ -69,12 +78,12 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 | `test_configuration_files.py` | 9 | System |
 | `test_schema_compatibility.py` | 7 | System |
 
-## Cobertura Pendiente
+## Pending Coverage
 
-Modulos sin tests dedicados:
+Modules without dedicated tests:
 - `hooks/modules/audit/logger.py`, `metrics.py`
 
-## Dependencias
+## Dependencies
 
 ```bash
 pip install pytest pytest-cov
@@ -82,4 +91,4 @@ pip install pytest pytest-cov
 
 ---
 
-**Actualizado:** 2026-02-24 | **Tests:** 890
+**Updated:** 2026-03-03 | **Tests:** 897

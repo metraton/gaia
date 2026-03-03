@@ -1,53 +1,82 @@
-# Scripts Utilitarios de Gaia-Ops
+# Gaia-Ops Utility Scripts
 
-**[English version](README.en.md)**
+Utility scripts to install, update, diagnose, and manage the gaia-ops package.
 
-Scripts de utilidades para instalar, actualizar y gestionar el paquete gaia-ops.
+## Purpose
 
-## Proposito
+Automate common package management tasks, providing a friendly interface for operations that would otherwise require complex manual steps.
 
-Automatizan tareas comunes de gestion del paquete, proporcionando una interfaz amigable para operaciones que de otro modo requeririan pasos manuales complejos.
-
-## Como Funciona
+## How It Works
 
 ```
-Usuario ejecuta bin/script
+User executes bin/script
         |
-[Script] detecta estado actual
+[Script] detects current state
         |
-    Ejecuta acciones
+    Executes actions
     |               |
-[Instalacion]    [Limpieza]
+[Installation]   [Cleanup]
     |               |
-Configura symlinks  Remueve archivos
+Configure symlinks  Remove files
 ```
 
-## Scripts Disponibles
+## Available Scripts
 
-### Instalacion y Setup
+### Installation and Setup
 
-| Script | Lineas | Descripcion |
-|--------|--------|-------------|
-| `gaia-init.js` | ~1000 | Instalador principal |
-| `gaia-update.js` | ~300 | Actualizador de configuracion |
+| Script | Description |
+|--------|-------------|
+| `gaia-init.js` | Main installer (interactive or non-interactive) |
+| `gaia-update.js` | Configuration updater (postinstall hook) |
 
-### Limpieza y Desinstalacion
+### Diagnostics and Monitoring
 
-| Script | Lineas | Descripcion |
-|--------|--------|-------------|
-| `gaia-cleanup.js` | ~200 | Limpia archivos temporales |
-| `gaia-uninstall.js` | ~250 | Desinstala completamente |
+| Script | Description |
+|--------|-------------|
+| `gaia-doctor.js` | System health check |
+| `gaia-skills-diagnose.js` | Diagnoses skills, injection wiring, and contract gaps |
+| `gaia-status.js` | Current system status |
+| `gaia-metrics.js` | Metrics and usage statistics |
+| `gaia-history.js` | Operation history viewer |
+| `gaia-review.js` | Review engine interface |
 
-### Validacion
+### Cleanup and Uninstall
 
-| Script | Lineas | Descripcion |
-|--------|--------|-------------|
-| `pre-publish-validate.js` | ~400 | Valida antes de publicar |
-| `gaia-skills-diagnose.js` | ~700 | Diagnostica skills, inyeccion y gaps de contrato |
+| Script | Description |
+|--------|-------------|
+| `gaia-cleanup.js` | Cleans temporary files (preuninstall hook) |
+| `gaia-uninstall.js` | Complete uninstall |
 
-## Uso Comun
+### Validation
 
-### Primera Instalacion
+| Script | Description |
+|--------|-------------|
+| `pre-publish-validate.js` | Pre-publish validation |
+
+## npm Binaries
+
+Defined in `package.json`:
+
+```json
+{
+  "bin": {
+    "gaia-init": "bin/gaia-init.js",
+    "gaia-doctor": "bin/gaia-doctor.js",
+    "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
+    "gaia-cleanup": "bin/gaia-cleanup.js",
+    "gaia-uninstall": "bin/gaia-uninstall.js",
+    "gaia-metrics": "bin/gaia-metrics.js",
+    "gaia-review": "bin/gaia-review.js",
+    "gaia-status": "bin/gaia-status.js",
+    "gaia-history": "bin/gaia-history.js",
+    "gaia-update": "bin/gaia-update.js"
+  }
+}
+```
+
+## Common Usage
+
+### First Installation
 
 ```bash
 npm install @jaguilar87/gaia-ops
@@ -55,61 +84,55 @@ npx gaia-init
 claude-code
 ```
 
-### Actualizacion
+### Update
 
 ```bash
 npm update @jaguilar87/gaia-ops
-# Postinstall hook actualiza automaticamente
+# Postinstall hook updates automatically
 ```
 
-### Desinstalacion
+### Diagnostics
 
 ```bash
-node bin/gaia-uninstall.js
+# System health check
+npx gaia-doctor
+
+# Skills diagnosis (structure + wiring + known gaps)
+npx gaia-skills-diagnose
+
+# Include focused pytest probe for skills/injection
+npx gaia-skills-diagnose --run-tests
+
+# JSON output for CI
+npx gaia-skills-diagnose --json --strict
+
+# View metrics
+npx gaia-metrics
+
+# View operation history
+npx gaia-history
+```
+
+### Uninstall
+
+```bash
+npx gaia-uninstall
 npm uninstall @jaguilar87/gaia-ops
 ```
 
 ## gaia-cleanup.js
 
-**Que limpia:**
-- Caches temporales
-- Logs antiguos (>30 dias)
+**What it cleans:**
+- Temporary caches
+- Old logs (>30 days)
 - __pycache__ directories
 
-**Que NO toca:**
+**What it preserves:**
 - `project-context.json`
 - `CLAUDE.md`
-- Symlinks de `.claude/`
+- `.claude/` symlinks
 
-## Binarios npm
-
-Definidos en `package.json`:
-
-```json
-{
-  "bin": {
-    "gaia-init": "bin/gaia-init.js",
-    "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
-    "gaia-cleanup": "bin/gaia-cleanup.js",
-    "gaia-uninstall": "bin/gaia-uninstall.js"
-  }
-}
-```
-
-### Diagnostico de Skills e Inyeccion
-
-```bash
-# Diagnostico rapido (estructura + wiring + gaps conocidos)
-npx gaia-skills-diagnose
-
-# Incluye corrida de pytest focalizada para skills/inyeccion
-npx gaia-skills-diagnose --run-tests
-
-# Salida JSON para CI
-npx gaia-skills-diagnose --json --strict
-```
-
-## Variables de Entorno
+## Environment Variables
 
 ```bash
 export CLAUDE_GITOPS_DIR="./my-gitops"
@@ -117,11 +140,11 @@ export CLAUDE_PROJECT_ID="my-gcp-project"
 npx gaia-init --non-interactive
 ```
 
-## Referencias
+## References
 
-- [INSTALL.md](../INSTALL.md) - Guia de instalacion
-- [README.md](../README.md) - Overview del paquete
+- [INSTALL.md](../INSTALL.md) - Installation guide
+- [README.md](../README.md) - Package overview
 
 ---
 
-**Version:** 1.1.0 | **Actualizado:** 2026-02-24 | **Scripts:** 6
+**Version:** 4.0.0 | **Updated:** 2026-03-03 | **Scripts:** 11

@@ -6,22 +6,30 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 
 ```
 .claude/skills/
-├── agent-protocol/        # AGENT_STATUS, local-first, error handling
+├── agent-protocol/        # AGENT_STATUS, search protocol, error handling
 ├── security-tiers/        # T0-T3 classification
+│   └── reference.md
 ├── output-format/         # Report structure and icons
+├── investigation/         # Diagnosis methodology and pattern analysis
+├── command-execution/     # Defensive execution, safe shell patterns
+│   └── reference.md
 ├── context-updater/       # CONTEXT_UPDATE format
 │   └── examples.md
 ├── git-conventions/       # Conventional commits
-├── fast-queries/          # Quick diagnostic scripts
+├── skill-creation/        # How to create new skills
+├── gaia-patterns/         # Gaia meta-system patterns
+│   └── reference.md
 ├── terraform-patterns/    # Terraform/Terragrunt patterns
 │   └── reference.md
 ├── gitops-patterns/       # GitOps/Flux patterns
 │   └── reference.md
-├── command-execution/     # Defensive execution, timeout protection, safe shell patterns
-├── investigation/         # Diagnosis methodology and pattern analysis
-├── approval/              # T3 plan presentation and approval/rejection workflow
+├── developer-patterns/    # Developer workflow patterns
+├── fast-queries/          # Quick diagnostic scripts
+├── speckit-workflow/      # Speckit phase management
+├── approval/              # T3 plan presentation and approval workflow
 │   └── examples.md
-└── execution/             # Post-approval execution protocol
+├── execution/             # Post-approval execution protocol
+└── reference.md           # Cross-skill reference
 ```
 
 ## How Skills Work
@@ -47,23 +55,23 @@ skills:
 
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
-| cloud-troubleshooter | security-tiers, output-format, agent-protocol, context-updater, investigation, command-execution | fast-queries |
-| terraform-architect | security-tiers, output-format, agent-protocol, context-updater, investigation, command-execution, git-conventions | terraform-patterns, fast-queries |
-| gitops-operator | security-tiers, output-format, agent-protocol, context-updater, investigation, command-execution, git-conventions | gitops-patterns, fast-queries |
-| devops-developer | security-tiers, output-format, agent-protocol, context-updater, investigation, command-execution, git-conventions | |
-| gaia | security-tiers, output-format, agent-protocol, investigation, command-execution, git-conventions | |
-| speckit-planner | security-tiers, output-format, agent-protocol | speckit.* (9 skills) |
+| cloud-troubleshooter | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | fast-queries |
+| terraform-architect | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater, git-conventions | terraform-patterns, fast-queries |
+| gitops-operator | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater, git-conventions | gitops-patterns, fast-queries |
+| devops-developer | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater, git-conventions | developer-patterns |
+| gaia | agent-protocol, security-tiers, output-format, investigation, command-execution, git-conventions | gaia-patterns, skill-creation |
+| speckit-planner | agent-protocol, security-tiers, output-format | speckit-workflow, speckit.* (9 phase skills) |
 
 ## Skill Types
 
 | Type | Injection | Examples |
 |------|-----------|----------|
 | **Core** | Always via `skills:` | agent-protocol, security-tiers, output-format, investigation |
-| **Common** | Most agents via `skills:` | context-updater, command-execution, git-conventions |
-| **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, fast-queries |
+| **Common** | Most agents via `skills:` | command-execution, context-updater, git-conventions |
+| **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns |
 | **Workflow** | On-demand (agent reads file) | approval, execution |
 
-Workflow skills are loaded on-demand — agents read them from disk when needed rather than receiving them at startup. Supporting files (`examples.md`, `reference.md`) are also read on-demand.
+Workflow skills are loaded on-demand -- agents read them from disk when needed rather than receiving them at startup. Supporting files (`examples.md`, `reference.md`) are also read on-demand.
 
 ## SKILL.md Format
 
@@ -86,4 +94,9 @@ Instructions and patterns the agent follows.
 - Use `user-invocable: false` for background knowledge
 - Keep injected skills under 100 lines (move details to supporting files)
 - Reference workflow skills as readable files, not injected content
-- Avoid duplicating content across skills — use references instead
+- Avoid duplicating content across skills -- use references instead
+- See `skill-creation/SKILL.md` for detailed creation guidelines
+
+---
+
+**Updated:** 2026-03-03 | **Total skills:** 17

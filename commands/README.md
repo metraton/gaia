@@ -1,229 +1,227 @@
-# Comandos Slash de Gaia-Ops
+# Gaia-Ops Slash Commands
 
-**[English version](README.en.md)**
+Slash commands are quick shortcuts that let you invoke specific system functions directly. They're like keyboard shortcuts for common tasks.
 
-Los comandos slash son atajos rapidos que te permiten invocar funcionalidades especificas del sistema directamente. Son como accesos directos del teclado para tareas comunes.
+## Purpose
 
-## Proposito
+Slash commands provide a fast and consistent way to access advanced features without needing to write complete natural language requests.
 
-Los comandos slash proporcionan una forma rapida y consistente de acceder a funcionalidades avanzadas sin necesidad de escribir solicitudes completas en lenguaje natural.
+**Problem it solves:** Some tasks require direct invocation of specific tools. Instead of verbosely describing what you want to do, you simply use a slash command.
 
-**Problema que resuelve:** Algunas tareas requieren invocacion directa de herramientas especificas. En lugar de describir verbosamente lo que quieres hacer, simplemente usas un comando slash.
+## How It Works
 
-## Como Funciona
-
-### Flujo de Arquitectura
+### Architecture Flow
 
 ```
-Usuario escribe /comando
+User types /command
         |
-[Claude Code] detecta el patron /
+[Claude Code] detects / pattern
         |
-[Command Handler] carga el archivo .md del comando
+[Command Handler] loads command .md file
         |
-[Orquestador] ejecuta instrucciones del comando
+[Orchestrator] executes command instructions
         |
-Resultado al usuario
+Result to user
 ```
 
-## Comandos Disponibles
+## Available Commands
 
-### Comandos de Spec-Kit
+### Spec-Kit Commands
 
-El framework Spec-Kit proporciona un workflow estructurado de idea -> implementacion.
+The Spec-Kit framework provides a structured workflow from idea -> implementation.
 
 #### `/speckit.init`
-Inicializa Spec-Kit en el proyecto actual, creando/validando `project-context.json`.
+Initializes Spec-Kit in the current project, creating/validating `project-context.json`.
 
-**Cuando usar:**
-- Primera vez usando Spec-Kit en un proyecto
-- Para validar configuracion existente
+**When to use:**
+- First time using Spec-Kit in a project
+- To validate existing configuration
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.init
 ```
 
 ---
 
-#### `/speckit.specify [spec-root] [descripcion]`
-Crea una especificacion de feature con contexto del proyecto auto-llenado.
+#### `/speckit.specify [spec-root] [description]`
+Creates a feature specification with auto-filled project context.
 
-**Cuando usar:**
-- Inicio de una nueva feature
-- Documentar requisitos
+**When to use:**
+- Starting a new feature
+- Documenting requirements
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.specify spec-kit-auth Add OAuth2 authentication
 ```
 
-**Lo que genera:**
-- `specs/00N-oauth2-auth/spec.md` con template
-- Contexto de proyecto pre-llenado (cluster, paths, etc.)
-- User stories y requisitos funcionales
+**What it generates:**
+- `specs/00N-oauth2-auth/spec.md` with template
+- Pre-filled project context (cluster, paths, etc.)
+- User stories and functional requirements
 
 ---
 
 #### `/speckit.plan [spec-root] [spec-id]`
-Genera plan de implementacion con clarificacion automatica integrada.
+Generates implementation plan with automatic integrated clarification.
 
-**Cuando usar:**
-- Despues de crear la especificacion
-- Antes de generar tareas
+**When to use:**
+- After creating the specification
+- Before generating tasks
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.plan spec-kit-auth 003-oauth2-auth
 ```
 
-**Lo que genera:**
-- `plan.md` - Plan tecnico detallado
-- `data-model.md` - Modelo de datos
-- `contracts/` - Contratos de API
-- Preguntas de clarificacion (si hay ambiguedades)
+**What it generates:**
+- `plan.md` - Detailed technical plan
+- `data-model.md` - Data model
+- `contracts/` - API contracts
+- Clarification questions (if ambiguities exist)
 
 ---
 
 #### `/speckit.tasks [spec-root] [spec-id]`
-Genera lista de tareas enriquecidas con metadata inline.
+Generates enriched task list with inline metadata.
 
-**Cuando usar:**
-- Despues de completar el plan
-- Antes de implementar
+**When to use:**
+- After completing the plan
+- Before implementing
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.tasks spec-kit-auth 003-oauth2-auth
 ```
 
-**Lo que genera:**
-- `tasks.md` con metadata completa:
-  - Agent asignado
-  - Tier de seguridad
-  - Tags de categoria
+**What it generates:**
+- `tasks.md` with complete metadata:
+  - Assigned agent
+  - Security tier
+  - Category tags
   - Confidence score
-- Validacion de cobertura automatica
-- Gate si hay issues criticos
+- Automatic coverage validation
+- Gate if critical issues exist
 
 ---
 
 #### `/speckit.implement [spec-root] [spec-id]`
-Ejecuta las tareas usando agentes especializados.
+Executes tasks using specialized agents.
 
-**Cuando usar:**
-- Despues de generar tareas
-- Para implementar automaticamente
+**When to use:**
+- After generating tasks
+- To implement automatically
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.implement spec-kit-auth 003-oauth2-auth
 ```
 
-**Lo que hace:**
-- Lee tasks.md enriquecido
-- Invoca agentes apropiados por tarea
-- T2/T3 tasks -> analisis automatico pre-ejecucion
-- Approval gates cuando necesario
-- Genera codigo, tests, documentacion
+**What it does:**
+- Reads enriched tasks.md
+- Invokes appropriate agents per task
+- T2/T3 tasks -> automatic pre-execution analysis
+- Approval gates when needed
+- Generates code, tests, documentation
 
 ---
 
 #### `/speckit.add-task [spec-root] [spec-id]`
-Agrega una tarea ad-hoc durante la implementacion.
+Adds an ad-hoc task during implementation.
 
-**Cuando usar:**
-- Durante implementacion
-- Para tareas no previstas en el plan
+**When to use:**
+- During implementation
+- For tasks not foreseen in the plan
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.add-task spec-kit-auth 003-oauth2-auth
 ```
 
-**Pregunta interactivamente:**
-- Descripcion de la tarea
-- ID de la tarea
-- Fase de implementacion
-- Dependencias
+**Asks interactively:**
+- Task description
+- Task ID
+- Implementation phase
+- Dependencies
 
 ---
 
 #### `/speckit.analyze-task [spec-root] [spec-id] [task-id]`
-Analisis profundo de una tarea especifica (auto-triggered para T2/T3).
+Deep analysis of a specific task (auto-triggered for T2/T3).
 
-**Cuando usar:**
-- Para tareas de alto riesgo
-- Antes de ejecutar operaciones T3
+**When to use:**
+- For high-risk tasks
+- Before executing T3 operations
 
-**Ejemplo:**
+**Example:**
 ```bash
 /speckit.analyze-task spec-kit-auth 003-oauth2-auth T055
 ```
 
-**Lo que analiza:**
-- Riesgos potenciales
-- Dependencias
-- Impacto en sistema
-- Recomendaciones de ejecucion
+**What it analyzes:**
+- Potential risks
+- Dependencies
+- System impact
+- Execution recommendations
 
 ---
 
-## Uso General
+## General Usage
 
-### Sintaxis Basica
+### Basic Syntax
 
 ```bash
-/comando [argumentos]
+/command [arguments]
 ```
 
-### Caracteristicas Comunes
+### Common Features
 
-**Autocompletado:**
-Claude Code sugiere comandos disponibles al escribir `/`
+**Autocomplete:**
+Claude Code suggests available commands when typing `/`
 
-**Help inline:**
-Todos los comandos soportan ayuda contextual si se invocan sin argumentos
+**Inline help:**
+All commands support contextual help if invoked without arguments
 
-**Validacion:**
-Los comandos validan argumentos y dan feedback claro si falta informacion
+**Validation:**
+Commands validate arguments and give clear feedback if information is missing
 
-### Diferencia vs Lenguaje Natural
+### Difference vs Natural Language
 
-| Lenguaje Natural | Comando Slash |
+| Natural Language | Slash Command |
 |------------------|---------------|
-| "Crea una spec para autenticacion OAuth" | `/speckit.specify auth-spec Add OAuth2` |
+| "Create a spec for OAuth authentication" | `/speckit.specify auth-spec Add OAuth2` |
 
-**Ventajas de comandos slash:**
-- Mas rapido
-- Sintaxis consistente
-- Invocacion directa de herramientas
-- Menos ambiguo
+**Advantages of slash commands:**
+- Faster
+- Consistent syntax
+- Direct tool invocation
+- Less ambiguous
 
-**Cuando usar lenguaje natural:**
-- Preguntas exploratorias
-- Diagnostico de problemas
-- Consultas complejas
+**When to use natural language:**
+- Exploratory questions
+- Problem diagnosis
+- Complex queries
 
-## Caracteristicas Tecnicas
+## Technical Details
 
-### Estructura de un Comando
+### Command Structure
 
-Cada comando es un archivo Markdown en `commands/[nombre].md` con frontmatter:
+Each command is a Markdown file in `commands/[name].md` with frontmatter:
 
 ```markdown
 ---
-name: comando
-description: Breve descripcion
-usage: Sintaxis de uso
+name: command
+description: Brief description
+usage: Usage syntax
 ---
 
-# Comando
+# Command
 
-[Instrucciones detalladas para el orquestador]
+[Detailed instructions for the orchestrator]
 ```
 
-### Comandos Disponibles
+### Available Commands
 
 ```
 commands/
@@ -236,25 +234,25 @@ commands/
 └── speckit.analyze-task.md
 ```
 
-**Total:** 7 comandos speckit
+**Total:** 7 speckit commands
 
-> **Nota:** El meta-agente Gaia se invoca directamente via el agent `gaia` (ver [agents/gaia.md](../agents/gaia.md)), no como comando slash.
+> **Note:** The Gaia meta-agent is invoked directly via the `gaia` agent (see [agents/gaia.md](../agents/gaia.md)), not as a slash command.
 
-## Referencias
+## References
 
-**Documentacion relacionada:**
-- [Spec-Kit Framework](../speckit/README.md) - Detalles completos de Spec-Kit
-- [Gaia Agent](../agents/gaia.md) - El meta-agente
-- [Episodic Memory](../tools/memory/episodic.py) - Sistema de memoria de contexto
-- [Config](../config/) - Configuracion del sistema
+**Related documentation:**
+- [Spec-Kit Framework](../speckit/README.md) - Complete Spec-Kit details
+- [Gaia Agent](../agents/gaia.md) - The meta-agent
+- [Episodic Memory](../tools/memory/episodic.py) - Context memory system
+- [Config](../config/) - System configuration
 
-**Herramientas subyacentes:**
+**Underlying tools:**
 - Context provider: `tools/context/context_provider.py`
 - Episodic memory: `tools/memory/episodic.py`
 
 ---
 
-**Version:** 2.0.0  
-**Ultima actualizacion:** 2025-12-06  
-**Total de comandos:** 7 spec-kit
-**Mantenido por:** Gaia (meta-agent)
+**Version:** 4.0.0
+**Last updated:** 2026-03-03
+**Total commands:** 7 spec-kit
+**Maintained by:** Gaia (meta-agent)

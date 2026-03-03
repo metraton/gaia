@@ -29,7 +29,8 @@
     },
     "gitops-operator": {
       "read": [
-        "workload_identity"
+        "workload_identity",
+        "gcp_services"
       ],
       "write": []
     },
