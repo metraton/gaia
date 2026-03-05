@@ -4,22 +4,15 @@ Blocked command patterns - PERMANENTLY BLOCKED operations (settings.json deny li
 IMPORTANT: This file is synchronized with settings.json "deny" list.
 Commands here are ALWAYS BLOCKED, regardless of user approval.
 
-For commands that require approval but can be allowed, see settings.json "ask" list.
+All other T3 (state-modifying) commands are detected by the universal verb detector
+(dangerous_verbs.py) and routed through the approval workflow.
 
 Categories:
-- AWS delete operations (specific destructive commands)
-- GCP delete operations (specific destructive commands)
-- Kubernetes critical delete operations (cluster, namespace, pv, node, etc.)
-- Git force push operations
-- Disk/filesystem destruction operations (dd, fdisk, mkfs, etc.)
-- Flux delete operations
-
-NOT included here (handled by settings.json "ask"):
-- rm (simple file removal - requires approval)
-- terraform apply/destroy (requires approval)
-- kubectl apply/delete (most operations - requires approval)
-- helm install/upgrade (requires approval)
-- docker build/push (requires approval)
+- AWS networking/data infrastructure delete operations
+- GCP project/cluster/database delete operations
+- Kubernetes critical delete operations (cluster, namespace, pv, node, CRD, webhooks)
+- Git force push operations (not --force-with-lease)
+- Disk/filesystem destruction operations (dd, fdisk, mkfs)
 """
 
 import re
@@ -43,75 +36,82 @@ class BlockedCommandResult:
 # BLOCKED PATTERNS - Synchronized with settings.json "deny" list
 # ============================================================================
 # These commands are PERMANENTLY BLOCKED and cannot be executed even with approval.
-# They represent irreversible, destructive operations that could cause severe damage.
+# They represent irreversible, catastrophic operations.
 #
-# For operations that require approval but can be allowed (terraform apply,
-# kubectl apply, rm, etc.), see settings.json "ask" list.
+# Commands removed from here (now handled by the universal verb detector as
+# approvable T3 operations):
+# - aws iam delete-*, detach-*, remove-user-from-group
+# - aws ec2 terminate-instances, delete-key-pair, delete-snapshot, delete-volume,
+#   delete-security-group, delete-network-interface
+# - aws lambda delete-function
+# - aws rds delete-db-parameter-group, delete-db-cluster-parameter-group
+# - aws cloudformation delete-stack
+# - aws s3api delete-objects
+# - aws sns delete-topic, aws sqs delete-queue
+# - aws dynamodb delete-item
+# - aws backup delete
+# - aws eks delete-nodegroup, delete-addon
+# - gcloud compute firewall-rules/instances/networks/disks/images/snapshots delete
+# - gcloud container node-pools delete
+# - gcloud iam roles delete
+# - gcloud storage rm
+# - kubectl delete clusterrole, clusterrolebinding
+# - flux delete
 # ============================================================================
 
 BLOCKED_PATTERNS = {
-    # AWS - Critical delete operations (synchronized with settings.json deny)
-    "aws_delete": [
-        r"aws\s+backup\s+delete",
-        r"aws\s+cloudformation\s+delete-stack",
-        r"aws\s+dynamodb\s+delete-table",
-        r"aws\s+dynamodb\s+delete-item",
-        r"aws\s+ec2\s+delete-(key-pair|snapshot|volume)",
-        r"aws\s+ec2\s+terminate-instances",
-        r"aws\s+elasticache\s+delete-(cache-cluster|replication-group)",
-        r"aws\s+iam\s+delete-(user|role|access-key|group|instance-profile|policy)",
-        r"aws\s+iam\s+delete-(role-policy|user-policy|group-policy)",
-        r"aws\s+iam\s+detach-(user-policy|role-policy|group-policy)",
-        r"aws\s+iam\s+remove-user-from-group",
-        r"aws\s+lambda\s+delete-function",
-        r"aws\s+rds\s+delete-db-(cluster-parameter-group|cluster|instance|parameter-group)",
-        r"aws\s+s3\s+rb",
-        r"aws\s+s3api\s+delete-(bucket|objects)",
-        r"aws\s+sns\s+delete-topic",
-        r"aws\s+sqs\s+delete-queue",
-        r"aws\s+ec2\s+delete-(security-group|network-interface|internet-gateway|subnet|vpc|route|route-table)",
-        r"aws\s+eks\s+delete-(cluster|nodegroup|addon)",
+    # AWS - Networking and data infrastructure (irreversible)
+    # Patterns use (?!-) negative lookahead to prevent prefix matching
+    # (e.g., delete-db-cluster must not match delete-db-cluster-parameter-group).
+    # \b alone is insufficient because hyphens are non-word characters.
+    "aws_critical": [
+        r"aws\s+ec2\s+delete-vpc(?!-)\b",
+        r"aws\s+ec2\s+delete-subnet(?!-)\b",
+        r"aws\s+ec2\s+delete-internet-gateway(?!-)\b",
+        r"aws\s+ec2\s+delete-route-table(?!-)\b",
+        r"aws\s+ec2\s+delete-route(?!-)\b",
+        r"aws\s+rds\s+delete-db-instance(?!-)\b",
+        r"aws\s+rds\s+delete-db-cluster(?!-)\b",
+        r"aws\s+dynamodb\s+delete-table(?!-)\b",
+        r"aws\s+s3\s+rb(?!-)\b",
+        r"aws\s+s3api\s+delete-bucket(?!-)\b",
+        r"aws\s+elasticache\s+delete-cache-cluster(?!-)\b",
+        r"aws\s+elasticache\s+delete-replication-group(?!-)\b",
+        r"aws\s+eks\s+delete-cluster(?!-)\b",
     ],
 
-    # GCP - Critical delete operations (synchronized with settings.json deny)
-    "gcp_delete": [
-        r"gcloud\s+compute\s+firewall-rules\s+delete",
-        r"gcloud\s+compute\s+instances\s+delete",
-        r"gcloud\s+compute\s+networks\s+delete",
-        r"gcloud\s+compute\s+(disks|images|snapshots)\s+delete",
-        r"gcloud\s+container\s+clusters\s+delete",
-        r"gcloud\s+container\s+node-pools\s+delete",
-        r"gcloud\s+iam\s+roles\s+delete",
-        r"gcloud\s+projects\s+delete",
-        r"gcloud\s+services\s+disable",
-        r"gcloud\s+sql\s+(databases|instances)\s+delete",
-        r"gcloud\s+storage\s+rm",
-        r"gsutil\s+rb",
-        r"gsutil\s+rm\s+-r",
+    # GCP - Project, cluster, and database operations (irreversible)
+    "gcp_critical": [
+        r"gcloud\s+projects\s+delete\b",
+        r"gcloud\s+container\s+clusters\s+delete\b",
+        r"gcloud\s+sql\s+instances\s+delete\b",
+        r"gcloud\s+sql\s+databases\s+delete\b",
+        r"gcloud\s+services\s+disable\b",
+        r"gsutil\s+rb\b",
+        r"gsutil\s+rm\s+-r\b",
     ],
 
-    # Kubernetes - Critical cluster operations (synchronized with settings.json deny)
+    # Kubernetes - Critical cluster operations (irreversible)
+    # Word boundaries prevent "cluster" from matching "clusterrole" etc.
     "kubernetes_critical": [
-        r"kubectl\s+delete\s+(cluster|clusterrole|clusterrolebinding)",
-        r"kubectl\s+delete\s+(namespace|node)",
-        r"kubectl\s+delete\s+(pv|pvc|persistentvolume|persistentvolumeclaim)",
-        r"kubectl\s+delete\s+(crd|customresourcedefinition)",
-        r"kubectl\s+delete\s+(mutatingwebhookconfiguration|validatingwebhookconfiguration)",
-        r"kubectl\s+drain",
+        r"kubectl\s+delete\s+namespace\b",
+        r"kubectl\s+delete\s+node\b",
+        r"kubectl\s+delete\s+cluster\b",
+        r"kubectl\s+delete\s+(pv|persistentvolume)\b",
+        r"kubectl\s+delete\s+(pvc|persistentvolumeclaim)\b",
+        r"kubectl\s+delete\s+(crd|customresourcedefinition)\b",
+        r"kubectl\s+delete\s+mutatingwebhookconfiguration\b",
+        r"kubectl\s+delete\s+validatingwebhookconfiguration\b",
+        r"kubectl\s+drain\b",
     ],
 
-    # Git - Force push operations (synchronized with settings.json deny)
+    # Git - Force push (history rewrite, not --force-with-lease)
     "git_force": [
-        r"git\s+push\s+(--force|-f)",
-        r"git\s+push\s+origin\s+(--force|-f)",
+        r"git\s+push\s+.*--force(?!-with-lease)",
+        r"git\s+push\s+.*(?<!\w)-f\b",
     ],
 
-    # Flux - Delete operations (synchronized with settings.json deny)
-    "flux_delete": [
-        r"flux\s+delete",
-    ],
-
-    # Disk operations - Irreversible data destruction (synchronized with settings.json deny)
+    # Disk operations - Irreversible data destruction
     "disk_operations": [
         r"^dd\s+",
         r"^fdisk\s+",
@@ -119,27 +119,38 @@ BLOCKED_PATTERNS = {
     ],
 }
 
-# Suggestions for permanently blocked commands (synchronized with deny list)
+# Suggestions for permanently blocked commands
 BLOCKED_COMMAND_SUGGESTIONS = {
     # AWS suggestions
-    "aws cloudformation delete-stack": "BLOCKED: Use Terraform/Terragrunt to manage infrastructure lifecycle",
-    "aws ec2 terminate-instances": "BLOCKED: Use Terraform/Terragrunt for instance management",
-    "aws rds delete-db-instance": "BLOCKED: Use Terraform/Terragrunt for RDS management",
+    "aws ec2 delete-vpc": "BLOCKED: VPC deletion is irreversible - use Terraform/Terragrunt",
+    "aws rds delete-db-instance": "BLOCKED: Use Terraform/Terragrunt for RDS lifecycle management",
+    "aws rds delete-db-cluster": "BLOCKED: Use Terraform/Terragrunt for RDS cluster management",
+    "aws dynamodb delete-table": "BLOCKED: Table deletion loses all data - use Terraform/Terragrunt",
+    "aws s3 rb": "BLOCKED: Bucket removal is irreversible - use Terraform/Terragrunt",
+    "aws s3api delete-bucket": "BLOCKED: Bucket deletion is irreversible - use Terraform/Terragrunt",
     "aws eks delete-cluster": "BLOCKED: Use Terraform/Terragrunt for EKS management",
+    "aws elasticache delete": "BLOCKED: Use Terraform/Terragrunt for ElastiCache management",
 
     # GCP suggestions
+    "gcloud projects delete": "BLOCKED: Project deletion is irreversible - must be done via Cloud Console",
     "gcloud container clusters delete": "BLOCKED: Use Terraform/Terragrunt for GKE management",
-    "gcloud projects delete": "BLOCKED: Critical operation - must be done via Cloud Console",
     "gcloud sql instances delete": "BLOCKED: Use Terraform/Terragrunt for Cloud SQL management",
+    "gcloud sql databases delete": "BLOCKED: Database deletion loses all data - use Terraform/Terragrunt",
+    "gcloud services disable": "BLOCKED: Disabling services can break dependent resources",
+    "gsutil rb": "BLOCKED: Bucket removal is irreversible",
+    "gsutil rm -r": "BLOCKED: Recursive deletion of cloud storage is irreversible",
 
     # Kubernetes suggestions
-    "kubectl delete namespace": "BLOCKED: Critical operation - namespace deletion is irreversible",
-    "kubectl delete pv": "BLOCKED: Persistent volume deletion would lose data",
+    "kubectl delete namespace": "BLOCKED: Namespace deletion destroys all resources within it",
+    "kubectl delete node": "BLOCKED: Node deletion removes the node from the cluster",
+    "kubectl delete pv": "BLOCKED: Persistent volume deletion loses data",
+    "kubectl delete pvc": "BLOCKED: PVC deletion can trigger PV reclaim and data loss",
+    "kubectl delete crd": "BLOCKED: CRD deletion destroys all custom resources of that type",
     "kubectl drain": "BLOCKED: Node draining can cause service disruption",
 
     # Git suggestions
-    "git push --force": "BLOCKED: Force push rewrites history - use git push --force-with-lease if necessary",
-    "git push -f": "BLOCKED: Force push rewrites history - use git push --force-with-lease if necessary",
+    "git push --force": "BLOCKED: Force push rewrites history - use git push --force-with-lease",
+    "git push -f": "BLOCKED: Force push rewrites history - use git push --force-with-lease",
 
     # Disk operations
     "dd": "BLOCKED: Low-level disk operations can destroy data",
@@ -166,7 +177,7 @@ def get_blocked_patterns_by_category(category: str) -> List[str]:
     Get blocked patterns for a specific category.
 
     Args:
-        category: Category name (terraform, kubernetes, etc.)
+        category: Category name (aws_critical, kubernetes_critical, etc.)
 
     Returns:
         List of regex patterns for that category

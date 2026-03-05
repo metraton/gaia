@@ -27,7 +27,10 @@ CLOUD_CLI_PATTERN = re.compile(
 VIOLATIONS = [
     (
         "pipe",
-        re.compile(r'\|'),
+        # Match a single pipe `|` but NOT logical OR `||`.
+        # Negative lookbehind (?<!\|) skips the second `|` of `||`.
+        # Negative lookahead (?!\|) skips the first `|` of `||`.
+        re.compile(r'(?<!\|)\|(?!\|)'),
         (
             "Use native output flags instead of piping to shell utilities.\n"
             "  gcloud: --filter='...' --format='value(field)'\n"
@@ -38,7 +41,12 @@ VIOLATIONS = [
     ),
     (
         "redirect",
-        re.compile(r'>>?'),
+        # Match `>` or `>>` for file redirection, but NOT:
+        # - `>&` (file descriptor duplication, e.g. `2>&1`)
+        # - `--` prefixed flags or other non-redirect uses
+        # Negative lookbehind (?<![>&]) avoids matching the `>` in `>&1`.
+        # Negative lookahead (?![>&]) avoids matching `>` when followed by `&`.
+        re.compile(r'(?<![>&])>{1,2}(?![>&])'),
         (
             "Use the Write tool to write output to a file instead of shell redirection.\n"
             "  Write tool: creates or overwrites files cleanly without shell quoting issues.\n"
@@ -47,6 +55,8 @@ VIOLATIONS = [
     ),
     (
         "chaining",
+        # Match `;` or `&&` but NOT `||` (which is now correctly handled
+        # by the pipe regex above via negative lookahead).
         re.compile(r';|&&'),
         (
             "Run each command as a separate, atomic Bash call instead of chaining.\n"
@@ -123,7 +133,7 @@ def build_block_response(violation: PipeViolation, command: str) -> dict:
     Build the structured JSON block that tells Claude Code to block the command
     and return a corrective reason to the agent.
 
-    Uses permissionDecision: "block" with exit 0 (NOT exit 2) so the agent
+    Uses permissionDecision: "deny" with exit 0 (NOT exit 2) so the agent
     receives the correction message and adjusts rather than stopping entirely.
 
     Args:
@@ -146,7 +156,7 @@ def build_block_response(violation: PipeViolation, command: str) -> dict:
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": "block",
+            "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }
     }

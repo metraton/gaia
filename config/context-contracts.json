@@ -70,13 +70,6 @@
         "application_services"
       ],
       "write": []
-    },
-    "gaia": {
-      "read": [
-        "application_architecture",
-        "development_standards"
-      ],
-      "write": []
     }
   }
 }

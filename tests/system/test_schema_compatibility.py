@@ -66,8 +66,16 @@ class TestSchemaCompatibility:
                 f"Template routing table must include {agent}"
             )
 
-    def test_template_documents_plan_status(self, template_content):
-        """Template must document PLAN_STATUS values for orchestrator parsing."""
+    def test_template_documents_plan_status(self, template_content, package_root):
+        """PLAN_STATUS values must be documented in the template or agent-protocol skill."""
+        # The orchestrator template documents the statuses it acts on directly.
+        # The full set of valid states (including agent-internal ones like
+        # INVESTIGATING, APPROVED_EXECUTING) is authoritative in agent-protocol.
+        agent_protocol_path = package_root / "skills" / "agent-protocol" / "SKILL.md"
+        combined = template_content
+        if agent_protocol_path.exists():
+            combined += "\n" + agent_protocol_path.read_text()
+
         required_statuses = [
             "INVESTIGATING",
             "PENDING_APPROVAL",
@@ -77,8 +85,8 @@ class TestSchemaCompatibility:
             "NEEDS_INPUT",
         ]
         for status in required_statuses:
-            assert status in template_content, (
-                f"Template must document PLAN_STATUS: {status}"
+            assert status in combined, (
+                f"PLAN_STATUS '{status}' not found in template or agent-protocol skill"
             )
 
     def test_template_references_agent_status(self, template_content):

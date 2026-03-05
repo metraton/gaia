@@ -9,11 +9,12 @@ Validates Task tool invocations:
 
 import re
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
 from ..security.approval_constants import APPROVAL_INDICATORS
+from ..security.dangerous_verbs import detect_dangerous_command, DangerResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,8 @@ AVAILABLE_AGENTS = [
 # speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
 META_AGENTS = ["gaia", "Explore", "Plan"]
 
-# Keywords indicating T3 operations
+# Legacy T3_KEYWORDS kept for backward compatibility (tests import it).
+# Detection now uses detect_dangerous_command() from the verb detector.
 T3_KEYWORDS = [
     "git commit",
     "git push",
@@ -65,6 +67,83 @@ T3_KEYWORDS = [
     "gcloud storage cp",
     "gcloud storage rsync",
 ]
+
+
+def _extract_command_candidates(text: str) -> List[str]:
+    """Extract command-like lines from free-form text for verb detection.
+
+    Looks for lines that start with known CLI prefixes or contain command-like
+    patterns (e.g., "git push", "terraform apply").
+
+    Args:
+        text: Free-form text (prompt or description).
+
+    Returns:
+        List of candidate command strings to scan.
+    """
+    if not text:
+        return []
+
+    candidates: List[str] = []
+    # Known CLI prefixes that signal a command
+    cli_prefixes = (
+        "git ", "kubectl ", "helm ", "flux ", "terraform ", "terragrunt ",
+        "gcloud ", "gsutil ", "aws ", "az ", "docker ", "podman ",
+        "npm ", "pnpm ", "yarn ", "pip ", "pip3 ",
+        "rm ", "mv ", "cp ", "dd ", "mkfs ",
+        "systemctl ", "service ",
+    )
+
+    text_lower = text.lower()
+
+    # Strategy 1: Scan the full text for known CLI command patterns
+    for prefix in cli_prefixes:
+        idx = 0
+        while True:
+            pos = text_lower.find(prefix, idx)
+            if pos == -1:
+                break
+            # Only match at word boundaries (start of string or preceded by whitespace/punctuation)
+            if pos > 0 and text_lower[pos - 1].isalnum():
+                idx = pos + len(prefix)
+                continue
+            # Extract from the prefix to end of line (or next sentence boundary)
+            end = text.find("\n", pos)
+            if end == -1:
+                end = len(text)
+            fragment = text[pos:end].strip()
+            # Trim trailing punctuation/quotes that are part of prose
+            fragment = fragment.rstrip(".,;:!?\"')")
+            if fragment:
+                candidates.append(fragment)
+            idx = pos + len(prefix)
+
+    return candidates
+
+
+def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[DangerResult]]:
+    """Scan free-form text for T3 (dangerous) command intent using the verb detector.
+
+    Args:
+        text: Combined prompt/description text.
+
+    Returns:
+        (is_t3, matched_command, danger_result) tuple.
+    """
+    candidates = _extract_command_candidates(text)
+
+    for candidate in candidates:
+        result = detect_dangerous_command(candidate)
+        if result.is_dangerous and result.category in ("DESTRUCTIVE", "MUTATIVE"):
+            return True, candidate, result
+
+    # Fallback: check legacy keywords for anything the extractor might miss
+    text_lower = text.lower()
+    for keyword in T3_KEYWORDS:
+        if keyword in text_lower:
+            return True, keyword, None
+
+    return False, "", None
 
 # Re-export from canonical source so tests that import from here keep working.
 # Do NOT define indicators here — edit approval_constants.py instead.
@@ -193,17 +272,16 @@ class TaskValidator:
         )
 
     def _is_t3_operation(self, prompt: str, description: str) -> bool:
-        """Check if this is a T3 (destructive) operation."""
-        combined = f"{description.lower()} {prompt.lower()}"
-        return any(keyword in combined for keyword in T3_KEYWORDS)
+        """Check if this is a T3 (destructive) operation using the verb detector."""
+        combined = f"{description} {prompt}"
+        is_t3, _, _ = _scan_text_for_t3(combined)
+        return is_t3
 
     def _matched_t3_keyword(self, prompt: str, description: str) -> str:
-        """Return the first T3 keyword found in the prompt/description, or empty string."""
-        combined = f"{description.lower()} {prompt.lower()}"
-        for keyword in T3_KEYWORDS:
-            if keyword in combined:
-                return keyword
-        return ""
+        """Return the first T3 command found in the prompt/description, or empty string."""
+        combined = f"{description} {prompt}"
+        is_t3, matched, _ = _scan_text_for_t3(combined)
+        return matched if is_t3 else ""
 
     def _check_approval(self, prompt: str) -> bool:
         """Check if approval was received."""

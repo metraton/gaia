@@ -26,6 +26,10 @@ Read on-demand by infrastructure agents. Not injected automatically.
 - `helm upgrade --dry-run`
 - `kubectl apply --dry-run=server`
 
+### Conditional (T0 or T3 depending on flags)
+
+- `git branch` -- T0 for listing (no args or `--list`), T3 with `-D`, `-d`, `-m`, `-M`, `--delete`, `--move`
+
 ### T3 -- Realization
 
 - `terraform apply` / `terragrunt apply`

@@ -1,11 +1,19 @@
 """
 Bash command validator.
 
-Validates Bash tool invocations:
-- Security tier classification
-- Blocked command detection
-- GitOps workflow validation
-- Compound command validation
+Primary security gate for all Bash tool invocations. With Bash(*) in the
+settings.json allow list, ALL commands reach this hook -- it is the sole
+enforcement layer for dangerous command detection.
+
+Validation order (short-circuit on first match):
+1. blocked_commands FIRST -- permanently denied patterns (exit 2)
+2. Claude footer stripping -- transparent cleanup via updatedInput
+3. Commit message validation -- conventional commits format
+4. Cloud pipe/redirect/chain check -- corrective deny (exit 0)
+5. Safe command fast-path -- auto-approve read-only commands
+6. Dangerous verb detector -- DESTRUCTIVE/MUTATIVE -> nonce-based deny (exit 0)
+7. GitOps policy validation
+8. Tier classification fallback
 """
 
 import re
@@ -18,6 +26,14 @@ from ..security.tiers import SecurityTier, classify_command_tier
 from ..security.safe_commands import is_read_only_command
 from ..security.blocked_commands import is_blocked_command, get_suggestion_for_blocked
 from ..security.gitops_validator import validate_gitops_workflow
+from ..security.dangerous_verbs import detect_dangerous_command, build_t3_block_response
+from ..security.approval_grants import (
+    check_approval_grant,
+    consume_grant,
+    generate_nonce,
+    write_pending_approval,
+)
+from ..security.interactive_handler import ensure_non_interactive
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
 
@@ -95,6 +111,38 @@ class BashValidator:
 
         command = command.strip()
 
+        # ================================================================
+        # PRIORITY 1: Blocked commands check on FULL command (exit 2).
+        # This MUST run before any other validator to ensure permanently
+        # blocked commands (kubectl delete namespace, etc.) are caught
+        # with a reliable exit 2 — even if the command also triggers
+        # cloud_pipe_validator or has compound operators.
+        # ================================================================
+        blocked_result = is_blocked_command(command)
+        if blocked_result.is_blocked:
+            suggestion = get_suggestion_for_blocked(command)
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=f"Command blocked by security policy: {blocked_result.category}",
+                suggestions=[suggestion] if suggestion else [],
+            )
+
+        # Also check each component of compound commands against the deny list.
+        # This catches "ls && kubectl delete namespace prod" early.
+        if self._has_operators(command):
+            components = self.shell_parser.parse(command)
+            for component in components:
+                comp_blocked = is_blocked_command(component.strip())
+                if comp_blocked.is_blocked:
+                    suggestion = get_suggestion_for_blocked(component.strip())
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason=f"Command blocked by security policy: {comp_blocked.category}",
+                        suggestions=[suggestion] if suggestion else [],
+                    )
+
         # Auto-strip forbidden footers from git commits (instead of blocking).
         # Uses updatedInput to transparently clean the command before execution.
         command_was_modified = False
@@ -109,7 +157,7 @@ class BashValidator:
             if not commit_validation.allowed:
                 return commit_validation
 
-        # Cloud pipe/redirect/chaining check — runs before tier classification.
+        # Cloud pipe/redirect/chaining check — runs AFTER blocked commands.
         # Returns a structured block response dict if a violation is found.
         # block_response is set so the caller emits JSON and exits 0 (corrective),
         # not a plain string with exit 2 (which would terminate the agent).
@@ -164,6 +212,55 @@ class BashValidator:
                 reason=f"Auto-approved: {reason}",
             )
 
+        # Dangerous verb detection: block DESTRUCTIVE/MUTATIVE commands
+        # and direct the agent to follow the T3 approval workflow.
+        # NOTE: PreToolUse hooks fire regardless of settings.json allow list.
+        # The allow list only controls whether a PermissionRequest dialog is shown.
+        # With Bash(*) in allow, ALL Bash commands reach this hook — the hook is
+        # the primary security gate for dangerous command detection.
+        danger = detect_dangerous_command(command)
+        if danger.is_dangerous:
+            # Check for an active approval grant before blocking.
+            # When the orchestrator resumes an agent with "User approved: ...",
+            # the pre_tool_use hook writes a time-limited grant. If a matching
+            # grant exists, allow the command through instead of blocking.
+            grant = check_approval_grant(command)
+            if grant is not None:
+                logger.info(
+                    "T3 command allowed via approval grant: %s (scope='%s')",
+                    command[:80], grant.approved_scope,
+                )
+                consume_grant(grant)
+                # Fall through to tier classification below (do NOT block)
+            else:
+                # Generate a cryptographic nonce and write a pending approval.
+                # The nonce is included in the block response so the agent can
+                # present it for user approval.
+                nonce = generate_nonce()
+                write_pending_approval(
+                    nonce=nonce,
+                    command=command,
+                    danger_verb=danger.verb,
+                    danger_category=danger.category,
+                )
+
+                t3_block = build_t3_block_response(command, danger, nonce=nonce)
+                # Wrap in hookSpecificOutput format so Claude Code receives the
+                # corrective message (exit 0) instead of a terminal error (exit 2).
+                hook_block = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": t3_block["message"],
+                    }
+                }
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Dangerous {danger.category.lower()} command: {danger.reason}",
+                    block_response=hook_block,
+                )
+
         # Check GitOps commands
         if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
             gitops_result = validate_gitops_workflow(command)
@@ -181,11 +278,10 @@ class BashValidator:
         # Classify tier
         tier = classify_command_tier(command)
 
-        # T3 commands that reached here already passed blocked_commands.py check
-        # Allow them to pass - settings.json will handle approval prompts (double validation)
-        # This ensures:
-        # - Truly dangerous commands blocked by blocked_commands.py (redundant layer)
-        # - Other T3 commands go to settings.json for user approval
+        # Commands that reached here passed both blocked_commands.py and the
+        # dangerous verb detector (either safe, granted, or unknown verb).
+        # With Bash(*) in allow and empty ask list, the hook is the sole
+        # security gate -- settings.json no longer prompts for approval.
         return BashValidationResult(
             allowed=True,
             tier=tier,

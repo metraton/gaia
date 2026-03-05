@@ -4,7 +4,7 @@ Tests for Bash Validator.
 
 Tests the bash command validation system:
 1. Safe commands (T0, T1, T2) are allowed
-2. T3 commands require approval (allowed=True, tier=T3)
+2. Dangerous (T3) commands are blocked with structured block_response
 3. Deny list commands are blocked (allowed=False)
 4. Compound commands are validated correctly
 5. Credential requirements are detected
@@ -46,28 +46,35 @@ class TestBashValidator:
         assert result.allowed is True
         assert result.tier in [SecurityTier.T0_READ_ONLY, SecurityTier.T1_VALIDATION, SecurityTier.T2_DRY_RUN]
 
-    # T3 commands (require approval but allowed)
+    # T3 commands (blocked by dangerous verb detector with structured response)
     @pytest.mark.parametrize("command", [
         "terraform apply",
         "git push origin main",
     ])
-    def test_t3_commands_require_approval(self, validator, command):
-        """Test T3 commands are allowed but require approval."""
-        result = validator.validate(command)
-        assert result.allowed is True
-        assert result.tier == SecurityTier.T3_BLOCKED
-        assert "tier T3" in result.reason or "approval" in result.reason.lower()
-
-    # Commands blocked by specific policies
-    @pytest.mark.parametrize("command,policy", [
-        ("kubectl apply -f manifest.yaml", "GitOps"),
-        ("helm install my-release chart/", "GitOps"),
-    ])
-    def test_blocks_gitops_policy_violations(self, validator, command, policy):
-        """Test commands blocked by GitOps policy."""
+    def test_t3_commands_blocked_by_dangerous_verb_detector(self, validator, command):
+        """Test T3 commands are blocked with a structured block_response."""
         result = validator.validate(command)
         assert result.allowed is False
-        assert policy.lower() in result.reason.lower()
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "dangerous" in result.reason.lower()
+        # Block response uses hookSpecificOutput format for corrective messaging
+        assert result.block_response is not None
+        assert "hookSpecificOutput" in result.block_response
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "approval workflow" in result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+
+    # Commands blocked by dangerous verb detector (before reaching GitOps validator)
+    @pytest.mark.parametrize("command", [
+        "kubectl apply -f manifest.yaml",
+        "helm install my-release chart/",
+    ])
+    def test_blocks_mutative_gitops_commands(self, validator, command):
+        """Test mutative GitOps commands are blocked by dangerous verb detector."""
+        result = validator.validate(command)
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "dangerous" in result.reason.lower()
+        assert result.block_response is not None
 
     def test_blocks_invalid_commit_message(self, validator):
         """Test blocks git commit with invalid format."""
@@ -108,10 +115,10 @@ class TestCompoundCommandValidation:
         assert result.allowed is True
         assert result.tier == SecurityTier.T0_READ_ONLY
 
-    def test_t3_in_compound_requires_approval(self, validator):
-        """Test compound with T3 part requires approval."""
+    def test_t3_in_compound_blocked(self, validator):
+        """Test compound with T3 part is blocked by dangerous verb detector."""
         result = validator.validate("ls -la && terraform apply")
-        assert result.allowed is True
+        assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
 
     def test_blocks_deny_in_compound(self, validator):
@@ -126,39 +133,57 @@ class TestCompoundCommandValidation:
 
     def test_returns_highest_tier(self, validator):
         """Test returns highest security tier from compound."""
-        # T0 + T3 should return T3
-        result = validator.validate("ls -la && terraform apply")
-        assert result.tier == SecurityTier.T3_BLOCKED
+        # T0 + T2 (simulation) should return T2
+        result = validator.validate("ls -la && terraform plan")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T2_DRY_RUN
 
 
 class TestClaudeFooterStripping:
-    """Test auto-stripping of Claude-generated commit footers via updatedInput."""
+    """Test auto-stripping of Claude-generated commit footers via updatedInput.
 
-    def test_strips_generated_with_claude_code(self, validator):
-        """Test strips 'Generated with Claude Code' footer instead of blocking."""
+    Note: git commit is a mutative command and will be blocked by the dangerous
+    verb detector. Footer stripping still happens before the command reaches
+    _validate_single_command, so we test the stripping logic directly and verify
+    that the block response contains the cleaned command (without footers).
+    """
+
+    def test_footer_stripping_occurs_before_validation(self, validator):
+        """Test that footer stripping happens before dangerous verb detection."""
         result = validator.validate('git commit -m "feat(test): add feature\n\nGenerated with Claude Code"')
-        assert result.allowed is True
-        assert result.modified_input is not None
-        assert "Generated with Claude Code" not in result.modified_input["command"]
+        # git commit is blocked by dangerous verb detector
+        assert result.allowed is False
+        assert result.block_response is not None
+        # The block response message should NOT contain the stripped footer
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Generated with Claude Code" not in reason
 
-    def test_strips_co_authored_by_claude(self, validator):
-        """Test strips 'Co-Authored-By: Claude' footer instead of blocking."""
+    def test_strips_co_authored_by_before_validation(self, validator):
+        """Test that Co-Authored-By footer is stripped before dangerous verb detection."""
         result = validator.validate('git commit -m "feat(test): add feature\n\nCo-Authored-By: Claude Opus 4.6"')
-        assert result.allowed is True
-        assert result.modified_input is not None
-        assert "Co-Authored-By" not in result.modified_input["command"]
+        assert result.allowed is False
+        assert result.block_response is not None
 
-    def test_stripped_command_preserves_message(self, validator):
-        """Test that the commit message content is preserved after stripping."""
-        result = validator.validate('git commit -m "feat(api): add endpoint\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"')
-        assert result.allowed is True
-        assert "feat(api): add endpoint" in result.modified_input["command"]
-
-    def test_no_modified_input_for_clean_commits(self, validator):
-        """Test that clean commits don't have modified_input."""
+    def test_clean_commit_blocked_by_dangerous_verb(self, validator):
+        """Test that clean commits are blocked by dangerous verb detector."""
         result = validator.validate('git commit -m "feat(api): add endpoint"')
-        assert result.allowed is True
-        assert result.modified_input is None
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "commit" in result.reason.lower()
+
+    def test_internal_strip_method(self, validator):
+        """Test the internal _strip_claude_footers method directly."""
+        command = 'git commit -m "feat(test): add feature\n\nGenerated with Claude Code"'
+        stripped = validator._strip_claude_footers(command)
+        assert "Generated with Claude Code" not in stripped
+        assert "feat(test): add feature" in stripped
+
+    def test_internal_strip_co_authored(self, validator):
+        """Test the internal _strip_claude_footers strips Co-Authored-By."""
+        command = 'git commit -m "feat(test): add feature\n\nCo-Authored-By: Claude Opus 4.6"'
+        stripped = validator._strip_claude_footers(command)
+        assert "Co-Authored-By" not in stripped
+        assert "feat(test): add feature" in stripped
 
     def test_no_modified_input_for_non_commit_commands(self, validator):
         """Test that non-commit commands don't have modified_input."""
@@ -216,16 +241,74 @@ class TestConvenienceFunction:
         result = validate_bash_command("ls -la")
         assert result.allowed is True
 
-    def test_convenience_function_t3_requires_approval(self):
-        """Test convenience function marks T3 commands."""
+    def test_convenience_function_blocks_t3_commands(self):
+        """Test convenience function blocks dangerous T3 commands."""
         result = validate_bash_command("terraform apply")
-        assert result.allowed is True
+        assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
+        assert result.block_response is not None
 
     def test_convenience_function_blocks_dangerous(self):
         """Test convenience function blocks dangerous commands."""
         result = validate_bash_command("kubectl delete namespace production")
         assert result.allowed is False
+
+
+class TestBlockedCommandsPriority:
+    """Test that blocked commands are caught BEFORE cloud_pipe_validator.
+
+    This is the critical bug fix: when a command is permanently blocked
+    (e.g., kubectl delete namespace), it must be caught with exit 2
+    (no block_response) regardless of whether cloud_pipe_validator would
+    also flag it. Exit 2 is reliably honored by Claude Code; exit 0 with
+    permissionDecision: "deny" is NOT reliable.
+    """
+
+    def test_kubectl_delete_namespace_blocked_without_block_response(self, validator):
+        """kubectl delete namespace must be caught by deny list, not cloud_pipe_validator."""
+        result = validator.validate("kubectl delete namespace production")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        # CRITICAL: block_response must be None (exit 2 path), not a dict (exit 0 path)
+        assert result.block_response is None
+
+    def test_kubectl_delete_namespace_with_or_blocked_reliably(self, validator):
+        """The exact bug scenario: kubectl delete namespace with || and 2>&1.
+
+        Previously, cloud_pipe_validator caught `||` as a false-positive pipe
+        and returned exit 0 block (unreliable). Now, blocked_commands runs
+        first and returns exit 2 (reliable).
+        """
+        result = validator.validate("kubectl delete namespace test 2>&1 || echo 'blocked'")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+    def test_blocked_command_in_compound_caught_early(self, validator):
+        """Blocked command as part of compound is caught before cloud_pipe_validator."""
+        result = validator.validate("ls -la && kubectl delete namespace production")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+    def test_gcloud_cluster_delete_blocked_without_block_response(self, validator):
+        """gcloud container clusters delete must use exit 2 path."""
+        result = validator.validate("gcloud container clusters delete my-cluster --region us-central1")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+    def test_aws_eks_delete_cluster_blocked_without_block_response(self, validator):
+        """aws eks delete-cluster must use exit 2 path."""
+        result = validator.validate("aws eks delete-cluster --name my-cluster")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
 
 
 class TestEdgeCases:

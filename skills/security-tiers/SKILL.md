@@ -35,10 +35,19 @@ Classify using your own tools. Common verb patterns:
 
 For cloud-specific command examples (kubectl, terraform, gcloud, helm, flux), see `reference.md` in this skill directory.
 
+## Hook Enforcement
+
+The pre_tool_use hook is the primary security gate. With `Bash(*)` in the allow list, all commands reach the hook. The hook enforces:
+1. Permanently blocked commands (blocked_commands.py) -- always denied
+2. Dangerous verb detection (dangerous_verbs.py) -- nonce-based approval flow
+3. Safe command auto-approval (safe_commands.py)
+
+Conditional commands like `git branch` are safe for listing but T3 with mutative flags (`-D`, `-d`, `-m`). See `reference.md`.
+
 ## T3 Workflow
 
 For T3 operations, follow the state flow in `agent-protocol`: PLANNING -- PENDING_APPROVAL -- APPROVED_EXECUTING -- COMPLETE.
 
 On-demand workflow skills (read from disk when needed):
-- `.claude/skills/approval/SKILL.md` -- plan format and presentation
+- `.claude/skills/approval/SKILL.md` -- plan format, nonce-based approval presentation
 - `.claude/skills/execution/SKILL.md` -- post-approval execution protocol

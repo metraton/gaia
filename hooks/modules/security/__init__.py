@@ -7,6 +7,7 @@ Provides:
 - blocked_commands: Dangerous pattern matching
 - gitops_validator: kubectl/helm/flux validation
 - approval_constants: Canonical APPROVAL_INDICATORS list
+- approval_grants: Time-limited T3 command passthrough after user approval
 """
 
 from .tiers import SecurityTier, classify_command_tier
@@ -22,6 +23,13 @@ from .blocked_commands import (
 )
 from .gitops_validator import validate_gitops_workflow, GitOpsValidationResult
 from .approval_constants import APPROVAL_INDICATORS
+from .approval_grants import (
+    write_approval_grant,
+    check_approval_grant,
+    consume_grant,
+    cleanup_expired_grants,
+    ApprovalGrant,
+)
 
 __all__ = [
     # Tiers
@@ -40,4 +48,10 @@ __all__ = [
     "GitOpsValidationResult",
     # Approval
     "APPROVAL_INDICATORS",
+    # Approval Grants
+    "write_approval_grant",
+    "check_approval_grant",
+    "consume_grant",
+    "cleanup_expired_grants",
+    "ApprovalGrant",
 ]

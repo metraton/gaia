@@ -1,11 +1,17 @@
 """
 Security tier definitions and classification.
 
+Provides tier metadata for commands after bash_validator has already
+enforced security decisions. The bash_validator is the primary gate;
+this module's classify_command_tier() is used for logging and state
+tracking.
+
 Tiers:
-- T0: Read-only operations
-- T1: Validation operations (validate, lint, fmt, check) — local only
-- T2: Simulation operations (plan, diff, dry-run) — may contact remote APIs
-- T3: Destructive/state-modifying operations (require approval)
+- T0: Read-only operations (safe_commands.py)
+- T1: Validation operations (validate, lint, fmt, check) -- local only
+- T2: Simulation operations (plan, diff, dry-run) -- may contact remote APIs
+- T3: Destructive/state-modifying operations (dangerous_verbs.py detection,
+  nonce-based approval via approval_grants.py)
 """
 
 import re
@@ -62,9 +68,11 @@ T2_PATTERNS = [
 
 # Ultra-common commands that should fast-path to T0
 # These are commands that appear in >80% of sessions
+# NOTE: Only include commands that are ALWAYS read-only regardless of flags.
+# "git branch" was removed because it has mutative variants (-D, -m, -M, etc.).
 ULTRA_COMMON_T0_COMMANDS = frozenset({
     "ls", "pwd", "cat", "echo", "git status", "git diff",
-    "git log", "git branch", "kubectl get",
+    "git log", "kubectl get",
 })
 
 
@@ -120,6 +128,12 @@ def _classify_command_tier_cached(
     if is_safe:
         return SecurityTier.T0_READ_ONLY
 
+    # Use the universal verb detector for T3 classification
+    from .dangerous_verbs import detect_dangerous_command
+    danger = detect_dangerous_command(command)
+    if danger.is_dangerous and danger.category in ("DESTRUCTIVE", "MUTATIVE"):
+        return SecurityTier.T3_BLOCKED
+
     # Default to blocked for unknown commands
     return SecurityTier.T3_BLOCKED
 
@@ -132,12 +146,19 @@ def classify_command_tier(
     """
     Classify command into security tier.
 
+    NOTE: This function is used for tier metadata AFTER the bash_validator has
+    already enforced security decisions. The bash_validator's own validation
+    order (blocked -> safe -> dangerous verbs -> GitOps -> tier) is the primary
+    security gate.
+
     Classification order:
-    1. Check for blocked operations (T3)
-    2. Check for dry-run/simulation operations (T2)
-    3. Check for local validation operations (T1)
-    4. Check for read-only operations (T0)
-    5. Default to T3 (blocked) for unknown commands
+    1. Ultra-common T0 fast-path (ls, git status, etc.)
+    2. Blocked patterns (T3) -- if flagged externally
+    3. Dry-run/simulation (T2) -- --dry-run, plan, diff, template
+    4. Local validation (T1) -- validate, lint, fmt, check
+    5. Read-only (T0) -- safe_commands check
+    6. Dangerous verb detector (T3) -- DESTRUCTIVE/MUTATIVE verbs
+    7. Default T3 for unknown commands
 
     Args:
         command: Shell command to classify

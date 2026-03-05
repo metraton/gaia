@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Pre-tool use hook v2 - Modular Architecture (Optimized)
+Pre-tool use hook - Modular Architecture.
 
-Thin entry point that uses the new modular hook system.
-Maintains backward compatibility with Claude Code hook interface.
+Entry point for Bash and Task/Agent tool validation. The hook is the primary
+security gate: with Bash(*) in the settings.json allow list, all commands
+reach this hook regardless of settings.json permissions.
 
-Features:
-- Modular validation (security, tools, workflow modules)
-- State sharing with post-hook
-- Auto-approval for read-only commands (handled in BashValidator)
-- LRU cache for tier classification (60-70% faster for repeated commands)
-- Fast-path detection for ultra-common commands
-- Lazy parsing (only parse compound commands with operators)
+Responsibilities:
+- Bash: delegates to BashValidator (blocked commands, safe detection,
+  dangerous verb detector with nonce-based approval flow)
+- Task/Agent: project-context injection, session events, nonce activation
+  (APPROVE:{hex32}) and legacy approval grant creation
+- State sharing with post-hook via hook state files
+- Periodic cleanup of expired approval grants
 """
 
 import sys
@@ -30,7 +31,15 @@ from modules.core.paths import get_logs_dir
 
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.tiers import SecurityTier, classify_command_tier
-from modules.security.approval_constants import APPROVAL_INDICATORS
+from modules.security.approval_constants import (
+    APPROVAL_INDICATORS,
+    NONCE_APPROVAL_PATTERN,
+)
+from modules.security.approval_grants import (
+    write_approval_grant,
+    activate_pending_approval,
+    cleanup_expired_grants,
+)
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
 from modules.tools.task_validator import TaskValidator
 
@@ -199,9 +208,13 @@ def _should_inject_on_resume(parameters: dict) -> bool:
     prompt_lower = prompt.lower()
     
     # Case 1: Post-approval execution - NO injection needed
-    # These are simple "go ahead" instructions
+    # These are simple "go ahead" instructions.
+    # Check nonce-based approval first, then legacy indicators.
+    if NONCE_APPROVAL_PATTERN.search(prompt):
+        logger.debug("Resume with nonce approval - skipping context injection")
+        return False
     if any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS):
-        logger.debug("Resume with approval indicator - skipping context injection")
+        logger.debug("Resume with legacy approval indicator - skipping context injection")
         return False
     
     # Case 2: Substantial new information - YES inject
@@ -598,6 +611,9 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
     logger.info(f"Hook invoked: tool={tool_name}, params={json.dumps(parameters)[:200]}")
 
     try:
+        # Periodic cleanup of expired approval grants (fast no-op if none exist)
+        cleanup_expired_grants()
+
         # Validate inputs
         if not isinstance(tool_name, str):
             return "Error: Invalid tool name"
@@ -725,6 +741,43 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         # Step 26: Skip heavy validations (agent already validated in phase 1)
         # Step 27: Log resume operation
         logger.info(f"✅ RESUME: Continuing agent {resume_id}")
+
+        # Step 27b: Write approval grant for T3 passthrough
+        # Check for nonce-based approval first (APPROVE:{hex32}), then
+        # fall back to legacy string-matching indicators.
+        nonce_match = NONCE_APPROVAL_PATTERN.search(prompt)
+        if nonce_match:
+            nonce = nonce_match.group(1)
+            grant_path = activate_pending_approval(nonce)
+            if grant_path:
+                logger.info(
+                    "Nonce approval activated for resume %s: nonce=%s, file=%s",
+                    resume_id, nonce, grant_path.name,
+                )
+            else:
+                logger.warning(
+                    "Failed to activate nonce approval for resume %s: nonce=%s "
+                    "(may be expired, already used, or session mismatch)",
+                    resume_id, nonce,
+                )
+        else:
+            # Legacy path: string-matching approval indicators
+            prompt_lower = prompt.lower()
+            for indicator in APPROVAL_INDICATORS:
+                if indicator in prompt_lower:
+                    # Extract scope from "User approved: <scope>" format
+                    scope_match = re.search(
+                        r"user approved:\s*(.+?)(?:\n|$)", prompt, re.IGNORECASE
+                    )
+                    scope = scope_match.group(1).strip() if scope_match else prompt
+                    grant_path = write_approval_grant(scope)
+                    if grant_path:
+                        logger.info(
+                            "Legacy approval grant written for resume %s: "
+                            "scope='%s', file=%s",
+                            resume_id, scope, grant_path.name,
+                        )
+                    break
 
         # Step 28: Save state for post-hook
         state = create_pre_hook_state(
@@ -867,6 +920,7 @@ if __name__ == "__main__":
         try:
             stdin_data = sys.stdin.read()
             if not stdin_data.strip():
+                print("Error: Empty stdin data", file=sys.stderr)
                 print("Error: Empty stdin data")
                 sys.exit(1)
 
@@ -882,12 +936,29 @@ if __name__ == "__main__":
             if isinstance(result, dict):
                 # Dict = allowed with modification (updatedInput)
                 # Output JSON so Claude Code applies the modified parameters
+                #
+                # Special case: structured block responses (e.g. cloud pipe violations)
+                # use permissionDecision: "deny" inside a dict.  Claude Code still
+                # shows the agent the reason, but stderr output ensures the USER also
+                # sees WHY the command was blocked in the hook output panel.
+                hook_output = result.get("hookSpecificOutput", {})
+                if hook_output.get("permissionDecision") in ("block", "deny"):
+                    reason = hook_output.get("permissionDecisionReason", "Command blocked by hook policy")
+                    # One-line summary for stderr (first line of the reason)
+                    summary = reason.split('\n')[0]
+                    print(f"BLOCKED: {summary}", file=sys.stderr)
                 print(json.dumps(result))
                 sys.exit(0)
             elif isinstance(result, str):
                 # String = BLOCKING error - Claude MUST stop execution
                 # Exit code 2 = blocking, exit code 1 = non-blocking
                 # See: https://docs.anthropic.com/en/docs/claude-code/hooks
+                #
+                # Write the rejection reason to stderr so Claude Code displays
+                # it to the user.  stdout carries the full message for the agent;
+                # stderr carries a concise summary for the human operator.
+                summary = result.split('\n')[0]
+                print(f"BLOCKED: {summary}", file=sys.stderr)
                 print(result)
                 sys.exit(2)
             else:
@@ -896,9 +967,11 @@ if __name__ == "__main__":
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON from stdin: {e}")
+            print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             logger.error(f"Error processing hook: {e}", exc_info=True)
+            print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
             print(f"Hook error: {str(e)}")
             sys.exit(1)
     else:

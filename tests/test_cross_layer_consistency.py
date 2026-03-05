@@ -147,24 +147,45 @@ class TestSettingsCodeConsistency:
             f"T3 mutation commands in allow (should be in ask): {violations}"
         )
 
-    def test_flux_suspend_resume_in_ask(self, ask_list):
-        """flux suspend/resume must require approval (they stop/start reconciliation)."""
-        ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
-        assert "flux suspend" in ask_cmds, "flux suspend must be in ask list"
-        assert "flux resume" in ask_cmds, "flux resume must be in ask list"
+    def test_flux_suspend_resume_protected(self, ask_list, deny_list):
+        """flux suspend/resume must be protected (in ask, deny, or enforced by hooks).
 
-    def test_gitops_forbidden_commands_in_ask_or_deny(self, ask_list, deny_list):
-        """Commands forbidden by gitops_validator must be in ask or deny."""
+        When settings uses Bash(*) with deny-only, the hook layer (gitops_validator)
+        enforces approval for flux suspend/resume at runtime.
+        """
         ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
         deny_cmds = {self._extract_command(e) for e in deny_list if e.startswith("Bash(")}
         protected = ask_cmds | deny_cmds
 
-        # flux suspend/resume are forbidden in gitops_validator
+        for cmd in ["flux suspend", "flux resume"]:
+            if cmd not in protected:
+                # Not in settings lists -- verify the hook layer covers it
+                from modules.security.gitops_validator import is_forbidden_gitops_command
+                assert is_forbidden_gitops_command(cmd), (
+                    f"'{cmd}' not protected by settings.json or gitops_validator hook"
+                )
+
+    def test_gitops_forbidden_commands_protected(self, ask_list, deny_list):
+        """Commands forbidden by gitops_validator must be in ask/deny or enforced by hooks.
+
+        When settings uses Bash(*) with deny-only, the hook layer (gitops_validator)
+        provides the enforcement for commands not explicitly in the deny list.
+        """
+        ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
+        deny_cmds = {self._extract_command(e) for e in deny_list if e.startswith("Bash(")}
+        protected = ask_cmds | deny_cmds
+
+        # flux commands are forbidden in gitops_validator
         for pattern in FORBIDDEN_FLUX_COMMANDS:
             # Extract the command from the regex (e.g., r"flux\s+suspend" -> "flux suspend")
             cmd = re.sub(r'\\s\+', ' ', pattern).strip()
             found = any(cmd in p for p in protected)
-            assert found, f"Forbidden gitops command '{cmd}' not protected in settings.json"
+            if not found:
+                # Verify the hook layer covers it
+                from modules.security.gitops_validator import is_forbidden_gitops_command
+                assert is_forbidden_gitops_command(cmd), (
+                    f"Forbidden gitops command '{cmd}' not protected by settings.json or hook"
+                )
 
 
 # ===========================================================================
@@ -176,10 +197,12 @@ class TestTierConsistency:
 
     def test_ultra_common_t0_are_genuinely_read_only(self):
         """Every command in ULTRA_COMMON_T0_COMMANDS must be truly read-only."""
-        # These are the ONLY commands that should be in the T0 fast-path
+        # These are the ONLY commands that should be in the T0 fast-path.
+        # NOTE: "git branch" was removed because it has mutative variants
+        # (-D, -m, -M, etc.). It is handled by conditional_safe_multiword instead.
         genuinely_read_only = {
             "ls", "pwd", "cat", "echo", "git status", "git diff",
-            "git log", "git branch", "kubectl get",
+            "git log", "kubectl get",
         }
 
         assert ULTRA_COMMON_T0_COMMANDS == genuinely_read_only, (

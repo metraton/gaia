@@ -23,7 +23,7 @@ Verification criteria exist because commands completing ≠ system in the desire
 
 Before executing ANY approved operation:
 
-- [ ] Prompt contains canonical token: `User approved: <operation>`
+- [ ] Prompt contains canonical token: `APPROVE:<nonce>` or legacy `User approved: <operation>`
 - [ ] Git status clean — no uncommitted changes in the way
 - [ ] Plan still valid — no drift since plan was created (re-run dry-run if in doubt)
 - [ ] Credentials available — can access cloud/cluster
@@ -33,14 +33,15 @@ If ANY check fails → STOP and report with `PLAN_STATUS: BLOCKED`
 
 ## Approval Token (Canonical)
 
-`User approved: <operation description>`
+The orchestrator resumes you with one of two formats:
 
-The scope must describe the specific operation approved:
-- `User approved: terraform apply prod/vpc`
-- `User approved: git push origin feature/my-branch`
-- `User approved: kubectl apply namespace payment-service`
+**Primary (nonce-based):** `APPROVE:<32-char-hex>`
+The hook activates the pending approval grant and the blocked command succeeds on retry.
 
-If the resume prompt does not include this token → do not execute. Generic scopes ("the changes", "everything") are accepted but flag them in your response.
+**Legacy (string-matching):** `User approved: <operation description>`
+Examples: `User approved: terraform apply prod/vpc`, `User approved: git push origin feature/my-branch`
+
+If the resume prompt does not include either token format, do not execute. Generic scopes ("the changes", "everything") are accepted but flag them in your response.
 
 ## Non-Interactive Flags
 
@@ -111,7 +112,7 @@ If you're forming any of these thoughts, stop:
 - *"The plan just ran, there can't be drift"* → Re-run dry-run anyway — the checklist is not optional
 - *"The dry-run passed earlier, that counts"* → Dry-run from planning is stale — re-run before executing
 - *"I'll commit to git after apply succeeds"* → Commit before apply — if apply fails, intended state must be recorded
-- *"The user said yes, the token format doesn't matter"* → The hook validates the canonical token — format matters
+- *"The user said yes, the token format doesn't matter"* → The hook validates the nonce or legacy token — format matters
 - *"All commands ran without error, I can claim COMPLETE"* → Commands finishing ≠ verification passing — run the criteria
 - *"It's only dev, I can skip some checks"* → No environment exceptions — irreversibility is irreversibility
 - *"A partial verification is enough"* → Partial proves nothing — run all criteria
@@ -123,7 +124,7 @@ If you're forming any of these thoughts, stop:
 | "Plan was just created, no drift possible" | Drift can occur between planning and execution at any time | Plan still valid |
 | "Dry-run passed during planning, skipping now" | Stale dry-run from planning ≠ current state validation | Dry-run still passes |
 | "Git commit can happen after apply" | If apply fails partially, intended state is unrecorded in Git | Git commit before apply |
-| "User said yes, token is just a formality" | The hook validates the exact token format — it's a machine check, not a courtesy | Approval token |
+| "User said yes, token is just a formality" | The hook validates the nonce or legacy token format — it's a machine check, not a courtesy | Approval token |
 | "All steps completed successfully" | Commands exiting 0 ≠ system in desired state — only criteria confirm this | Verification criteria |
 | "Dev environment doesn't need strict checks" | Irreversible operations are irreversible regardless of environment | All checks |
 
@@ -132,4 +133,4 @@ If you're forming any of these thoughts, stop:
 - **Skip pre-execution checklist** — "it's obvious everything is ready". It isn't always. Run it.
 - **Apply before git commit** — if apply fails mid-way, you have no record of what you intended.
 - **COMPLETE without running verification criteria** — the Iron Law exists because this is the most common failure mode.
-- **Execute on approximate approval** — "user approved something like this" is not the canonical token. The `approval` skill defines what an explicit scope looks like for destructive operations.
+- **Execute on approximate approval** — "user approved something like this" is not the canonical token. The `approval` skill defines the nonce-based flow and what an explicit scope looks like for destructive operations.

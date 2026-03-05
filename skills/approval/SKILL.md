@@ -58,27 +58,40 @@ Then emit AGENT_STATUS with `PLAN_STATUS: PENDING_APPROVAL`.
 
 **Note:** Partial approval is not supported. If user wants scope reduction, treat as **Requests modifications** and present a new plan.
 
-## Resume Token
+## Nonce-Based Approval
 
-When the user approves, the orchestrator resumes the agent with:
+When your command is blocked by the hook, the block response includes a cryptographic nonce:
+
+```
+APPROVAL REQUIRED. Present your plan to the user and include this approval code: NONCE:<hex>
+```
+
+You MUST include this nonce in your PENDING_APPROVAL output so the orchestrator can relay it:
+
+```markdown
+## Approval Required
+
+**Approval Code:** `NONCE:<hex from the block response>`
+**Operation:** [what will be executed]
+**Environment:** [dev / staging / prod]
+**Risk Level:** [LOW / MEDIUM / HIGH / CRITICAL]
+```
+
+When the user approves, the orchestrator resumes you with `APPROVE:<nonce>`. The hook converts
+the pending approval into an active grant, and you can then retry the command successfully.
+
+**If you lose the nonce** (e.g., the block response is not in your context), re-attempt the
+command. The hook will generate a fresh nonce.
+
+## Legacy Resume Token (backward compatibility)
+
+The orchestrator may also resume with the legacy format:
 
 ```
 User approved: <operation description>
 ```
 
-The scope must describe the specific operation approved:
-- `User approved: terraform apply prod/vpc`
-- `User approved: git push origin feature/my-branch`
-- `User approved: kubectl apply namespace payment-service`
-
-**Destructive operations (no rollback path) require the destructive word explicitly in the scope:**
-- `User approved: terraform destroy prod/vpc` — not "terraform apply"
-- `User approved: kubectl delete namespace payment-service` — not "kubectl apply"
-- `User approved: git push --force origin main` — not "git push"
-
-If the user approves without naming the destructive action explicitly, request clarification. A general "yes" is not sufficient for irreversible operations.
-
-The hook validates this token before allowing the Task tool to proceed.
+The hook still supports this path but the nonce-based flow is preferred.
 
 ---
 
