@@ -95,6 +95,17 @@ skip this section entirely -- investigation leads directly to `COMPLETE`.
 For T3 operations, read `.claude/skills/approval/SKILL.md` and follow the workflow there.
 Post-approval execution protocol is in `.claude/skills/execution/SKILL.md`.
 
+## Self-Review Gate
+
+Before setting PLAN_STATUS to `COMPLETE`, verify your own output:
+
+1. **Re-read the original request.** Does your output answer what was asked?
+2. **Check completeness.** Are all requested items addressed? Any silent omissions?
+3. **Validate accuracy.** Do file paths, resource names, and commands match what you found in code?
+4. **Verify format.** Does your output follow the `output-format` skill? Is the AGENT_STATUS block present and correct?
+
+If any check fails, fix before emitting COMPLETE. Do not flag self-review to the user -- just do it.
+
 ## Agent Handoff
 
 When receiving context from another agent (team workflow): consume prior findings directly — no re-investigation of confirmed facts. If findings are incomplete or contradictory, investigate only the gap. Emit independent AGENT_STATUS.

@@ -411,9 +411,9 @@ def capture_episodic_memory(
             outcome = "failed"
             success = False
 
-        # Tags from metrics
-        tags = metrics.get("tags", [])
-        if not tags:
+        # Tags from metrics — filter empty strings defensively
+        tags = [t for t in metrics.get("tags", []) if t]
+        if not tags and subagent_type and subagent_type != "unknown":
             tags = [subagent_type]
 
         # Enrich with session events and anomalies
@@ -798,7 +798,7 @@ def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str
     # Extract real task description from the first user message in the transcript
     transcript_path = hook_data.get("agent_transcript_path", "")
     task_description = _extract_task_description_from_transcript(transcript_path)
-    agent_type = hook_data.get("agent_type", "unknown")
+    agent_type = hook_data.get("agent_type", "") or "unknown"
     if not task_description:
         task_description = f"SubagentStop for {agent_type}"
 
@@ -807,7 +807,7 @@ def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str
         "description": task_description,
         "agent": agent_type,
         "tier": tier_real,
-        "tags": [],
+        "tags": [agent_type] if agent_type != "unknown" else [],
         "exit_code": exit_code,
         "plan_status": plan_status,
     }

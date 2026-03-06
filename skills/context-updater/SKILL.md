@@ -50,12 +50,25 @@ CONTEXT_UPDATE:
 
 | Agent | Writable Sections |
 |-------|-------------------|
-| `cloud-troubleshooter` | `cluster_details`, `infrastructure_topology`, `monitoring_observability` |
-| `gitops-operator` | `gitops_configuration`, `cluster_details` |
+| `cloud-troubleshooter` | `cluster_details`, `infrastructure_topology`, `application_services`, `monitoring_observability`, `architecture_overview` |
+| `gitops-operator` | `gitops_configuration`, `cluster_details`, `application_services` |
 | `terraform-architect` | `terraform_infrastructure`, `infrastructure_topology` |
-| `devops-developer` | `application_services`, `application_architecture`, `development_standards` |
+| `devops-developer` | `application_services`, `application_architecture`, `development_standards`, `architecture_overview` |
 
 Writing to a section you don't own will be rejected by the hook.
 `gaia` and `speckit-planner` do not write to project-context — they manage gaia-ops internals and specs respectively.
+
+## Progressive Enrichment Targets
+
+When a section you own is empty or sparse, prioritize populating it with high-value keys first.
+
+| Priority | What to capture | Why |
+|----------|----------------|-----|
+| **P0** | Resource identifiers (names, IDs, paths) | Enables direct targeting in future searches |
+| **P1** | Structural relationships (what connects to what) | Enables cross-agent reasoning |
+| **P2** | Configuration values (versions, replicas, limits) | Enables drift detection |
+| **P3** | Behavioral patterns (conventions, naming schemes) | Enables consistency enforcement |
+
+Capture P0 keys on every investigation. P1-P3 when naturally encountered -- do not investigate solely to populate context.
 
 For concrete examples, read `examples.md` in this directory.
