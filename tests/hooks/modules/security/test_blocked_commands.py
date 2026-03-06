@@ -15,6 +15,7 @@ Validates:
 6. Safe commands and approvable T3 commands are NOT blocked
 """
 
+import re
 import sys
 import pytest
 from pathlib import Path
@@ -193,6 +194,36 @@ class TestGitForceBlockedCommands:
         assert result.is_blocked is False
 
 
+class TestBlockedCommandVariants:
+    """Deny-listed commands stay blocked even with leading global flags."""
+
+    def test_aws_delete_vpc_with_profile_and_region_is_blocked(self):
+        result = is_blocked_command(
+            "aws --profile prod --region us-east-1 ec2 delete-vpc --vpc-id vpc-123"
+        )
+        assert result.is_blocked is True
+        assert result.category == "aws_critical"
+
+    def test_gcloud_delete_cluster_with_project_is_blocked(self):
+        result = is_blocked_command(
+            "gcloud --project dev container clusters delete cluster-a --region us-central1"
+        )
+        assert result.is_blocked is True
+        assert result.category == "gcp_critical"
+
+    def test_kubectl_delete_namespace_with_context_is_blocked(self):
+        result = is_blocked_command(
+            "kubectl --context prod --namespace default delete namespace payments"
+        )
+        assert result.is_blocked is True
+        assert result.category == "kubernetes_critical"
+
+    def test_git_force_push_with_worktree_flag_is_blocked(self):
+        result = is_blocked_command("git -C repo push origin main --force")
+        assert result.is_blocked is True
+        assert result.category == "git_force"
+
+
 class TestFluxDeleteNotBlocked:
     """Test Flux delete operations are no longer blocked (moved to approvable T3)."""
 
@@ -282,15 +313,15 @@ class TestGetBlockedPatterns:
         assert isinstance(patterns, list)
         assert len(patterns) > 0
 
-    def test_patterns_are_strings(self):
-        """All patterns are strings."""
+    def test_patterns_are_compiled(self):
+        """All patterns are pre-compiled regex objects."""
         patterns = get_blocked_patterns()
-        assert all(isinstance(p, str) for p in patterns)
+        assert all(isinstance(p, re.Pattern) for p in patterns)
 
     def test_contains_critical_patterns(self):
         """Patterns include critical commands."""
         patterns = get_blocked_patterns()
-        patterns_str = " ".join(patterns)
+        patterns_str = " ".join(p.pattern for p in patterns)
 
         # Should contain AWS critical
         assert "aws" in patterns_str

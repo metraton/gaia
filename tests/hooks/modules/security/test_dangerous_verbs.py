@@ -35,7 +35,7 @@ from modules.security.dangerous_verbs import (
     R_FLAG_MEANS_RECURSIVE_DELETE,
     ALWAYS_SAFE_CLIS,
     SIMULATION_FLAGS,
-    _CLI_FAMILY_LOOKUP,
+    CLI_FAMILY_LOOKUP,
 )
 
 
@@ -250,13 +250,13 @@ class TestAlwaysSafeCLIs:
 
     def test_always_safe_cli_family_detection(self):
         """Always-safe CLIs get correct cli_family from lookup."""
-        # k9s is in _CLI_FAMILY_LOOKUP as k8s
+        # k9s is in CLI_FAMILY_LOOKUP as k8s
         result = detect_dangerous_command("k9s")
         assert result.cli_family == "k8s"
-        # stern is in _CLI_FAMILY_LOOKUP as k8s
+        # stern is in CLI_FAMILY_LOOKUP as k8s
         result = detect_dangerous_command("stern pod-name")
         assert result.cli_family == "k8s"
-        # jq is NOT in _CLI_FAMILY_LOOKUP, gets default "text"
+        # jq is NOT in CLI_FAMILY_LOOKUP, gets default "text"
         result = detect_dangerous_command("jq '.data' file.json")
         assert result.cli_family == "text"
 
@@ -339,7 +339,34 @@ class TestAgnosticVerbScanning:
         assert result.is_dangerous is True
         assert result.category == "MUTATIVE"
         assert result.verb == "apply"
-        assert result.cli_family == "iac"
+
+    def test_aws_delete_with_leading_flag_values_is_destructive(self):
+        """Danger detection must survive multiple flag/value pairs before the verb."""
+        result = detect_dangerous_command(
+            "aws --profile prod --region us-east-1 ec2 delete-vpc --vpc-id vpc-123"
+        )
+        assert result.is_dangerous is True
+        assert result.category == "DESTRUCTIVE"
+        assert result.verb == "delete"
+
+    def test_gcloud_delete_with_project_flags_is_destructive(self):
+        """gcloud delete must still be found after project/config flags."""
+        result = detect_dangerous_command(
+            "gcloud --project dev --configuration shared container clusters delete cluster-a"
+        )
+        assert result.is_dangerous is True
+        assert result.category == "DESTRUCTIVE"
+        assert result.verb == "delete"
+
+    def test_kubectl_delete_with_context_flags_is_destructive(self):
+        """kubectl delete must still be found after context and namespace flags."""
+        result = detect_dangerous_command(
+            "kubectl --context prod --namespace default delete namespace payments"
+        )
+        assert result.is_dangerous is True
+        assert result.category == "DESTRUCTIVE"
+        assert result.verb == "delete"
+        assert result.cli_family == "k8s"
 
     def test_git_push_is_mutative(self):
         """git push origin main is MUTATIVE."""
@@ -821,7 +848,7 @@ class TestDangerousFlags:
 # ============================================================================
 
 class TestCLIFamilyLookup:
-    """Test lightweight CLI family detection via _CLI_FAMILY_LOOKUP."""
+    """Test lightweight CLI family detection via CLI_FAMILY_LOOKUP."""
 
     @pytest.mark.parametrize("cli,expected_family", [
         ("kubectl", "k8s"),

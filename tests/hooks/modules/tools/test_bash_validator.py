@@ -310,6 +310,80 @@ class TestBlockedCommandsPriority:
         assert "security policy" in result.reason.lower()
         assert result.block_response is None
 
+    def test_aws_delete_vpc_with_global_flags_still_uses_exit_2(self, validator):
+        """Leading AWS flags must not downgrade deny-list enforcement."""
+        result = validator.validate(
+            "aws --profile prod --region us-east-1 ec2 delete-vpc --vpc-id vpc-123"
+        )
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+    def test_gcloud_delete_cluster_with_project_flag_still_uses_exit_2(self, validator):
+        """Leading gcloud flags must not downgrade deny-list enforcement."""
+        result = validator.validate(
+            "gcloud --project dev container clusters delete cluster-a --region us-central1"
+        )
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+    def test_kubectl_delete_namespace_with_context_flag_still_uses_exit_2(self, validator):
+        """Leading kubectl flags must not downgrade deny-list enforcement."""
+        result = validator.validate(
+            "kubectl --context prod --namespace default delete namespace payments"
+        )
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+    def test_git_force_push_with_git_c_flag_still_uses_exit_2(self, validator):
+        """git global flags must not hide force pushes from the deny list."""
+        result = validator.validate("git -C repo push origin main --force")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        assert result.block_response is None
+
+
+class TestGlobalFlagSafeVariants:
+    """Read-only commands with leading flags should stay allowed."""
+
+    def test_git_log_with_worktree_flag_allowed(self, validator):
+        result = validator.validate("git -C repo log --oneline")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    def test_kubectl_get_with_context_flag_allowed(self, validator):
+        result = validator.validate("kubectl --context prod get pods")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    def test_aws_describe_with_profile_flag_allowed(self, validator):
+        result = validator.validate("aws --profile prod ec2 describe-instances")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+
+class TestManagedCliFailClosed:
+    """Known infra/system CLIs must not auto-allow unknown T3 commands."""
+
+    @pytest.mark.parametrize("command", [
+        "aws foo bar",
+        "kubectl foo bar",
+        "gcloud foo bar",
+        "terraform foo bar",
+    ])
+    def test_unknown_managed_cli_commands_are_blocked(self, validator, command):
+        result = validator.validate(command)
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "could not be classified as safe" in result.reason.lower()
+        assert result.block_response is None
+
 
 class TestEdgeCases:
     """Test edge cases."""

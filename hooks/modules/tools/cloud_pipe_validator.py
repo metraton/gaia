@@ -9,11 +9,12 @@ This validator runs before tier classification so violations are caught early
 and the agent receives a corrective response rather than a blocked execution.
 """
 
-import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
+
+from .hook_response import build_hook_permission_response
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +154,7 @@ def build_block_response(violation: PipeViolation, command: str) -> dict:
         f"{violation.correction}"
     )
 
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }
+    return build_hook_permission_response("deny", reason)
 
 
 def validate_cloud_pipe(command: str) -> Optional[dict]:

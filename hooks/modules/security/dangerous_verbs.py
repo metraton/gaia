@@ -12,12 +12,25 @@ Verb Taxonomy:
 - READ_ONLY: get, list, describe, show, logs, status, etc.
 """
 
-import shlex
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, List
 
+from .command_semantics import analyze_command
+
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Category Constants
+# ============================================================================
+
+CATEGORY_DESTRUCTIVE = "DESTRUCTIVE"
+CATEGORY_MUTATIVE = "MUTATIVE"
+CATEGORY_SIMULATION = "SIMULATION"
+CATEGORY_READ_ONLY = "READ_ONLY"
+CATEGORY_ALIAS = "ALIAS"
+CATEGORY_UNKNOWN = "UNKNOWN"
 
 
 # ============================================================================
@@ -30,8 +43,9 @@ class DangerResult:
 
     Attributes:
         is_dangerous: Whether the command is classified as dangerous (T3).
-        category: Verb category: "DESTRUCTIVE", "MUTATIVE", "SIMULATION",
-            "READ_ONLY", "ALIAS", or "UNKNOWN".
+        category: Verb category: CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE,
+            CATEGORY_SIMULATION, CATEGORY_READ_ONLY, CATEGORY_ALIAS, or
+            CATEGORY_UNKNOWN.
         verb: The extracted verb (e.g., "delete", "apply", "get").
         verb_position: Token index where the verb was found (-1 if none).
         dangerous_flags: List of flags that escalate the danger level.
@@ -40,7 +54,7 @@ class DangerResult:
         reason: Human-readable explanation of the classification.
     """
     is_dangerous: bool = False
-    category: str = "UNKNOWN"
+    category: str = CATEGORY_UNKNOWN
     verb: str = ""
     verb_position: int = -1
     dangerous_flags: List[str] = field(default_factory=list)
@@ -88,7 +102,7 @@ READ_ONLY_VERBS: FrozenSet[str] = frozenset({
     "search", "find", "query", "scan", "fetch", "download",
     "version", "help", "whoami", "which", "explain",
     "top", "stat", "history", "blame", "tree", "shortlog", "reflog",
-    "env", "auth", "config", "cluster-info", "api-resources",
+    "env", "auth", "config", "cluster-info", "api-resources", "ls",
 })
 
 
@@ -97,17 +111,17 @@ READ_ONLY_VERBS: FrozenSet[str] = frozenset({
 # ============================================================================
 
 COMMAND_ALIASES: Dict[str, str] = {
-    "rm": "DESTRUCTIVE",
-    "rmdir": "DESTRUCTIVE",
-    "mv": "MUTATIVE",
-    "cp": "MUTATIVE",
-    "ln": "MUTATIVE",
-    "dd": "DESTRUCTIVE",
-    "mkfs": "DESTRUCTIVE",
-    "fdisk": "DESTRUCTIVE",
-    "chmod": "MUTATIVE",
-    "chown": "MUTATIVE",
-    "chgrp": "MUTATIVE",
+    "rm": CATEGORY_DESTRUCTIVE,
+    "rmdir": CATEGORY_DESTRUCTIVE,
+    "mv": CATEGORY_MUTATIVE,
+    "cp": CATEGORY_MUTATIVE,
+    "ln": CATEGORY_MUTATIVE,
+    "dd": CATEGORY_DESTRUCTIVE,
+    "mkfs": CATEGORY_DESTRUCTIVE,
+    "fdisk": CATEGORY_DESTRUCTIVE,
+    "chmod": CATEGORY_MUTATIVE,
+    "chown": CATEGORY_MUTATIVE,
+    "chgrp": CATEGORY_MUTATIVE,
 }
 
 
@@ -201,7 +215,7 @@ DELETE_FLAG_IS_DESTRUCTIVE: FrozenSet[str] = frozenset({
 # Lightweight CLI Family Lookup (metadata only, not routing)
 # ============================================================================
 
-_CLI_FAMILY_LOOKUP: Dict[str, str] = {
+CLI_FAMILY_LOOKUP: Dict[str, str] = {
     "kubectl": "k8s", "helm": "k8s", "flux": "k8s", "kustomize": "k8s",
     "k9s": "k8s", "kubectx": "k8s", "kubens": "k8s", "stern": "k8s",
     "terraform": "iac", "terragrunt": "iac", "pulumi": "iac", "cdktf": "iac",
@@ -229,69 +243,13 @@ _CLI_FAMILY_LOOKUP: Dict[str, str] = {
 
 
 # ============================================================================
-# Tokenization
-# ============================================================================
-
-def _tokenize(command: str) -> List[str]:
-    """Tokenize a shell command safely.
-
-    Uses shlex for proper quote handling. Falls back to simple split
-    on parse errors (e.g., unmatched quotes).
-
-    Args:
-        command: Raw shell command string.
-
-    Returns:
-        List of tokens. Empty list for empty/whitespace commands.
-    """
-    if not command or not command.strip():
-        return []
-    try:
-        return shlex.split(command.strip())
-    except ValueError:
-        # Fallback for malformed quoting
-        return command.strip().split()
-
-
-# ============================================================================
-# Verb Classification
-# ============================================================================
-
-def _classify_verb(verb: str) -> str:
-    """Classify a verb into its taxonomy category.
-
-    Args:
-        verb: Extracted verb string.
-
-    Returns:
-        Category string: "DESTRUCTIVE", "MUTATIVE", "SIMULATION",
-        "READ_ONLY", or "UNKNOWN".
-    """
-    if not verb:
-        return "UNKNOWN"
-    v = verb.lower()
-    if v in DESTRUCTIVE_VERBS:
-        return "DESTRUCTIVE"
-    if v in SIMULATION_VERBS:
-        return "SIMULATION"
-    if v in MUTATIVE_VERBS:
-        return "MUTATIVE"
-    if v in READ_ONLY_VERBS:
-        return "READ_ONLY"
-    # Fall back to command aliases (e.g., "rm" -> DESTRUCTIVE, "mv" -> MUTATIVE)
-    if v in COMMAND_ALIASES:
-        return COMMAND_ALIASES[v]
-    return "UNKNOWN"
-
-
-# ============================================================================
 # Dangerous Flag Scanning
 # ============================================================================
 
 def _scan_dangerous_flags(
     tokens: List[str],
     cli: str,
-    verb_category: str = "UNKNOWN",
+    verb_category: str = CATEGORY_UNKNOWN,
 ) -> List[str]:
     """Scan tokens for dangerous flags with context sensitivity.
 
@@ -343,7 +301,7 @@ def _scan_dangerous_flags(
                 if cli in DELETE_FLAG_IS_DESTRUCTIVE:
                     found.append(token)
             elif token == "--all":
-                if verb_category == "DESTRUCTIVE":
+                if verb_category == CATEGORY_DESTRUCTIVE:
                     found.append(token)
             elif token == "--recursive":
                 if cli in R_FLAG_MEANS_RECURSIVE_DELETE:
@@ -375,7 +333,7 @@ def detect_dangerous_command(command: str) -> DangerResult:
     2. ALWAYS_SAFE_CLIS fast-path.
     3. COMMAND_ALIASES fast-path.
     4. Simulation flag override: --dry-run anywhere = safe.
-    5. Scan tokens[1:5] for known verbs (skip flags, split hyphens).
+    5. Scan the first semantic non-flag tokens after the base CLI.
     6. Scan for dangerous flags.
     7. No match: not dangerous, unknown.
 
@@ -389,30 +347,30 @@ def detect_dangerous_command(command: str) -> DangerResult:
     if not command or not command.strip():
         return DangerResult(
             is_dangerous=False,
-            category="UNKNOWN",
+            category=CATEGORY_UNKNOWN,
             reason="Empty command",
             confidence="high",
         )
 
-    tokens = _tokenize(command)
+    semantics = analyze_command(command)
+    tokens = list(semantics.tokens)
     if not tokens:
         return DangerResult(
             is_dangerous=False,
-            category="UNKNOWN",
+            category=CATEGORY_UNKNOWN,
             reason="No tokens after parsing",
             confidence="high",
         )
 
-    # Strip path prefix: /usr/local/bin/kubectl -> kubectl
-    base_cmd = tokens[0].rsplit("/", 1)[-1] if "/" in tokens[0] else tokens[0]
-    family = _CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
+    base_cmd = semantics.base_cmd
+    family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
 
     # --- Step 1: Always-safe CLI fast-path ---
     if base_cmd in ALWAYS_SAFE_CLIS:
-        safe_family = _CLI_FAMILY_LOOKUP.get(base_cmd, "text")
+        safe_family = CLI_FAMILY_LOOKUP.get(base_cmd, "text")
         return DangerResult(
             is_dangerous=False,
-            category="READ_ONLY",
+            category=CATEGORY_READ_ONLY,
             verb=base_cmd,
             verb_position=0,
             cli_family=safe_family,
@@ -439,7 +397,7 @@ def detect_dangerous_command(command: str) -> DangerResult:
     if len(tokens) == 1:
         return DangerResult(
             is_dangerous=False,
-            category="UNKNOWN",
+            category=CATEGORY_UNKNOWN,
             verb=base_cmd,
             verb_position=0,
             cli_family=family,
@@ -448,12 +406,12 @@ def detect_dangerous_command(command: str) -> DangerResult:
         )
 
     # --- Step 4: Simulation flag override ---
-    if any(t in SIMULATION_FLAGS for t in tokens):
+    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
         # Find the first non-flag token after base_cmd for the verb
-        verb, verb_pos = _find_first_non_flag(tokens)
+        verb, verb_pos = _find_first_non_flag(semantics.semantic_head_tokens)
         return DangerResult(
             is_dangerous=False,
-            category="SIMULATION",
+            category=CATEGORY_SIMULATION,
             verb=verb,
             verb_position=verb_pos,
             cli_family=family,
@@ -461,32 +419,27 @@ def detect_dangerous_command(command: str) -> DangerResult:
             reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
 
-    # --- Step 5: Scan tokens[1:5] for known verbs ---
-    scan_end = min(len(tokens), 5)
-    for i in range(1, scan_end):
-        token = tokens[i]
-        if token.startswith("-"):
-            continue
-
+    # --- Step 5: Scan semantic non-flag tokens near the command head ---
+    for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
         # Split hyphenated tokens: "delete-stack" -> check "delete"
-        candidate = token.split("-", 1)[0].lower() if "-" in token else token.lower()
+        candidate = token.split("-", 1)[0] if "-" in token else token
 
         # Also check full token for exact matches (e.g., "force-delete")
-        full_lower = token.lower()
+        full_lower = token
 
         # Determine confidence from position
-        confidence = "high" if i <= 2 else "medium"
+        confidence = "high" if semantic_index <= 2 else "medium"
 
         # Check verb taxonomy in priority order
         if candidate in DESTRUCTIVE_VERBS or full_lower in DESTRUCTIVE_VERBS:
             verb = candidate if candidate in DESTRUCTIVE_VERBS else full_lower
-            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, "DESTRUCTIVE")
+            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, CATEGORY_DESTRUCTIVE)
             flag_detail = f" with flags {dangerous_flags}" if dangerous_flags else ""
             return DangerResult(
                 is_dangerous=True,
-                category="DESTRUCTIVE",
+                category=CATEGORY_DESTRUCTIVE,
                 verb=verb,
-                verb_position=i,
+                verb_position=semantic_index,
                 dangerous_flags=dangerous_flags,
                 cli_family=family,
                 confidence=confidence,
@@ -497,9 +450,9 @@ def detect_dangerous_command(command: str) -> DangerResult:
             verb = candidate if candidate in SIMULATION_VERBS else full_lower
             return DangerResult(
                 is_dangerous=False,
-                category="SIMULATION",
+                category=CATEGORY_SIMULATION,
                 verb=verb,
-                verb_position=i,
+                verb_position=semantic_index,
                 cli_family=family,
                 confidence=confidence,
                 reason=f"Simulation verb '{verb}'",
@@ -507,16 +460,16 @@ def detect_dangerous_command(command: str) -> DangerResult:
 
         if candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
             verb = candidate if candidate in MUTATIVE_VERBS else full_lower
-            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, "MUTATIVE")
+            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, CATEGORY_MUTATIVE)
             flag_detail = (
                 f" with dangerous flags {dangerous_flags}"
                 if dangerous_flags else ""
             )
             return DangerResult(
                 is_dangerous=True,
-                category="MUTATIVE",
+                category=CATEGORY_MUTATIVE,
                 verb=verb,
-                verb_position=i,
+                verb_position=semantic_index,
                 dangerous_flags=dangerous_flags,
                 cli_family=family,
                 confidence=confidence,
@@ -527,9 +480,9 @@ def detect_dangerous_command(command: str) -> DangerResult:
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
             return DangerResult(
                 is_dangerous=False,
-                category="READ_ONLY",
+                category=CATEGORY_READ_ONLY,
                 verb=verb,
-                verb_position=i,
+                verb_position=semantic_index,
                 cli_family=family,
                 confidence=confidence,
                 reason=f"Read-only verb '{verb}'",
@@ -543,7 +496,7 @@ def detect_dangerous_command(command: str) -> DangerResult:
                 is_dangerous=True,
                 category=alias_cat,
                 verb=candidate,
-                verb_position=i,
+                verb_position=semantic_index,
                 dangerous_flags=dangerous_flags,
                 cli_family=family,
                 confidence=confidence,
@@ -551,13 +504,13 @@ def detect_dangerous_command(command: str) -> DangerResult:
             )
 
     # --- Step 6: Scan for dangerous flags (no verb found) ---
-    dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, "UNKNOWN")
+    dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, CATEGORY_UNKNOWN)
     if dangerous_flags:
         # Find first non-flag token as the "verb" for reporting
-        verb, verb_pos = _find_first_non_flag(tokens)
+        verb, verb_pos = _find_first_non_flag(semantics.semantic_head_tokens)
         return DangerResult(
             is_dangerous=True,
-            category="UNKNOWN",
+            category=CATEGORY_UNKNOWN,
             verb=verb,
             verb_position=verb_pos,
             dangerous_flags=dangerous_flags,
@@ -567,10 +520,10 @@ def detect_dangerous_command(command: str) -> DangerResult:
         )
 
     # --- Step 7: No match ---
-    verb, verb_pos = _find_first_non_flag(tokens)
+    verb, verb_pos = _find_first_non_flag(semantics.semantic_head_tokens)
     return DangerResult(
         is_dangerous=False,
-        category="UNKNOWN",
+        category=CATEGORY_UNKNOWN,
         verb=verb,
         verb_position=verb_pos,
         cli_family=family,
@@ -583,14 +536,14 @@ def detect_dangerous_command(command: str) -> DangerResult:
 # Helpers
 # ============================================================================
 
-def _find_first_non_flag(tokens: List[str]) -> tuple:
-    """Find the first non-flag token after tokens[0].
+def _find_first_non_flag(tokens: List[str] | tuple) -> tuple:
+    """Find the first semantic token after tokens[0].
 
     Returns:
         (verb, position) tuple. ("", -1) if no non-flag token found.
     """
-    for i in range(1, min(len(tokens), 5)):
-        if not tokens[i].startswith("-"):
+    for i in range(1, len(tokens)):
+        if tokens[i]:
             return tokens[i], i
     return "", -1
 

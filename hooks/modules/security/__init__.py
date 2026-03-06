@@ -11,6 +11,7 @@ Provides:
 """
 
 from .tiers import SecurityTier, classify_command_tier
+from .command_semantics import analyze_command, CommandSemantics
 from .safe_commands import (
     is_read_only_command,
     is_single_command_safe,
@@ -22,6 +23,15 @@ from .blocked_commands import (
     BlockedCommandResult,
 )
 from .gitops_validator import validate_gitops_workflow, GitOpsValidationResult
+from .dangerous_verbs import (
+    CLI_FAMILY_LOOKUP,
+    CATEGORY_DESTRUCTIVE,
+    CATEGORY_MUTATIVE,
+    CATEGORY_SIMULATION,
+    CATEGORY_READ_ONLY,
+    CATEGORY_ALIAS,
+    CATEGORY_UNKNOWN,
+)
 from .approval_constants import APPROVAL_INDICATORS
 from .approval_grants import (
     write_approval_grant,
@@ -35,6 +45,8 @@ __all__ = [
     # Tiers
     "SecurityTier",
     "classify_command_tier",
+    "analyze_command",
+    "CommandSemantics",
     # Safe commands
     "is_read_only_command",
     "is_single_command_safe",
@@ -46,6 +58,14 @@ __all__ = [
     # GitOps
     "validate_gitops_workflow",
     "GitOpsValidationResult",
+    # Dangerous verbs
+    "CLI_FAMILY_LOOKUP",
+    "CATEGORY_DESTRUCTIVE",
+    "CATEGORY_MUTATIVE",
+    "CATEGORY_SIMULATION",
+    "CATEGORY_READ_ONLY",
+    "CATEGORY_ALIAS",
+    "CATEGORY_UNKNOWN",
     # Approval
     "APPROVAL_INDICATORS",
     # Approval Grants

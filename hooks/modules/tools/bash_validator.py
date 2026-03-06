@@ -22,11 +22,21 @@ import logging
 from typing import Tuple, Dict, Any, Optional, List
 from dataclasses import dataclass
 
-from ..security.tiers import SecurityTier, classify_command_tier
+from ..security.tiers import SecurityTier
+from ..security.command_semantics import analyze_command
 from ..security.safe_commands import is_read_only_command
-from ..security.blocked_commands import is_blocked_command, get_suggestion_for_blocked
+from ..security.blocked_commands import is_blocked_command
 from ..security.gitops_validator import validate_gitops_workflow
-from ..security.dangerous_verbs import detect_dangerous_command, build_t3_block_response
+from ..security.dangerous_verbs import (
+    detect_dangerous_command,
+    build_t3_block_response,
+    ALWAYS_SAFE_CLIS,
+    CLI_FAMILY_LOOKUP,
+    CATEGORY_DESTRUCTIVE,
+    CATEGORY_MUTATIVE,
+    CATEGORY_READ_ONLY,
+    CATEGORY_SIMULATION,
+)
 from ..security.approval_grants import (
     check_approval_grant,
     consume_grant,
@@ -36,6 +46,7 @@ from ..security.approval_grants import (
 from ..security.interactive_handler import ensure_non_interactive
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
+from .hook_response import build_hook_permission_response
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +87,18 @@ FORBIDDEN_FOOTER_PATTERNS = [
     r"Co-Authored-By:\s+Claude",
 ]
 
+# CLI families that should fail closed if they cannot be proven safe.
+# These commands operate against infrastructure, cluster state, system state,
+# or history-bearing resources where an "unknown" subcommand is not acceptable.
+FAIL_CLOSED_CLI_FAMILIES = frozenset({
+    "cloud",
+    "k8s",
+    "iac",
+    "git",
+    "docker",
+    "system",
+})
+
 
 class BashValidator:
     """Validator for Bash tool invocations."""
@@ -83,6 +106,16 @@ class BashValidator:
     def __init__(self):
         """Initialize validator."""
         self.shell_parser = get_shell_parser()
+
+    def _requires_fail_closed_managed_cli(self, command: str) -> bool:
+        """Return True when a known high-impact CLI should not auto-allow unknown T3."""
+        semantics = analyze_command(command)
+        base_cmd = semantics.base_cmd
+        if not base_cmd or base_cmd in ALWAYS_SAFE_CLIS:
+            return False
+
+        family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
+        return family in FAIL_CLOSED_CLI_FAMILIES
 
     def _has_operators(self, command: str) -> bool:
         """Quick check if command has operators (before parsing)."""
@@ -120,12 +153,11 @@ class BashValidator:
         # ================================================================
         blocked_result = is_blocked_command(command)
         if blocked_result.is_blocked:
-            suggestion = get_suggestion_for_blocked(command)
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Command blocked by security policy: {blocked_result.category}",
-                suggestions=[suggestion] if suggestion else [],
+                suggestions=[blocked_result.suggestion] if blocked_result.suggestion else [],
             )
 
         # Also check each component of compound commands against the deny list.
@@ -135,12 +167,11 @@ class BashValidator:
             for component in components:
                 comp_blocked = is_blocked_command(component.strip())
                 if comp_blocked.is_blocked:
-                    suggestion = get_suggestion_for_blocked(component.strip())
                     return BashValidationResult(
                         allowed=False,
                         tier=SecurityTier.T3_BLOCKED,
                         reason=f"Command blocked by security policy: {comp_blocked.category}",
-                        suggestions=[suggestion] if suggestion else [],
+                        suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
                     )
 
         # Auto-strip forbidden footers from git commits (instead of blocking).
@@ -190,18 +221,13 @@ class BashValidator:
         return result
 
     def _validate_single_command(self, command: str) -> BashValidationResult:
-        """Validate a single command (no operators)."""
+        """Validate a single command (no operators).
 
-        # Check for blocked patterns FIRST (deny before allow)
-        blocked_result = is_blocked_command(command)
-        if blocked_result.is_blocked:
-            suggestion = get_suggestion_for_blocked(command)
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=f"Command blocked by security policy: {blocked_result.category}",
-                suggestions=[suggestion] if suggestion else [],
-            )
+        Note: is_blocked_command() is NOT called here because validate()
+        already checks the full command AND each compound component against
+        the deny list before dispatching to this method.  Calling it again
+        would be redundant work for the same string.
+        """
 
         # Fast-path: Auto-approve read-only commands
         is_safe, reason = is_read_only_command(command)
@@ -219,6 +245,7 @@ class BashValidator:
         # With Bash(*) in allow, ALL Bash commands reach this hook — the hook is
         # the primary security gate for dangerous command detection.
         danger = detect_dangerous_command(command)
+        grant_consumed = False
         if danger.is_dangerous:
             # Check for an active approval grant before blocking.
             # When the orchestrator resumes an agent with "User approved: ...",
@@ -231,6 +258,7 @@ class BashValidator:
                     command[:80], grant.approved_scope,
                 )
                 consume_grant(grant)
+                grant_consumed = True
                 # Fall through to tier classification below (do NOT block)
             else:
                 # Generate a cryptographic nonce and write a pending approval.
@@ -247,19 +275,29 @@ class BashValidator:
                 t3_block = build_t3_block_response(command, danger, nonce=nonce)
                 # Wrap in hookSpecificOutput format so Claude Code receives the
                 # corrective message (exit 0) instead of a terminal error (exit 2).
-                hook_block = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": t3_block["message"],
-                    }
-                }
+                hook_block = build_hook_permission_response("deny", t3_block["message"])
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Dangerous {danger.category.lower()} command: {danger.reason}",
                     block_response=hook_block,
                 )
+
+        # Semantic fallback for commands that are clearly read-only/simulation
+        # but were not matched by the stricter safe_commands heuristics.
+        if danger.category == CATEGORY_READ_ONLY:
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T0_READ_ONLY,
+                reason=f"Semantic read-only detection: {danger.reason}",
+            )
+
+        if danger.category == CATEGORY_SIMULATION:
+            return BashValidationResult(
+                allowed=True,
+                tier=SecurityTier.T2_DRY_RUN,
+                reason=f"Semantic simulation detection: {danger.reason}",
+            )
 
         # Check GitOps commands
         if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
@@ -275,8 +313,25 @@ class BashValidator:
         # Check credentials requirement
         requires_creds, cred_warning = self._check_credentials_required(command)
 
-        # Classify tier
-        tier = classify_command_tier(command)
+        # Derive tier from results already computed above.
+        # All T0 (read-only), T2 (simulation), and blocked paths have already
+        # returned.  The only commands reaching here are:
+        #   - danger.is_dangerous=True with an active approval grant (T3)
+        #   - danger.category="UNKNOWN" with no dangerous flags (unknown verb)
+        # Both default to T3; no need to call classify_command_tier() again.
+        tier = SecurityTier.T3_BLOCKED
+
+        # Fail-closed: block unknown subcommands for managed CLIs UNLESS the
+        # command was explicitly approved via a grant (grant_consumed=True).
+        if not grant_consumed and self._requires_fail_closed_managed_cli(command):
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=(
+                    "Managed CLI command could not be classified as safe; "
+                    "review the subcommand or extend security rules before allowing it"
+                ),
+            )
 
         # Commands that reached here passed both blocked_commands.py and the
         # dangerous verb detector (either safe, granted, or unknown verb).
@@ -294,6 +349,7 @@ class BashValidator:
         """Validate a compound command (multiple components)."""
         logger.info(f"Compound command detected with {len(components)} components")
 
+        component_results: List[BashValidationResult] = []
         for i, component in enumerate(components, 1):
             result = self._validate_single_command(component)
 
@@ -308,11 +364,15 @@ class BashValidator:
                     ),
                     suggestions=result.suggestions,
                 )
+            component_results.append(result)
 
-        # All components validated
-        # Return highest tier among components
-        tiers = [classify_command_tier(c) for c in components]
-        highest_tier = max(tiers, key=lambda t: ["T0", "T1", "T2", "T3"].index(t.value))
+        # All components validated -- derive highest tier from results already
+        # computed by _validate_single_command (avoids redundant classification).
+        tier_order = ["T0", "T1", "T2", "T3"]
+        highest_tier = max(
+            (r.tier for r in component_results),
+            key=lambda t: tier_order.index(t.value),
+        )
 
         return BashValidationResult(
             allowed=True,
@@ -494,11 +554,4 @@ def create_permission_allow_response(reason: str) -> str:
 
     This response tells Claude Code to skip the permission check.
     """
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": reason
-        }
-    }
-    return json.dumps(response)
+    return json.dumps(build_hook_permission_response("allow", reason))

@@ -14,7 +14,12 @@ from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
 from ..security.approval_constants import APPROVAL_INDICATORS
-from ..security.dangerous_verbs import detect_dangerous_command, DangerResult
+from ..security.dangerous_verbs import (
+    detect_dangerous_command,
+    DangerResult,
+    CATEGORY_DESTRUCTIVE,
+    CATEGORY_MUTATIVE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +139,7 @@ def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[DangerResult]]:
 
     for candidate in candidates:
         result = detect_dangerous_command(candidate)
-        if result.is_dangerous and result.category in ("DESTRUCTIVE", "MUTATIVE"):
+        if result.is_dangerous and result.category in (CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE):
             return True, candidate, result
 
     # Fallback: check legacy keywords for anything the extractor might miss

@@ -302,27 +302,31 @@ class TestDefenseInDepth:
     """Verify that security checks happen in the correct order."""
 
     def test_blocked_checked_before_safe(self):
-        """bash_validator must check blocked_commands BEFORE safe_commands."""
-        # Read the source code and verify the order
+        """bash_validator.validate() must check blocked_commands BEFORE safe_commands.
+
+        The blocked check runs in validate() (the public entry point) before
+        dispatching to _validate_single_command.  This test verifies the
+        actual defense-in-depth order in the method that callers invoke.
+        """
         source = (HOOKS_MODULES_DIR / "tools" / "bash_validator.py").read_text()
 
-        # Find the positions of blocked check and safe check in _validate_single_command
+        # Extract the validate() method body (the public entry point)
         method_match = re.search(
-            r'def _validate_single_command\(self.*?\n(.*?)(?=\n    def |\nclass |\Z)',
+            r'def validate\(self.*?\n(.*?)(?=\n    def |\nclass |\Z)',
             source, re.DOTALL
         )
-        assert method_match, "Could not find _validate_single_command method"
+        assert method_match, "Could not find validate method"
 
         method_body = method_match.group(1)
 
         blocked_pos = method_body.find("is_blocked_command")
-        safe_pos = method_body.find("is_read_only_command")
+        safe_pos = method_body.find("_validate_single_command")
 
-        assert blocked_pos != -1, "is_blocked_command call not found in _validate_single_command"
-        assert safe_pos != -1, "is_read_only_command call not found in _validate_single_command"
+        assert blocked_pos != -1, "is_blocked_command call not found in validate()"
+        assert safe_pos != -1, "_validate_single_command call not found in validate()"
         assert blocked_pos < safe_pos, (
-            "SECURITY: is_blocked_command must be checked BEFORE is_read_only_command "
-            f"(blocked at pos {blocked_pos}, safe at pos {safe_pos})"
+            "SECURITY: is_blocked_command must be checked BEFORE _validate_single_command "
+            f"(blocked at pos {blocked_pos}, single_command at pos {safe_pos})"
         )
 
 

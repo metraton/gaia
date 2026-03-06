@@ -17,7 +17,6 @@ Tiers:
 import re
 import logging
 from enum import Enum
-from typing import Optional
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -129,20 +128,26 @@ def _classify_command_tier_cached(
         return SecurityTier.T0_READ_ONLY
 
     # Use the universal verb detector for T3 classification
-    from .dangerous_verbs import detect_dangerous_command
+    from .dangerous_verbs import (
+        detect_dangerous_command,
+        CATEGORY_DESTRUCTIVE,
+        CATEGORY_MUTATIVE,
+        CATEGORY_READ_ONLY,
+        CATEGORY_SIMULATION,
+    )
     danger = detect_dangerous_command(command)
-    if danger.is_dangerous and danger.category in ("DESTRUCTIVE", "MUTATIVE"):
+    if danger.category == CATEGORY_READ_ONLY:
+        return SecurityTier.T0_READ_ONLY
+    if danger.category == CATEGORY_SIMULATION:
+        return SecurityTier.T2_DRY_RUN
+    if danger.is_dangerous and danger.category in (CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE):
         return SecurityTier.T3_BLOCKED
 
     # Default to blocked for unknown commands
     return SecurityTier.T3_BLOCKED
 
 
-def classify_command_tier(
-    command: str,
-    is_read_only_func=None,
-    blocked_patterns: Optional[list] = None
-) -> SecurityTier:
+def classify_command_tier(command: str) -> SecurityTier:
     """
     Classify command into security tier.
 
@@ -153,7 +158,7 @@ def classify_command_tier(
 
     Classification order:
     1. Ultra-common T0 fast-path (ls, git status, etc.)
-    2. Blocked patterns (T3) -- if flagged externally
+    2. Blocked patterns (T3) -- checked against pre-compiled patterns
     3. Dry-run/simulation (T2) -- --dry-run, plan, diff, template
     4. Local validation (T1) -- validate, lint, fmt, check
     5. Read-only (T0) -- safe_commands check
@@ -162,8 +167,6 @@ def classify_command_tier(
 
     Args:
         command: Shell command to classify
-        is_read_only_func: Optional function to check if command is read-only
-        blocked_patterns: Optional list of blocked command patterns
 
     Returns:
         SecurityTier classification
@@ -174,15 +177,14 @@ def classify_command_tier(
     command = command.strip()
 
     # Import here to avoid circular imports
-    if blocked_patterns is None:
-        from .blocked_commands import get_blocked_patterns
-        blocked_patterns = get_blocked_patterns()
+    from .blocked_commands import get_blocked_patterns
+    blocked_patterns = get_blocked_patterns()
 
     # Check for blocked operations first (T3)
-    # This must be done before caching since blocked_patterns can be injected
+    # This must be done before caching since blocked_patterns come from module state
     has_blocked = False
     for pattern in blocked_patterns:
-        if re.search(pattern, command, re.IGNORECASE):
+        if pattern.search(command):
             has_blocked = True
             break
 
