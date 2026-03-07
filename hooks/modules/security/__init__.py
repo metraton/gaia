@@ -33,6 +33,14 @@ from .dangerous_verbs import (
     CATEGORY_UNKNOWN,
 )
 from .approval_constants import APPROVAL_INDICATORS
+from .approval_scopes import (
+    ApprovalSignature,
+    SCOPE_EXACT_COMMAND,
+    SCOPE_SEMANTIC_SIGNATURE,
+    SCOPE_RESOURCE_FAMILY,
+    build_approval_signature,
+    matches_approval_signature,
+)
 from .approval_grants import (
     write_approval_grant,
     check_approval_grant,
@@ -68,6 +76,12 @@ __all__ = [
     "CATEGORY_UNKNOWN",
     # Approval
     "APPROVAL_INDICATORS",
+    "ApprovalSignature",
+    "SCOPE_EXACT_COMMAND",
+    "SCOPE_SEMANTIC_SIGNATURE",
+    "SCOPE_RESOURCE_FAMILY",
+    "build_approval_signature",
+    "matches_approval_signature",
     # Approval Grants
     "write_approval_grant",
     "check_approval_grant",

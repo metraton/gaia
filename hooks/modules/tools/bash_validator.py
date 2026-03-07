@@ -363,6 +363,7 @@ class BashValidator:
                         f"Reason: {result.reason}"
                     ),
                     suggestions=result.suggestions,
+                    block_response=result.block_response,
                 )
             component_results.append(result)
 

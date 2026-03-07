@@ -23,7 +23,8 @@ Grants are:
 
 Security properties:
 - Grants are created ONLY by the hook (not by agents)
-- Grants are scoped to the approved command verb+family
+- Nonce-activated grants are scoped to a semantic command signature
+- Legacy "User approved: ..." grants are scoped to an explicit resource family
 - Grants expire automatically
 - The deny list (blocked_commands.py) is NEVER bypassed -- grants only
   override the dangerous verb detector
@@ -43,11 +44,38 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..core.paths import find_claude_dir
+from .approval_scopes import (
+    ApprovalSignature,
+    SCOPE_LEGACY_VERB_ONLY,
+    SCOPE_RESOURCE_FAMILY,
+    SCOPE_SEMANTIC_SIGNATURE,
+    build_approval_signature,
+    matches_approval_signature,
+)
 
 logger = logging.getLogger(__name__)
 
 # Default grant TTL in minutes
 DEFAULT_GRANT_TTL_MINUTES = 10
+
+ACTIVATION_ACTIVATED = "activated"
+ACTIVATION_NOT_FOUND = "not_found"
+ACTIVATION_NONCE_MISMATCH = "nonce_mismatch"
+ACTIVATION_SESSION_MISMATCH = "session_mismatch"
+ACTIVATION_EXPIRED = "expired"
+ACTIVATION_INVALID_SIGNATURE = "invalid_signature"
+ACTIVATION_INVALID_PENDING = "invalid_pending"
+ACTIVATION_ERROR = "error"
+
+
+@dataclass(frozen=True)
+class ApprovalActivationResult:
+    """Structured result for pending approval activation."""
+
+    success: bool
+    status: str
+    reason: str
+    grant_path: Optional[Path] = None
 
 
 @dataclass
@@ -56,8 +84,10 @@ class ApprovalGrant:
 
     Attributes:
         session_id: The Claude session that owns this grant.
-        approved_verbs: Verbs approved (e.g., ["commit", "push"]).
+        approved_verbs: Human-readable verb summary for logs/debugging.
         approved_scope: Original approval scope text from the user.
+        scope_type: Approval scope mode (exact, semantic, family, or legacy).
+        scope_signature: Persisted ApprovalSignature payload for matching.
         granted_at: Unix timestamp when the grant was created.
         ttl_minutes: How long the grant is valid.
         used: Whether the grant has been consumed.
@@ -65,6 +95,8 @@ class ApprovalGrant:
     session_id: str = ""
     approved_verbs: List[str] = field(default_factory=list)
     approved_scope: str = ""
+    scope_type: str = SCOPE_LEGACY_VERB_ONLY
+    scope_signature: Optional[dict] = None
     granted_at: float = 0.0
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES
     used: bool = False
@@ -80,31 +112,21 @@ class ApprovalGrant:
         """Check if the grant is still usable."""
         return not self.is_expired() and not self.used
 
+    def get_signature(self) -> Optional[ApprovalSignature]:
+        """Deserialize the persisted scope signature, if present."""
+        if not self.scope_signature:
+            return None
+        try:
+            return ApprovalSignature.from_dict(self.scope_signature)
+        except Exception:
+            return None
+
     def matches_command(self, command: str) -> bool:
-        """Check if a command matches this grant's approved verbs.
-
-        Matching is intentionally broad within the approved verb set.
-        If 'commit' is approved, any `git commit ...` command matches.
-        If 'push' is approved, any `git push ...` command matches.
-        If 'apply' is approved, any `terraform apply ...` / `kubectl apply ...` matches.
-
-        Args:
-            command: The shell command to check.
-
-        Returns:
-            True if the command matches an approved verb.
-        """
-        if not self.approved_verbs:
+        """Check whether a command falls inside this grant's explicit scope."""
+        signature = self.get_signature()
+        if signature is None:
             return False
-
-        command_lower = command.lower()
-        for verb in self.approved_verbs:
-            # Match the verb as a word boundary in the command
-            # e.g., "commit" matches "git commit -m ..." but not "uncommit"
-            pattern = r'\b' + re.escape(verb) + r'\b'
-            if re.search(pattern, command_lower):
-                return True
-        return False
+        return matches_approval_signature(signature, command)
 
 
 def _get_grants_dir() -> Path:
@@ -195,12 +217,27 @@ def write_pending_approval(
     if session_id is None:
         session_id = _get_session_id()
 
+    signature = build_approval_signature(
+        command,
+        scope_type=SCOPE_SEMANTIC_SIGNATURE,
+        danger_verb=danger_verb,
+        danger_category=danger_category,
+    )
+    if signature is None:
+        logger.error(
+            "Failed to build semantic approval signature for pending command: %s",
+            command,
+        )
+        return None
+
     pending_data = {
         "nonce": nonce,
         "session_id": session_id,
         "command": command,
         "danger_verb": danger_verb,
         "danger_category": danger_category,
+        "scope_type": signature.scope_type,
+        "scope_signature": signature.to_dict(),
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
     }
@@ -225,7 +262,7 @@ def activate_pending_approval(
     nonce: str,
     session_id: Optional[str] = None,
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
-) -> Optional[Path]:
+) -> ApprovalActivationResult:
     """Activate a pending approval by converting it to an active grant.
 
     Called by the pre_tool_use hook when it detects "APPROVE:{nonce}" in a
@@ -238,7 +275,7 @@ def activate_pending_approval(
         ttl_minutes: TTL for the active grant.
 
     Returns:
-        Path to the active grant file, or None on failure.
+        Structured activation result with status and optional grant path.
     """
     if session_id is None:
         session_id = _get_session_id()
@@ -254,7 +291,11 @@ def activate_pending_approval(
                 "may have expired or already been activated",
                 nonce,
             )
-            return None
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_NOT_FOUND,
+                reason="Pending approval not found. It may have expired or already been used.",
+            )
 
         # Read and validate pending data
         pending_data = json.loads(pending_file.read_text())
@@ -262,7 +303,11 @@ def activate_pending_approval(
         # Validate nonce matches exactly
         if pending_data.get("nonce") != nonce:
             logger.warning("Nonce mismatch in pending file: expected %s", nonce)
-            return None
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_NONCE_MISMATCH,
+                reason="Nonce mismatch while activating approval.",
+            )
 
         # Validate session matches
         if pending_data.get("session_id") != session_id:
@@ -270,7 +315,11 @@ def activate_pending_approval(
                 "Session mismatch for nonce %s: pending=%s, current=%s",
                 nonce, pending_data.get("session_id"), session_id,
             )
-            return None
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_SESSION_MISMATCH,
+                reason="Approval was issued for a different Claude session.",
+            )
 
         # Validate not expired
         pending_timestamp = pending_data.get("timestamp", 0)
@@ -283,29 +332,49 @@ def activate_pending_approval(
             )
             # Clean up expired pending file
             _cleanup_grant(pending_file)
-            return None
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_EXPIRED,
+                reason="Approval nonce expired before activation.",
+            )
 
-        # Extract verbs from the blocked command
         command = pending_data.get("command", "")
         danger_verb = pending_data.get("danger_verb", "")
-        verbs = _extract_verbs_from_scope(command)
+        danger_category = pending_data.get("danger_category", "")
+        scope_signature_data = pending_data.get("scope_signature")
+        signature = None
+        if scope_signature_data:
+            signature = ApprovalSignature.from_dict(scope_signature_data)
+        else:
+            # Backward-compatible fallback for older pending files created
+            # before semantic signatures were persisted.
+            signature = build_approval_signature(
+                command,
+                scope_type=SCOPE_SEMANTIC_SIGNATURE,
+                danger_verb=danger_verb,
+                danger_category=danger_category,
+            )
 
-        # If verb extraction from command fails, use the danger_verb directly
-        if not verbs and danger_verb:
-            verbs = [danger_verb]
-
-        if not verbs:
+        if signature is None:
             logger.warning(
-                "Could not extract verbs from pending approval command: %s",
+                "Could not build semantic signature from pending approval command: %s",
                 command,
             )
-            return None
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_SIGNATURE,
+                reason="Approval signature could not be reconstructed safely.",
+            )
+
+        verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
 
         # Create active grant
         grant = ApprovalGrant(
             session_id=session_id,
             approved_verbs=verbs,
             approved_scope=command,
+            scope_type=signature.scope_type,
+            scope_signature=signature.to_dict(),
             granted_at=time.time(),
             ttl_minutes=ttl_minutes,
         )
@@ -320,14 +389,27 @@ def activate_pending_approval(
             "Pending approval activated: nonce=%s, verbs=%s, grant=%s",
             nonce, verbs, grant_file.name,
         )
-        return grant_file
+        return ApprovalActivationResult(
+            success=True,
+            status=ACTIVATION_ACTIVATED,
+            reason="Pending approval activated.",
+            grant_path=grant_file,
+        )
 
     except (json.JSONDecodeError, TypeError) as e:
         logger.error("Invalid pending approval file for nonce %s: %s", nonce, e)
-        return None
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_INVALID_PENDING,
+            reason="Pending approval file is invalid or corrupt.",
+        )
     except Exception as e:
         logger.error("Failed to activate pending approval: %s", e)
-        return None
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_ERROR,
+            reason="Unexpected error while activating approval.",
+        )
 
 
 # ============================================================================
@@ -350,9 +432,18 @@ def write_approval_grant(scope: str, ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTE
     session_id = _get_session_id()
     verbs = _extract_verbs_from_scope(scope)
 
-    if not verbs:
+    if len(verbs) != 1:
         logger.warning(
-            "Could not extract verbs from approval scope '%s' -- "
+            "Could not derive a single explicit approval verb from scope '%s' -- "
+            "no grant written. The bash_validator will block as usual.",
+            scope,
+        )
+        return None
+
+    signature = build_approval_signature(scope, scope_type=SCOPE_RESOURCE_FAMILY)
+    if signature is None:
+        logger.warning(
+            "Could not build explicit approval scope from '%s' -- "
             "no grant written. The bash_validator will block as usual.",
             scope,
         )
@@ -360,8 +451,10 @@ def write_approval_grant(scope: str, ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTE
 
     grant = ApprovalGrant(
         session_id=session_id,
-        approved_verbs=verbs,
+        approved_verbs=[signature.verb] if signature.verb else verbs,
         approved_scope=scope,
+        scope_type=signature.scope_type,
+        scope_signature=signature.to_dict(),
         granted_at=time.time(),
         ttl_minutes=ttl_minutes,
     )
@@ -417,11 +510,11 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
                         _cleanup_grant(grant_file)
                     continue
 
-                # Check if command matches
+                # Check if command matches the explicit scope signature
                 if grant.matches_command(command):
                     logger.info(
-                        "Approval grant matched: command='%s', scope='%s', verbs=%s",
-                        command[:80], grant.approved_scope, grant.approved_verbs,
+                        "Approval grant matched: command='%s', scope='%s', type=%s",
+                        command[:80], grant.approved_scope, grant.scope_type,
                     )
                     return grant
 
@@ -443,9 +536,9 @@ def consume_grant(grant: ApprovalGrant) -> None:
     so subsequent calls to check_approval_grant skip it. The grant file
     is cleaned up by the next cleanup_expired_grants call or on expiry.
 
-    Note: We do NOT consume on first use because an agent may need to run
-    related commands (e.g., git commit followed by git push, both approved).
-    The TTL handles eventual cleanup.
+    Note: We do NOT consume on first use. The scope signature is the primary
+    boundary; TTL handles eventual cleanup and allows a retried exact command
+    to pass after transient failures.
 
     Args:
         grant: The grant to mark as consumed (currently a no-op; TTL handles it).

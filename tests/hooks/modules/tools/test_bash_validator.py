@@ -121,6 +121,30 @@ class TestCompoundCommandValidation:
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
 
+    def test_t3_in_compound_propagates_block_response(self, validator, tmp_path, monkeypatch):
+        """Blocked T3 component should surface its nonce approval response."""
+        monkeypatch.setattr(
+            "modules.security.approval_grants.find_claude_dir",
+            lambda: tmp_path / ".claude",
+        )
+        result = validator.validate("ls -la && terraform apply")
+        assert result.allowed is False
+        assert result.block_response is not None
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "NONCE:" in reason
+
+    def test_multiple_t3_components_return_first_block_response(self, validator, tmp_path, monkeypatch):
+        """Compound commands should preserve the first blocked component response."""
+        monkeypatch.setattr(
+            "modules.security.approval_grants.find_claude_dir",
+            lambda: tmp_path / ".claude",
+        )
+        result = validator.validate("git commit -m 'feat: test' && git push origin main")
+        assert result.allowed is False
+        assert result.block_response is not None
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "NONCE:" in reason
+
     def test_blocks_deny_in_compound(self, validator):
         """Test blocks compound with denied command."""
         result = validator.validate("ls -la && kubectl delete namespace production")

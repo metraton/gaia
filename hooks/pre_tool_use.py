@@ -742,42 +742,9 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         # Step 27: Log resume operation
         logger.info(f"✅ RESUME: Continuing agent {resume_id}")
 
-        # Step 27b: Write approval grant for T3 passthrough
-        # Check for nonce-based approval first (APPROVE:{hex32}), then
-        # fall back to legacy string-matching indicators.
-        nonce_match = NONCE_APPROVAL_PATTERN.search(prompt)
-        if nonce_match:
-            nonce = nonce_match.group(1)
-            grant_path = activate_pending_approval(nonce)
-            if grant_path:
-                logger.info(
-                    "Nonce approval activated for resume %s: nonce=%s, file=%s",
-                    resume_id, nonce, grant_path.name,
-                )
-            else:
-                logger.warning(
-                    "Failed to activate nonce approval for resume %s: nonce=%s "
-                    "(may be expired, already used, or session mismatch)",
-                    resume_id, nonce,
-                )
-        else:
-            # Legacy path: string-matching approval indicators
-            prompt_lower = prompt.lower()
-            for indicator in APPROVAL_INDICATORS:
-                if indicator in prompt_lower:
-                    # Extract scope from "User approved: <scope>" format
-                    scope_match = re.search(
-                        r"user approved:\s*(.+?)(?:\n|$)", prompt, re.IGNORECASE
-                    )
-                    scope = scope_match.group(1).strip() if scope_match else prompt
-                    grant_path = write_approval_grant(scope)
-                    if grant_path:
-                        logger.info(
-                            "Legacy approval grant written for resume %s: "
-                            "scope='%s', file=%s",
-                            resume_id, scope, grant_path.name,
-                        )
-                    break
+        approval_error, has_approval = _handle_resume_approval(resume_id, prompt)
+        if approval_error:
+            return approval_error
 
         # Step 28: Save state for post-hook
         state = create_pre_hook_state(
@@ -786,7 +753,7 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
             tier="T0",  # Resume doesn't change tier
             allowed=True,
             is_t3=False,  # Approval already handled in phase 1
-            has_approval=True,  # Implicit from phase 1
+            has_approval=has_approval,
         )
         save_hook_state(state)
 
@@ -830,6 +797,72 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         }
 
     return None
+
+
+def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bool]:
+    """Process nonce or legacy approval indicators for Task resume."""
+    nonce_match = NONCE_APPROVAL_PATTERN.search(prompt)
+    if nonce_match:
+        nonce = nonce_match.group(1)
+        activation = activate_pending_approval(nonce)
+        if activation.success:
+            grant_path = activation.grant_path
+            grant_name = grant_path.name if grant_path else "<unknown>"
+            logger.info(
+                "Nonce approval activated for resume %s: nonce=%s, file=%s",
+                resume_id,
+                nonce,
+                grant_name,
+            )
+            return None, True
+
+        logger.warning(
+            "Denied resume %s: nonce approval activation failed for nonce=%s "
+            "(status=%s, reason=%s)",
+            resume_id,
+            nonce,
+            activation.status,
+            activation.reason,
+        )
+        return (
+            "❌ Approval activation failed\n\n"
+            f"Nonce: {nonce}\n"
+            f"Status: {activation.status}\n"
+            f"Reason: {activation.reason}\n\n"
+            "Request a fresh approval by retrying the blocked command so the hook "
+            "can issue a new nonce."
+        ), False
+
+    prompt_lower = prompt.lower()
+    for indicator in APPROVAL_INDICATORS:
+        if indicator not in prompt_lower:
+            continue
+
+        scope_match = re.search(r"user approved:\s*(.+?)(?:\n|$)", prompt, re.IGNORECASE)
+        scope = scope_match.group(1).strip() if scope_match else prompt
+        grant_path = write_approval_grant(scope)
+        if grant_path:
+            logger.info(
+                "Legacy approval grant written for resume %s: scope='%s', file=%s",
+                resume_id,
+                scope,
+                grant_path.name,
+            )
+            return None, True
+
+        logger.warning(
+            "Denied resume %s: legacy approval grant could not be written for scope='%s'",
+            resume_id,
+            scope,
+        )
+        return (
+            "❌ Approval grant creation failed\n\n"
+            f"Scope: {scope}\n\n"
+            "The approval text was detected, but the hook could not derive a safe "
+            "grant scope. Reissue approval using an explicit command scope."
+        ), False
+
+    return None, False
 
 
 def _format_blocked_message(result) -> str:

@@ -38,6 +38,15 @@ from modules.security.approval_grants import (
     activate_pending_approval,
     _extract_verbs_from_scope,
     _get_grants_dir,
+    ACTIVATION_ACTIVATED,
+    ACTIVATION_EXPIRED,
+    ACTIVATION_NOT_FOUND,
+    ACTIVATION_SESSION_MISMATCH,
+)
+from modules.security.approval_scopes import (
+    SCOPE_RESOURCE_FAMILY,
+    SCOPE_SEMANTIC_SIGNATURE,
+    build_approval_signature,
 )
 
 
@@ -117,6 +126,11 @@ class TestApprovalGrant:
             session_id="test",
             approved_verbs=["commit"],
             approved_scope="git commit",
+            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_signature=build_approval_signature(
+                "git commit",
+                scope_type=SCOPE_RESOURCE_FAMILY,
+            ).to_dict(),
             granted_at=time.time(),
             ttl_minutes=10,
         )
@@ -129,6 +143,11 @@ class TestApprovalGrant:
             session_id="test",
             approved_verbs=["commit"],
             approved_scope="git commit",
+            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_signature=build_approval_signature(
+                "git commit",
+                scope_type=SCOPE_RESOURCE_FAMILY,
+            ).to_dict(),
             granted_at=time.time() - 700,  # 11+ minutes ago
             ttl_minutes=10,
         )
@@ -140,42 +159,80 @@ class TestApprovalGrant:
             session_id="test",
             approved_verbs=["commit"],
             approved_scope="git commit",
+            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_signature=build_approval_signature(
+                "git commit",
+                scope_type=SCOPE_RESOURCE_FAMILY,
+            ).to_dict(),
             granted_at=time.time(),
             ttl_minutes=10,
             used=True,
         )
         assert not grant.is_valid()
 
-    def test_matches_git_commit(self):
-        grant = ApprovalGrant(approved_verbs=["commit"])
+    def test_resource_family_matches_git_commit(self):
+        grant = ApprovalGrant(
+            approved_verbs=["commit"],
+            approved_scope="git commit",
+            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_signature=build_approval_signature(
+                "git commit",
+                scope_type=SCOPE_RESOURCE_FAMILY,
+            ).to_dict(),
+        )
         assert grant.matches_command("git commit -m 'feat: add feature'")
 
-    def test_matches_git_push(self):
-        grant = ApprovalGrant(approved_verbs=["push"])
+    def test_semantic_signature_matches_exact_retry(self):
+        grant = ApprovalGrant(
+            approved_verbs=["push"],
+            approved_scope="git push origin feature/branch",
+            scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            scope_signature=build_approval_signature(
+                "git push origin feature/branch",
+                scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            ).to_dict(),
+        )
         assert grant.matches_command("git push origin feature/branch")
 
-    def test_matches_terraform_apply(self):
-        grant = ApprovalGrant(approved_verbs=["apply"])
-        assert grant.matches_command("terraform apply -auto-approve")
+    def test_semantic_signature_rejects_cross_cli_same_verb(self):
+        grant = ApprovalGrant(
+            approved_verbs=["apply"],
+            approved_scope="terraform apply prod/vpc",
+            scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            scope_signature=build_approval_signature(
+                "terraform apply prod/vpc",
+                scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            ).to_dict(),
+        )
+        assert not grant.matches_command("kubectl apply -f prod.yaml")
 
     def test_does_not_match_unrelated_command(self):
-        grant = ApprovalGrant(approved_verbs=["commit"])
+        grant = ApprovalGrant(
+            approved_verbs=["commit"],
+            approved_scope="git commit",
+            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_signature=build_approval_signature(
+                "git commit",
+                scope_type=SCOPE_RESOURCE_FAMILY,
+            ).to_dict(),
+        )
         assert not grant.matches_command("git push origin main")
 
-    def test_does_not_match_empty_verbs(self):
-        grant = ApprovalGrant(approved_verbs=[])
+    def test_does_not_match_missing_signature(self):
+        grant = ApprovalGrant(approved_verbs=["commit"])
         assert not grant.matches_command("git commit")
 
-    def test_word_boundary_matching(self):
-        """Verb 'commit' should not match 'uncommit'."""
-        grant = ApprovalGrant(approved_verbs=["commit"])
-        assert not grant.matches_command("git uncommit HEAD~1")
-
-    def test_multiple_verbs_match(self):
-        grant = ApprovalGrant(approved_verbs=["commit", "push"])
-        assert grant.matches_command("git commit -m 'feat: test'")
-        assert grant.matches_command("git push origin main")
-        assert not grant.matches_command("git status")
+    def test_resource_family_rejects_more_dangerous_variant(self):
+        grant = ApprovalGrant(
+            approved_verbs=["push"],
+            approved_scope="git push origin main",
+            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_signature=build_approval_signature(
+                "git push origin main",
+                scope_type=SCOPE_RESOURCE_FAMILY,
+            ).to_dict(),
+        )
+        assert not grant.matches_command("git push origin main --force")
 
 
 # ============================================================================
@@ -237,6 +294,8 @@ class TestPendingApproval:
         assert data["command"] == "git commit -m 'feat: test'"
         assert data["danger_verb"] == "commit"
         assert data["danger_category"] == "MUTATIVE"
+        assert data["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
+        assert data["scope_signature"]["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
         assert data["ttl_minutes"] == 10
         assert "timestamp" in data
 
@@ -268,10 +327,12 @@ class TestActivatePendingApproval:
             danger_verb="commit",
             danger_category="MUTATIVE",
         )
-        grant_path = activate_pending_approval(nonce)
-        assert grant_path is not None
-        assert grant_path.exists()
-        assert grant_path.name.startswith("grant-")
+        result = activate_pending_approval(nonce)
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert result.grant_path is not None
+        assert result.grant_path.exists()
+        assert result.grant_path.name.startswith("grant-")
 
     def test_activation_deletes_pending_file(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -284,23 +345,25 @@ class TestActivatePendingApproval:
         activate_pending_approval(nonce)
         assert not pending_path.exists(), "Pending file should be deleted after activation"
 
-    def test_activated_grant_matches_command(self, clean_grants_dir):
+    def test_activated_grant_matches_exact_command(self, clean_grants_dir):
         nonce = generate_nonce()
+        command = "git commit -m 'feat: test'"
         write_pending_approval(
             nonce=nonce,
-            command="git commit -m 'feat: test'",
+            command=command,
             danger_verb="commit",
             danger_category="MUTATIVE",
         )
         activate_pending_approval(nonce)
         # Now check the active grant
-        grant = check_approval_grant("git commit -m 'feat: another commit'")
+        grant = check_approval_grant(command)
         assert grant is not None
         assert "commit" in grant.approved_verbs
 
     def test_activation_fails_for_nonexistent_nonce(self, clean_grants_dir):
         result = activate_pending_approval("deadbeef" * 4)
-        assert result is None
+        assert result.success is False
+        assert result.status == ACTIVATION_NOT_FOUND
 
     def test_activation_fails_for_wrong_session(self, clean_grants_dir, monkeypatch):
         nonce = generate_nonce()
@@ -313,7 +376,8 @@ class TestActivatePendingApproval:
         # Change session
         monkeypatch.setenv("CLAUDE_SESSION_ID", "different-session")
         result = activate_pending_approval(nonce)
-        assert result is None, "Activation should fail with wrong session ID"
+        assert result.success is False, "Activation should fail with wrong session ID"
+        assert result.status == ACTIVATION_SESSION_MISMATCH
 
     def test_activation_fails_for_expired_pending(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -327,7 +391,8 @@ class TestActivatePendingApproval:
         )
         time.sleep(0.1)  # ensure expiry
         result = activate_pending_approval(nonce)
-        assert result is None, "Activation should fail for expired pending"
+        assert result.success is False, "Activation should fail for expired pending"
+        assert result.status == ACTIVATION_EXPIRED
 
     def test_activation_is_one_time_only(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -339,10 +404,11 @@ class TestActivatePendingApproval:
         )
         # First activation succeeds
         result1 = activate_pending_approval(nonce)
-        assert result1 is not None
+        assert result1.success is True
         # Second activation fails (pending file already deleted)
         result2 = activate_pending_approval(nonce)
-        assert result2 is None, "Second activation of same nonce should fail"
+        assert result2.success is False, "Second activation of same nonce should fail"
+        assert result2.status == ACTIVATION_NOT_FOUND
 
     def test_activation_uses_danger_verb_fallback(self, clean_grants_dir):
         """If verb extraction from command fails, use danger_verb directly."""
@@ -354,11 +420,13 @@ class TestActivatePendingApproval:
             danger_verb="commit",
             danger_category="MUTATIVE",
         )
-        grant_path = activate_pending_approval(nonce)
-        assert grant_path is not None
+        result = activate_pending_approval(nonce)
+        assert result.success is True
+        assert result.grant_path is not None
         # Grant should have the fallback verb
-        data = json.loads(grant_path.read_text())
+        data = json.loads(result.grant_path.read_text())
         assert "commit" in data["approved_verbs"]
+        assert data["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
 
 
 # ============================================================================
@@ -380,6 +448,8 @@ class TestWriteAndCheckGrants:
         assert data["session_id"] == "test-session-123"
         assert "commit" in data["approved_verbs"]
         assert data["approved_scope"] == "git commit"
+        assert data["scope_type"] == SCOPE_RESOURCE_FAMILY
+        assert data["scope_signature"]["scope_type"] == SCOPE_RESOURCE_FAMILY
         assert data["ttl_minutes"] == 10
         assert data["used"] is False
 
@@ -393,6 +463,16 @@ class TestWriteAndCheckGrants:
         grant = check_approval_grant("git commit -m 'feat: add feature'")
         assert grant is not None
         assert "commit" in grant.approved_verbs
+
+    def test_check_rejects_force_push_variant_for_same_family(self, clean_grants_dir):
+        write_approval_grant("git push origin main")
+        grant = check_approval_grant("git push origin main --force")
+        assert grant is None
+
+    def test_check_rejects_cross_cli_same_verb(self, clean_grants_dir):
+        write_approval_grant("terraform apply prod/vpc")
+        grant = check_approval_grant("kubectl apply -f prod.yaml")
+        assert grant is None
 
     def test_check_returns_none_when_no_match(self, clean_grants_dir):
         write_approval_grant("git commit")
@@ -534,8 +614,8 @@ class TestNonceEndToEnd:
         assert pending_file.exists()
 
         # Step 2: Activate the pending approval (simulates orchestrator resume)
-        grant_path = activate_pending_approval(nonce)
-        assert grant_path is not None
+        activation = activate_pending_approval(nonce)
+        assert activation.success is True
 
         # Pending file should be gone
         assert not pending_file.exists()
@@ -583,10 +663,58 @@ class TestBashValidatorIntegration:
         """terraform apply should be allowed when a grant exists."""
         from modules.tools.bash_validator import BashValidator
 
-        write_approval_grant("terraform apply prod/vpc")
+        write_approval_grant("terraform apply")
         validator = BashValidator()
         result = validator.validate("terraform apply -auto-approve")
         assert result.allowed is True
+
+    def test_nonce_grant_does_not_cross_cli_same_verb(self, clean_grants_dir):
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply prod/vpc",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+        )
+        result = activate_pending_approval(nonce)
+        assert result.success is True
+        assert check_approval_grant("kubectl apply -f prod.yaml") is None
+
+    def test_nonce_grant_does_not_escalate_to_more_dangerous_variant(self, clean_grants_dir):
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+        )
+        result = activate_pending_approval(nonce)
+        assert result.success is True
+        assert check_approval_grant("git push origin main --force") is None
+
+    def test_nonce_grant_does_not_jump_resource_kind(self, clean_grants_dir):
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="kubectl delete pod pod-1",
+            danger_verb="delete",
+            danger_category="DESTRUCTIVE",
+        )
+        result = activate_pending_approval(nonce)
+        assert result.success is True
+        assert check_approval_grant("kubectl delete namespace prod") is None
+
+    def test_legacy_verb_only_grant_file_does_not_match(self, clean_grants_dir):
+        legacy_file = clean_grants_dir / "grant-test-session-123-legacy.json"
+        legacy_file.write_text(json.dumps({
+            "session_id": "test-session-123",
+            "approved_verbs": ["apply"],
+            "approved_scope": "terraform apply prod/vpc",
+            "granted_at": time.time(),
+            "ttl_minutes": 10,
+            "used": False,
+        }))
+        assert check_approval_grant("terraform apply prod/vpc") is None
 
     def test_git_commit_still_blocked_without_grant(self, clean_grants_dir):
         """Without a grant, git commit should still be blocked."""
