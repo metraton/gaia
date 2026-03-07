@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from ..core.paths import get_logs_dir
+from ..core.state import get_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class AuditLogger:
         else:
             self.log_dir = get_logs_dir()
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.session_id = os.environ.get("CLAUDE_SESSION_ID", "default")
+        self.session_id = get_session_id()
 
     def hash_output(self, output: str, max_length: int = 1000) -> str:
         """

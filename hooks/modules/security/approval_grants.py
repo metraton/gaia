@@ -24,7 +24,6 @@ Grants are:
 Security properties:
 - Grants are created ONLY by the hook (not by agents)
 - Nonce-activated grants are scoped to a semantic command signature
-- Legacy "User approved: ..." grants are scoped to an explicit resource family
 - Grants expire automatically
 - The deny list (blocked_commands.py) is NEVER bypassed -- grants only
   override the dangerous verb detector
@@ -36,19 +35,20 @@ Security properties:
 import json
 import logging
 import os
-import re
 import secrets
 import time
 from dataclasses import dataclass, field, asdict
+from enum import Enum
 from pathlib import Path
 from typing import List, Optional
 
 from ..core.paths import find_claude_dir
+from ..core.state import get_session_id
 from .approval_scopes import (
     ApprovalSignature,
-    SCOPE_LEGACY_VERB_ONLY,
-    SCOPE_RESOURCE_FAMILY,
+    SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
+    SUPPORTED_SCOPE_TYPES,
     build_approval_signature,
     matches_approval_signature,
 )
@@ -58,14 +58,39 @@ logger = logging.getLogger(__name__)
 # Default grant TTL in minutes
 DEFAULT_GRANT_TTL_MINUTES = 10
 
-ACTIVATION_ACTIVATED = "activated"
-ACTIVATION_NOT_FOUND = "not_found"
-ACTIVATION_NONCE_MISMATCH = "nonce_mismatch"
-ACTIVATION_SESSION_MISMATCH = "session_mismatch"
-ACTIVATION_EXPIRED = "expired"
-ACTIVATION_INVALID_SIGNATURE = "invalid_signature"
-ACTIVATION_INVALID_PENDING = "invalid_pending"
-ACTIVATION_ERROR = "error"
+# Cleanup throttle: only run cleanup if 60+ seconds since last run
+_last_cleanup_time: float = 0.0
+_CLEANUP_INTERVAL_SECONDS = 60
+
+class ActivationStatus(str, Enum):
+    """Activation result statuses for pending approval flow."""
+    ACTIVATED = "activated"
+    NOT_FOUND = "not_found"
+    NONCE_MISMATCH = "nonce_mismatch"
+    SESSION_MISMATCH = "session_mismatch"
+    EXPIRED = "expired"
+    INVALID_SIGNATURE = "invalid_signature"
+    INVALID_PENDING = "invalid_pending"
+    ERROR = "error"
+
+
+# Backward-compatible module-level aliases
+ACTIVATION_ACTIVATED = ActivationStatus.ACTIVATED
+ACTIVATION_NOT_FOUND = ActivationStatus.NOT_FOUND
+ACTIVATION_NONCE_MISMATCH = ActivationStatus.NONCE_MISMATCH
+ACTIVATION_SESSION_MISMATCH = ActivationStatus.SESSION_MISMATCH
+ACTIVATION_EXPIRED = ActivationStatus.EXPIRED
+ACTIVATION_INVALID_SIGNATURE = ActivationStatus.INVALID_SIGNATURE
+ACTIVATION_INVALID_PENDING = ActivationStatus.INVALID_PENDING
+ACTIVATION_ERROR = ActivationStatus.ERROR
+
+
+def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
+    """Return True if the given timestamp is older than ttl_minutes."""
+    if timestamp == 0:
+        return True
+    elapsed_minutes = (time.time() - timestamp) / 60
+    return elapsed_minutes > ttl_minutes
 
 
 @dataclass(frozen=True)
@@ -86,7 +111,7 @@ class ApprovalGrant:
         session_id: The Claude session that owns this grant.
         approved_verbs: Human-readable verb summary for logs/debugging.
         approved_scope: Original approval scope text from the user.
-        scope_type: Approval scope mode (exact, semantic, family, or legacy).
+        scope_type: Approval scope mode (exact or semantic).
         scope_signature: Persisted ApprovalSignature payload for matching.
         granted_at: Unix timestamp when the grant was created.
         ttl_minutes: How long the grant is valid.
@@ -95,7 +120,7 @@ class ApprovalGrant:
     session_id: str = ""
     approved_verbs: List[str] = field(default_factory=list)
     approved_scope: str = ""
-    scope_type: str = SCOPE_LEGACY_VERB_ONLY
+    scope_type: str = SCOPE_SEMANTIC_SIGNATURE
     scope_signature: Optional[dict] = None
     granted_at: float = 0.0
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES
@@ -103,10 +128,7 @@ class ApprovalGrant:
 
     def is_expired(self) -> bool:
         """Check if the grant has expired."""
-        if self.granted_at == 0:
-            return True
-        elapsed_minutes = (time.time() - self.granted_at) / 60
-        return elapsed_minutes > self.ttl_minutes
+        return _is_ttl_expired(self.granted_at, self.ttl_minutes)
 
     def is_valid(self) -> bool:
         """Check if the grant is still usable."""
@@ -129,51 +151,22 @@ class ApprovalGrant:
         return matches_approval_signature(signature, command)
 
 
+_grants_dir_created: bool = False
+
+
 def _get_grants_dir() -> Path:
     """Get the directory for approval grant files."""
+    global _grants_dir_created
     grants_dir = find_claude_dir() / "cache" / "approvals"
-    grants_dir.mkdir(parents=True, exist_ok=True)
+    if not _grants_dir_created:
+        grants_dir.mkdir(parents=True, exist_ok=True)
+        _grants_dir_created = True
     return grants_dir
 
 
 def _get_session_id() -> str:
-    """Get the current session ID."""
-    return os.environ.get("CLAUDE_SESSION_ID", "default")
-
-
-def _extract_verbs_from_scope(scope: str) -> List[str]:
-    """Extract command verbs from an approval scope string.
-
-    Parses scopes like:
-      "git commit"         -> ["commit"]
-      "git push origin main" -> ["push"]
-      "terraform apply prod/vpc" -> ["apply"]
-      "kubectl apply namespace payment-service" -> ["apply"]
-      "git commit and git push" -> ["commit", "push"]
-
-    Args:
-        scope: The approval scope text.
-
-    Returns:
-        List of extracted verb strings.
-    """
-    if not scope:
-        return []
-
-    # Known T3 verbs (from dangerous_verbs.py taxonomy)
-    from .dangerous_verbs import DESTRUCTIVE_VERBS, MUTATIVE_VERBS
-
-    t3_verbs = DESTRUCTIVE_VERBS | MUTATIVE_VERBS
-    scope_lower = scope.lower()
-
-    found_verbs = []
-    for verb in t3_verbs:
-        # Match as word boundary
-        pattern = r'\b' + re.escape(verb) + r'\b'
-        if re.search(pattern, scope_lower):
-            found_verbs.append(verb)
-
-    return found_verbs
+    """Get the current session ID. Delegates to core.state.get_session_id()."""
+    return get_session_id()
 
 
 # ============================================================================
@@ -324,11 +317,10 @@ def activate_pending_approval(
         # Validate not expired
         pending_timestamp = pending_data.get("timestamp", 0)
         pending_ttl = pending_data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
-        elapsed_minutes = (time.time() - pending_timestamp) / 60
-        if elapsed_minutes > pending_ttl:
+        if _is_ttl_expired(pending_timestamp, pending_ttl):
             logger.warning(
-                "Pending approval expired for nonce %s: %.1f min > %d min TTL",
-                nonce, elapsed_minutes, pending_ttl,
+                "Pending approval expired for nonce %s: TTL=%d min",
+                nonce, pending_ttl,
             )
             # Clean up expired pending file
             _cleanup_grant(pending_file)
@@ -340,30 +332,39 @@ def activate_pending_approval(
 
         command = pending_data.get("command", "")
         danger_verb = pending_data.get("danger_verb", "")
-        danger_category = pending_data.get("danger_category", "")
         scope_signature_data = pending_data.get("scope_signature")
-        signature = None
-        if scope_signature_data:
-            signature = ApprovalSignature.from_dict(scope_signature_data)
-        else:
-            # Backward-compatible fallback for older pending files created
-            # before semantic signatures were persisted.
-            signature = build_approval_signature(
-                command,
-                scope_type=SCOPE_SEMANTIC_SIGNATURE,
-                danger_verb=danger_verb,
-                danger_category=danger_category,
+        if not scope_signature_data:
+            logger.warning("Pending approval for nonce %s is missing scope_signature", nonce)
+            _cleanup_grant(pending_file)
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_PENDING,
+                reason="Pending approval file is missing a semantic signature.",
             )
 
-        if signature is None:
+        signature = ApprovalSignature.from_dict(scope_signature_data)
+        if signature.scope_type != SCOPE_SEMANTIC_SIGNATURE:
             logger.warning(
-                "Could not build semantic signature from pending approval command: %s",
+                "Pending approval for nonce %s has unsupported scope_type=%s",
+                nonce,
+                signature.scope_type,
+            )
+            _cleanup_grant(pending_file)
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_SIGNATURE,
+                reason="Pending approval uses an unsupported scope type.",
+            )
+
+        if not signature.verb and not danger_verb:
+            logger.warning(
+                "Could not validate semantic signature for pending approval command: %s",
                 command,
             )
             return ApprovalActivationResult(
                 success=False,
                 status=ACTIVATION_INVALID_SIGNATURE,
-                reason="Approval signature could not be reconstructed safely.",
+                reason="Approval signature could not be validated safely.",
             )
 
         verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
@@ -411,72 +412,6 @@ def activate_pending_approval(
             reason="Unexpected error while activating approval.",
         )
 
-
-# ============================================================================
-# Legacy Grant Management (still used for active grants)
-# ============================================================================
-
-def write_approval_grant(scope: str, ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES) -> Optional[Path]:
-    """Write an approval grant file after user approval.
-
-    Called by the pre_tool_use hook when it detects a legacy approval token
-    in a Task/Agent resume prompt.
-
-    Args:
-        scope: The approval scope (e.g., "git commit", "terraform apply prod/vpc").
-        ttl_minutes: How long the grant is valid.
-
-    Returns:
-        Path to the grant file, or None on failure.
-    """
-    session_id = _get_session_id()
-    verbs = _extract_verbs_from_scope(scope)
-
-    if len(verbs) != 1:
-        logger.warning(
-            "Could not derive a single explicit approval verb from scope '%s' -- "
-            "no grant written. The bash_validator will block as usual.",
-            scope,
-        )
-        return None
-
-    signature = build_approval_signature(scope, scope_type=SCOPE_RESOURCE_FAMILY)
-    if signature is None:
-        logger.warning(
-            "Could not build explicit approval scope from '%s' -- "
-            "no grant written. The bash_validator will block as usual.",
-            scope,
-        )
-        return None
-
-    grant = ApprovalGrant(
-        session_id=session_id,
-        approved_verbs=[signature.verb] if signature.verb else verbs,
-        approved_scope=scope,
-        scope_type=signature.scope_type,
-        scope_signature=signature.to_dict(),
-        granted_at=time.time(),
-        ttl_minutes=ttl_minutes,
-    )
-
-    try:
-        grants_dir = _get_grants_dir()
-        # Use session_id + timestamp for uniqueness
-        # Use high-resolution timestamp to avoid collisions from rapid writes
-        grant_file = grants_dir / f"grant-{session_id}-{int(time.time() * 1000)}.json"
-        grant_file.write_text(json.dumps(asdict(grant), indent=2))
-
-        logger.info(
-            "Approval grant written: session=%s, verbs=%s, scope='%s', ttl=%dm, file=%s",
-            session_id, verbs, scope, ttl_minutes, grant_file.name,
-        )
-        return grant_file
-
-    except Exception as e:
-        logger.error("Failed to write approval grant: %s", e)
-        return None
-
-
 def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
     """Check if there is an active approval grant for a command.
 
@@ -510,6 +445,12 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
                         _cleanup_grant(grant_file)
                     continue
 
+                signature = grant.get_signature()
+                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
+                    logger.warning("Removing unsupported approval grant file %s", grant_file)
+                    _cleanup_grant(grant_file)
+                    continue
+
                 # Check if command matches the explicit scope signature
                 if grant.matches_command(command):
                     logger.info(
@@ -529,36 +470,21 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
     return None
 
 
-def consume_grant(grant: ApprovalGrant) -> None:
-    """Mark a grant as used after the approved command executes.
-
-    This does NOT delete the grant file immediately -- it marks it as used
-    so subsequent calls to check_approval_grant skip it. The grant file
-    is cleaned up by the next cleanup_expired_grants call or on expiry.
-
-    Note: We do NOT consume on first use. The scope signature is the primary
-    boundary; TTL handles eventual cleanup and allows a retried exact command
-    to pass after transient failures.
-
-    Args:
-        grant: The grant to mark as consumed (currently a no-op; TTL handles it).
-    """
-    # Intentional no-op: grants are valid for their full TTL to allow
-    # related approved commands (commit + push in same approval).
-    # The TTL provides the security boundary.
-    logger.debug(
-        "Grant consumed (TTL-based expiry): scope='%s'", grant.approved_scope
-    )
-
-
 def cleanup_expired_grants() -> int:
     """Remove expired grant and pending files.
 
     Called periodically (e.g., at hook startup) to prevent accumulation.
+    Throttled to run at most once every _CLEANUP_INTERVAL_SECONDS.
 
     Returns:
         Number of files cleaned up.
     """
+    global _last_cleanup_time
+    now = time.time()
+    if now - _last_cleanup_time < _CLEANUP_INTERVAL_SECONDS:
+        return 0
+    _last_cleanup_time = now
+
     cleaned = 0
     try:
         grants_dir = _get_grants_dir()
@@ -570,6 +496,11 @@ def cleanup_expired_grants() -> int:
             try:
                 data = json.loads(grant_file.read_text())
                 grant = ApprovalGrant(**data)
+                signature = grant.get_signature()
+                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
+                    _cleanup_grant(grant_file)
+                    cleaned += 1
+                    continue
                 if grant.is_expired():
                     _cleanup_grant(grant_file)
                     cleaned += 1
@@ -582,10 +513,13 @@ def cleanup_expired_grants() -> int:
         for pending_file in grants_dir.glob("pending-*.json"):
             try:
                 data = json.loads(pending_file.read_text())
+                if not data.get("scope_signature"):
+                    _cleanup_grant(pending_file)
+                    cleaned += 1
+                    continue
                 timestamp = data.get("timestamp", 0)
                 ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
-                elapsed_minutes = (time.time() - timestamp) / 60
-                if elapsed_minutes > ttl:
+                if _is_ttl_expired(timestamp, ttl):
                     _cleanup_grant(pending_file)
                     cleaned += 1
             except Exception:

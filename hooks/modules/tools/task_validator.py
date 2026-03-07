@@ -4,19 +4,19 @@ Task tool validator.
 Validates Task tool invocations:
 - Agent existence verification
 - Context provisioning enforcement
-- T3 operation approval requirement
+- T3 operation detection for Bash-time nonce approval
 """
 
-import re
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
-from ..security.approval_constants import APPROVAL_INDICATORS
 from ..security.dangerous_verbs import (
     detect_dangerous_command,
     DangerResult,
+    CLI_FAMILY_LOOKUP,
+    COMMAND_ALIASES,
     CATEGORY_DESTRUCTIVE,
     CATEGORY_MUTATIVE,
 )
@@ -47,8 +47,9 @@ AVAILABLE_AGENTS = [
 # speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
 META_AGENTS = ["gaia", "Explore", "Plan"]
 
-# Legacy T3_KEYWORDS kept for backward compatibility (tests import it).
-# Detection now uses detect_dangerous_command() from the verb detector.
+# T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
+# to verify that these commands are classified as T3 by the verb detector.
+# NOT used at runtime -- detection is handled entirely by detect_dangerous_command().
 T3_KEYWORDS = [
     "git commit",
     "git push",
@@ -90,13 +91,13 @@ def _extract_command_candidates(text: str) -> List[str]:
         return []
 
     candidates: List[str] = []
-    # Known CLI prefixes that signal a command
-    cli_prefixes = (
-        "git ", "kubectl ", "helm ", "flux ", "terraform ", "terragrunt ",
-        "gcloud ", "gsutil ", "aws ", "az ", "docker ", "podman ",
-        "npm ", "pnpm ", "yarn ", "pip ", "pip3 ",
-        "rm ", "mv ", "cp ", "dd ", "mkfs ",
-        "systemctl ", "service ",
+    # Derive CLI prefixes from the canonical CLI_FAMILY_LOOKUP and COMMAND_ALIASES
+    cli_prefixes = tuple(
+        f"{cli} " for cli in sorted(
+            set(CLI_FAMILY_LOOKUP.keys()) | set(COMMAND_ALIASES.keys()),
+            key=len,
+            reverse=True,
+        )
     )
 
     text_lower = text.lower()
@@ -142,16 +143,8 @@ def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[DangerResult]]:
         if result.is_dangerous and result.category in (CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE):
             return True, candidate, result
 
-    # Fallback: check legacy keywords for anything the extractor might miss
-    text_lower = text.lower()
-    for keyword in T3_KEYWORDS:
-        if keyword in text_lower:
-            return True, keyword, None
-
     return False, "", None
 
-# Re-export from canonical source so tests that import from here keep working.
-# Do NOT define indicators here — edit approval_constants.py instead.
 __all__ = [
     "TaskValidator",
     "TaskValidationResult",
@@ -159,7 +152,6 @@ __all__ = [
     "AVAILABLE_AGENTS",
     "META_AGENTS",
     "T3_KEYWORDS",
-    "APPROVAL_INDICATORS",
 ]
 
 
@@ -172,7 +164,6 @@ class TaskValidationResult:
     agent_name: str = ""
     has_context: bool = False
     is_t3_operation: bool = False
-    has_approval: bool = False
 
 
 class TaskValidator:
@@ -233,39 +224,27 @@ class TaskValidator:
 
         # Check for T3 operations (use original user task to avoid false positives from context)
         is_t3 = self._is_t3_operation(user_task_for_t3_check, description)
-        has_approval = False
-
-        if is_t3:
-            has_approval = self._check_approval(prompt)
-            matched_keyword = self._matched_t3_keyword(user_task_for_t3_check, description)
-
-            if not has_approval:
-                return TaskValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=self._get_approval_required_message(agent_name, matched_keyword),
-                    agent_name=agent_name,
-                    has_context=has_context,
-                    is_t3_operation=True,
-                    has_approval=False,
-                )
 
         logger.info(
             f"Task invocation validated: {agent_name} "
-            f"(T3={is_t3}, approval={'yes' if has_approval else 'no' if is_t3 else 'N/A'}, "
-            f"context={has_context})"
+            f"(T3={is_t3}, context={has_context})"
         )
 
-        tier = SecurityTier.T3_BLOCKED if is_t3 and not has_approval else SecurityTier.T0_READ_ONLY
+        tier = SecurityTier.T3_BLOCKED if is_t3 else SecurityTier.T0_READ_ONLY
+        reason = (
+            f"Task invocation allowed for {agent_name}; T3 execution still requires "
+            f"nonce-based approval at Bash time"
+            if is_t3
+            else f"Task invocation allowed for {agent_name}"
+        )
 
         return TaskValidationResult(
             allowed=True,
             tier=tier,
-            reason=f"Task invocation allowed for {agent_name}",
+            reason=reason,
             agent_name=agent_name,
             has_context=has_context,
             is_t3_operation=is_t3,
-            has_approval=has_approval,
         )
 
     def _check_context_provisioning(self, prompt: str, agent_name: str) -> bool:
@@ -281,56 +260,6 @@ class TaskValidator:
         combined = f"{description} {prompt}"
         is_t3, _, _ = _scan_text_for_t3(combined)
         return is_t3
-
-    def _matched_t3_keyword(self, prompt: str, description: str) -> str:
-        """Return the first T3 command found in the prompt/description, or empty string."""
-        combined = f"{description} {prompt}"
-        is_t3, matched, _ = _scan_text_for_t3(combined)
-        return matched if is_t3 else ""
-
-    def _check_approval(self, prompt: str) -> bool:
-        """Check if approval was received."""
-        prompt_lower = prompt.lower()
-        return any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS)
-
-    def _extract_approval_scope(self, prompt: str) -> str:
-        """
-        Extract the scope from a scoped approval token.
-
-        Looks for: 'User approved: <scope>'
-        Returns the scope string or empty if not found / scope is generic.
-        """
-        match = re.search(r"user approved:\s*(.+)", prompt, re.IGNORECASE)
-        if not match:
-            return ""
-        scope = match.group(1).strip()
-        # Warn on generic/empty scopes but don't block
-        generic_scopes = {"the changes", "everything", "all", "yes", "ok", "proceed"}
-        if scope.lower() in generic_scopes:
-            logger.warning(
-                "Approval scope '%s' is generic — consider describing the operation "
-                "(e.g. 'User approved: terraform apply prod/vpc')", scope
-            )
-        return scope
-
-    def _get_approval_required_message(self, agent_name: str = "", matched_keyword: str = "") -> str:
-        """Get the approval required error message with detected operation details."""
-        detected_line = (
-            f'Detected: "{matched_keyword}" in agent prompt\n'
-            if matched_keyword
-            else "Detected: T3 operation in agent prompt\n"
-        )
-        agent_line = f"Agent: {agent_name}\n" if agent_name else ""
-
-        return (
-            "❌ T3 Operation Blocked — Approval Required\n\n"
-            f"{detected_line}"
-            f"{agent_line}"
-            "\nTo proceed, the orchestrator must:\n"
-            "  1. Present the plan to the user (AskUserQuestion)\n"
-            f'  2. Resume with: "User approved: {matched_keyword or "<operation> [scope]"}"\n'
-            "\nThis operation requires explicit user approval before execution."
-        )
 
 
 

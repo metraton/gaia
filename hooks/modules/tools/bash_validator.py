@@ -39,11 +39,9 @@ from ..security.dangerous_verbs import (
 )
 from ..security.approval_grants import (
     check_approval_grant,
-    consume_grant,
     generate_nonce,
     write_pending_approval,
 )
-from ..security.interactive_handler import ensure_non_interactive
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
 from .hook_response import build_hook_permission_response
@@ -160,11 +158,14 @@ class BashValidator:
                 suggestions=[blocked_result.suggestion] if blocked_result.suggestion else [],
             )
 
-        # Also check each component of compound commands against the deny list.
-        # This catches "ls && kubectl delete namespace prod" early.
-        if self._has_operators(command):
-            components = self.shell_parser.parse(command)
-            for component in components:
+        # Parse compound commands once (reused for blocked-command check and validation dispatch).
+        has_operators = self._has_operators(command)
+        parsed_components = None
+        if has_operators:
+            parsed_components = self.shell_parser.parse(command)
+            # Check each component of compound commands against the deny list.
+            # This catches "ls && kubectl delete namespace prod" early.
+            for component in parsed_components:
                 comp_blocked = is_blocked_command(component.strip())
                 if comp_blocked.is_blocked:
                     return BashValidationResult(
@@ -188,7 +189,7 @@ class BashValidator:
             if not commit_validation.allowed:
                 return commit_validation
 
-        # Cloud pipe/redirect/chaining check — runs AFTER blocked commands.
+        # Cloud pipe/redirect/chaining check -- runs AFTER blocked commands.
         # Returns a structured block response dict if a violation is found.
         # block_response is set so the caller emits JSON and exits 0 (corrective),
         # not a plain string with exit 2 (which would terminate the agent).
@@ -203,16 +204,13 @@ class BashValidator:
                 block_response=pipe_block,
             )
 
-        # Fast-path: Check if command has operators BEFORE parsing
-        if not self._has_operators(command):
+        # Dispatch to single or compound validation using already-parsed components
+        if not has_operators:
             result = self._validate_single_command(command)
+        elif parsed_components is not None and len(parsed_components) > 1:
+            result = self._validate_compound_command(parsed_components)
         else:
-            # Parse compound commands only if operators detected
-            components = self.shell_parser.parse(command)
-            if len(components) > 1:
-                result = self._validate_compound_command(components)
-            else:
-                result = self._validate_single_command(command)
+            result = self._validate_single_command(command)
 
         # Attach cleaned command for hook to emit via updatedInput
         if command_was_modified and result.allowed:
@@ -248,16 +246,16 @@ class BashValidator:
         grant_consumed = False
         if danger.is_dangerous:
             # Check for an active approval grant before blocking.
-            # When the orchestrator resumes an agent with "User approved: ...",
-            # the pre_tool_use hook writes a time-limited grant. If a matching
-            # grant exists, allow the command through instead of blocking.
+            # When the orchestrator resumes an agent with "APPROVE:<nonce>",
+            # the pre_tool_use hook activates a time-limited grant. If a
+            # matching grant exists, allow the command through instead of
+            # blocking.
             grant = check_approval_grant(command)
             if grant is not None:
                 logger.info(
                     "T3 command allowed via approval grant: %s (scope='%s')",
                     command[:80], grant.approved_scope,
                 )
-                consume_grant(grant)
                 grant_consumed = True
                 # Fall through to tier classification below (do NOT block)
             else:
@@ -265,12 +263,25 @@ class BashValidator:
                 # The nonce is included in the block response so the agent can
                 # present it for user approval.
                 nonce = generate_nonce()
-                write_pending_approval(
+                pending_file = write_pending_approval(
                     nonce=nonce,
                     command=command,
                     danger_verb=danger.verb,
                     danger_category=danger.category,
                 )
+                if pending_file is None:
+                    hook_block = build_hook_permission_response(
+                        "deny",
+                        "Approval workflow unavailable: failed to persist the pending "
+                        "approval record for this command. Retry once. If it fails "
+                        "again, inspect the hook logs before proceeding.",
+                    )
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason="Failed to persist pending approval for T3 command",
+                        block_response=hook_block,
+                    )
 
                 t3_block = build_t3_block_response(command, danger, nonce=nonce)
                 # Wrap in hookSpecificOutput format so Claude Code receives the

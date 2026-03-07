@@ -83,16 +83,6 @@ the pending approval into an active grant, and you can then retry the command su
 **If you lose the nonce** (e.g., the block response is not in your context), re-attempt the
 command. The hook will generate a fresh nonce.
 
-## Legacy Resume Token (backward compatibility)
-
-The orchestrator may also resume with the legacy format:
-
-```
-User approved: <operation description>
-```
-
-The hook still supports this path but the nonce-based flow is preferred.
-
 ---
 
 ## Red Flags — Stop Before Presenting

@@ -10,7 +10,7 @@ Responsibilities:
 - Bash: delegates to BashValidator (blocked commands, safe detection,
   dangerous verb detector with nonce-based approval flow)
 - Task/Agent: project-context injection, session events, nonce activation
-  (APPROVE:{hex32}) and legacy approval grant creation
+  (APPROVE:{hex32})
 - State sharing with post-hook via hook state files
 - Periodic cleanup of expired approval grants
 """
@@ -30,18 +30,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 
 from modules.core.state import create_pre_hook_state, save_hook_state
-from modules.security.tiers import SecurityTier, classify_command_tier
 from modules.security.approval_constants import (
-    APPROVAL_INDICATORS,
+    NONCE_APPROVAL_PREFIX,
     NONCE_APPROVAL_PATTERN,
 )
 from modules.security.approval_grants import (
-    write_approval_grant,
     activate_pending_approval,
     cleanup_expired_grants,
 )
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
-from modules.tools.task_validator import TaskValidator
+from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
 
 # Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
 log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -59,13 +57,19 @@ logger = logging.getLogger(__name__)
 # PROJECT CONTEXT INJECTION
 # ============================================================================
 
-PROJECT_AGENTS = [
-    "terraform-architect",
-    "gitops-operator",
-    "cloud-troubleshooter",
-    "devops-developer",
-    "speckit-planner"
-]
+# Derive from task_validator lists: project agents = available minus meta
+PROJECT_AGENTS = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
+
+DEPRECATED_APPROVAL_PHRASES = (
+    "user approved:",
+    "user approval received",
+    "approved by user",
+    "approval confirmed",
+    "approved. execute",
+    "approved, execute",
+    "proceed with execution",
+    "confirmed. proceed",
+)
 
 
 def _build_context_update_reminder(subagent_type: str) -> str:
@@ -185,50 +189,65 @@ def _build_context_update_reminder(subagent_type: str) -> str:
     )
 
 
+def _classify_resume_prompt(prompt: str) -> str:
+    """Classify a resume prompt into one of four categories.
+
+    Returns:
+        'nonce' -- valid nonce approval token present
+        'malformed_nonce' -- APPROVE: prefix present but invalid nonce
+        'deprecated' -- deprecated approval phrase detected
+        'standard' -- normal resume prompt (no approval indicators)
+    """
+    if NONCE_APPROVAL_PATTERN.search(prompt):
+        return "nonce"
+    if NONCE_APPROVAL_PREFIX in prompt:
+        return "malformed_nonce"
+    prompt_lower = prompt.lower()
+    if any(phrase in prompt_lower for phrase in DEPRECATED_APPROVAL_PHRASES):
+        return "deprecated"
+    return "standard"
+
+
 def _should_inject_on_resume(parameters: dict) -> bool:
     """
     Determine if context should be injected on a resume operation.
-    
+
     By default, resume operations skip context injection because the agent
     already has context from phase 1. However, in some cases we need fresh context:
-    
+
     Rules:
-    1. If prompt contains "User approved" -> NO inject (simple execution)
+    1. If prompt contains a nonce approval token -> NO inject (simple execution)
     2. If prompt has substantial new information (>100 words) -> YES inject
-    3. If prompt mentions new resources/scope -> YES inject  
+    3. If prompt mentions new resources/scope -> YES inject
     4. Default: NO inject (trust existing context)
-    
+
     Args:
         parameters: Task tool parameters with 'prompt' key
-    
+
     Returns:
         True if context should be injected, False otherwise
     """
     prompt = parameters.get("prompt", "")
-    prompt_lower = prompt.lower()
-    
-    # Case 1: Post-approval execution - NO injection needed
-    # These are simple "go ahead" instructions.
-    # Check nonce-based approval first, then legacy indicators.
-    if NONCE_APPROVAL_PATTERN.search(prompt):
-        logger.debug("Resume with nonce approval - skipping context injection")
+
+    # Case 1: Any approval-related prompt - NO injection needed.
+    classification = _classify_resume_prompt(prompt)
+    if classification != "standard":
+        logger.debug("Resume with %s prompt - skipping context injection", classification)
         return False
-    if any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS):
-        logger.debug("Resume with legacy approval indicator - skipping context injection")
-        return False
-    
+
     # Case 2: Substantial new information - YES inject
     # If user is providing a lot of new context, we should refresh
     word_count = len(prompt.split())
     if word_count > 100:
         logger.info(f"Resume with substantial new info ({word_count} words) - injecting context")
         return True
-    
+
     # Case 3: New scope/resources mentioned - YES inject
     # These words indicate the user is expanding the task scope
+    prompt_lower = prompt.lower()
     scope_expansion_indicators = [
         "also",
-        "additionally", 
+        "additionally",
         "another",
         "new ",
         "different",
@@ -243,7 +262,7 @@ def _should_inject_on_resume(parameters: dict) -> bool:
     if any(indicator in prompt_lower for indicator in scope_expansion_indicators):
         logger.info("Resume with scope expansion - injecting context")
         return True
-    
+
     # Default: Trust existing context
     logger.debug("Standard resume - skipping context injection")
     return False
@@ -733,7 +752,7 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
                 "When resuming an agent, you must provide instructions:\n\n"
                 "Task(\n"
                 "    resume=\"a12345\",\n"
-                "    prompt=\"User approved. Execute the deployment plan.\"\n"
+                "    prompt=\"Continue with the latest user instruction.\"\n"
                 ")\n\n"
                 "The prompt tells the agent what to do next."
             )
@@ -777,7 +796,6 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         tier=str(result.tier),
         allowed=True,  # Always true here
         is_t3=result.is_t3_operation,
-        has_approval=result.has_approval,
     )
     save_hook_state(state)
 
@@ -800,10 +818,11 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
 
 
 def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bool]:
-    """Process nonce or legacy approval indicators for Task resume."""
-    nonce_match = NONCE_APPROVAL_PATTERN.search(prompt)
-    if nonce_match:
-        nonce = nonce_match.group(1)
+    """Process nonce approval indicators for Task resume."""
+    classification = _classify_resume_prompt(prompt)
+
+    if classification == "nonce":
+        nonce = NONCE_APPROVAL_PATTERN.search(prompt).group(1)
         activation = activate_pending_approval(nonce)
         if activation.success:
             grant_path = activation.grant_path
@@ -833,33 +852,29 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
             "can issue a new nonce."
         ), False
 
-    prompt_lower = prompt.lower()
-    for indicator in APPROVAL_INDICATORS:
-        if indicator not in prompt_lower:
-            continue
-
-        scope_match = re.search(r"user approved:\s*(.+?)(?:\n|$)", prompt, re.IGNORECASE)
-        scope = scope_match.group(1).strip() if scope_match else prompt
-        grant_path = write_approval_grant(scope)
-        if grant_path:
-            logger.info(
-                "Legacy approval grant written for resume %s: scope='%s', file=%s",
-                resume_id,
-                scope,
-                grant_path.name,
-            )
-            return None, True
-
+    if classification == "malformed_nonce":
         logger.warning(
-            "Denied resume %s: legacy approval grant could not be written for scope='%s'",
+            "Denied resume %s: malformed nonce approval token in prompt='%s'",
             resume_id,
-            scope,
+            prompt[:120],
         )
         return (
-            "❌ Approval grant creation failed\n\n"
-            f"Scope: {scope}\n\n"
-            "The approval text was detected, but the hook could not derive a safe "
-            "grant scope. Reissue approval using an explicit command scope."
+            "❌ Invalid approval token\n\n"
+            f"Expected format: {NONCE_APPROVAL_PREFIX}<32-char-hex>\n\n"
+            "The resume prompt contains an approval prefix but not a valid nonce. "
+            "Retry the blocked command to generate a fresh nonce, then resume with "
+            "the exact APPROVE token."
+        ), False
+
+    if classification == "deprecated":
+        logger.warning(
+            "Denied resume %s: deprecated legacy approval phrase detected",
+            resume_id,
+        )
+        return (
+            "❌ Deprecated approval format\n\n"
+            "String-based approval tokens are no longer supported.\n"
+            f"Use only {NONCE_APPROVAL_PREFIX}<32-char-hex> from the latest blocked command."
         ), False
 
     return None, False

@@ -63,6 +63,19 @@ class TestBashValidator:
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "approval workflow" in result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
 
+    def test_pending_approval_persistence_failure_returns_structured_error(self, validator, monkeypatch):
+        """If the nonce record cannot be persisted, the agent must see a retryable error."""
+        monkeypatch.setattr(
+            "modules.tools.bash_validator.write_pending_approval",
+            lambda **kwargs: None,
+        )
+        result = validator.validate("terraform apply")
+        assert result.allowed is False
+        assert result.block_response is not None
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Approval workflow unavailable" in reason
+        assert "NONCE:" not in reason
+
     # Commands blocked by dangerous verb detector (before reaching GitOps validator)
     @pytest.mark.parametrize("command", [
         "kubectl apply -f manifest.yaml",
@@ -123,6 +136,8 @@ class TestCompoundCommandValidation:
 
     def test_t3_in_compound_propagates_block_response(self, validator, tmp_path, monkeypatch):
         """Blocked T3 component should surface its nonce approval response."""
+        import modules.security.approval_grants as ag
+        ag._grants_dir_created = False
         monkeypatch.setattr(
             "modules.security.approval_grants.find_claude_dir",
             lambda: tmp_path / ".claude",
@@ -135,6 +150,8 @@ class TestCompoundCommandValidation:
 
     def test_multiple_t3_components_return_first_block_response(self, validator, tmp_path, monkeypatch):
         """Compound commands should preserve the first blocked component response."""
+        import modules.security.approval_grants as ag
+        ag._grants_dir_created = False
         monkeypatch.setattr(
             "modules.security.approval_grants.find_claude_dir",
             lambda: tmp_path / ".claude",

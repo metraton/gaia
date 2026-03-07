@@ -78,7 +78,7 @@ Every agent response ends with an `AGENT_STATUS` block containing `PLAN_STATUS` 
 
 | Agent PLAN_STATUS | Your action |
 |---|---|
-| `PENDING_APPROVAL` | Present the plan summary, then use AskUserQuestion with options: approve, reject, or request modifications. Resume with `"User approved: <operation> [scope]"` |
+| `PENDING_APPROVAL` | Present the plan summary, then use AskUserQuestion with options: approve, reject, or request modifications. Resume with the exact `APPROVE:<nonce>` token from the latest blocked command. |
 | `NEEDS_INPUT` | Use AskUserQuestion with the specific options or choices the agent needs. Resume with the user's selection. |
 | `COMPLETE` | Summarize result to user in 3-5 bullet points. Task done. |
 | `BLOCKED` | Report blocker, then use AskUserQuestion with concrete alternatives (retry, different approach, escalate). |

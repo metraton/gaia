@@ -6,7 +6,7 @@ Provides:
 - safe_commands: Read-only command detection
 - blocked_commands: Dangerous pattern matching
 - gitops_validator: kubectl/helm/flux validation
-- approval_constants: Canonical APPROVAL_INDICATORS list
+- approval_constants: Canonical nonce approval token
 - approval_grants: Time-limited T3 command passthrough after user approval
 """
 
@@ -29,22 +29,18 @@ from .dangerous_verbs import (
     CATEGORY_MUTATIVE,
     CATEGORY_SIMULATION,
     CATEGORY_READ_ONLY,
-    CATEGORY_ALIAS,
     CATEGORY_UNKNOWN,
 )
-from .approval_constants import APPROVAL_INDICATORS
+from .approval_constants import NONCE_APPROVAL_PATTERN, NONCE_APPROVAL_PREFIX
 from .approval_scopes import (
     ApprovalSignature,
     SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
-    SCOPE_RESOURCE_FAMILY,
     build_approval_signature,
     matches_approval_signature,
 )
 from .approval_grants import (
-    write_approval_grant,
     check_approval_grant,
-    consume_grant,
     cleanup_expired_grants,
     ApprovalGrant,
 )
@@ -72,20 +68,17 @@ __all__ = [
     "CATEGORY_MUTATIVE",
     "CATEGORY_SIMULATION",
     "CATEGORY_READ_ONLY",
-    "CATEGORY_ALIAS",
     "CATEGORY_UNKNOWN",
     # Approval
-    "APPROVAL_INDICATORS",
+    "NONCE_APPROVAL_PREFIX",
+    "NONCE_APPROVAL_PATTERN",
     "ApprovalSignature",
     "SCOPE_EXACT_COMMAND",
     "SCOPE_SEMANTIC_SIGNATURE",
-    "SCOPE_RESOURCE_FAMILY",
     "build_approval_signature",
     "matches_approval_signature",
     # Approval Grants
-    "write_approval_grant",
     "check_approval_grant",
-    "consume_grant",
     "cleanup_expired_grants",
     "ApprovalGrant",
 ]

@@ -12,9 +12,10 @@ Verb Taxonomy:
 - READ_ONLY: get, list, describe, show, logs, status, etc.
 """
 
+import functools
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List
+from typing import Dict, FrozenSet, List, Tuple
 
 from .command_semantics import analyze_command
 
@@ -29,7 +30,6 @@ CATEGORY_DESTRUCTIVE = "DESTRUCTIVE"
 CATEGORY_MUTATIVE = "MUTATIVE"
 CATEGORY_SIMULATION = "SIMULATION"
 CATEGORY_READ_ONLY = "READ_ONLY"
-CATEGORY_ALIAS = "ALIAS"
 CATEGORY_UNKNOWN = "UNKNOWN"
 
 
@@ -37,18 +37,17 @@ CATEGORY_UNKNOWN = "UNKNOWN"
 # DangerResult
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class DangerResult:
     """Structured result of dangerous verb detection.
 
     Attributes:
         is_dangerous: Whether the command is classified as dangerous (T3).
         category: Verb category: CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE,
-            CATEGORY_SIMULATION, CATEGORY_READ_ONLY, CATEGORY_ALIAS, or
-            CATEGORY_UNKNOWN.
+            CATEGORY_SIMULATION, CATEGORY_READ_ONLY, or CATEGORY_UNKNOWN.
         verb: The extracted verb (e.g., "delete", "apply", "get").
         verb_position: Token index where the verb was found (-1 if none).
-        dangerous_flags: List of flags that escalate the danger level.
+        dangerous_flags: Tuple of flags that escalate the danger level.
         cli_family: Lightweight CLI family hint (e.g., "k8s", "cloud", "git").
         confidence: Confidence level: "high", "medium", or "low".
         reason: Human-readable explanation of the classification.
@@ -57,7 +56,7 @@ class DangerResult:
     category: str = CATEGORY_UNKNOWN
     verb: str = ""
     verb_position: int = -1
-    dangerous_flags: List[str] = field(default_factory=list)
+    dangerous_flags: Tuple[str, ...] = ()
     cli_family: str = "unknown"
     confidence: str = "low"
     reason: str = ""
@@ -89,6 +88,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "commit", "push", "merge", "rebase", "cherry-pick", "stash",
     "revert", "rollback",
     "grant", "assign",
+    "reconcile", "rsync",
 })
 
 SIMULATION_VERBS: FrozenSet[str] = frozenset({
@@ -247,10 +247,10 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
 # ============================================================================
 
 def _scan_dangerous_flags(
-    tokens: List[str],
+    tokens: List[str] | tuple,
     cli: str,
     verb_category: str = CATEGORY_UNKNOWN,
-) -> List[str]:
+) -> Tuple[str, ...]:
     """Scan tokens for dangerous flags with context sensitivity.
 
     Context rules:
@@ -268,7 +268,7 @@ def _scan_dangerous_flags(
         verb_category: Classified verb category.
 
     Returns:
-        List of dangerous flag strings found.
+        Tuple of dangerous flag strings found.
     """
     found: List[str] = []
 
@@ -318,13 +318,14 @@ def _scan_dangerous_flags(
             elif "r" in flag_chars and cli in R_FLAG_MEANS_RECURSIVE_DELETE:
                 found.append(token)
 
-    return found
+    return tuple(found)
 
 
 # ============================================================================
 # Main Detection Function
 # ============================================================================
 
+@functools.lru_cache(maxsize=128)
 def detect_dangerous_command(command: str) -> DangerResult:
     """Analyze a shell command and return a structured danger assessment.
 

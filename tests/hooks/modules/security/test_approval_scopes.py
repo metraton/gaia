@@ -10,7 +10,6 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.approval_scopes import (
     SCOPE_EXACT_COMMAND,
-    SCOPE_RESOURCE_FAMILY,
     SCOPE_SEMANTIC_SIGNATURE,
     build_approval_signature,
     matches_approval_signature,
@@ -52,18 +51,9 @@ class TestApprovalScopes:
         assert signature is not None
         assert not matches_approval_signature(signature, "git push origin main --force")
 
-    def test_resource_family_allows_explicit_same_family(self):
+    def test_unsupported_scope_type_returns_none(self):
         signature = build_approval_signature(
             "git commit",
-            scope_type=SCOPE_RESOURCE_FAMILY,
+            scope_type="resource_family",
         )
-        assert signature is not None
-        assert matches_approval_signature(signature, 'git commit -m "feat: add login"')
-
-    def test_resource_family_rejects_different_verb(self):
-        signature = build_approval_signature(
-            "git commit",
-            scope_type=SCOPE_RESOURCE_FAMILY,
-        )
-        assert signature is not None
-        assert not matches_approval_signature(signature, "git push origin main")
+        assert signature is None

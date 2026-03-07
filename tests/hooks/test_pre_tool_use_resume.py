@@ -78,17 +78,24 @@ class TestHandleTaskResumeApproval:
         assert "expired" in result.lower()
         assert saved_states == []
 
-    def test_legacy_grant_failure_denies_resume_and_skips_state(self, monkeypatch, saved_states):
-        monkeypatch.setattr(pre_tool_use, "APPROVAL_INDICATORS", ["user approved:"])
-        monkeypatch.setattr(pre_tool_use, "write_approval_grant", lambda scope: None)
-
+    def test_malformed_nonce_token_denies_resume_and_skips_state(self, saved_states):
         result = pre_tool_use._handle_task(
             "Task",
-            {"resume": "a12345", "prompt": "User approved: review the changes"},
+            {"resume": "a12345", "prompt": "APPROVE:deadbeef continue"},
         )
 
         assert isinstance(result, str)
-        assert "Approval grant creation failed" in result
+        assert "Invalid approval token" in result
+        assert saved_states == []
+
+    def test_deprecated_approval_phrase_denies_resume_and_skips_state(self, saved_states):
+        result = pre_tool_use._handle_task(
+            "Task",
+            {"resume": "a12345", "prompt": "User approved: terraform apply prod/vpc"},
+        )
+
+        assert isinstance(result, str)
+        assert "Deprecated approval format" in result
         assert saved_states == []
 
     def test_resume_without_approval_token_allows_and_marks_false(self, saved_states):

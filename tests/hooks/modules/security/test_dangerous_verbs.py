@@ -53,7 +53,7 @@ class TestDangerResult:
         assert result.category == "UNKNOWN"
         assert result.verb == ""
         assert result.verb_position == -1
-        assert result.dangerous_flags == []
+        assert result.dangerous_flags == ()
         assert result.cli_family == "unknown"
         assert result.confidence == "low"
         assert result.reason == ""
@@ -65,7 +65,7 @@ class TestDangerResult:
             category="DESTRUCTIVE",
             verb="delete",
             verb_position=1,
-            dangerous_flags=["--force"],
+            dangerous_flags=("--force",),
             cli_family="k8s",
             confidence="high",
             reason="Destructive verb 'delete'",
@@ -74,17 +74,17 @@ class TestDangerResult:
         assert result.category == "DESTRUCTIVE"
         assert result.verb == "delete"
         assert result.verb_position == 1
-        assert result.dangerous_flags == ["--force"]
+        assert result.dangerous_flags == ("--force",)
         assert result.cli_family == "k8s"
         assert result.confidence == "high"
         assert result.reason == "Destructive verb 'delete'"
 
-    def test_dangerous_flags_default_is_mutable_list(self):
-        """Each DangerResult gets its own list for dangerous_flags."""
+    def test_dangerous_flags_default_is_empty_tuple(self):
+        """DangerResult dangerous_flags default is an empty tuple (frozen dataclass)."""
         r1 = DangerResult()
         r2 = DangerResult()
-        r1.dangerous_flags.append("--force")
-        assert r2.dangerous_flags == []
+        assert r1.dangerous_flags == ()
+        assert r2.dangerous_flags == ()
 
 
 # ============================================================================
@@ -1079,10 +1079,10 @@ class TestBuildT3BlockResponse:
             is_dangerous=True,
             category="DESTRUCTIVE",
             verb="push",
-            dangerous_flags=["--force"],
+            dangerous_flags=("--force",),
             cli_family="git",
             confidence="high",
-            reason="Mutative verb 'push' with dangerous flags ['--force']",
+            reason="Mutative verb 'push' with dangerous flags ('--force',)",
         )
         response = build_t3_block_response("git push --force origin main", danger)
         assert "--force" in response["message"]
@@ -1109,7 +1109,7 @@ class TestBuildT3BlockResponse:
             is_dangerous=True,
             category="MUTATIVE",
             verb="apply",
-            dangerous_flags=[],
+            dangerous_flags=(),
             cli_family="k8s",
             confidence="high",
             reason="Mutative verb 'apply'",

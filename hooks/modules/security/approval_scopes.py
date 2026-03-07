@@ -1,14 +1,10 @@
 """
 Approval scope builders and matching for nonce-based T3 grants.
 
-The approval system supports three explicit scope shapes:
+The approval system supports two explicit scope shapes:
 
 - exact_command: tokenized command must match exactly
 - semantic_signature: same semantic command and normalized flags
-- resource_family: same CLI/verb family with an explicit semantic prefix
-
-There is intentionally no verb-only matching. Cross-CLI matches such as
-"terraform apply" -> "kubectl apply" are rejected by construction.
 """
 
 from dataclasses import asdict, dataclass
@@ -21,13 +17,10 @@ APPROVAL_SCOPE_VERSION = 2
 
 SCOPE_EXACT_COMMAND = "exact_command"
 SCOPE_SEMANTIC_SIGNATURE = "semantic_signature"
-SCOPE_RESOURCE_FAMILY = "resource_family"
-SCOPE_LEGACY_VERB_ONLY = "legacy_verb_scope"
 
 SUPPORTED_SCOPE_TYPES = frozenset({
     SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
-    SCOPE_RESOURCE_FAMILY,
 })
 
 
@@ -151,12 +144,6 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
             incoming_semantic_tokens == signature.semantic_tokens
             and incoming_flags == signature.normalized_flags
         )
-
-    if signature.scope_type == SCOPE_RESOURCE_FAMILY:
-        approved_len = len(signature.semantic_tokens)
-        if approved_len == 0 or len(incoming_semantic_tokens) < approved_len:
-            return False
-        return incoming_semantic_tokens[:approved_len] == signature.semantic_tokens
 
     return False
 
