@@ -214,6 +214,21 @@ class TestT3ApprovalRequirement:
         result2 = validator.validate(params2)
         assert result2.is_t3_operation is True
 
+    @pytest.mark.parametrize("prompt", [
+        "Please run `terraform apply` in prod",
+        'Need to execute "terraform apply" in prod',
+        "Please use `git push origin main` after review",
+    ])
+    def test_detects_t3_commands_embedded_in_quotes_or_backticks(self, validator, prompt):
+        """Quoted/backticked commands in prose must still be classified as T3."""
+        params = {
+            "subagent_type": "devops-developer",
+            "prompt": prompt,
+        }
+        result = validator.validate(params)
+        assert result.is_t3_operation is True
+        assert result.tier == SecurityTier.T3_BLOCKED
+
     def test_git_commit_is_t3(self, validator):
         """git commit must be treated as T3."""
         params = {

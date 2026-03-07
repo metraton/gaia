@@ -8,6 +8,7 @@ Validates Task tool invocations:
 """
 
 import logging
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -75,6 +76,27 @@ T3_KEYWORDS = [
 ]
 
 
+_EMBEDDED_COMMAND_QUOTE_CHARS = "\"'`"
+
+
+def _sanitize_candidate_fragment(fragment: str) -> str:
+    """Normalize a prose-embedded command fragment for verb detection.
+
+    Task prompts often mention commands inside backticks or quotes:
+      - Please run `terraform apply` in prod
+      - Need to execute "terraform apply" in prod
+
+    The detector only needs the command skeleton, so strip quote delimiters and
+    collapse whitespace before handing the fragment to the dangerous verb
+    classifier.
+    """
+    if not fragment:
+        return ""
+    cleaned = fragment.translate(str.maketrans({char: " " for char in _EMBEDDED_COMMAND_QUOTE_CHARS}))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned.rstrip(".,;:!?")
+
+
 def _extract_command_candidates(text: str) -> List[str]:
     """Extract command-like lines from free-form text for verb detection.
 
@@ -120,6 +142,7 @@ def _extract_command_candidates(text: str) -> List[str]:
             fragment = text[pos:end].strip()
             # Trim trailing punctuation/quotes that are part of prose
             fragment = fragment.rstrip(".,;:!?\"')")
+            fragment = _sanitize_candidate_fragment(fragment)
             if fragment:
                 candidates.append(fragment)
             idx = pos + len(prefix)

@@ -198,9 +198,10 @@ def _classify_resume_prompt(prompt: str) -> str:
         'deprecated' -- deprecated approval phrase detected
         'standard' -- normal resume prompt (no approval indicators)
     """
+    stripped_prompt = prompt.strip()
     if NONCE_APPROVAL_PATTERN.search(prompt):
         return "nonce"
-    if NONCE_APPROVAL_PREFIX in prompt:
+    if stripped_prompt.startswith(NONCE_APPROVAL_PREFIX):
         return "malformed_nonce"
     prompt_lower = prompt.lower()
     if any(phrase in prompt_lower for phrase in DEPRECATED_APPROVAL_PHRASES):
@@ -824,6 +825,7 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
     if classification == "nonce":
         nonce = NONCE_APPROVAL_PATTERN.search(prompt).group(1)
         activation = activate_pending_approval(nonce)
+        status_text = getattr(activation.status, "value", str(activation.status))
         if activation.success:
             grant_path = activation.grant_path
             grant_name = grant_path.name if grant_path else "<unknown>"
@@ -840,13 +842,13 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
             "(status=%s, reason=%s)",
             resume_id,
             nonce,
-            activation.status,
+            status_text,
             activation.reason,
         )
         return (
             "❌ Approval activation failed\n\n"
             f"Nonce: {nonce}\n"
-            f"Status: {activation.status}\n"
+            f"Status: {status_text}\n"
             f"Reason: {activation.reason}\n\n"
             "Request a fresh approval by retrying the blocked command so the hook "
             "can issue a new nonce."

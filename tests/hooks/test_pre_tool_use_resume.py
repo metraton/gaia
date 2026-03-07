@@ -75,6 +75,7 @@ class TestHandleTaskResumeApproval:
 
         assert isinstance(result, str)
         assert "Approval activation failed" in result
+        assert "Status: expired" in result
         assert "expired" in result.lower()
         assert saved_states == []
 
@@ -97,6 +98,16 @@ class TestHandleTaskResumeApproval:
         assert isinstance(result, str)
         assert "Deprecated approval format" in result
         assert saved_states == []
+
+    def test_documentary_nonce_text_is_not_treated_as_malformed_approval(self, saved_states):
+        result = pre_tool_use._handle_task(
+            "Task",
+            {"resume": "a12345", "prompt": "Use APPROVE:<nonce> in the docs and continue."},
+        )
+
+        assert result is None
+        assert len(saved_states) == 1
+        assert saved_states[0].metadata["has_approval"] is False
 
     def test_resume_without_approval_token_allows_and_marks_false(self, saved_states):
         result = pre_tool_use._handle_task(
