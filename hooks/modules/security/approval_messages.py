@@ -32,7 +32,9 @@ def build_invalid_nonce_message() -> str:
     return (
         "❌ Invalid approval token\n\n"
         f"Expected format: {CANONICAL_APPROVAL_TOKEN_FORMAT}\n\n"
-        "The resume prompt contains an approval prefix but not a valid nonce. "
+        "The token after APPROVE: must be the 32-character hex nonce from the latest "
+        "blocked command. Do not use an operation name, scope label, or placeholder "
+        "after APPROVE: (for example, APPROVE:commit is invalid).\n\n"
         "Retry the blocked command to generate a fresh nonce, then resume with "
         f"the exact token. {CANONICAL_APPROVAL_FORMAT_GUIDANCE}"
     )

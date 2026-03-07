@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..core.paths import find_claude_dir
 from ..core.state import get_session_id
@@ -164,9 +164,103 @@ def _get_grants_dir() -> Path:
     return grants_dir
 
 
+def _get_pending_index_path(session_id: str) -> Path:
+    """Return the session-scoped pending-approval index path."""
+    return _get_grants_dir() / f"pending-index-{session_id}.json"
+
+
+def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    """Read a JSON file defensively and return its dict payload."""
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _rebuild_pending_index(session_id: str) -> None:
+    """Rebuild the per-session pending-approval index from authoritative files."""
+    index_path = _get_pending_index_path(session_id)
+    entries: List[Dict[str, Any]] = []
+
+    for pending_file in _get_grants_dir().glob("pending-*.json"):
+        if pending_file.name.startswith("pending-index-"):
+            continue
+        data = _read_json_file(pending_file)
+        if not data or data.get("session_id") != session_id:
+            continue
+
+        nonce = data.get("nonce")
+        timestamp = data.get("timestamp")
+        if not nonce or not isinstance(timestamp, (int, float)):
+            continue
+        ttl_minutes = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
+        if _is_ttl_expired(float(timestamp), int(ttl_minutes)):
+            continue
+
+        entries.append(
+            {
+                "nonce": nonce,
+                "pending_file": pending_file.name,
+                "timestamp": float(timestamp),
+            }
+        )
+
+    entries.sort(key=lambda item: item["timestamp"], reverse=True)
+
+    if not entries:
+        index_path.unlink(missing_ok=True)
+        return
+
+    index_payload = {
+        "session_id": session_id,
+        "latest_nonce": entries[0]["nonce"],
+        "entries": entries,
+    }
+    index_path.write_text(json.dumps(index_payload, indent=2))
+
+
 def _get_session_id() -> str:
     """Get the current session ID. Delegates to core.state.get_session_id()."""
     return get_session_id()
+
+
+def get_latest_pending_approval(session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Return the newest pending approval record for the current session.
+
+    This is a deterministic helper for future orchestrator logic: it reads the
+    session index, then dereferences the authoritative pending file instead of
+    asking callers to parse a nonce from agent text.
+    """
+    if session_id is None:
+        session_id = _get_session_id()
+
+    index_path = _get_pending_index_path(session_id)
+
+    for attempt in range(2):
+        if not index_path.exists():
+            return None
+
+        index_data = _read_json_file(index_path)
+        if not index_data:
+            _rebuild_pending_index(session_id)
+            continue
+
+        latest_nonce = index_data.get("latest_nonce")
+        entries = index_data.get("entries") or []
+        pending_ref = next((entry for entry in entries if entry.get("nonce") == latest_nonce), None)
+        if not latest_nonce or pending_ref is None:
+            _rebuild_pending_index(session_id)
+            continue
+
+        pending_path = _get_grants_dir() / pending_ref.get("pending_file", "")
+        pending_data = _read_json_file(pending_path)
+        if not pending_data or pending_data.get("session_id") != session_id:
+            _rebuild_pending_index(session_id)
+            continue
+
+        return pending_data
+
+    return None
 
 
 # ============================================================================
@@ -239,6 +333,7 @@ def write_pending_approval(
         grants_dir = _get_grants_dir()
         pending_file = grants_dir / f"pending-{nonce}.json"
         pending_file.write_text(json.dumps(pending_data, indent=2))
+        _rebuild_pending_index(session_id)
 
         logger.info(
             "Pending approval written: nonce=%s, verb=%s, category=%s, session=%s",
@@ -324,6 +419,7 @@ def activate_pending_approval(
             )
             # Clean up expired pending file
             _cleanup_grant(pending_file)
+            _rebuild_pending_index(session_id)
             return ApprovalActivationResult(
                 success=False,
                 status=ACTIVATION_EXPIRED,
@@ -336,6 +432,7 @@ def activate_pending_approval(
         if not scope_signature_data:
             logger.warning("Pending approval for nonce %s is missing scope_signature", nonce)
             _cleanup_grant(pending_file)
+            _rebuild_pending_index(session_id)
             return ApprovalActivationResult(
                 success=False,
                 status=ACTIVATION_INVALID_PENDING,
@@ -350,6 +447,7 @@ def activate_pending_approval(
                 signature.scope_type,
             )
             _cleanup_grant(pending_file)
+            _rebuild_pending_index(session_id)
             return ApprovalActivationResult(
                 success=False,
                 status=ACTIVATION_INVALID_SIGNATURE,
@@ -385,6 +483,7 @@ def activate_pending_approval(
 
         # Delete pending file (one-time activation)
         _cleanup_grant(pending_file)
+        _rebuild_pending_index(session_id)
 
         logger.info(
             "Pending approval activated: nonce=%s, verbs=%s, grant=%s",
@@ -486,6 +585,7 @@ def cleanup_expired_grants() -> int:
     _last_cleanup_time = now
 
     cleaned = 0
+    sessions_to_rebuild: set[str] = set()
     try:
         grants_dir = _get_grants_dir()
         if not grants_dir.exists():
@@ -511,24 +611,37 @@ def cleanup_expired_grants() -> int:
 
         # Clean up expired pending approvals
         for pending_file in grants_dir.glob("pending-*.json"):
+            if pending_file.name.startswith("pending-index-"):
+                continue
             try:
                 data = json.loads(pending_file.read_text())
+                session_id = data.get("session_id")
                 if not data.get("scope_signature"):
                     _cleanup_grant(pending_file)
+                    if session_id:
+                        sessions_to_rebuild.add(session_id)
                     cleaned += 1
                     continue
                 timestamp = data.get("timestamp", 0)
                 ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
                 if _is_ttl_expired(timestamp, ttl):
                     _cleanup_grant(pending_file)
+                    if session_id:
+                        sessions_to_rebuild.add(session_id)
                     cleaned += 1
             except Exception:
                 # Corrupt file, remove it
+                data = _read_json_file(pending_file)
+                if data and data.get("session_id"):
+                    sessions_to_rebuild.add(data["session_id"])
                 _cleanup_grant(pending_file)
                 cleaned += 1
 
     except Exception as e:
         logger.error("Error during grant cleanup: %s", e)
+
+    for session_id in sessions_to_rebuild:
+        _rebuild_pending_index(session_id)
 
     if cleaned:
         logger.info("Cleaned up %d expired approval/pending files", cleaned)

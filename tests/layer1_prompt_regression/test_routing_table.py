@@ -102,5 +102,29 @@ class TestSystemPaths:
         assert "skills/" in claude_md_content
 
 
+class TestApprovalFlowContract:
+    """Validate the orchestrator approval flow contract in CLAUDE.md."""
+
+    def test_nonce_must_not_be_synthesized(self, claude_md_content):
+        """The orchestrator must forbid synthetic APPROVE tokens."""
+        assert "Never synthesize `APPROVE:<...>`" in claude_md_content
+        assert "APPROVE:commit" in claude_md_content
+
+    def test_semantic_approval_is_distinct_from_nonce(self, claude_md_content):
+        """The orchestrator must distinguish user approval intent from hook nonce."""
+        assert "Human approval and hook nonce are different things" in claude_md_content
+        assert "approval intent" in claude_md_content
+
+    def test_no_nonce_means_resume_without_approve_token(self, claude_md_content):
+        """If approval exists but nonce does not, the orchestrator must not invent one."""
+        assert "If the user approved earlier but no nonce exists yet" in claude_md_content
+        assert "Resume the agent with normal language" in claude_md_content
+
+    def test_auto_resume_requires_same_operation(self, claude_md_content):
+        """Auto-relay of a nonce is only valid for the same approved operation."""
+        assert "same approved operation" in claude_md_content
+        assert "changes operation" in claude_md_content
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

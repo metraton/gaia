@@ -82,11 +82,12 @@ class TestHandleTaskResumeApproval:
     def test_malformed_nonce_token_denies_resume_and_skips_state(self, saved_states):
         result = pre_tool_use._handle_task(
             "Task",
-            {"resume": "a12345", "prompt": "APPROVE:deadbeef continue"},
+            {"resume": "a12345", "prompt": "APPROVE:commit\n\nRetry the git commit."},
         )
 
         assert isinstance(result, str)
         assert "Invalid approval token" in result
+        assert "APPROVE:commit is invalid" in result
         assert saved_states == []
 
     def test_deprecated_approval_phrase_denies_resume_and_skips_state(self, saved_states):

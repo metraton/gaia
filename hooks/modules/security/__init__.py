@@ -50,6 +50,7 @@ from .approval_scopes import (
 from .approval_grants import (
     check_approval_grant,
     cleanup_expired_grants,
+    get_latest_pending_approval,
     ApprovalGrant,
 )
 
@@ -94,5 +95,6 @@ __all__ = [
     # Approval Grants
     "check_approval_grant",
     "cleanup_expired_grants",
+    "get_latest_pending_approval",
     "ApprovalGrant",
 ]

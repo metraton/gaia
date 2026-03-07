@@ -26,6 +26,7 @@ from modules.security.approval_grants import (
     check_approval_grant,
     cleanup_expired_grants,
     generate_nonce,
+    get_latest_pending_approval,
     write_pending_approval,
 )
 from modules.security.approval_scopes import (
@@ -225,6 +226,46 @@ class TestPendingApproval:
         assert data["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
         assert data["scope_signature"]["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
 
+    def test_latest_pending_index_tracks_newest_nonce(self, clean_grants_dir):
+        first_nonce = generate_nonce()
+        second_nonce = generate_nonce()
+        write_pending_approval(
+            nonce=first_nonce,
+            command="git commit -m 'feat: first'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        time.sleep(0.01)
+        write_pending_approval(
+            nonce=second_nonce,
+            command="git commit -m 'feat: second'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+
+        index_file = clean_grants_dir / "pending-index-test-session-123.json"
+        assert index_file.exists()
+
+        index_data = json.loads(index_file.read_text())
+        assert index_data["session_id"] == "test-session-123"
+        assert index_data["latest_nonce"] == second_nonce
+        assert [entry["nonce"] for entry in index_data["entries"]] == [second_nonce, first_nonce]
+
+    def test_get_latest_pending_approval_dereferences_pending_file(self, clean_grants_dir):
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git commit -m 'feat: latest'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+
+        pending = get_latest_pending_approval()
+        assert pending is not None
+        assert pending["nonce"] == nonce
+        assert pending["command"] == "git commit -m 'feat: latest'"
+        assert pending["session_id"] == "test-session-123"
+
 
 class TestActivatePendingApproval:
     """Pending approvals should activate only for valid nonce-backed records."""
@@ -253,6 +294,39 @@ class TestActivatePendingApproval:
         )
         activate_pending_approval(nonce)
         assert not pending_path.exists()
+
+    def test_activation_removes_latest_pending_index_when_last_nonce_used(self, clean_grants_dir):
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git commit -m 'feat: test'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        activate_pending_approval(nonce)
+        assert not (clean_grants_dir / "pending-index-test-session-123.json").exists()
+
+    def test_activation_rebuilds_index_to_previous_pending_nonce(self, clean_grants_dir):
+        first_nonce = generate_nonce()
+        second_nonce = generate_nonce()
+        write_pending_approval(
+            nonce=first_nonce,
+            command="git commit -m 'feat: first'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        time.sleep(0.01)
+        write_pending_approval(
+            nonce=second_nonce,
+            command="git commit -m 'feat: second'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+
+        activate_pending_approval(second_nonce)
+        latest = get_latest_pending_approval()
+        assert latest is not None
+        assert latest["nonce"] == first_nonce
 
     def test_activated_grant_matches_exact_command(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -401,23 +475,19 @@ class TestCleanup:
 
     def test_cleanup_removes_expired_pending(self, clean_grants_dir):
         nonce = generate_nonce()
-        pending_file = clean_grants_dir / f"pending-{nonce}.json"
-        pending_file.write_text(json.dumps({
-            "nonce": nonce,
-            "session_id": "test-session-123",
-            "command": "git commit -m 'test'",
-            "danger_verb": "commit",
-            "danger_category": "MUTATIVE",
-            "scope_signature": build_approval_signature(
-                "git commit -m 'test'",
-                scope_type=SCOPE_SEMANTIC_SIGNATURE,
-            ).to_dict(),
-            "timestamp": 1000000.0,
-            "ttl_minutes": 10,
-        }))
+        pending_file = write_pending_approval(
+            nonce=nonce,
+            command="git commit -m 'test'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        data = json.loads(pending_file.read_text())
+        data["timestamp"] = 1000000.0
+        pending_file.write_text(json.dumps(data, indent=2))
         cleaned = cleanup_expired_grants()
         assert cleaned >= 1
         assert not pending_file.exists()
+        assert not (clean_grants_dir / "pending-index-test-session-123.json").exists()
 
     def test_cleanup_removes_pending_without_signature(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -432,6 +502,57 @@ class TestCleanup:
         cleaned = cleanup_expired_grants()
         assert cleaned >= 1
         assert not pending_file.exists()
+
+    def test_get_latest_pending_approval_recovers_from_stale_index(self, clean_grants_dir):
+        first_nonce = generate_nonce()
+        second_nonce = generate_nonce()
+        write_pending_approval(
+            nonce=first_nonce,
+            command="git commit -m 'feat: first'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        time.sleep(0.01)
+        write_pending_approval(
+            nonce=second_nonce,
+            command="git commit -m 'feat: stale'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        index_file = clean_grants_dir / "pending-index-test-session-123.json"
+        pending_file = clean_grants_dir / f"pending-{second_nonce}.json"
+        pending_file.unlink()
+
+        latest = get_latest_pending_approval()
+        assert latest is not None
+        assert latest["nonce"] == first_nonce
+        rebuilt = json.loads(index_file.read_text())
+        assert rebuilt["latest_nonce"] == first_nonce
+
+    def test_get_latest_pending_approval_skips_expired_entries(self, clean_grants_dir):
+        expired_nonce = generate_nonce()
+        fresh_nonce = generate_nonce()
+        expired_file = write_pending_approval(
+            nonce=expired_nonce,
+            command="git commit -m 'feat: old'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        expired_data = json.loads(expired_file.read_text())
+        expired_data["timestamp"] = 1000000.0
+        expired_file.write_text(json.dumps(expired_data, indent=2))
+
+        time.sleep(0.01)
+        write_pending_approval(
+            nonce=fresh_nonce,
+            command="git commit -m 'feat: fresh'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+
+        latest = get_latest_pending_approval()
+        assert latest is not None
+        assert latest["nonce"] == fresh_nonce
 
 
 class TestNonceEndToEnd:
@@ -459,6 +580,17 @@ class TestNonceEndToEnd:
 
         result2 = validator.validate('git commit -m "feat(auth): add login endpoint"')
         assert result2.allowed is True
+
+    def test_blocked_t3_is_queryable_via_latest_pending_helper(self, clean_grants_dir):
+        from modules.tools.bash_validator import BashValidator
+
+        result = BashValidator().validate('git commit -m "feat(auth): add login endpoint"')
+        assert result.allowed is False
+
+        latest = get_latest_pending_approval()
+        assert latest is not None
+        assert latest["command"] == 'git commit -m "feat(auth): add login endpoint"'
+        assert latest["danger_verb"] == "commit"
 
 
 class TestBashValidatorIntegration:
