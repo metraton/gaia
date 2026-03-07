@@ -53,6 +53,10 @@ from modules.tools.task_validator import (
     T3_KEYWORDS,
 )
 from modules.security.approval_constants import NONCE_APPROVAL_PATTERN, NONCE_APPROVAL_PREFIX
+from modules.security.approval_messages import (
+    CANONICAL_APPROVAL_TOKEN,
+    LATEST_BLOCKED_COMMAND_PHRASE,
+)
 from modules.security.gitops_validator import (
     FORBIDDEN_FLUX_COMMANDS,
     FORBIDDEN_HELM_COMMANDS,
@@ -373,10 +377,12 @@ class TestTaskValidatorConsistency:
             pytest.skip("execution/SKILL.md not found")
 
         content = execution_skill.read_text().lower()
-        canonical_token = "approve:<nonce>"
-        assert canonical_token in content, (
+        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
             f"Execution skill must contain the canonical approval token "
-            f"('{canonical_token}')"
+            f"('{CANONICAL_APPROVAL_TOKEN}')"
+        )
+        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
+            "Execution skill must state that the nonce comes from the latest blocked command"
         )
 
 
@@ -407,9 +413,29 @@ class TestSkillsCrossReferences:
     def test_execution_skill_references_approval_token(self):
         """Execution skill must define the canonical approval token."""
         content = (SKILLS_DIR / "execution" / "SKILL.md").read_text()
-        assert "APPROVE:<nonce>" in content, (
+        assert CANONICAL_APPROVAL_TOKEN in content, (
             "Execution skill must contain the canonical nonce approval token "
-            "('APPROVE:<nonce>')"
+            f"('{CANONICAL_APPROVAL_TOKEN}')"
+        )
+
+    def test_approval_skill_references_canonical_nonce_contract(self):
+        """Approval skill must reference the same nonce contract as the hook/template."""
+        content = (SKILLS_DIR / "approval" / "SKILL.md").read_text().lower()
+        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
+            "Approval skill must mention the canonical nonce approval token"
+        )
+        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
+            "Approval skill must state that the token comes from the latest blocked command"
+        )
+
+    def test_claude_template_references_latest_blocked_command_nonce(self):
+        """CLAUDE template must instruct the orchestrator to relay the canonical nonce."""
+        content = (TEMPLATES_DIR / "CLAUDE.template.md").read_text().lower()
+        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
+            "CLAUDE.template.md must mention the canonical nonce token"
+        )
+        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
+            "CLAUDE.template.md must state that the token comes from the latest blocked command"
         )
 
     def test_security_tiers_t3_references_agent_protocol(self):

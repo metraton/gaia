@@ -39,7 +39,8 @@ The orchestrator resumes you with:
 
 The hook activates the pending approval grant and the blocked command succeeds on retry.
 
-If the resume prompt does not include that exact token format, do not execute.
+Use only `APPROVE:<nonce>` from the latest blocked command. If the resume prompt does not
+include that exact token, do not execute.
 
 ## Non-Interactive Flags
 

@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, List, Tuple
 
+from .approval_messages import build_t3_approval_instructions
 from .command_semantics import analyze_command
 
 logger = logging.getLogger(__name__)
@@ -580,29 +581,14 @@ def build_t3_block_response(
             f"\nDangerous flags detected: {', '.join(danger.dangerous_flags)}"
         )
 
-    nonce_section = ""
-    if nonce:
-        nonce_section = (
-            f"\n"
-            f"APPROVAL REQUIRED. Present your plan to the user and include "
-            f"this approval code: NONCE:{nonce}\n"
-            f"When approved, the orchestrator will resume you with "
-            f"APPROVE:{nonce} -- then retry the command.\n"
-        )
-
     message = (
         f"BLOCKED: {danger.category} operation detected.\n"
         f"Command: {command}\n"
         f"Verb: '{danger.verb}' (CLI family: {danger.cli_family})\n"
         f"Confidence: {danger.confidence}\n"
         f"Reason: {danger.reason}{flag_warning}\n"
-        f"{nonce_section}"
         f"\n"
-        f"This is a T3 (state-modifying) operation. Follow the approval workflow:\n"
-        f"1. Present a plan with scope, impact, and rollback steps.\n"
-        f"2. Include the approval code NONCE:{nonce} in your PENDING_APPROVAL output.\n"
-        f"3. Set PLAN_STATUS: PENDING_APPROVAL.\n"
-        f"4. Wait for explicit user approval before executing."
+        f"{build_t3_approval_instructions(nonce)}"
     )
 
     return {

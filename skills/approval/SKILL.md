@@ -77,8 +77,9 @@ You MUST include this nonce in your PENDING_APPROVAL output so the orchestrator 
 **Risk Level:** [LOW / MEDIUM / HIGH / CRITICAL]
 ```
 
-When the user approves, the orchestrator resumes you with `APPROVE:<nonce>`. The hook converts
-the pending approval into an active grant, and you can then retry the command successfully.
+When the user approves, the orchestrator resumes you with `APPROVE:<nonce>` from the latest blocked command.
+Do not improvise approval text and do not paraphrase the token. The hook converts the pending approval
+into an active grant, and you can then retry the command successfully.
 
 **If you lose the nonce** (e.g., the block response is not in your context), re-attempt the
 command. The hook will generate a fresh nonce.

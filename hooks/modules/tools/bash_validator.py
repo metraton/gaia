@@ -42,6 +42,7 @@ from ..security.approval_grants import (
     generate_nonce,
     write_pending_approval,
 )
+from ..security.approval_messages import build_pending_approval_unavailable_message
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
 from .hook_response import build_hook_permission_response
@@ -272,9 +273,7 @@ class BashValidator:
                 if pending_file is None:
                     hook_block = build_hook_permission_response(
                         "deny",
-                        "Approval workflow unavailable: failed to persist the pending "
-                        "approval record for this command. Retry once. If it fails "
-                        "again, inspect the hook logs before proceeding.",
+                        build_pending_approval_unavailable_message(),
                     )
                     return BashValidationResult(
                         allowed=False,

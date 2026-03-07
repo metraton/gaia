@@ -34,6 +34,11 @@ from modules.security.approval_constants import (
     NONCE_APPROVAL_PREFIX,
     NONCE_APPROVAL_PATTERN,
 )
+from modules.security.approval_messages import (
+    build_activation_failed_message,
+    build_deprecated_approval_message,
+    build_invalid_nonce_message,
+)
 from modules.security.approval_grants import (
     activate_pending_approval,
     cleanup_expired_grants,
@@ -845,14 +850,7 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
             status_text,
             activation.reason,
         )
-        return (
-            "❌ Approval activation failed\n\n"
-            f"Nonce: {nonce}\n"
-            f"Status: {status_text}\n"
-            f"Reason: {activation.reason}\n\n"
-            "Request a fresh approval by retrying the blocked command so the hook "
-            "can issue a new nonce."
-        ), False
+        return build_activation_failed_message(nonce, status_text, activation.reason), False
 
     if classification == "malformed_nonce":
         logger.warning(
@@ -860,24 +858,14 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
             resume_id,
             prompt[:120],
         )
-        return (
-            "❌ Invalid approval token\n\n"
-            f"Expected format: {NONCE_APPROVAL_PREFIX}<32-char-hex>\n\n"
-            "The resume prompt contains an approval prefix but not a valid nonce. "
-            "Retry the blocked command to generate a fresh nonce, then resume with "
-            "the exact APPROVE token."
-        ), False
+        return build_invalid_nonce_message(), False
 
     if classification == "deprecated":
         logger.warning(
             "Denied resume %s: deprecated legacy approval phrase detected",
             resume_id,
         )
-        return (
-            "❌ Deprecated approval format\n\n"
-            "String-based approval tokens are no longer supported.\n"
-            f"Use only {NONCE_APPROVAL_PREFIX}<32-char-hex> from the latest blocked command."
-        ), False
+        return build_deprecated_approval_message(), False
 
     return None, False
 
