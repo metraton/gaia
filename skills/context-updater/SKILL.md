@@ -46,17 +46,20 @@ CONTEXT_UPDATE:
 | **OVERWRITE** | Scalar values replaced |
 | **NO-DELETE** | Keys you don't mention are preserved |
 
-## Writable Sections Per Agent
+## Writable Sections Source of Truth
 
-| Agent | Writable Sections |
-|-------|-------------------|
-| `cloud-troubleshooter` | `cluster_details`, `infrastructure_topology`, `application_services`, `monitoring_observability`, `architecture_overview` |
-| `gitops-operator` | `gitops_configuration`, `cluster_details`, `application_services` |
-| `terraform-architect` | `terraform_infrastructure`, `infrastructure_topology` |
-| `devops-developer` | `application_services`, `application_architecture`, `development_standards`, `architecture_overview` |
+Do **not** memorize a static table from this skill.
+Use the injected `context_update_contract` as the source of truth:
 
-Writing to a section you don't own will be rejected by the hook.
-`gaia` and `speckit-planner` do not write to project-context — they manage gaia-ops internals and specs respectively.
+- `readable_sections` — the context sections available to you
+- `writable_sections` — the only sections you may update
+
+If `context_update_contract` is absent, fall back to your agent contract in
+`config/context-contracts.json`. Do not invent section names.
+
+Writing to a section you do not own will be rejected by the hook.
+`gaia` and `speckit-planner` do not write to project-context — they manage
+gaia-ops internals and specs respectively.
 
 ## Progressive Enrichment Targets
 

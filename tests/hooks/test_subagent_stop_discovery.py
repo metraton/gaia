@@ -151,3 +151,64 @@ AGENT_ID: a12345
         assert result["success"] is True
         assert result["response_contract"]["valid"] is False
         assert result["contract_repair_pending"] is True
+
+    @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
+    def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path):
+        transcript_path = tmp_path / "agent.jsonl"
+        injected_payload = {
+            "contract": {"application_services": {}},
+            "surface_routing": {
+                "active_surfaces": ["app_ci_tooling", "gitops_desired_state"],
+                "primary_surface": "app_ci_tooling",
+                "multi_surface": True,
+            },
+            "investigation_brief": {
+                "cross_check_required": True,
+                "consolidation_required": True,
+            },
+        }
+        user_prompt = (
+            "# Project Context (Auto-Injected)\n\n"
+            f"{json.dumps(injected_payload, indent=2)}\n\n---\n\n"
+            "# User Task\n\nInvestigate rollout failure after CI image change."
+        )
+        transcript_path.write_text(
+            json.dumps({"message": {"role": "user", "content": user_prompt}}) + "\n"
+        )
+
+        task_info = dict(structural_task_info)
+        task_info["agent_id"] = "a12345"
+        task_info["task_id"] = "a12345"
+        task_info["agent_transcript_path"] = str(transcript_path)
+
+        output = """\
+## Findings
+
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- compared existing deployment manifests
+FILES_CHECKED:
+- apps/base/api/deployment.yaml
+COMMANDS_RUN:
+- `kubectl get pods -n api` -> not run
+KEY_OUTPUTS:
+- image tag differs from CI artifact
+CROSS_LAYER_IMPACTS:
+- gitops_desired_state may be out of sync with CI output
+OPEN_GAPS:
+- live rollout failure still needs gitops verification
+<!-- /EVIDENCE_REPORT -->
+
+<!-- AGENT_STATUS -->
+PLAN_STATUS: COMPLETE
+PENDING_STEPS: []
+NEXT_ACTION: Report findings to the orchestrator
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+"""
+        result = subagent_stop_hook(task_info, output)
+        assert result["success"] is True
+        assert result["response_contract"]["valid"] is False
+        assert result["response_contract"]["consolidation_required"] is True
+        assert "CONSOLIDATION_REPORT" in result["response_contract"]["missing"]
+        assert result["contract_repair_pending"] is True

@@ -11,7 +11,6 @@ skills:
   - command-execution
   - gaia-patterns
   - skill-creation
-  - git-conventions
 ---
 
 ## Identity

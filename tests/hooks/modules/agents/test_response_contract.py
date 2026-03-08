@@ -15,6 +15,7 @@ from modules.agents.response_contract import (
     RECOMMENDED_ACTION_ESCALATE,
     RECOMMENDED_ACTION_RESUME_REPAIR,
     _get_contract_dir,
+    build_repair_prompt,
     clear_contract_dir_cache,
     load_pending_repair,
     load_last_validation,
@@ -44,6 +45,46 @@ CROSS_LAYER_IMPACTS:
 OPEN_GAPS:
 - none
 <!-- /EVIDENCE_REPORT -->
+
+<!-- AGENT_STATUS -->
+PLAN_STATUS: COMPLETE
+PENDING_STEPS: []
+NEXT_ACTION: Report findings to the orchestrator
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+"""
+
+VALID_MULTI_SURFACE_OUTPUT = """\
+## Findings
+
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- compared sibling terraform modules
+FILES_CHECKED:
+- terraform/main.tf
+COMMANDS_RUN:
+- `terraform plan -no-color` -> plan succeeded
+KEY_OUTPUTS:
+- plan adds one bucket and no destroys
+CROSS_LAYER_IMPACTS:
+- app_ci_tooling needs TURBO cache env vars updated
+OPEN_GAPS:
+- secret injection path still needs runtime validation
+<!-- /EVIDENCE_REPORT -->
+
+<!-- CONSOLIDATION_REPORT -->
+OWNERSHIP_ASSESSMENT: cross_surface_dependency
+CONFIRMED_FINDINGS:
+- terraform module defines the bucket correctly
+SUSPECTED_FINDINGS:
+- runtime token source may be misconfigured
+CONFLICTS:
+- none
+OPEN_GAPS:
+- cloud-troubleshooter should validate the live secret mapping
+NEXT_BEST_AGENT:
+- cloud-troubleshooter
+<!-- /CONSOLIDATION_REPORT -->
 
 <!-- AGENT_STATUS -->
 PLAN_STATUS: COMPLETE
@@ -105,6 +146,36 @@ AGENT_ID: a12345
         result = validate_response_contract(output, task_agent_id="")
         assert result.valid is False
         assert result.recommended_action == RECOMMENDED_ACTION_ESCALATE
+
+    def test_multi_surface_output_requires_consolidation_report(self):
+        result = validate_response_contract(
+            VALID_OUTPUT,
+            task_agent_id="a12345",
+            consolidation_required=True,
+        )
+        assert result.valid is False
+        assert "CONSOLIDATION_REPORT" in result.missing
+        assert "OWNERSHIP_ASSESSMENT" in result.missing
+
+    def test_multi_surface_output_with_consolidation_report_passes(self):
+        result = validate_response_contract(
+            VALID_MULTI_SURFACE_OUTPUT,
+            task_agent_id="a12345",
+            consolidation_required=True,
+        )
+        assert result.valid is True
+        assert result.consolidation_required is True
+        assert result.consolidation_report.ownership_assessment == "cross_surface_dependency"
+
+    def test_repair_prompt_mentions_consolidation_without_double_comma(self):
+        prompt = build_repair_prompt(
+            {
+                "missing": ["CONSOLIDATION_REPORT", "OWNERSHIP_ASSESSMENT"],
+                "invalid": [],
+            }
+        )
+        assert "CONSOLIDATION_REPORT (with OWNERSHIP_ASSESSMENT), optional" in prompt
+        assert ",," not in prompt
 
 
 class TestPersistence:

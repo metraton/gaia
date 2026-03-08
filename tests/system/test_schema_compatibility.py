@@ -57,6 +57,9 @@ class TestSchemaCompatibility:
         """Template must contain the final surface routing contract."""
         assert "## Surface Routing" in template_content
         assert "## Agent Routing" not in template_content
+        assert "surface_routing" in template_content
+        assert "investigation_brief" in template_content
+        assert "CONSOLIDATION_REPORT" in template_content
         for surface in [
             "live_runtime",
             "gitops_desired_state",
@@ -87,6 +90,9 @@ class TestSchemaCompatibility:
         )
         assert "two or more surfaces are active" in lowered, (
             "Template must define when to use multi-agent dispatch"
+        )
+        assert "recommended_action" in lowered, (
+            "Template must define the multi-surface consolidation output"
         )
 
     def test_template_documents_plan_status(self, template_content, package_root):

@@ -36,7 +36,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 - **Agent Instantiation:** identity (.md) + skills (injected) + project-context (contracts) + orchestrator request.
 - **Security Tiers:** T0 (read) → T1 (validate) → T2 (simulate) → T3 (realize, requires approval).
 - **Two-Phase T3:** PLANNING → PENDING_APPROVAL → APPROVED_EXECUTING → COMPLETE.
-- **Principle:** Skills teach process. Agents teach identity and domain knowledge. Never duplicate.
+- **Principle:** Skills teach process. Agents teach identity and domain knowledge. Runtime enforces deterministic contracts. Never duplicate.
 
 ## Workflow Design Philosophy
 
@@ -61,7 +61,9 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 3. **Scope** — CAN DO / CANNOT DO → DELEGATE table with agent names
 4. **Domain Errors** — domain-specific errors only
 
-**Canonical skills order:** `agent-protocol` → `security-tiers` → `output-format` → `investigation` → `command-execution` → domain skill → `context-updater` → `git-conventions` → `fast-queries`
+**Canonical injected skills order:** `agent-protocol` → `security-tiers` → `output-format` → `investigation` → `command-execution` → domain skill → `context-updater` → `fast-queries`
+
+**On-demand workflow skills:** `approval`, `execution`, `git-conventions`
 
 ## Documentation Standards
 

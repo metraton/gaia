@@ -6,16 +6,16 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 
 ```
 .claude/skills/
-├── agent-protocol/        # AGENT_STATUS, EVIDENCE_REPORT, search protocol, error handling
+├── agent-protocol/        # AGENT_STATUS, EVIDENCE_REPORT, search protocol, repair flow
 ├── security-tiers/        # T0-T3 classification
 │   └── reference.md
-├── output-format/         # Report structure, evidence formatting, and icons
+├── output-format/         # Human-facing report structure, verification sections, and icons
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── command-execution/     # Defensive execution, safe shell patterns
 │   └── reference.md
-├── context-updater/       # CONTEXT_UPDATE format
+├── context-updater/       # CONTEXT_UPDATE format and contract-driven writable sections
 │   └── examples.md
-├── git-conventions/       # Conventional commits
+├── git-conventions/       # Conventional commits (on-demand)
 ├── skill-creation/        # How to create new skills
 ├── gaia-patterns/         # Gaia meta-system patterns
 │   └── reference.md
@@ -56,10 +56,10 @@ skills:
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
 | cloud-troubleshooter | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | fast-queries |
-| terraform-architect | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater, git-conventions | terraform-patterns, fast-queries |
-| gitops-operator | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater, git-conventions | gitops-patterns, fast-queries |
-| devops-developer | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater, git-conventions | developer-patterns |
-| gaia | agent-protocol, security-tiers, output-format, investigation, command-execution, git-conventions | gaia-patterns, skill-creation |
+| terraform-architect | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | terraform-patterns, fast-queries |
+| gitops-operator | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | gitops-patterns, fast-queries |
+| devops-developer | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | developer-patterns, fast-queries |
+| gaia | agent-protocol, security-tiers, output-format, investigation, command-execution | gaia-patterns, skill-creation |
 | speckit-planner | agent-protocol, security-tiers, output-format | speckit-workflow, speckit.* (9 phase skills) |
 
 ## Skill Types
@@ -67,9 +67,9 @@ skills:
 | Type | Injection | Examples |
 |------|-----------|----------|
 | **Core** | Always via `skills:` | agent-protocol, security-tiers, output-format, investigation |
-| **Common** | Most agents via `skills:` | command-execution, context-updater, git-conventions |
+| **Common** | Most agents via `skills:` | command-execution, context-updater |
 | **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns |
-| **Workflow** | On-demand (agent reads file) | approval, execution |
+| **Workflow** | On-demand (agent reads file) | approval, execution, git-conventions |
 
 Workflow skills are loaded on-demand -- agents read them from disk when needed rather than receiving them at startup. Supporting files (`examples.md`, `reference.md`) are also read on-demand.
 

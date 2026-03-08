@@ -1,6 +1,19 @@
 {
   "rules": {
-    "universal": [],
+    "universal": [
+      {
+        "rule": "Start with existing repo patterns before inventing a new approach. Search 2-3 comparable examples when possible."
+      },
+      {
+        "rule": "If the task touches more than one surface, check at least one adjacent surface or explicitly explain why you did not."
+      },
+      {
+        "rule": "When commands inform your conclusion, include the exact command and the key output in EVIDENCE_REPORT."
+      },
+      {
+        "rule": "If another surface appears to own the fix, state that in CROSS_LAYER_IMPACTS or OPEN_GAPS instead of guessing across domains."
+      }
+    ],
     "agent_specific": {}
   }
 }

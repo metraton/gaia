@@ -109,6 +109,20 @@ class TestAgentProtocolSkill:
             assert field in content, \
                 f"agent-protocol should document EVIDENCE_REPORT field '{field}'"
 
+    def test_has_consolidation_report_section(self, content):
+        """Must document CONSOLIDATION_REPORT for multi-surface work."""
+        assert "CONSOLIDATION_REPORT" in content, \
+            "agent-protocol must document CONSOLIDATION_REPORT"
+        for field in [
+            "OWNERSHIP_ASSESSMENT",
+            "CONFIRMED_FINDINGS",
+            "SUSPECTED_FINDINGS",
+            "CONFLICTS",
+            "NEXT_BEST_AGENT",
+        ]:
+            assert field in content, \
+                f"agent-protocol should document CONSOLIDATION_REPORT field '{field}'"
+
     def test_documents_all_valid_statuses(self, content):
         """Must document all valid PLAN_STATUS values."""
         statuses = ["INVESTIGATING", "PLANNING", "PENDING_APPROVAL",
@@ -137,6 +151,8 @@ class TestContextUpdaterSkill:
         """Must document CONTEXT_UPDATE format."""
         assert "CONTEXT_UPDATE" in content, \
             "context-updater must document CONTEXT_UPDATE format"
+        assert "context_update_contract" in content, \
+            "context-updater should reference injected context_update_contract as SSOT"
 
     def test_documents_merge_rules(self, content):
         """Should document merge rules."""
@@ -165,14 +181,12 @@ class TestOutputFormatSkill:
             assert icon in content, \
                 f"output-format should document icon '{icon}'"
 
-    def test_documents_evidence_report_format(self, content):
-        """output-format should define compact evidence formatting."""
+    def test_references_protocol_mandated_evidence_report(self, content):
+        """output-format should defer deterministic evidence schema to agent-protocol."""
         assert "EVIDENCE_REPORT" in content, \
-            "output-format should document EVIDENCE_REPORT"
-        assert "COMMANDS_RUN" in content, \
-            "output-format should mention COMMANDS_RUN"
-        assert "KEY_OUTPUTS" in content, \
-            "output-format should mention KEY_OUTPUTS"
+            "output-format should reference EVIDENCE_REPORT"
+        assert "agent-protocol" in content, \
+            "output-format should defer the block schema to agent-protocol"
 
 
 class TestInvestigationSkill:
@@ -196,6 +210,13 @@ class TestInvestigationSkill:
         ]:
             assert field in content, \
                 f"investigation should explain '{field}'"
+
+    def test_documents_consolidation_contract(self, content):
+        """investigation should explain the consolidation contract for cross-surface work."""
+        assert "Consolidation Contract" in content, \
+            "investigation should document the consolidation contract"
+        assert "CONSOLIDATION_REPORT" in content, \
+            "investigation should reference CONSOLIDATION_REPORT"
 
 
 if __name__ == "__main__":

@@ -183,8 +183,11 @@ def test_payload_structure(temp_project_context: Path):
     result = run_script(temp_project_context, "terraform-architect", "check status")
 
     assert "contract" in result
+    assert "context_update_contract" in result
     assert "rules" in result
     assert "metadata" in result
+    assert "surface_routing" in result
+    assert "investigation_brief" in result
 
     # Removed fields should not be present
     assert "enrichment" not in result
@@ -196,6 +199,68 @@ def test_payload_structure(temp_project_context: Path):
     assert "contract_version" in metadata
     assert "rules_count" in metadata
     assert "historical_episodes_count" in metadata
+    assert "surface_routing_version" in metadata
+    assert "active_surfaces_count" in metadata
+    assert "surface_routing_confidence" in metadata
+
+
+def test_context_update_contract_matches_agent_write_scope(temp_project_context: Path):
+    """Injected context_update_contract should reflect the agent's SSOT write scope."""
+    result = run_script(temp_project_context, "terraform-architect", "Review terraform drift.")
+
+    context_update_contract = result["context_update_contract"]
+    writable_sections = set(context_update_contract["writable_sections"])
+    assert {"terraform_infrastructure", "infrastructure_topology"} <= writable_sections
+    assert {"gcp_services", "workload_identity", "static_ips"} <= writable_sections
+    assert "terraform_infrastructure" in context_update_contract["readable_sections"]
+    assert "application_services" in context_update_contract["readable_sections"]
+
+
+def test_surface_routing_single_surface_for_terraform_task(temp_project_context: Path):
+    """Context payload should classify a Terraform task into terraform_iac."""
+    result = run_script(
+        temp_project_context,
+        "terraform-architect",
+        "Review terraform module changes for the VPC service account policy.",
+    )
+
+    routing = result["surface_routing"]
+    brief = result["investigation_brief"]
+
+    assert routing["primary_surface"] == "terraform_iac"
+    assert "terraform_iac" in routing["active_surfaces"]
+    assert routing["dispatch_mode"] == "single_surface"
+    assert "terraform-architect" in routing["recommended_agents"]
+
+    assert brief["primary_surface"] == "terraform_iac"
+    assert brief["agent_role"] == "primary"
+    assert "terraform_infrastructure" in brief["contract_sections_to_anchor"]
+    assert "PATTERNS_CHECKED" in brief["evidence_required"]
+
+
+def test_surface_routing_detects_multi_surface_task(temp_project_context: Path):
+    """Context payload should detect multiple active surfaces when signals cross layers."""
+    result = run_script(
+        temp_project_context,
+        "devops-developer",
+        "Investigate why the CI pipeline changed the image tag, the deployment rollout failed, and kubectl logs now show runtime errors.",
+    )
+
+    routing = result["surface_routing"]
+    brief = result["investigation_brief"]
+
+    assert routing["multi_surface"] is True
+    assert "app_ci_tooling" in routing["active_surfaces"]
+    assert "gitops_desired_state" in routing["active_surfaces"]
+    assert "live_runtime" in routing["active_surfaces"]
+    assert routing["dispatch_mode"] == "parallel"
+
+    assert brief["cross_check_required"] is True
+    assert brief["consolidation_required"] is True
+    assert "gitops_desired_state" in brief["adjacent_surfaces"]
+    assert "live_runtime" in brief["adjacent_surfaces"]
+    assert "CROSS_LAYER_IMPACTS" in brief["evidence_required"]
+    assert "OWNERSHIP_ASSESSMENT" in brief["consolidation_fields"]
 
 def test_invalid_agent(temp_project_context: Path):
     """Verify script rejects invalid agent names."""

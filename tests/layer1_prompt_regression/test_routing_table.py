@@ -80,6 +80,7 @@ class TestSurfaceRoutingContract:
         """Gaia must explicitly own cross-surface consolidation."""
         assert "Gaia consolidates" in claude_md_content
         assert "conflicts" in claude_md_content
+        assert "recommended_action" in claude_md_content
 
     def test_reconnaissance_is_explicit_not_silent_fallback(self, claude_md_content):
         """devops-developer can do reconnaissance, but not act as a silent catch-all owner."""
@@ -99,6 +100,23 @@ class TestSurfaceRoutingContract:
             "open gaps",
         ]:
             assert phrase in claude_md_content
+
+    def test_multi_surface_tasks_require_consolidation_report(self, claude_md_content):
+        """Multi-surface work should require a consolidation-friendly block."""
+        assert "CONSOLIDATION_REPORT" in claude_md_content
+        for phrase in [
+            "ownership assessment",
+            "confirmed findings",
+            "suspected findings",
+            "conflicts",
+            "next best agent",
+        ]:
+            assert phrase in claude_md_content
+
+    def test_surface_routing_is_documented_as_auto_injected_context(self, claude_md_content):
+        """The orchestrator contract should mention the deterministic routing payload."""
+        assert "surface_routing" in claude_md_content
+        assert "investigation_brief" in claude_md_content
 
     def test_cross_agent_context_is_documented(self, claude_md_content):
         """Chained agents should receive a short summary of prior findings."""

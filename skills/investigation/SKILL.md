@@ -38,6 +38,12 @@ After gathering initial evidence, resist the pull to stop at the first answer.
 
 Stop exploring when new files confirm what you already know rather than adding new information.
 
+If Project Context includes an `investigation_brief`, use it to prioritize:
+- which surface you own
+- which adjacent surface must still be checked
+- which required checks must appear in your evidence
+- whether you must return a `CONSOLIDATION_REPORT` for Gaia to merge findings
+
 ## 4. Pattern Analysis
 
 Apply this hierarchy — in order, without skipping levels:
@@ -106,6 +112,19 @@ Minimum expectations:
 - Use `- none` or `- not run` when a field truly does not apply
 
 The goal is not verbosity. The goal is evidence that another agent, the orchestrator, or the user can verify quickly.
+
+## 9. Consolidation Contract
+
+When `investigation_brief.consolidation_required` is true, your response must help
+Gaia merge parallel or cross-surface work. That means:
+
+- say what is confirmed vs only suspected
+- say whether the problem is owned here or depends on another surface
+- say what still blocks a final conclusion
+- say who should continue if it is no longer your surface
+
+Do not wait for the orchestrator to infer this from prose. Put it in the
+protocol-mandated `CONSOLIDATION_REPORT`.
 
 ## Anti-Patterns
 

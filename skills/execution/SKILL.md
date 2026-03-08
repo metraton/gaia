@@ -15,9 +15,10 @@ Commands finishing is not success. Verification criteria passing is success.
 
 T3 operations modify live state. Live state is irreversible. That is why approval exists — and why verification must happen *after* execution, not during planning.
 
-The approval token is not a formality. It is a machine-checked contract: the orchestrator validates the exact token before the hook allows execution to proceed. "The user said yes" is not the same as the canonical token.
-
 Verification criteria exist because commands completing ≠ system in the desired state. A `terraform apply` can exit 0 and leave resources in a broken configuration. A `git push` can succeed and still not trigger Flux reconciliation. You cannot claim COMPLETE until you have read evidence — not assumed it.
+Runtime is authoritative for whether `APPROVE:<nonce>` is valid. Your
+responsibility is to execute only after canonical approval, run non-interactive
+commands, and prove the result with fresh verification evidence.
 
 ## Pre-Execution Checklist (MANDATORY)
 
@@ -36,8 +37,6 @@ If ANY check fails → STOP and report with `PLAN_STATUS: BLOCKED`
 The orchestrator resumes you with:
 
 `APPROVE:<32-char-hex>`
-
-The hook activates the pending approval grant and the blocked command succeeds on retry.
 
 Use only `APPROVE:<nonce>` from the latest blocked command. If the resume prompt does not
 include that exact token, do not execute.

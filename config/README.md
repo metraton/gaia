@@ -13,6 +13,7 @@ Central configuration for the orchestration system. Contracts are the SSOT for a
 | `context-contracts.aws.json` | **Legacy** -- kept for backward compatibility | Fallback if `context-contracts.json` not found |
 | `git_standards.json` | Commit standards (Conventional Commits), allowed types, forbidden footers | `hooks/modules/validation/commit_validator.py` |
 | `universal-rules.json` | Behavior rules injected into all agents | `context_provider.py` |
+| `surface-routing.json` | Generic surface classification and investigation-brief rules | `surface_router.py`, `context_provider.py`, Spec-Kit |
 
 ## How the base+cloud merge works
 
@@ -38,6 +39,7 @@ config/
 │   └── aws.json                  <- AWS extensions + section_schemas
 ├── context-contracts.gcp.json    <- legacy (fallback)
 ├── context-contracts.aws.json    <- legacy (fallback)
+├── surface-routing.json          <- generic surface routing + investigation brief config
 ├── git_standards.json
 ├── universal-rules.json
 └── README.md

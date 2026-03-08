@@ -11,7 +11,6 @@ skills:
   - command-execution
   - terraform-patterns
   - context-updater
-  - git-conventions
   - fast-queries
 ---
 

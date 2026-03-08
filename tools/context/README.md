@@ -5,6 +5,7 @@
 ## Overview
 
 This module manages the SSOT (Single Source of Truth) context that agents receive. It loads project configuration, filters by agent contract (defined in `config/context-contracts.json` + cloud extensions), and provides context to agents.
+It also classifies the task into generic Gaia surfaces, emits an `investigation_brief`, and injects a `context_update_contract` so agents receive deterministic cross-surface guidance and writable-section ownership, not just raw project data.
 
 ## Core Functions
 
@@ -28,12 +29,36 @@ contract_context = get_contract_context(
 )
 ```
 
+### `get_context_update_contract(agent_name, provider_contracts)`
+Gets the readable/writable section contract that governs `CONTEXT_UPDATE`.
+
+```python
+from tools.context.context_provider import get_context_update_contract
+update_contract = get_context_update_contract("terraform-architect", provider_contracts)
+```
+
 ### `load_provider_contracts(cloud_provider)`
 Loads cloud provider-specific agent contracts (GCP, AWS, Azure).
 
 ```python
 from tools.context.context_provider import load_provider_contracts
 contracts = load_provider_contracts("gcp")
+```
+
+### `classify_surfaces(task, current_agent=...)`
+Classifies a task into one or more active Gaia surfaces using generic signals.
+
+```python
+from tools.context.surface_router import classify_surfaces
+routing = classify_surfaces("Investigate rollout failure after CI image change", current_agent="gitops-operator")
+```
+
+### `build_investigation_brief(task, agent_name, contract_context)`
+Builds the deterministic investigation brief injected into project context.
+
+```python
+from tools.context.surface_router import build_investigation_brief
+brief = build_investigation_brief("Review hook/skill drift", "gaia", contract_context={})
 ```
 
 ## Core Classes
@@ -70,6 +95,13 @@ Each agent receives specific context sections (defined in `config/context-contra
 - gitops_configuration
 - cloud_provider_details
 
+The same contracts are also exposed under `context_update_contract`:
+- `readable_sections`
+- `writable_sections`
+
+Agents should use that injected contract, not a hardcoded table in a skill, when
+deciding whether a `CONTEXT_UPDATE` is allowed.
+
 ## Command Line Usage
 
 ```bash
@@ -82,6 +114,7 @@ python3 tools/context/context_provider.py terraform-architect "Create a VPC" \
 ```
 context/
 ├── context_provider.py        # Main context provisioning logic
+├── surface_router.py          # Surface classification + investigation brief
 ├── context_section_reader.py  # Token-optimized context extraction
 ├── context_selector.py        # Context selection logic
 ├── context_compressor.py      # Context compression for token optimization

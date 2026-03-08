@@ -3,6 +3,7 @@ Runtime validation for agent response contracts.
 
 Validates the deterministic blocks returned by agents:
 - EVIDENCE_REPORT
+- CONSOLIDATION_REPORT (for multi-surface / cross-check tasks)
 - AGENT_STATUS
 
 Also persists repair state so the orchestrator can deterministically resume the
@@ -44,6 +45,19 @@ EVIDENCE_FIELDS = [
     "CROSS_LAYER_IMPACTS",
     "OPEN_GAPS",
 ]
+VALID_OWNERSHIP_ASSESSMENTS = {
+    "owned_here",
+    "cross_surface_dependency",
+    "not_my_surface",
+}
+# Bullet-list fields only; OWNERSHIP_ASSESSMENT is validated separately as a key-value enum.
+CONSOLIDATION_FIELDS = [
+    "CONFIRMED_FINDINGS",
+    "SUSPECTED_FINDINGS",
+    "CONFLICTS",
+    "OPEN_GAPS",
+    "NEXT_BEST_AGENT",
+]
 
 RECOMMENDED_ACTION_NONE = "none"
 RECOMMENDED_ACTION_RESUME_REPAIR = "resume_same_agent_contract_repair"
@@ -58,6 +72,10 @@ _AGENT_STATUS_BLOCK_RE = re.compile(
 )
 _EVIDENCE_REPORT_BLOCK_RE = re.compile(
     r"<!-- EVIDENCE_REPORT -->\s*(.*?)\s*<!-- /EVIDENCE_REPORT -->", re.DOTALL
+)
+_CONSOLIDATION_REPORT_BLOCK_RE = re.compile(
+    r"<!-- CONSOLIDATION_REPORT -->\s*(.*?)\s*<!-- /CONSOLIDATION_REPORT -->",
+    re.DOTALL,
 )
 
 
@@ -83,24 +101,35 @@ class EvidenceReportBlock:
 
 
 @dataclass(frozen=True)
+class ConsolidationReportBlock:
+    marker_present: bool
+    ownership_assessment: str
+    fields: Dict[str, List[str]]
+
+
+@dataclass(frozen=True)
 class ResponseContractValidation:
     valid: bool
     severity: str
     missing: List[str]
     invalid: List[str]
     evidence_required: bool
+    consolidation_required: bool
     recommended_action: str
     agent_status: AgentStatusBlock
     evidence_report: EvidenceReportBlock
+    consolidation_report: ConsolidationReportBlock
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
 
 
 def _extract_last_marked_block(text: str, pattern: re.Pattern[str]) -> tuple[str, bool]:
-    matches = pattern.findall(text)
-    if matches:
-        return matches[-1].strip(), True
+    last = None
+    for m in pattern.finditer(text):
+        last = m
+    if last is not None:
+        return last.group(1).strip(), True
     return "", False
 
 
@@ -112,6 +141,24 @@ def _parse_key_value_lines(block_text: str) -> Dict[str, str]:
             continue
         key, _, value = stripped.partition(":")
         parsed[key.strip().upper()] = value.strip()
+    return parsed
+
+
+def _parse_bullet_field_block(
+    block_text: str,
+    fields: List[str],
+) -> Dict[str, List[str]]:
+    parsed: Dict[str, List[str]] = {field: [] for field in fields}
+    current_field: Optional[str] = None
+    for raw_line in block_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.endswith(":") and line[:-1] in fields:
+            current_field = line[:-1]
+            continue
+        if line.startswith("- ") and current_field:
+            parsed[current_field].append(line[2:].strip())
     return parsed
 
 
@@ -140,22 +187,27 @@ def parse_evidence_report(agent_output: str) -> EvidenceReportBlock:
         agent_output,
         _EVIDENCE_REPORT_BLOCK_RE,
     )
-    fields: Dict[str, List[str]] = {field: [] for field in EVIDENCE_FIELDS}
-
-    if body:
-        current_field: Optional[str] = None
-        for raw_line in body.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            if line.endswith(":") and line[:-1] in EVIDENCE_FIELDS:
-                current_field = line[:-1]
-                continue
-            if line.startswith("- ") and current_field:
-                fields[current_field].append(line[2:].strip())
-                continue
+    fields = _parse_bullet_field_block(body, EVIDENCE_FIELDS) if body else {field: [] for field in EVIDENCE_FIELDS}
 
     return EvidenceReportBlock(marker_present=marker_present, fields=fields)
+
+
+def parse_consolidation_report(agent_output: str) -> ConsolidationReportBlock:
+    """Parse the last CONSOLIDATION_REPORT block from agent output."""
+    body, marker_present = _extract_last_marked_block(
+        agent_output,
+        _CONSOLIDATION_REPORT_BLOCK_RE,
+    )
+    parsed = _parse_key_value_lines(body) if body else {}
+    fields = _parse_bullet_field_block(body, CONSOLIDATION_FIELDS) if body else {
+        field: [] for field in CONSOLIDATION_FIELDS
+    }
+
+    return ConsolidationReportBlock(
+        marker_present=marker_present,
+        ownership_assessment=parsed.get("OWNERSHIP_ASSESSMENT", "").strip(),
+        fields=fields,
+    )
 
 
 def _is_resume_agent_id(value: str) -> bool:
@@ -170,10 +222,18 @@ def validate_response_contract(
     agent_output: str,
     *,
     task_agent_id: str = "",
+    consolidation_required: bool = False,
 ) -> ResponseContractValidation:
     """Validate deterministic response blocks emitted by an agent."""
     status = parse_agent_status(agent_output)
     evidence = parse_evidence_report(agent_output)
+    if consolidation_required:
+        consolidation = parse_consolidation_report(agent_output)
+    else:
+        consolidation = ConsolidationReportBlock(
+            marker_present=False, ownership_assessment="",
+            fields={field: [] for field in CONSOLIDATION_FIELDS}
+        )
 
     missing: List[str] = []
     invalid: List[str] = []
@@ -204,6 +264,17 @@ def validate_response_contract(
             if not evidence.fields.get(field, []):
                 missing.append(field)
 
+    if consolidation_required:
+        if not consolidation.marker_present:
+            missing.append("CONSOLIDATION_REPORT")
+        if not consolidation.ownership_assessment:
+            missing.append("OWNERSHIP_ASSESSMENT")
+        elif consolidation.ownership_assessment not in VALID_OWNERSHIP_ASSESSMENTS:
+            invalid.append(f"OWNERSHIP_ASSESSMENT:{consolidation.ownership_assessment}")
+        for field in CONSOLIDATION_FIELDS:
+            if not consolidation.fields.get(field, []):
+                missing.append(field)
+
     valid = not missing and not invalid
     recommended_action = RECOMMENDED_ACTION_NONE if valid else RECOMMENDED_ACTION_RESUME_REPAIR
     severity = "none" if valid else "hard"
@@ -218,9 +289,11 @@ def validate_response_contract(
         missing=missing,
         invalid=invalid,
         evidence_required=evidence_required,
+        consolidation_required=consolidation_required,
         recommended_action=recommended_action,
         agent_status=status,
         evidence_report=evidence,
+        consolidation_report=consolidation,
     )
 
 
@@ -369,10 +442,14 @@ def build_repair_prompt(repair_payload: dict) -> str:
     missing = repair_payload.get("missing", [])
     invalid = repair_payload.get("invalid", [])
 
+    consolidation_clause = ""
+    if any("CONSOLIDATION" in m or "OWNERSHIP" in m for m in missing):
+        consolidation_clause = ", CONSOLIDATION_REPORT (with OWNERSHIP_ASSESSMENT)"
+
     return (
         "Repair your previous response contract only.\n"
         "Do not restart the investigation unless strictly required to fill missing evidence.\n"
-        "Reissue a corrected response with complete EVIDENCE_REPORT, optional CONTEXT_UPDATE if applicable, "
+        f"Reissue a corrected response with complete EVIDENCE_REPORT{consolidation_clause}, optional CONTEXT_UPDATE if applicable, "
         "and a valid AGENT_STATUS block.\n\n"
         "Missing fields:\n"
         f"{_format_field_list(missing)}\n\n"
@@ -384,16 +461,20 @@ def build_repair_prompt(repair_payload: dict) -> str:
 __all__ = [
     "AgentStatusBlock",
     "EvidenceReportBlock",
+    "ConsolidationReportBlock",
     "ResponseContractValidation",
     "VALID_PLAN_STATUSES",
     "EVIDENCE_REQUIRED_PLAN_STATUSES",
     "EVIDENCE_FIELDS",
+    "VALID_OWNERSHIP_ASSESSMENTS",
+    "CONSOLIDATION_FIELDS",
     "RECOMMENDED_ACTION_NONE",
     "RECOMMENDED_ACTION_RESUME_REPAIR",
     "RECOMMENDED_ACTION_ESCALATE",
     "MAX_REPAIR_ATTEMPTS",
     "parse_agent_status",
     "parse_evidence_report",
+    "parse_consolidation_report",
     "validate_response_contract",
     "save_validation_result",
     "save_pending_repair",

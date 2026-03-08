@@ -42,6 +42,10 @@ The pre_tool_use hook is the primary security gate. With `Bash(*)` in the allow 
 2. Dangerous verb detection (dangerous_verbs.py) -- nonce-based approval flow
 3. Safe command auto-approval (safe_commands.py)
 
+Runtime is the single source of truth for nonce handling, grant scope, and
+approval enforcement. This skill teaches classification and decision-making; it
+does not replace the hook contract.
+
 Conditional commands like `git branch` are safe for listing but T3 with mutative flags (`-D`, `-d`, `-m`). See `reference.md`.
 
 ## T3 Workflow
@@ -49,5 +53,5 @@ Conditional commands like `git branch` are safe for listing but T3 with mutative
 For T3 operations, follow the state flow in `agent-protocol`: PLANNING -- PENDING_APPROVAL -- APPROVED_EXECUTING -- COMPLETE.
 
 On-demand workflow skills (read from disk when needed):
-- `.claude/skills/approval/SKILL.md` -- plan format, nonce-based approval presentation
-- `.claude/skills/execution/SKILL.md` -- post-approval execution protocol
+- `.claude/skills/approval/SKILL.md` -- informed-consent plan quality and approval presentation
+- `.claude/skills/execution/SKILL.md` -- post-approval execution discipline and verification
