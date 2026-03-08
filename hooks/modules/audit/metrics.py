@@ -6,6 +6,7 @@ Collects execution metrics and provides FUNCTIONAL generate_summary.
 
 import json
 import logging
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
@@ -57,17 +58,22 @@ class MetricsCollector:
             "tool_name": tool_name,
             "command_type": self._classify_command(command),
             "duration_ms": round(duration * 1000, 2),
-            "success": success,
+            # NOTE: 'success' field removed -- Claude Code's PostToolUse hook
+            # always reports success=True due to API limitation, making the
+            # field unreliable. Use exit_code from audit logs instead.
             "tier": tier,
         }
 
-        # Write to monthly metrics file
-        metrics_file = self.metrics_dir / f"metrics-{datetime.now().strftime('%Y-%m')}.jsonl"
-        try:
-            with open(metrics_file, "a") as f:
-                f.write(json.dumps(metrics_record) + "\n")
-        except Exception as e:
-            logger.error(f"Error writing metrics: {e}")
+        # Metrics files are a strict subset of audit logs (audit-*.jsonl).
+        # Writing is disabled by default; audit logs are the SSOT for command metrics.
+        # Set GAIA_WRITE_METRICS=1 to re-enable for backward compatibility.
+        if os.environ.get("GAIA_WRITE_METRICS") == "1":
+            metrics_file = self.metrics_dir / f"metrics-{datetime.now().strftime('%Y-%m')}.jsonl"
+            try:
+                with open(metrics_file, "a") as f:
+                    f.write(json.dumps(metrics_record) + "\n")
+            except Exception as e:
+                logger.error(f"Error writing metrics: {e}")
 
     def _classify_command(self, command: str) -> str:
         """Classify command type for metrics."""

@@ -322,12 +322,42 @@ def _consume_anomaly_flag(enriched_prompt: str) -> str:
     detected.  Reading it once and deleting ensures the warning is shown
     exactly once.  Must not slow down context injection -- returns
     immediately if the file does not exist.
+
+    TTL enforcement: flags older than 1 hour (by created_at or file mtime)
+    are auto-expired and deleted without injecting a warning.
     """
     flag_path = Path(".claude/project-context/workflow-episodic-memory/signals/needs_analysis.flag")
     if not flag_path.exists():
         return enriched_prompt
     try:
         signal_data = json.loads(flag_path.read_text())
+
+        # TTL check: auto-expire flags older than ttl_hours (default 1 hour)
+        ttl_hours = signal_data.get("ttl_hours", 1)
+        ttl_seconds = ttl_hours * 3600
+        created_at = signal_data.get("created_at") or signal_data.get("timestamp")
+        if created_at:
+            created_dt = datetime.fromisoformat(created_at)
+            age_seconds = (datetime.now() - created_dt).total_seconds()
+            if age_seconds > ttl_seconds:
+                flag_path.unlink()
+                logger.info(
+                    "Auto-expired anomaly flag (age: %.0fs, ttl: %ds)",
+                    age_seconds, ttl_seconds,
+                )
+                return enriched_prompt
+        else:
+            # Fallback: check file modification time
+            mtime = flag_path.stat().st_mtime
+            age_seconds = datetime.now().timestamp() - mtime
+            if age_seconds > ttl_seconds:
+                flag_path.unlink()
+                logger.info(
+                    "Auto-expired anomaly flag by mtime (age: %.0fs, ttl: %ds)",
+                    age_seconds, ttl_seconds,
+                )
+                return enriched_prompt
+
         anomalies = signal_data.get("anomalies", [])
         summary = "; ".join(a.get("message", "") for a in anomalies if a.get("message"))
         if summary:

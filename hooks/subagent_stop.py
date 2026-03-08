@@ -235,13 +235,14 @@ def capture_workflow_metrics(task_info: Dict[str, Any], agent_output: str, sessi
         "prompt": task_info.get("description", ""),  # Store for episodic
     }
 
-    # Save to workflow memory
-    workflow_memory_dir = get_workflow_memory_dir()
-    workflow_memory_dir.mkdir(parents=True, exist_ok=True)
+    # Save to workflow memory (gated behind env var; default: no write)
+    if os.environ.get("GAIA_WRITE_WORKFLOW_METRICS") == "1":
+        workflow_memory_dir = get_workflow_memory_dir()
+        workflow_memory_dir.mkdir(parents=True, exist_ok=True)
 
-    metrics_file = workflow_memory_dir / "metrics.jsonl"
-    with open(metrics_file, "a") as f:
-        f.write(json.dumps(metrics) + "\n")
+        metrics_file = workflow_memory_dir / "metrics.jsonl"
+        with open(metrics_file, "a") as f:
+            f.write(json.dumps(metrics) + "\n")
 
     logger.debug(f"Captured workflow metrics: {metrics['agent']} (duration: {duration_ms}ms, exit: {exit_code})")
 
@@ -316,6 +317,8 @@ def signal_gaia_analysis(anomalies: List[Dict], metrics: Dict[str, Any]):
 
         signal_data = {
             "timestamp": datetime.now().isoformat(),
+            "created_at": datetime.now().isoformat(),
+            "ttl_hours": 1,
             "anomalies": anomalies,
             "metrics_summary": {
                 "agent": metrics["agent"],
@@ -434,7 +437,7 @@ def capture_episodic_memory(
             context["anomalies"] = anomalies
             logger.info(f"Episode has {len(anomalies)} anomaly/anomalies")
 
-        # Store episode
+        # Store episode (pass workflow metrics for P3 CLI compatibility fields)
         episode_id = memory.store_episode(
             prompt=prompt,
             clarifications={},
@@ -444,7 +447,8 @@ def capture_episodic_memory(
             outcome=outcome,
             success=success,
             duration_seconds=duration_seconds,
-            commands_executed=[]
+            commands_executed=[],
+            workflow_metrics=metrics
         )
 
         logger.info(f"Captured episode: {episode_id} (outcome: {outcome}, plan_status: {plan_status})")

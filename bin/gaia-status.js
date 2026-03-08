@@ -47,18 +47,44 @@ async function readLastLine(filePath) {
 }
 
 /**
- * Get the last agent session from workflow metrics.
+ * Read the episodic memory index. Returns { episodes, lastAgent } where
+ * episodes is the full array and lastAgent is the last entry with an agent field.
+ * Falls back to workflow-episodic-memory/metrics.jsonl for backward compatibility.
  */
-async function getLastAgent() {
-  const metricsPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
-  if (!existsSync(metricsPath)) return null;
-  const line = await readLastLine(metricsPath);
-  if (!line) return null;
+async function readEpisodicIndex() {
+  // Primary: episodic-memory/index.json
   try {
-    return JSON.parse(line);
-  } catch {
-    return null;
-  }
+    const indexPath = join(CWD, '.claude', 'project-context', 'episodic-memory', 'index.json');
+    if (existsSync(indexPath)) {
+      const data = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
+      const episodes = data.episodes || [];
+      const withAgent = episodes.filter(e => e.agent);
+      if (withAgent.length > 0) {
+        const lastAgent = withAgent[withAgent.length - 1];
+        return { episodes, lastAgent, source: 'episodic-memory' };
+      }
+      // Episodes exist but none have agent field (pre-backfill) -- fall through
+      if (episodes.length > 0) {
+        return { episodes, lastAgent: null, source: 'episodic-memory' };
+      }
+    }
+  } catch { /* fall through to legacy */ }
+
+  // Fallback: read both old sources
+  const episodes = [];
+  let lastAgent = null;
+
+  try {
+    const metricsPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
+    if (existsSync(metricsPath)) {
+      const line = await readLastLine(metricsPath);
+      if (line) {
+        try { lastAgent = JSON.parse(line); } catch { /* skip */ }
+      }
+    }
+  } catch { /* skip */ }
+
+  return { episodes, lastAgent, source: 'legacy' };
 }
 
 /**
@@ -103,29 +129,36 @@ async function getContextLastUpdated() {
   }
 }
 
-/**
- * Count episodes from the episodic memory index.
- */
-async function getEpisodeCount() {
-  const indexPath = join(CWD, '.claude', 'project-context', 'episodic-memory', 'index.json');
-  if (!existsSync(indexPath)) return null;
-  try {
-    const data = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
-    return (data.episodes || []).length;
-  } catch {
-    return null;
-  }
-}
+// getEpisodeCount and getMetricsCount removed -- now unified in readEpisodicIndex()
 
 /**
- * Count workflow metrics entries.
+ * Get response contract validation stats from session result files.
+ * Reads response-contract session directories for last-result.json files.
+ * Returns an object with valid and total counts, or null if no data exists.
  */
-async function getMetricsCount() {
-  const metricsPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
-  if (!existsSync(metricsPath)) return null;
+async function getContractStats() {
+  const contractDir = join(CWD, '.claude', 'session', 'active', 'response-contract');
+  if (!existsSync(contractDir)) return null;
+
   try {
-    const content = await fs.readFile(metricsPath, 'utf-8');
-    return content.split('\n').filter(l => l.trim()).length;
+    const entries = await fs.readdir(contractDir, { withFileTypes: true });
+    const sessionDirs = entries.filter(e => e.isDirectory() && e.name.startsWith('session-'));
+
+    let valid = 0;
+    let total = 0;
+
+    for (const dir of sessionDirs) {
+      const resultPath = join(contractDir, dir.name, 'last-result.json');
+      try {
+        const data = JSON.parse(await fs.readFile(resultPath, 'utf-8'));
+        if (data.validation) {
+          total++;
+          if (data.validation.valid) valid++;
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return total > 0 ? { valid, total } : null;
   } catch {
     return null;
   }
@@ -166,20 +199,22 @@ async function main() {
   }
 
   const [
-    lastAgent,
+    episodicData,
     pendingCount,
     anomalyCount,
     contextUpdated,
-    episodeCount,
-    metricsCount,
+    contractStats,
   ] = await Promise.all([
-    getLastAgent(),
+    readEpisodicIndex(),
     getPendingCount(),
     getAnomalyCount(),
     getContextLastUpdated(),
-    getEpisodeCount(),
-    getMetricsCount(),
+    getContractStats(),
   ]);
+
+  const lastAgent = episodicData.lastAgent;
+  const episodeCount = episodicData.episodes.length || null;
+  const agentSessionCount = episodicData.episodes.filter(e => e.agent).length;
 
   const governancePath = join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md');
   const governanceOk = existsSync(governancePath);
@@ -226,9 +261,16 @@ async function main() {
   console.log(`  Governance:   speckit-project-specs/governance.md — ${govStatus}`);
 
   // Memory
-  const epStr = episodeCount !== null ? `${episodeCount} episodes` : 'no episodic-memory';
-  const metStr = metricsCount !== null ? `${metricsCount} metrics entries` : 'no metrics';
-  console.log(`  Memory:       ${chalk.gray(epStr + '  |  ' + metStr)}`);
+  const epStr = episodeCount ? `${episodeCount} episodes` : 'no episodic-memory';
+  const agentStr = agentSessionCount > 0 ? `${agentSessionCount} agent sessions` : 'no agent sessions';
+  console.log(`  Memory:       ${chalk.gray(epStr + '  |  ' + agentStr)}`);
+
+  // Contract validation stats (only shown if data exists)
+  if (contractStats) {
+    const pct = Math.round((contractStats.valid / contractStats.total) * 100);
+    const contractColor = pct >= 80 ? chalk.green : pct >= 50 ? chalk.yellow : chalk.red;
+    console.log(`  Contracts:    ${contractColor(`${contractStats.valid} valid / ${contractStats.total} total (${pct}% success rate)`)}`);
+  }
 
   console.log('  ' + SEP + '\n');
 }

@@ -19,6 +19,7 @@ import logging
 import os
 import fcntl
 import select
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -28,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir, get_session_dir
 from modules.core.state import get_hook_state, clear_hook_state
 from modules.audit.logger import log_execution
-from modules.audit.metrics import record_metric
 from modules.audit.event_detector import detect_critical_event
 
 # Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
@@ -130,26 +130,28 @@ def post_tool_use_hook(
         pre_state = get_hook_state()
         tier = pre_state.tier if pre_state else "unknown"
 
+        # Compute duration from pre-hook timestamp when available.
+        # Claude Code's duration_ms is unreliable (often 0), so we
+        # measure wall-clock time between pre-hook and post-hook.
+        computed_duration = duration
+        if pre_state and pre_state.start_time_epoch > 0:
+            computed_duration = time.time() - pre_state.start_time_epoch
+
         # Log execution
         exit_code = 0 if success else 1
         log_execution(
             tool_name=tool_name,
             parameters=parameters,
             result=result,
-            duration=duration,
+            duration=computed_duration,
             exit_code=exit_code,
             tier=tier,
         )
 
-        # Record metrics
-        command = parameters.get("command", "") if tool_name.lower() == "bash" else tool_name
-        record_metric(
-            tool_name=tool_name,
-            command=command,
-            duration=duration,
-            success=success,
-            tier=tier,
-        )
+        # Metrics recording disabled: audit logs (audit-*.jsonl) are the SSOT
+        # for command metrics. The metrics-*.jsonl files were a strict subset
+        # with no unique data (command_type is derivable from the audit command).
+        # To re-enable, set GAIA_WRITE_METRICS=1.
 
         # Detect critical events
         events = detect_critical_event(tool_name, parameters, result, success)

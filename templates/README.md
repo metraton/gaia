@@ -20,7 +20,7 @@ Generates final file in project
 
 ## Available Templates
 
-### `CLAUDE.template.md` (~66 lines)
+### `CLAUDE.template.md` (~174 lines)
 
 Static template for the orchestrator file. Copied as-is by `gaia-init` and `gaia-update` — no placeholder interpolation.
 
@@ -31,7 +31,7 @@ Contains: identity, routing table, agent descriptions, task tool syntax, work un
 
 ---
 
-### `settings.template.json` (~727 lines)
+### `settings.template.json` (~126 lines)
 
 Template for permissions and security configuration. On update, new rules are merged while preserving user additions.
 

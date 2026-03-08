@@ -33,7 +33,7 @@ Log to .claude/logs/
 
 ### Pre-Execution Hook
 
-**`pre_tool_use.py`** (~909 lines) - Main guardian (v2 modular) - validates ALL operations before execution.
+**`pre_tool_use.py`** (~1125 lines) - Main guardian (v2 modular) - validates ALL operations before execution.
 
 Uses the modular architecture in `modules/`:
 - **Bash validation**: tier classification, blocked commands, read-only auto-approval
@@ -47,7 +47,7 @@ Uses the modular architecture in `modules/`:
 
 ### Workflow Metrics Hook
 
-**`subagent_stop.py`** (~918 lines) - Captures metrics and detects anomalies when agents finish. Detects slow execution (>120s), failures, and consecutive failures.
+**`subagent_stop.py`** (~1010 lines) - Captures metrics and detects anomalies when agents finish. Detects slow execution (>120s), failures, and consecutive failures.
 
 ## Automatic Invocation
 
@@ -91,9 +91,9 @@ Hooks read `.claude/settings.json` for decisions:
 
 ```
 hooks/
-├── pre_tool_use.py        (~909 lines) - Main guardian (v2 modular)
+├── pre_tool_use.py        (~1125 lines) - Main guardian (v2 modular)
 ├── post_tool_use.py       (~270 lines) - Main auditor
-├── subagent_stop.py       (~918 lines) - Workflow metrics + anomaly detection
+├── subagent_stop.py       (~1010 lines) - Workflow metrics + anomaly detection
 └── modules/               - Modular architecture (see modules/README.md)
     ├── core/              - Shared utilities (paths, state)
     ├── security/          - Tier classification, safe/blocked commands

@@ -91,7 +91,7 @@ Validates installation:
   ✅ Claude Code available
   ✅ Valid configuration
          ↓
-Ready! You can use: claude-code
+Ready! You can use: claude
 ```
 
 ### Real Installation Example
@@ -117,7 +117,7 @@ Example: Installation in project with GitOps and Terraform
    ↓
 5. Creates structure:
    ✅ .claude/ created
-   ✅ 6 symlinks created
+   ✅ 8 symlinks created
    ✅ CLAUDE.md generated (196 lines)
    ✅ project-context.json created
    ↓
@@ -131,7 +131,7 @@ Example: Installation in project with GitOps and Terraform
    - .claude/commands/README.md
    
    🚀 Next steps:
-   1. Run: claude-code
+   1. Run: claude
    2. Ask: "Show me GKE clusters"
    3. Or use: /gaia to explore the system
 ```
@@ -211,7 +211,7 @@ Once installed, you have access to **complete documentation** in each directory:
 ```
 .claude/
 ├── agents/               6 agents (terraform-architect, gitops-operator, etc.)
-├── skills/README.md      17 skill modules
+├── skills/README.md      16 skill modules
 ├── commands/README.md    7 speckit slash commands
 ├── config/README.md      Contracts, git standards, universal rules
 ├── hooks/README.md       3 hooks (pre, post, metrics)
@@ -249,7 +249,7 @@ cat .claude/project-context/project-context.json
 ### 3. Start Claude Code
 
 ```bash
-claude-code
+claude
 ```
 
 ### 4. Test the System
@@ -309,10 +309,10 @@ Gaia-Ops **automatically detects** if you already have Claude Code installed and
 
 ```bash
 # See where Claude Code is installed
-which claude-code
+which claude
 
 # Should show ONE location:
-# ✅ /usr/local/bin/claude-code (native - recommended)
+# ✅ /usr/local/bin/claude (native - recommended)
 ```
 
 #### If You Have Multiple Installations
@@ -328,8 +328,8 @@ npx gaia-cleanup
 npm -g uninstall @anthropic-ai/claude-code
 
 # Verify only one remains
-which claude-code
-claude-code --version
+which claude
+claude --version
 ```
 
 ---
@@ -341,9 +341,9 @@ claude-code --version
 **Solution:**
 ```bash
 # Verify installation
-which claude-code
+which claude
 
-# If not found, install manually
+# If not found, install via npm
 npm install -g @anthropic-ai/claude-code
 ```
 
@@ -400,7 +400,7 @@ npx gaia-uninstall --force --remove-all
 rm -rf .claude/
 
 # 2. Remove generated files
-rm CLAUDE.md AGENTS.md
+rm CLAUDE.md
 
 # 3. Uninstall npm package
 npm uninstall @jaguilar87/gaia-ops

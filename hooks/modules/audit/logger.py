@@ -8,7 +8,6 @@ with no additional value (session_id was always "default").
 
 import os
 import json
-import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -37,20 +36,6 @@ class AuditLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.session_id = get_session_id()
 
-    def hash_output(self, output: str, max_length: int = 1000) -> str:
-        """
-        Create hash of output for audit trail.
-
-        Args:
-            output: Output string to hash
-            max_length: Max length to consider for hashing
-
-        Returns:
-            Truncated SHA256 hash
-        """
-        truncated = output[:max_length] if len(output) > max_length else output
-        return hashlib.sha256(truncated.encode()).hexdigest()[:16]
-
     def log_execution(
         self,
         tool_name: str,
@@ -78,14 +63,6 @@ class AuditLogger:
         if tool_name.lower() == "bash":
             command = parameters.get("command", "")
 
-        # Process result
-        output_preview = ""
-        output_hash = ""
-        if result:
-            result_str = str(result)
-            output_preview = result_str[:200] + "..." if len(result_str) > 200 else result_str
-            output_hash = self.hash_output(result_str)
-
         # Create audit record
         audit_record = {
             "timestamp": timestamp,
@@ -96,8 +73,6 @@ class AuditLogger:
             "duration_ms": round(duration * 1000, 2),
             "exit_code": exit_code,
             "tier": tier,
-            "output_hash": output_hash,
-            "output_preview": output_preview,
         }
 
         # Write to daily audit log (session log removed — was always "session-default.jsonl")

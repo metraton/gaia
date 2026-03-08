@@ -13,8 +13,15 @@
  * - Security tier usage distribution
  * - Command type breakdown (terraform, git, kubernetes, etc.)
  * - Top commands by frequency
- * - Agent invocations (from workflow-episodic/metrics.jsonl)
+ * - Agent invocations (from episodic-memory/index.json)
+ * - Anomaly summary (last 30 days, from anomalies.jsonl)
  * - Activity summary for today
+ *
+ * Data sources:
+ * - .claude/logs/audit-*.jsonl (SSOT for command metrics)
+ * - .claude/project-context/episodic-memory/index.json (primary, agent metrics)
+ * - .claude/project-context/workflow-episodic-memory/metrics.jsonl (fallback)
+ * - .claude/project-context/workflow-episodic-memory/anomalies.jsonl
  */
 
 import { join, dirname, resolve } from 'path';
@@ -83,46 +90,33 @@ async function readAuditLogs() {
   }
 }
 
-/**
- * Read metrics logs from .claude/metrics/metrics-*.jsonl
- * Fields: timestamp, tool_name, command_type, tier, success, duration_ms
- */
-async function readMetricsLogs() {
-  try {
-    const metricsDir = join(CWD, '.claude', 'metrics');
-    if (!existsSync(metricsDir)) return [];
-
-    const files = await fs.readdir(metricsDir);
-    const metricFiles = files.filter(f => f.startsWith('metrics-') && f.endsWith('.jsonl'));
-
-    let all = [];
-    for (const file of metricFiles) {
-      try {
-        const content = await fs.readFile(join(metricsDir, file), 'utf-8');
-        const parsed = content.split('\n')
-          .filter(l => l.trim())
-          .map(l => { try { return JSON.parse(l); } catch { return null; } })
-          .filter(Boolean);
-        all = all.concat(parsed);
-      } catch { /* skip */ }
-    }
-    return all;
-  } catch {
-    return [];
-  }
-}
+// metrics-*.jsonl removed: audit logs are the SSOT for command metrics.
+// The command_type field is now derived via classifyCommand() from the
+// audit log's command field. Set GAIA_WRITE_METRICS=1 to re-enable writing.
 
 /**
- * Read workflow episodic metrics from .claude/project-context/workflow-episodic-memory/metrics.jsonl
- * Fields: timestamp, agent, exit_code, output_length, task_id, session_id
- * Note: entries with agent === "" are SubagentStop events without a named agent (skip them).
+ * Read workflow metrics from the episodic memory index (primary source).
+ * Falls back to workflow-episodic-memory/metrics.jsonl for backward compatibility.
+ * Fields: timestamp, agent, exit_code, output_length, task_id, session_id,
+ *         plan_status, output_tokens_approx, prompt
  */
 async function readWorkflowMetrics() {
+  // Primary: episodic-memory/index.json
   try {
-    const path = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
-    if (!existsSync(path)) return [];
+    const indexPath = join(CWD, '.claude', 'project-context', 'episodic-memory', 'index.json');
+    if (existsSync(indexPath)) {
+      const data = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
+      const episodes = (data.episodes || []).filter(e => e.agent);
+      if (episodes.length > 0) return episodes;
+    }
+  } catch { /* fall through to legacy */ }
 
-    const content = await fs.readFile(path, 'utf-8');
+  // Fallback: workflow-episodic-memory/metrics.jsonl
+  try {
+    const metricsPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
+    if (!existsSync(metricsPath)) return [];
+
+    const content = await fs.readFile(metricsPath, 'utf-8');
     return content.split('\n')
       .filter(l => l.trim())
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
@@ -299,22 +293,17 @@ function calculateTierUsage(auditLogs) {
 
 /**
  * Command type breakdown.
- * Prefers the command_type field from metrics logs; falls back to
- * classifyCommand() applied to the audit log command field.
+ * Derives command_type via classifyCommand() from the audit log command field.
+ * Audit logs are the SSOT; metrics-*.jsonl is no longer written.
  */
-function calculateCommandTypeBreakdown(auditLogs, metricsLogs) {
-  const fromMetrics = metricsLogs.length > 0;
-  const source = fromMetrics ? metricsLogs : auditLogs;
-
+function calculateCommandTypeBreakdown(auditLogs) {
   const counts = {};
-  for (const entry of source) {
-    const type = fromMetrics
-      ? (entry.command_type || 'general')
-      : classifyCommand(entry.command);
+  for (const entry of auditLogs) {
+    const type = classifyCommand(entry.command);
     counts[type] = (counts[type] || 0) + 1;
   }
 
-  const total = source.length;
+  const total = auditLogs.length;
   const breakdown = Object.entries(counts)
     .map(([type, count]) => ({
       type,
@@ -323,7 +312,7 @@ function calculateCommandTypeBreakdown(auditLogs, metricsLogs) {
     }))
     .sort((a, b) => b.count - a.count);
 
-  return { total, breakdown, fromMetrics };
+  return { total, breakdown };
 }
 
 /**
@@ -463,6 +452,51 @@ function calculateTokenUsage(workflowMetrics) {
 }
 
 /**
+ * Anomaly summary from workflow-episodic-memory/anomalies.jsonl.
+ * Groups anomalies by type for the last 30 days.
+ * Returns { total, byType: [{ type, count, percentage }] } or null if no data.
+ */
+async function calculateAnomalySummary() {
+  try {
+    const anomalyPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'anomalies.jsonl');
+    if (!existsSync(anomalyPath)) return null;
+
+    const content = await fs.readFile(anomalyPath, 'utf-8');
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const entries = content.split('\n')
+      .filter(l => l.trim())
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(r => r !== null && r.timestamp && r.timestamp >= cutoff);
+
+    if (entries.length === 0) return null;
+
+    // Count anomalies by type (each entry can have multiple anomalies)
+    const typeCounts = {};
+    for (const entry of entries) {
+      const anomalies = entry.anomalies || [];
+      for (const anomaly of anomalies) {
+        const type = anomaly.type || 'unknown';
+        typeCounts[type] = (typeCounts[type] || 0) + 1;
+      }
+    }
+
+    const total = Object.values(typeCounts).reduce((s, c) => s + c, 0);
+    const byType = Object.entries(typeCounts)
+      .map(([type, count]) => ({
+        type,
+        count,
+        percentage: total > 0 ? (count / total * 100) : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return { total, byType };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Extract audit log entries that fall within the time window of a given
  * agent session. Uses the session timestamp as the end boundary, and
  * the previous named-agent session as the start boundary (approximation).
@@ -497,7 +531,7 @@ function formatTokens(n) {
 /**
  * Display the main dashboard metrics.
  */
-function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditTotal, agentOutcomes, tokenUsage) {
+function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditTotal, agentOutcomes, tokenUsage, anomalySummary) {
   const SEP = chalk.gray('═'.repeat(52));
 
   console.log(chalk.cyan('\n📊 Gaia-Ops System Metrics'));
@@ -525,10 +559,7 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
   }
 
   // ── Command Type Breakdown ───────────────────────────
-  const srcNote = cmdTypes.fromMetrics
-    ? `from ${cmdTypes.total} metrics entries`
-    : `derived from ${auditTotal} audit entries`;
-  console.log(chalk.bold(`\n🛠  Command Type Breakdown  (${srcNote})`));
+  console.log(chalk.bold(`\n🛠  Command Type Breakdown  (derived from ${auditTotal} audit entries)`));
 
   if (cmdTypes.breakdown.length === 0) {
     console.log(chalk.gray('  no command data'));
@@ -601,6 +632,17 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
     }
   }
 
+  // ── Anomaly Summary (last 30 days) ─────────────────
+  if (anomalySummary && anomalySummary.total > 0) {
+    console.log(chalk.bold(`\n⚠️  Anomaly Summary (last 30 days)  ${anomalySummary.total} anomalies`));
+    for (const { type, count, percentage } of anomalySummary.byType) {
+      const bar = makeBar(percentage, 10);
+      const pct = percentage.toFixed(1).padStart(5);
+      const color = type.includes('contract') ? chalk.red : chalk.yellow;
+      console.log(color(`  ${type.padEnd(28)} ${count.toString().padStart(3)}  ${bar.padEnd(10)}  ${pct}%`));
+    }
+  }
+
   // ── Activity Today ───────────────────────────────────
   console.log(chalk.bold('\n⚡ Activity Today'));
   console.log(`  Total calls:   ${tiers.todayCount}`);
@@ -629,7 +671,7 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
   }
 
   console.log('\n' + SEP);
-  console.log(chalk.gray('💡 Source: .claude/logs/audit-*.jsonl  |  .claude/metrics/metrics-*.jsonl\n'));
+  console.log(chalk.gray('💡 Source: .claude/logs/audit-*.jsonl  |  episodic-memory/index.json\n'));
 }
 
 /**
@@ -691,7 +733,7 @@ async function displayAgentDetail(agentName, workflowMetrics, auditLogs) {
   console.log(chalk.bold(`\n📊 Invocation History  (last 7 days)`));
 
   if (agentSessions.length === 0) {
-    console.log(chalk.gray('  no invocations found in workflow-episodic/metrics.jsonl'));
+    console.log(chalk.gray('  no invocations found in episodic-memory/index.json'));
   } else {
     console.log(
       `  Total: ${agentSessions.length} invocations  |  ` +
@@ -802,13 +844,12 @@ async function main() {
       process.exit(1);
     }
 
-    const [auditLogs, metricsLogs, workflowMetrics] = await Promise.all([
+    const [auditLogs, workflowMetrics] = await Promise.all([
       readAuditLogs(),
-      readMetricsLogs(),
       readWorkflowMetrics(),
     ]);
 
-    if (auditLogs.length === 0 && metricsLogs.length === 0 && workflowMetrics.length === 0) {
+    if (auditLogs.length === 0 && workflowMetrics.length === 0) {
       spinner.info('No log data found');
       console.log(chalk.yellow('\n⚠️  No metrics data available yet'));
       console.log(chalk.gray('   Metrics will be generated as you use the system\n'));
@@ -816,7 +857,7 @@ async function main() {
     }
 
     spinner.succeed(
-      `Loaded ${auditLogs.length} audit + ${metricsLogs.length} metrics + ${workflowMetrics.length} workflow entries`
+      `Loaded ${auditLogs.length} audit + ${workflowMetrics.length} workflow entries`
     );
 
     if (agentName) {
@@ -825,14 +866,15 @@ async function main() {
     } else {
       // Full dashboard
       const tiers            = calculateTierUsage(auditLogs);
-      const cmdTypes         = calculateCommandTypeBreakdown(auditLogs, metricsLogs);
+      const cmdTypes         = calculateCommandTypeBreakdown(auditLogs);
       const topCmds          = calculateTopCommands(auditLogs);
       const agentInvocations = calculateAgentInvocations(workflowMetrics);
       const errorStats       = calculateErrorRate(auditLogs);
       const agentOutcomes    = calculateAgentOutcomes(workflowMetrics);
       const tokenUsage       = calculateTokenUsage(workflowMetrics);
+      const anomalySummary   = await calculateAnomalySummary();
 
-      displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditLogs.length, agentOutcomes, tokenUsage);
+      displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditLogs.length, agentOutcomes, tokenUsage, anomalySummary);
     }
 
   } catch (error) {

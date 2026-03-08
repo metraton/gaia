@@ -606,7 +606,7 @@ function extractProviderBlock(content, providerName) {
   if (!match) return null;
 
   let depth = 1;
-  let start = match.index + match[0].length;
+  const start = match.index + match[0].length;
 
   for (let i = start; i < content.length && depth > 0; i++) {
     if (content[i] === '{') depth++;
@@ -1593,7 +1593,7 @@ async function findGitopsDir() {
 /**
  * Convert an absolute path to a CWD-relative path prefixed with ./
  */
-function toRelativePath(absPath) {
+function _toRelativePath(absPath) {
   if (!absPath) return null;
   const rel = relative(CWD, absPath);
   if (!rel) return '.';

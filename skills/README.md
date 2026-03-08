@@ -60,7 +60,7 @@ skills:
 | gitops-operator | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | gitops-patterns, fast-queries |
 | devops-developer | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | developer-patterns, fast-queries |
 | gaia | agent-protocol, security-tiers, output-format, investigation, command-execution | gaia-patterns, skill-creation |
-| speckit-planner | agent-protocol, security-tiers, output-format | speckit-workflow, speckit.* (9 phase skills) |
+| speckit-planner | agent-protocol, security-tiers, output-format, investigation, command-execution | speckit-workflow |
 
 ## Skill Types
 
@@ -99,4 +99,4 @@ Instructions and patterns the agent follows.
 
 ---
 
-**Updated:** 2026-03-03 | **Total skills:** 17
+**Updated:** 2026-03-08 | **Total skills:** 16

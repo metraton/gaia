@@ -47,6 +47,8 @@ config/
 
 ## Adding support for a new cloud (Azure, etc.)
 
+> **Note:** Only GCP and AWS are currently implemented.
+
 1. Create `cloud/azure.json` with the same schema as `cloud/gcp.json`
 2. Define agents and their Azure-specific sections
 3. No code changes needed -- `context_provider.py` detects it automatically

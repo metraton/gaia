@@ -38,7 +38,7 @@ update_contract = get_context_update_contract("terraform-architect", provider_co
 ```
 
 ### `load_provider_contracts(cloud_provider)`
-Loads cloud provider-specific agent contracts (GCP, AWS, Azure).
+Loads cloud provider-specific agent contracts (GCP, AWS).
 
 ```python
 from tools.context.context_provider import load_provider_contracts
@@ -113,6 +113,8 @@ python3 tools/context/context_provider.py terraform-architect "Create a VPC" \
 
 ```
 context/
+├── __init__.py                # Public exports (re-exports from context_provider + surface_router)
+├── _paths.py                  # Shared config directory resolution (resolve_config_dir)
 ├── context_provider.py        # Main context provisioning logic
 ├── surface_router.py          # Surface classification + investigation brief
 ├── context_section_reader.py  # Token-optimized context extraction

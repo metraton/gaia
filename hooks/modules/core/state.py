@@ -8,6 +8,7 @@ since they run in separate processes.
 import os
 import json
 import logging
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -44,6 +45,7 @@ class HookState:
     command: str = ""
     tier: str = "unknown"
     start_time: str = ""
+    start_time_epoch: float = 0.0
     session_id: str = ""
     pre_hook_result: str = "allowed"
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -60,6 +62,7 @@ class HookState:
             command=data.get("command", ""),
             tier=data.get("tier", "unknown"),
             start_time=data.get("start_time", ""),
+            start_time_epoch=float(data.get("start_time_epoch", 0.0)),
             session_id=data.get("session_id", ""),
             pre_hook_result=data.get("pre_hook_result", "allowed"),
             metadata=data.get("metadata", {}),
@@ -169,6 +172,7 @@ def create_pre_hook_state(
         command=command,
         tier=tier,
         start_time=datetime.now().isoformat(),
+        start_time_epoch=time.time(),
         session_id=session_id,
         pre_hook_result="allowed",
         metadata=metadata,

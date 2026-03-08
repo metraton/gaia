@@ -8,7 +8,6 @@ Structured workflow framework for specification-driven feature development. Spec
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [Skills Reference](#skills-reference)
-- [Scripts Reference](#scripts-reference)
 - [Auto-Enrichment](#auto-enrichment)
 - [Surface Routing](#surface-routing)
 - [Troubleshooting](#troubleshooting)
@@ -54,12 +53,7 @@ Spec-Kit provides structured workflow for feature development:
 ```
 .claude/speckit/
 ├── README.md                # This file
-├── scripts/                 # 5 bash scripts for automation
-│   ├── common.sh            # Shared functions (get_feature_paths)
-│   ├── create-new-feature.sh   # Create feature directory
-│   ├── check-prerequisites.sh  # Validate prerequisites
-│   ├── setup-plan.sh        # Setup plan template
-│   └── update-agent-context.sh # Update agent context
+├── scripts/                 # Reserved - not yet implemented
 ├── templates/               # 5 markdown templates
 │   ├── spec-template.md     # Feature specification template
 │   ├── plan-template.md     # Implementation plan template
@@ -70,16 +64,17 @@ Spec-Kit provides structured workflow for feature development:
 .claude/agents/
 └── speckit-planner.md       # Lean agent — phase detection + skill dispatch
 
-.claude/skills/              # 9 speckit skills (one per workflow phase)
-├── speckit.init/SKILL.md        # Bootstrap project-context.json
-├── speckit.specify/SKILL.md     # Parse description, write spec.md
-├── speckit.plan/SKILL.md        # Generate plan.md + design artifacts
-├── speckit.tasks/SKILL.md       # Generate enriched tasks.md
-├── speckit.implement/SKILL.md   # Execute tasks with agents
-├── speckit.add-task/SKILL.md    # Add ad-hoc task with enrichment
-├── speckit.analyze-task/SKILL.md # Deep-dive before executing risky tasks
-├── speckit.status/SKILL.md      # State detection + next step
-└── speckit.validate/SKILL.md    # Drift detection
+.claude/skills/
+└── speckit-workflow/SKILL.md    # Single skill with full workflow logic
+
+.claude/commands/            # 7 slash commands (one per workflow phase)
+├── speckit.init.md              # Bootstrap project-context.json
+├── speckit.specify.md           # Parse description, write spec.md
+├── speckit.plan.md              # Generate plan.md + design artifacts
+├── speckit.tasks.md             # Generate enriched tasks.md
+├── speckit.implement.md         # Execute tasks with agents
+├── speckit.add-task.md          # Add ad-hoc task with enrichment
+└── speckit.analyze-task.md      # Deep-dive before executing risky tasks
 
 .claude/tools/               # Python utilities
 ├── context/                 # Context provisioning and enrichment
@@ -109,7 +104,7 @@ Spec-Kit provides structured workflow for feature development:
 |-----------|---------------|---------|
 | **speckit-planner** | Phase detection, skill dispatch | Claude orchestrator |
 | **Skills** | Per-phase process and protocol | Agent automatically |
-| **Scripts** | Automation and path resolution | Agent via Bash |
+| **Scripts** | Reserved - not yet implemented | -- |
 | **Templates** | Consistent artifact structure | Scripts during creation |
 | **Governance** | Project governance principles | All planning skills |
 
@@ -148,33 +143,21 @@ mkdir -p spec-kit-tcm-plan/specs
 
 ## Skills Reference
 
-The `speckit-planner` agent loads the appropriate skill based on phase detection. Users interact in natural language — no slash commands.
+The `speckit-planner` agent uses a single skill (`skills/speckit-workflow/SKILL.md`) that contains the full workflow logic. Phase detection determines which workflow phase to activate. Users interact in natural language -- no slash commands needed. Additionally, 7 slash commands in `commands/` provide direct phase invocation.
 
-| Skill | Phase | Purpose | Trigger phrase examples |
-|-------|-------|---------|------------------------|
-| **speckit.init** | Step 0 (automatic) | Verify prerequisites, generate/sync governance.md | Runs silently — user does not invoke directly |
-| **speckit.specify** | Specify | Parse description, write spec.md | "I want to add X", "create spec for Y" |
-| **speckit.plan** | Plan | Generate plan.md + design artifacts | "plan feature X", "generate implementation plan" |
-| **speckit.tasks** | Tasks | Generate enriched tasks.md | "generate tasks for X", "create task list" |
-| **speckit.implement** | Implement | Execute tasks with agents | "implement X", "execute task plan" |
-| **speckit.add-task** | Ad-hoc | Add task with auto-enrichment | "add a task for X", "I need a task to fix Y" |
-| **speckit.analyze-task** | Analysis | Deep-dive before executing risky task | "analyze T042", "what does T015 do" |
-| **speckit.status** | Orientation | State detection + exact next step | "where are we with feature X", "what's next" |
-| **speckit.validate** | Verification | Detect drift between tasks.md and code | "validate feature X", "check completion" |
+| Phase | Purpose | Trigger phrase examples |
+|-------|---------|------------------------|
+| **init** | Verify prerequisites, generate/sync governance.md | Runs silently -- user does not invoke directly |
+| **specify** | Parse description, write spec.md | "I want to add X", "create spec for Y" |
+| **plan** | Generate plan.md + design artifacts | "plan feature X", "generate implementation plan" |
+| **tasks** | Generate enriched tasks.md | "generate tasks for X", "create task list" |
+| **implement** | Execute tasks with agents | "implement X", "execute task plan" |
+| **add-task** | Add task with auto-enrichment | "add a task for X", "I need a task to fix Y" |
+| **analyze-task** | Deep-dive before executing risky task | "analyze T042", "what does T015 do" |
+| **status** | State detection + exact next step | "where are we with feature X", "what's next" |
+| **validate** | Detect drift between tasks.md and code | "validate feature X", "check completion" |
 
-> **speckit.init** runs automatically as Step 0 before any agent action. It generates `governance.md` on first use and syncs it with `project-context.json` on subsequent sessions — silently unless changes are made.
-
----
-
-## Scripts Reference
-
-Location: `.claude/speckit/scripts/`
-
-- `common.sh`: Shared functions (`get_feature_paths`, path resolution from arguments)
-- `create-new-feature.sh`: Creates feature structure and `spec.md`
-- `check-prerequisites.sh`: Validates required and optional artifacts
-- `setup-plan.sh`: Creates `plan.md` from template
-- `update-agent-context.sh`: Syncs agent context
+> **init** runs automatically as Step 0 before any agent action. It generates `governance.md` on first use and syncs it with `project-context.json` on subsequent sessions -- silently unless changes are made.
 
 ---
 
@@ -493,16 +476,16 @@ jq --version
 
 Agent: `.claude/agents/speckit-planner.md`
 
-Skills in `.claude/skills/speckit.*/SKILL.md`:
-- speckit.init
-- speckit.specify
-- speckit.plan
-- speckit.tasks
-- speckit.analyze-task
-- speckit.implement
-- speckit.add-task
-- speckit.status
-- speckit.validate
+Skill: `.claude/skills/speckit-workflow/SKILL.md` (single skill with full workflow logic)
+
+Slash commands in `.claude/commands/`:
+- speckit.init.md
+- speckit.specify.md
+- speckit.plan.md
+- speckit.tasks.md
+- speckit.implement.md
+- speckit.add-task.md
+- speckit.analyze-task.md
 
 ### Tool Files
 
@@ -540,4 +523,4 @@ Spec-Kit is an open-source framework adapted as agentic functionality for Claude
 
 ---
 
-**Version:** 2.3.0 | **Updated:** 2026-03-03
+**Version:** 4.0.0 | **Updated:** 2026-03-08

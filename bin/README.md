@@ -81,7 +81,7 @@ Defined in `package.json`:
 ```bash
 npm install @jaguilar87/gaia-ops
 npx gaia-init
-claude-code
+claude
 ```
 
 ### Update

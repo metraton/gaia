@@ -40,38 +40,34 @@ const CWD = findProjectRoot();
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Read all workflow metrics entries.
+ * Read workflow metrics from the episodic memory index (primary source).
+ * Falls back to workflow-episodic-memory/metrics.jsonl for backward compatibility.
+ * Fields: timestamp, agent, exit_code, output_length, task_id, session_id,
+ *         plan_status, output_tokens_approx, prompt
  */
 async function readWorkflowMetrics() {
-  const path = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
-  if (!existsSync(path)) return [];
+  // Primary: episodic-memory/index.json
   try {
-    const content = await fs.readFile(path, 'utf-8');
+    const indexPath = join(CWD, '.claude', 'project-context', 'episodic-memory', 'index.json');
+    if (existsSync(indexPath)) {
+      const data = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
+      const episodes = (data.episodes || []).filter(e => e.agent);
+      if (episodes.length > 0) return episodes;
+    }
+  } catch { /* fall through to legacy */ }
+
+  // Fallback: workflow-episodic-memory/metrics.jsonl
+  try {
+    const metricsPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'metrics.jsonl');
+    if (!existsSync(metricsPath)) return [];
+
+    const content = await fs.readFile(metricsPath, 'utf-8');
     return content.split('\n')
       .filter(l => l.trim())
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
       .filter(r => r !== null && r.agent); // skip blank-agent entries
   } catch {
     return [];
-  }
-}
-
-/**
- * Build a task description lookup from episodic memory index (optional enrichment).
- * Returns a map of task_id -> title for quick lookup.
- * This is best-effort: entries may not always match.
- */
-async function buildTaskIndex() {
-  const indexPath = join(CWD, '.claude', 'project-context', 'episodic-memory', 'index.json');
-  if (!existsSync(indexPath)) return {};
-  try {
-    const data = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
-    const map = {};
-    // The episodic index doesn't store task_id, so we can't cross-reference directly.
-    // Future: correlate by timestamp proximity. For now return empty map.
-    return map;
-  } catch {
-    return {};
   }
 }
 

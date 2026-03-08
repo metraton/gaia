@@ -221,7 +221,9 @@ class EpisodicMemory:
         duration_seconds: Optional[float] = None,
         commands_executed: Optional[List[str]] = None,
         # P1: Relationship parameters
-        related_episodes: Optional[List[Dict[str, str]]] = None
+        related_episodes: Optional[List[Dict[str, str]]] = None,
+        # P3: Workflow metric fields for CLI compatibility
+        workflow_metrics: Optional[Dict] = None
     ) -> str:
         """
         Store a new episode in memory.
@@ -238,6 +240,7 @@ class EpisodicMemory:
             duration_seconds: How long the episode took to complete
             commands_executed: List of commands executed during episode
             related_episodes: List of related episode references [{"id": "ep_xxx", "type": "SOLVES"}]
+            workflow_metrics: Optional workflow metrics dict (agent, session_id, task_id, etc.)
 
         Returns:
             Episode ID
@@ -305,9 +308,19 @@ class EpisodicMemory:
         with open(episode_file, 'w') as f:
             json.dump(episode.to_dict(), f, indent=2)
 
-        # Append to JSONL file
+        # Append to JSONL file (enriched with workflow metrics for consistency)
+        jsonl_entry = episode.to_dict()
+        if workflow_metrics:
+            jsonl_entry["agent"] = workflow_metrics.get("agent", "")
+            jsonl_entry["session_id"] = workflow_metrics.get("session_id", "")
+            jsonl_entry["task_id"] = workflow_metrics.get("task_id", "")
+            jsonl_entry["exit_code"] = workflow_metrics.get("exit_code", 0)
+            jsonl_entry["plan_status"] = workflow_metrics.get("plan_status", "")
+            jsonl_entry["output_length"] = workflow_metrics.get("output_length", 0)
+            jsonl_entry["output_tokens_approx"] = workflow_metrics.get("output_tokens_approx", 0)
+            jsonl_entry["wf_prompt"] = workflow_metrics.get("prompt", "")
         with open(self.episodes_jsonl, 'a') as f:
-            f.write(json.dumps(episode.to_dict()) + '\n')
+            f.write(json.dumps(jsonl_entry) + '\n')
 
         # Update index
         index = self._load_index()
@@ -323,7 +336,16 @@ class EpisodicMemory:
             "outcome": outcome,
             "success": success,
             # P1: Include relationship count in index
-            "relationship_count": len(validated_relationships) if validated_relationships else 0
+            "relationship_count": len(validated_relationships) if validated_relationships else 0,
+            # P3: Workflow metric fields for CLI compatibility
+            "agent": (workflow_metrics or {}).get("agent", ""),
+            "session_id": (workflow_metrics or {}).get("session_id", ""),
+            "task_id": (workflow_metrics or {}).get("task_id", ""),
+            "exit_code": (workflow_metrics or {}).get("exit_code", 0),
+            "plan_status": (workflow_metrics or {}).get("plan_status", ""),
+            "output_length": (workflow_metrics or {}).get("output_length", 0),
+            "output_tokens_approx": (workflow_metrics or {}).get("output_tokens_approx", 0),
+            "prompt": (workflow_metrics or {}).get("prompt", ""),
         }
         index["episodes"].append(index_entry)
 

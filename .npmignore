@@ -4,23 +4,37 @@
 .vscode/
 .idea/
 
-# Test files
+# Test files (should not ship to npm consumers)
+tests/
 TEST_ABSOLUTE_PATHS.sh
 TEST_PLAN.md
 TEST_RESULTS_2.6.1.md
 EXAMPLES_ABSOLUTE_PATHS.md
 
+# CI/CD (not needed by consumers)
+.github/
+
 # Git files
 .git/
 .gitignore
 
-# Python cache
+# Python cache (all nested levels -- prepack script handles removal)
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 *.so
+
+# Python tooling cache
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+
+# Operational logs
+logs/
 
 # Node
 node_modules/

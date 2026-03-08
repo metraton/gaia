@@ -12,14 +12,14 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 
 ### Features
 
-- **Multi-cloud support** - GCP, AWS, Azure-ready
+- **Multi-cloud support** - GCP, AWS
 - **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, devops-developer, speckit-planner, gaia (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
 - **Episodic Memory** - Persistent memory system for operational patterns
 - **Approval gates** for T3 operations
 - **Git commit validation** with Conventional Commits
-- **17 skills** - Injected procedural knowledge modules for agents
-- **897 tests** at 100% passing
+- **16 skills** - Injected procedural knowledge modules for agents
+- **1438 tests** at 100% passing
 
 ## Installation
 
@@ -65,7 +65,7 @@ ln -s ../node_modules/@jaguilar87/gaia-ops/speckit speckit
 Once installed, the agent system is ready:
 
 ```bash
-claude-code
+claude
 ```
 
 Claude Code will automatically load `CLAUDE.md` and have access to all agents via `.claude/`.
@@ -83,15 +83,15 @@ npx gaia-skills-diagnose --run-tests
 ```
 node_modules/@jaguilar87/gaia-ops/
 ├── agents/              # Agent definitions (6 agents)
-├── skills/              # Skill modules (17 skills)
+├── skills/              # Skill modules (16 skills)
 ├── tools/               # Orchestration tools
 ├── hooks/               # Claude Code hooks (modular architecture)
 ├── commands/            # Slash commands (7 speckit commands)
 ├── config/              # Configuration (contracts, git standards, rules)
 ├── templates/           # Installation templates
 ├── speckit/             # Spec-Kit framework (scripts + templates)
-├── bin/                 # CLI utilities (10 scripts)
-└── tests/               # Test suite (897 tests)
+├── bin/                 # CLI utilities (11 scripts)
+└── tests/               # Test suite (1438 tests)
 ```
 
 ## API

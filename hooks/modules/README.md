@@ -28,43 +28,59 @@ Claude Code invokes hook
 modules/
 ├── __init__.py           # Package marker
 ├── core/                 # Shared utilities
+│   ├── __init__.py
 │   ├── paths.py          # find_claude_dir() - single source of truth
 │   └── state.py          # Pre/post hook state sharing
 │
-├── security/             # Security classification
+├── security/             # Security classification & approval
+│   ├── __init__.py
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
 │   ├── safe_commands.py  # SAFE_COMMANDS_CONFIG + is_read_only_command()
 │   ├── blocked_commands.py # Blocked patterns by category
+│   ├── dangerous_verbs.py  # CLI-agnostic verb detector, nonce-based deny
+│   ├── approval_grants.py  # Nonce-based approval grant management
+│   ├── approval_constants.py # Approval system constants
+│   ├── approval_messages.py  # Approval denial message formatting
+│   ├── approval_scopes.py   # Approval scope definitions
+│   ├── command_semantics.py  # Command semantic analysis
+│   ├── interactive_handler.py # Auto-append non-interactive flags
 │   └── gitops_validator.py # kubectl/helm/flux validation
 │
 ├── tools/                # Tool-specific validators
+│   ├── __init__.py
 │   ├── shell_parser.py   # Parse compound commands
-│   ├── bash_validator.py # Bash command validation
-│   └── task_validator.py # Task tool validation with context enforcement
+│   ├── bash_validator.py # Bash command validation (orchestrates pipeline)
+│   ├── task_validator.py # Task tool validation with context enforcement
+│   ├── cloud_pipe_validator.py # Cloud pipe/redirect/chain check
+│   └── hook_response.py  # Standardized hook response formatting
 │
 ├── context/              # Context management
+│   ├── __init__.py
 │   └── context_writer.py # Write context updates
 │
 ├── validation/           # Commit validation
+│   ├── __init__.py
 │   └── commit_validator.py # Conventional Commits enforcement
 │
 ├── workflow/             # Workflow support (reserved)
+│   └── __init__.py
 │
 ├── audit/                # Logging and metrics
+│   ├── __init__.py
 │   ├── logger.py         # AuditLogger
 │   ├── metrics.py        # MetricsCollector + FUNCTIONAL generate_summary
 │   └── event_detector.py # CriticalEventDetector
 │
-└── agents/               # Subagent support (reserved)
+└── agents/               # Subagent support
+    ├── __init__.py
+    └── response_contract.py # Agent response contract validation
 ```
 
 ## Key Features
 
 ### Orchestrator Gate
-The orchestrator is restricted to specific tools:
-- `Read` - Reading context files
-- `Task` - Delegating to agents
-- `TodoWrite` - Managing task lists
+The orchestrator is restricted to two tools only:
+- `Agent` - Delegating to agents
 - `AskUserQuestion` - Getting user input
 
 This enforces the principle: "Orchestrator delegates, agents execute."
@@ -126,11 +142,15 @@ The modular architecture maintains full backward compatibility with Claude Code'
 All security rules (safe commands, blocked patterns, tiers) are hardcoded in the Python modules for performance and simplicity - no external JSON config files needed.
 
 ### Validation Order (Defense-in-Depth)
-bash_validator checks commands in this order:
-1. **Blocked commands** (deny first) — permanently blocked destructive operations
-2. **Safe commands** (allow) — auto-approve read-only operations
-3. **GitOps validation** — kubectl/helm/flux policy enforcement
-4. **Tier classification** — T0/T1/T2/T3 for logging and metrics
+bash_validator checks commands in this order (short-circuit on first match):
+1. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
+2. **Claude footer stripping** — transparent via updatedInput
+3. **Commit message validation** — conventional commits enforcement
+4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny
+5. **Safe commands** (safe_commands.py) — auto-approve read-only operations
+6. **Dangerous verbs** (dangerous_verbs.py) — CLI-agnostic verb detector, nonce-based deny
+7. **GitOps validation** (gitops_validator.py) — kubectl/helm/flux policy enforcement
+8. **Tier classification** — T0/T1/T2/T3 fallback for logging and metrics
 
 ### Tier Classification
 - **T0**: Read-only (get, list, describe, show)

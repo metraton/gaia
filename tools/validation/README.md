@@ -28,11 +28,6 @@ without requiring explicit imports in agent code.
 **Configuration:** `.claude/config/git_standards.json` (SSOT)
 **Logs:** `.claude/logs/commit-violations.jsonl`
 
-**Testing:**
-```bash
-python3 .claude/tools/validation/test_commit_validator.py
-```
-
 ---
 
 ### 2. Approval Gate
@@ -96,7 +91,7 @@ python3 .claude/tools/validation/test_approval_gate.py
 
 This validation module works with skills in a **hybrid model**:
 
-- **Skills** (`.claude/skills/workflow/`) - Document patterns and guide agents
+- **Skills** (`.claude/skills/`) - Document patterns and guide agents
 - **Code** (this module) - Enforce rules and ensure consistency
 
 **Skills updated:**
@@ -135,7 +130,7 @@ This validation module works with skills in a **hybrid model**:
                         │
                         ▼
 ┌──────────────────────────────────────────────────────────┐
-│  skills/workflow/ (Guidance)                              │
+│  skills/ (Guidance)                              │
 │  ├─ approval/SKILL.md                                     │
 │  │  └─ How to present plans                               │
 │  └─ execution/SKILL.md                                    │
@@ -238,12 +233,12 @@ Example entry:
 ## See Also
 
 - `.claude/config/git_standards.json` - Git standards configuration
-- `.claude/skills/workflow/approval/SKILL.md` - Approval workflow patterns
-- `.claude/skills/workflow/execution/SKILL.md` - Execution workflow patterns
+- `.claude/skills/approval/SKILL.md` - Approval workflow patterns
+- `.claude/skills/execution/SKILL.md` - Execution workflow patterns
 - `CLAUDE.md` - Orchestrator protocol with T3 workflow
 
 ---
 
-**Version:** 1.0.0
+**Version:** 4.0.0
 **Last Updated:** 2026-01-15
 **Maintained by:** gaia-ops validation team

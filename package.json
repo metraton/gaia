@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -49,11 +49,15 @@
     "config/",
     "speckit/",
     "skills/",
-    "tests/",
     "README.md",
     "INSTALL.md",
     "PRE_PUBLISH_WORKFLOW.md",
     "CHANGELOG.md",
+    "ARCHITECTURE.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    "pyproject.toml",
     "index.js"
   ],
   "scripts": {
@@ -68,6 +72,7 @@
     "pre-publish": "node bin/pre-publish-validate.js",
     "pre-publish:dry": "node bin/pre-publish-validate.js --dry-run",
     "pre-publish:validate": "node bin/pre-publish-validate.js --validate-only",
+    "prepack": "npm run clean",
     "prepublishOnly": "npm run clean",
     "postinstall": "node bin/gaia-update.js",
     "preuninstall": "node bin/gaia-cleanup.js"
