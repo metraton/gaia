@@ -6,10 +6,10 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 
 ```
 .claude/skills/
-├── agent-protocol/        # AGENT_STATUS, search protocol, error handling
+├── agent-protocol/        # AGENT_STATUS, EVIDENCE_REPORT, search protocol, error handling
 ├── security-tiers/        # T0-T3 classification
 │   └── reference.md
-├── output-format/         # Report structure and icons
+├── output-format/         # Report structure, evidence formatting, and icons
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── command-execution/     # Defensive execution, safe shell patterns
 │   └── reference.md

@@ -26,6 +26,8 @@ from subagent_stop import (
     _build_task_info_from_hook_data,
     subagent_stop_hook,
 )
+from modules.agents.response_contract import clear_contract_dir_cache
+from modules.core.paths import clear_path_cache
 
 
 # ============================================================================
@@ -35,12 +37,17 @@ from subagent_stop import (
 @pytest.fixture(autouse=True)
 def isolate_env(tmp_path, monkeypatch):
     """Isolate all file I/O to tmp_path."""
+    clear_path_cache()
+    clear_contract_dir_cache()
     monkeypatch.setenv("WORKFLOW_MEMORY_BASE_PATH", str(tmp_path))
     monkeypatch.chdir(tmp_path)
 
     # Create minimal directory structure
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
+    yield
+    clear_path_cache()
+    clear_contract_dir_cache()
 
 
 @pytest.fixture
@@ -122,3 +129,25 @@ class TestSubagentStopHookPostRemoval:
         result = subagent_stop_hook(structural_task_info, output)
         assert result["success"] is True
         assert "discoveries" not in result
+        assert result["response_contract"]["valid"] is False
+        assert result["contract_repair_pending"] is False
+
+    @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
+    def test_invalid_contract_with_agent_id_creates_pending_repair(self, mock_episodic, structural_task_info):
+        task_info = dict(structural_task_info)
+        task_info["agent_id"] = "a12345"
+        task_info["task_id"] = "a12345"
+        output = """\
+## Findings
+
+<!-- AGENT_STATUS -->
+PLAN_STATUS: COMPLETE
+PENDING_STEPS: []
+NEXT_ACTION: Done
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+"""
+        result = subagent_stop_hook(task_info, output)
+        assert result["success"] is True
+        assert result["response_contract"]["valid"] is False
+        assert result["contract_repair_pending"] is True

@@ -39,6 +39,14 @@ from modules.security.approval_messages import (
     build_deprecated_approval_message,
     build_invalid_nonce_message,
 )
+from modules.agents.response_contract import (
+    build_repair_prompt,
+    clear_pending_repair,
+    load_pending_repair,
+    mark_repair_attempt,
+    MAX_REPAIR_ATTEMPTS,
+    _format_field_list,
+)
 from modules.security.approval_grants import (
     activate_pending_approval,
     cleanup_expired_grants,
@@ -459,6 +467,89 @@ def _inject_project_context(parameters: dict) -> dict:
         return parameters
 
 
+def _build_response_contract_repair_block(repair_payload: dict) -> str:
+    """Build a deterministic block message for pending contract repair."""
+    agent_id = repair_payload.get("agent_id", "<unknown>")
+    missing = repair_payload.get("missing", [])
+    invalid = repair_payload.get("invalid", [])
+    attempts = int(repair_payload.get("repair_attempts", 0))
+
+    return (
+        "❌ Previous agent response contract is incomplete\n\n"
+        f"Resume the same agent first: `{agent_id}`\n"
+        f"Repair attempts so far: {attempts}\n\n"
+        "Missing fields:\n"
+        f"{_format_field_list(missing, indent='  ')}\n\n"
+        "Invalid fields:\n"
+        f"{_format_field_list(invalid, indent='  ')}\n\n"
+        "Correct pattern:\n"
+        "Task(\n"
+        f"    resume=\"{agent_id}\",\n"
+        "    prompt=\"Repair the previous response contract only. Do not re-run commands unless required to fill missing evidence.\"\n"
+        ")\n"
+    )
+
+
+def _build_response_contract_escalation_block(repair_payload: dict) -> str:
+    """Build a deterministic escalation message after auto-repair retries are exhausted."""
+    agent_id = repair_payload.get("agent_id", "<unknown>")
+    attempts = int(repair_payload.get("repair_attempts", 0))
+    missing = repair_payload.get("missing", [])
+    invalid = repair_payload.get("invalid", [])
+
+    return (
+        "❌ Agent response contract repair did not converge\n\n"
+        f"Agent: `{agent_id}`\n"
+        f"Automatic repair retry limit reached: {attempts}/{MAX_REPAIR_ATTEMPTS}\n\n"
+        "Missing fields:\n"
+        f"{_format_field_list(missing, indent='  ')}\n\n"
+        "Invalid fields:\n"
+        f"{_format_field_list(invalid, indent='  ')}\n\n"
+        "Do not continue delegating automatically.\n"
+        "Summarize the failure, ask the user how to proceed, and only then decide whether to retry,"
+        " restart the investigation, or abandon the task.\n"
+    )
+
+
+def _apply_response_contract_guard(parameters: dict) -> tuple[str | None, dict]:
+    """Enforce pending response-contract repairs before new Task work proceeds."""
+    repair_payload = load_pending_repair()
+    if not repair_payload:
+        return None, parameters
+
+    attempts = int(repair_payload.get("repair_attempts", 0))
+    if attempts >= MAX_REPAIR_ATTEMPTS:
+        clear_pending_repair(repair_payload.get("agent_id", ""))
+        logger.warning(
+            "BLOCKED Task: response-contract auto-repair limit reached for %s",
+            repair_payload.get("agent_id", "<unknown>"),
+        )
+        return _build_response_contract_escalation_block(repair_payload), parameters
+
+    resume_id = parameters.get("resume", "")
+    if not resume_id:
+        return _build_response_contract_repair_block(repair_payload), parameters
+
+    if resume_id != repair_payload.get("agent_id", ""):
+        return _build_response_contract_repair_block(repair_payload), parameters
+
+    # Same agent resume: inject deterministic repair instructions unless the prompt
+    # is trying to do something else (e.g. APPROVE:<nonce>).
+    prompt = parameters.get("prompt", "")
+    if _classify_resume_prompt(prompt) != "standard":
+        return _build_response_contract_repair_block(repair_payload), parameters
+
+    repair_prompt = build_repair_prompt(repair_payload)
+    if repair_prompt in prompt:
+        return None, parameters
+
+    updated = dict(parameters)
+    updated["prompt"] = f"{repair_prompt}\n{prompt}".strip()
+    mark_repair_attempt(resume_id)
+    logger.info("Injected response-contract repair instructions for resume %s", resume_id)
+    return None, updated
+
+
 def _filter_events_for_agent(events: list, agent: str) -> list:
     """
     Filter events relevant to agent domain.
@@ -725,6 +816,10 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     # PROJECT CONTEXT INJECTION (for new tasks only, not resume)
     # ========================================================================
     original_prompt = parameters.get("prompt", "")
+    contract_error, parameters = _apply_response_contract_guard(parameters)
+    if contract_error:
+        logger.warning("BLOCKED Task: pending response-contract repair required")
+        return contract_error
     if not parameters.get("resume"):
         parameters = _inject_project_context(parameters)
         parameters = _inject_session_events(parameters)
@@ -783,6 +878,16 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         save_hook_state(state)
 
         logger.info(f"ALLOWED Resume: agent {resume_id} - prompt length: {len(prompt)}")
+        if parameters.get("prompt", "") != original_prompt:
+            updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Response-contract repair instructions injected",
+                    "updatedInput": updated_input,
+                }
+            }
         return None  # Allow resume
 
     # ========================================================================

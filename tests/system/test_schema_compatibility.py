@@ -2,7 +2,7 @@
 Test schema compatibility between CLAUDE.template.md and system components.
 
 Ensures the orchestrator template contains the essential sections that
-the hook system and agent routing depend on.
+the hook system and surface routing depend on.
 """
 
 import json
@@ -53,18 +53,41 @@ class TestSchemaCompatibility:
             "Template must reference the Task tool for agent invocation"
         )
 
-    def test_template_has_routing_table(self, template_content):
-        """Template must contain the agent routing table."""
-        required_agents = [
+    def test_template_has_surface_routing_contract(self, template_content):
+        """Template must contain the final surface routing contract."""
+        assert "## Surface Routing" in template_content
+        assert "## Agent Routing" not in template_content
+        for surface in [
+            "live_runtime",
+            "gitops_desired_state",
+            "terraform_iac",
+            "app_ci_tooling",
+            "planning_specs",
+            "gaia_system",
+        ]:
+            assert f"`{surface}`" in template_content, (
+                f"Template surface routing must include {surface}"
+            )
+
+        for agent in [
             "terraform-architect",
             "gitops-operator",
             "cloud-troubleshooter",
             "devops-developer",
-        ]
-        for agent in required_agents:
+            "speckit-planner",
+            "gaia",
+        ]:
             assert agent in template_content, (
-                f"Template routing table must include {agent}"
+                f"Template surface routing must include {agent}"
             )
+
+        lowered = template_content.lower()
+        assert "gaia consolidates" in lowered, (
+            "Template must state that Gaia consolidates multi-surface findings"
+        )
+        assert "two or more surfaces are active" in lowered, (
+            "Template must define when to use multi-agent dispatch"
+        )
 
     def test_template_documents_plan_status(self, template_content, package_root):
         """PLAN_STATUS values must be documented in the template or agent-protocol skill."""
@@ -97,6 +120,15 @@ class TestSchemaCompatibility:
         assert "AGENT_ID" in template_content, (
             "Template must reference AGENT_ID for resume operations"
         )
+
+    def test_template_documents_cross_agent_context(self, template_content):
+        """Template should preserve cross-agent summary guidance."""
+        assert "Cross-agent context" in template_content
+        assert "2-3 sentence summary" in template_content
+
+    def test_template_documents_contract_repair_retry_cap(self, template_content):
+        """Template should bound automatic response-contract repair retries."""
+        assert "capped at 2" in template_content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):
         """Test fixture project-context files must have the sections gaia-init generates."""

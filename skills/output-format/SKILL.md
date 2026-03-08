@@ -22,6 +22,33 @@ user-invocable: false
 - Recommended action 2
 ```
 
+When a response is grounded in investigation, validation, review, or diagnostics, include the protocol-mandated `EVIDENCE_REPORT` block before `AGENT_STATUS`.
+
+Use this compact style:
+
+```html
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- ...
+FILES_CHECKED:
+- ...
+COMMANDS_RUN:
+- `command` -> result
+KEY_OUTPUTS:
+- ...
+CROSS_LAYER_IMPACTS:
+- ...
+OPEN_GAPS:
+- none
+<!-- /EVIDENCE_REPORT -->
+```
+
+Formatting rules:
+- Prefer 1-3 bullets per field.
+- Keep `KEY_OUTPUTS` summarized; do not dump full logs unless the user asked.
+- If a command was run, show it exactly in `COMMANDS_RUN`.
+- If no command was run, say `- not run`.
+
 ## Status Icons
 
 | Icon | Meaning |

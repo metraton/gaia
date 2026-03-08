@@ -165,6 +165,6 @@ Use this command to append or insert a **single** task in the currently active S
 ## Inline Metadata Benefits
 - ✅ No post-processing step required
 - ✅ Consistent metadata format
-- ✅ Automatic agent routing
+- ✅ Automatic surface routing
 - ✅ Security tier classification
 - ✅ High-risk detection for T2/T3

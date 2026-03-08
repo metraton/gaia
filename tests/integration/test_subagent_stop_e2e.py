@@ -34,6 +34,8 @@ sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(TOOLS_DIR / "context"))
+from modules.agents.response_contract import clear_contract_dir_cache
+from modules.core.paths import clear_path_cache
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +149,8 @@ def project_env(tmp_path, monkeypatch):
               context-contracts.gcp.json  (copied from real config dir)
     """
     # Isolate file I/O
+    clear_path_cache()
+    clear_contract_dir_cache()
     monkeypatch.setenv("WORKFLOW_MEMORY_BASE_PATH", str(tmp_path))
     monkeypatch.chdir(tmp_path)
 
@@ -171,13 +175,15 @@ def project_env(tmp_path, monkeypatch):
     pending_dir.mkdir(parents=True)
     (pending_dir / "applied").mkdir()
 
-    return {
+    yield {
         "tmp_path": tmp_path,
         "claude_dir": claude_dir,
         "context_dir": context_dir,
         "config_dir": config_dir,
         "context_file": context_file,
     }
+    clear_path_cache()
+    clear_contract_dir_cache()
 
 
 # ============================================================================

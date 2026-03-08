@@ -1,11 +1,12 @@
 """
-Test routing table consistency between CLAUDE.md and code.
+Test surface routing consistency between CLAUDE.md and code.
 
-Validates that the orchestrator's agent routing table matches
-the available agents in code and the agent definition files on disk.
+Validates that the orchestrator documents the final surface-routing model:
+- no legacy agent routing table
+- all agents are still documented
+- multi-surface dispatch and Gaia consolidation are explicit
 """
 
-import re
 import pytest
 from pathlib import Path
 import sys
@@ -17,43 +18,92 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.tools.task_validator import AVAILABLE_AGENTS, META_AGENTS
 
 
-class TestRoutingTableAgents:
-    """Validate CLAUDE.md routing table matches actual agents."""
+class TestSurfaceRoutingContract:
+    """Validate CLAUDE.md surface routing matches actual agents."""
 
-    @pytest.fixture
-    def routing_agents(self, claude_md_content):
-        """Extract agent names from the routing table in CLAUDE.md."""
-        # Pattern: | **agent-name** | ...
-        pattern = r'\|\s*\*\*([a-z][\w-]*)\*\*\s*\|'
-        matches = re.findall(pattern, claude_md_content)
-        return set(matches)
+    REQUIRED_SURFACES = {
+        "live_runtime",
+        "gitops_desired_state",
+        "terraform_iac",
+        "app_ci_tooling",
+        "planning_specs",
+        "gaia_system",
+    }
 
-    def test_routing_agents_exist_on_disk(self, routing_agents, agents_dir):
-        """All agents in routing table must exist as .md files."""
-        for agent in routing_agents:
-            agent_file = agents_dir / f"{agent}.md"
-            assert agent_file.exists(), \
-                f"Routing table references '{agent}' but {agent_file} not found"
+    def test_surface_routing_section_present(self, claude_md_content):
+        """The orchestrator must document surface routing explicitly."""
+        assert "## Surface Routing" in claude_md_content
 
-    def test_disk_agents_in_routing_table(self, routing_agents, all_agent_files):
-        """All agent .md files should appear in routing table."""
+    def test_legacy_agent_routing_removed(self, claude_md_content):
+        """The legacy sequential routing section must be gone."""
+        assert "## Agent Routing" not in claude_md_content
+        assert "routing priority (in order)" not in claude_md_content.lower()
+
+    def test_surface_routing_mentions_all_disk_agents(self, claude_md_content, all_agent_files):
+        """Every agent file on disk must still be referenced in the orchestrator contract."""
         disk_agents = {f.stem for f in all_agent_files}
         for agent in disk_agents:
-            assert agent in routing_agents, \
-                f"Agent '{agent}' exists on disk but not in CLAUDE.md routing table"
+            assert agent in claude_md_content, (
+                f"Agent '{agent}' exists on disk but is not documented in CLAUDE.md"
+            )
 
-    def test_routing_agents_in_available_agents(self, routing_agents):
-        """All routing table agents must be in AVAILABLE_AGENTS."""
-        for agent in routing_agents:
-            assert agent in AVAILABLE_AGENTS, \
-                f"Routing table agent '{agent}' not in AVAILABLE_AGENTS"
+    def test_documented_agents_exist_in_available_agents(self, claude_md_content):
+        """Every runtime-available agent must remain documented."""
+        for agent in AVAILABLE_AGENTS:
+            if not agent[:1].islower():
+                continue
+            assert agent in claude_md_content, (
+                f"AVAILABLE_AGENT '{agent}' not documented in CLAUDE.md"
+            )
 
-    def test_available_project_agents_in_routing(self, routing_agents):
-        """All project agents (non-meta) from AVAILABLE_AGENTS should be in routing table."""
+    def test_available_project_agents_are_documented(self, claude_md_content):
+        """All project agents (non-meta) must appear in the routing contract."""
         project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
         for agent in project_agents:
-            assert agent in routing_agents, \
-                f"AVAILABLE_AGENT '{agent}' not in CLAUDE.md routing table"
+            assert agent in claude_md_content, (
+                f"Project agent '{agent}' not documented in CLAUDE.md"
+            )
+
+    @pytest.mark.parametrize("surface", sorted(REQUIRED_SURFACES))
+    def test_required_surfaces_documented(self, surface, claude_md_content):
+        """The final routing contract must enumerate the core surfaces."""
+        assert f"`{surface}`" in claude_md_content
+
+    def test_multi_surface_dispatch_documented(self, claude_md_content):
+        """Multi-surface tasks must trigger multi-agent dispatch."""
+        content_lower = claude_md_content.lower()
+        assert "two or more surfaces are active" in content_lower
+        assert "parallel" in content_lower
+        assert "primary agent for each active surface" in content_lower
+
+    def test_gaia_consolidates_findings(self, claude_md_content):
+        """Gaia must explicitly own cross-surface consolidation."""
+        assert "Gaia consolidates" in claude_md_content
+        assert "conflicts" in claude_md_content
+
+    def test_reconnaissance_is_explicit_not_silent_fallback(self, claude_md_content):
+        """devops-developer can do reconnaissance, but not act as a silent catch-all owner."""
+        content_lower = claude_md_content.lower()
+        assert "narrow reconnaissance task to `devops-developer`" in claude_md_content
+        assert "silently treat `devops-developer` as the owner of all ambiguous work" in content_lower
+
+    def test_investigation_brief_requires_evidence(self, claude_md_content):
+        """Delegated investigations must ask for evidence, not just conclusions."""
+        assert "EVIDENCE_REPORT" in claude_md_content
+        for phrase in [
+            "patterns checked",
+            "files/paths checked",
+            "exact commands run",
+            "key outputs or evidence",
+            "cross-layer impacts",
+            "open gaps",
+        ]:
+            assert phrase in claude_md_content
+
+    def test_cross_agent_context_is_documented(self, claude_md_content):
+        """Chained agents should receive a short summary of prior findings."""
+        assert "Cross-agent context" in claude_md_content
+        assert "2-3 sentence summary" in claude_md_content
 
 
 class TestPlanStatusDocumentation:
@@ -82,8 +132,9 @@ class TestPlanStatusDocumentation:
     @pytest.mark.parametrize("status", VALID_STATUSES)
     def test_plan_status_documented(self, status, agent_protocol_content):
         """Each valid PLAN_STATUS must appear in agent-protocol skill."""
-        assert status in agent_protocol_content, \
+        assert status in agent_protocol_content, (
             f"PLAN_STATUS '{status}' not documented in agent-protocol/SKILL.md"
+        )
 
 
 class TestSystemPaths:
@@ -124,6 +175,10 @@ class TestApprovalFlowContract:
         """Auto-relay of a nonce is only valid for the same approved operation."""
         assert "same approved operation" in claude_md_content
         assert "changes operation" in claude_md_content
+
+    def test_contract_repair_retry_cap_is_documented(self, claude_md_content):
+        """Runtime contract repair should have a bounded retry policy."""
+        assert "capped at 2" in claude_md_content
 
 
 if __name__ == "__main__":

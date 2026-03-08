@@ -94,6 +94,21 @@ class TestAgentProtocolSkill:
         assert "PENDING_STEPS" in content, \
             "agent-protocol must document PENDING_STEPS"
 
+    def test_has_evidence_report_section(self, content):
+        """Must document EVIDENCE_REPORT format."""
+        assert "EVIDENCE_REPORT" in content, \
+            "agent-protocol must document EVIDENCE_REPORT"
+        for field in [
+            "PATTERNS_CHECKED",
+            "FILES_CHECKED",
+            "COMMANDS_RUN",
+            "KEY_OUTPUTS",
+            "CROSS_LAYER_IMPACTS",
+            "OPEN_GAPS",
+        ]:
+            assert field in content, \
+                f"agent-protocol should document EVIDENCE_REPORT field '{field}'"
+
     def test_documents_all_valid_statuses(self, content):
         """Must document all valid PLAN_STATUS values."""
         statuses = ["INVESTIGATING", "PLANNING", "PENDING_APPROVAL",
@@ -102,6 +117,13 @@ class TestAgentProtocolSkill:
         for status in statuses:
             assert status in content, \
                 f"agent-protocol should document PLAN_STATUS '{status}'"
+
+    def test_documents_contract_repair_behavior(self, content):
+        """agent-protocol should explain runtime-driven contract repair."""
+        assert "## Contract Repair" in content, \
+            "agent-protocol should document contract repair behavior"
+        assert "capped at 2" in content, \
+            "agent-protocol should document the repair retry cap"
 
 
 class TestContextUpdaterSkill:
@@ -142,6 +164,38 @@ class TestOutputFormatSkill:
         for icon in icons:
             assert icon in content, \
                 f"output-format should document icon '{icon}'"
+
+    def test_documents_evidence_report_format(self, content):
+        """output-format should define compact evidence formatting."""
+        assert "EVIDENCE_REPORT" in content, \
+            "output-format should document EVIDENCE_REPORT"
+        assert "COMMANDS_RUN" in content, \
+            "output-format should mention COMMANDS_RUN"
+        assert "KEY_OUTPUTS" in content, \
+            "output-format should mention KEY_OUTPUTS"
+
+
+class TestInvestigationSkill:
+    """investigation SKILL.md specific rules."""
+
+    @pytest.fixture
+    def content(self, skills_dir):
+        return (skills_dir / "investigation" / "SKILL.md").read_text()
+
+    def test_documents_evidence_contract(self, content):
+        """investigation should define the meaning of evidence fields."""
+        assert "Evidence Contract" in content, \
+            "investigation should document the evidence contract"
+        for field in [
+            "PATTERNS_CHECKED",
+            "FILES_CHECKED",
+            "COMMANDS_RUN",
+            "KEY_OUTPUTS",
+            "CROSS_LAYER_IMPACTS",
+            "OPEN_GAPS",
+        ]:
+            assert field in content, \
+                f"investigation should explain '{field}'"
 
 
 if __name__ == "__main__":

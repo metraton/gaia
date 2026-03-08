@@ -86,6 +86,27 @@ Before findings feed into a plan, explicitly state:
 
 If critical gaps remain → run another validation round. Never propose on shaky ground.
 
+## 8. Evidence Contract
+
+When you report investigation findings, populate the protocol-mandated `EVIDENCE_REPORT` block.
+
+Interpret the fields this way:
+
+- `PATTERNS_CHECKED` — existing repo patterns, sibling resources, or conventions you compared against
+- `FILES_CHECKED` — concrete files, directories, manifests, modules, or docs you inspected
+- `COMMANDS_RUN` — exact read-only or validation commands you executed, plus a terse result
+- `KEY_OUTPUTS` — the evidence that actually changed your conclusion
+- `CROSS_LAYER_IMPACTS` — adjacent surfaces, systems, or contracts affected by the finding
+- `OPEN_GAPS` — what is still unverified, inaccessible, or assumed
+
+Minimum expectations:
+- Always populate `PATTERNS_CHECKED` and `FILES_CHECKED` for local/code investigations
+- Populate `COMMANDS_RUN` and `KEY_OUTPUTS` whenever you touched live state, validation commands, or diagnostics
+- Populate `CROSS_LAYER_IMPACTS` whenever the issue crosses app, infra, GitOps, runtime, hooks, skills, or docs
+- Use `- none` or `- not run` when a field truly does not apply
+
+The goal is not verbosity. The goal is evidence that another agent, the orchestrator, or the user can verify quickly.
+
 ## Anti-Patterns
 
 - Searching before knowing what question you're trying to answer

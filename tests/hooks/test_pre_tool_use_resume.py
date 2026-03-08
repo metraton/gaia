@@ -16,6 +16,16 @@ from modules.security.approval_grants import (
     ACTIVATION_ACTIVATED,
     ACTIVATION_EXPIRED,
 )
+from modules.core.paths import clear_path_cache
+
+
+@pytest.fixture(autouse=True)
+def isolated_session(tmp_path, monkeypatch):
+    clear_path_cache()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude").mkdir(parents=True, exist_ok=True)
+    yield
+    clear_path_cache()
 
 
 @pytest.fixture

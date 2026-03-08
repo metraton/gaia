@@ -10,7 +10,7 @@ Structured workflow framework for specification-driven feature development. Spec
 - [Skills Reference](#skills-reference)
 - [Scripts Reference](#scripts-reference)
 - [Auto-Enrichment](#auto-enrichment)
-- [Agent Routing](#agent-routing)
+- [Surface Routing](#surface-routing)
 - [Troubleshooting](#troubleshooting)
 - [Best Practices](#best-practices)
 - [References](#references)
@@ -39,9 +39,9 @@ Spec-Kit provides structured workflow for feature development:
 - ✅ **GOVERNANCE_UPDATE** - specify and plan skills detect new technologies and update governance.md automatically
 - ✅ **Multi-project** - Work with multiple spec-kits simultaneously
 - ✅ **Portable** - Works with any project structure
-- ✅ **Auto-enrichment** - Tasks automatically tagged with agent routing metadata
+- ✅ **Auto-enrichment** - Tasks automatically tagged with surface-routing metadata
 - ✅ **Risk analysis** - High-risk tasks (T2/T3) analyzed before execution
-- ✅ **Agent routing** - Tasks routed to specialized agents automatically
+- ✅ **Surface routing** - Tasks can target one or more specialized agents automatically
 - ✅ **Git-agnostic** - User controls Git workflow independently
 - ✅ **Template-based** - Consistent structure across features
 - ✅ **State machine** - Always know where you are and what to run next
@@ -194,7 +194,7 @@ Automatic injection of metadata into tasks for agent routing and risk assessment
 
 ### Enrichment Process
 
-**Step 1: Agent routing** (handled by the speckit.tasks skill during task generation)
+**Step 1: Surface routing** (handled by the speckit.tasks skill during task generation)
 
 **Step 2: Metadata injection**
 ```markdown
@@ -202,7 +202,7 @@ Automatic injection of metadata into tasks for agent routing and risk assessment
   <!-- 🤖 Agent: terraform-architect | ✅ T1 | ❓ 0.85 -->
   <!-- 🏷️ Tags: #terraform #gcp #gke -->
   <!-- 🎯 skill: terraform_operations (8.0) -->
-  <!-- 🔄 Fallback: devops-developer -->
+  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
 ```
 
 ### Metadata Components
@@ -239,11 +239,11 @@ Technology and domain tags
 ```
 Agent capability match
 
-**Fallback agent:**
+**Adjacent surface note:**
 ```
-🔄 Fallback: devops-developer
+🧭 Adjacent surfaces: app_ci_tooling, live_runtime
 ```
-Alternative if primary fails
+Cross-layer follow-up or validation surfaces to review before execution
 
 **High-risk warning:**
 ```
@@ -254,13 +254,13 @@ For T2/T3 tasks only. The implement skill triggers analysis automatically.
 
 **Low-confidence warning** (score < 0.5):
 ```
-⚠️ LOW_CONFIDENCE: score=0.3 — review agent routing manually
+⚠️ LOW_CONFIDENCE: score=0.3 — review surface classification manually
 ```
 Emitted automatically when routing confidence falls below `MIN_CONFIDENCE: 0.5`
 
 ### Enrichment Benefits
 
-- [x] Automatic agent routing
+- [x] Automatic surface routing
 - [x] Risk visibility
 - [x] Execution safety
 - [x] Audit trail
@@ -268,23 +268,24 @@ Emitted automatically when routing confidence falls below `MIN_CONFIDENCE: 0.5`
 - [x] Confidence threshold warnings (MIN_CONFIDENCE: 0.5)
 - [x] Machine-readable dependency graph (YAML) in tasks.md
 
-## Agent Routing
+## Surface Routing
 
 ### How Routing Works
 
-**Step 1: Parse task metadata**
+**Step 1: Infer active surfaces from task metadata**
 ```markdown
 <!-- 🤖 Agent: gitops-operator | ✅ T0 | ❓ 0.92 -->
+<!-- 🧭 Surface: gitops_desired_state -->
 ```
 
-**Step 2: Load agent context**
+**Step 2: Load surface-relevant context**
 ```python
 from tools.context.context_section_reader import ContextSectionReader
 reader = ContextSectionReader(project_context)
 context = reader.get_sections_for_agent('gitops-operator')
 ```
 
-**Step 3: Invoke specialized agent**
+**Step 3: Invoke one or more specialized agents**
 ```python
 Task(
     subagent_type='gitops-operator',
@@ -292,45 +293,36 @@ Task(
 )
 ```
 
-### Available Agents
+If the task spans multiple surfaces, dispatch the primary agent for each active surface and consolidate the findings before acting.
 
-| Agent | Specialization | Risk Tiers |
+### Core Surfaces
+
+| Surface | Primary agent | Typical signals |
 |-------|---------------|-----------|
-| **terraform-architect** | Terraform/Terragrunt validation | T0-T3 |
-| **gitops-operator** | Kubernetes/Flux operations | T0-T3 |
-| **cloud-troubleshooter** | Cloud diagnostics (GCP/AWS) | T0 only |
-| **devops-developer** | Application development | T0-T2 |
+| `terraform_iac` | **terraform-architect** | Terraform/Terragrunt, IAM, buckets, shared modules |
+| `gitops_desired_state` | **gitops-operator** | Kubernetes manifests, Flux, Helm, desired state in Git |
+| `live_runtime` | **cloud-troubleshooter** | Live cluster/cloud diagnostics, pods, logs, runtime drift |
+| `app_ci_tooling` | **devops-developer** | Application code, CI/CD, Docker, build/test tooling |
 
 ### Routing Decision Factors
 
-**Keyword matching:**
-- "terraform" → terraform-architect
-- "kubectl", "flux" → gitops-operator
-- "gcp", "gke" → cloud-troubleshooter
-- "build", "test" → devops-developer
+- Detect dominant edit surface from paths, tools, and artifacts named in the task.
+- If the task crosses desired state, live state, and infra/app boundaries, treat it as multi-surface.
+- Ask each agent for evidence: patterns checked, files/paths checked, exact commands run, key outputs, and cross-layer impacts.
+- Use `devops-developer` for narrow reconnaissance when the dominant surface is unclear, not as a silent default owner.
 
-**Skill scoring:**
-```
-Agent: gitops-operator
-- skill: kubernetes_operations (9.0)
-- skill: flux_operations (8.5)
-- skill: helm_management (7.0)
-```
+### Unclear or Multi-Surface Tasks
 
-**Context requirements:**
-- Cluster name → gitops-operator, cloud-troubleshooter
-- Terraform path → terraform-architect
-- Repository → devops-developer
+**If the dominant surface is clear:**
+1. Route to that surface's primary agent.
 
-### Fallback Behavior
+**If multiple surfaces are active:**
+1. Invoke the primary agent for each active surface.
+2. Consolidate findings before implementation or approval.
 
-**If primary agent fails:**
-1. Check fallback agent in metadata
-2. Retry with fallback
-3. If fallback fails, escalate to user
-
-**If no agent specified:**
-- Default to `devops-developer` (general-purpose)
+**If the surface is unclear:**
+1. Ask the user or run a narrow reconnaissance task.
+2. Re-classify after evidence arrives.
 
 ## Troubleshooting
 

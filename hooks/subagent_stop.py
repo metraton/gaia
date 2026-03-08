@@ -33,6 +33,14 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import hashlib
 
+from modules.agents.response_contract import (
+    clear_pending_repair,
+    save_pending_repair,
+    save_validation_result,
+    validate_response_contract,
+    _resolve_agent_id,
+)
+
 # Configure structured logging with file handler (matching pre_tool_use.py pattern)
 try:
     from modules.core.paths import get_logs_dir
@@ -584,17 +592,42 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         # Step 1: Capture workflow metrics
         workflow_metrics = capture_workflow_metrics(task_info, agent_output, session_context)
 
-        # Step 2: Check for anomalies
+        # Step 2: Validate deterministic response contract
+        response_contract = validate_response_contract(
+            agent_output,
+            task_agent_id=_resolve_agent_id(task_info),
+        )
+        save_validation_result(task_info, response_contract)
+
+        repair_file = None
+        contract_agent_id = response_contract.agent_status.agent_id or _resolve_agent_id(task_info)
+        if response_contract.valid:
+            clear_pending_repair(contract_agent_id)
+        else:
+            repair_file = save_pending_repair(task_info, response_contract)
+
+        # Step 3: Check for anomalies
         anomalies = detect_anomalies(workflow_metrics)
+        if not response_contract.valid:
+            missing = ", ".join(response_contract.missing) or "none"
+            invalid = ", ".join(response_contract.invalid) or "none"
+            anomalies.append({
+                "type": "response_contract_violation",
+                "severity": "critical",
+                "message": (
+                    f"Agent response contract invalid for {task_info.get('agent', 'unknown')}: "
+                    f"missing=[{missing}] invalid=[{invalid}]"
+                ),
+            })
 
         if anomalies:
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        # Step 3: Capture as episodic memory (include anomalies for context)
+        # Step 4: Capture as episodic memory (include anomalies for context)
         episode_id = capture_episodic_memory(workflow_metrics, anomalies=anomalies if anomalies else None)
 
-        # Step 4: Process context updates (progressive enrichment)
+        # Step 5: Process context updates (progressive enrichment)
         context_update_result = _process_context_updates(agent_output, task_info)
 
         return {
@@ -605,6 +638,8 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             "anomalies_detected": len(anomalies) if anomalies else 0,
             "episode_id": episode_id,
             "context_updated": context_update_result.get("updated", False) if context_update_result else False,
+            "response_contract": response_contract.to_dict(),
+            "contract_repair_pending": repair_file is not None,
         }
 
     except Exception as e:
@@ -804,6 +839,7 @@ def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str
 
     return {
         "task_id": hook_data.get("agent_id", "unknown"),
+        "agent_id": hook_data.get("agent_id", "unknown"),
         "description": task_description,
         "agent": agent_type,
         "tier": tier_real,

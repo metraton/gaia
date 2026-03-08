@@ -43,13 +43,44 @@ If your identity restricts you to local/code-only operations, skip LIVE entirely
 Mismatch found → update your map, continue investigating with the new reality.
 Only escalate (`BLOCKED`/`NEEDS_INPUT`) if the mismatch is CRITICAL to completing the task.
 
-**REPORT** — Every response ends with AGENT_STATUS block.
+**REPORT** — Every response ends with AGENT_STATUS. When you investigated, validated, reviewed, or gathered live/local evidence, include an `EVIDENCE_REPORT` block before AGENT_STATUS.
 
 For investigation methodology and pattern hierarchy, follow the `investigation` skill.
 
+## EVIDENCE_REPORT Format (MANDATORY WHEN EVIDENCE EXISTS)
+
+Use this block whenever your response is based on code reading, config reading, command execution, review findings, or other concrete evidence. This applies to most `INVESTIGATING`, `PLANNING`, `BLOCKED`, `NEEDS_INPUT`, and evidence-backed `COMPLETE` responses.
+It is also required for `PENDING_APPROVAL` and `FIXING`, because those states still need to show the evidence that justified the plan or the fix attempt.
+
+If a field does not apply, write `- none` or `- not run` instead of omitting the field.
+
+```html
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- [existing pattern or convention you compared against]
+FILES_CHECKED:
+- [file or path]
+COMMANDS_RUN:
+- `[exact command]` -> [concise result, or `not run`]
+KEY_OUTPUTS:
+- [short output excerpt or evidence summary]
+CROSS_LAYER_IMPACTS:
+- [affected adjacent surface, contract, or subsystem]
+OPEN_GAPS:
+- [remaining unknown, validation gap, or `none`]
+<!-- /EVIDENCE_REPORT -->
+```
+
+Rules:
+- Keep each field to 1-3 bullets unless the task genuinely needs more.
+- `COMMANDS_RUN` must contain the exact command when a command was executed.
+- `KEY_OUTPUTS` must summarize what mattered, not paste walls of output.
+- `CROSS_LAYER_IMPACTS` is required for review, debugging, or multi-surface tasks.
+- `OPEN_GAPS` must be explicit. Do not imply certainty when uncertainty remains.
+
 ## AGENT_STATUS Format (MANDATORY)
 
-Every response MUST end with this block:
+Every response MUST end with this block, after any `EVIDENCE_REPORT` and optional `CONTEXT_UPDATE`:
 
 ```html
 <!-- AGENT_STATUS -->
@@ -102,9 +133,19 @@ Before setting PLAN_STATUS to `COMPLETE`, verify your own output:
 1. **Re-read the original request.** Does your output answer what was asked?
 2. **Check completeness.** Are all requested items addressed? Any silent omissions?
 3. **Validate accuracy.** Do file paths, resource names, and commands match what you found in code?
-4. **Verify format.** Does your output follow the `output-format` skill? Is the AGENT_STATUS block present and correct?
+4. **Verify format.** Does your output follow the `output-format` skill? Are the `EVIDENCE_REPORT` and AGENT_STATUS blocks present and correct when required?
 
 If any check fails, fix before emitting COMPLETE. Do not flag self-review to the user -- just do it.
+
+## Contract Repair
+
+If runtime resumes you with instructions to repair your previous response contract, treat that as a structural fix request:
+
+- Reissue a complete response with the required `EVIDENCE_REPORT`, optional `CONTEXT_UPDATE`, and `AGENT_STATUS`
+- Do not restart the full investigation unless missing evidence truly requires one more command or file read
+- Preserve the task's real status; contract repair is not a license to fabricate evidence or mark work complete prematurely
+
+Runtime auto-repair retries are capped at 2. If your response is still structurally invalid after that, the orchestrator will escalate instead of silently retrying forever.
 
 ## Agent Handoff
 
