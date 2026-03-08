@@ -271,6 +271,9 @@ class PrePublishValidator {
   runTests() {
     this.log('Step 6: Running validation tests...', 'info');
 
+    // In validate-only mode, validate source files directly
+    const baseDir = this.validateOnly ? GAIA_OPS_ROOT : NODE_MODULES_INSTALL;
+
     try {
       // Test 1: Validate JSON files
       this.log('Test 1: Validating JSON configuration files...', 'info');
@@ -281,7 +284,7 @@ class PrePublishValidator {
       ];
 
       jsonFiles.forEach(file => {
-        const filePath = path.join(NODE_MODULES_INSTALL, file);
+        const filePath = path.join(baseDir, file);
         if (fs.existsSync(filePath)) {
           try {
             JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -304,9 +307,9 @@ class PrePublishValidator {
         ];
 
         pythonFiles.forEach(file => {
-          const filePath = path.join(NODE_MODULES_INSTALL, file);
+          const filePath = path.join(baseDir, file);
           if (fs.existsSync(filePath)) {
-            this.execute(`python3 -m py_compile "${filePath}"`, MONOREPO_ROOT, true);
+            this.execute(`python3 -m py_compile "${filePath}"`, GAIA_OPS_ROOT, true);
             this.log(`  ✓ ${file}`, 'success');
           }
         });
@@ -316,7 +319,7 @@ class PrePublishValidator {
 
       // Test 3: Check if bin scripts are executable
       this.log('Test 3: Checking bin scripts...', 'info');
-      const binDir = path.join(NODE_MODULES_INSTALL, 'bin');
+      const binDir = path.join(baseDir, 'bin');
       if (fs.existsSync(binDir)) {
         const scripts = fs.readdirSync(binDir);
         this.log(`  ✓ Found ${scripts.length} bin scripts`, 'success');
@@ -374,9 +377,9 @@ class PrePublishValidator {
       if (!this.validateOnly) {
         this.bumpVersion();
         this.reinstallNodeModules();
+        this.validateNodeModules();
+        this.validateFiles();
       }
-      this.validateNodeModules();
-      this.validateFiles();
       this.runTests();
 
       this.summary();
