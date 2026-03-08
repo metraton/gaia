@@ -33,6 +33,14 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import hashlib
 
+from modules.agents.response_contract import (
+    clear_pending_repair,
+    save_pending_repair,
+    save_validation_result,
+    validate_response_contract,
+    _resolve_agent_id,
+)
+
 # Configure structured logging with file handler (matching pre_tool_use.py pattern)
 try:
     from modules.core.paths import get_logs_dir
@@ -411,9 +419,9 @@ def capture_episodic_memory(
             outcome = "failed"
             success = False
 
-        # Tags from metrics
-        tags = metrics.get("tags", [])
-        if not tags:
+        # Tags from metrics — filter empty strings defensively
+        tags = [t for t in metrics.get("tags", []) if t]
+        if not tags and subagent_type and subagent_type != "unknown":
             tags = [subagent_type]
 
         # Enrich with session events and anomalies
@@ -584,17 +592,43 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         # Step 1: Capture workflow metrics
         workflow_metrics = capture_workflow_metrics(task_info, agent_output, session_context)
 
-        # Step 2: Check for anomalies
+        # Step 2: Validate deterministic response contract
+        response_contract = validate_response_contract(
+            agent_output,
+            task_agent_id=_resolve_agent_id(task_info),
+            consolidation_required=_requires_consolidation_report(task_info),
+        )
+        save_validation_result(task_info, response_contract)
+
+        repair_file = None
+        contract_agent_id = response_contract.agent_status.agent_id or _resolve_agent_id(task_info)
+        if response_contract.valid:
+            clear_pending_repair(contract_agent_id)
+        else:
+            repair_file = save_pending_repair(task_info, response_contract)
+
+        # Step 3: Check for anomalies
         anomalies = detect_anomalies(workflow_metrics)
+        if not response_contract.valid:
+            missing = ", ".join(response_contract.missing) or "none"
+            invalid = ", ".join(response_contract.invalid) or "none"
+            anomalies.append({
+                "type": "response_contract_violation",
+                "severity": "critical",
+                "message": (
+                    f"Agent response contract invalid for {task_info.get('agent', 'unknown')}: "
+                    f"missing=[{missing}] invalid=[{invalid}]"
+                ),
+            })
 
         if anomalies:
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        # Step 3: Capture as episodic memory (include anomalies for context)
+        # Step 4: Capture as episodic memory (include anomalies for context)
         episode_id = capture_episodic_memory(workflow_metrics, anomalies=anomalies if anomalies else None)
 
-        # Step 4: Process context updates (progressive enrichment)
+        # Step 5: Process context updates (progressive enrichment)
         context_update_result = _process_context_updates(agent_output, task_info)
 
         return {
@@ -605,6 +639,8 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             "anomalies_detected": len(anomalies) if anomalies else 0,
             "episode_id": episode_id,
             "context_updated": context_update_result.get("updated", False) if context_update_result else False,
+            "response_contract": response_contract.to_dict(),
+            "contract_repair_pending": repair_file is not None,
         }
 
     except Exception as e:
@@ -671,21 +707,19 @@ def _read_transcript(transcript_path: str) -> str:
         return ""
 
 
-def _extract_task_description_from_transcript(transcript_path: str) -> str:
-    """Read the first user message from the subagent transcript JSONL.
+def _read_first_user_content_from_transcript(transcript_path: str) -> Optional[str]:
+    """Read the raw content string of the first user message from a transcript JSONL.
 
-    Claude Code's agent_transcript_path contains the full subagent conversation.
-    The first ``role: "user"`` entry is the task prompt sent by the orchestrator —
-    which is the most meaningful description of what the agent was asked to do.
-
-    Returns empty string on any error so the hook never crashes.
+    Handles: empty path guard, path expansion, existence check, JSONL iteration,
+    JSON parse, role=="user" check, content normalization (str vs list).
+    Returns the raw content string or None.
     """
     if not transcript_path:
-        return ""
+        return None
     try:
         path = Path(transcript_path).expanduser()
         if not path.exists():
-            return ""
+            return None
         with open(path, "r") as f:
             for line in f:
                 line = line.strip()
@@ -693,45 +727,96 @@ def _extract_task_description_from_transcript(transcript_path: str) -> str:
                     continue
                 try:
                     entry = json.loads(line)
-                    # Format: {"type": "user", "message": {"role": "user", "content": ...}}
                     msg = entry.get("message", entry)
                     if msg.get("role") != "user":
                         continue
                     content = msg.get("content", "")
                     if isinstance(content, str):
-                        text = content.strip()
-                        # Pattern 2: pre_tool_use injected project context before the real prompt.
-                        # The injected block ends with "\n\n---\n\n# User Task\n\n" followed by
-                        # the actual task description sent by the orchestrator.
-                        if text.startswith("# Project Context (Auto-Injected)"):
-                            sep_full = "\n\n---\n\n# User Task\n\n"
-                            sep_bare = "\n\n---\n\n"
-                            pos = text.find(sep_full)
-                            if pos != -1:
-                                text = text[pos + len(sep_full):].strip()
-                            else:
-                                pos = text.find(sep_bare)
-                                if pos != -1:
-                                    text = text[pos + len(sep_bare):].strip()
-                                else:
-                                    text = ""  # Cannot extract real prompt
-                        # Pattern 1: content is already the clean orchestrator prompt — no change
+                        return content
                     elif isinstance(content, list):
-                        # content blocks: [{"type": "text", "text": "..."}]
-                        text = " ".join(
+                        return " ".join(
                             b.get("text", "") for b in content
                             if isinstance(b, dict) and b.get("type") == "text"
-                        ).strip()
-                    else:
-                        continue
-                    if text:
-                        # Truncate to 500 chars — enough context, not too much
-                        return text[:500]
+                        )
+                    return None
                 except (json.JSONDecodeError, TypeError):
                     continue
     except Exception as e:
-        logger.debug("Failed to extract task description from transcript: %s", e)
+        logger.debug("Failed to read first user content from transcript: %s", e)
+    return None
+
+
+def _extract_task_description_from_transcript(transcript_path: str) -> str:
+    """Read the first user message from the subagent transcript JSONL.
+
+    Claude Code's agent_transcript_path contains the full subagent conversation.
+    The first ``role: "user"`` entry is the task prompt sent by the orchestrator --
+    which is the most meaningful description of what the agent was asked to do.
+
+    Returns empty string on any error so the hook never crashes.
+    """
+    content = _read_first_user_content_from_transcript(transcript_path)
+    if not content:
+        return ""
+
+    text = content.strip()
+    # Pattern 2: pre_tool_use injected project context before the real prompt.
+    # The injected block ends with "\n\n---\n\n# User Task\n\n" followed by
+    # the actual task description sent by the orchestrator.
+    if text.startswith("# Project Context (Auto-Injected)"):
+        sep_full = "\n\n---\n\n# User Task\n\n"
+        sep_bare = "\n\n---\n\n"
+        pos = text.find(sep_full)
+        if pos != -1:
+            text = text[pos + len(sep_full):].strip()
+        else:
+            pos = text.find(sep_bare)
+            if pos != -1:
+                text = text[pos + len(sep_bare):].strip()
+            else:
+                text = ""  # Cannot extract real prompt
+
+    if text:
+        # Truncate to 500 chars -- enough context, not too much
+        return text[:500]
     return ""
+
+
+def _extract_injected_context_payload_from_transcript(transcript_path: str) -> Dict[str, Any]:
+    """Extract the auto-injected JSON context payload from the first user message."""
+    content = _read_first_user_content_from_transcript(transcript_path)
+    if not content:
+        return {}
+    if not content.startswith("# Project Context (Auto-Injected)"):
+        return {}
+    try:
+        start = content.find("{")
+        end = content.find("\n\n---\n\n")
+        if start == -1 or end == -1 or end <= start:
+            return {}
+        return json.loads(content[start:end].strip())
+    except Exception:
+        return {}
+
+
+def _requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
+    """Determine whether runtime should require a CONSOLIDATION_REPORT block."""
+    payload = task_info.get("injected_context") or {}
+    if not payload:
+        # Fallback: read from transcript if injected_context was not pre-extracted
+        payload = _extract_injected_context_payload_from_transcript(
+            task_info.get("agent_transcript_path", "")
+        )
+    if not payload:
+        return False
+
+    investigation_brief = payload.get("investigation_brief", {}) or {}
+    surface_routing = payload.get("surface_routing", {}) or {}
+    return bool(
+        investigation_brief.get("consolidation_required")
+        or investigation_brief.get("cross_check_required")
+        or surface_routing.get("multi_surface")
+    )
 
 
 def _extract_plan_status_from_output(agent_output: str) -> str:
@@ -798,18 +883,22 @@ def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str
     # Extract real task description from the first user message in the transcript
     transcript_path = hook_data.get("agent_transcript_path", "")
     task_description = _extract_task_description_from_transcript(transcript_path)
-    agent_type = hook_data.get("agent_type", "unknown")
+    injected_context = _extract_injected_context_payload_from_transcript(transcript_path)
+    agent_type = hook_data.get("agent_type", "") or "unknown"
     if not task_description:
         task_description = f"SubagentStop for {agent_type}"
 
     return {
         "task_id": hook_data.get("agent_id", "unknown"),
+        "agent_id": hook_data.get("agent_id", "unknown"),
+        "agent_transcript_path": transcript_path,
         "description": task_description,
         "agent": agent_type,
         "tier": tier_real,
-        "tags": [],
+        "tags": [agent_type] if agent_type != "unknown" else [],
         "exit_code": exit_code,
         "plan_status": plan_status,
+        "injected_context": injected_context,
     }
 
 
@@ -877,6 +966,7 @@ if __name__ == "__main__":
         try:
             stdin_data = sys.stdin.read()
             if not stdin_data.strip():
+                print("Error: Empty stdin data", file=sys.stderr)
                 print("Error: Empty stdin data")
                 sys.exit(1)
 
@@ -907,9 +997,11 @@ if __name__ == "__main__":
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON from stdin: {e}")
+            print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             logger.error(f"Error processing hook: {e}", exc_info=True)
+            print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
             sys.exit(1)
     else:
         # No args and no stdin - show usage

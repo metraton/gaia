@@ -48,7 +48,8 @@ class TestCoreDirectories:
         config_dir = package_root / "config"
         required_files = [
             "git_standards.json",
-            "universal-rules.json"
+            "universal-rules.json",
+            "surface-routing.json",
         ]
 
         for file_name in required_files:
@@ -98,6 +99,7 @@ class TestToolsDirectory:
         """All critical tools must exist in reorganized structure"""
         critical_tools = {
             "context/context_provider.py",
+            "context/surface_router.py",
             "context/context_section_reader.py",
             "validation/approval_gate.py",
             "memory/episodic.py"

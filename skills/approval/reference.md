@@ -53,6 +53,13 @@ When approved, will execute:
 After execution, these checks MUST pass before emitting COMPLETE:
 - `[read-only command] [args]` → [expected output or state]
 
+### Approval Required
+
+**Approval Code:** `NONCE:<hex from hook block response>`
+**Operation:** [what will be executed]
+**Environment:** [dev / staging / prod]
+**Risk Level:** [LOW / MEDIUM / HIGH / CRITICAL]
+
 ### Files Affected
 
 **Git changes:**

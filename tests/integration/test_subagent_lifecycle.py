@@ -28,6 +28,8 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.tiers import SecurityTier
 from modules.tools.task_validator import AVAILABLE_AGENTS, META_AGENTS
+from modules.agents.response_contract import clear_contract_dir_cache
+from modules.core.paths import clear_path_cache
 
 # Import context_writer directly for validation
 sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
@@ -52,6 +54,8 @@ def test_project(tmp_path):
                 project-context/
                     project-context.json  (minimal, with empty sections)
     """
+    clear_path_cache()
+    clear_contract_dir_cache()
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
 
@@ -94,7 +98,9 @@ def test_project(tmp_path):
     }
     (pc_dir / "project-context.json").write_text(json.dumps(pc_data, indent=2))
 
-    return tmp_path, claude_dir
+    yield tmp_path, claude_dir
+    clear_path_cache()
+    clear_contract_dir_cache()
 
 
 # ============================================================================

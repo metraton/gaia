@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 STATE_FILE_NAME = ".hooks_state.json"
 
 
+def get_session_id() -> str:
+    """Return the current Claude session ID, defaulting to 'default'."""
+    return os.environ.get("CLAUDE_SESSION_ID", "default")
+
+
 @dataclass
 class HookState:
     """
@@ -157,7 +162,7 @@ def create_pre_hook_state(
     Returns:
         New HookState instance
     """
-    session_id = os.environ.get("CLAUDE_SESSION_ID", "default")
+    session_id = get_session_id()
 
     return HookState(
         tool_name=tool_name,

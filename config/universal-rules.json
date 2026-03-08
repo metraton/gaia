@@ -1,46 +1,19 @@
 {
-  "version": "1.0.0",
-  "description": "Universal rules injected via context_provider.py to ensure consistent agent behavior",
   "rules": {
     "universal": [
       {
-        "id": "U1",
-        "category": "tools",
-        "rule": "Use Claude Code native tools for file operations:\n- Search files by name: Glob(pattern, path)\n- Search content: Grep(pattern, path, glob, output_mode, -A/-B/-C for context)\n- Read files: Read(file_path, offset, limit). Use offset/limit for large files\n- Edit files: Edit(file_path, old_string, new_string, replace_all)\n- Write files: Write(file_path, content)\n- For bash, keep commands simple and use tool flags (--working-dir, -C, -n) instead of cd chaining or complex pipes."
+        "rule": "Start with existing repo patterns before inventing a new approach. Search 2-3 comparable examples when possible."
       },
       {
-        "id": "U2",
-        "category": "user_interaction",
-        "rule": "When presenting 3 or more valid options to the user, use AskUserQuestion tool with clickable options instead of writing options in plain text. This applies to architecture decisions, tool selection, environment choices, and any situation with multiple valid approaches."
+        "rule": "If the task touches more than one surface, check at least one adjacent surface or explicitly explain why you did not."
       },
       {
-        "id": "U3",
-        "category": "paths",
-        "rule": "Always use absolute paths in all file operations. Never use relative paths like ../../ or ./something."
+        "rule": "When commands inform your conclusion, include the exact command and the key output in EVIDENCE_REPORT."
       },
       {
-        "id": "U4",
-        "category": "commits",
-        "rule": "For all git commits, validate message format before committing. Import and use: from tools.validation.commit_validator import safe_validate_before_commit; if not safe_validate_before_commit(message): return error"
+        "rule": "If another surface appears to own the fix, state that in CROSS_LAYER_IMPACTS or OPEN_GAPS instead of guessing across domains."
       }
     ],
-    "agent_specific": {
-      "gitops-operator": [
-        {
-          "id": "G1",
-          "rule": "For flux reconcile commands, always use --timeout=90s or less to avoid Bash timeout issues."
-        }
-      ],
-      "cloud-troubleshooter": [
-        {
-          "id": "C1",
-          "rule": "For gcloud commands with large output, save to file using --format=json > /tmp/output.json, then use Read tool to process."
-        },
-        {
-          "id": "C2",
-          "rule": "For AWS CLI commands with large output, save to file using --output json > /tmp/output.json, then use Read tool to process."
-        }
-      ]
-    }
+    "agent_specific": {}
   }
 }

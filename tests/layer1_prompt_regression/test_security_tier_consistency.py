@@ -86,7 +86,12 @@ class TestT3KeywordsConsistency:
 
     @pytest.fixture
     def skill_content(self, skills_dir):
-        return (skills_dir / "security-tiers" / "SKILL.md").read_text()
+        """Combined content from SKILL.md and reference.md (examples may live in either)."""
+        content = (skills_dir / "security-tiers" / "SKILL.md").read_text()
+        ref_path = skills_dir / "security-tiers" / "reference.md"
+        if ref_path.exists():
+            content += "\n" + ref_path.read_text()
+        return content
 
     def test_t3_keywords_documented(self, skill_content):
         """T3 operations from code should appear in documentation."""
@@ -95,7 +100,7 @@ class TestT3KeywordsConsistency:
         core_t3 = ["terraform apply", "kubectl apply"]
         for cmd in core_t3:
             assert cmd in content_lower, \
-                f"T3 keyword '{cmd}' not documented in security-tiers SKILL.md"
+                f"T3 keyword '{cmd}' not documented in security-tiers skill docs"
 
     def test_documented_t0_classifies_as_t0(self):
         """Commands documented as T0 should classify as T0."""

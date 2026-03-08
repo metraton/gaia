@@ -51,7 +51,11 @@ from modules.tools.task_validator import (
     AVAILABLE_AGENTS,
     META_AGENTS,
     T3_KEYWORDS,
-    APPROVAL_INDICATORS,
+)
+from modules.security.approval_constants import NONCE_APPROVAL_PATTERN, NONCE_APPROVAL_PREFIX
+from modules.security.approval_messages import (
+    CANONICAL_APPROVAL_TOKEN,
+    LATEST_BLOCKED_COMMAND_PHRASE,
 )
 from modules.security.gitops_validator import (
     FORBIDDEN_FLUX_COMMANDS,
@@ -147,24 +151,45 @@ class TestSettingsCodeConsistency:
             f"T3 mutation commands in allow (should be in ask): {violations}"
         )
 
-    def test_flux_suspend_resume_in_ask(self, ask_list):
-        """flux suspend/resume must require approval (they stop/start reconciliation)."""
-        ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
-        assert "flux suspend" in ask_cmds, "flux suspend must be in ask list"
-        assert "flux resume" in ask_cmds, "flux resume must be in ask list"
+    def test_flux_suspend_resume_protected(self, ask_list, deny_list):
+        """flux suspend/resume must be protected (in ask, deny, or enforced by hooks).
 
-    def test_gitops_forbidden_commands_in_ask_or_deny(self, ask_list, deny_list):
-        """Commands forbidden by gitops_validator must be in ask or deny."""
+        When settings uses Bash(*) with deny-only, the hook layer (gitops_validator)
+        enforces approval for flux suspend/resume at runtime.
+        """
         ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
         deny_cmds = {self._extract_command(e) for e in deny_list if e.startswith("Bash(")}
         protected = ask_cmds | deny_cmds
 
-        # flux suspend/resume are forbidden in gitops_validator
+        for cmd in ["flux suspend", "flux resume"]:
+            if cmd not in protected:
+                # Not in settings lists -- verify the hook layer covers it
+                from modules.security.gitops_validator import is_forbidden_gitops_command
+                assert is_forbidden_gitops_command(cmd), (
+                    f"'{cmd}' not protected by settings.json or gitops_validator hook"
+                )
+
+    def test_gitops_forbidden_commands_protected(self, ask_list, deny_list):
+        """Commands forbidden by gitops_validator must be in ask/deny or enforced by hooks.
+
+        When settings uses Bash(*) with deny-only, the hook layer (gitops_validator)
+        provides the enforcement for commands not explicitly in the deny list.
+        """
+        ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
+        deny_cmds = {self._extract_command(e) for e in deny_list if e.startswith("Bash(")}
+        protected = ask_cmds | deny_cmds
+
+        # flux commands are forbidden in gitops_validator
         for pattern in FORBIDDEN_FLUX_COMMANDS:
             # Extract the command from the regex (e.g., r"flux\s+suspend" -> "flux suspend")
             cmd = re.sub(r'\\s\+', ' ', pattern).strip()
             found = any(cmd in p for p in protected)
-            assert found, f"Forbidden gitops command '{cmd}' not protected in settings.json"
+            if not found:
+                # Verify the hook layer covers it
+                from modules.security.gitops_validator import is_forbidden_gitops_command
+                assert is_forbidden_gitops_command(cmd), (
+                    f"Forbidden gitops command '{cmd}' not protected by settings.json or hook"
+                )
 
 
 # ===========================================================================
@@ -176,10 +201,12 @@ class TestTierConsistency:
 
     def test_ultra_common_t0_are_genuinely_read_only(self):
         """Every command in ULTRA_COMMON_T0_COMMANDS must be truly read-only."""
-        # These are the ONLY commands that should be in the T0 fast-path
+        # These are the ONLY commands that should be in the T0 fast-path.
+        # NOTE: "git branch" was removed because it has mutative variants
+        # (-D, -m, -M, etc.). It is handled by conditional_safe_multiword instead.
         genuinely_read_only = {
             "ls", "pwd", "cat", "echo", "git status", "git diff",
-            "git log", "git branch", "kubectl get",
+            "git log", "kubectl get",
         }
 
         assert ULTRA_COMMON_T0_COMMANDS == genuinely_read_only, (
@@ -279,27 +306,31 @@ class TestDefenseInDepth:
     """Verify that security checks happen in the correct order."""
 
     def test_blocked_checked_before_safe(self):
-        """bash_validator must check blocked_commands BEFORE safe_commands."""
-        # Read the source code and verify the order
+        """bash_validator.validate() must check blocked_commands BEFORE safe_commands.
+
+        The blocked check runs in validate() (the public entry point) before
+        dispatching to _validate_single_command.  This test verifies the
+        actual defense-in-depth order in the method that callers invoke.
+        """
         source = (HOOKS_MODULES_DIR / "tools" / "bash_validator.py").read_text()
 
-        # Find the positions of blocked check and safe check in _validate_single_command
+        # Extract the validate() method body (the public entry point)
         method_match = re.search(
-            r'def _validate_single_command\(self.*?\n(.*?)(?=\n    def |\nclass |\Z)',
+            r'def validate\(self.*?\n(.*?)(?=\n    def |\nclass |\Z)',
             source, re.DOTALL
         )
-        assert method_match, "Could not find _validate_single_command method"
+        assert method_match, "Could not find validate method"
 
         method_body = method_match.group(1)
 
         blocked_pos = method_body.find("is_blocked_command")
-        safe_pos = method_body.find("is_read_only_command")
+        safe_pos = method_body.find("_validate_single_command")
 
-        assert blocked_pos != -1, "is_blocked_command call not found in _validate_single_command"
-        assert safe_pos != -1, "is_read_only_command call not found in _validate_single_command"
+        assert blocked_pos != -1, "is_blocked_command call not found in validate()"
+        assert safe_pos != -1, "_validate_single_command call not found in validate()"
         assert blocked_pos < safe_pos, (
-            "SECURITY: is_blocked_command must be checked BEFORE is_read_only_command "
-            f"(blocked at pos {blocked_pos}, safe at pos {safe_pos})"
+            "SECURITY: is_blocked_command must be checked BEFORE _validate_single_command "
+            f"(blocked at pos {blocked_pos}, single_command at pos {safe_pos})"
         )
 
 
@@ -310,29 +341,13 @@ class TestDefenseInDepth:
 class TestTaskValidatorConsistency:
     """Verify task_validator configuration matches the rest of the system."""
 
-    def test_approval_indicators_are_current(self):
-        """Approval indicators must only contain strings from the documented protocol."""
-        # All allowed indicators — new canonical token + documented legacy synonyms.
-        # To add a new indicator: add it here AND to approval_constants.py.
-        valid_indicators = {
-            "user approved:",           # canonical scoped token (new)
-            "user approval received",   # legacy canonical token
-            "approved by user",         # legacy variant
-            "user approved",            # legacy short form
-            "approved. execute",        # legacy variant
-            "approved, execute",        # legacy variant
-            "approval confirmed",       # legacy variant
-            "proceed with execution",   # legacy variant
-            "go ahead",                 # legacy variant
-            "confirmed. proceed",       # legacy variant
-        }
-
-        actual = set(APPROVAL_INDICATORS)
-        unexpected = actual - valid_indicators
-        assert not unexpected, (
-            f"Undocumented approval indicators found: {unexpected}. "
-            f"Add them to the valid_indicators set in this test AND document them in approval_constants.py."
+    def test_nonce_approval_pattern_is_current(self):
+        """Nonce approval must use the exact canonical token format."""
+        match = NONCE_APPROVAL_PATTERN.search(
+            f"{NONCE_APPROVAL_PREFIX}deadbeefdeadbeefdeadbeefdeadbeef"
         )
+        assert match is not None
+        assert match.group(1) == "deadbeefdeadbeefdeadbeefdeadbeef"
 
     def test_meta_agents_are_subset_of_available(self):
         """All META_AGENTS must exist in AVAILABLE_AGENTS."""
@@ -362,13 +377,12 @@ class TestTaskValidatorConsistency:
             pytest.skip("execution/SKILL.md not found")
 
         content = execution_skill.read_text().lower()
-        # Primary canonical token (new scoped format)
-        canonical_token = "user approved:"
-        # Legacy fallback token still supported
-        legacy_token = "user approval received"
-        assert canonical_token in content or legacy_token in content, (
+        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
             f"Execution skill must contain the canonical approval token "
-            f"('{canonical_token}' or '{legacy_token}')"
+            f"('{CANONICAL_APPROVAL_TOKEN}')"
+        )
+        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
+            "Execution skill must state that the nonce comes from the latest blocked command"
         )
 
 
@@ -399,10 +413,29 @@ class TestSkillsCrossReferences:
     def test_execution_skill_references_approval_token(self):
         """Execution skill must define the canonical approval token."""
         content = (SKILLS_DIR / "execution" / "SKILL.md").read_text()
-        # Accept either the new scoped token or the legacy token
-        assert "User approved:" in content or "User approval received" in content, (
-            "Execution skill must contain the canonical approval token "
-            "('User approved:' or 'User approval received')"
+        assert CANONICAL_APPROVAL_TOKEN in content, (
+            "Execution skill must contain the canonical nonce approval token "
+            f"('{CANONICAL_APPROVAL_TOKEN}')"
+        )
+
+    def test_approval_skill_references_canonical_nonce_contract(self):
+        """Approval skill must reference the same nonce contract as the hook/template."""
+        content = (SKILLS_DIR / "approval" / "SKILL.md").read_text().lower()
+        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
+            "Approval skill must mention the canonical nonce approval token"
+        )
+        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
+            "Approval skill must state that the token comes from the latest blocked command"
+        )
+
+    def test_claude_template_references_latest_blocked_command_nonce(self):
+        """CLAUDE template must instruct the orchestrator to relay the canonical nonce."""
+        content = (TEMPLATES_DIR / "CLAUDE.template.md").read_text().lower()
+        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
+            "CLAUDE.template.md must mention the canonical nonce token"
+        )
+        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
+            "CLAUDE.template.md must state that the token comes from the latest blocked command"
         )
 
     def test_security_tiers_t3_references_agent_protocol(self):

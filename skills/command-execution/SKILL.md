@@ -56,5 +56,6 @@ If you are forming any of these thoughts, stop. You are about to violate the ato
 - *"Let me `cat` this file"* -- Rule 3: use the Read tool
 - *"Let me `cd` first"* -- Rule 4: use absolute path with `-chdir` or equivalent
 - *"No spaces in this variable"* -- Rule 7: always quote
+- *"I'll cd to the worktree and then run the command"* -- Rule 2: run `cd` as a separate Bash call, then run the command in the next call. Never chain with `&&`.
 
 For mutation-specific rules (dry-run before apply, files over inline data), timeout tables, and cloud CLI examples, see `reference.md` in this skill directory.

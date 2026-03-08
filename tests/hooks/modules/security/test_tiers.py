@@ -69,6 +69,9 @@ class TestClassifyCommandTier:
         "git status",
         "git log",
         "git diff",
+        "git branch",
+        "git branch -a",
+        "git branch -v",
         "kubectl get pods",
         "kubectl describe pod test",
         "kubectl logs deployment/app",
@@ -123,6 +126,11 @@ class TestClassifyCommandTier:
         "helm install release chart/",
         "rm -rf /",
         "git push origin main",
+        "git branch -D main",
+        "git branch -d feature",
+        "git branch -m old new",
+        "git branch -M old new",
+        "git branch --delete feat",
     ])
     def test_classifies_destructive_as_t3(self, command):
         """Test destructive commands are classified as T3."""

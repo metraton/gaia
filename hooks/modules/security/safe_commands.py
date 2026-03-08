@@ -72,9 +72,11 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
     # Multi-word commands that are always safe (prefix matching)
     "always_safe_multiword": {
         # Git read-only
-        "git status", "git diff", "git log", "git show", "git branch",
+        "git status", "git diff", "git log", "git show",
         "git remote", "git describe", "git rev-parse", "git ls-files",
         "git cat-file", "git blame", "git shortlog", "git reflog", "git tag",
+        # Git local-only (safe: no remote or history impact)
+        "git add", "git stash", "git fetch",
 
         # Terraform read-only
         "terraform version", "terraform validate", "terraform fmt",
@@ -163,12 +165,45 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
         # cd is read-only (changes directory in shell session)
         "cd": [],
     },
+
+    # Multi-word commands safe UNLESS certain flags/args are present.
+    # Same semantics as conditional_safe but for multi-word prefix matching.
+    # If ANY dangerous pattern matches, the command is NOT safe and falls
+    # through to the dangerous verb detector for T3 classification.
+    "conditional_safe_multiword": {
+        # git branch is read-only (listing) unless mutative flags are present:
+        #   -d/-D (delete), -m/-M (rename), -c/-C (copy),
+        #   --delete, --move, --copy, --set-upstream-to, --unset-upstream,
+        #   --edit-description
+        # NOTE: bare "git branch <name>" (create) also has a positional arg
+        # but that case is caught by the "any non-flag arg after 'branch'" rule
+        # in the dangerous_verbs detector (verb "branch" is UNKNOWN, so it
+        # falls through to flag scanning).
+        "git branch": [
+            r"\s-[dDmMcC]\b",
+            r"\s--delete\b",
+            r"\s--move\b",
+            r"\s--copy\b",
+            r"\s--set-upstream-to\b",
+            r"\s--unset-upstream\b",
+            r"\s--edit-description\b",
+            r"\s--force\b",
+        ],
+        # git checkout is safe for switching branches but dangerous when
+        # discarding changes (-- pathspec) or forcing (--force/-f).
+        "git checkout": [
+            r"\s--\s",       # -- separator means discard working tree changes
+            r"\s--force\b",
+            r"\s-f\b",
+        ],
+    },
 }
 
 # Derived sets for fast lookup
 ALWAYS_SAFE_COMMANDS: Set[str] = SAFE_COMMANDS_CONFIG["always_safe"]
 ALWAYS_SAFE_MULTIWORD: Set[str] = SAFE_COMMANDS_CONFIG["always_safe_multiword"]
 CONDITIONAL_SAFE_COMMANDS: Dict[str, List[str]] = SAFE_COMMANDS_CONFIG["conditional_safe"]
+CONDITIONAL_SAFE_MULTIWORD: Dict[str, List[str]] = SAFE_COMMANDS_CONFIG["conditional_safe_multiword"]
 SAFE_PATTERNS: List[str] = SAFE_COMMANDS_CONFIG["safe_patterns"]
 
 
@@ -298,7 +333,18 @@ def is_single_command_safe(single_cmd: str) -> Tuple[bool, str]:
     # Normalize git commands: strip global flags so "git -C /path log" matches "git log"
     normalized_cmd = _normalize_git_command(single_cmd)
 
-    # Check multi-word commands first (more specific)
+    # Check conditional multi-word commands BEFORE always-safe (more specific wins)
+    # e.g., "git branch" is safe for listing but not with -D/-m flags
+    for prefix, dangerous_patterns in CONDITIONAL_SAFE_MULTIWORD.items():
+        if normalized_cmd.startswith(prefix):
+            if not dangerous_patterns:
+                return True, f"Conditional-safe: {prefix}"
+            for pattern in dangerous_patterns:
+                if re.search(pattern, normalized_cmd):
+                    return False, f"Dangerous flag in '{prefix}': {pattern}"
+            return True, f"Conditional-safe: {prefix}"
+
+    # Check multi-word commands (always safe, prefix matching)
     for safe_cmd in ALWAYS_SAFE_MULTIWORD:
         if normalized_cmd.startswith(safe_cmd):
             return True, f"Always-safe: {safe_cmd}"

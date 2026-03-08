@@ -76,6 +76,7 @@ Every excuse an agent makes for violating a rule, and why it is wrong.
 | "Dry-run passed so apply is safe" | dry-run and diff are separate validations -- skip either and you miss drift | 5 |
 | "The inline value is simple enough" | Shell quoting breaks at spaces, special chars, and nested quotes -- always | 6 |
 | "This variable definitely won't have spaces" | It will, eventually -- and when it does, it breaks silently and is hard to debug | 7 |
+| "I need to search file contents with grep" | Use the Grep tool -- it handles permissions, output formatting, and never needs piping | 3 |
 
 ## Anti-Patterns
 

@@ -11,7 +11,6 @@ skills:
   - command-execution
   - developer-patterns
   - context-updater
-  - git-conventions
   - fast-queries
 ---
 

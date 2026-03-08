@@ -69,6 +69,7 @@ When approved, will execute:
 
 ## Approval Required
 
+**Approval Code:** `NONCE:<hex from hook block response>`
 **Operation:** terragrunt apply
 **Environment:** prod
 **Risk Level:** MEDIUM
@@ -132,6 +133,7 @@ When approved, will execute:
 
 ## Approval Required
 
+**Approval Code:** `NONCE:<hex from hook block response>`
 **Operation:** git push + flux reconcile
 **Environment:** prod
 **Risk Level:** LOW

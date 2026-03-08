@@ -4,16 +4,23 @@ Task tool validator.
 Validates Task tool invocations:
 - Agent existence verification
 - Context provisioning enforcement
-- T3 operation approval requirement
+- T3 operation detection for Bash-time nonce approval
 """
 
-import re
 import logging
-from typing import Dict, Any, List, Optional
+import re
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
-from ..security.approval_constants import APPROVAL_INDICATORS
+from ..security.dangerous_verbs import (
+    detect_dangerous_command,
+    DangerResult,
+    CLI_FAMILY_LOOKUP,
+    COMMAND_ALIASES,
+    CATEGORY_DESTRUCTIVE,
+    CATEGORY_MUTATIVE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +48,9 @@ AVAILABLE_AGENTS = [
 # speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
 META_AGENTS = ["gaia", "Explore", "Plan"]
 
-# Keywords indicating T3 operations
+# T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
+# to verify that these commands are classified as T3 by the verb detector.
+# NOT used at runtime -- detection is handled entirely by detect_dangerous_command().
 T3_KEYWORDS = [
     "git commit",
     "git push",
@@ -66,8 +75,99 @@ T3_KEYWORDS = [
     "gcloud storage rsync",
 ]
 
-# Re-export from canonical source so tests that import from here keep working.
-# Do NOT define indicators here — edit approval_constants.py instead.
+
+_EMBEDDED_COMMAND_QUOTE_CHARS = "\"'`"
+
+
+def _sanitize_candidate_fragment(fragment: str) -> str:
+    """Normalize a prose-embedded command fragment for verb detection.
+
+    Task prompts often mention commands inside backticks or quotes:
+      - Please run `terraform apply` in prod
+      - Need to execute "terraform apply" in prod
+
+    The detector only needs the command skeleton, so strip quote delimiters and
+    collapse whitespace before handing the fragment to the dangerous verb
+    classifier.
+    """
+    if not fragment:
+        return ""
+    cleaned = fragment.translate(str.maketrans({char: " " for char in _EMBEDDED_COMMAND_QUOTE_CHARS}))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned.rstrip(".,;:!?")
+
+
+def _extract_command_candidates(text: str) -> List[str]:
+    """Extract command-like lines from free-form text for verb detection.
+
+    Looks for lines that start with known CLI prefixes or contain command-like
+    patterns (e.g., "git push", "terraform apply").
+
+    Args:
+        text: Free-form text (prompt or description).
+
+    Returns:
+        List of candidate command strings to scan.
+    """
+    if not text:
+        return []
+
+    candidates: List[str] = []
+    # Derive CLI prefixes from the canonical CLI_FAMILY_LOOKUP and COMMAND_ALIASES
+    cli_prefixes = tuple(
+        f"{cli} " for cli in sorted(
+            set(CLI_FAMILY_LOOKUP.keys()) | set(COMMAND_ALIASES.keys()),
+            key=len,
+            reverse=True,
+        )
+    )
+
+    text_lower = text.lower()
+
+    # Strategy 1: Scan the full text for known CLI command patterns
+    for prefix in cli_prefixes:
+        idx = 0
+        while True:
+            pos = text_lower.find(prefix, idx)
+            if pos == -1:
+                break
+            # Only match at word boundaries (start of string or preceded by whitespace/punctuation)
+            if pos > 0 and text_lower[pos - 1].isalnum():
+                idx = pos + len(prefix)
+                continue
+            # Extract from the prefix to end of line (or next sentence boundary)
+            end = text.find("\n", pos)
+            if end == -1:
+                end = len(text)
+            fragment = text[pos:end].strip()
+            # Trim trailing punctuation/quotes that are part of prose
+            fragment = fragment.rstrip(".,;:!?\"')")
+            fragment = _sanitize_candidate_fragment(fragment)
+            if fragment:
+                candidates.append(fragment)
+            idx = pos + len(prefix)
+
+    return candidates
+
+
+def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[DangerResult]]:
+    """Scan free-form text for T3 (dangerous) command intent using the verb detector.
+
+    Args:
+        text: Combined prompt/description text.
+
+    Returns:
+        (is_t3, matched_command, danger_result) tuple.
+    """
+    candidates = _extract_command_candidates(text)
+
+    for candidate in candidates:
+        result = detect_dangerous_command(candidate)
+        if result.is_dangerous and result.category in (CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE):
+            return True, candidate, result
+
+    return False, "", None
+
 __all__ = [
     "TaskValidator",
     "TaskValidationResult",
@@ -75,7 +175,6 @@ __all__ = [
     "AVAILABLE_AGENTS",
     "META_AGENTS",
     "T3_KEYWORDS",
-    "APPROVAL_INDICATORS",
 ]
 
 
@@ -88,7 +187,6 @@ class TaskValidationResult:
     agent_name: str = ""
     has_context: bool = False
     is_t3_operation: bool = False
-    has_approval: bool = False
 
 
 class TaskValidator:
@@ -149,39 +247,27 @@ class TaskValidator:
 
         # Check for T3 operations (use original user task to avoid false positives from context)
         is_t3 = self._is_t3_operation(user_task_for_t3_check, description)
-        has_approval = False
-
-        if is_t3:
-            has_approval = self._check_approval(prompt)
-            matched_keyword = self._matched_t3_keyword(user_task_for_t3_check, description)
-
-            if not has_approval:
-                return TaskValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=self._get_approval_required_message(agent_name, matched_keyword),
-                    agent_name=agent_name,
-                    has_context=has_context,
-                    is_t3_operation=True,
-                    has_approval=False,
-                )
 
         logger.info(
             f"Task invocation validated: {agent_name} "
-            f"(T3={is_t3}, approval={'yes' if has_approval else 'no' if is_t3 else 'N/A'}, "
-            f"context={has_context})"
+            f"(T3={is_t3}, context={has_context})"
         )
 
-        tier = SecurityTier.T3_BLOCKED if is_t3 and not has_approval else SecurityTier.T0_READ_ONLY
+        tier = SecurityTier.T3_BLOCKED if is_t3 else SecurityTier.T0_READ_ONLY
+        reason = (
+            f"Task invocation allowed for {agent_name}; T3 execution still requires "
+            f"nonce-based approval at Bash time"
+            if is_t3
+            else f"Task invocation allowed for {agent_name}"
+        )
 
         return TaskValidationResult(
             allowed=True,
             tier=tier,
-            reason=f"Task invocation allowed for {agent_name}",
+            reason=reason,
             agent_name=agent_name,
             has_context=has_context,
             is_t3_operation=is_t3,
-            has_approval=has_approval,
         )
 
     def _check_context_provisioning(self, prompt: str, agent_name: str) -> bool:
@@ -193,61 +279,10 @@ class TaskValidator:
         )
 
     def _is_t3_operation(self, prompt: str, description: str) -> bool:
-        """Check if this is a T3 (destructive) operation."""
-        combined = f"{description.lower()} {prompt.lower()}"
-        return any(keyword in combined for keyword in T3_KEYWORDS)
-
-    def _matched_t3_keyword(self, prompt: str, description: str) -> str:
-        """Return the first T3 keyword found in the prompt/description, or empty string."""
-        combined = f"{description.lower()} {prompt.lower()}"
-        for keyword in T3_KEYWORDS:
-            if keyword in combined:
-                return keyword
-        return ""
-
-    def _check_approval(self, prompt: str) -> bool:
-        """Check if approval was received."""
-        prompt_lower = prompt.lower()
-        return any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS)
-
-    def _extract_approval_scope(self, prompt: str) -> str:
-        """
-        Extract the scope from a scoped approval token.
-
-        Looks for: 'User approved: <scope>'
-        Returns the scope string or empty if not found / scope is generic.
-        """
-        match = re.search(r"user approved:\s*(.+)", prompt, re.IGNORECASE)
-        if not match:
-            return ""
-        scope = match.group(1).strip()
-        # Warn on generic/empty scopes but don't block
-        generic_scopes = {"the changes", "everything", "all", "yes", "ok", "proceed"}
-        if scope.lower() in generic_scopes:
-            logger.warning(
-                "Approval scope '%s' is generic — consider describing the operation "
-                "(e.g. 'User approved: terraform apply prod/vpc')", scope
-            )
-        return scope
-
-    def _get_approval_required_message(self, agent_name: str = "", matched_keyword: str = "") -> str:
-        """Get the approval required error message with detected operation details."""
-        detected_line = (
-            f'Detected: "{matched_keyword}" in agent prompt\n'
-            if matched_keyword
-            else "Detected: T3 operation in agent prompt\n"
-        )
-        agent_line = f"Agent: {agent_name}\n" if agent_name else ""
-
-        return (
-            "❌ T3 Operation Blocked — Approval Required\n\n"
-            f"{detected_line}"
-            f"{agent_line}"
-            "\nTo proceed, the orchestrator must:\n"
-            "  1. Present the plan to the user (AskUserQuestion)\n"
-            f'  2. Resume with: "User approved: {matched_keyword or "<operation> [scope]"}"\n'
-            "\nThis operation requires explicit user approval before execution."
-        )
+        """Check if this is a T3 (destructive) operation using the verb detector."""
+        combined = f"{description} {prompt}"
+        is_t3, _, _ = _scan_text_for_t3(combined)
+        return is_t3
 
 
 

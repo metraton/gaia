@@ -11,7 +11,6 @@ skills:
   - command-execution
   - gitops-patterns
   - context-updater
-  - git-conventions
   - fast-queries
 ---
 

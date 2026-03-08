@@ -17,6 +17,20 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+try:
+    from ._paths import resolve_config_dir
+    from .surface_router import (
+        build_investigation_brief,
+        classify_surfaces,
+        load_surface_routing_config,
+    )
+except ImportError:
+    from _paths import resolve_config_dir
+    from surface_router import (
+        build_investigation_brief,
+        classify_surfaces,
+        load_surface_routing_config,
+    )
 
 # Default paths
 DEFAULT_CONTEXT_PATH = Path(".claude/project-context/project-context.json")
@@ -28,19 +42,7 @@ DEFAULT_CONTEXT_PATH = Path(".claude/project-context/project-context.json")
 
 def get_contracts_dir():
     """Determines the correct contracts directory based on execution context."""
-    # First try .claude/config (installed project)
-    installed_path = Path(".claude/config")
-    if installed_path.is_dir():
-        return installed_path
-
-    # Fallback to package location (for development/testing)
-    # context/ -> tools/ -> gaia-ops/
-    script_dir = Path(__file__).parent.parent.parent
-    package_path = script_dir / "config"
-    if package_path.is_dir():
-        return package_path
-
-    return Path(".claude/config")
+    return resolve_config_dir()
 
 
 DEFAULT_CONTRACTS_DIR = get_contracts_dir()
@@ -205,6 +207,23 @@ def get_contract_context(
     return {key: sections[key] for key in contract_keys if key in sections}
 
 
+def get_context_update_contract(
+    agent_name: str,
+    provider_contracts: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return the SSOT contract agents should use for CONTEXT_UPDATE decisions."""
+    agent_contract = provider_contracts.get("agents", {}).get(agent_name)
+    if not agent_contract:
+        print(f"ERROR: Invalid agent '{agent_name}'. Available: {list(provider_contracts.get('agents', {}).keys())}", file=sys.stderr)
+        sys.exit(1)
+
+    return {
+        "readable_sections": agent_contract.get("read", []),
+        "writable_sections": agent_contract.get("write", []),
+        "source": "config/context-contracts.json + config/cloud/{provider}.json",
+    }
+
+
 # ============================================================================
 # EPISODIC MEMORY
 # ============================================================================
@@ -312,22 +331,42 @@ def main():
 
     # Extract contracted sections
     contract_context = get_contract_context(project_context, args.agent_name, provider_contracts)
+    context_update_contract = get_context_update_contract(args.agent_name, provider_contracts)
 
     # Load historical episodes
     historical_context = load_relevant_episodes(args.user_task)
 
     # Load universal rules
     rules_context = load_universal_rules(args.agent_name)
+    surface_routing_config = load_surface_routing_config()
+    surface_routing = classify_surfaces(
+        args.user_task,
+        current_agent=args.agent_name,
+        routing_config=surface_routing_config,
+    )
+    investigation_brief = build_investigation_brief(
+        args.user_task,
+        args.agent_name,
+        contract_context,
+        routing_config=surface_routing_config,
+        routing=surface_routing,
+    )
 
     # Build final payload
     final_payload = {
         "contract": contract_context,
+        "context_update_contract": context_update_contract,
         "rules": rules_context,
+        "surface_routing": surface_routing,
+        "investigation_brief": investigation_brief,
         "metadata": {
             "cloud_provider": cloud_provider,
             "contract_version": provider_contracts.get("version", "unknown"),
             "historical_episodes_count": len(historical_context.get("episodes", [])),
-            "rules_count": len(rules_context.get("universal", [])) + len(rules_context.get("agent_specific", []))
+            "rules_count": len(rules_context.get("universal", [])) + len(rules_context.get("agent_specific", [])),
+            "surface_routing_version": surface_routing_config.get("version", "unknown"),
+            "active_surfaces_count": len(surface_routing.get("active_surfaces", [])),
+            "surface_routing_confidence": surface_routing.get("confidence", 0.0),
         }
     }
 

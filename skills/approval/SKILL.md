@@ -10,9 +10,10 @@ user-invocable: false
 
 The plan is a contract. The user approves the exact contract — not a vague intent, not a summary, not "the general idea". Without a complete plan, the user cannot meaningfully consent: they would be approving blindly.
 
-The approval token is the machine-readable proof that the contract was accepted. The hook validates it. A general "yes" without the canonical token does not pass.
-
 The template is not bureaucracy. It is the minimum information needed for informed consent.
+Runtime is authoritative for nonce validation and grant activation. Your job is to
+present a complete plan, preserve the exact nonce, and wait for canonical
+approval to return.
 
 ## Plan Presentation Format (MANDATORY)
 
@@ -58,27 +59,31 @@ Then emit AGENT_STATUS with `PLAN_STATUS: PENDING_APPROVAL`.
 
 **Note:** Partial approval is not supported. If user wants scope reduction, treat as **Requests modifications** and present a new plan.
 
-## Resume Token
+## Nonce-Based Approval
 
-When the user approves, the orchestrator resumes the agent with:
+When your command is blocked by the hook, the block response includes a nonce:
 
 ```
-User approved: <operation description>
+APPROVAL REQUIRED. Present your plan to the user and include this approval code: NONCE:<hex>
 ```
 
-The scope must describe the specific operation approved:
-- `User approved: terraform apply prod/vpc`
-- `User approved: git push origin feature/my-branch`
-- `User approved: kubectl apply namespace payment-service`
+You MUST include this nonce in your PENDING_APPROVAL output so the orchestrator can relay it:
 
-**Destructive operations (no rollback path) require the destructive word explicitly in the scope:**
-- `User approved: terraform destroy prod/vpc` — not "terraform apply"
-- `User approved: kubectl delete namespace payment-service` — not "kubectl apply"
-- `User approved: git push --force origin main` — not "git push"
+```markdown
+## Approval Required
 
-If the user approves without naming the destructive action explicitly, request clarification. A general "yes" is not sufficient for irreversible operations.
+**Approval Code:** `NONCE:<hex from the block response>`
+**Operation:** [what will be executed]
+**Environment:** [dev / staging / prod]
+**Risk Level:** [LOW / MEDIUM / HIGH / CRITICAL]
+```
 
-The hook validates this token before allowing the Task tool to proceed.
+When the user approves, the orchestrator resumes you with `APPROVE:<nonce>` from
+the latest blocked command. Do not improvise approval text and do not paraphrase
+the token.
+
+**If you lose the nonce** (e.g., the block response is not in your context), re-attempt the
+command. The hook will generate a fresh nonce.
 
 ---
 

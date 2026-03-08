@@ -238,6 +238,7 @@ if __name__ == "__main__":
         try:
             stdin_data = sys.stdin.read()
             if not stdin_data.strip():
+                print("Error: Empty stdin data", file=sys.stderr)
                 print("Error: Empty stdin data")
                 sys.exit(1)
 
@@ -259,9 +260,11 @@ if __name__ == "__main__":
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON from stdin: {e}")
+            print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             logger.error(f"Error processing hook: {e}", exc_info=True)
+            print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
             sys.exit(1)
     else:
         # No args and no stdin - show usage

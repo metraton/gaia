@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-Pre-tool use hook v2 - Modular Architecture (Optimized)
+Pre-tool use hook - Modular Architecture.
 
-Thin entry point that uses the new modular hook system.
-Maintains backward compatibility with Claude Code hook interface.
+Entry point for Bash and Task/Agent tool validation. The hook is the primary
+security gate: with Bash(*) in the settings.json allow list, all commands
+reach this hook regardless of settings.json permissions.
 
-Features:
-- Modular validation (security, tools, workflow modules)
-- State sharing with post-hook
-- Auto-approval for read-only commands (handled in BashValidator)
-- LRU cache for tier classification (60-70% faster for repeated commands)
-- Fast-path detection for ultra-common commands
-- Lazy parsing (only parse compound commands with operators)
+Responsibilities:
+- Bash: delegates to BashValidator (blocked commands, safe detection,
+  dangerous verb detector with nonce-based approval flow)
+- Task/Agent: project-context injection, session events, nonce activation
+  (APPROVE:{hex32})
+- State sharing with post-hook via hook state files
+- Periodic cleanup of expired approval grants
 """
 
 import sys
@@ -29,10 +30,29 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 
 from modules.core.state import create_pre_hook_state, save_hook_state
-from modules.security.tiers import SecurityTier, classify_command_tier
-from modules.security.approval_constants import APPROVAL_INDICATORS
+from modules.security.approval_constants import (
+    NONCE_APPROVAL_PREFIX,
+    NONCE_APPROVAL_PATTERN,
+)
+from modules.security.approval_messages import (
+    build_activation_failed_message,
+    build_deprecated_approval_message,
+    build_invalid_nonce_message,
+)
+from modules.agents.response_contract import (
+    build_repair_prompt,
+    clear_pending_repair,
+    load_pending_repair,
+    mark_repair_attempt,
+    MAX_REPAIR_ATTEMPTS,
+    _format_field_list,
+)
+from modules.security.approval_grants import (
+    activate_pending_approval,
+    cleanup_expired_grants,
+)
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
-from modules.tools.task_validator import TaskValidator
+from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
 
 # Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
 log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -50,13 +70,19 @@ logger = logging.getLogger(__name__)
 # PROJECT CONTEXT INJECTION
 # ============================================================================
 
-PROJECT_AGENTS = [
-    "terraform-architect",
-    "gitops-operator",
-    "cloud-troubleshooter",
-    "devops-developer",
-    "speckit-planner"
-]
+# Derive from task_validator lists: project agents = available minus meta
+PROJECT_AGENTS = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
+
+DEPRECATED_APPROVAL_PHRASES = (
+    "user approved:",
+    "user approval received",
+    "approved by user",
+    "approval confirmed",
+    "approved. execute",
+    "approved, execute",
+    "proceed with execution",
+    "confirmed. proceed",
+)
 
 
 def _build_context_update_reminder(subagent_type: str) -> str:
@@ -176,46 +202,66 @@ def _build_context_update_reminder(subagent_type: str) -> str:
     )
 
 
+def _classify_resume_prompt(prompt: str) -> str:
+    """Classify a resume prompt into one of four categories.
+
+    Returns:
+        'nonce' -- valid nonce approval token present
+        'malformed_nonce' -- APPROVE: prefix present but invalid nonce
+        'deprecated' -- deprecated approval phrase detected
+        'standard' -- normal resume prompt (no approval indicators)
+    """
+    stripped_prompt = prompt.strip()
+    if NONCE_APPROVAL_PATTERN.search(prompt):
+        return "nonce"
+    if stripped_prompt.startswith(NONCE_APPROVAL_PREFIX):
+        return "malformed_nonce"
+    prompt_lower = prompt.lower()
+    if any(phrase in prompt_lower for phrase in DEPRECATED_APPROVAL_PHRASES):
+        return "deprecated"
+    return "standard"
+
+
 def _should_inject_on_resume(parameters: dict) -> bool:
     """
     Determine if context should be injected on a resume operation.
-    
+
     By default, resume operations skip context injection because the agent
     already has context from phase 1. However, in some cases we need fresh context:
-    
+
     Rules:
-    1. If prompt contains "User approved" -> NO inject (simple execution)
+    1. If prompt contains a nonce approval token -> NO inject (simple execution)
     2. If prompt has substantial new information (>100 words) -> YES inject
-    3. If prompt mentions new resources/scope -> YES inject  
+    3. If prompt mentions new resources/scope -> YES inject
     4. Default: NO inject (trust existing context)
-    
+
     Args:
         parameters: Task tool parameters with 'prompt' key
-    
+
     Returns:
         True if context should be injected, False otherwise
     """
     prompt = parameters.get("prompt", "")
-    prompt_lower = prompt.lower()
-    
-    # Case 1: Post-approval execution - NO injection needed
-    # These are simple "go ahead" instructions
-    if any(indicator in prompt_lower for indicator in APPROVAL_INDICATORS):
-        logger.debug("Resume with approval indicator - skipping context injection")
+
+    # Case 1: Any approval-related prompt - NO injection needed.
+    classification = _classify_resume_prompt(prompt)
+    if classification != "standard":
+        logger.debug("Resume with %s prompt - skipping context injection", classification)
         return False
-    
+
     # Case 2: Substantial new information - YES inject
     # If user is providing a lot of new context, we should refresh
     word_count = len(prompt.split())
     if word_count > 100:
         logger.info(f"Resume with substantial new info ({word_count} words) - injecting context")
         return True
-    
+
     # Case 3: New scope/resources mentioned - YES inject
     # These words indicate the user is expanding the task scope
+    prompt_lower = prompt.lower()
     scope_expansion_indicators = [
         "also",
-        "additionally", 
+        "additionally",
         "another",
         "new ",
         "different",
@@ -230,7 +276,7 @@ def _should_inject_on_resume(parameters: dict) -> bool:
     if any(indicator in prompt_lower for indicator in scope_expansion_indicators):
         logger.info("Resume with scope expansion - injecting context")
         return True
-    
+
     # Default: Trust existing context
     logger.debug("Standard resume - skipping context injection")
     return False
@@ -421,6 +467,89 @@ def _inject_project_context(parameters: dict) -> dict:
         return parameters
 
 
+def _build_response_contract_repair_block(repair_payload: dict) -> str:
+    """Build a deterministic block message for pending contract repair."""
+    agent_id = repair_payload.get("agent_id", "<unknown>")
+    missing = repair_payload.get("missing", [])
+    invalid = repair_payload.get("invalid", [])
+    attempts = int(repair_payload.get("repair_attempts", 0))
+
+    return (
+        "❌ Previous agent response contract is incomplete\n\n"
+        f"Resume the same agent first: `{agent_id}`\n"
+        f"Repair attempts so far: {attempts}\n\n"
+        "Missing fields:\n"
+        f"{_format_field_list(missing, indent='  ')}\n\n"
+        "Invalid fields:\n"
+        f"{_format_field_list(invalid, indent='  ')}\n\n"
+        "Correct pattern:\n"
+        "Task(\n"
+        f"    resume=\"{agent_id}\",\n"
+        "    prompt=\"Repair the previous response contract only. Do not re-run commands unless required to fill missing evidence.\"\n"
+        ")\n"
+    )
+
+
+def _build_response_contract_escalation_block(repair_payload: dict) -> str:
+    """Build a deterministic escalation message after auto-repair retries are exhausted."""
+    agent_id = repair_payload.get("agent_id", "<unknown>")
+    attempts = int(repair_payload.get("repair_attempts", 0))
+    missing = repair_payload.get("missing", [])
+    invalid = repair_payload.get("invalid", [])
+
+    return (
+        "❌ Agent response contract repair did not converge\n\n"
+        f"Agent: `{agent_id}`\n"
+        f"Automatic repair retry limit reached: {attempts}/{MAX_REPAIR_ATTEMPTS}\n\n"
+        "Missing fields:\n"
+        f"{_format_field_list(missing, indent='  ')}\n\n"
+        "Invalid fields:\n"
+        f"{_format_field_list(invalid, indent='  ')}\n\n"
+        "Do not continue delegating automatically.\n"
+        "Summarize the failure, ask the user how to proceed, and only then decide whether to retry,"
+        " restart the investigation, or abandon the task.\n"
+    )
+
+
+def _apply_response_contract_guard(parameters: dict) -> tuple[str | None, dict]:
+    """Enforce pending response-contract repairs before new Task work proceeds."""
+    repair_payload = load_pending_repair()
+    if not repair_payload:
+        return None, parameters
+
+    attempts = int(repair_payload.get("repair_attempts", 0))
+    if attempts >= MAX_REPAIR_ATTEMPTS:
+        clear_pending_repair(repair_payload.get("agent_id", ""))
+        logger.warning(
+            "BLOCKED Task: response-contract auto-repair limit reached for %s",
+            repair_payload.get("agent_id", "<unknown>"),
+        )
+        return _build_response_contract_escalation_block(repair_payload), parameters
+
+    resume_id = parameters.get("resume", "")
+    if not resume_id:
+        return _build_response_contract_repair_block(repair_payload), parameters
+
+    if resume_id != repair_payload.get("agent_id", ""):
+        return _build_response_contract_repair_block(repair_payload), parameters
+
+    # Same agent resume: inject deterministic repair instructions unless the prompt
+    # is trying to do something else (e.g. APPROVE:<nonce>).
+    prompt = parameters.get("prompt", "")
+    if _classify_resume_prompt(prompt) != "standard":
+        return _build_response_contract_repair_block(repair_payload), parameters
+
+    repair_prompt = build_repair_prompt(repair_payload)
+    if repair_prompt in prompt:
+        return None, parameters
+
+    updated = dict(parameters)
+    updated["prompt"] = f"{repair_prompt}\n{prompt}".strip()
+    mark_repair_attempt(resume_id)
+    logger.info("Injected response-contract repair instructions for resume %s", resume_id)
+    return None, updated
+
+
 def _filter_events_for_agent(events: list, agent: str) -> list:
     """
     Filter events relevant to agent domain.
@@ -598,6 +727,9 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
     logger.info(f"Hook invoked: tool={tool_name}, params={json.dumps(parameters)[:200]}")
 
     try:
+        # Periodic cleanup of expired approval grants (fast no-op if none exist)
+        cleanup_expired_grants()
+
         # Validate inputs
         if not isinstance(tool_name, str):
             return "Error: Invalid tool name"
@@ -684,6 +816,10 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     # PROJECT CONTEXT INJECTION (for new tasks only, not resume)
     # ========================================================================
     original_prompt = parameters.get("prompt", "")
+    contract_error, parameters = _apply_response_contract_guard(parameters)
+    if contract_error:
+        logger.warning("BLOCKED Task: pending response-contract repair required")
+        return contract_error
     if not parameters.get("resume"):
         parameters = _inject_project_context(parameters)
         parameters = _inject_session_events(parameters)
@@ -717,7 +853,7 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
                 "When resuming an agent, you must provide instructions:\n\n"
                 "Task(\n"
                 "    resume=\"a12345\",\n"
-                "    prompt=\"User approved. Execute the deployment plan.\"\n"
+                "    prompt=\"Continue with the latest user instruction.\"\n"
                 ")\n\n"
                 "The prompt tells the agent what to do next."
             )
@@ -726,6 +862,10 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         # Step 27: Log resume operation
         logger.info(f"✅ RESUME: Continuing agent {resume_id}")
 
+        approval_error, has_approval = _handle_resume_approval(resume_id, prompt)
+        if approval_error:
+            return approval_error
+
         # Step 28: Save state for post-hook
         state = create_pre_hook_state(
             tool_name=tool_name,
@@ -733,11 +873,21 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
             tier="T0",  # Resume doesn't change tier
             allowed=True,
             is_t3=False,  # Approval already handled in phase 1
-            has_approval=True,  # Implicit from phase 1
+            has_approval=has_approval,
         )
         save_hook_state(state)
 
         logger.info(f"ALLOWED Resume: agent {resume_id} - prompt length: {len(prompt)}")
+        if parameters.get("prompt", "") != original_prompt:
+            updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Response-contract repair instructions injected",
+                    "updatedInput": updated_input,
+                }
+            }
         return None  # Allow resume
 
     # ========================================================================
@@ -757,7 +907,6 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         tier=str(result.tier),
         allowed=True,  # Always true here
         is_t3=result.is_t3_operation,
-        has_approval=result.has_approval,
     )
     save_hook_state(state)
 
@@ -777,6 +926,53 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         }
 
     return None
+
+
+def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bool]:
+    """Process nonce approval indicators for Task resume."""
+    classification = _classify_resume_prompt(prompt)
+
+    if classification == "nonce":
+        nonce = NONCE_APPROVAL_PATTERN.search(prompt).group(1)
+        activation = activate_pending_approval(nonce)
+        status_text = getattr(activation.status, "value", str(activation.status))
+        if activation.success:
+            grant_path = activation.grant_path
+            grant_name = grant_path.name if grant_path else "<unknown>"
+            logger.info(
+                "Nonce approval activated for resume %s: nonce=%s, file=%s",
+                resume_id,
+                nonce,
+                grant_name,
+            )
+            return None, True
+
+        logger.warning(
+            "Denied resume %s: nonce approval activation failed for nonce=%s "
+            "(status=%s, reason=%s)",
+            resume_id,
+            nonce,
+            status_text,
+            activation.reason,
+        )
+        return build_activation_failed_message(nonce, status_text, activation.reason), False
+
+    if classification == "malformed_nonce":
+        logger.warning(
+            "Denied resume %s: malformed nonce approval token in prompt='%s'",
+            resume_id,
+            prompt[:120],
+        )
+        return build_invalid_nonce_message(), False
+
+    if classification == "deprecated":
+        logger.warning(
+            "Denied resume %s: deprecated legacy approval phrase detected",
+            resume_id,
+        )
+        return build_deprecated_approval_message(), False
+
+    return None, False
 
 
 def _format_blocked_message(result) -> str:
@@ -867,6 +1063,7 @@ if __name__ == "__main__":
         try:
             stdin_data = sys.stdin.read()
             if not stdin_data.strip():
+                print("Error: Empty stdin data", file=sys.stderr)
                 print("Error: Empty stdin data")
                 sys.exit(1)
 
@@ -882,12 +1079,29 @@ if __name__ == "__main__":
             if isinstance(result, dict):
                 # Dict = allowed with modification (updatedInput)
                 # Output JSON so Claude Code applies the modified parameters
+                #
+                # Special case: structured block responses (e.g. cloud pipe violations)
+                # use permissionDecision: "deny" inside a dict.  Claude Code still
+                # shows the agent the reason, but stderr output ensures the USER also
+                # sees WHY the command was blocked in the hook output panel.
+                hook_output = result.get("hookSpecificOutput", {})
+                if hook_output.get("permissionDecision") in ("block", "deny"):
+                    reason = hook_output.get("permissionDecisionReason", "Command blocked by hook policy")
+                    # One-line summary for stderr (first line of the reason)
+                    summary = reason.split('\n')[0]
+                    print(f"BLOCKED: {summary}", file=sys.stderr)
                 print(json.dumps(result))
                 sys.exit(0)
             elif isinstance(result, str):
                 # String = BLOCKING error - Claude MUST stop execution
                 # Exit code 2 = blocking, exit code 1 = non-blocking
                 # See: https://docs.anthropic.com/en/docs/claude-code/hooks
+                #
+                # Write the rejection reason to stderr so Claude Code displays
+                # it to the user.  stdout carries the full message for the agent;
+                # stderr carries a concise summary for the human operator.
+                summary = result.split('\n')[0]
+                print(f"BLOCKED: {summary}", file=sys.stderr)
                 print(result)
                 sys.exit(2)
             else:
@@ -896,9 +1110,11 @@ if __name__ == "__main__":
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON from stdin: {e}")
+            print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
             logger.error(f"Error processing hook: {e}", exc_info=True)
+            print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
             print(f"Hook error: {str(e)}")
             sys.exit(1)
     else:

@@ -25,7 +25,26 @@ Follow the local-first order from `agent-protocol`. For each area of investigati
 - Read 2-3 similar existing resources to understand what is already implemented
 - Extract: naming conventions, directory structure, dependencies, config patterns
 
-## 3. Pattern Analysis
+## 3. Explore Before Concluding
+
+After gathering initial evidence, resist the pull to stop at the first answer.
+
+- **Check adjacency:** Read neighboring files, sibling modules, and related configs.
+  The file next to your target often explains constraints that the target itself does not.
+- **Check depth:** If you found the resource, also find what references it and what it
+  references. One level up and one level down reveals integration patterns.
+- **Check breadth:** Search for 2-3 more instances of the same pattern. One example is
+  an anecdote; three examples are a convention.
+
+Stop exploring when new files confirm what you already know rather than adding new information.
+
+If Project Context includes an `investigation_brief`, use it to prioritize:
+- which surface you own
+- which adjacent surface must still be checked
+- which required checks must appear in your evidence
+- whether you must return a `CONSOLIDATION_REPORT` for Gaia to merge findings
+
+## 4. Pattern Analysis
 
 Apply this hierarchy — in order, without skipping levels:
 
@@ -49,7 +68,7 @@ If neither codebase nor domain skill has a pattern for what you need, use your t
 skill, emit `CONTEXT_UPDATE`. Otherwise, note the discovery in your report for the
 orchestrator to route.
 
-## 4. Validate Your Hypothesis
+## 5. Validate Your Hypothesis
 
 Before treating findings as fact:
 - Does local code agree with project-context? If not → investigate drift first
@@ -58,20 +77,54 @@ Before treating findings as fact:
 
 Never plan on assumptions. If in doubt, validate.
 
-## 5. Surface Options
+## 6. Surface Options
 
 When multiple valid approaches exist:
 - List them explicitly: **Option A** (trade-offs), **Option B** (trade-offs)
 - Evaluate each against existing project patterns and constraints
 - Do NOT pick silently — surface them and set status: `NEEDS_INPUT`
 
-## 6. Qualify Confidence Before Proposing
+## 7. Qualify Confidence Before Proposing
 
 Before findings feed into a plan, explicitly state:
 - What is **confirmed** (seen in code, validated by CLI or docs)
 - What is **assumed** (inferred but not yet validated)
 
 If critical gaps remain → run another validation round. Never propose on shaky ground.
+
+## 8. Evidence Contract
+
+When you report investigation findings, populate the protocol-mandated `EVIDENCE_REPORT` block.
+
+Interpret the fields this way:
+
+- `PATTERNS_CHECKED` — existing repo patterns, sibling resources, or conventions you compared against
+- `FILES_CHECKED` — concrete files, directories, manifests, modules, or docs you inspected
+- `COMMANDS_RUN` — exact read-only or validation commands you executed, plus a terse result
+- `KEY_OUTPUTS` — the evidence that actually changed your conclusion
+- `CROSS_LAYER_IMPACTS` — adjacent surfaces, systems, or contracts affected by the finding
+- `OPEN_GAPS` — what is still unverified, inaccessible, or assumed
+
+Minimum expectations:
+- Always populate `PATTERNS_CHECKED` and `FILES_CHECKED` for local/code investigations
+- Populate `COMMANDS_RUN` and `KEY_OUTPUTS` whenever you touched live state, validation commands, or diagnostics
+- Populate `CROSS_LAYER_IMPACTS` whenever the issue crosses app, infra, GitOps, runtime, hooks, skills, or docs
+- Use `- none` or `- not run` when a field truly does not apply
+
+The goal is not verbosity. The goal is evidence that another agent, the orchestrator, or the user can verify quickly.
+
+## 9. Consolidation Contract
+
+When `investigation_brief.consolidation_required` is true, your response must help
+Gaia merge parallel or cross-surface work. That means:
+
+- say what is confirmed vs only suspected
+- say whether the problem is owned here or depends on another surface
+- say what still blocks a final conclusion
+- say who should continue if it is no longer your surface
+
+Do not wait for the orchestrator to infer this from prose. Put it in the
+protocol-mandated `CONSOLIDATION_REPORT`.
 
 ## Anti-Patterns
 

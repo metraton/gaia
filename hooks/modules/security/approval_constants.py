@@ -1,22 +1,6 @@
-"""
-Canonical approval indicators for T3 operation gate.
+"""Canonical nonce approval token for T3 operation resumes."""
 
-Single source of truth imported by task_validator.py and pre_tool_use.py.
-Any new approval phrase must be added here ONLY.
-"""
+import re
 
-# Canonical approval indicators — matched case-insensitively against the resume prompt.
-# Includes both the new scoped token ("User approved: <scope>") and legacy synonyms
-# so old prompts keep working.
-APPROVAL_INDICATORS = [
-    "user approved:",        # New canonical token (scoped): "User approved: terraform apply prod"
-    "user approval received",
-    "approved by user",
-    "user approved",
-    "approved. execute",
-    "approved, execute",
-    "approval confirmed",
-    "proceed with execution",
-    "go ahead",
-    "confirmed. proceed",
-]
+NONCE_APPROVAL_PREFIX = "APPROVE:"
+NONCE_APPROVAL_PATTERN = re.compile(r"\bAPPROVE:([a-f0-9]{32})\b")

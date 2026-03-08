@@ -16,6 +16,13 @@ You are instantiated with:
 
 Trust your contracts. Use them as search anchors — not documentation to read linearly.
 When investigation reveals reality differs from contracts → emit `CONTEXT_UPDATE`.
+If Project Context includes `surface_routing`, `investigation_brief`, or `context_update_contract`, treat them as orchestration guidance:
+- `surface_routing` tells you which surfaces appear active
+- `investigation_brief` tells you your role, ownership, and expected cross-surface evidence
+- `context_update_contract` tells you which sections you may read and write
+
+These are assignment constraints, not a closed checklist. They tell you what you
+own and what you must account for. They do not replace open investigation.
 
 ## Search Protocol
 
@@ -43,13 +50,79 @@ If your identity restricts you to local/code-only operations, skip LIVE entirely
 Mismatch found → update your map, continue investigating with the new reality.
 Only escalate (`BLOCKED`/`NEEDS_INPUT`) if the mismatch is CRITICAL to completing the task.
 
-**REPORT** — Every response ends with AGENT_STATUS block.
+**REPORT** — Every response ends with AGENT_STATUS. When you investigated, validated, reviewed, or gathered live/local evidence, include an `EVIDENCE_REPORT` block before AGENT_STATUS.
+Use `output-format` for the human-facing summary around those blocks; this skill
+remains the authority for the block schema itself.
 
 For investigation methodology and pattern hierarchy, follow the `investigation` skill.
 
+## EVIDENCE_REPORT Format (MANDATORY WHEN EVIDENCE EXISTS)
+
+Use this block whenever your response is based on code reading, config reading, command execution, review findings, or other concrete evidence. This applies to most `INVESTIGATING`, `PLANNING`, `BLOCKED`, `NEEDS_INPUT`, and evidence-backed `COMPLETE` responses.
+It is also required for `PENDING_APPROVAL` and `FIXING`, because those states still need to show the evidence that justified the plan or the fix attempt.
+
+If a field does not apply, write `- none` or `- not run` instead of omitting the field.
+
+```html
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- [existing pattern or convention you compared against]
+FILES_CHECKED:
+- [file or path]
+COMMANDS_RUN:
+- `[exact command]` -> [concise result, or `not run`]
+KEY_OUTPUTS:
+- [short output excerpt or evidence summary]
+CROSS_LAYER_IMPACTS:
+- [affected adjacent surface, contract, or subsystem]
+OPEN_GAPS:
+- [remaining unknown, validation gap, or `none`]
+<!-- /EVIDENCE_REPORT -->
+```
+
+Rules:
+- Keep each field to 1-3 bullets unless the task genuinely needs more.
+- `COMMANDS_RUN` must contain the exact command when a command was executed.
+- `KEY_OUTPUTS` must summarize what mattered, not paste walls of output.
+- `CROSS_LAYER_IMPACTS` is required for review, debugging, or multi-surface tasks.
+- `OPEN_GAPS` must be explicit. Do not imply certainty when uncertainty remains.
+
+## CONSOLIDATION_REPORT Format (MANDATORY FOR MULTI-SURFACE / CROSS-CHECK TASKS)
+
+If `investigation_brief.consolidation_required` is `true`, include this block after
+`EVIDENCE_REPORT` and before any optional `CONTEXT_UPDATE`.
+
+This block exists so Gaia can consolidate multiple agent responses without guessing.
+It does not tell you how to investigate. It tells you what you must hand back when
+the task crosses surfaces.
+
+```html
+<!-- CONSOLIDATION_REPORT -->
+OWNERSHIP_ASSESSMENT: [owned_here|cross_surface_dependency|not_my_surface]
+CONFIRMED_FINDINGS:
+- [facts confirmed by code, config, commands, or docs]
+SUSPECTED_FINDINGS:
+- [plausible but not yet confirmed findings, or `none`]
+CONFLICTS:
+- [contradiction with prior findings or `none`]
+OPEN_GAPS:
+- [remaining unknowns, validation gaps, or `none`]
+NEXT_BEST_AGENT:
+- [agent name to continue, or `none`]
+<!-- /CONSOLIDATION_REPORT -->
+```
+
+Rules:
+- `OWNERSHIP_ASSESSMENT` is required and must use one of the exact values above.
+- `CONFIRMED_FINDINGS` should contain only evidence-backed facts.
+- `SUSPECTED_FINDINGS` is where hypotheses belong. Do not hide uncertainty.
+- `CONFLICTS` must explicitly call out disagreements with prior agent findings when they exist.
+- `NEXT_BEST_AGENT` must name the next owner if the fix or validation clearly belongs elsewhere.
+- Reuse `OPEN_GAPS` consistently with the one in `EVIDENCE_REPORT`; they can overlap, but they must not contradict.
+
 ## AGENT_STATUS Format (MANDATORY)
 
-Every response MUST end with this block:
+Every response MUST end with this block, after any `EVIDENCE_REPORT`, optional `CONSOLIDATION_REPORT`, and optional `CONTEXT_UPDATE`:
 
 ```html
 <!-- AGENT_STATUS -->
@@ -94,6 +167,34 @@ skip this section entirely -- investigation leads directly to `COMPLETE`.
 
 For T3 operations, read `.claude/skills/approval/SKILL.md` and follow the workflow there.
 Post-approval execution protocol is in `.claude/skills/execution/SKILL.md`.
+
+## Git Workflow
+
+If you are preparing a git commit or PR-ready change summary, read
+`.claude/skills/git-conventions/SKILL.md`.
+Treat it as an on-demand workflow skill: load it when git realization is part of
+the task, not as a substitute for your normal investigation or reporting flow.
+
+## Self-Review Gate
+
+Before setting PLAN_STATUS to `COMPLETE`, verify your own output:
+
+1. **Re-read the original request.** Does your output answer what was asked?
+2. **Check completeness.** Are all requested items addressed? Any silent omissions?
+3. **Validate accuracy.** Do file paths, resource names, and commands match what you found in code?
+4. **Verify format.** Does your output follow the `output-format` skill? Are the `EVIDENCE_REPORT` and AGENT_STATUS blocks present and correct when required?
+
+If any check fails, fix before emitting COMPLETE. Do not flag self-review to the user -- just do it.
+
+## Contract Repair
+
+If runtime resumes you with instructions to repair your previous response contract, treat that as a structural fix request:
+
+- Reissue a complete response with the required `EVIDENCE_REPORT`, optional `CONTEXT_UPDATE`, and `AGENT_STATUS`
+- Do not restart the full investigation unless missing evidence truly requires one more command or file read
+- Preserve the task's real status; contract repair is not a license to fabricate evidence or mark work complete prematurely
+
+Runtime auto-repair retries are capped at 2. If your response is still structurally invalid after that, the orchestrator will escalate instead of silently retrying forever.
 
 ## Agent Handoff
 

@@ -22,6 +22,7 @@ from modules.security.safe_commands import (
     ALWAYS_SAFE_COMMANDS,
     ALWAYS_SAFE_MULTIWORD,
     CONDITIONAL_SAFE_COMMANDS,
+    CONDITIONAL_SAFE_MULTIWORD,
 )
 
 
@@ -55,7 +56,10 @@ class TestIsSingleCommandSafe:
         "git status",
         "git log --oneline",
         "git diff HEAD~1",
+        "git branch",
         "git branch -a",
+        "git branch -v",
+        "git branch --list",
         "kubectl get pods",
         "kubectl describe pod test-pod",
         "kubectl logs deployment/app",
@@ -196,7 +200,11 @@ class TestSafeCommandsConfig:
         assert len(ALWAYS_SAFE_MULTIWORD) > 0
 
     def test_multiword_contains_git_read(self):
-        """Test multiword contains git read operations."""
+        """Test multiword contains git read operations.
+
+        NOTE: 'git branch' is not here -- it moved to conditional_safe_multiword
+        because it has mutative variants (-D, -m, -M, etc.).
+        """
         git_ops = ["git status", "git log", "git diff"]
         for op in git_ops:
             assert op in ALWAYS_SAFE_MULTIWORD, f"{op} should be in multiword safe"
@@ -363,6 +371,59 @@ class TestSafePatternMatching:
         assert matches is True
 
 
+class TestGitBranchConditionalSafe:
+    """Test git branch is safe for listing but not for mutative operations.
+
+    Gap 2 fix: git branch -D (and other mutative flags) must NOT be
+    classified as safe. Only read-only listing variants are safe.
+    """
+
+    @pytest.mark.parametrize("command", [
+        "git branch",
+        "git branch -a",
+        "git branch -r",
+        "git branch -v",
+        "git branch -vv",
+        "git branch --list",
+        "git branch --list 'feat/*'",
+        "git branch --sort=-committerdate",
+        "git branch --color",
+    ])
+    def test_git_branch_listing_is_safe(self, command):
+        """git branch listing variants are safe (read-only)."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    @pytest.mark.parametrize("command", [
+        "git branch -d feature-branch",
+        "git branch -D feature-branch",
+        "git branch -m old-name new-name",
+        "git branch -M old-name new-name",
+        "git branch -c source-branch new-branch",
+        "git branch -C source-branch new-branch",
+        "git branch --delete feature-branch",
+        "git branch --move old-name new-name",
+        "git branch --copy source new",
+        "git branch --set-upstream-to=origin/main",
+        "git branch --unset-upstream",
+        "git branch --edit-description",
+        "git branch --force feature-branch HEAD~3",
+    ])
+    def test_git_branch_mutative_is_not_safe(self, command):
+        """git branch with mutative flags is NOT safe."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is False, f"{command} should NOT be safe: {reason}"
+
+    def test_git_branch_not_in_always_safe_multiword(self):
+        """git branch should NOT be in always_safe_multiword (moved to conditional)."""
+        assert "git branch" not in ALWAYS_SAFE_MULTIWORD
+
+    def test_git_branch_in_conditional_safe_multiword(self):
+        """git branch should be in conditional_safe_multiword."""
+        assert "git branch" in CONDITIONAL_SAFE_MULTIWORD
+        assert len(CONDITIONAL_SAFE_MULTIWORD["git branch"]) > 0
+
+
 class TestNewlySafeCommands:
     """Test newly added safe commands (cd, pytest)."""
 
@@ -381,3 +442,120 @@ class TestNewlySafeCommands:
         for cmd in commands:
             is_safe, reason = is_single_command_safe(cmd)
             assert is_safe is True, f"{cmd} should be safe: {reason}"
+
+
+class TestGitLocalOnlySafe:
+    """Test git local-only commands are safe (git add, git stash, git fetch).
+
+    These commands only affect local state and never modify remote
+    repositories or rewrite history. They should be auto-approved.
+    """
+
+    @pytest.mark.parametrize("command", [
+        "git add .",
+        "git add -A",
+        "git add file.py",
+        "git add src/module.py tests/test_module.py",
+        "git add -p",
+        "git add --patch",
+        "git add -u",
+    ])
+    def test_git_add_is_safe(self, command):
+        """git add (staging) is safe -- local only, no history or remote impact."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    @pytest.mark.parametrize("command", [
+        "git stash",
+        "git stash push",
+        "git stash push -m 'wip'",
+        "git stash pop",
+        "git stash apply",
+        "git stash drop",
+        "git stash list",
+        "git stash show",
+    ])
+    def test_git_stash_is_safe(self, command):
+        """git stash (all subcommands) is safe -- local only."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    @pytest.mark.parametrize("command", [
+        "git fetch",
+        "git fetch origin",
+        "git fetch --all",
+        "git fetch --prune",
+        "git fetch origin main",
+    ])
+    def test_git_fetch_is_safe(self, command):
+        """git fetch is safe -- download only, no local modifications."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    def test_git_add_in_always_safe_multiword(self):
+        """git add should be in always_safe_multiword."""
+        assert "git add" in ALWAYS_SAFE_MULTIWORD
+
+    def test_git_stash_in_always_safe_multiword(self):
+        """git stash should be in always_safe_multiword."""
+        assert "git stash" in ALWAYS_SAFE_MULTIWORD
+
+    def test_git_fetch_in_always_safe_multiword(self):
+        """git fetch should be in always_safe_multiword."""
+        assert "git fetch" in ALWAYS_SAFE_MULTIWORD
+
+
+class TestGitCheckoutConditionalSafe:
+    """Test git checkout is safe for switching but not for discarding changes."""
+
+    @pytest.mark.parametrize("command", [
+        "git checkout main",
+        "git checkout feature-branch",
+        "git checkout -b new-branch",
+        "git checkout -B new-branch",
+    ])
+    def test_git_checkout_switch_is_safe(self, command):
+        """git checkout for branch switching is safe."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    @pytest.mark.parametrize("command", [
+        "git checkout -- file.py",
+        "git checkout --force main",
+        "git checkout -f main",
+    ])
+    def test_git_checkout_discard_is_not_safe(self, command):
+        """git checkout with -- (discard) or --force is NOT safe."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is False, f"{command} should NOT be safe: {reason}"
+
+    def test_git_checkout_in_conditional_safe_multiword(self):
+        """git checkout should be in conditional_safe_multiword."""
+        assert "git checkout" in CONDITIONAL_SAFE_MULTIWORD
+        assert len(CONDITIONAL_SAFE_MULTIWORD["git checkout"]) > 0
+
+
+class TestGitT3CommandsStillBlocked:
+    """Verify T3 git commands are NOT safe-listed.
+
+    These must remain as T3 (requiring approval):
+    - git commit (creates history)
+    - git push (affects remote)
+    - git merge (modifies history)
+    - git rebase (modifies history)
+    - git reset (can lose data)
+    """
+
+    @pytest.mark.parametrize("command", [
+        "git commit -m 'test'",
+        "git push origin main",
+        "git push",
+        "git merge feature-branch",
+        "git rebase main",
+        "git reset --hard HEAD~1",
+        "git reset HEAD~1",
+    ])
+    def test_git_t3_commands_not_safe(self, command):
+        """T3 git commands must NOT be classified as safe."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is False, f"{command} should NOT be safe: {reason}"

@@ -8,6 +8,7 @@ agents receive the necessary context for execution.
 Main functions:
 - load_project_context(): Load project context from JSON
 - get_contract_context(): Get context for an agent based on its contract
+- get_context_update_contract(): Get readable/writable CONTEXT_UPDATE contract
 - load_provider_contracts(): Load cloud provider-specific contracts
 """
 
@@ -18,7 +19,13 @@ from .context_section_reader import ContextSectionReader
 from .context_provider import (
     load_project_context,
     get_contract_context,
+    get_context_update_contract,
     load_provider_contracts,
+)
+from .surface_router import (
+    build_investigation_brief,
+    classify_surfaces,
+    load_surface_routing_config,
 )
 
 __all__ = [
@@ -27,5 +34,9 @@ __all__ = [
     # Main functions
     "load_project_context",
     "get_contract_context",
+    "get_context_update_contract",
     "load_provider_contracts",
+    "build_investigation_brief",
+    "classify_surfaces",
+    "load_surface_routing_config",
 ]

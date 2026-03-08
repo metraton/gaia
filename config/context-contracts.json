@@ -10,13 +10,15 @@
         "terraform_infrastructure",
         "gitops_configuration",
         "application_services",
-        "monitoring_observability"
+        "monitoring_observability",
+        "architecture_overview"
       ],
       "write": [
         "cluster_details",
         "infrastructure_topology",
         "application_services",
-        "monitoring_observability"
+        "monitoring_observability",
+        "architecture_overview"
       ]
     },
     "gitops-operator": {
@@ -25,7 +27,8 @@
         "gitops_configuration",
         "cluster_details",
         "operational_guidelines",
-        "application_services"
+        "application_services",
+        "architecture_overview"
       ],
       "write": [
         "gitops_configuration",
@@ -40,7 +43,8 @@
         "infrastructure_topology",
         "operational_guidelines",
         "cluster_details",
-        "application_services"
+        "application_services",
+        "architecture_overview"
       ],
       "write": [
         "terraform_infrastructure",
@@ -53,12 +57,14 @@
         "application_services",
         "application_architecture",
         "development_standards",
-        "operational_guidelines"
+        "operational_guidelines",
+        "architecture_overview"
       ],
       "write": [
         "application_services",
         "application_architecture",
-        "development_standards"
+        "development_standards",
+        "architecture_overview"
       ]
     },
     "speckit-planner": {
@@ -67,14 +73,8 @@
         "operational_guidelines",
         "application_architecture",
         "development_standards",
-        "application_services"
-      ],
-      "write": []
-    },
-    "gaia": {
-      "read": [
-        "application_architecture",
-        "development_standards"
+        "application_services",
+        "architecture_overview"
       ],
       "write": []
     }
