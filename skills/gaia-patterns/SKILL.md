@@ -36,7 +36,27 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 - **Agent Instantiation:** identity (.md) + skills (injected) + project-context (contracts) + orchestrator request.
 - **Security Tiers:** T0 (read) → T1 (validate) → T2 (simulate) → T3 (realize, requires approval).
 - **Two-Phase T3:** PLANNING → PENDING_APPROVAL → APPROVED_EXECUTING → COMPLETE.
+- **Consolidation Loop:** for multi-surface work, Gaia may dispatch more than one round of agents, but only while gaps are actionable and evidence is still improving.
 - **Principle:** Skills teach process. Agents teach identity and domain knowledge. Runtime enforces deterministic contracts. Never duplicate.
+
+## Multi-Agent Consolidation
+
+When Gaia coordinates multi-surface work:
+1. dispatch the primary owners for the active surfaces
+2. collect `EVIDENCE_REPORT` and `CONSOLIDATION_REPORT`
+3. merge:
+   - confirmed findings
+   - conflicts
+   - open gaps
+   - next best agent
+   - recommended action
+4. continue only if the next gap has a clear owner and another round is likely to reduce uncertainty
+5. stop after at most **2 consolidation rounds after the initial pass**
+
+Do not keep dispatching agents just because a gap exists. A gap must be:
+- owned by a clear next agent
+- resolvable without new user input
+- likely to produce new evidence rather than rephrase existing uncertainty
 
 ## Workflow Design Philosophy
 

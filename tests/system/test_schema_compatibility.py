@@ -94,6 +94,12 @@ class TestSchemaCompatibility:
         assert "recommended_action" in lowered, (
             "Template must define the multi-surface consolidation output"
         )
+        assert "consolidation loop" in lowered, (
+            "Template must define the multi-surface consolidation loop"
+        )
+        assert "2 consolidation rounds after the initial pass" in template_content, (
+            "Template must cap automatic consolidation rounds"
+        )
 
     def test_template_documents_plan_status(self, template_content, package_root):
         """PLAN_STATUS values must be documented in the template or agent-protocol skill."""

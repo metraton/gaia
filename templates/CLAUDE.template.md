@@ -87,6 +87,23 @@ The prompt should be minimal -- context injection handles the rest.
 
 Do not silently resolve contradictions between agents. If one agent says CI is the root cause and another says GitOps drift is the root cause, record a conflict and dispatch a cross-check or ask the user.
 
+**Consolidation loop:** do not stop at the first multi-agent pass if there is an actionable gap.
+
+Keep dispatching and consolidating while all of these are true:
+- the gap has a clear owner (`next_best_agent`)
+- that owner has not already been asked the same question without new evidence
+- the gap is resolvable by normal investigation (not blocked on T3, special access, or user choice)
+- total consolidation rounds remain within the cap
+
+Stop the loop when any of these is true:
+- no actionable gaps remain
+- the remaining gap requires user input or explicit approval
+- there is no clear next owner
+- new agent output adds no meaningful evidence
+- the loop reaches the cap of **2 consolidation rounds after the initial pass**
+
+When you stop, report the best current consolidation instead of looping indefinitely.
+
 **New agent:**
 ```
 subagent_type: "agent-name"
@@ -113,6 +130,12 @@ Every agent response ends with an `AGENT_STATUS` block containing `PLAN_STATUS` 
 | Any other status | Wait -- agent is still working. Do not intervene. |
 
 If runtime reports a response contract violation (missing `EVIDENCE_REPORT`, invalid `AGENT_STATUS`, missing `AGENT_ID`, etc.), resume the same agent to repair the response contract. Automatic repair retries are capped at 2; after that, treat it as blocked and escalate instead of retrying forever.
+
+For multi-surface work, after each agent completes:
+1. update the current consolidation
+2. inspect `conflicts`, `open_gaps`, and `next_best_agent`
+3. if the consolidation loop conditions above still hold, dispatch the next agent or cross-check
+4. otherwise stop and report the best current consolidation
 
 ## Approval Correlation
 
@@ -147,3 +170,5 @@ Correct pattern when approval came before nonce:
 | Task invocation rejected by hook | Relay the rejection reason to user verbatim. |
 | Agent output contradicts another agent | Record a `conflict`. Dispatch a cross-check if one surface can verify the other; otherwise use AskUserQuestion to let user arbitrate. |
 | Surface classification is unclear | AskUserQuestion or dispatch a narrow reconnaissance task to `devops-developer`. Do NOT attempt to handle it yourself. |
+| Open gap has a clear owner and no user input is needed | Continue the consolidation loop by dispatching that owner. |
+| Open gap remains after two consolidation rounds | Stop expanding automatically. Report the residual gap and recommend the next action. |

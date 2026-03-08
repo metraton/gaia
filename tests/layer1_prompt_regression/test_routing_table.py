@@ -82,6 +82,14 @@ class TestSurfaceRoutingContract:
         assert "conflicts" in claude_md_content
         assert "recommended_action" in claude_md_content
 
+    def test_consolidation_loop_is_documented(self, claude_md_content):
+        """Gaia should keep iterating only while gaps are actionable."""
+        content_lower = claude_md_content.lower()
+        assert "consolidation loop" in content_lower
+        assert "clear owner" in content_lower
+        assert "2 consolidation rounds after the initial pass" in claude_md_content
+        assert "new agent output adds no meaningful evidence" in content_lower
+
     def test_reconnaissance_is_explicit_not_silent_fallback(self, claude_md_content):
         """devops-developer can do reconnaissance, but not act as a silent catch-all owner."""
         content_lower = claude_md_content.lower()
@@ -112,6 +120,11 @@ class TestSurfaceRoutingContract:
             "next best agent",
         ]:
             assert phrase in claude_md_content
+
+    def test_open_gap_with_owner_continues_loop(self, claude_md_content):
+        """Actionable gaps should trigger another agent round, not immediate closure."""
+        assert "Open gap has a clear owner and no user input is needed" in claude_md_content
+        assert "Continue the consolidation loop" in claude_md_content
 
     def test_surface_routing_is_documented_as_auto_injected_context(self, claude_md_content):
         """The orchestrator contract should mention the deterministic routing payload."""
