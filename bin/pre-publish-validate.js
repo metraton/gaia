@@ -373,9 +373,8 @@ class PrePublishValidator {
 
       if (!this.validateOnly) {
         this.bumpVersion();
+        this.reinstallNodeModules();
       }
-
-      this.reinstallNodeModules();
       this.validateNodeModules();
       this.validateFiles();
       this.runTests();

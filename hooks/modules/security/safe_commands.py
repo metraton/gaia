@@ -99,6 +99,16 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
         "docker ps", "docker images", "docker inspect", "docker logs",
         "docker stats", "docker version", "docker info",
 
+        # GitHub CLI read-only
+        "gh run view", "gh run list", "gh run watch",
+        "gh pr view", "gh pr list", "gh pr diff", "gh pr checks", "gh pr status",
+        "gh issue view", "gh issue list", "gh issue status",
+        "gh repo view", "gh repo list",
+        "gh release view", "gh release list",
+        "gh workflow view", "gh workflow list",
+        "gh api",
+        "gh status", "gh auth status",
+
         # GCP read-only (list/describe operations)
         "gcloud compute instances list", "gcloud compute instances describe",
         "gcloud container clusters list", "gcloud container clusters describe",
