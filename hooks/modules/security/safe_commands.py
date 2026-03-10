@@ -109,6 +109,15 @@ SAFE_COMMANDS_CONFIG: Dict[str, any] = {
         "gh api",
         "gh status", "gh auth status",
 
+        # GitLab CLI read-only
+        "glab mr view", "glab mr list", "glab mr diff",
+        "glab mr note",  # view comments
+        "glab issue view", "glab issue list",
+        "glab ci view", "glab ci list", "glab ci status",
+        "glab repo view", "glab repo list",
+        "glab auth status",
+        "glab release view", "glab release list",
+
         # GCP read-only (list/describe operations)
         "gcloud compute instances list", "gcloud compute instances describe",
         "gcloud container clusters list", "gcloud container clusters describe",

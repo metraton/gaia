@@ -1,18 +1,28 @@
 """
-Blocked command patterns - PERMANENTLY BLOCKED operations (settings.json deny list).
+Blocked command patterns - PERMANENTLY BLOCKED operations (exit 2, never approvable).
 
-IMPORTANT: This file is synchronized with settings.json "deny" list.
-Commands here are ALWAYS BLOCKED, regardless of user approval.
+This is the single source of truth for DESTRUCTIVE commands. Commands matched here
+are blocked with exit 2 and no nonce is generated -- they cannot be approved.
 
-All other T3 (state-modifying) commands are detected by the universal verb detector
-(dangerous_verbs.py) and routed through the approval workflow.
+All other state-modifying commands are detected by the universal verb detector
+(dangerous_verbs.py) as MUTATIVE and routed through the nonce approval workflow.
 
 Categories:
 - AWS networking/data infrastructure delete operations
+- AWS KMS/Route53/Organizations operations
 - GCP project/cluster/database delete operations
 - Kubernetes critical delete operations (cluster, namespace, pv, node, CRD, webhooks)
+- Kubernetes bulk delete operations (--all flag)
+- Terraform/Terragrunt destroy (without -target)
+- Docker bulk prune operations
+- Flux uninstall (removes all Flux components)
 - Git force push operations (not --force-with-lease)
+- Git reset --hard
+- GitHub/GitLab repo delete
+- npm unpublish (entire package)
+- SQL destructive operations (drop database, drop table)
 - Disk/filesystem destruction operations (dd, fdisk, mkfs)
+- rm -rf / and rm -rf ~
 """
 
 import re
@@ -53,21 +63,25 @@ class SemanticBlockedRule:
         flags = set(semantics.flag_tokens)
         if any(flag not in flags for flag in self.required_flags):
             return False
-        if any(flag in flags for flag in self.forbidden_flags):
-            return False
+        # forbidden_flags uses prefix matching to handle -flag=value forms
+        # (e.g., "-target=aws_instance.web" should match forbidden flag "-target")
+        if self.forbidden_flags:
+            for flag_token in semantics.flag_tokens:
+                for forbidden in self.forbidden_flags:
+                    if flag_token == forbidden or flag_token.startswith(forbidden + "="):
+                        return False
         return True
 
 
 # ============================================================================
-# BLOCKED PATTERNS - Synchronized with settings.json "deny" list
+# BLOCKED PATTERNS - PERMANENTLY BLOCKED (exit 2, no nonce, never approvable)
 # ============================================================================
 # These commands are PERMANENTLY BLOCKED and cannot be executed even with approval.
-# They represent irreversible, catastrophic operations.
+# They represent irreversible, catastrophic operations at scale.
 #
-# Commands removed from here (now handled by the universal verb detector as
-# approvable T3 operations):
+# The following are MUTATIVE (approvable via nonce, handled by dangerous_verbs.py):
 # - aws iam delete-*, detach-*, remove-user-from-group
-# - aws ec2 terminate-instances, delete-key-pair, delete-snapshot, delete-volume,
+# - aws ec2 delete-key-pair, delete-snapshot, delete-volume,
 #   delete-security-group, delete-network-interface
 # - aws lambda delete-function
 # - aws rds delete-db-parameter-group, delete-db-cluster-parameter-group
@@ -81,8 +95,11 @@ class SemanticBlockedRule:
 # - gcloud container node-pools delete
 # - gcloud iam roles delete
 # - gcloud storage rm
-# - kubectl delete clusterrole, clusterrolebinding
-# - flux delete
+# - kubectl delete pod/deployment/service/configmap/secret/clusterrole/clusterrolebinding
+# - flux delete (single resource)
+# - terraform destroy -target=<resource> (targeted)
+# - helm uninstall (any release)
+# - docker rm, docker rmi (individual containers/images)
 # ============================================================================
 
 BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
@@ -96,6 +113,7 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"aws\s+ec2\s+delete-internet-gateway(?!-)\b", re.IGNORECASE),
         re.compile(r"aws\s+ec2\s+delete-route-table(?!-)\b", re.IGNORECASE),
         re.compile(r"aws\s+ec2\s+delete-route(?!-)\b", re.IGNORECASE),
+        re.compile(r"aws\s+ec2\s+terminate-instances\b", re.IGNORECASE),
         re.compile(r"aws\s+rds\s+delete-db-instance(?!-)\b", re.IGNORECASE),
         re.compile(r"aws\s+rds\s+delete-db-cluster(?!-)\b", re.IGNORECASE),
         re.compile(r"aws\s+dynamodb\s+delete-table(?!-)\b", re.IGNORECASE),
@@ -104,6 +122,9 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"aws\s+elasticache\s+delete-cache-cluster(?!-)\b", re.IGNORECASE),
         re.compile(r"aws\s+elasticache\s+delete-replication-group(?!-)\b", re.IGNORECASE),
         re.compile(r"aws\s+eks\s+delete-cluster(?!-)\b", re.IGNORECASE),
+        re.compile(r"aws\s+kms\s+schedule-key-deletion\b", re.IGNORECASE),
+        re.compile(r"aws\s+organizations\s+delete-organization\b", re.IGNORECASE),
+        re.compile(r"aws\s+route53\s+delete-hosted-zone\b", re.IGNORECASE),
     ],
 
     # GCP - Project, cluster, and database operations (irreversible)
@@ -121,6 +142,7 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
     # Word boundaries prevent "cluster" from matching "clusterrole" etc.
     "kubernetes_critical": [
         re.compile(r"kubectl\s+delete\s+namespace\b", re.IGNORECASE),
+        re.compile(r"kubectl\s+delete\s+ns\b", re.IGNORECASE),
         re.compile(r"kubectl\s+delete\s+node\b", re.IGNORECASE),
         re.compile(r"kubectl\s+delete\s+cluster\b", re.IGNORECASE),
         re.compile(r"kubectl\s+delete\s+(pv|persistentvolume)\b", re.IGNORECASE),
@@ -129,12 +151,55 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"kubectl\s+delete\s+mutatingwebhookconfiguration\b", re.IGNORECASE),
         re.compile(r"kubectl\s+delete\s+validatingwebhookconfiguration\b", re.IGNORECASE),
         re.compile(r"kubectl\s+drain\b", re.IGNORECASE),
+        # Bulk delete with --all flag on any resource type
+        re.compile(r"kubectl\s+delete\s+\w+\s+.*--all\b", re.IGNORECASE),
     ],
 
-    # Git - Force push (history rewrite, not --force-with-lease)
-    "git_force": [
+    # Terraform / Terragrunt - Whole-state destruction
+    "terraform_destroy": [
+        # terraform destroy WITHOUT -target (bare destroy is destructive)
+        # Uses negative lookahead to allow "terraform destroy -target=X" through
+        re.compile(r"terraform\s+destroy\b(?!.*-target)", re.IGNORECASE),
+        re.compile(r"terragrunt\s+destroy\b(?!.*-target)", re.IGNORECASE),
+        re.compile(r"terragrunt\s+run-all\s+destroy\b", re.IGNORECASE),
+        re.compile(r"terragrunt\s+destroy-all\b", re.IGNORECASE),
+    ],
+
+    # Docker - Bulk prune operations
+    "docker_critical": [
+        re.compile(r"docker\s+system\s+prune\s+.*(-a|--all)\b", re.IGNORECASE),
+        re.compile(r"docker\s+system\s+prune\s+.*--volumes\b", re.IGNORECASE),
+        re.compile(r"docker\s+volume\s+prune\b", re.IGNORECASE),
+    ],
+
+    # Flux - Uninstall removes ALL Flux components from cluster
+    "flux_critical": [
+        re.compile(r"flux\s+uninstall\b", re.IGNORECASE),
+    ],
+
+    # Git - Force push (history rewrite, not --force-with-lease) and reset --hard
+    "git_destructive": [
         re.compile(r"git\s+push\s+.*--force(?!-with-lease)", re.IGNORECASE),
         re.compile(r"git\s+push\s+.*(?<!\w)-f\b", re.IGNORECASE),
+        re.compile(r"git\s+reset\s+.*--hard\b", re.IGNORECASE),
+    ],
+
+    # GitHub/GitLab - Repo deletion
+    "repo_delete": [
+        re.compile(r"gh\s+repo\s+delete\b", re.IGNORECASE),
+        re.compile(r"glab\s+project\s+delete\b", re.IGNORECASE),
+    ],
+
+    # npm - Unpublish entire package (without @version)
+    "npm_critical": [
+        # Matches "npm unpublish packagename" but NOT "npm unpublish package@1.0.0"
+        re.compile(r"npm\s+unpublish\s+(?!.*@)\S+", re.IGNORECASE),
+    ],
+
+    # SQL - Drop database/table
+    "sql_critical": [
+        re.compile(r"drop\s+database\b", re.IGNORECASE),
+        re.compile(r"drop\s+table\b", re.IGNORECASE),
     ],
 
     # Disk operations - Irreversible data destruction
@@ -142,6 +207,16 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"^dd\s+", re.IGNORECASE),
         re.compile(r"^fdisk\s+", re.IGNORECASE),
         re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
+    ],
+
+    # rm -rf / and rm -rf ~ (catastrophic filesystem destruction)
+    "rm_critical": [
+        re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+/\s*$", re.IGNORECASE),
+        re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+/\s*$", re.IGNORECASE),
+        re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+/\*", re.IGNORECASE),
+        re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+/\*", re.IGNORECASE),
+        re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+~/?", re.IGNORECASE),
+        re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+~/?", re.IGNORECASE),
     ],
 }
 
@@ -153,6 +228,7 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "aws ec2 delete-internet-gateway": "BLOCKED: Internet gateway deletion is irreversible - use Terraform/Terragrunt",
     "aws ec2 delete-route-table": "BLOCKED: Route table deletion is irreversible - use Terraform/Terragrunt",
     "aws ec2 delete-route": "BLOCKED: Route deletion should be done via Terraform/Terragrunt",
+    "aws ec2 terminate-instances": "BLOCKED: Instance termination is irreversible - use Terraform/Terragrunt",
     "aws rds delete-db-instance": "BLOCKED: Use Terraform/Terragrunt for RDS lifecycle management",
     "aws rds delete-db-cluster": "BLOCKED: Use Terraform/Terragrunt for RDS cluster management",
     "aws dynamodb delete-table": "BLOCKED: Table deletion loses all data - use Terraform/Terragrunt",
@@ -160,6 +236,9 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "aws s3api delete-bucket": "BLOCKED: Bucket deletion is irreversible - use Terraform/Terragrunt",
     "aws eks delete-cluster": "BLOCKED: Use Terraform/Terragrunt for EKS management",
     "aws elasticache delete": "BLOCKED: Use Terraform/Terragrunt for ElastiCache management",
+    "aws kms schedule-key-deletion": "BLOCKED: KMS key deletion renders all encrypted data permanently unrecoverable",
+    "aws organizations delete-organization": "BLOCKED: Organization deletion is irreversible",
+    "aws route53 delete-hosted-zone": "BLOCKED: DNS zone deletion causes widespread outage",
 
     # GCP suggestions
     "gcloud projects delete": "BLOCKED: Project deletion is irreversible - must be done via Cloud Console",
@@ -172,6 +251,7 @@ BLOCKED_COMMAND_SUGGESTIONS = {
 
     # Kubernetes suggestions
     "kubectl delete namespace": "BLOCKED: Namespace deletion destroys all resources within it",
+    "kubectl delete ns": "BLOCKED: Namespace deletion destroys all resources within it",
     "kubectl delete node": "BLOCKED: Node deletion removes the node from the cluster",
     "kubectl delete cluster": "BLOCKED: Cluster deletion is irreversible and impacts all workloads",
     "kubectl delete pv": "BLOCKED: Persistent volume deletion loses data",
@@ -180,15 +260,45 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "kubectl delete mutatingwebhookconfiguration": "BLOCKED: Webhook deletion can break admission control and cluster safety",
     "kubectl delete validatingwebhookconfiguration": "BLOCKED: Webhook deletion can break admission control and cluster safety",
     "kubectl drain": "BLOCKED: Node draining can cause service disruption",
+    "kubectl delete --all": "BLOCKED: Bulk deletion of all resources is irreversible",
+
+    # Terraform / Terragrunt suggestions
+    "terraform destroy": "BLOCKED: terraform destroy without -target destroys entire state - use terraform destroy -target=<resource>",
+    "terragrunt destroy": "BLOCKED: terragrunt destroy without -target destroys entire state",
+    "terragrunt run-all destroy": "BLOCKED: Recursive destruction of all modules",
+    "terragrunt destroy-all": "BLOCKED: Recursive destruction of all modules",
+
+    # Docker suggestions
+    "docker system prune": "BLOCKED: docker system prune with -a or --volumes removes all unused resources",
+    "docker volume prune": "BLOCKED: docker volume prune removes all unused volumes and data",
+
+    # Flux suggestions
+    "flux uninstall": "BLOCKED: flux uninstall removes ALL Flux components from the cluster",
 
     # Git suggestions
     "git push --force": "BLOCKED: Force push rewrites history - use git push --force-with-lease",
     "git push -f": "BLOCKED: Force push rewrites history - use git push --force-with-lease",
+    "git reset --hard": "BLOCKED: git reset --hard permanently discards uncommitted changes",
+
+    # GitHub/GitLab suggestions
+    "gh repo delete": "BLOCKED: Repository deletion is irreversible - destroys all code and history",
+    "glab project delete": "BLOCKED: Project deletion is irreversible - destroys all code and history",
+
+    # npm suggestions
+    "npm unpublish": "BLOCKED: npm unpublish without @version removes entire package from registry",
+
+    # SQL suggestions
+    "drop database": "BLOCKED: DROP DATABASE is irreversible - destroys all data",
+    "drop table": "BLOCKED: DROP TABLE is irreversible - destroys all data",
 
     # Disk operations
     "dd": "BLOCKED: Low-level disk operations can destroy data",
     "fdisk": "BLOCKED: Disk partitioning can destroy data",
     "mkfs": "BLOCKED: Filesystem creation destroys all data on target",
+
+    # rm critical
+    "rm -rf /": "BLOCKED: Filesystem destruction is irreversible",
+    "rm -rf ~": "BLOCKED: Home directory destruction is irreversible",
 }
 
 # Structured deny signatures complement the raw regex patterns above.
@@ -204,6 +314,7 @@ SEMANTIC_BLOCKED_RULES = (
     SemanticBlockedRule("aws_critical", ("aws", "ec2", "delete-internet-gateway"), "aws ec2 delete-internet-gateway"),
     SemanticBlockedRule("aws_critical", ("aws", "ec2", "delete-route-table"), "aws ec2 delete-route-table"),
     SemanticBlockedRule("aws_critical", ("aws", "ec2", "delete-route"), "aws ec2 delete-route"),
+    SemanticBlockedRule("aws_critical", ("aws", "ec2", "terminate-instances"), "aws ec2 terminate-instances"),
     SemanticBlockedRule("aws_critical", ("aws", "rds", "delete-db-instance"), "aws rds delete-db-instance"),
     SemanticBlockedRule("aws_critical", ("aws", "rds", "delete-db-cluster"), "aws rds delete-db-cluster"),
     SemanticBlockedRule("aws_critical", ("aws", "dynamodb", "delete-table"), "aws dynamodb delete-table"),
@@ -220,6 +331,9 @@ SEMANTIC_BLOCKED_RULES = (
         "aws elasticache delete",
     ),
     SemanticBlockedRule("aws_critical", ("aws", "eks", "delete-cluster"), "aws eks delete-cluster"),
+    SemanticBlockedRule("aws_critical", ("aws", "kms", "schedule-key-deletion"), "aws kms schedule-key-deletion"),
+    SemanticBlockedRule("aws_critical", ("aws", "organizations", "delete-organization"), "aws organizations delete-organization"),
+    SemanticBlockedRule("aws_critical", ("aws", "route53", "delete-hosted-zone"), "aws route53 delete-hosted-zone"),
 
     # GCP
     SemanticBlockedRule("gcp_critical", ("gcloud", "projects", "delete"), "gcloud projects delete"),
@@ -236,6 +350,7 @@ SEMANTIC_BLOCKED_RULES = (
 
     # Kubernetes
     SemanticBlockedRule("kubernetes_critical", ("kubectl", "delete", "namespace"), "kubectl delete namespace"),
+    SemanticBlockedRule("kubernetes_critical", ("kubectl", "delete", "ns"), "kubectl delete ns"),
     SemanticBlockedRule("kubernetes_critical", ("kubectl", "delete", "node"), "kubectl delete node"),
     SemanticBlockedRule("kubernetes_critical", ("kubectl", "delete", "cluster"), "kubectl delete cluster"),
     SemanticBlockedRule("kubernetes_critical", ("kubectl", "delete", "pv"), "kubectl delete pv"),
@@ -268,9 +383,39 @@ SEMANTIC_BLOCKED_RULES = (
     ),
     SemanticBlockedRule("kubernetes_critical", ("kubectl", "drain"), "kubectl drain"),
 
+    # Terraform / Terragrunt (semantic rules use forbidden_flags to allow -target through)
+    SemanticBlockedRule(
+        "terraform_destroy",
+        ("terraform", "destroy"),
+        "terraform destroy",
+        forbidden_flags=("-target", "--target"),
+    ),
+    SemanticBlockedRule(
+        "terraform_destroy",
+        ("terragrunt", "destroy"),
+        "terragrunt destroy",
+        forbidden_flags=("-target", "--target"),
+    ),
+    SemanticBlockedRule("terraform_destroy", ("terragrunt", "run-all", "destroy"), "terragrunt run-all destroy"),
+    SemanticBlockedRule("terraform_destroy", ("terragrunt", "destroy-all"), "terragrunt destroy-all"),
+
+    # Docker
+    SemanticBlockedRule("docker_critical", ("docker", "system", "prune"), "docker system prune", required_flags=("-a",)),
+    SemanticBlockedRule("docker_critical", ("docker", "system", "prune"), "docker system prune", required_flags=("--all",)),
+    SemanticBlockedRule("docker_critical", ("docker", "system", "prune"), "docker system prune", required_flags=("--volumes",)),
+    SemanticBlockedRule("docker_critical", ("docker", "volume", "prune"), "docker volume prune"),
+
+    # Flux
+    SemanticBlockedRule("flux_critical", ("flux", "uninstall"), "flux uninstall"),
+
     # Git
-    SemanticBlockedRule("git_force", ("git", "push"), "git push --force", required_flags=("--force",)),
-    SemanticBlockedRule("git_force", ("git", "push"), "git push -f", required_flags=("-f",)),
+    SemanticBlockedRule("git_destructive", ("git", "push"), "git push --force", required_flags=("--force",)),
+    SemanticBlockedRule("git_destructive", ("git", "push"), "git push -f", required_flags=("-f",)),
+    SemanticBlockedRule("git_destructive", ("git", "reset"), "git reset --hard", required_flags=("--hard",)),
+
+    # GitHub/GitLab
+    SemanticBlockedRule("repo_delete", ("gh", "repo", "delete"), "gh repo delete"),
+    SemanticBlockedRule("repo_delete", ("glab", "project", "delete"), "glab project delete"),
 )
 
 

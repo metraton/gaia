@@ -5,9 +5,13 @@ Classifies commands by scanning tokens for known verb patterns, dangerous flags,
 and command aliases. CLI-agnostic: no per-tool extraction logic. Produces a
 structured DangerResult for use by hooks, tier classification, or standalone analysis.
 
-Verb Taxonomy:
-- DESTRUCTIVE: delete, destroy, remove, purge, kill, terminate, etc.
-- MUTATIVE: apply, create, update, deploy, install, scale, exec, push, etc.
+Three-Category Security Model:
+- DESTRUCTIVE verbs are checked by blocked_commands.py (exit 2, never approvable).
+  This module does NOT classify anything as DESTRUCTIVE. Destructive detection is
+  pattern-based (command + arguments), not verb-based.
+- MUTATIVE: ALL state-modifying verbs including delete, destroy, remove, kill, etc.
+  These are approvable via the nonce workflow. The verb detector treats every
+  state-modifying verb identically -- the user always decides.
 - SIMULATION: plan, diff, preview, template, validate, lint, etc.
 - READ_ONLY: get, list, describe, show, logs, status, etc.
 """
@@ -67,29 +71,52 @@ class DangerResult:
 # Verb Taxonomy Constants
 # ============================================================================
 
-DESTRUCTIVE_VERBS: FrozenSet[str] = frozenset({
-    "delete", "destroy", "remove", "drop", "purge", "wipe", "clean",
-    "truncate", "kill", "terminate", "stop", "shutdown", "halt", "abort",
-    "drain", "evict", "cordon", "revoke", "deregister", "detach",
-    "disconnect", "unbind", "reset", "force-delete", "force-remove", "erase",
-})
+# DESTRUCTIVE_VERBS is intentionally empty. All destructive-at-scale detection
+# is handled by blocked_commands.py using pattern matching (command + arguments).
+# The verb detector treats ALL state-modifying verbs as MUTATIVE (approvable).
+# This prevents the verb detector from permanently blocking commands that are
+# only dangerous in specific contexts (e.g., "delete pod" is fine, "delete
+# namespace" is not -- but the verb "delete" is the same).
+DESTRUCTIVE_VERBS: FrozenSet[str] = frozenset()
 
 MUTATIVE_VERBS: FrozenSet[str] = frozenset({
+    # Creation / addition
     "apply", "create", "add", "put", "insert", "register",
+    # Modification
     "update", "patch", "set", "modify", "edit", "configure",
     "replace", "overwrite", "write",
+    # Deployment / packaging
     "deploy", "install", "upgrade", "downgrade", "publish", "release", "promote",
+    # Scaling
     "scale", "resize", "autoscale",
+    # Lifecycle
     "start", "restart", "reboot", "reload", "refresh", "resume",
     "uncordon", "unsuspend", "enable", "disable", "suspend", "pause",
+    "stop", "shutdown", "halt", "abort",
+    # Movement / transfer
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
+    # Attachment
     "attach", "bind", "connect", "mount", "link",
+    # Execution
     "exec", "run", "execute", "invoke", "trigger", "send",
+    # Git operations
     "commit", "push", "merge", "rebase", "cherry-pick", "stash",
     "revert", "rollback",
-    "grant", "assign",
+    # Access control
+    "grant", "assign", "revoke",
+    # Reconciliation
     "reconcile", "rsync",
+    # Deletion / removal (approvable via nonce -- blocked_commands.py catches
+    # the truly destructive patterns like "delete namespace", "delete-vpc", etc.)
+    "delete", "destroy", "remove", "drop", "purge", "wipe", "clean",
+    "truncate", "kill", "terminate", "uninstall", "unpublish",
+    "drain", "evict", "cordon", "deregister", "detach",
+    "disconnect", "unbind", "reset", "force-delete", "force-remove", "erase",
+    # Collaboration (GitHub/GitLab CLI)
+    "comment", "label", "annotate", "approve", "close", "reopen", "tag",
+    # Helm-specific
+    "uninstall",
 })
 
 SIMULATION_VERBS: FrozenSet[str] = frozenset({
@@ -111,15 +138,18 @@ READ_ONLY_VERBS: FrozenSet[str] = frozenset({
 # Command Aliases (single-token commands that map to a category)
 # ============================================================================
 
+# All command aliases are MUTATIVE (approvable via nonce).
+# The truly destructive patterns (rm -rf /, dd of=/dev/sda, mkfs, fdisk) are
+# permanently blocked by blocked_commands.py before the verb detector runs.
 COMMAND_ALIASES: Dict[str, str] = {
-    "rm": CATEGORY_DESTRUCTIVE,
-    "rmdir": CATEGORY_DESTRUCTIVE,
+    "rm": CATEGORY_MUTATIVE,
+    "rmdir": CATEGORY_MUTATIVE,
     "mv": CATEGORY_MUTATIVE,
     "cp": CATEGORY_MUTATIVE,
     "ln": CATEGORY_MUTATIVE,
-    "dd": CATEGORY_DESTRUCTIVE,
-    "mkfs": CATEGORY_DESTRUCTIVE,
-    "fdisk": CATEGORY_DESTRUCTIVE,
+    "dd": CATEGORY_MUTATIVE,
+    "mkfs": CATEGORY_MUTATIVE,
+    "fdisk": CATEGORY_MUTATIVE,
     "chmod": CATEGORY_MUTATIVE,
     "chown": CATEGORY_MUTATIVE,
     "chgrp": CATEGORY_MUTATIVE,
@@ -422,6 +452,9 @@ def detect_dangerous_command(command: str) -> DangerResult:
         )
 
     # --- Step 5: Scan semantic non-flag tokens near the command head ---
+    # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
+    # DESTRUCTIVE_VERBS is intentionally empty -- all destructive detection
+    # is handled by blocked_commands.py before this function runs.
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
         # Split hyphenated tokens: "delete-stack" -> check "delete"
         candidate = token.split("-", 1)[0] if "-" in token else token
@@ -433,21 +466,6 @@ def detect_dangerous_command(command: str) -> DangerResult:
         confidence = "high" if semantic_index <= 2 else "medium"
 
         # Check verb taxonomy in priority order
-        if candidate in DESTRUCTIVE_VERBS or full_lower in DESTRUCTIVE_VERBS:
-            verb = candidate if candidate in DESTRUCTIVE_VERBS else full_lower
-            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd, CATEGORY_DESTRUCTIVE)
-            flag_detail = f" with flags {dangerous_flags}" if dangerous_flags else ""
-            return DangerResult(
-                is_dangerous=True,
-                category=CATEGORY_DESTRUCTIVE,
-                verb=verb,
-                verb_position=semantic_index,
-                dangerous_flags=dangerous_flags,
-                cli_family=family,
-                confidence=confidence,
-                reason=f"Destructive verb '{verb}'{flag_detail}",
-            )
-
         if candidate in SIMULATION_VERBS or full_lower in SIMULATION_VERBS:
             verb = candidate if candidate in SIMULATION_VERBS else full_lower
             return DangerResult(

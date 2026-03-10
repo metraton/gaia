@@ -62,22 +62,22 @@ class TestDangerResult:
         """DangerResult accepts custom values."""
         result = DangerResult(
             is_dangerous=True,
-            category="DESTRUCTIVE",
+            category="MUTATIVE",
             verb="delete",
             verb_position=1,
             dangerous_flags=("--force",),
             cli_family="k8s",
             confidence="high",
-            reason="Destructive verb 'delete'",
+            reason="Mutative verb 'delete'",
         )
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
         assert result.verb_position == 1
         assert result.dangerous_flags == ("--force",)
         assert result.cli_family == "k8s"
         assert result.confidence == "high"
-        assert result.reason == "Destructive verb 'delete'"
+        assert result.reason == "Mutative verb 'delete'"
 
     def test_dangerous_flags_default_is_empty_tuple(self):
         """DangerResult dangerous_flags default is an empty tuple (frozen dataclass)."""
@@ -94,11 +94,11 @@ class TestDangerResult:
 class TestCommandAliases:
     """Test base command aliases that map directly to a category."""
 
-    def test_rm_is_destructive(self):
-        """rm is classified as DESTRUCTIVE."""
+    def test_rm_is_mutative(self):
+        """rm is classified as MUTATIVE (blocked_commands.py handles destructive patterns)."""
         result = detect_dangerous_command("rm file.txt")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "rm"
         assert result.confidence == "high"
 
@@ -110,11 +110,11 @@ class TestCommandAliases:
         assert result.verb == "mv"
         assert result.confidence == "high"
 
-    def test_dd_is_destructive(self):
-        """dd is classified as DESTRUCTIVE."""
+    def test_dd_is_mutative(self):
+        """dd is classified as MUTATIVE (blocked_commands.py handles destructive patterns)."""
         result = detect_dangerous_command("dd if=/dev/zero of=/dev/sda")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "dd"
 
     def test_chmod_is_mutative(self):
@@ -131,27 +131,27 @@ class TestCommandAliases:
         assert result.category == "MUTATIVE"
         assert result.verb == "cp"
 
-    def test_mkfs_is_destructive(self):
-        """mkfs is classified as DESTRUCTIVE."""
+    def test_mkfs_is_mutative(self):
+        """mkfs is classified as MUTATIVE (blocked_commands.py handles destructive patterns)."""
         result = detect_dangerous_command("mkfs /dev/sda1")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
 
     @pytest.mark.parametrize("cmd,expected_category", [
-        ("rm file.txt", "DESTRUCTIVE"),
-        ("rmdir empty_dir", "DESTRUCTIVE"),
+        ("rm file.txt", "MUTATIVE"),
+        ("rmdir empty_dir", "MUTATIVE"),
         ("mv a b", "MUTATIVE"),
         ("cp a b", "MUTATIVE"),
         ("ln -s a b", "MUTATIVE"),
-        ("dd if=x of=y", "DESTRUCTIVE"),
-        ("mkfs /dev/sda", "DESTRUCTIVE"),
-        ("fdisk /dev/sda", "DESTRUCTIVE"),
+        ("dd if=x of=y", "MUTATIVE"),
+        ("mkfs /dev/sda", "MUTATIVE"),
+        ("fdisk /dev/sda", "MUTATIVE"),
         ("chmod 644 f", "MUTATIVE"),
         ("chown user f", "MUTATIVE"),
         ("chgrp group f", "MUTATIVE"),
     ])
     def test_all_aliases_parametrized(self, cmd, expected_category):
-        """All command aliases are classified correctly."""
+        """All command aliases are classified as MUTATIVE (approvable)."""
         result = detect_dangerous_command(cmd)
         assert result.is_dangerous is True
         assert result.category == expected_category
@@ -289,7 +289,7 @@ class TestAgnosticVerbScanning:
         """kubectl delete pod my-pod is DESTRUCTIVE."""
         result = detect_dangerous_command("kubectl delete pod my-pod")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
         assert result.cli_family == "k8s"
 
@@ -297,7 +297,7 @@ class TestAgnosticVerbScanning:
         """terraform destroy is DESTRUCTIVE."""
         result = detect_dangerous_command("terraform destroy")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "destroy"
         assert result.cli_family == "iac"
 
@@ -305,7 +305,7 @@ class TestAgnosticVerbScanning:
         """git reset --hard HEAD is DESTRUCTIVE."""
         result = detect_dangerous_command("git reset --hard HEAD")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "reset"
         assert result.cli_family == "git"
 
@@ -313,14 +313,14 @@ class TestAgnosticVerbScanning:
         """docker stop container is DESTRUCTIVE."""
         result = detect_dangerous_command("docker stop my-container")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "stop"
 
     def test_docker_kill_is_destructive(self):
         """docker kill container is DESTRUCTIVE."""
         result = detect_dangerous_command("docker kill my-container")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "kill"
 
     # --- Mutative verbs across various CLIs ---
@@ -346,7 +346,7 @@ class TestAgnosticVerbScanning:
             "aws --profile prod --region us-east-1 ec2 delete-vpc --vpc-id vpc-123"
         )
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
 
     def test_gcloud_delete_with_project_flags_is_destructive(self):
@@ -355,7 +355,7 @@ class TestAgnosticVerbScanning:
             "gcloud --project dev --configuration shared container clusters delete cluster-a"
         )
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
 
     def test_kubectl_delete_with_context_flags_is_destructive(self):
@@ -364,7 +364,7 @@ class TestAgnosticVerbScanning:
             "kubectl --context prod --namespace default delete namespace payments"
         )
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
         assert result.cli_family == "k8s"
 
@@ -529,7 +529,7 @@ class TestAgnosticVerbScanning:
         """aws cloudformation delete-stack extracts 'delete' from hyphenated token."""
         result = detect_dangerous_command("aws cloudformation delete-stack --stack-name foo")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
 
     def test_hyphenated_describe_instances(self):
@@ -552,7 +552,7 @@ class TestAgnosticVerbScanning:
             "aws ec2 terminate-instances --instance-ids i-123"
         )
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "terminate"
 
     # --- Docker rm as verb alias ---
@@ -561,7 +561,7 @@ class TestAgnosticVerbScanning:
         """docker rm container-id: 'rm' found as verb alias -> DESTRUCTIVE."""
         result = detect_dangerous_command("docker rm container-id")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "rm"
         assert result.cli_family == "docker"
 
@@ -571,7 +571,7 @@ class TestAgnosticVerbScanning:
         """Unknown CLI with 'delete' verb is DESTRUCTIVE."""
         result = detect_dangerous_command("newcli delete resource")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
         assert result.cli_family == "unknown"
 
@@ -624,7 +624,7 @@ class TestAgnosticVerbScanning:
         """gcloud compute instances delete: 'delete' found at position 3."""
         result = detect_dangerous_command("gcloud compute instances delete my-vm")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
 
     def test_gcloud_deep_verb_describe(self):
@@ -802,11 +802,12 @@ class TestDangerousFlags:
         result = detect_dangerous_command("rm --no-preserve-root /")
         assert "--no-preserve-root" in result.dangerous_flags
 
-    def test_all_flag_only_dangerous_with_destructive_verb(self):
-        """--all is only dangerous when combined with a DESTRUCTIVE verb."""
-        # DESTRUCTIVE verb + --all => flagged
+    def test_all_flag_not_flagged_by_verb_detector(self):
+        """--all is not flagged by verb detector (blocked_commands.py handles kubectl delete --all)."""
+        # Since all verbs are now MUTATIVE, --all is not flagged at verb level.
+        # kubectl delete --all is caught by blocked_commands.py instead.
         result_delete = detect_dangerous_command("kubectl delete pods --all")
-        assert "--all" in result_delete.dangerous_flags
+        assert "--all" not in result_delete.dangerous_flags
 
         # MUTATIVE verb + --all => not flagged
         result_apply = detect_dangerous_command("kubectl apply --all -f .")
@@ -1021,7 +1022,7 @@ class TestEdgeCases:
         """/usr/bin/kubectl is correctly identified."""
         result = detect_dangerous_command("/usr/bin/kubectl delete pod my-pod")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.cli_family == "k8s"
 
     def test_unmatched_quotes_fallback(self):
@@ -1143,14 +1144,14 @@ class TestBuildToolClassification:
         """make clean is DESTRUCTIVE."""
         result = detect_dangerous_command("make clean")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "clean"
 
     def test_bazel_clean_is_destructive(self):
         """bazel clean is DESTRUCTIVE."""
         result = detect_dangerous_command("bazel clean")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "clean"
 
 
@@ -1210,7 +1211,7 @@ class TestRegressionCoverage:
         """eksctl delete cluster is DESTRUCTIVE."""
         result = detect_dangerous_command("eksctl delete cluster --name test")
         assert result.is_dangerous is True
-        assert result.category == "DESTRUCTIVE"
+        assert result.category == "MUTATIVE"
         assert result.verb == "delete"
 
     def test_git_fetch_is_read_only(self):

@@ -410,7 +410,12 @@ class TestGlobalFlagSafeVariants:
 
 
 class TestManagedCliFailClosed:
-    """Known infra/system CLIs must not auto-allow unknown T3 commands."""
+    """Known infra/system CLIs must not auto-allow unknown T3 commands.
+
+    Unknown verbs on managed CLIs now go through the nonce approval flow
+    (corrective deny, exit 0) instead of permanent block (exit 2). This
+    makes them approvable by the user.
+    """
 
     @pytest.mark.parametrize("command", [
         "aws foo bar",
@@ -418,12 +423,18 @@ class TestManagedCliFailClosed:
         "gcloud foo bar",
         "terraform foo bar",
     ])
-    def test_unknown_managed_cli_commands_are_blocked(self, validator, command):
+    def test_unknown_managed_cli_commands_are_blocked_with_nonce(self, validator, command):
         result = validator.validate(command)
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
         assert "could not be classified as safe" in result.reason.lower()
-        assert result.block_response is None
+        # Must have a block_response (corrective deny, exit 0) with nonce
+        assert result.block_response is not None
+        assert "hookSpecificOutput" in result.block_response
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "NONCE:" in reason
+        assert "Unclassified command on managed CLI" in reason
 
 
 class TestEdgeCases:

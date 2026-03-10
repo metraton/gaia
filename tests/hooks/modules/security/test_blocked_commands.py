@@ -60,8 +60,24 @@ class TestAWSCriticalBlockedCommands:
         assert result.category == "aws_critical"
 
 
+class TestAWSNewlyBlocked:
+    """Test newly added AWS DESTRUCTIVE patterns are blocked."""
+
+    @pytest.mark.parametrize("command", [
+        "aws ec2 terminate-instances --instance-ids i-1234567",
+        "aws kms schedule-key-deletion --key-id 1234",
+        "aws organizations delete-organization",
+        "aws route53 delete-hosted-zone --id Z12345",
+    ])
+    def test_aws_new_destructive_blocked(self, command):
+        """Test newly added AWS destructive operations are blocked."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+        assert result.category == "aws_critical"
+
+
 class TestAWSApprovableNotBlocked:
-    """Test AWS operations removed from deny (now approvable T3) are NOT blocked."""
+    """Test AWS operations that are MUTATIVE (approvable T3) are NOT blocked."""
 
     @pytest.mark.parametrize("command", [
         "aws iam delete-user --user-name test-user",
@@ -70,7 +86,6 @@ class TestAWSApprovableNotBlocked:
         "aws iam delete-policy --policy-arn arn:aws:iam::123:policy/test",
         "aws iam detach-role-policy --role-name test --policy-arn arn:aws:iam::123:policy/test",
         "aws iam remove-user-from-group --user-name test --group-name test-group",
-        "aws ec2 terminate-instances --instance-ids i-1234567",
         "aws ec2 delete-key-pair --key-name test-key",
         "aws ec2 delete-snapshot --snapshot-id snap-123",
         "aws ec2 delete-volume --volume-id vol-123",
@@ -89,7 +104,7 @@ class TestAWSApprovableNotBlocked:
         "aws eks delete-addon --cluster-name my-cluster --addon-name my-addon",
     ])
     def test_aws_approvable_not_blocked(self, command):
-        """Test AWS operations moved to approvable T3 are NOT blocked."""
+        """Test AWS operations that are MUTATIVE (approvable) are NOT blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is False
 
@@ -173,8 +188,8 @@ class TestKubernetesApprovableNotBlocked:
         assert result.is_blocked is False
 
 
-class TestGitForceBlockedCommands:
-    """Test Git force push operations are permanently blocked."""
+class TestGitDestructiveBlockedCommands:
+    """Test Git destructive operations are permanently blocked."""
 
     @pytest.mark.parametrize("command", [
         "git push --force origin main",
@@ -186,11 +201,22 @@ class TestGitForceBlockedCommands:
         """Test Git force push is blocked."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
-        assert result.category == "git_force"
+        assert result.category == "git_destructive"
 
     def test_git_force_with_lease_not_blocked(self):
         """Test git push --force-with-lease is NOT blocked."""
         result = is_blocked_command("git push --force-with-lease origin main")
+        assert result.is_blocked is False
+
+    def test_git_reset_hard_blocked(self):
+        """Test git reset --hard is blocked."""
+        result = is_blocked_command("git reset --hard HEAD~1")
+        assert result.is_blocked is True
+        assert result.category == "git_destructive"
+
+    def test_git_reset_soft_not_blocked(self):
+        """Test git reset --soft is NOT blocked."""
+        result = is_blocked_command("git reset --soft HEAD~1")
         assert result.is_blocked is False
 
 
@@ -221,7 +247,7 @@ class TestBlockedCommandVariants:
     def test_git_force_push_with_worktree_flag_is_blocked(self):
         result = is_blocked_command("git -C repo push origin main --force")
         assert result.is_blocked is True
-        assert result.category == "git_force"
+        assert result.category == "git_destructive"
 
 
 class TestFluxDeleteNotBlocked:
@@ -255,7 +281,7 @@ class TestDiskOperationsBlocked:
 
 
 class TestSafeCommandsNotBlocked:
-    """Test that safe commands are NOT blocked."""
+    """Test that safe and approvable commands are NOT blocked."""
 
     @pytest.mark.parametrize("command", [
         # Read-only commands
@@ -265,12 +291,13 @@ class TestSafeCommandsNotBlocked:
         "aws ec2 describe-instances",
         "gcloud compute instances list",
 
-        # Commands that require APPROVAL but NOT blocked
+        # Commands that require APPROVAL but NOT permanently blocked
         "terraform apply",
-        "terraform destroy",
+        "terraform destroy -target=aws_instance.web",  # targeted destroy is approvable
         "kubectl apply -f manifest.yaml",
         "kubectl delete pod my-pod",
         "helm install my-release chart/",
+        "helm uninstall my-release",  # helm uninstall is approvable
         "git commit -m 'message'",
         "git push origin main",
         "git push --force-with-lease origin main",
@@ -339,8 +366,15 @@ class TestGetBlockedPatternsByCategory:
         "aws_critical",
         "gcp_critical",
         "kubernetes_critical",
-        "git_force",
+        "git_destructive",
         "disk_operations",
+        "terraform_destroy",
+        "docker_critical",
+        "flux_critical",
+        "repo_delete",
+        "npm_critical",
+        "sql_critical",
+        "rm_critical",
     ])
     def test_returns_patterns_for_valid_category(self, category):
         """Returns patterns for valid categories."""
@@ -358,6 +392,7 @@ class TestGetBlockedPatternsByCategory:
         assert "aws_delete" not in BLOCKED_PATTERNS
         assert "gcp_delete" not in BLOCKED_PATTERNS
         assert "flux_delete" not in BLOCKED_PATTERNS
+        assert "git_force" not in BLOCKED_PATTERNS  # renamed to git_destructive
 
 
 class TestGetSuggestionForBlocked:
@@ -394,17 +429,162 @@ class TestBlockedPatternsCategories:
         "aws_critical",
         "gcp_critical",
         "kubernetes_critical",
-        "git_force",
+        "terraform_destroy",
+        "docker_critical",
+        "flux_critical",
+        "git_destructive",
+        "repo_delete",
+        "npm_critical",
+        "sql_critical",
         "disk_operations",
+        "rm_critical",
     ])
     def test_category_exists(self, category):
         """Test that expected category exists."""
         assert category in BLOCKED_PATTERNS
         assert len(BLOCKED_PATTERNS[category]) > 0
 
-    def test_exactly_five_categories(self):
-        """Test there are exactly 5 categories (no more, no less)."""
-        assert len(BLOCKED_PATTERNS) == 5
+    def test_exactly_twelve_categories(self):
+        """Test there are exactly 12 categories."""
+        assert len(BLOCKED_PATTERNS) == 12
+
+
+class TestTerraformDestroyBlocked:
+    """Test terraform/terragrunt destroy patterns."""
+
+    @pytest.mark.parametrize("command", [
+        "terraform destroy",
+        "terraform destroy --auto-approve",
+        "terragrunt destroy",
+        "terragrunt run-all destroy",
+        "terragrunt destroy-all",
+    ])
+    def test_terraform_destroy_blocked(self, command):
+        """Bare terraform/terragrunt destroy is blocked."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+
+    @pytest.mark.parametrize("command", [
+        "terraform destroy -target=aws_instance.web",
+        "terraform destroy -target=module.vpc",
+        "terragrunt destroy -target=aws_s3_bucket.data",
+    ])
+    def test_terraform_destroy_with_target_not_blocked(self, command):
+        """terraform destroy -target=X is NOT blocked (approvable)."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is False
+
+
+class TestDockerCriticalBlocked:
+    """Test Docker bulk prune operations are blocked."""
+
+    @pytest.mark.parametrize("command", [
+        "docker system prune -a",
+        "docker system prune --all",
+        "docker system prune --volumes",
+        "docker system prune -a --volumes",
+        "docker volume prune",
+    ])
+    def test_docker_prune_blocked(self, command):
+        """Docker bulk prune operations are blocked."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+
+    @pytest.mark.parametrize("command", [
+        "docker system prune",  # without -a or --volumes, only dangling
+        "docker rm my-container",
+        "docker rmi my-image",
+    ])
+    def test_docker_safe_operations_not_blocked(self, command):
+        """Docker single-resource operations are NOT blocked."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is False
+
+
+class TestFluxUninstallBlocked:
+    """Test flux uninstall is blocked."""
+
+    def test_flux_uninstall_blocked(self):
+        result = is_blocked_command("flux uninstall")
+        assert result.is_blocked is True
+        assert result.category == "flux_critical"
+
+    def test_flux_uninstall_silent_blocked(self):
+        result = is_blocked_command("flux uninstall --silent")
+        assert result.is_blocked is True
+
+
+class TestRepoDeleteBlocked:
+    """Test repo deletion commands are blocked."""
+
+    def test_gh_repo_delete_blocked(self):
+        result = is_blocked_command("gh repo delete my-org/my-repo")
+        assert result.is_blocked is True
+        assert result.category == "repo_delete"
+
+    def test_glab_project_delete_blocked(self):
+        result = is_blocked_command("glab project delete my-project")
+        assert result.is_blocked is True
+        assert result.category == "repo_delete"
+
+
+class TestNpmUnpublishBlocked:
+    """Test npm unpublish without version is blocked."""
+
+    def test_npm_unpublish_bare_blocked(self):
+        result = is_blocked_command("npm unpublish my-package")
+        assert result.is_blocked is True
+        assert result.category == "npm_critical"
+
+    def test_npm_unpublish_with_version_not_blocked(self):
+        result = is_blocked_command("npm unpublish my-package@1.0.0")
+        assert result.is_blocked is False
+
+
+class TestSQLCriticalBlocked:
+    """Test SQL destructive commands are blocked."""
+
+    @pytest.mark.parametrize("command", [
+        "drop database production",
+        "DROP TABLE users",
+    ])
+    def test_sql_drop_blocked(self, command):
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+        assert result.category == "sql_critical"
+
+
+class TestRmCriticalBlocked:
+    """Test rm -rf / and rm -rf ~ are blocked."""
+
+    @pytest.mark.parametrize("command", [
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf ~/",
+        "rm -rf ~",
+        "rm -fr /",
+    ])
+    def test_rm_critical_blocked(self, command):
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+
+    def test_rm_normal_not_blocked(self):
+        result = is_blocked_command("rm -rf /tmp/build")
+        assert result.is_blocked is False
+
+
+class TestKubectlDeleteAll:
+    """Test kubectl delete with --all flag is blocked."""
+
+    @pytest.mark.parametrize("command", [
+        "kubectl delete pods --all",
+        "kubectl delete deployments --all",
+        "kubectl delete services --all",
+    ])
+    def test_kubectl_delete_all_blocked(self, command):
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+        assert result.category == "kubernetes_critical"
 
 
 class TestEdgeCases:

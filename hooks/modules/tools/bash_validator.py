@@ -42,7 +42,10 @@ from ..security.approval_grants import (
     generate_nonce,
     write_pending_approval,
 )
-from ..security.approval_messages import build_pending_approval_unavailable_message
+from ..security.approval_messages import (
+    build_pending_approval_unavailable_message,
+    build_t3_approval_instructions,
+)
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
 from .hook_response import build_hook_permission_response
@@ -331,16 +334,53 @@ class BashValidator:
         # Both default to T3; no need to call classify_command_tier() again.
         tier = SecurityTier.T3_BLOCKED
 
-        # Fail-closed: block unknown subcommands for managed CLIs UNLESS the
-        # command was explicitly approved via a grant (grant_consumed=True).
+        # Fail-closed: unknown subcommands for managed CLIs go through the
+        # nonce approval flow (corrective deny, exit 0) UNLESS the command was
+        # explicitly approved via a grant (grant_consumed=True).
+        # Previously this was a permanent block (exit 2, no nonce) which made
+        # unclassified commands impossible to approve.
         if not grant_consumed and self._requires_fail_closed_managed_cli(command):
+            nonce = generate_nonce()
+            # Use the verb from the danger result if available, otherwise
+            # extract it from the command semantics.
+            verb = danger.verb if danger.verb else "unknown"
+            pending_file = write_pending_approval(
+                nonce=nonce,
+                command=command,
+                danger_verb=verb,
+                danger_category="UNCLASSIFIED",
+            )
+            if pending_file is None:
+                hook_block = build_hook_permission_response(
+                    "deny",
+                    build_pending_approval_unavailable_message(),
+                )
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason="Failed to persist pending approval for unclassified managed CLI command",
+                    block_response=hook_block,
+                )
+
+            message = (
+                f"BLOCKED: Unclassified command on managed CLI.\n"
+                f"Command: {command}\n"
+                f"Verb: '{verb}' is not in any known taxonomy "
+                f"(DESTRUCTIVE, MUTATIVE, SIMULATION, READ_ONLY).\n"
+                f"This command requires explicit approval because it runs on "
+                f"a managed CLI where unknown operations are not auto-allowed.\n"
+                f"\n"
+                f"{build_t3_approval_instructions(nonce)}"
+            )
+            hook_block = build_hook_permission_response("deny", message)
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=(
                     "Managed CLI command could not be classified as safe; "
-                    "review the subcommand or extend security rules before allowing it"
+                    "requires approval via nonce workflow"
                 ),
+                block_response=hook_block,
             )
 
         # Commands that reached here passed both blocked_commands.py and the

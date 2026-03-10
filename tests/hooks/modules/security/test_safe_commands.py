@@ -371,6 +371,45 @@ class TestSafePatternMatching:
         assert matches is True
 
 
+class TestGlabSafeCommands:
+    """Test GitLab CLI (glab) read-only commands are safe."""
+
+    @pytest.mark.parametrize("command", [
+        "glab mr view 123",
+        "glab mr list",
+        "glab mr diff 123",
+        "glab mr note 123",
+        "glab issue view 456",
+        "glab issue list",
+        "glab ci view",
+        "glab ci list",
+        "glab ci status",
+        "glab repo view",
+        "glab repo list",
+        "glab auth status",
+        "glab release view v1.0",
+        "glab release list",
+    ])
+    def test_glab_read_only_commands_are_safe(self, command):
+        """glab read-only commands should be auto-approved."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is True, f"{command} should be safe: {reason}"
+
+    @pytest.mark.parametrize("command", [
+        "glab mr create",
+        "glab mr merge 123",
+        "glab mr close 123",
+        "glab mr comment 123",
+        "glab issue create",
+        "glab issue close 456",
+        "glab release create v2.0",
+    ])
+    def test_glab_mutative_commands_are_not_safe(self, command):
+        """glab mutative commands should NOT be auto-approved."""
+        is_safe, reason = is_single_command_safe(command)
+        assert is_safe is False, f"{command} should NOT be safe: {reason}"
+
+
 class TestGitBranchConditionalSafe:
     """Test git branch is safe for listing but not for mutative operations.
 
