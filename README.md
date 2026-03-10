@@ -147,7 +147,7 @@ git clone git@bitbucket.org:yourorg/your-project-context.git project-context
 
 - **Issues:** [GitHub Issues](https://github.com/metraton/gaia-ops/issues)
 - **Repository:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
-- **Author:** Jorge Aguilar <jaguilar1897@gmail.com>
+- **Author:** Jorge Aguilar <jaguilar1987@gmail.com>
 
 ## License
 
