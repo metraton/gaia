@@ -36,7 +36,7 @@ The following are considered security vulnerabilities in gaia-ops:
 - **Hook bypass:** Any method to execute commands without passing through the pre_tool_use validation hook
 - **Approval flow bypass:** Circumventing the nonce-based approval flow for T3 (state-modifying) operations
 - **Nonce forgery:** Fabricating, reusing, or predicting approval nonces
-- **Command injection:** Injecting arbitrary commands through validators (bash_validator, dangerous_verbs, safe_commands, blocked_commands)
+- **Command injection:** Injecting arbitrary commands through validators (bash_validator, mutative_verbs, blocked_commands)
 - **Privilege escalation:** Agents executing operations above their declared security tier
 - **Context injection:** Manipulating project-context.json or skill injection to alter agent behavior maliciously
 

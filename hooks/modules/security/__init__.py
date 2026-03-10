@@ -1,10 +1,10 @@
 """
-Security module - Security tiers, safe commands, blocked patterns.
+Security module - Security tiers, blocked patterns, mutative verb detection.
 
 Provides:
 - tiers: SecurityTier enum and classification
-- safe_commands: Read-only command detection
-- blocked_commands: Dangerous pattern matching
+- blocked_commands: Permanently blocked pattern matching
+- mutative_verbs: Mutative verb detection (nonce-based approval)
 - gitops_validator: kubectl/helm/flux validation
 - approval_constants: Canonical nonce approval token
 - approval_grants: Time-limited T3 command passthrough after user approval
@@ -12,20 +12,14 @@ Provides:
 
 from .tiers import SecurityTier, classify_command_tier
 from .command_semantics import analyze_command, CommandSemantics
-from .safe_commands import (
-    is_read_only_command,
-    is_single_command_safe,
-    SAFE_COMMANDS_CONFIG,
-)
 from .blocked_commands import (
     is_blocked_command,
     get_blocked_patterns,
     BlockedCommandResult,
 )
 from .gitops_validator import validate_gitops_workflow, GitOpsValidationResult
-from .dangerous_verbs import (
+from .mutative_verbs import (
     CLI_FAMILY_LOOKUP,
-    CATEGORY_DESTRUCTIVE,
     CATEGORY_MUTATIVE,
     CATEGORY_SIMULATION,
     CATEGORY_READ_ONLY,
@@ -60,10 +54,6 @@ __all__ = [
     "classify_command_tier",
     "analyze_command",
     "CommandSemantics",
-    # Safe commands
-    "is_read_only_command",
-    "is_single_command_safe",
-    "SAFE_COMMANDS_CONFIG",
     # Blocked commands
     "is_blocked_command",
     "get_blocked_patterns",
@@ -71,9 +61,8 @@ __all__ = [
     # GitOps
     "validate_gitops_workflow",
     "GitOpsValidationResult",
-    # Dangerous verbs
+    # Mutative verbs
     "CLI_FAMILY_LOOKUP",
-    "CATEGORY_DESTRUCTIVE",
     "CATEGORY_MUTATIVE",
     "CATEGORY_SIMULATION",
     "CATEGORY_READ_ONLY",

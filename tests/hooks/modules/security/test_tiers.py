@@ -117,7 +117,7 @@ class TestClassifyCommandTier:
         tier = classify_command_tier(command)
         assert tier == SecurityTier.T2_DRY_RUN, f"{command} should be T2"
 
-    # T3 - Blocked/destructive operations
+    # T3 - Blocked/mutative operations
     @pytest.mark.parametrize("command", [
         "terraform apply",
         "terraform destroy",
@@ -127,15 +127,22 @@ class TestClassifyCommandTier:
         "rm -rf /",
         "git push origin main",
         "git branch -D main",
-        "git branch -d feature",
-        "git branch -m old new",
         "git branch -M old new",
         "git branch --delete feat",
     ])
-    def test_classifies_destructive_as_t3(self, command):
-        """Test destructive commands are classified as T3."""
+    def test_classifies_mutative_as_t3(self, command):
+        """Test mutative commands are classified as T3."""
         tier = classify_command_tier(command)
         assert tier == SecurityTier.T3_BLOCKED, f"{command} should be T3"
+
+    @pytest.mark.parametrize("command", [
+        "git branch -d feature",  # -d is not a dangerous flag (soft delete)
+        "git branch -m old new",  # -m is not a dangerous flag for git
+    ])
+    def test_soft_branch_ops_safe_by_elimination(self, command):
+        """git branch -d/-m are safe by elimination (no mutative verb, no dangerous flag)."""
+        tier = classify_command_tier(command)
+        assert tier == SecurityTier.T0_READ_ONLY, f"{command} should be T0 (safe)"
 
     def test_empty_command_is_t3(self):
         """Test empty command is classified as T3."""
@@ -147,10 +154,21 @@ class TestClassifyCommandTier:
         tier = classify_command_tier("   ")
         assert tier == SecurityTier.T3_BLOCKED
 
-    def test_unknown_command_is_t3(self):
-        """Test unknown command defaults to T3."""
+    def test_unknown_command_is_safe_by_elimination(self):
+        """Scenario #29: Unknown/unclassified -> T0 (safe by elimination, NOT T3).
+
+        This is a critical design decision: unknown commands default to SAFE,
+        not BLOCKED. The security model relies on blocked_commands.py and
+        mutative_verbs.py to catch dangerous commands. Everything else is safe.
+        """
         tier = classify_command_tier("some_unknown_command --flag")
-        assert tier == SecurityTier.T3_BLOCKED
+        assert tier == SecurityTier.T0_READ_ONLY
+        assert tier != SecurityTier.T3_BLOCKED  # Explicitly NOT T3
+
+    def test_unknown_cli_with_unknown_verb_is_t0(self):
+        """Another unknown combination -- must be T0, not T3."""
+        tier = classify_command_tier("mycustomtool dostuff --verbose")
+        assert tier == SecurityTier.T0_READ_ONLY
 
 
 class TestTierFromString:
@@ -214,11 +232,12 @@ class TestEdgeCases:
     """Test edge cases in tier classification."""
 
     def test_command_with_dry_run_takes_precedence(self):
-        """Test --dry-run flag gives T2 even for apply commands."""
+        """Test --dry-run flag gives T2 even for apply commands -- never T3."""
         command = "kubectl apply -f file.yaml --dry-run=client"
         tier = classify_command_tier(command)
-        # dry-run should give T1 or T2, not T3
-        assert tier in [SecurityTier.T1_VALIDATION, SecurityTier.T2_DRY_RUN]
+        # dry-run MUST give T2 (simulation), never T3
+        assert tier == SecurityTier.T2_DRY_RUN
+        assert tier != SecurityTier.T3_BLOCKED
 
     def test_terraform_plan_is_t2(self):
         """Test terraform plan is simulation (T2), not blocked."""
@@ -230,9 +249,14 @@ class TestEdgeCases:
         tier = classify_command_tier("kubectl get pods -o json")
         assert tier == SecurityTier.T0_READ_ONLY
 
-    def test_compound_safe_commands(self):
-        """Test compound commands with pipes."""
-        # This tests the raw classification - compound parsing
-        # happens in the validator, not here
+    def test_single_safe_command_is_t0(self):
+        """Individual safe commands classify as T0.
+
+        Note: compound parsing happens in bash_validator, not here.
+        classify_command_tier() only handles single commands.
+        """
         tier = classify_command_tier("ls")
         assert tier == SecurityTier.T0_READ_ONLY
+
+        tier2 = classify_command_tier("git status")
+        assert tier2 == SecurityTier.T0_READ_ONLY

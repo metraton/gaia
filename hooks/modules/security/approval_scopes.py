@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Optional, Tuple
 
 from .command_semantics import analyze_command, tokenize_command
-from .dangerous_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP, detect_dangerous_command
+from .mutative_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP, detect_mutative_command
 
 APPROVAL_SCOPE_VERSION = 2
 
@@ -80,7 +80,7 @@ def build_approval_signature(
     if not semantics.base_cmd:
         return None
 
-    danger = detect_dangerous_command(stripped)
+    danger = detect_mutative_command(stripped)
     resolved_category = danger.category
     if resolved_category == CATEGORY_UNKNOWN and danger_category:
         resolved_category = danger_category
@@ -122,7 +122,7 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     if semantics.base_cmd != signature.base_cmd:
         return False
 
-    danger = detect_dangerous_command(stripped)
+    danger = detect_mutative_command(stripped)
     incoming_dangerous_flags = _sorted_unique_lower(danger.dangerous_flags)
     if incoming_dangerous_flags != signature.dangerous_flags:
         return False

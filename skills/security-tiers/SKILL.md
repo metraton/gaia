@@ -37,10 +37,12 @@ For cloud-specific command examples (kubectl, terraform, gcloud, helm, flux), se
 
 ## Hook Enforcement
 
-The pre_tool_use hook is the primary security gate. With `Bash(*)` in the allow list, all commands reach the hook. The hook enforces:
-1. Permanently blocked commands (blocked_commands.py) -- always denied
-2. Dangerous verb detection (dangerous_verbs.py) -- nonce-based approval flow
-3. Safe command auto-approval (safe_commands.py)
+The pre_tool_use hook is the primary security gate. With `Bash(*)` in the allow list, all commands reach the hook. Two modules, elimination logic:
+
+1. **blocked_commands.py** -- pattern-matched irreversible commands, permanently denied (exit 2)
+2. **mutative_verbs.py** -- CLI-agnostic verb detection, nonce-based approval flow
+
+Everything that is not blocked and not mutative is safe by elimination. There is no separate safe-commands list.
 
 Runtime is the single source of truth for nonce handling, grant scope, and
 approval enforcement. This skill teaches classification and decision-making; it

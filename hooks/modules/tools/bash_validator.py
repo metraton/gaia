@@ -5,37 +5,27 @@ Primary security gate for all Bash tool invocations. With Bash(*) in the
 settings.json allow list, ALL commands reach this hook -- it is the sole
 enforcement layer for dangerous command detection.
 
-Validation order (short-circuit on first match):
+Simplified three-category pipeline:
 1. blocked_commands FIRST -- permanently denied patterns (exit 2)
 2. Claude footer stripping -- transparent cleanup via updatedInput
 3. Commit message validation -- conventional commits format
 4. Cloud pipe/redirect/chain check -- corrective deny (exit 0)
-5. Safe command fast-path -- auto-approve read-only commands
-6. Dangerous verb detector -- DESTRUCTIVE/MUTATIVE -> nonce-based deny (exit 0)
-7. GitOps policy validation
-8. Tier classification fallback
+5. Mutative verb detection -- MUTATIVE -> nonce-based deny (exit 0)
+6. Everything else -> SAFE (auto-approved by elimination)
 """
 
 import re
 import json
 import logging
-from typing import Tuple, Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
-from ..security.command_semantics import analyze_command
-from ..security.safe_commands import is_read_only_command
 from ..security.blocked_commands import is_blocked_command
 from ..security.gitops_validator import validate_gitops_workflow
-from ..security.dangerous_verbs import (
-    detect_dangerous_command,
+from ..security.mutative_verbs import (
+    detect_mutative_command,
     build_t3_block_response,
-    ALWAYS_SAFE_CLIS,
-    CLI_FAMILY_LOOKUP,
-    CATEGORY_DESTRUCTIVE,
-    CATEGORY_MUTATIVE,
-    CATEGORY_READ_ONLY,
-    CATEGORY_SIMULATION,
 )
 from ..security.approval_grants import (
     check_approval_grant,
@@ -60,8 +50,6 @@ class BashValidationResult:
     tier: SecurityTier
     reason: str
     suggestions: List[str] = None
-    requires_credentials: bool = False
-    credential_warning: str = None
     modified_input: Optional[Dict[str, Any]] = None
     # When set, the caller should return this dict (exit 0) instead of a
     # plain error string (exit 2).  Used for structured block responses that
@@ -73,34 +61,11 @@ class BashValidationResult:
             self.suggestions = []
 
 
-# Patterns for commands that require credentials
-CREDENTIAL_REQUIRED_PATTERNS = [
-    r"kubectl\s+(?!version)",
-    r"flux\s+(?!version)",
-    r"helm\s+(?!version)",
-    r"gcloud\s+container\s+",
-    r"gcloud\s+sql\s+",
-    r"gcloud\s+redis\s+",
-]
-
 # Patterns for Claude Code attribution footers (forbidden)
 FORBIDDEN_FOOTER_PATTERNS = [
     r"Generated with\s+Claude Code",
     r"Co-Authored-By:\s+Claude",
 ]
-
-# CLI families that should fail closed if they cannot be proven safe.
-# These commands operate against infrastructure, cluster state, system state,
-# or history-bearing resources where an "unknown" subcommand is not acceptable.
-FAIL_CLOSED_CLI_FAMILIES = frozenset({
-    "cloud",
-    "k8s",
-    "iac",
-    "git",
-    "docker",
-    "system",
-})
-
 
 class BashValidator:
     """Validator for Bash tool invocations."""
@@ -108,16 +73,6 @@ class BashValidator:
     def __init__(self):
         """Initialize validator."""
         self.shell_parser = get_shell_parser()
-
-    def _requires_fail_closed_managed_cli(self, command: str) -> bool:
-        """Return True when a known high-impact CLI should not auto-allow unknown T3."""
-        semantics = analyze_command(command)
-        base_cmd = semantics.base_cmd
-        if not base_cmd or base_cmd in ALWAYS_SAFE_CLIS:
-            return False
-
-        family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
-        return family in FAIL_CLOSED_CLI_FAMILIES
 
     def _has_operators(self, command: str) -> bool:
         """Quick check if command has operators (before parsing)."""
@@ -225,53 +180,39 @@ class BashValidator:
     def _validate_single_command(self, command: str) -> BashValidationResult:
         """Validate a single command (no operators).
 
+        Simplified pipeline:
+        1. Mutative verb detection -> block with nonce or allow with grant
+        2. GitOps policy validation (for kubectl/helm/flux)
+        3. Everything else -> SAFE by elimination
+
         Note: is_blocked_command() is NOT called here because validate()
         already checks the full command AND each compound component against
-        the deny list before dispatching to this method.  Calling it again
-        would be redundant work for the same string.
+        the deny list before dispatching to this method.
         """
 
-        # Fast-path: Auto-approve read-only commands
-        is_safe, reason = is_read_only_command(command)
-        if is_safe:
-            return BashValidationResult(
-                allowed=True,
-                tier=SecurityTier.T0_READ_ONLY,
-                reason=f"Auto-approved: {reason}",
-            )
-
-        # Dangerous verb detection: block DESTRUCTIVE/MUTATIVE commands
-        # and direct the agent to follow the T3 approval workflow.
-        # NOTE: PreToolUse hooks fire regardless of settings.json allow list.
-        # The allow list only controls whether a PermissionRequest dialog is shown.
-        # With Bash(*) in allow, ALL Bash commands reach this hook — the hook is
-        # the primary security gate for dangerous command detection.
-        danger = detect_dangerous_command(command)
-        grant_consumed = False
-        if danger.is_dangerous:
+        # Mutative verb detection
+        result = detect_mutative_command(command)
+        if result.is_mutative:
             # Check for an active approval grant before blocking.
-            # When the orchestrator resumes an agent with "APPROVE:<nonce>",
-            # the pre_tool_use hook activates a time-limited grant. If a
-            # matching grant exists, allow the command through instead of
-            # blocking.
             grant = check_approval_grant(command)
             if grant is not None:
                 logger.info(
                     "T3 command allowed via approval grant: %s (scope='%s')",
                     command[:80], grant.approved_scope,
                 )
-                grant_consumed = True
-                # Fall through to tier classification below (do NOT block)
+                return BashValidationResult(
+                    allowed=True,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Command allowed via approval grant (tier T3)",
+                )
             else:
                 # Generate a cryptographic nonce and write a pending approval.
-                # The nonce is included in the block response so the agent can
-                # present it for user approval.
                 nonce = generate_nonce()
                 pending_file = write_pending_approval(
                     nonce=nonce,
                     command=command,
-                    danger_verb=danger.verb,
-                    danger_category=danger.category,
+                    danger_verb=result.verb,
+                    danger_category=result.category,
                 )
                 if pending_file is None:
                     hook_block = build_hook_permission_response(
@@ -285,34 +226,16 @@ class BashValidator:
                         block_response=hook_block,
                     )
 
-                t3_block = build_t3_block_response(command, danger, nonce=nonce)
-                # Wrap in hookSpecificOutput format so Claude Code receives the
-                # corrective message (exit 0) instead of a terminal error (exit 2).
+                t3_block = build_t3_block_response(command, result, nonce=nonce)
                 hook_block = build_hook_permission_response("deny", t3_block["message"])
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
-                    reason=f"Dangerous {danger.category.lower()} command: {danger.reason}",
+                    reason=f"Dangerous {result.category.lower()} command: {result.reason}",
                     block_response=hook_block,
                 )
 
-        # Semantic fallback for commands that are clearly read-only/simulation
-        # but were not matched by the stricter safe_commands heuristics.
-        if danger.category == CATEGORY_READ_ONLY:
-            return BashValidationResult(
-                allowed=True,
-                tier=SecurityTier.T0_READ_ONLY,
-                reason=f"Semantic read-only detection: {danger.reason}",
-            )
-
-        if danger.category == CATEGORY_SIMULATION:
-            return BashValidationResult(
-                allowed=True,
-                tier=SecurityTier.T2_DRY_RUN,
-                reason=f"Semantic simulation detection: {danger.reason}",
-            )
-
-        # Check GitOps commands
+        # Check GitOps policy for kubectl/helm/flux commands
         if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
             gitops_result = validate_gitops_workflow(command)
             if not gitops_result.allowed:
@@ -323,76 +246,11 @@ class BashValidator:
                     suggestions=gitops_result.suggestions,
                 )
 
-        # Check credentials requirement
-        requires_creds, cred_warning = self._check_credentials_required(command)
-
-        # Derive tier from results already computed above.
-        # All T0 (read-only), T2 (simulation), and blocked paths have already
-        # returned.  The only commands reaching here are:
-        #   - danger.is_dangerous=True with an active approval grant (T3)
-        #   - danger.category="UNKNOWN" with no dangerous flags (unknown verb)
-        # Both default to T3; no need to call classify_command_tier() again.
-        tier = SecurityTier.T3_BLOCKED
-
-        # Fail-closed: unknown subcommands for managed CLIs go through the
-        # nonce approval flow (corrective deny, exit 0) UNLESS the command was
-        # explicitly approved via a grant (grant_consumed=True).
-        # Previously this was a permanent block (exit 2, no nonce) which made
-        # unclassified commands impossible to approve.
-        if not grant_consumed and self._requires_fail_closed_managed_cli(command):
-            nonce = generate_nonce()
-            # Use the verb from the danger result if available, otherwise
-            # extract it from the command semantics.
-            verb = danger.verb if danger.verb else "unknown"
-            pending_file = write_pending_approval(
-                nonce=nonce,
-                command=command,
-                danger_verb=verb,
-                danger_category="UNCLASSIFIED",
-            )
-            if pending_file is None:
-                hook_block = build_hook_permission_response(
-                    "deny",
-                    build_pending_approval_unavailable_message(),
-                )
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason="Failed to persist pending approval for unclassified managed CLI command",
-                    block_response=hook_block,
-                )
-
-            message = (
-                f"BLOCKED: Unclassified command on managed CLI.\n"
-                f"Command: {command}\n"
-                f"Verb: '{verb}' is not in any known taxonomy "
-                f"(DESTRUCTIVE, MUTATIVE, SIMULATION, READ_ONLY).\n"
-                f"This command requires explicit approval because it runs on "
-                f"a managed CLI where unknown operations are not auto-allowed.\n"
-                f"\n"
-                f"{build_t3_approval_instructions(nonce)}"
-            )
-            hook_block = build_hook_permission_response("deny", message)
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=(
-                    "Managed CLI command could not be classified as safe; "
-                    "requires approval via nonce workflow"
-                ),
-                block_response=hook_block,
-            )
-
-        # Commands that reached here passed both blocked_commands.py and the
-        # dangerous verb detector (either safe, granted, or unknown verb).
-        # With Bash(*) in allow and empty ask list, the hook is the sole
-        # security gate -- settings.json no longer prompts for approval.
+        # Not blocked, not mutative -> SAFE by elimination
         return BashValidationResult(
             allowed=True,
-            tier=tier,
-            reason=f"Command allowed (tier {tier})",
-            requires_credentials=requires_creds,
-            credential_warning=cred_warning if requires_creds else None,
+            tier=SecurityTier.T0_READ_ONLY,
+            reason="Safe by elimination (not blocked, not mutative)",
         )
 
     def _validate_compound_command(self, components: List[str]) -> BashValidationResult:
@@ -560,30 +418,6 @@ class BashValidator:
             return msg.strip()
 
         return None
-
-    def _check_credentials_required(self, command: str) -> Tuple[bool, str]:
-        """Check if command requires credentials and provide guidance."""
-        for pattern in CREDENTIAL_REQUIRED_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                # Skip if it's a credential setup command
-                if "gcloud auth" in command or "gcloud config" in command:
-                    return False, ""
-                if "source" in command and "load-cluster-credentials.sh" in command:
-                    return False, ""
-
-                warning = (
-                    "This command requires GCP/Kubernetes credentials to be loaded.\n\n"
-                    "Recommended patterns:\n"
-                    "  1. Load credentials inline:\n"
-                    "     gcloud auth application-default login && kubectl ...\n\n"
-                    "  2. Use gcloud container clusters get-credentials first:\n"
-                    "     gcloud container clusters get-credentials <cluster> --region <region>\n\n"
-                    "  3. Ensure KUBECONFIG is set for kubectl/helm/flux commands\n"
-                )
-                return True, warning
-
-        return False, ""
-
 
 def validate_bash_command(command: str) -> BashValidationResult:
     """

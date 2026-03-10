@@ -5,7 +5,7 @@ This is the single source of truth for DESTRUCTIVE commands. Commands matched he
 are blocked with exit 2 and no nonce is generated -- they cannot be approved.
 
 All other state-modifying commands are detected by the universal verb detector
-(dangerous_verbs.py) as MUTATIVE and routed through the nonce approval workflow.
+(mutative_verbs.py) as MUTATIVE and routed through the nonce approval workflow.
 
 Categories:
 - AWS networking/data infrastructure delete operations
@@ -79,7 +79,7 @@ class SemanticBlockedRule:
 # These commands are PERMANENTLY BLOCKED and cannot be executed even with approval.
 # They represent irreversible, catastrophic operations at scale.
 #
-# The following are MUTATIVE (approvable via nonce, handled by dangerous_verbs.py):
+# The following are MUTATIVE (approvable via nonce, handled by mutative_verbs.py):
 # - aws iam delete-*, detach-*, remove-user-from-group
 # - aws ec2 delete-key-pair, delete-snapshot, delete-volume,
 #   delete-security-group, delete-network-interface

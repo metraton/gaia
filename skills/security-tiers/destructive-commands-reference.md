@@ -630,11 +630,11 @@ Based on this research, the following commands are currently missing from `block
 
 ### Commands to KEEP as approvable T3 (no change needed)
 
-All commands currently in `dangerous_verbs.py` DESTRUCTIVE and MUTATIVE categories are correctly classified. The verb taxonomy is sound.
+All commands currently in `mutative_verbs.py` MUTATIVE category are correctly classified. The verb taxonomy is sound.
 
 ### Dangerous flag combinations to consider
 
-The `dangerous_verbs.py` flag scanning is solid. Consider adding:
+The `mutative_verbs.py` flag scanning is solid. Consider adding:
 - `--all-namespaces` / `-A` for kubectl as a DESTRUCTIVE escalator when combined with `delete`
 - `--no-hooks` for helm as a DESTRUCTIVE escalator when combined with `uninstall`
 - `--volumes` for docker as a DESTRUCTIVE escalator when combined with `prune`

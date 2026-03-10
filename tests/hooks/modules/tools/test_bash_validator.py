@@ -7,7 +7,6 @@ Tests the bash command validation system:
 2. Dangerous (T3) commands are blocked with structured block_response
 3. Deny list commands are blocked (allowed=False)
 4. Compound commands are validated correctly
-5. Credential requirements are detected
 """
 
 import sys
@@ -174,10 +173,11 @@ class TestCompoundCommandValidation:
 
     def test_returns_highest_tier(self, validator):
         """Test returns highest security tier from compound."""
-        # T0 + T2 (simulation) should return T2
+        # In simplified pipeline, non-mutative commands are T0 (safe by elimination)
         result = validator.validate("ls -la && terraform plan")
         assert result.allowed is True
-        assert result.tier == SecurityTier.T2_DRY_RUN
+        # Both components are safe by elimination (not mutative)
+        assert result.tier == SecurityTier.T0_READ_ONLY
 
 
 class TestClaudeFooterStripping:
@@ -233,28 +233,6 @@ class TestClaudeFooterStripping:
         assert result.modified_input is None
 
 
-class TestCredentialRequirement:
-    """Test credential requirement detection."""
-
-    def test_detects_kubectl_credentials(self, validator):
-        """Test detects kubectl commands need credentials."""
-        result = validator.validate("kubectl get pods")
-        # This should either require credentials or be marked somehow
-        # Implementation may vary - adjust based on actual behavior
-
-    def test_detects_helm_credentials(self, validator):
-        """Test detects helm commands need credentials."""
-        result = validator.validate("helm list")
-        # This should either require credentials or be marked somehow
-        # Implementation may vary - adjust based on actual behavior
-
-    def test_detects_flux_credentials(self, validator):
-        """Test detects flux commands need credentials."""
-        result = validator.validate("flux get sources git")
-        # This should either require credentials or be marked somehow
-        # Implementation may vary - adjust based on actual behavior
-
-
 class TestBashValidationResult:
     """Test BashValidationResult structure."""
 
@@ -265,13 +243,15 @@ class TestBashValidationResult:
         assert hasattr(result, "tier")
         assert hasattr(result, "reason")
         assert hasattr(result, "suggestions")
-        assert hasattr(result, "requires_credentials")
 
     def test_suggestions_for_blocked(self, validator):
-        """Test provides suggestions for blocked commands."""
+        """Test blocked commands return a structured result with no block_response (exit 2 path)."""
         result = validator.validate("kubectl delete namespace production")
         assert result.allowed is False
-        # May or may not have suggestions depending on implementation
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "security policy" in result.reason.lower()
+        # Permanently blocked commands use exit 2 (no block_response)
+        assert result.block_response is None
 
 
 class TestConvenienceFunction:
@@ -293,6 +273,62 @@ class TestConvenienceFunction:
         """Test convenience function blocks dangerous commands."""
         result = validate_bash_command("kubectl delete namespace production")
         assert result.allowed is False
+
+
+class TestMutativeWithActiveGrant:
+    """Scenario #3: Mutative command WITH active grant -> allow.
+
+    When a valid approval grant exists for a mutative command,
+    the validator should allow it through.
+    """
+
+    def test_mutative_command_allowed_with_grant(self, validator, tmp_path, monkeypatch):
+        """A mutative command with an active grant should be allowed."""
+        import time
+        from modules.security.approval_grants import ApprovalGrant
+
+        # Create a fake grant that matches the command
+        fake_grant = ApprovalGrant(
+            session_id="test-session",
+            approved_verbs=["apply"],
+            approved_scope="terraform apply",
+            granted_at=time.time(),
+            ttl_minutes=10,
+            used=False,
+        )
+
+        # Monkeypatch check_approval_grant to return our fake grant
+        monkeypatch.setattr(
+            "modules.tools.bash_validator.check_approval_grant",
+            lambda cmd: fake_grant,
+        )
+
+        result = validator.validate("terraform apply")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T3_BLOCKED  # tier stays T3 even when granted
+        assert "approval grant" in result.reason.lower()
+
+
+class TestNonMutativeManagedCLI:
+    """Scenario #4: Non-mutative command on managed CLI -> SAFE.
+
+    Commands on managed CLIs (kubectl, terraform, etc.) that are not
+    blocked and not mutative should be safe by elimination.
+    """
+
+    @pytest.mark.parametrize("command,expected_tier", [
+        ("kubectl get pods", SecurityTier.T0_READ_ONLY),
+        ("terraform show", SecurityTier.T0_READ_ONLY),
+        ("helm list", SecurityTier.T0_READ_ONLY),
+        ("aws s3 ls", SecurityTier.T0_READ_ONLY),
+        ("gcloud compute instances list", SecurityTier.T0_READ_ONLY),
+    ])
+    def test_read_only_managed_cli_commands_are_safe(self, validator, command, expected_tier):
+        """Read-only commands on managed CLIs should be allowed as T0."""
+        result = validator.validate(command)
+        assert result.allowed is True
+        assert result.tier == expected_tier
+        assert result.block_response is None
 
 
 class TestBlockedCommandsPriority:
@@ -390,6 +426,27 @@ class TestBlockedCommandsPriority:
         assert result.block_response is None
 
 
+class TestCloudPipeValidation:
+    """Scenario #5: Pipe/chain validation for cloud commands.
+
+    Cloud commands piped to other tools should be caught by
+    cloud_pipe_validator when they violate security policy.
+    """
+
+    def test_cloud_command_piped_to_tool_blocked(self, validator):
+        """Piping cloud output to mutation tools should be blocked."""
+        result = validator.validate("kubectl get pods -o json | kubectl apply -f -")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+    def test_cloud_command_piped_to_safe_tool_may_be_blocked(self, validator):
+        """Cloud commands with pipes trigger cloud_pipe_validator."""
+        # Simple cloud pipe -- depends on cloud_pipe_validator rules
+        result = validator.validate("gcloud compute instances list | grep prod")
+        # This may or may not be blocked depending on cloud_pipe_validator config
+        assert isinstance(result, BashValidationResult)
+
+
 class TestGlobalFlagSafeVariants:
     """Read-only commands with leading flags should stay allowed."""
 
@@ -409,12 +466,12 @@ class TestGlobalFlagSafeVariants:
         assert result.tier == SecurityTier.T0_READ_ONLY
 
 
-class TestManagedCliFailClosed:
-    """Known infra/system CLIs must not auto-allow unknown T3 commands.
+class TestSafeByElimination:
+    """Commands that are not blocked and not mutative are safe by elimination.
 
-    Unknown verbs on managed CLIs now go through the nonce approval flow
-    (corrective deny, exit 0) instead of permanent block (exit 2). This
-    makes them approvable by the user.
+    In the simplified pipeline, there is no fail-closed behavior for managed CLIs.
+    Unknown commands on kubectl, aws, gcloud, etc. are safe if they don't
+    contain a mutative verb.
     """
 
     @pytest.mark.parametrize("command", [
@@ -422,31 +479,45 @@ class TestManagedCliFailClosed:
         "kubectl foo bar",
         "gcloud foo bar",
         "terraform foo bar",
+        "docker ps",
+        "git add .",
+        "git stash",
     ])
-    def test_unknown_managed_cli_commands_are_blocked_with_nonce(self, validator, command):
+    def test_unknown_and_safe_commands_are_allowed(self, validator, command):
+        """Non-blocked, non-mutative commands are safe by elimination."""
+        result = validator.validate(command)
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    @pytest.mark.parametrize("command", [
+        "git commit -m 'feat: test'",
+        "kubectl apply -f manifest.yaml",
+        "glab api -X POST /projects/123/notes",
+        "terraform apply",
+    ])
+    def test_mutative_commands_are_blocked(self, validator, command):
+        """Mutative commands still require nonce approval."""
         result = validator.validate(command)
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
-        assert "could not be classified as safe" in result.reason.lower()
-        # Must have a block_response (corrective deny, exit 0) with nonce
-        assert result.block_response is not None
-        assert "hookSpecificOutput" in result.block_response
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
-        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "NONCE:" in reason
-        assert "Unclassified command on managed CLI" in reason
 
 
 class TestEdgeCases:
     """Test edge cases."""
 
     def test_handles_long_command(self, validator):
-        """Test handles very long commands."""
+        """Test handles very long commands without crashing and produces a valid result."""
         long_cmd = "ls " + " ".join([f"file{i}" for i in range(1000)])
         result = validator.validate(long_cmd)
         assert isinstance(result, BashValidationResult)
+        # ls is read-only regardless of argument count
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
 
     def test_handles_special_characters(self, validator):
-        """Test handles special characters in commands."""
+        """Test handles special characters in commands -- quoted && is not a compound operator."""
         result = validator.validate('echo "hello && world"')
         assert isinstance(result, BashValidationResult)
+        # echo with quoted string is safe, && inside quotes is not an operator
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY

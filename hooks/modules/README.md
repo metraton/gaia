@@ -35,9 +35,8 @@ modules/
 ├── security/             # Security classification & approval
 │   ├── __init__.py
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
-│   ├── safe_commands.py  # SAFE_COMMANDS_CONFIG + is_read_only_command()
 │   ├── blocked_commands.py # Blocked patterns by category
-│   ├── dangerous_verbs.py  # CLI-agnostic verb detector, nonce-based deny
+│   ├── mutative_verbs.py   # CLI-agnostic verb detector, nonce-based deny
 │   ├── approval_grants.py  # Nonce-based approval grant management
 │   ├── approval_constants.py # Approval system constants
 │   ├── approval_messages.py  # Approval denial message formatting
@@ -147,10 +146,9 @@ bash_validator checks commands in this order (short-circuit on first match):
 2. **Claude footer stripping** — transparent via updatedInput
 3. **Commit message validation** — conventional commits enforcement
 4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny
-5. **Safe commands** (safe_commands.py) — auto-approve read-only operations
-6. **Dangerous verbs** (dangerous_verbs.py) — CLI-agnostic verb detector, nonce-based deny
-7. **GitOps validation** (gitops_validator.py) — kubectl/helm/flux policy enforcement
-8. **Tier classification** — T0/T1/T2/T3 fallback for logging and metrics
+5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, nonce-based deny
+6. **GitOps validation** (gitops_validator.py) — kubectl/helm/flux policy enforcement
+7. **Everything else** — SAFE by elimination (auto-approved)
 
 ### Tier Classification
 - **T0**: Read-only (get, list, describe, show)

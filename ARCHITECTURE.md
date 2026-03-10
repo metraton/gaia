@@ -63,14 +63,11 @@ Order is short-circuit -- first match wins:
 2. Claude footer strip    --> auto-remove Co-Authored-By (transparent updatedInput)
 3. Commit message check   --> conventional commits format validation
 4. cloud_pipe_validator   --> block pipes/redirects/chains on cloud CLIs (exit 0, corrective)
-5. safe_commands.py       --> auto-approve read-only commands (T0)
-6. dangerous_verbs.py     --> scan tokens 1-5 for DESTRUCTIVE/MUTATIVE verbs
-   |                          If dangerous + no active grant -> generate nonce, block
-   |                          If dangerous + active grant -> allow (T3)
-   |                          If READ_ONLY category -> allow (T0)
-   |                          If SIMULATION category -> allow (T2)
-7. gitops_validator       --> GitOps policy for kubectl/helm/flux
-8. Fail-closed fallback   --> managed CLIs with unknown verbs -> block
+5. mutative_verbs.py      --> scan tokens 1-5 for MUTATIVE verbs
+   |                          If mutative + no active grant -> generate nonce, block
+   |                          If mutative + active grant -> allow (T3)
+   |                          If not mutative -> safe by elimination (T0)
+6. gitops_validator       --> GitOps policy for kubectl/helm/flux
 ```
 
 ### Task/Agent Validation
@@ -158,7 +155,7 @@ Nonce-based T3 approval lifecycle:
 
 ```
 1. Agent attempts dangerous command (e.g., terraform apply)
-2. dangerous_verbs.py detects DESTRUCTIVE/MUTATIVE verb
+2. mutative_verbs.py detects MUTATIVE verb
 3. BashValidator generates 128-bit nonce via generate_nonce()
 4. write_pending_approval() saves pending-{nonce}.json to .claude/cache/approvals/
 5. Hook returns corrective deny (exit 0) with NONCE:{hex} in message
@@ -190,8 +187,7 @@ Invalid responses trigger a repair loop: save pending-repair.json, pre_tool_use 
 | `hooks/modules/tools/bash_validator.py` | Bash command security gate |
 | `hooks/modules/tools/task_validator.py` | Task/Agent invocation validator |
 | `hooks/modules/security/blocked_commands.py` | Permanently denied command patterns |
-| `hooks/modules/security/safe_commands.py` | Auto-approved read-only commands |
-| `hooks/modules/security/dangerous_verbs.py` | CLI-agnostic dangerous verb detector |
+| `hooks/modules/security/mutative_verbs.py` | CLI-agnostic mutative verb detector |
 | `hooks/modules/security/approval_grants.py` | Nonce grant lifecycle management |
 | `hooks/modules/agents/response_contract.py` | Agent response contract validator |
 | `hooks/modules/context/context_writer.py` | Progressive context enrichment |

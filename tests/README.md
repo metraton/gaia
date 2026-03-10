@@ -18,7 +18,7 @@ tests/
 ├── fixtures/              # JSON fixtures (project-context AWS/GCP/full)
 ├── hooks/                 # Hook and security module tests
 │   └── modules/
-│       ├── security/      # safe_commands, blocked_commands, tiers, gitops_validator
+│       ├── security/      # mutative_verbs, blocked_commands, tiers, gitops_validator
 │       ├── tools/         # bash_validator, shell_parser, task_validator
 │       ├── core/          # paths, state
 │       └── context/       # context_writer
@@ -59,8 +59,7 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 
 | File | Tests | Category |
 |------|-------|----------|
-| `test_dangerous_verbs.py` | 246 | Security |
-| `test_safe_commands.py` | 175 | Security |
+| `test_mutative_verbs.py` | ~50 | Security |
 | `test_blocked_commands.py` | 126 | Security |
 | `test_gitops_validator.py` | 80 | Security |
 | `test_tiers.py` | 66 | Security |

@@ -6,7 +6,7 @@ They catch the class of bugs where "each module works in isolation but the syste
 is inconsistent" — the #1 source of silent failures in gaia-ops.
 
 What these tests cover:
-1. settings.json ↔ safe_commands.py ↔ blocked_commands.py consistency
+1. settings.json ↔ blocked_commands.py consistency
 2. Security tier classification matches skill definitions
 3. bash_validator enforces defense-in-depth order (deny before allow)
 4. task_validator agents/indicators match CLAUDE.md and skills
@@ -33,12 +33,6 @@ CONFIG_DIR = GAIA_OPS_ROOT / "config"
 # Add hooks to path for imports
 sys.path.insert(0, str(HOOKS_DIR))
 
-from modules.security.safe_commands import (
-    ALWAYS_SAFE_COMMANDS,
-    ALWAYS_SAFE_MULTIWORD,
-    SAFE_PATTERNS,
-    CONDITIONAL_SAFE_COMMANDS,
-)
 from modules.security.blocked_commands import BLOCKED_PATTERNS, get_blocked_patterns
 from modules.security.tiers import (
     ULTRA_COMMON_T0_COMMANDS,
@@ -275,28 +269,6 @@ class TestTierConsistency:
             f"T2 patterns should be {expected_t2_keywords}, got {actual_t2_keywords}"
         )
 
-    def test_always_safe_commands_are_truly_read_only(self):
-        """Commands in ALWAYS_SAFE must not be able to modify state."""
-        # Commands that can execute arbitrary code or modify filesystem
-        not_read_only = {
-            "python", "python3", "node", "ruby", "perl",  # script execution
-            "tar", "gzip", "gunzip", "zip", "unzip",      # archive operations (extract writes)
-            "mv", "cp", "rm", "mkdir", "touch",            # filesystem mutation
-            "chmod", "chown",                               # permission changes
-            "tee",                                          # writes to files
-        }
-
-        violations = ALWAYS_SAFE_COMMANDS & not_read_only
-        assert not violations, (
-            f"Non-read-only commands in ALWAYS_SAFE: {violations}"
-        )
-
-    def test_terraform_plan_not_in_safe_multiword(self):
-        """terraform plan must NOT be in always_safe_multiword (it's T2, not T0)."""
-        for cmd in ALWAYS_SAFE_MULTIWORD:
-            assert cmd != "terraform plan", "terraform plan should not be in ALWAYS_SAFE_MULTIWORD"
-            assert cmd != "terragrunt plan", "terragrunt plan should not be in ALWAYS_SAFE_MULTIWORD"
-
 
 # ===========================================================================
 # 3. Defense-in-depth: bash_validator order
@@ -306,7 +278,7 @@ class TestDefenseInDepth:
     """Verify that security checks happen in the correct order."""
 
     def test_blocked_checked_before_safe(self):
-        """bash_validator.validate() must check blocked_commands BEFORE safe_commands.
+        """bash_validator.validate() must check blocked_commands BEFORE mutative verb detection.
 
         The blocked check runs in validate() (the public entry point) before
         dispatching to _validate_single_command.  This test verifies the

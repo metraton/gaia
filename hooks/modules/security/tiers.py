@@ -7,10 +7,10 @@ this module's classify_command_tier() is used for logging and state
 tracking.
 
 Tiers:
-- T0: Read-only operations (safe_commands.py)
+- T0: Read-only operations (safe by elimination)
 - T1: Validation operations (validate, lint, fmt, check) -- local only
 - T2: Simulation operations (plan, diff, dry-run) -- may contact remote APIs
-- T3: Destructive/state-modifying operations (dangerous_verbs.py detection,
+- T3: State-modifying operations (mutative_verbs.py detection,
   nonce-based approval via approval_grants.py)
 """
 
@@ -91,10 +91,7 @@ def _classify_command_tier_cached(
     command = command.strip()
 
     # Fast-path: Ultra-common T0 commands
-    # Normalize git commands so "git -C /path log" matches "git log"
-    from .safe_commands import _normalize_git_command
-    normalized = _normalize_git_command(command)
-    words = normalized.split()
+    words = command.split()
     if len(words) >= 2:
         prefix2 = f"{words[0]} {words[1]}"
         if prefix2 in ULTRA_COMMON_T0_COMMANDS:
@@ -121,30 +118,23 @@ def _classify_command_tier_cached(
         if re.search(pattern, command, re.IGNORECASE):
             return SecurityTier.T1_VALIDATION
 
-    # Check for read-only operations (T0)
-    from .safe_commands import is_read_only_command
-    is_safe, _ = is_read_only_command(command)
-    if is_safe:
-        return SecurityTier.T0_READ_ONLY
-
-    # Use the universal verb detector for T3 classification
-    from .dangerous_verbs import (
-        detect_dangerous_command,
-        CATEGORY_DESTRUCTIVE,
+    # Use the mutative verb detector for T3 classification
+    from .mutative_verbs import (
+        detect_mutative_command,
         CATEGORY_MUTATIVE,
         CATEGORY_READ_ONLY,
         CATEGORY_SIMULATION,
     )
-    danger = detect_dangerous_command(command)
-    if danger.category == CATEGORY_READ_ONLY:
-        return SecurityTier.T0_READ_ONLY
-    if danger.category == CATEGORY_SIMULATION:
-        return SecurityTier.T2_DRY_RUN
-    if danger.is_dangerous and danger.category in (CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE):
+    result = detect_mutative_command(command)
+    if result.is_mutative:
         return SecurityTier.T3_BLOCKED
+    if result.category == CATEGORY_SIMULATION:
+        return SecurityTier.T2_DRY_RUN
+    if result.category == CATEGORY_READ_ONLY:
+        return SecurityTier.T0_READ_ONLY
 
-    # Default to blocked for unknown commands
-    return SecurityTier.T3_BLOCKED
+    # Not blocked, not mutative -> safe by elimination (T0)
+    return SecurityTier.T0_READ_ONLY
 
 
 def classify_command_tier(command: str) -> SecurityTier:
@@ -161,9 +151,8 @@ def classify_command_tier(command: str) -> SecurityTier:
     2. Blocked patterns (T3) -- checked against pre-compiled patterns
     3. Dry-run/simulation (T2) -- --dry-run, plan, diff, template
     4. Local validation (T1) -- validate, lint, fmt, check
-    5. Read-only (T0) -- safe_commands check
-    6. Dangerous verb detector (T3) -- DESTRUCTIVE/MUTATIVE verbs
-    7. Default T3 for unknown commands
+    5. Mutative verb detector (T3) -- MUTATIVE verbs
+    6. Default T0 for everything else (safe by elimination)
 
     Args:
         command: Shell command to classify

@@ -115,7 +115,7 @@ The `hooks/` directory contains runtime validators that enforce security and wor
 
 - `pre_tool_use.py` - Main entry point; validates every tool call before execution.
 - `post_tool_use.py` - Audit and metrics after tool execution.
-- `hooks/modules/` - Individual validation modules (e.g., `blocked_commands.py`, `safe_commands.py`, `dangerous_verbs.py`).
+- `hooks/modules/` - Individual validation modules (e.g., `blocked_commands.py`, `mutative_verbs.py`).
 
 **Key rules for hook changes:**
 - Every change to a hook module must have a corresponding test in `tests/`.

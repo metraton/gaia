@@ -13,12 +13,11 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
-from ..security.dangerous_verbs import (
-    detect_dangerous_command,
-    DangerResult,
+from ..security.mutative_verbs import (
+    detect_mutative_command,
+    MutativeResult,
     CLI_FAMILY_LOOKUP,
     COMMAND_ALIASES,
-    CATEGORY_DESTRUCTIVE,
     CATEGORY_MUTATIVE,
 )
 
@@ -50,7 +49,7 @@ META_AGENTS = ["gaia", "Explore", "Plan"]
 
 # T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
 # to verify that these commands are classified as T3 by the verb detector.
-# NOT used at runtime -- detection is handled entirely by detect_dangerous_command().
+# NOT used at runtime -- detection is handled entirely by detect_mutative_command().
 T3_KEYWORDS = [
     "git commit",
     "git push",
@@ -150,7 +149,7 @@ def _extract_command_candidates(text: str) -> List[str]:
     return candidates
 
 
-def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[DangerResult]]:
+def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[MutativeResult]]:
     """Scan free-form text for T3 (dangerous) command intent using the verb detector.
 
     Args:
@@ -162,8 +161,8 @@ def _scan_text_for_t3(text: str) -> Tuple[bool, str, Optional[DangerResult]]:
     candidates = _extract_command_candidates(text)
 
     for candidate in candidates:
-        result = detect_dangerous_command(candidate)
-        if result.is_dangerous and result.category in (CATEGORY_DESTRUCTIVE, CATEGORY_MUTATIVE):
+        result = detect_mutative_command(candidate)
+        if result.is_mutative:
             return True, candidate, result
 
     return False, "", None
