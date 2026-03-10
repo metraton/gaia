@@ -40,6 +40,8 @@ COMMANDS_RUN:
 - `terraform plan -no-color` -> plan succeeded
 KEY_OUTPUTS:
 - plan adds one bucket and no destroys
+VERBATIM_OUTPUTS:
+- none
 CROSS_LAYER_IMPACTS:
 - app_ci_tooling needs TURBO cache env vars updated
 OPEN_GAPS:
@@ -66,6 +68,8 @@ COMMANDS_RUN:
 - `terraform plan -no-color` -> plan succeeded
 KEY_OUTPUTS:
 - plan adds one bucket and no destroys
+VERBATIM_OUTPUTS:
+- none
 CROSS_LAYER_IMPACTS:
 - app_ci_tooling needs TURBO cache env vars updated
 OPEN_GAPS:
@@ -106,8 +110,8 @@ class TestParseResponseBlocks:
     def test_parse_evidence_report(self):
         evidence = parse_evidence_report(VALID_OUTPUT)
         assert evidence.marker_present is True
-        assert evidence.fields["FILES_CHECKED"] == ["terraform/main.tf"]
-        assert evidence.fields["OPEN_GAPS"] == ["none"]
+        assert "terraform/main.tf" in evidence.fields["FILES_CHECKED"][0]
+        assert "none" in evidence.fields["OPEN_GAPS"][0]
 
 
 class TestValidateResponseContract:
@@ -134,6 +138,36 @@ AGENT_ID: a12345
         assert result.recommended_action == RECOMMENDED_ACTION_RESUME_REPAIR
         assert "EVIDENCE_REPORT" in result.missing
         assert "PATTERNS_CHECKED" in result.missing
+
+    def test_missing_verbatim_outputs_requires_repair(self):
+        output = """\
+## Findings
+
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- compared sibling terraform modules
+FILES_CHECKED:
+- terraform/main.tf
+COMMANDS_RUN:
+- `terraform plan -no-color` -> plan succeeded
+KEY_OUTPUTS:
+- plan adds one bucket and no destroys
+CROSS_LAYER_IMPACTS:
+- app_ci_tooling needs TURBO cache env vars updated
+OPEN_GAPS:
+- none
+<!-- /EVIDENCE_REPORT -->
+
+<!-- AGENT_STATUS -->
+PLAN_STATUS: COMPLETE
+PENDING_STEPS: []
+NEXT_ACTION: Report findings to the orchestrator
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+"""
+        result = validate_response_contract(output, task_agent_id="a12345")
+        assert result.valid is False
+        assert "VERBATIM_OUTPUTS" in result.missing
 
     def test_invalid_plan_status_is_rejected(self):
         output = VALID_OUTPUT.replace("PLAN_STATUS: COMPLETE", "PLAN_STATUS: DONE")
@@ -176,6 +210,76 @@ AGENT_ID: a12345
         )
         assert "CONSOLIDATION_REPORT (with OWNERSHIP_ASSESSMENT), optional" in prompt
         assert ",," not in prompt
+
+
+VALID_OUTPUT_WITH_FENCED_VERBATIM = """\
+## Findings
+
+<!-- EVIDENCE_REPORT -->
+PATTERNS_CHECKED:
+- compared sibling terraform modules
+FILES_CHECKED:
+- terraform/main.tf
+COMMANDS_RUN:
+- `terraform plan -no-color` -> plan succeeded
+- `kubectl get pods -n staging` -> 3 pods found
+KEY_OUTPUTS:
+- plan adds one bucket and no destroys
+VERBATIM_OUTPUTS:
+- `kubectl get pods -n staging`:
+  ```
+  NAME            READY   STATUS
+  api-gateway     0/1     OOMKilled
+  redis-cache     1/1     Running
+  ```
+- `terraform plan -no-color`:
+  ```
+  Plan: 1 to add, 0 to change, 0 to destroy.
+  ```
+CROSS_LAYER_IMPACTS:
+- app_ci_tooling needs TURBO cache env vars updated
+OPEN_GAPS:
+- none
+<!-- /EVIDENCE_REPORT -->
+
+<!-- AGENT_STATUS -->
+PLAN_STATUS: COMPLETE
+PENDING_STEPS: []
+NEXT_ACTION: Report findings to the orchestrator
+AGENT_ID: a12345
+<!-- /AGENT_STATUS -->
+"""
+
+
+class TestVerbatimOutputsWithFencedBlocks:
+    def test_fenced_code_blocks_are_preserved(self):
+        """Verify VERBATIM_OUTPUTS with fenced code blocks parses correctly."""
+        result = validate_response_contract(
+            VALID_OUTPUT_WITH_FENCED_VERBATIM,
+            task_agent_id="a12345",
+        )
+        assert result.valid is True
+        verbatim = result.evidence_report.fields.get("VERBATIM_OUTPUTS", [])
+        assert len(verbatim) == 1, "VERBATIM_OUTPUTS should have one raw text entry"
+        raw_text = verbatim[0]
+        assert "OOMKilled" in raw_text
+        assert "redis-cache" in raw_text
+        assert "Plan: 1 to add" in raw_text
+
+    def test_fenced_blocks_do_not_bleed_into_next_field(self):
+        """Fenced code blocks should not leak content into CROSS_LAYER_IMPACTS."""
+        evidence = parse_evidence_report(VALID_OUTPUT_WITH_FENCED_VERBATIM)
+        cross_layer = evidence.fields.get("CROSS_LAYER_IMPACTS", [])
+        assert len(cross_layer) == 1
+        assert "OOMKilled" not in cross_layer[0]
+        assert "TURBO" in cross_layer[0]
+
+    def test_simple_none_verbatim_still_works(self):
+        """The original '- none' format should still parse correctly."""
+        evidence = parse_evidence_report(VALID_OUTPUT)
+        verbatim = evidence.fields.get("VERBATIM_OUTPUTS", [])
+        assert len(verbatim) == 1
+        assert "none" in verbatim[0]
 
 
 class TestPersistence:

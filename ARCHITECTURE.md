@@ -89,7 +89,7 @@ Fires after every agent tool completes:
 2. Capture workflow metrics  --> duration, exit code, plan status -> metrics.jsonl
 3. Validate response contract
    |  Parse AGENT_STATUS block (plan_status, agent_id, pending_steps, next_action)
-   |  Parse EVIDENCE_REPORT block (6 required fields)
+   |  Parse EVIDENCE_REPORT block (7 required fields)
    |  Parse CONSOLIDATION_REPORT if multi-surface task
    |  If invalid -> save pending-repair.json for pre_tool_use guard
    |  If valid -> clear pending repair
@@ -172,7 +172,7 @@ Nonce-based T3 approval lifecycle:
 Every agent response must end with an AGENT_STATUS block. The contract validator (`hooks/modules/agents/response_contract.py`) enforces:
 
 - **AGENT_STATUS**: PLAN_STATUS (from 8 valid states), PENDING_STEPS, NEXT_ACTION, AGENT_ID
-- **EVIDENCE_REPORT**: required for all states except APPROVED_EXECUTING. Six fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS
+- **EVIDENCE_REPORT**: required for all states except APPROVED_EXECUTING. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS
 - **CONSOLIDATION_REPORT**: required when multi-surface or cross-check. Fields: OWNERSHIP_ASSESSMENT (enum), CONFIRMED_FINDINGS, SUSPECTED_FINDINGS, CONFLICTS, OPEN_GAPS, NEXT_BEST_AGENT
 
 Invalid responses trigger a repair loop: save pending-repair.json, pre_tool_use guard blocks new tasks, orchestrator must resume the same agent for repair (max 2 attempts before escalation).

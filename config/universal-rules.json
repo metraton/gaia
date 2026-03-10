@@ -12,6 +12,9 @@
       },
       {
         "rule": "If another surface appears to own the fix, state that in CROSS_LAYER_IMPACTS or OPEN_GAPS instead of guessing across domains."
+      },
+      {
+        "rule": "When a command produces output that is evidence for your conclusion, include the literal output in VERBATIM_OUTPUTS. KEY_OUTPUTS is the summary; VERBATIM_OUTPUTS is the raw data."
       }
     ],
     "agent_specific": {}

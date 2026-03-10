@@ -103,6 +103,7 @@ class TestAgentProtocolSkill:
             "FILES_CHECKED",
             "COMMANDS_RUN",
             "KEY_OUTPUTS",
+            "VERBATIM_OUTPUTS",
             "CROSS_LAYER_IMPACTS",
             "OPEN_GAPS",
         ]:
@@ -205,6 +206,7 @@ class TestInvestigationSkill:
             "FILES_CHECKED",
             "COMMANDS_RUN",
             "KEY_OUTPUTS",
+            "VERBATIM_OUTPUTS",
             "CROSS_LAYER_IMPACTS",
             "OPEN_GAPS",
         ]:

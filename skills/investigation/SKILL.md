@@ -101,7 +101,8 @@ Interpret the fields this way:
 - `PATTERNS_CHECKED` — existing repo patterns, sibling resources, or conventions you compared against
 - `FILES_CHECKED` — concrete files, directories, manifests, modules, or docs you inspected
 - `COMMANDS_RUN` — exact read-only or validation commands you executed, plus a terse result
-- `KEY_OUTPUTS` — the evidence that actually changed your conclusion
+- `KEY_OUTPUTS` — 1-2 sentence summary of what changed your conclusion
+- `VERBATIM_OUTPUTS` — literal command outputs that back up your findings. The orchestrator shows these to the user on request. Format each entry as the command in backticks followed by a fenced code block with the raw output. Truncate outputs longer than ~100 lines with `[truncated]`. Write `- none` when no commands were executed.
 - `CROSS_LAYER_IMPACTS` — adjacent surfaces, systems, or contracts affected by the finding
 - `OPEN_GAPS` — what is still unverified, inaccessible, or assumed
 

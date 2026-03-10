@@ -347,9 +347,74 @@ def signal_gaia_analysis(anomalies: List[Dict], metrics: Dict[str, Any]):
         logger.warning(f"Could not create analysis signal: {e}")
 
 
+_NOT_RUN_INDICATORS = re.compile(
+    r"\b(not\s+run|not\s+executed|skipped|n/a)\b",
+    re.IGNORECASE,
+)
+
+_LITERAL_NONE_COMMANDS = {"none", "not run", "not executed", "n/a", "skipped"}
+
+
+def _extract_commands_from_evidence(agent_output: str) -> List[str]:
+    """Extract command strings from the EVIDENCE_REPORT COMMANDS_RUN field.
+
+    Parses lines between ``COMMANDS_RUN:`` and the next field header (a line
+    ending with ``:`` that matches a known evidence field name). Each bullet
+    line (``- `cmd` -> result`` or ``- cmd``) is extracted as a command string.
+
+    Commands whose result indicates they were NOT actually run (e.g. "not run",
+    "skipped", "n/a", "not executed") are excluded from the returned list.
+
+    Returns a list of command strings (without surrounding backticks).
+    """
+    commands: List[str] = []
+    in_commands_section = False
+    # Known field headers that end the COMMANDS_RUN section
+    _FIELD_HEADERS = {
+        "PATTERNS_CHECKED:", "FILES_CHECKED:", "COMMANDS_RUN:",
+        "KEY_OUTPUTS:", "VERBATIM_OUTPUTS:", "CROSS_LAYER_IMPACTS:", "OPEN_GAPS:",
+    }
+
+    for raw_line in agent_output.splitlines():
+        line = raw_line.strip()
+        if line == "COMMANDS_RUN:":
+            in_commands_section = True
+            continue
+        if in_commands_section:
+            # Stop at the next field header or block boundary
+            if line in _FIELD_HEADERS or line.startswith("<!-- "):
+                break
+            if line.startswith("- "):
+                entry = line[2:].strip()
+                # Extract command from backtick-quoted format: `cmd` -> result
+                cmd = ""
+                if entry.startswith("`"):
+                    end_tick = entry.find("`", 1)
+                    if end_tick > 1:
+                        cmd = entry[1:end_tick]
+                    else:
+                        # Single backtick without closing — take the whole entry
+                        cmd = entry.lstrip("`").strip()
+                elif entry and entry.lower() not in _LITERAL_NONE_COMMANDS:
+                    cmd = entry
+
+                if not cmd or cmd.lower() in _LITERAL_NONE_COMMANDS:
+                    continue
+
+                # Check if the rest of the line (after the command) indicates
+                # the command was not actually run
+                remainder = entry[entry.find(cmd) + len(cmd):]
+                if _NOT_RUN_INDICATORS.search(remainder):
+                    continue
+
+                commands.append(cmd)
+    return commands
+
+
 def capture_episodic_memory(
     metrics: Dict[str, Any],
     anomalies: Optional[List[Dict[str, str]]] = None,
+    commands_executed: Optional[List[str]] = None,
 ) -> Optional[str]:
     """
     Capture workflow as episodic memory.
@@ -447,7 +512,7 @@ def capture_episodic_memory(
             outcome=outcome,
             success=success,
             duration_seconds=duration_seconds,
-            commands_executed=[],
+            commands_executed=commands_executed or [],
             workflow_metrics=metrics
         )
 
@@ -629,10 +694,17 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        # Step 4: Capture as episodic memory (include anomalies for context)
-        episode_id = capture_episodic_memory(workflow_metrics, anomalies=anomalies if anomalies else None)
+        # Step 4: Extract commands from EVIDENCE_REPORT for episodic memory
+        commands_executed = _extract_commands_from_evidence(agent_output)
 
-        # Step 5: Process context updates (progressive enrichment)
+        # Step 5: Capture as episodic memory (include anomalies for context)
+        episode_id = capture_episodic_memory(
+            workflow_metrics,
+            anomalies=anomalies if anomalies else None,
+            commands_executed=commands_executed,
+        )
+
+        # Step 6: Process context updates (progressive enrichment)
         context_update_result = _process_context_updates(agent_output, task_info)
 
         return {

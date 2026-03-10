@@ -67,12 +67,12 @@ When your command is blocked by the hook, the block response includes a nonce:
 APPROVAL REQUIRED. Present your plan to the user and include this approval code: NONCE:<hex>
 ```
 
-You MUST include this nonce in your PENDING_APPROVAL output so the orchestrator can relay it:
+You MUST include this nonce in your PENDING_APPROVAL output so the orchestrator can extract it. The nonce is a machine-readable token for the orchestrator-to-hook handshake -- it is never displayed to the user. The orchestrator extracts the nonce from your output, presents only the human-readable action summary and content to the user, and handles the nonce silently when resuming you after approval.
 
 ```markdown
 ## Approval Required
 
-**Approval Code:** `NONCE:<hex from the block response>`
+**Nonce:** `NONCE:<hex from the block response>`
 **Operation:** [what will be executed]
 **Environment:** [dev / staging / prod]
 **Risk Level:** [LOW / MEDIUM / HIGH / CRITICAL]

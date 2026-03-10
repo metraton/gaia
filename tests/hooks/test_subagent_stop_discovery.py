@@ -23,6 +23,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 from subagent_stop import (
     _extract_exit_code_from_output,
+    _extract_commands_from_evidence,
     _build_task_info_from_hook_data,
     subagent_stop_hook,
 )
@@ -117,6 +118,87 @@ class TestBuildTaskInfoExitCode:
 
 
 # ============================================================================
+# Test _extract_commands_from_evidence
+# ============================================================================
+
+class TestExtractCommandsFromEvidence:
+    """Test that _extract_commands_from_evidence filters out not-run commands."""
+
+    def test_extracts_executed_commands(self):
+        evidence_text = """\
+COMMANDS_RUN:
+- `kubectl get pods` -> 3 pods running
+- `terraform plan` -> 2 to add, 0 to destroy
+KEY_OUTPUTS:
+- all good
+"""
+        commands = _extract_commands_from_evidence(evidence_text)
+        assert "kubectl get pods" in commands
+        assert "terraform plan" in commands
+        assert len(commands) == 2
+
+    def test_skips_not_run_commands(self):
+        """Commands marked as 'not run' should not appear in commands_executed."""
+        evidence_text = """\
+COMMANDS_RUN:
+- `kubectl get pods` -> 3 pods running
+- `kubectl logs api-gateway` -> not run
+- `terraform plan` -> skipped
+KEY_OUTPUTS:
+- partial investigation
+"""
+        commands = _extract_commands_from_evidence(evidence_text)
+        assert "kubectl get pods" in commands
+        assert "kubectl logs api-gateway" not in commands
+        assert "terraform plan" not in commands
+        assert len(commands) == 1
+
+    def test_skips_not_executed_commands(self):
+        evidence_text = """\
+COMMANDS_RUN:
+- `gcloud compute instances list` -> not executed
+- `kubectl get svc` -> 2 services found
+KEY_OUTPUTS:
+- found services
+"""
+        commands = _extract_commands_from_evidence(evidence_text)
+        assert "kubectl get svc" in commands
+        assert "gcloud compute instances list" not in commands
+
+    def test_skips_na_commands(self):
+        evidence_text = """\
+COMMANDS_RUN:
+- `helm list` -> n/a
+- `flux get ks` -> 1 kustomization reconciled
+KEY_OUTPUTS:
+- flux healthy
+"""
+        commands = _extract_commands_from_evidence(evidence_text)
+        assert "flux get ks" in commands
+        assert "helm list" not in commands
+
+    def test_skips_literal_none_entries(self):
+        evidence_text = """\
+COMMANDS_RUN:
+- none
+- not run
+KEY_OUTPUTS:
+- nothing ran
+"""
+        commands = _extract_commands_from_evidence(evidence_text)
+        assert len(commands) == 0
+
+    def test_empty_commands_section(self):
+        evidence_text = """\
+COMMANDS_RUN:
+KEY_OUTPUTS:
+- nothing
+"""
+        commands = _extract_commands_from_evidence(evidence_text)
+        assert len(commands) == 0
+
+
+# ============================================================================
 # Test subagent_stop_hook integration
 # ============================================================================
 
@@ -193,6 +275,8 @@ COMMANDS_RUN:
 - `kubectl get pods -n api` -> not run
 KEY_OUTPUTS:
 - image tag differs from CI artifact
+VERBATIM_OUTPUTS:
+- none
 CROSS_LAYER_IMPACTS:
 - gitops_desired_state may be out of sync with CI output
 OPEN_GAPS:

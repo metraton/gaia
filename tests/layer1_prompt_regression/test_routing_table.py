@@ -204,7 +204,7 @@ class TestApprovalFlowContract:
 
     def test_auto_resume_requires_same_operation(self, claude_md_content):
         """Auto-relay of a nonce is only valid for the same approved operation."""
-        assert "same approved operation" in claude_md_content
+        assert "what the user approved" in claude_md_content
         assert "changes operation" in claude_md_content
 
     def test_contract_repair_retry_cap_is_documented(self, claude_md_content):

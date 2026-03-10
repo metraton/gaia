@@ -42,6 +42,7 @@ EVIDENCE_FIELDS = [
     "FILES_CHECKED",
     "COMMANDS_RUN",
     "KEY_OUTPUTS",
+    "VERBATIM_OUTPUTS",
     "CROSS_LAYER_IMPACTS",
     "OPEN_GAPS",
 ]
@@ -148,17 +149,44 @@ def _parse_bullet_field_block(
     block_text: str,
     fields: List[str],
 ) -> Dict[str, List[str]]:
+    """Parse a block of text into field-keyed content.
+
+    Collects ALL lines between one field header and the next (or end of block)
+    as a single raw text entry per field.  This preserves fenced code blocks,
+    indented continuation lines, and other multiline content that a
+    bullet-only parser would drop.
+
+    Each field value is a list:
+    - ``[]`` when no content exists between the header and the next header
+    - ``[raw_text]`` (single-element list) with the raw text block otherwise
+
+    The raw text block has leading/trailing blank lines stripped but internal
+    structure (indentation, blank lines, fenced code markers) is preserved.
+    """
     parsed: Dict[str, List[str]] = {field: [] for field in fields}
     current_field: Optional[str] = None
+    accumulator: List[str] = []
+
+    def _flush(field: Optional[str], lines: List[str]) -> None:
+        if field is None:
+            return
+        raw = "\n".join(lines).strip()
+        if raw:
+            parsed[field] = [raw]
+
     for raw_line in block_text.splitlines():
-        line = raw_line.strip()
-        if not line:
+        stripped = raw_line.strip()
+        # Detect a field header: a known field name followed by ":"
+        if stripped.endswith(":") and stripped[:-1] in fields:
+            _flush(current_field, accumulator)
+            current_field = stripped[:-1]
+            accumulator = []
             continue
-        if line.endswith(":") and line[:-1] in fields:
-            current_field = line[:-1]
-            continue
-        if line.startswith("- ") and current_field:
-            parsed[current_field].append(line[2:].strip())
+        if current_field is not None:
+            accumulator.append(raw_line)
+
+    # Flush the last field
+    _flush(current_field, accumulator)
     return parsed
 
 

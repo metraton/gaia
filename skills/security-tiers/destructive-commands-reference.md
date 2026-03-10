@@ -181,6 +181,7 @@ AWS uses `delete-*` and `terminate-*` -- never `destroy`.
 | `aws elasticache delete-cache-cluster` | Cache cluster and data |
 | `aws elasticache delete-replication-group` | Replication group and data |
 | `aws eks delete-cluster` | Entire EKS cluster |
+| `aws ec2 terminate-instances` | Instance termination is irreversible -- use Terraform/Terragrunt |
 | `aws kms schedule-key-deletion` | KMS key -- all encrypted data becomes unrecoverable |
 | `aws organizations delete-organization` | Entire AWS Organization |
 | `aws route53 delete-hosted-zone` | DNS zone and all records |
@@ -190,7 +191,6 @@ AWS uses `delete-*` and `terminate-*` -- never `destroy`.
 
 | Command / Pattern | Notes |
 |---|---|
-| `aws ec2 terminate-instances` | Instance termination (recoverable via AMI/ASG) |
 | `aws ec2 delete-key-pair` | SSH key removal |
 | `aws ec2 delete-snapshot` | Single snapshot |
 | `aws ec2 delete-volume` | Single EBS volume |
@@ -221,13 +221,13 @@ AWS uses `delete-*` and `terminate-*` -- never `destroy`.
 | `aws eks delete-addon` | Single addon |
 | `aws backup delete-recovery-point` | Single recovery point |
 
-### Edge cases: should these be DESTRUCTIVE?
+### Edge cases
 
-| Command | Current | Argument for DESTRUCTIVE |
+| Command | Status | Notes |
 |---|---|---|
-| `aws kms schedule-key-deletion` | Not in blocked list | Renders all encrypted data unrecoverable. Strong candidate for permanent block. |
-| `aws route53 delete-hosted-zone` | Not in blocked list | DNS zone loss can cause widespread outage. Strong candidate. |
-| `aws s3 rm --recursive` on entire bucket | Caught by verb detector | Could wipe all data. Consider pattern-specific block. |
+| `aws kms schedule-key-deletion` | DESTRUCTIVE (blocked) | Added to blocked_commands.py -- renders all encrypted data permanently unrecoverable |
+| `aws route53 delete-hosted-zone` | DESTRUCTIVE (blocked) | Added to blocked_commands.py -- DNS zone loss causes widespread outage |
+| `aws s3 rm --recursive` on entire bucket | Caught by verb detector | Mutative (approvable). Could wipe all data but pattern-specific block not yet implemented. |
 
 ---
 
@@ -245,6 +245,7 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 |---|---|
 | `git push --force` / `git push -f` | Rewrites remote history, loses others' commits |
 | `git push --force` to `main`/`master` | Especially catastrophic on default branch |
+| `git reset --hard` | Permanently discards uncommitted changes |
 
 ### MUTATIVE (approvable T3)
 
@@ -260,7 +261,6 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 | `git branch -d` / `git branch -D` | Branch deletion |
 | `git branch -m` / `git branch -M` | Branch rename |
 | `git tag -d` | Tag deletion |
-| `git reset --hard` | Discards uncommitted changes (dangerous but local-only) |
 | `git reset --soft` / `git reset --mixed` | Safe resets |
 | `git revert` | Creates new commit to undo |
 | `git clean -f` / `git clean -fd` | Removes untracked files (local-only) |
@@ -274,7 +274,7 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 | `--force` / `-f` (on push) | DESTRUCTIVE -- rewrites remote history |
 | `--force-with-lease` (on push) | MUTATIVE -- checks remote state first |
 | `-D` (on branch) | Force-deletes unmerged branch |
-| `--hard` (on reset) | Discards all uncommitted work |
+| `--hard` (on reset) | DESTRUCTIVE -- permanently blocked by blocked_commands.py |
 | `-f` / `-d` (on clean) | Removes untracked files/directories |
 
 ---
@@ -590,7 +590,7 @@ Commands where the same verb is DESTRUCTIVE in one context and MUTATIVE in anoth
 | `docker rm` | N/A (always mutative per-container) | Single container |
 | `terraform destroy` | Without `-target` (whole state) | With `-target=<resource>` |
 | `git push` | + `--force` / `-f` | Without force, or with `--force-with-lease` |
-| `git reset` | + `--hard` (loses uncommitted) | + `--soft` / `--mixed` |
+| `git reset` | + `--hard` (permanently blocked) | + `--soft` / `--mixed` |
 | `aws s3 rm` | + `--recursive` on bucket root | Single object |
 | `gsutil rm` | + `-r` (recursive) | Single object |
 | `npm unpublish` | Entire package (no version) | Specific `@version` |
@@ -599,43 +599,25 @@ Commands where the same verb is DESTRUCTIVE in one context and MUTATIVE in anoth
 
 ---
 
-## Recommendations for blocked_commands.py
+## Implementation Status
 
-### Commands to ADD to permanent block list
+### All recommended commands: IMPLEMENTED
 
-Based on this research, the following commands are currently missing from `blocked_commands.py` but should be permanently blocked:
+The following commands were identified as candidates for permanent blocking and have all been added to `blocked_commands.py`:
 
-1. **AWS**
-   - `aws kms schedule-key-deletion` -- encrypted data becomes permanently unrecoverable
-   - `aws route53 delete-hosted-zone` -- DNS zone loss causes widespread outage
-   - `aws organizations delete-organization` -- entire org destruction
+- `aws kms schedule-key-deletion`, `aws route53 delete-hosted-zone`, `aws organizations delete-organization`
+- `aws ec2 terminate-instances`
+- `docker system prune -a` / `--all` / `--volumes`, `docker volume prune`
+- `flux uninstall`
+- `gh repo delete`, `glab project delete`
+- `terraform destroy` (without `-target`), `terragrunt run-all destroy`
+- `npm unpublish` (without `@version`)
+- `git reset --hard`
 
-2. **Docker**
-   - `docker system prune -a` / `docker system prune --all` -- wipes all unused images/containers
-   - `docker system prune --volumes` -- wipes all unused volumes
-   - `docker volume prune` -- wipes all unused volumes
+### Dangerous flag combinations: OPEN
 
-3. **Flux**
-   - `flux uninstall` -- removes all Flux components from cluster
+The following flag-based escalations have NOT been implemented as pattern-specific blocks. They are caught by `mutative_verbs.py` as approvable T3 commands:
 
-4. **GitHub CLI**
-   - `gh repo delete` -- entire repository deletion
-
-5. **Terraform**
-   - `terraform destroy` (without `-target`) -- entire state destruction
-   - `terragrunt run-all destroy` -- recursive destruction
-
-6. **npm**
-   - `npm unpublish` (without `@version`) -- removes entire package from registry
-
-### Commands to KEEP as approvable T3 (no change needed)
-
-All commands currently in `mutative_verbs.py` MUTATIVE category are correctly classified. The verb taxonomy is sound.
-
-### Dangerous flag combinations to consider
-
-The `mutative_verbs.py` flag scanning is solid. Consider adding:
-- `--all-namespaces` / `-A` for kubectl as a DESTRUCTIVE escalator when combined with `delete`
-- `--no-hooks` for helm as a DESTRUCTIVE escalator when combined with `uninstall`
-- `--volumes` for docker as a DESTRUCTIVE escalator when combined with `prune`
-- `--recursive` for `aws s3 rm` scope escalation
+- `--all-namespaces` / `-A` for kubectl with `delete` -- partial coverage via `kubectl delete <type> --all` pattern
+- `--no-hooks` for helm with `uninstall` -- not blocked (normal `helm uninstall` is approvable T3)
+- `--recursive` for `aws s3 rm` -- not pattern-blocked (caught by verb detector as mutative)

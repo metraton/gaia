@@ -73,6 +73,11 @@ COMMANDS_RUN:
 - `[exact command]` -> [concise result, or `not run`]
 KEY_OUTPUTS:
 - [short output excerpt or evidence summary]
+VERBATIM_OUTPUTS:
+- `[command]`:
+  ```
+  [literal output]
+  ```
 CROSS_LAYER_IMPACTS:
 - [affected adjacent surface, contract, or subsystem]
 OPEN_GAPS:
@@ -84,6 +89,7 @@ Rules:
 - Keep each field to 1-3 bullets unless the task genuinely needs more.
 - `COMMANDS_RUN` must contain the exact command when a command was executed.
 - `KEY_OUTPUTS` must summarize what mattered, not paste walls of output.
+- `VERBATIM_OUTPUTS` must contain the literal command output when it is evidence for your conclusion. Format each entry as the command in backticks followed by a fenced code block with the raw output. Truncate outputs longer than ~100 lines with `[truncated]`. Write `- none` when no commands were executed.
 - `CROSS_LAYER_IMPACTS` is required for review, debugging, or multi-surface tasks.
 - `OPEN_GAPS` must be explicit. Do not imply certainty when uncertainty remains.
 

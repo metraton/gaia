@@ -117,14 +117,20 @@ python3 post_tool_use.py --metrics
 ### Importing Modules
 
 ```python
-from modules.security import SecurityTier, is_read_only_command
+from modules.security import SecurityTier, classify_command_tier, is_blocked_command
+from modules.security import CATEGORY_MUTATIVE, CATEGORY_READ_ONLY
 from modules.tools import BashValidator
 from modules.audit import generate_summary
 
-# Check if command is safe
-is_safe, reason = is_read_only_command("ls -la")
+# Check if command is permanently blocked
+result = is_blocked_command("kubectl delete namespace production")
+print(f"Blocked: {result.blocked}, Reason: {result.reason}")
 
-# Validate Bash command
+# Classify command tier
+tier = classify_command_tier("kubectl get pods")
+print(f"Tier: {tier}")  # SecurityTier.T0
+
+# Validate Bash command (full pipeline: blocked -> mutative verbs -> safe by elimination)
 validator = BashValidator()
 result = validator.validate("kubectl get pods")
 print(f"Allowed: {result.allowed}, Tier: {result.tier}")
@@ -138,7 +144,7 @@ print(f"Success rate: {summary['success_rate']:.1%}")
 
 The modular architecture maintains full backward compatibility with Claude Code's hook interface (stdin JSON format).
 
-All security rules (safe commands, blocked patterns, tiers) are hardcoded in the Python modules for performance and simplicity - no external JSON config files needed.
+All security rules (blocked patterns, mutative verbs, tiers) are hardcoded in the Python modules for performance and simplicity - no external JSON config files needed.
 
 ### Validation Order (Defense-in-Depth)
 bash_validator checks commands in this order (short-circuit on first match):
