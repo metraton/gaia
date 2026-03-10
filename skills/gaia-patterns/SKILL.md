@@ -41,22 +41,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 
 ## Multi-Agent Consolidation
 
-When Gaia coordinates multi-surface work:
-1. dispatch the primary owners for the active surfaces
-2. collect `EVIDENCE_REPORT` and `CONSOLIDATION_REPORT`
-3. merge:
-   - confirmed findings
-   - conflicts
-   - open gaps
-   - next best agent
-   - recommended action
-4. continue only if the next gap has a clear owner and another round is likely to reduce uncertainty
-5. stop after at most **2 consolidation rounds after the initial pass**
-
-Do not keep dispatching agents just because a gap exists. A gap must be:
-- owned by a clear next agent
-- resolvable without new user input
-- likely to produce new evidence rather than rephrase existing uncertainty
+The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritative contract (consolidation contract + consolidation loop rules). Agents return `CONSOLIDATION_REPORT` blocks; the orchestrator merges, decides whether to dispatch another round, and stops when gaps are no longer actionable.
 
 ## Workflow Design Philosophy
 
