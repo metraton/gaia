@@ -512,7 +512,7 @@ function validateInjectionWiring(ctx, findings, checks) {
           title: "Missing runtime .claude directory",
           detail: `Missing .claude/${name}, runtime injection may fail.`,
           evidence: target,
-          remediation: "Run gaia-init to recreate runtime links/directories.",
+          remediation: "Run gaia-scan to recreate runtime links/directories.",
         });
         ok = false;
       }
@@ -563,7 +563,7 @@ function validateInjectionWiring(ctx, findings, checks) {
         title: "Invalid settings.json",
         detail: `Failed to parse settings.json: ${error.message}`,
         evidence: ctx.settingsPath,
-        remediation: "Fix JSON syntax or regenerate settings via gaia-init.",
+        remediation: "Fix JSON syntax or regenerate settings via gaia-scan.",
       });
       ok = false;
     }
@@ -576,7 +576,7 @@ function validateInjectionWiring(ctx, findings, checks) {
         ? "Project appears installed but .claude/settings.json is missing."
         : "Running in package mode; runtime settings validation skipped.",
       evidence: ctx.settingsPath,
-      remediation: "Generate settings with gaia-init in project context.",
+      remediation: "Generate settings with gaia-scan in project context.",
     });
     if (ctx.inProject) ok = false;
   }

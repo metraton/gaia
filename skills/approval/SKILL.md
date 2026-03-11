@@ -47,11 +47,11 @@ After presenting the plan, request approval:
 - [ ] Modify the plan (specify changes)
 ```
 
-Then emit AGENT_STATUS with `PLAN_STATUS: PENDING_APPROVAL`.
+Then emit your `json:contract` block with `"plan_status": "PENDING_APPROVAL"`.
 
 ## After User Responds
 
-| User Response | Agent Action | AGENT_STATUS |
+| User Response | Agent Action | plan_status |
 |---------------|-------------|--------------|
 | **Approves** | Read `.claude/skills/execution/SKILL.md` and execute | `APPROVED_EXECUTING` |
 | **Rejects** | Acknowledge. Ask if they want to abandon or re-investigate | `NEEDS_INPUT` |

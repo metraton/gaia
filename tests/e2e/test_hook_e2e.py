@@ -36,6 +36,12 @@ from tests.e2e.fixtures import (
     PRETOOL_BASH_SAFE_GIT_STATUS,
     PRETOOL_BASH_SAFE_LS,
     PRETOOL_READ,
+    STOP_EVENT,
+    STOP_EVENT_WITH_REASON,
+    SUBAGENT_START,
+    SUBAGENT_START_DEVOPS,
+    TASK_COMPLETED,
+    TASK_COMPLETED_WITH_OUTPUT,
 )
 
 # Worktree root where hooks live
@@ -308,3 +314,102 @@ class TestPluginChannelE2E:
             env_extras={"CLAUDE_PLUGIN_ROOT": str(WORKTREE)},
         )
         assert code == 2, f"Expected exit 2 with plugin channel, got {code}. stderr: {stderr}"
+
+
+def _hook_script_is_nonempty(script_name: str) -> bool:
+    """Check if a hook script exists and has content (not just a 0-byte stub)."""
+    script_path = HOOKS_DIR / script_name
+    return script_path.exists() and script_path.stat().st_size > 0
+
+
+# ============================================================================
+# P2: Stop E2E
+# ============================================================================
+
+
+class TestStopE2E:
+    """Stop hook runs and exits 0."""
+
+    HOOK = "stop_hook.py"
+
+    def test_stop_event_runs(self):
+        """Stop hook exits 0."""
+        if not _hook_script_is_nonempty(self.HOOK):
+            pytest.skip(f"{self.HOOK} not found or empty (stub only)")
+
+        code, response, stderr = run_hook(self.HOOK, STOP_EVENT)
+        assert code == 0, (
+            f"Expected exit 0 for Stop hook, got {code}. stderr: {stderr}"
+        )
+
+    def test_stop_event_with_reason_runs(self):
+        """Stop hook with stop_reason exits 0."""
+        if not _hook_script_is_nonempty(self.HOOK):
+            pytest.skip(f"{self.HOOK} not found or empty (stub only)")
+
+        code, response, stderr = run_hook(self.HOOK, STOP_EVENT_WITH_REASON)
+        assert code == 0, (
+            f"Expected exit 0 for Stop hook, got {code}. stderr: {stderr}"
+        )
+
+
+# ============================================================================
+# P2: TaskCompleted E2E
+# ============================================================================
+
+
+class TestTaskCompletedE2E:
+    """TaskCompleted hook runs and exits 0."""
+
+    HOOK = "task_completed.py"
+
+    def test_task_completed_runs(self):
+        """TaskCompleted hook exits 0."""
+        if not _hook_script_is_nonempty(self.HOOK):
+            pytest.skip(f"{self.HOOK} not found or empty (stub only)")
+
+        code, response, stderr = run_hook(self.HOOK, TASK_COMPLETED)
+        assert code == 0, (
+            f"Expected exit 0 for TaskCompleted hook, got {code}. stderr: {stderr}"
+        )
+
+    def test_task_completed_with_output_runs(self):
+        """TaskCompleted with output exits 0."""
+        if not _hook_script_is_nonempty(self.HOOK):
+            pytest.skip(f"{self.HOOK} not found or empty (stub only)")
+
+        code, response, stderr = run_hook(self.HOOK, TASK_COMPLETED_WITH_OUTPUT)
+        assert code == 0, (
+            f"Expected exit 0 for TaskCompleted hook, got {code}. stderr: {stderr}"
+        )
+
+
+# ============================================================================
+# P2: SubagentStart E2E
+# ============================================================================
+
+
+class TestSubagentStartE2E:
+    """SubagentStart hook runs and exits 0."""
+
+    HOOK = "subagent_start.py"
+
+    def test_subagent_start_runs(self):
+        """SubagentStart hook exits 0."""
+        if not _hook_script_is_nonempty(self.HOOK):
+            pytest.skip(f"{self.HOOK} not found or empty (stub only)")
+
+        code, response, stderr = run_hook(self.HOOK, SUBAGENT_START)
+        assert code == 0, (
+            f"Expected exit 0 for SubagentStart hook, got {code}. stderr: {stderr}"
+        )
+
+    def test_subagent_start_devops_runs(self):
+        """SubagentStart for devops-developer exits 0."""
+        if not _hook_script_is_nonempty(self.HOOK):
+            pytest.skip(f"{self.HOOK} not found or empty (stub only)")
+
+        code, response, stderr = run_hook(self.HOOK, SUBAGENT_START_DEVOPS)
+        assert code == 0, (
+            f"Expected exit 0 for SubagentStart hook, got {code}. stderr: {stderr}"
+        )

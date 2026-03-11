@@ -1,32 +1,38 @@
 {
-  "version": "1.0",
+  "_note": "Legacy file. Canonical source: context-contracts.json + cloud/{provider}.json",
+  "version": "3.0",
   "provider": "gcp",
+  "description": "Legacy GCP contracts (self-contained). Kept for backward compatibility with tests. Canonical source: context-contracts.json + cloud/gcp.json. v3: removed backward-compat sections.",
   "agents": {
     "cloud-troubleshooter": {
-      "read": ["project_details", "cluster_details", "infrastructure_topology",
-               "terraform_infrastructure", "gitops_configuration",
-               "application_services", "monitoring_observability"],
+      "read": ["project_identity", "stack", "git", "environment",
+               "infrastructure", "orchestration", "cluster_details",
+               "infrastructure_topology", "terraform_infrastructure",
+               "gitops_configuration", "application_services",
+               "monitoring_observability"],
       "write": ["cluster_details", "infrastructure_topology"]
     },
     "gitops-operator": {
-      "read": ["project_details", "gitops_configuration", "cluster_details",
-               "operational_guidelines"],
+      "read": ["project_identity", "stack", "git", "environment",
+               "infrastructure", "orchestration", "gitops_configuration",
+               "cluster_details", "operational_guidelines"],
       "write": ["gitops_configuration", "cluster_details"]
     },
     "terraform-architect": {
-      "read": ["project_details", "terraform_infrastructure",
+      "read": ["project_identity", "stack", "git", "environment",
+               "infrastructure", "orchestration", "terraform_infrastructure",
                "infrastructure_topology", "operational_guidelines"],
       "write": ["terraform_infrastructure", "infrastructure_topology"]
     },
     "devops-developer": {
-      "read": ["project_details", "application_services",
-               "application_architecture", "development_standards",
+      "read": ["project_identity", "stack", "git", "environment",
+               "infrastructure", "application_services",
                "operational_guidelines"],
       "write": ["application_services"]
     },
     "speckit-planner": {
-      "read": ["project_details", "operational_guidelines",
-               "application_architecture", "development_standards"],
+      "read": ["project_identity", "stack", "git", "environment",
+               "infrastructure", "operational_guidelines"],
       "write": []
     }
   }

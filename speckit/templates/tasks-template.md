@@ -1,391 +1,257 @@
-# Tasks: [FEATURE NAME]
+# Tasks: {FEATURE_NAME}
 
-<!-- AUTO-ENRICHMENT CONFIG
-  MIN_CONFIDENCE: 0.5
-  When routing confidence score < MIN_CONFIDENCE, the agent MUST emit a LOW_CONFIDENCE warning:
-    <!-- ⚠️ LOW_CONFIDENCE: score=0.3 — review surface classification manually -->
-  Tasks with score >= MIN_CONFIDENCE proceed normally.
--->
+<!-- Feature: {feature-dir-absolute-path} -->
+<!-- Tasks file: {this-file-absolute-path} -->
 
-**Input**: Design documents from `/specs/[###-feature-name]/`
-**Prerequisites**: plan.md (required), research.md, data-model.md, contracts/
+**Feature**: {feature-id}
+**Date**: {date}
+**Plan**: `{feature-dir}/plan.md`
+**Total Tasks**: {count}
 
-## Execution Flow (main)
-```
-1. Load plan.md from feature directory
-   → If not found: ERROR "No implementation plan found"
-   → Extract: tech stack, libraries, structure
-2. Load optional design documents:
-   → data-model.md: Extract entities → model tasks
-   → contracts/: Each file → contract test task
-   → research.md: Extract decisions → setup tasks
-3. Generate tasks by category:
-   → Setup: GitOps setup, HelmRelease validation, image tag verification
-   → Tests: contract tests, integration tests, health checks
-   → Core: models, services, CLI commands
-   → Infrastructure: Ingress-GCE, certificate management, DNS setup
-   → Integration: DB, middleware, logging, observability
-   → Polish: unit tests, performance, documentation, rollback procedures
-4. Apply task rules:
-   → Different files = mark [P] for parallel
-   → Same file = sequential (no [P])
-   → Tests before implementation (TDD)
-5. Number tasks sequentially (T001, T002...)
-6. Generate dependency graph
-7. Create parallel execution examples
-8. Validate task completeness:
-   → All contracts have tests?
-   → All entities have models?
-   → All endpoints implemented?
-9. Return: SUCCESS (tasks ready for execution)
-```
+---
 
-## Format: `[ID] [P?] Description`
-- **[P]**: Can run in parallel (different files, no dependencies)
-- Include exact file paths in descriptions
-- **verify**: Each task MUST include a verification step (command, check, or observable outcome)
+## Execution Contract
 
-## Path Conventions
-- **Single project**: `src/`, `tests/` at repository root
-- **Web app**: `backend/src/`, `frontend/src/`
-- **Mobile**: `api/src/`, `ios/src/` or `android/src/`
-- Paths shown below assume single project - adjust based on plan.md structure
+- Each task is self-contained: a `devops-developer` agent executes it without SpecKit knowledge
+- Each task includes a verify command that proves completion
+- When ALL acceptance criteria pass and verify succeeds, the executing agent MUST mark `[ ]` as `[x]` in this file
+- Quality gate tasks validate the milestone before proceeding
+- Tasks are grouped by milestone; milestones execute sequentially, tasks within a milestone may parallelize where marked [P]
 
-## Phase 3.1: Setup
-- [ ] T001 Create project structure per implementation plan
-  - verify: `ls -la src/` shows expected directories
-  <!-- 🤖 Agent: terraform-architect | ✅ T1 | ❓ 0.70 -->
-  <!-- 🏷️ Tags: #code #setup -->
-  <!-- 🧠 Reasoning: Skill 'terraform_operations' matched (score: 2.0), Routed to terraform-architect, Security tier: T1 -->
-  <!-- 🎯 skill: terraform_operations (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+---
 
-- [ ] T002 Initialize [language] project with [framework] dependencies
-  - verify: `[package-manager] list` shows dependencies installed
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags: #setup -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-  <!-- ⚠️ LOW_CONFIDENCE: score=0.00 — review surface classification manually -->
+## Task Format Reference
 
-- [ ] T003 [P] Configure linting and formatting tools
-  - verify: `npm run lint` exits with code 0
-  <!-- 🤖 Agent: gitops-operator | 👁️ T0 | ❓ 0.50 -->
-  <!-- 🏷️ Tags: #config #setup -->
-  <!-- 🧠 Reasoning: Skill 'configuration_management' matched (score: 2.0), Routed to gitops-operator, Security tier: T0 -->
-  <!-- 🎯 skill: configuration_management (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+Every task MUST follow this structure exactly:
 
-
-## Phase 3.2: Tests First (TDD) ⚠️ MUST COMPLETE BEFORE 3.3
-**CRITICAL: These tests MUST be written and MUST FAIL before ANY implementation**
-- [ ] T004 [P] Contract test POST /api/users in tests/contract/test_users_post.py
-  - verify: `pytest tests/contract/test_users_post.py` runs (fails before implementation)
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
-  <!-- 🏷️ Tags: #api #hr #integration #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 10.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (10.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T005 [P] Contract test GET /api/users/{id} in tests/contract/test_users_get.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
-  <!-- 🏷️ Tags: #api #hr #integration #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 10.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (10.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T006 [P] Integration test user registration in tests/integration/test_registration.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #hr #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 10.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (10.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T007 [P] Integration test auth flow in tests/integration/test_auth.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
-  <!-- 🏷️ Tags: #security #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 10.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (10.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-
-## Phase 3.3: Core Implementation (ONLY after tests are failing)
-- [ ] T008 [P] User model in src/models/user.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ❓ 0.90 -->
-  <!-- 🏷️ Tags: #hr -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 6.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: application_development (6.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T009 [P] UserService CRUD in src/services/user_service.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
-  <!-- 🏷️ Tags: #api #hr #kubernetes -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 8.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: application_development (8.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T010 [P] CLI --create-user in src/cli/user_commands.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ❓ 0.90 -->
-  <!-- 🏷️ Tags: #hr #setup -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 6.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: application_development (6.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T011 POST /api/users endpoint
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.50 -->
-  <!-- 🏷️ Tags: #api #hr #integration -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 2.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: application_development (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T012 GET /api/users/{id} endpoint
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.50 -->
-  <!-- 🏷️ Tags: #api #hr #integration -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 2.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: application_development (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T013 Input validation
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.70 -->
-  <!-- 🏷️ Tags: #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 2.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T014 Error handling and logging
-  <!-- 🤖 Agent: cloud-troubleshooter | 👁️ T0 | ❓ 0.50 -->
-  <!-- 🏷️ Tags: #debug -->
-  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to cloud-troubleshooter, Security tier: T0 -->
-  <!-- 🎯 skill: monitoring_observability (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-
-## Phase 3.4: Integration
-- [ ] T015 Connect UserService to DB
-  <!-- 🤖 Agent: gitops-operator | 👁️ T0 | ⚡ 0.60 -->
-  <!-- 🏷️ Tags: #api #database #hr #kubernetes -->
-  <!-- 🧠 Reasoning: Skill 'kubernetes_deployment' matched (score: 2.0), Routed to gitops-operator, Security tier: T0 -->
-  <!-- 🎯 skill: kubernetes_deployment (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T016 Auth middleware
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags: #security -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T017 Request/response logging
-  <!-- 🤖 Agent: cloud-troubleshooter | 👁️ T0 | ❓ 0.50 -->
-  <!-- 🏷️ Tags:  -->
-  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to cloud-troubleshooter, Security tier: T0 -->
-  <!-- 🎯 skill: monitoring_observability (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T018 CORS and security headers
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.70 -->
-  <!-- 🏷️ Tags: #infrastructure #security #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 2.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-
-## Phase 3.5: Polish
-- [ ] T019 [P] Unit tests for validation in tests/unit/test_validation.py
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 12.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (12.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T020 Performance tests (<200ms)
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #performance #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 5.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (5.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T021 [P] Update docs/api.md
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | 🔥 1.00 -->
-  <!-- 🏷️ Tags: #api #docs #integration -->
-  <!-- 🧠 Reasoning: Skill 'documentation_creation' matched (score: 8.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: documentation_creation (8.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T022 Remove duplication
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags:  -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-- [ ] T023 Run manual-testing.md
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #docs #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 7.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (7.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
-
-
-## Dependencies
-- Tests (T004-T007) before implementation (T008-T014)
-- T008 blocks T009, T015
-- T016 blocks T018
-- Implementation before polish (T019-T023)
-
-## Parallel Example
-```
-# Launch T004-T007 together:
-Task: "Contract test POST /api/users in tests/contract/test_users_post.py"
-Task: "Contract test GET /api/users/{id} in tests/contract/test_users_get.py"
-Task: "Integration test registration in tests/integration/test_registration.py"
-Task: "Integration test auth in tests/integration/test_auth.py"
+```markdown
+### T{NNN}: {Title} [ ]
+<!-- FR: {FR-numbers} -->
+- **Description**: {What to do -- specific enough for an agent with no SpecKit context}
+- **Files**: {Files to create/modify with paths relative to repo root}
+- **Acceptance criteria**:
+  - {Specific testable criterion}
+  - {Another criterion}
+- **Complexity**: {S|M|L}
+- **Agent**: `{agent-name}`
+- **Tier**: {T0|T1|T2|T3} ({reason})
+- **Tags**: {#tag1 #tag2}
+- **Verify**: `{command that proves it works}`
+- **On completion**: Mark `[ ]` as `[x]` in this file
 ```
 
-## Notes
-- [P] tasks = different files, no dependencies
-- Verify tests fail before implementing
-- Commit after each task
-- Avoid: vague tasks, same file conflicts
+**Required fields**: Description, Files, Acceptance criteria, Verify, On completion.
+**Optional fields**: FR comment, Complexity, Agent, Tier, Tags.
+
+**Quality gate tasks** end each milestone:
+
+```markdown
+### T{NNN}: Milestone {N} Quality Gate [ ]
+<!-- FR: {all-FR-numbers-covered-by-this-milestone} -->
+- **Description**: Verify all FRs covered by Milestone {N} are satisfied.
+- **Files**: N/A (validation only)
+- **Acceptance criteria**:
+  - All T{first}-T{last} verify commands pass
+  - {Milestone-specific validation}
+- **Agent**: `devops-developer`
+- **Tier**: T0 (read-only validation)
+- **Tags**: #validation #quality-gate
+- **Verify**: `{command that validates all milestone tasks}`
+- **On completion**: Mark `[ ]` as `[x]` in this file
+```
+
+---
 
 ## Task Generation Rules
-*Applied during main() execution*
 
-1. **From Contracts**:
-   - Each contract file → contract test task [P]
-   - Each endpoint → implementation task
-   
-2. **From Data Model**:
-   - Each entity → model creation task [P]
-   - Relationships → service layer tasks
-   
-3. **From User Stories**:
-   - Each story → integration test [P]
-   - Quickstart scenarios → validation tasks
+When generating real tasks from plan.md and design artifacts:
 
-4. **Ordering**:
-   - Setup → Tests → Models → Services → Endpoints → Polish
+1. **From plan.md** (required):
+   - Extract tech stack, architecture, file structure
+   - Each architectural component becomes one or more tasks
+   - Setup tasks come first (project init, dependencies, config)
+
+2. **From contracts/** (if exists):
+   - Each contract file produces a contract test task [P]
+   - Each endpoint produces an implementation task
+
+3. **From data-model.md** (if exists):
+   - Each entity produces a model creation task [P]
+   - Relationships produce service layer tasks
+
+4. **From research.md** (if exists):
+   - Technical decisions inform setup and integration tasks
+
+5. **Ordering**:
+   - Setup before tests, tests before implementation (TDD), core before integration
    - Dependencies block parallel execution
+   - Different files = can be parallel [P]; same file = sequential
 
-## Validation Checklist
-*GATE: Checked by main() before returning*
+6. **Milestones**:
+   - Group related tasks into milestones (3-8 tasks per milestone)
+   - Each milestone ends with a quality gate task
+   - Milestone N+1 depends on Milestone N quality gate passing
 
-- [ ] T024 All contracts have corresponding tests
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 7.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (7.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+7. **Cross-spec dependencies**:
+   - If the feature shares contracts or schemas with other features, note the dependency at the top of the file and on each affected task
 
-- [ ] T025 All entities have model tasks
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags:  -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+---
 
-- [ ] T026 All tests come before implementation
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #code #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 5.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (5.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+## Example Tasks
 
-- [ ] T027 Parallel tasks truly independent
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags:  -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+The following examples show the format for common task types. Replace with real tasks generated from your plan.md.
 
-- [ ] T028 Each task specifies exact file path
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.80 -->
-  <!-- 🏷️ Tags: #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 3.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (3.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+### Example: Milestone 1 -- Foundation
 
-- [ ] T029 No task modifies same file as another [P] task
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags:  -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+### T001: Create package structure [ ]
+<!-- FR: FR-001 -->
+- **Description**: Create the `src/myfeature/` package directory with `__init__.py`, establish the module hierarchy for core modules and tests.
+- **Files**: `src/myfeature/__init__.py`, `src/myfeature/core/__init__.py`, `tests/myfeature/__init__.py`, `tests/myfeature/conftest.py`
+- **Acceptance criteria**:
+  - `python3 -c "import src.myfeature"` succeeds without error
+  - Directory structure: `src/myfeature/`, `src/myfeature/core/`, `tests/myfeature/`
+  - `src/myfeature/__init__.py` exports `__version__` string
+- **Complexity**: S
+- **Agent**: `devops-developer`
+- **Tier**: T3 (creates files)
+- **Tags**: #python #setup #foundation
+- **Verify**: `python3 -c "from src.myfeature import __version__; print(__version__)"`
+- **On completion**: Mark `[ ]` as `[x]` in this file
 
+---
 
-**TCM Constitution Compliance**:
-- [ ] T030 GitOps patterns enforced (no manual kubectl apply tasks)
-  <!-- 🤖 Agent: terraform-architect | 🚫 T3 | ❓ 0.70 -->
-  <!-- 🏷️ Tags: #docs #kubernetes -->
-  <!-- 🧠 Reasoning: Skill 'terraform_operations' matched (score: 2.0), Routed to terraform-architect, Security tier: T3 -->
-  <!-- 🎯 skill: terraform_operations (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+### T002: Implement base interface [ ]
+<!-- FR: FR-001, FR-002 -->
+- **Description**: Create `src/myfeature/core/base.py` with the abstract base class. Define the contract methods and type hints per `contracts/interface.md`.
+- **Files**: `src/myfeature/core/base.py`
+- **Acceptance criteria**:
+  - Abstract base class importable via `from src.myfeature.core.base import BaseHandler`
+  - Subclass that does not implement `handle()` raises `TypeError` on instantiation
+  - Docstring documents the interface contract
+- **Complexity**: S
+- **Agent**: `devops-developer`
+- **Tier**: T3
+- **Tags**: #python #architecture #interface
+- **Verify**: `python3 -c "from src.myfeature.core.base import BaseHandler; print('OK')"`
+- **On completion**: Mark `[ ]` as `[x]` in this file
 
-- [ ] T031 Concrete image tags specified (no :latest references)
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 1.00 -->
-  <!-- 🏷️ Tags: #docker #test -->
-  <!-- 🧠 Reasoning: Skill 'testing_validation' matched (score: 8.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: testing_validation (8.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+---
 
-- [ ] T032 HTTPS endpoints required for external exposure
-  <!-- 🤖 Agent: devops-developer | ✅ T1 | ⚡ 0.60 -->
-  <!-- 🏷️ Tags: #api #web -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 3.0), Routed to devops-developer, Security tier: T1 -->
-  <!-- 🎯 skill: application_development (3.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+### T003: Milestone 1 Quality Gate [ ]
+<!-- FR: FR-001, FR-002 -->
+- **Description**: Verify all FRs covered by Milestone 1 are satisfied. Run import checks for all foundation modules.
+- **Files**: N/A (validation only)
+- **Acceptance criteria**:
+  - All T001-T002 verify commands pass
+  - Package structure is correct and importable
+  - Base interface enforces its contract
+- **Agent**: `devops-developer`
+- **Tier**: T0 (read-only validation)
+- **Tags**: #validation #quality-gate
+- **Verify**: `python3 -c "from src.myfeature.core.base import BaseHandler; print('M1 GATE PASS')"`
+- **On completion**: Mark `[ ]` as `[x]` in this file
 
-- [ ] T033 Health checks included before DNS exposure
-  <!-- 🤖 Agent: cloud-troubleshooter | 👁️ T0 | ❓ 0.50 -->
-  <!-- 🏷️ Tags: #monitoring #networking #test -->
-  <!-- 🧠 Reasoning: Skill 'monitoring_observability' matched (score: 2.0), Routed to cloud-troubleshooter, Security tier: T0 -->
-  <!-- 🎯 skill: monitoring_observability (2.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+---
 
-- [ ] T034 Certificate management strategy documented
-  <!-- 🤖 Agent: devops-developer | 👁️ T0 | ❓ 0.00 -->
-  <!-- 🏷️ Tags: #security #tcm -->
-  <!-- 🧠 Reasoning: Dominant surface unresolved; use devops-developer only for reconnaissance and re-classify after evidence -->
-  <!-- 🎯 default: devops-developer -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+### Example: Parallel implementation tasks
 
-- [ ] T035 Rollback procedures defined for deployments
-  <!-- 🤖 Agent: devops-developer | 🚫 T3 | ❓ 0.60 -->
-  <!-- 🏷️ Tags: #deploy #kubernetes -->
-  <!-- 🧠 Reasoning: Skill 'application_development' matched (score: 3.0), Routed to devops-developer, Security tier: T3 -->
-  <!-- 🎯 skill: application_development (3.0) -->
-  <!-- 🧭 Adjacent surfaces: note any cross-layer checks or follow-up agents -->
+### T004: Implement handler A [P] [ ]
+<!-- FR: FR-003 -->
+- **Description**: Create `src/myfeature/handlers/handler_a.py` implementing `BaseHandler` for the A workflow. Include detection logic from plan.md section 3.2.
+- **Files**: `src/myfeature/handlers/handler_a.py`
+- **Acceptance criteria**:
+  - Class `HandlerA` extends `BaseHandler` and implements all abstract methods
+  - Detection logic returns correct results for known test fixtures
+  - Includes `_source` metadata
+- **Complexity**: M
+- **Agent**: `devops-developer`
+- **Tier**: T3
+- **Tags**: #python #handler #implementation
+- **Verify**: `python3 -c "from src.myfeature.handlers.handler_a import HandlerA; print('OK')"`
+- **On completion**: Mark `[ ]` as `[x]` in this file
+
+---
+
+### T005: Implement handler B [P] [ ]
+<!-- FR: FR-004 -->
+- **Description**: Create `src/myfeature/handlers/handler_b.py` implementing `BaseHandler` for the B workflow. This task is independent of T004 and can run in parallel.
+- **Files**: `src/myfeature/handlers/handler_b.py`
+- **Acceptance criteria**:
+  - Class `HandlerB` extends `BaseHandler` and implements all abstract methods
+  - Returns empty result when no B indicators found
+  - Includes `_source` metadata
+- **Complexity**: M
+- **Agent**: `devops-developer`
+- **Tier**: T3
+- **Tags**: #python #handler #implementation
+- **Verify**: `python3 -c "from src.myfeature.handlers.handler_b import HandlerB; print('OK')"`
+- **On completion**: Mark `[ ]` as `[x]` in this file
+
+---
+
+### Example: High-risk task
+
+### T006: Wire integration with external system [ ]
+<!-- FR: FR-005 -->
+- **Description**: Modify `src/myfeature/orchestrator.py` to call the external API. Use atomic write pattern. Preserve existing behavior for offline mode.
+- **Files**: `src/myfeature/orchestrator.py`
+- **Acceptance criteria**:
+  - External API called when available, graceful fallback when not
+  - Atomic write: output file is either fully written or not present
+  - Existing offline tests still pass
+- **Complexity**: L
+- **Agent**: `devops-developer`
+- **Tier**: T3
+- **Tags**: #python #integration #external-api
+- **Verify**: `python3 -m pytest tests/myfeature/test_orchestrator.py -v --tb=short`
+- **On completion**: Mark `[ ]` as `[x]` in this file
+- **HIGH RISK**: Modifies integration point. Verify offline fallback still works.
+
+---
 
 ## Dependency Graph
-<!-- AGENT INSTRUCTION: Fill this section when generating tasks.md.
-     Replace the example entries below with the actual task dependencies for this feature.
-     - dependencies: maps each task to the list of tasks it requires to be complete first
-     - parallel_groups: lists sets of tasks that can run simultaneously (all share no file conflicts)
+
+<!-- AGENT INSTRUCTION: Replace with actual dependencies when generating tasks.
+     - dependencies: maps each task to the list of tasks it requires first
+     - parallel_groups: lists sets of tasks that can run simultaneously
      Omit a task from 'dependencies' if it has no prerequisites.
-     This section is machine-readable — keep it valid YAML inside the fenced block.
+     Keep valid YAML inside the fenced block.
 -->
 ```yaml
 dependencies:
   T002: [T001]
-  T003: [T001]
-  T008: [T004, T005, T006, T007]
-  T009: [T008]
-  T010: [T008]
-  T011: [T009]
-  T012: [T009]
-  T013: [T011, T012]
-  T014: [T011, T012]
-  T015: [T008]
-  T016: [T015]
-  T018: [T016]
-  T019: [T013]
-  T020: [T013]
-  T021: [T011, T012]
-  T022: [T019, T020]
-  T023: [T022]
+  T003: [T001, T002]
+  T004: [T003]
+  T005: [T003]
+  T006: [T004, T005]
 parallel_groups:
-  - [T004, T005, T006, T007]
-  - [T008, T010]
-  - [T019, T021]
+  - [T004, T005]
 ```
+
+---
+
+## Summary
+
+<!-- AGENT INSTRUCTION: Replace with actual milestone summary table. -->
+
+| Milestone | Tasks | Parallel | Complexity |
+|---|---|---|---|
+| M1: Foundation | T001-T003 | No (sequential) | 2S + 1QG |
+| M2: Implementation | T004-T006 | Partial (T004, T005 parallel) | 2M + 1L |
+| **Total** | **6** | | |
+
+---
+
+## FR Traceability Matrix
+
+<!-- AGENT INSTRUCTION: Replace with actual FR traceability.
+     Every FR from spec.md MUST appear with at least one primary task and quality gate.
+-->
+
+| FR | Description | Primary Task(s) | Quality Gate |
+|---|---|---|---|
+| FR-001 | {requirement} | T001 | T003 |
+| FR-002 | {requirement} | T002 | T003 |
+| FR-003 | {requirement} | T004 | T006 |
+| FR-004 | {requirement} | T005 | T006 |
+| FR-005 | {requirement} | T006 | T006 |

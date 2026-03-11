@@ -91,7 +91,7 @@
     "app_ci_tooling": {
       "primary_agent": "devops-developer",
       "adjacent_surfaces": ["terraform_iac", "gitops_desired_state", "live_runtime"],
-      "contract_sections": ["application_services", "application_architecture", "development_standards", "operational_guidelines"],
+      "contract_sections": ["application_services", "stack", "environment", "operational_guidelines"],
       "required_checks": [
         "Search for existing application, CI, and developer workflow patterns before changing build or runtime behavior",
         "Surface deployment, runtime, or infrastructure implications instead of treating the task as app-only by default",
@@ -125,7 +125,7 @@
     "planning_specs": {
       "primary_agent": "speckit-planner",
       "adjacent_surfaces": ["app_ci_tooling", "gaia_system"],
-      "contract_sections": ["project_details", "operational_guidelines", "application_architecture", "development_standards", "application_services"],
+      "contract_sections": ["project_identity", "stack", "environment", "operational_guidelines", "application_services", "speckit_root", "active_features"],
       "required_checks": [
         "Keep planning artifacts aligned with governance and project context",
         "Tag adjacent surfaces explicitly when the plan crosses infra, runtime, or app boundaries",
@@ -140,9 +140,18 @@
           "data-model",
           "acceptance criteria",
           "feature breakdown",
-          "workflow phase"
+          "workflow phase",
+          "speckit",
+          "specification",
+          "specify",
+          "task generation",
+          "implementation plan",
+          "feature planning",
+          "pre-implementation",
+          "feature spec",
+          "task breakdown"
         ],
-        "commands": [],
+        "commands": ["/speckit.plan", "/speckit.tasks", "/speckit.init", "/speckit.add-task", "/speckit.analyze-task"],
         "artifacts": ["spec.md", "plan.md", "tasks.md", "research.md", "data-model.md", "governance.md"]
       }
     },

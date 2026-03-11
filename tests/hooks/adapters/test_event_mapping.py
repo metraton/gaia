@@ -32,7 +32,7 @@ from adapters.types import HookEventType
 class TestHookEventTypeEnum:
     """Verify HookEventType enum has all expected members."""
 
-    # The 15 event types from the Claude Code hook protocol
+    # The 19 event types from the Claude Code hook protocol
     EXPECTED_EVENTS = {
         # P0 - Currently implemented
         "PRE_TOOL_USE": "PreToolUse",
@@ -54,10 +54,15 @@ class TestHookEventTypeEnum:
         "POST_TOOL_USE_FAILURE": "PostToolUseFailure",
         # P4
         "NOTIFICATION": "Notification",
+        # P5 - Additional events
+        "TEAMMATE_IDLE": "TeammateIdle",
+        "WORKTREE_CREATE": "WorktreeCreate",
+        "WORKTREE_REMOVE": "WorktreeRemove",
+        "PROMPT_SUBMIT": "PromptSubmit",
     }
 
     def test_enum_has_all_expected_members(self):
-        """All 15 expected event types exist in the enum."""
+        """All 19 expected event types exist in the enum."""
         for attr_name, event_value in self.EXPECTED_EVENTS.items():
             assert hasattr(HookEventType, attr_name), (
                 f"HookEventType missing member: {attr_name}"
@@ -68,10 +73,10 @@ class TestHookEventTypeEnum:
             )
 
     def test_enum_count(self):
-        """Enum has exactly 15 members."""
+        """Enum has exactly 19 members."""
         member_count = len(HookEventType)
-        assert member_count == 15, (
-            f"Expected 15 HookEventType members, got {member_count}. "
+        assert member_count == 19, (
+            f"Expected 19 HookEventType members, got {member_count}. "
             f"Members: {[e.name for e in HookEventType]}"
         )
 
@@ -236,13 +241,14 @@ class TestUnknownEventHandling:
             adapter.parse_event(stdin_data)
 
     def test_all_non_p0_events_still_parse(self, adapter):
-        """All P1-P4 events parse (even though no business logic exists yet)."""
+        """All P1-P5 events parse (even though no business logic exists yet)."""
         non_p0_events = [
             "SessionStart", "UserPromptSubmit",
             "PermissionRequest", "Stop", "TaskCompleted", "SubagentStart",
             "PreCompact", "ConfigChange", "SessionEnd",
             "InstructionsLoaded", "PostToolUseFailure",
             "Notification",
+            "TeammateIdle", "WorktreeCreate", "WorktreeRemove", "PromptSubmit",
         ]
         for event_name in non_p0_events:
             stdin_data = json.dumps({

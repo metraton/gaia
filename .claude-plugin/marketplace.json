@@ -1,35 +1,32 @@
 {
-  "name": "gaia-ops-marketplace",
-  "version": "1.0.0",
-  "description": "Security, governance, and multi-agent orchestration for AI coding",
-  "owner": {
-    "name": "gaia-ops",
-    "email": "jaguilar87@users.noreply.github.com"
-  },
-  "plugins": [
-    {
-      "name": "gaia-security",
-      "description": "Command validation hooks: blocked commands, mutative verb detection, nonce-based approval",
-      "version": "4.1.1",
-      "source": "./plugins/gaia-security",
-      "category": "security",
-      "tags": ["hooks", "governance", "approval", "command-validation"]
+  "marketplace": {
+    "name": "gaia-ops-marketplace",
+    "description": "Security, governance, and multi-agent orchestration for AI coding",
+    "owner": {
+      "name": "jaguilar87",
+      "email": "jaguilar1897@gmail.com"
     },
-    {
-      "name": "gaia-agents",
-      "description": "Specialized DevOps agents: cloud-troubleshooter, terraform-architect, gitops-operator, devops-developer, speckit-planner",
-      "version": "4.1.1",
-      "source": "./plugins/gaia-agents",
-      "category": "development",
-      "tags": ["agents", "devops", "terraform", "kubernetes", "gitops"]
-    },
-    {
-      "name": "gaia-full",
-      "description": "Complete orchestration system: security hooks, specialized agents, skills, context injection, episodic memory",
-      "version": "4.1.1",
-      "source": ".",
-      "category": "development",
-      "tags": ["orchestrator", "devops", "security", "governance", "multi-agent"]
-    }
-  ]
+    "plugins": [
+      {
+        "name": "gaia-security",
+        "description": "Security hooks, approval system, audit logging, metrics, and anomaly detection for Claude Code",
+        "version": "4.1.1",
+        "source": "./plugins/gaia-security",
+        "category": "security",
+        "tags": ["security", "hooks", "audit", "metrics", "approval"],
+        "dependencies": [],
+        "includes": ["hooks/pre_tool_use.py", "hooks/post_tool_use.py", "hooks/subagent_stop.py", "hooks/stop_hook.py", "hooks/modules/security/", "hooks/modules/tools/", "hooks/adapters/", "config/"]
+      },
+      {
+        "name": "gaia-ops",
+        "description": "Complete DevOps orchestration system: agents, scanning, context injection, episodic memory, speckit planning, and CLI tools \u2014 includes gaia-security",
+        "version": "4.1.1",
+        "source": "./plugins/gaia-ops",
+        "category": "devops",
+        "tags": ["devops", "agents", "scanning", "orchestration", "speckit", "ops"],
+        "dependencies": [],
+        "includes": ["."]
+      }
+    ]
+  }
 }

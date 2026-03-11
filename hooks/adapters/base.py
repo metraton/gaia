@@ -12,12 +12,15 @@ from abc import ABC, abstractmethod
 
 from .types import (
     AgentCompletion,
+    BootstrapResult,
     CompletionResult,
     ContextResult,
     DistributionChannel,
     HookEvent,
     HookResponse,
+    QualityResult,
     ValidationResult,
+    VerificationResult,
 )
 
 
@@ -78,6 +81,81 @@ class HookAdapter(ABC):
     @abstractmethod
     def format_context_response(self, result: ContextResult) -> HookResponse:
         """Format a ContextResult for CLI consumption."""
+        ...
+
+    @abstractmethod
+    def format_bootstrap_response(self, result: BootstrapResult) -> HookResponse:
+        """Format a BootstrapResult for CLI consumption.
+
+        Returns session bootstrap status for SessionStart events.
+        """
+        ...
+
+    @abstractmethod
+    def adapt_session_start(self, raw: dict) -> BootstrapResult:
+        """Parse SessionStart event and return bootstrap actions.
+
+        Preconditions:
+            - raw is the HookEvent.payload dict for a SessionStart event
+
+        Postconditions:
+            - Returns BootstrapResult with should_scan and should_refresh set
+              based on session_type
+        """
+        ...
+
+    # ------------------------------------------------------------------ #
+    # P2 event adapters
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def adapt_stop(self, raw: dict) -> QualityResult:
+        """Parse Stop event and assess response quality.
+
+        Preconditions:
+            - raw is the HookEvent.payload dict for a Stop event
+
+        Postconditions:
+            - Returns QualityResult with quality assessment
+        """
+        ...
+
+    @abstractmethod
+    def adapt_task_completed(self, raw: dict) -> VerificationResult:
+        """Parse TaskCompleted event and verify completion criteria.
+
+        Preconditions:
+            - raw is the HookEvent.payload dict for a TaskCompleted event
+
+        Postconditions:
+            - Returns VerificationResult with criteria assessment
+        """
+        ...
+
+    @abstractmethod
+    def adapt_subagent_start(self, raw: dict) -> ContextResult:
+        """Parse SubagentStart event and prepare agent context.
+
+        Preconditions:
+            - raw is the HookEvent.payload dict for a SubagentStart event
+
+        Postconditions:
+            - Returns ContextResult with agent-specific context
+        """
+        ...
+
+    # ------------------------------------------------------------------ #
+    # P2 formatters
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def format_quality_response(self, result: QualityResult) -> HookResponse:
+        """Format a QualityResult for CLI consumption."""
+        ...
+
+    @abstractmethod
+    def format_verification_response(self, result: VerificationResult) -> HookResponse:
+        """Format a VerificationResult for CLI consumption."""
         ...
 
     @abstractmethod

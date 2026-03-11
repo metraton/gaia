@@ -840,7 +840,7 @@ async function main() {
     if (!existsSync(claudeDir)) {
       spinner.fail('.claude/ directory not found');
       console.log(chalk.yellow('\n⚠️  Gaia-ops not installed in this directory'));
-      console.log(chalk.gray('   Run: npx gaia-init\n'));
+      console.log(chalk.gray('   Run: npx gaia-scan\n'));
       process.exit(1);
     }
 

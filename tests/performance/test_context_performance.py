@@ -77,15 +77,16 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
             "environment": "production",
         },
         "sections": {
-            # 1. project_details
-            "project_details": {
-                "id": "perf-benchmark-123456",
-                "region": "us-central1",
-                "environment": "production",
+            # 1. project_identity (v2)
+            "project_identity": {
+                "name": "perf-benchmark-123456",
+                "type": "application",
                 "description": "Performance benchmark project for gaia-ops context pipeline",
-                "owner": "platform-team",
-                "cost_center": "CC-12345",
-                "tags": {f"tag-{i}": f"value-{i}" for i in range(20)},
+            },
+            # 1b. infrastructure (v2)
+            "infrastructure": {
+                "cloud_providers": [{"name": "gcp", "project_id": "perf-benchmark-123456", "region": "us-central1"}],
+                "ci_cd": [],
             },
 
             # 2. cluster_details (dict with nested arrays of named dicts)
@@ -336,8 +337,8 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
                 "sla": {"target": "99.95%", "measurement_window": "30d"},
             },
 
-            # 9. application_architecture
-            "application_architecture": {
+            # 9. architecture_overview (v2 -- replaces application_architecture)
+            "architecture_overview": {
                 "style": "microservices",
                 "api_gateway": {"type": "Kong", "version": "3.6.0"},
                 "service_mesh": {"type": "Istio", "version": "1.21.0"},
@@ -359,8 +360,8 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
                 ],
             },
 
-            # 10. development_standards
-            "development_standards": {
+            # 10. environment (v2 -- replaces development_standards)
+            "environment": {
                 "languages": {
                     lang: {
                         "version": ver,
@@ -545,11 +546,11 @@ class TestContextGeneration:
         assert size_kb >= 45, f"Context too small: {size_kb:.1f} KB (expected >= 45 KB)"
         assert size_kb <= 120, f"Context too large: {size_kb:.1f} KB (expected <= 120 KB)"
 
-    def test_generated_context_has_12_sections(self, setup_perf):
+    def test_generated_context_has_13_sections(self, setup_perf):
         _, _, context_data = setup_perf
         sections = context_data["sections"]
-        assert len(sections) == 12, (
-            f"Expected 12 sections, got {len(sections)}: {sorted(sections.keys())}"
+        assert len(sections) == 13, (
+            f"Expected 13 sections, got {len(sections)}: {sorted(sections.keys())}"
         )
 
     def test_generated_context_has_nested_structures(self, setup_perf):

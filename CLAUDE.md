@@ -105,6 +105,11 @@ When a `PENDING_APPROVAL` arrives with a real nonce, present it to the user with
 
 Use AskUserQuestion with concrete labeled options for all approvals, disambiguation, and choices.
 
+## Orchestrator Skills
+
+The orchestrator uses `skills/specification` for conversational spec creation
+when the `planning_specs` surface is active and no `spec.md` exists yet.
+
 ## Failure Handling
 
 | Failure | Action |

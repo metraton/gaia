@@ -1,12 +1,12 @@
 ---
 
 **USAGE**: This command requires: `<speckit-root> <feature-name>`
-**Example**: `/speckit.add-task spec-kit-tcm-plan 004-feature-name`
+**Example**: `/speckit.add-task specs 004-feature-name`
 description: Add a single task to active feature's tasks.md with automatic enrichment. Use during implementation for ad-hoc tasks.
 ---
 
 **USAGE**: This command requires: `<speckit-root> <feature-name>`
-**Example**: `/speckit.add-task spec-kit-tcm-plan 004-feature-name`
+**Example**: `/speckit.add-task specs 004-feature-name`
 
 The user input after `/speckit.add-task` MUST contain the high-level task intent (e.g., "Fix database connection pool leak"). Treat `$ARGUMENTS` below as that description and combine it with interactive prompts.
 
@@ -139,7 +139,7 @@ Use this command to append or insert a **single** task in the currently active S
      * High-risk status (if applicable)
      * Dependencies added
    - Mention that analysis was completed (step 7)
-   - If task is T2/T3, remind user it will trigger analysis again during `/speckit.implement`
+   - If task is T2/T3, remind user the orchestrator will trigger analysis before execution
 
 ## Notes
 - Never guess the task ID: always confirm with the user

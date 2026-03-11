@@ -80,49 +80,49 @@ class TestAgentProtocolSkill:
         return (skills_dir / "agent-protocol" / "SKILL.md").read_text()
 
     def test_has_agent_status_section(self, content):
-        """Must document AGENT_STATUS format."""
-        assert "AGENT_STATUS" in content, \
-            "agent-protocol must document AGENT_STATUS"
+        """Must document json:contract block format (replaces AGENT_STATUS)."""
+        assert "json:contract" in content, \
+            "agent-protocol must document json:contract block format"
 
     def test_has_plan_status(self, content):
-        """Must document PLAN_STATUS values."""
-        assert "PLAN_STATUS" in content, \
-            "agent-protocol must document PLAN_STATUS"
+        """Must document plan_status values."""
+        assert "plan_status" in content, \
+            "agent-protocol must document plan_status"
 
     def test_has_pending_steps(self, content):
-        """Must document PENDING_STEPS."""
-        assert "PENDING_STEPS" in content, \
-            "agent-protocol must document PENDING_STEPS"
+        """Must document pending_steps."""
+        assert "pending_steps" in content, \
+            "agent-protocol must document pending_steps"
 
     def test_has_evidence_report_section(self, content):
-        """Must document EVIDENCE_REPORT format."""
-        assert "EVIDENCE_REPORT" in content, \
-            "agent-protocol must document EVIDENCE_REPORT"
+        """Must document evidence object format in json:contract block."""
+        assert '"evidence"' in content, \
+            "agent-protocol must document evidence object"
         for field in [
-            "PATTERNS_CHECKED",
-            "FILES_CHECKED",
-            "COMMANDS_RUN",
-            "KEY_OUTPUTS",
-            "VERBATIM_OUTPUTS",
-            "CROSS_LAYER_IMPACTS",
-            "OPEN_GAPS",
+            "patterns_checked",
+            "files_checked",
+            "commands_run",
+            "key_outputs",
+            "verbatim_outputs",
+            "cross_layer_impacts",
+            "open_gaps",
         ]:
             assert field in content, \
-                f"agent-protocol should document EVIDENCE_REPORT field '{field}'"
+                f"agent-protocol should document evidence field '{field}'"
 
     def test_has_consolidation_report_section(self, content):
-        """Must document CONSOLIDATION_REPORT for multi-surface work."""
-        assert "CONSOLIDATION_REPORT" in content, \
-            "agent-protocol must document CONSOLIDATION_REPORT"
+        """Must document consolidation object for multi-surface work."""
+        assert '"consolidation"' in content, \
+            "agent-protocol must document consolidation object"
         for field in [
-            "OWNERSHIP_ASSESSMENT",
-            "CONFIRMED_FINDINGS",
-            "SUSPECTED_FINDINGS",
-            "CONFLICTS",
-            "NEXT_BEST_AGENT",
+            "ownership_assessment",
+            "confirmed_findings",
+            "suspected_findings",
+            "conflicts",
+            "next_best_agent",
         ]:
             assert field in content, \
-                f"agent-protocol should document CONSOLIDATION_REPORT field '{field}'"
+                f"agent-protocol should document consolidation field '{field}'"
 
     def test_documents_all_valid_statuses(self, content):
         """Must document all valid PLAN_STATUS values."""
@@ -184,8 +184,8 @@ class TestOutputFormatSkill:
 
     def test_references_protocol_mandated_evidence_report(self, content):
         """output-format should defer deterministic evidence schema to agent-protocol."""
-        assert "EVIDENCE_REPORT" in content, \
-            "output-format should reference EVIDENCE_REPORT"
+        assert "evidence" in content, \
+            "output-format should reference evidence (json:contract format)"
         assert "agent-protocol" in content, \
             "output-format should defer the block schema to agent-protocol"
 
@@ -217,8 +217,8 @@ class TestInvestigationSkill:
         """investigation should explain the consolidation contract for cross-surface work."""
         assert "Consolidation Contract" in content, \
             "investigation should document the consolidation contract"
-        assert "CONSOLIDATION_REPORT" in content, \
-            "investigation should reference CONSOLIDATION_REPORT"
+        assert "consolidation" in content, \
+            "investigation should reference consolidation (json:contract format)"
 
 
 if __name__ == "__main__":

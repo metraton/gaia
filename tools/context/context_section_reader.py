@@ -61,38 +61,56 @@ class ContextSectionReader:
     """
 
     # Define which sections each agent needs (JSON keys in snake_case)
+    # Aligned with v2 scanner sections from context-contracts.json v3
     AGENT_SECTIONS = {
         'gitops-operator': [
-            'infrastructure_topology',
+            'project_identity',
+            'stack',
+            'git',
+            'environment',
+            'infrastructure',
+            'orchestration',
             'gitops_configuration',
-            'gitops_repositories',
-            'application_deployments',
+            'cluster_details',
             'operational_guidelines',
+            'application_services',
         ],
         'cloud-troubleshooter': [
+            'project_identity',
+            'stack',
+            'git',
+            'environment',
+            'infrastructure',
+            'orchestration',
+            'cluster_details',
             'infrastructure_topology',
-            'operational_guidelines',
+            'terraform_infrastructure',
+            'gitops_configuration',
+            'application_services',
             'monitoring_observability',
         ],
         'terraform-architect': [
-            'infrastructure_topology',
+            'project_identity',
+            'stack',
+            'git',
+            'environment',
+            'infrastructure',
+            'orchestration',
             'terraform_infrastructure',
-            'terraform_configurations',
-            'vpc_mapping',
+            'infrastructure_topology',
             'operational_guidelines',
+            'cluster_details',
+            'application_services',
         ],
         'devops-developer': [
-            'application_architecture',
-            'application_deployments',
-            'development_standards',
+            'project_identity',
+            'stack',
+            'git',
+            'environment',
+            'infrastructure',
+            'application_services',
             'operational_guidelines',
         ],
-        'cloud-troubleshooter': [
-            'infrastructure_topology',
-            'vpc_mapping',
-            'dynamic_queries',
-            'operational_guidelines',
-        ]
     }
 
     def __init__(self, context_file: Optional[str] = None):

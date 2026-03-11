@@ -24,10 +24,10 @@ class TestSchemaCompatibility:
         return template_path.read_text()
 
     @pytest.fixture
-    def gaia_init_content(self, package_root):
-        init_path = package_root / "bin" / "gaia-init.js"
-        assert init_path.exists(), "gaia-init.js not found"
-        return init_path.read_text()
+    def gaia_scan_content(self, package_root):
+        scan_path = package_root / "bin" / "gaia-scan.py"
+        assert scan_path.exists(), "gaia-scan.py not found"
+        return scan_path.read_text()
 
     @pytest.fixture
     def fixture_contexts(self, package_root):
@@ -151,8 +151,8 @@ class TestSchemaCompatibility:
             assert "metadata" in ctx, f"{name}: missing metadata"
             assert "sections" in ctx, f"{name}: missing sections"
 
-    def test_gaia_init_writes_project_context(self, gaia_init_content):
-        """gaia-init must write to project-context.json."""
-        assert "project-context" in gaia_init_content, (
-            "gaia-init must reference project-context"
+    def test_gaia_scan_writes_project_context(self, gaia_scan_content):
+        """gaia-scan must write to project-context.json."""
+        assert "project-context" in gaia_scan_content, (
+            "gaia-scan must reference project-context"
         )

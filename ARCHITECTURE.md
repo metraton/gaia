@@ -201,6 +201,100 @@ are loaded from their respective directories.
 
 See `.claude-plugin/marketplace.json` for the self-hosted marketplace with sub-plugins.
 
+## Adapter Coupling Points
+
+The adapter layer connects Claude Code's hook protocol to gaia-ops business logic through 5 coupling points. Each coupling point is a thin entry point that delegates to the adapter for JSON parsing/formatting and to business logic modules for decisions.
+
+### CP-1: `hooks/pre_tool_use.py` -- Command Validation Entry Point
+
+| Attribute | Value |
+|-----------|-------|
+| **File** | `hooks/pre_tool_use.py` |
+| **Hook event** | PreToolUse |
+| **What it does** | Security gate for all Bash, Task, and Agent tool invocations. Validates commands (blocked patterns, mutative verbs, nonce-based approval), injects project-context into agent prompts, guards pending contract repairs. |
+| **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_pre_tool_use()`, `ClaudeCodeAdapter.format_validation_response()` |
+| **Business logic modules** | `security/blocked_commands.py`, `security/mutative_verbs.py`, `security/approval_grants.py`, `tools/bash_validator.py`, `tools/task_validator.py`, `agents/response_contract.py`, `context/context_provider.py` |
+
+### CP-2: `hooks/post_tool_use.py` -- Audit Logging Entry Point
+
+| Attribute | Value |
+|-----------|-------|
+| **File** | `hooks/post_tool_use.py` |
+| **Hook event** | PostToolUse |
+| **What it does** | Records execution audit logs, detects critical events (git commits, pushes, file modifications), updates active session context. Reads pre-hook state for timing and tier classification. |
+| **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_post_tool_use()` |
+| **Business logic modules** | `audit/logger.py` (`log_execution`), `audit/event_detector.py` (`detect_critical_event`), `core/state.py` (`get_hook_state`, `clear_hook_state`) |
+
+### CP-3: `hooks/subagent_stop.py` -- Contract Validation + Memory Entry Point
+
+| Attribute | Value |
+|-----------|-------|
+| **File** | `hooks/subagent_stop.py` |
+| **Hook event** | SubagentStop |
+| **What it does** | Fires after every agent completes. Consumes approval files, captures workflow metrics, validates the response contract (AGENT_STATUS, EVIDENCE_REPORT, CONSOLIDATION_REPORT), detects anomalies, stores episodic memory, and processes CONTEXT_UPDATE blocks. |
+| **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_agent_completion()` |
+| **Business logic modules** | `agents/response_contract.py` (`validate_response_contract`, `save_pending_repair`, `clear_pending_repair`), `tools/memory/episodic.py` (`EpisodicMemory.store_episode`), `context/context_writer.py` (`process_agent_output`) |
+
+### CP-4: `hooks/modules/tools/hook_response.py` -- Response Formatting
+
+| Attribute | Value |
+|-----------|-------|
+| **File** | `hooks/modules/tools/hook_response.py` |
+| **Hook event** | (shared utility, used by PreToolUse callers) |
+| **What it does** | Provides `build_hook_permission_response()` -- a shared builder for hookSpecificOutput JSON. Delegates to the adapter's `format_validation_response()` so all permission responses share a single code path. |
+| **Adapter methods called** | `ClaudeCodeAdapter.format_validation_response()` |
+| **Business logic modules** | None (pure formatting bridge) |
+
+### CP-5: `templates/settings.template.json` / `hooks/hooks.json` -- Hook Configuration
+
+| Attribute | Value |
+|-----------|-------|
+| **File (npm channel)** | `templates/settings.template.json` -- paths use `.claude/hooks/` prefix |
+| **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
+| **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
+| **Events configured** | PreToolUse, PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart (UserPromptSubmit is a static echo in settings.json only) |
+
+### HookAdapter ABC Contract
+
+The abstract interface in `hooks/adapters/base.py` defines the adapter contract. Each CLI backend provides a concrete implementation.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `parse_event` | `(stdin_data: str) -> HookEvent` | Parse raw stdin JSON into a normalized, CLI-agnostic event |
+| `format_validation_response` | `(result: ValidationResult) -> HookResponse` | Format a validation result for the CLI's permission protocol |
+| `format_completion_response` | `(result: CompletionResult) -> HookResponse` | Format a completion result for SubagentStop |
+| `format_context_response` | `(result: ContextResult) -> HookResponse` | Format a context injection result |
+| `detect_channel` | `() -> DistributionChannel` | Detect whether gaia-ops is running as NPM or PLUGIN |
+
+Additional abstract methods for P1/P2 events: `adapt_session_start`, `format_bootstrap_response`, `adapt_stop`, `adapt_task_completed`, `adapt_subagent_start`, `format_quality_response`, `format_verification_response`.
+
+**Invariants:**
+1. Business logic modules NEVER see `HookResponse`. They produce `ValidationResult`, `CompletionResult`, etc.
+2. The adapter NEVER modifies business logic results -- it only translates format.
+3. Adding a new hook event requires ONLY a new adapter method. Zero changes to business logic modules.
+
+### Adding a New Hook Event
+
+To add support for a new Claude Code hook event (e.g., a future `PreCompact` event):
+
+1. **Add enum value** to `HookEventType` in `hooks/adapters/types.py` (already present for all 19 known events).
+2. **Add adapter method** to `ClaudeCodeAdapter` in `hooks/adapters/claude_code.py` -- implement `adapt_<event_name>(raw: dict) -> <ResultType>` and the corresponding `format_<result>_response()` if a new result type is needed.
+3. **Add extract/format methods** for the event type -- the extract method pulls typed data from the raw payload, the format method builds the CLI response JSON.
+4. **Create hook script entry point** -- a new `hooks/<event_name>.py` file that reads stdin, calls `adapter.parse_event()`, delegates to business logic, and writes the response to stdout.
+5. **Add entry to `hooks/hooks.json`** (plugin channel) and `templates/settings.template.json` (npm channel) mapping the event name to the new script.
+
+**Zero changes to business logic modules required.** The adapter is the only layer that touches CLI-specific JSON.
+
+### Adding a New CLI Backend
+
+To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf integration):
+
+1. **Subclass `HookAdapter`** from `hooks/adapters/base.py`.
+2. **Implement `parse_event()`** and all `format_*()` methods to translate between the new CLI's JSON protocol and the normalized types in `hooks/adapters/types.py`.
+3. **No changes to business logic or adapter interface.** The same `ValidationResult`, `CompletionResult`, `ContextResult`, etc. flow through unchanged.
+
+**Business logic modules remain untouched.** They consume and produce normalized types; only the adapter layer changes.
+
 ## Key Files Reference
 
 | File | Purpose |
@@ -223,4 +317,4 @@ See `.claude-plugin/marketplace.json` for the self-hosted marketplace with sub-p
 | `config/surface-routing.json` | Surface signals and routing config |
 | `agents/*.md` | Agent identity definitions |
 | `skills/*/SKILL.md` | Injected procedural knowledge |
-| `bin/*.js` | CLI tools (gaia-init, gaia-doctor, gaia-status, etc.) |
+| `bin/*.js` | CLI tools (gaia-scan, gaia-doctor, gaia-status, etc.) |

@@ -15,7 +15,7 @@ Gaia-Ops is a system of specialized AI agents that automate DevOps tasks. Think 
 The easiest way - the installer will guide you step by step:
 
 ```bash
-npx gaia-init
+npx gaia-scan
 ```
 
 It will ask questions like:
@@ -28,7 +28,7 @@ It will ask questions like:
 For CI/CD scripts or if you already know the values:
 
 ```bash
-npx gaia-init --non-interactive \
+npx gaia-scan --non-interactive \
   --gitops ./gitops \
   --terraform ./terraform \
   --app-services ./app-services \
@@ -43,7 +43,7 @@ npx gaia-init --non-interactive \
 ### Installation Flow
 
 ```
-User runs: npx gaia-init
+User runs: npx gaia-scan
         ↓
 [Detector] scans your project
         ↓
@@ -99,7 +99,7 @@ Ready! You can use: claude
 ```
 Example: Installation in project with GitOps and Terraform
 
-1. User: npx gaia-init
+1. User: npx gaia-scan
    ↓
 2. Detector finds:
    ✅ ./gitops (52 YAML files detected)
@@ -107,9 +107,9 @@ Example: Installation in project with GitOps and Terraform
    ❌ ./app-services (not found)
    ↓
 3. Installer asks:
-   ? GCP Project ID: → aaxis-rnd-general-project
+   ? GCP Project ID: → my-gcp-project
    ? Primary region: → us-central1
-   ? Cluster name: → tcm-gke-non-prod
+   ? Cluster name: → my-gke-cluster
    ↓
 4. Checks Claude Code:
    ✅ Claude Code already installed at /usr/local/bin/claude
@@ -133,7 +133,7 @@ Example: Installation in project with GitOps and Terraform
    🚀 Next steps:
    1. Run: claude
    2. Ask: "Show me GKE clusters"
-   3. Or use: /gaia to explore the system
+   3. Or use: /scan-project to detect your project stack
 ```
 
 ---
@@ -156,13 +156,13 @@ export CLAUDE_REGION="us-central1"
 export CLAUDE_CLUSTER_NAME="my-gke-cluster"
 
 # Install without questions
-npx gaia-init --non-interactive
+npx gaia-scan --non-interactive
 ```
 
 ### Complete CLI Options
 
 ```
-gaia-init [options]
+gaia-scan [options]
 
 Options:
   --non-interactive          Skip prompts, use provided values or defaults
@@ -212,9 +212,9 @@ Once installed, you have access to **complete documentation** in each directory:
 .claude/
 ├── agents/               6 agents (terraform-architect, gitops-operator, etc.)
 ├── skills/README.md      16 skill modules
-├── commands/README.md    7 speckit slash commands
+├── commands/README.md    6 slash commands (5 speckit + scan-project)
 ├── config/README.md      Contracts, git standards, universal rules
-├── hooks/README.md       3 hooks (pre, post, metrics)
+├── hooks/README.md       9 hook scripts (3 primary + 6 event handlers)
 ├── tools/                Context, memory, validation, review
 ├── speckit/README.md     Spec-Kit framework
 ├── templates/README.md   Installation templates
@@ -260,7 +260,7 @@ claude
 "List deployments in production namespace"
 
 # Or use slash commands:
-/gaia Explain how routing works
+/scan-project
 ```
 
 ---
@@ -376,7 +376,7 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 **Solution:**
 ```bash
 # Re-run installation
-npx gaia-init --force
+npx gaia-scan --force
 ```
 
 ---

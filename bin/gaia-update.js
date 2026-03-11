@@ -7,7 +7,7 @@
  * Also available as: npx gaia-update
  *
  * Behavior:
- * - First-time install (.claude/ doesn't exist): skip silently (gaia-init handles it)
+ * - First-time install (.claude/ doesn't exist): skip silently (gaia-scan handles it)
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
  *   2. CLAUDE.md: overwrite safely (template is static)
@@ -273,7 +273,7 @@ async function runVerification() {
     }
   } else {
     checks.push({ name: 'project-context.json', ok: false });
-    issues.push('project-context.json not found (run gaia-init)');
+    issues.push('project-context.json not found (run gaia-scan)');
   }
 
   // 4. Config files accessible
@@ -332,7 +332,7 @@ async function main() {
   const isUpdate = existsSync(claudeDir);
 
   if (!isUpdate) {
-    // First-time install — gaia-init handles everything
+    // First-time install — gaia-scan handles everything
     process.exit(0);
   }
 

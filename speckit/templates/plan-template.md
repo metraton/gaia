@@ -46,22 +46,16 @@
 
 ## Constitution Check
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+<!-- Load project-specific governance rules from governance.md if it exists -->
+<!-- If no governance.md, use these generic checks -->
 
-**GitOps Compliance**:
-- [ ] All infrastructure changes use declarative GitOps patterns (no manual kubectl apply)
-- [ ] Changes follow Flux → HelmRelease → charts/tcm-service/ pattern
-- [ ] Container images use concrete Artifact Registry tags (no :latest)
-
-**Security & Operations**:
-- [ ] HTTPS mandatory for all external endpoints
-- [ ] Certificate strategy defined (ManagedCertificate or cert-manager wildcard)
-- [ ] DNS prerequisites identified for SSL provisioning
-- [ ] Health checks and readiness probes included
-
-**Scope Boundaries**:
-- [ ] No new cluster or foundational infrastructure creation
-- [ ] Focus on runtime stabilization and HTTP(S) exposure only
-- [ ] Existing secrets referenced (no recreation)
+| Check | Status |
+|-------|--------|
+| Changes are additive (no breaking changes to existing interfaces) | {PASS/FAIL/N/A} |
+| No new external dependencies without justification | {PASS/FAIL/N/A} |
+| Security: no credentials, secrets, or PII in code | {PASS/FAIL/N/A} |
+| Testing: plan includes test strategy | {PASS/FAIL/N/A} |
+| Documentation: plan includes doc updates if user-facing | {PASS/FAIL/N/A} |
 
 ## Project Structure
 

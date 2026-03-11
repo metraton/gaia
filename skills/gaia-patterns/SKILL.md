@@ -20,11 +20,11 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
    ├─ Load skills from frontmatter
    └─ Validate permissions
    ↓
-4. Agent Executes — uses tools, follows skills, returns AGENT_STATUS
+4. Agent Executes — uses tools, follows skills, returns `json:contract` block
    ↓
 5. Post-Tool Hook — audit + metrics
    ↓
-6. Orchestrator processes AGENT_STATUS
+6. Orchestrator processes `json:contract` block (plan_status)
    ├─ PENDING_APPROVAL → get approval → resume
    ├─ NEEDS_INPUT → ask user → resume
    └─ COMPLETE → respond to user
@@ -41,7 +41,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 
 ## Multi-Agent Consolidation
 
-The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritative contract (consolidation contract + consolidation loop rules). Agents return `CONSOLIDATION_REPORT` blocks; the orchestrator merges, decides whether to dispatch another round, and stops when gaps are no longer actionable.
+The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritative contract (consolidation contract + consolidation loop rules). Agents return `json:contract` blocks with `consolidation` objects; the orchestrator merges, decides whether to dispatch another round, and stops when gaps are no longer actionable.
 
 ## Workflow Design Philosophy
 
@@ -87,4 +87,4 @@ The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritat
 |--------|---------|
 | Bug fix in agent or skill | PATCH |
 | New agent or skill | MINOR |
-| Breaking change to AGENT_STATUS format | MAJOR |
+| Breaking change to `json:contract` format | MAJOR |

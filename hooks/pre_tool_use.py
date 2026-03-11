@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Pre-tool use hook - Modular Architecture.
+Pre-tool use hook - Thin Gate Architecture.
 
 Entry point for Bash and Task/Agent tool validation. The hook is the primary
 security gate: with Bash(*) in the settings.json allow list, all commands
 reach this hook regardless of settings.json permissions.
 
+This file is a thin gate: parse -> delegate -> format -> exit.
+All business logic lives in modules under hooks/modules/.
+
 Responsibilities:
 - Bash: delegates to BashValidator (blocked commands, safe detection,
   dangerous verb detector with nonce-based approval flow)
-- Task/Agent: project-context injection, session events, nonce activation
-  (APPROVE:{hex32})
+- Task/Agent: delegates to prompt_validator, contracts_loader,
+  context_injector, and session_event_injector
 - State sharing with post-hook via hook state files
 - Periodic cleanup of expired approval grants
 """
@@ -18,10 +21,7 @@ Responsibilities:
 import sys
 import json
 import logging
-import os
 import re
-import select
-import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -32,6 +32,7 @@ from modules.core.paths import get_logs_dir
 # Adapter layer: normalize stdin parsing and response formatting
 from adapters.claude_code import ClaudeCodeAdapter
 from adapters.types import ValidationResult
+from adapters.utils import has_stdin_data, warn_if_dual_channel
 
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.approval_constants import (
@@ -43,14 +44,6 @@ from modules.security.approval_messages import (
     build_deprecated_approval_message,
     build_invalid_nonce_message,
 )
-from modules.agents.response_contract import (
-    build_repair_prompt,
-    clear_pending_repair,
-    load_pending_repair,
-    mark_repair_attempt,
-    MAX_REPAIR_ATTEMPTS,
-    _format_field_list,
-)
 from modules.security.approval_grants import (
     activate_pending_approval,
     cleanup_expired_grants,
@@ -58,7 +51,13 @@ from modules.security.approval_grants import (
 from modules.tools.bash_validator import BashValidator, create_permission_allow_response
 from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
 
-# Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
+# Extracted modules
+from modules.security.prompt_validator import classify_resume_prompt
+from modules.context.context_injector import inject_project_context
+from modules.context.context_injector import should_inject_on_resume
+from modules.session.session_event_injector import inject_session_events
+
+# Configure logging -- all hooks share hooks-YYYY-MM-DD.log for easy tailing
 log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
@@ -71,674 +70,36 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# PROJECT CONTEXT INJECTION
+# DERIVED CONSTANTS
 # ============================================================================
 
 # Derive from task_validator lists: project agents = available minus meta
 PROJECT_AGENTS = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
 
-DEPRECATED_APPROVAL_PHRASES = (
-    "user approved:",
-    "user approval received",
-    "approved by user",
-    "approval confirmed",
-    "approved. execute",
-    "approved, execute",
-    "proceed with execution",
-    "confirmed. proceed",
-)
+# Hooks directory for module fallback path resolution
+_HOOKS_DIR = Path(__file__).parent
 
 
-def _build_context_update_reminder(subagent_type: str) -> str:
-    """
-    Check which writable sections are empty and build a reminder.
-
-    Reads the context contracts to find writable sections for this agent,
-    then checks project-context.json to see which are empty.
-
-    Returns:
-        Reminder string or empty string if no empty sections.
-    """
-    if subagent_type not in PROJECT_AGENTS:
-        return ""
-
-    # Load contracts to find writable sections.
-    # Strategy: load context-contracts.json (base) then merge cloud/{provider}.json.
-    # Fallback to legacy per-provider files for backward compatibility.
-    # We detect the cloud provider from project-context.json first.
-    cloud_provider = "gcp"  # default
-    pc_paths_for_provider = [
-        Path(".claude/project-context/project-context.json"),
-        Path("project-context.json"),
-    ]
-    for pp in pc_paths_for_provider:
-        if pp.exists():
-            try:
-                pc_data = json.loads(pp.read_text())
-                detected = (
-                    pc_data.get("metadata", {}).get("cloud_provider", "")
-                    or pc_data.get("sections", {}).get("project_details", {}).get("cloud_provider", "")
-                )
-                if detected:
-                    cloud_provider = detected.lower()
-                break
-            except Exception:
-                continue
-
-    # Candidate config directories (installed project first, package fallback)
-    config_dirs = [
-        Path(".claude/config"),
-        Path(__file__).parent.parent / "config",
-    ]
-
-    writable = []
-    for config_dir in config_dirs:
-        if not config_dir.is_dir():
-            continue
-        # Try new base+cloud system first
-        base_file = config_dir / "context-contracts.json"
-        cloud_file = config_dir / "cloud" / f"{cloud_provider}.json"
-        legacy_file = config_dir / f"context-contracts.{cloud_provider}.json"
-
-        merged_agents = {}
-        for contract_file in [base_file, legacy_file]:
-            if contract_file.exists():
-                try:
-                    data = json.loads(contract_file.read_text())
-                    merged_agents = data.get("agents", {})
-                    break
-                except Exception:
-                    continue
-
-        # Merge cloud overrides
-        if merged_agents and cloud_file.exists():
-            try:
-                cloud_data = json.loads(cloud_file.read_text())
-                agent_cloud = cloud_data.get("agents", {}).get(subagent_type, {})
-                base_write = merged_agents.get(subagent_type, {}).get("write", [])
-                extra_write = [s for s in agent_cloud.get("write", []) if s not in base_write]
-                if subagent_type in merged_agents:
-                    merged_agents[subagent_type]["write"] = base_write + extra_write
-            except Exception:
-                pass
-
-        if merged_agents:
-            agent_perms = merged_agents.get(subagent_type, {})
-            writable = agent_perms.get("write", [])
-            if writable:
-                break
-
-    if not writable:
-        return ""
-
-    # Load project-context.json to find empty sections
-    pc_paths = [
-        Path(".claude/project-context/project-context.json"),
-        Path("project-context.json"),
-    ]
-
-    sections = {}
-    for pp in pc_paths:
-        if pp.exists():
-            try:
-                pc = json.loads(pp.read_text())
-                sections = pc.get("sections", {})
-                break
-            except Exception:
-                continue
-
-    # Find empty writable sections
-    empty = []
-    for section_name in writable:
-        section_data = sections.get(section_name, {})
-        if not section_data or section_data == {}:
-            empty.append(section_name)
-
-    if not empty:
-        return ""
-
-    empty_list = ", ".join(f"`{s}`" for s in empty)
-    return (
-        f"\n**CONTEXT_UPDATE REQUIRED:** Your writable sections {empty_list} "
-        f"are currently EMPTY. After completing your task, you MUST emit a "
-        f"CONTEXT_UPDATE block with any data you discovered. "
-        f"See \"Context Updater Protocol\" above for the format.\n\n"
-    )
-
+# ============================================================================
+# THIN DELEGATION WRAPPERS
+# ============================================================================
+# These wrappers maintain the original private API so that existing tests
+# (which monkeypatch pre_tool_use._handle_task, etc.) continue to work.
+# They delegate all logic to the extracted modules.
 
 def _classify_resume_prompt(prompt: str) -> str:
-    """Classify a resume prompt into one of four categories.
-
-    Returns:
-        'nonce' -- valid nonce approval token present
-        'malformed_nonce' -- APPROVE: prefix present but invalid nonce
-        'deprecated' -- deprecated approval phrase detected
-        'standard' -- normal resume prompt (no approval indicators)
-    """
-    stripped_prompt = prompt.strip()
-    if NONCE_APPROVAL_PATTERN.search(prompt):
-        return "nonce"
-    if stripped_prompt.startswith(NONCE_APPROVAL_PREFIX):
-        return "malformed_nonce"
-    prompt_lower = prompt.lower()
-    if any(phrase in prompt_lower for phrase in DEPRECATED_APPROVAL_PHRASES):
-        return "deprecated"
-    return "standard"
-
-
-def _should_inject_on_resume(parameters: dict) -> bool:
-    """
-    Determine if context should be injected on a resume operation.
-
-    By default, resume operations skip context injection because the agent
-    already has context from phase 1. However, in some cases we need fresh context:
-
-    Rules:
-    1. If prompt contains a nonce approval token -> NO inject (simple execution)
-    2. If prompt has substantial new information (>100 words) -> YES inject
-    3. If prompt mentions new resources/scope -> YES inject
-    4. Default: NO inject (trust existing context)
-
-    Args:
-        parameters: Task tool parameters with 'prompt' key
-
-    Returns:
-        True if context should be injected, False otherwise
-    """
-    prompt = parameters.get("prompt", "")
-
-    # Case 1: Any approval-related prompt - NO injection needed.
-    classification = _classify_resume_prompt(prompt)
-    if classification != "standard":
-        logger.debug("Resume with %s prompt - skipping context injection", classification)
-        return False
-
-    # Case 2: Substantial new information - YES inject
-    # If user is providing a lot of new context, we should refresh
-    word_count = len(prompt.split())
-    if word_count > 100:
-        logger.info(f"Resume with substantial new info ({word_count} words) - injecting context")
-        return True
-
-    # Case 3: New scope/resources mentioned - YES inject
-    # These words indicate the user is expanding the task scope
-    prompt_lower = prompt.lower()
-    scope_expansion_indicators = [
-        "also",
-        "additionally",
-        "another",
-        "new ",
-        "different",
-        "and also",
-        "as well as",
-        "in addition",
-        "plus",
-        "moreover",
-        "furthermore",
-        "besides that"
-    ]
-    if any(indicator in prompt_lower for indicator in scope_expansion_indicators):
-        logger.info("Resume with scope expansion - injecting context")
-        return True
-
-    # Default: Trust existing context
-    logger.debug("Standard resume - skipping context injection")
-    return False
-
-def _check_pending_updates_threshold() -> str:
-    """
-    Check if pending updates count exceeds threshold and return warning text.
-
-    Returns warning string to inject into prompt, or empty string if below threshold.
-    Must NEVER block or slow down context injection (target: <50ms).
-    """
-    try:
-        threshold = int(os.environ.get("PENDING_UPDATE_THRESHOLD", "10"))
-
-        # Fast path: try to read index directly (no module import)
-        index_path = Path(".claude/project-context/pending-updates/pending-index.json")
-        if not index_path.exists():
-            return ""
-
-        with open(index_path, 'r') as f:
-            index_data = json.load(f)
-
-        pending_count = index_data.get("pending_count", 0)
-        if pending_count < threshold:
-            return ""
-
-        logger.info(f"Pending updates threshold reached: {pending_count} >= {threshold}")
-        return (
-            f"\n# Pending Context Updates Warning\n"
-            f"There are {pending_count} pending context update suggestions awaiting review. "
-            f"Run `gaia-review` or `python3 tools/review/review_engine.py list` to review them.\n\n"
-        )
-
-    except Exception as e:
-        logger.debug(f"Pending updates check failed (non-fatal): {e}")
-        return ""
-
-
-def _consume_anomaly_flag(enriched_prompt: str) -> str:
-    """Read and delete the needs_analysis.flag if it exists, appending a warning.
-
-    The flag is created by subagent_stop.py when workflow anomalies are
-    detected.  Reading it once and deleting ensures the warning is shown
-    exactly once.  Must not slow down context injection -- returns
-    immediately if the file does not exist.
-
-    TTL enforcement: flags older than 1 hour (by created_at or file mtime)
-    are auto-expired and deleted without injecting a warning.
-    """
-    flag_path = Path(".claude/project-context/workflow-episodic-memory/signals/needs_analysis.flag")
-    if not flag_path.exists():
-        return enriched_prompt
-    try:
-        signal_data = json.loads(flag_path.read_text())
-
-        # TTL check: auto-expire flags older than ttl_hours (default 1 hour)
-        ttl_hours = signal_data.get("ttl_hours", 1)
-        ttl_seconds = ttl_hours * 3600
-        created_at = signal_data.get("created_at") or signal_data.get("timestamp")
-        if created_at:
-            created_dt = datetime.fromisoformat(created_at)
-            age_seconds = (datetime.now() - created_dt).total_seconds()
-            if age_seconds > ttl_seconds:
-                flag_path.unlink()
-                logger.info(
-                    "Auto-expired anomaly flag (age: %.0fs, ttl: %ds)",
-                    age_seconds, ttl_seconds,
-                )
-                return enriched_prompt
-        else:
-            # Fallback: check file modification time
-            mtime = flag_path.stat().st_mtime
-            age_seconds = datetime.now().timestamp() - mtime
-            if age_seconds > ttl_seconds:
-                flag_path.unlink()
-                logger.info(
-                    "Auto-expired anomaly flag by mtime (age: %.0fs, ttl: %ds)",
-                    age_seconds, ttl_seconds,
-                )
-                return enriched_prompt
-
-        anomalies = signal_data.get("anomalies", [])
-        summary = "; ".join(a.get("message", "") for a in anomalies if a.get("message"))
-        if summary:
-            enriched_prompt += (
-                f"\n# Anomaly Alert\n"
-                f"Recent anomalies detected: {summary}. "
-                f"Consider investigating with /gaia.\n"
-            )
-        flag_path.unlink()
-        logger.info("Consumed anomaly flag and injected warning")
-    except Exception as e:
-        logger.debug(f"Failed to consume anomaly flag (non-fatal): {e}")
-    return enriched_prompt
+    """Classify a resume prompt. Delegates to modules.security.prompt_validator."""
+    return classify_resume_prompt(prompt)
 
 
 def _inject_project_context(parameters: dict) -> dict:
-    """
-    Inject project context for project agents.
-
-    Automatically provisions context from project-context.json for agents that need it.
-    This makes the orchestrator lightweight - it only routes, the hook injects context.
-
-    Args:
-        parameters: Original Task tool parameters
-
-    Returns:
-        Modified parameters with context injected into prompt
-    """
-    subagent_type = parameters.get("subagent_type", "")
-
-    # Only inject for project agents (not for generic agents like Explore, general-purpose, etc.)
-    if subagent_type not in PROJECT_AGENTS:
-        logger.debug(f"Skipping context injection for non-project agent: {subagent_type}")
-        return parameters
-
-    # Conditional context injection for resume operations (Phase 4 enhancement)
-    # By default, skip injection for resume (context from phase 1)
-    # But inject if: new info (>100 words), scope expansion, or new resources
-    if parameters.get("resume"):
-        if _should_inject_on_resume(parameters):
-            logger.info(f"Resume with new context detected, injecting for: {parameters.get('resume')}")
-            # Continue to context injection below
-        else:
-            logger.debug(f"Standard resume, skipping context injection: {parameters.get('resume')}")
-            return parameters
-
-    prompt = parameters.get("prompt", "")
-    if not prompt:
-        logger.warning(f"No prompt provided for {subagent_type}, skipping context injection")
-        return parameters
-
-    try:
-        # Find context_provider.py
-        context_provider_paths = [
-            Path(".claude/tools/context/context_provider.py"),
-            Path("node_modules/@jaguilar87/gaia-ops/tools/context/context_provider.py"),
-            Path(__file__).parent.parent / "tools" / "context" / "context_provider.py"
-        ]
-
-        context_provider = None
-        for path in context_provider_paths:
-            if path.exists():
-                context_provider = path
-                break
-
-        if not context_provider:
-            logger.warning("context_provider.py not found, skipping context injection")
-            return parameters
-
-        # Execute context_provider.py to get filtered context
-        logger.info(f"Injecting context for {subagent_type}...")
-        result = subprocess.run(
-            ["python3", str(context_provider), subagent_type, prompt],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=os.getcwd()
-        )
-
-        if result.returncode != 0:
-            logger.error(f"context_provider.py failed: {result.stderr}")
-            # Don't block - let agent proceed without context
-            return parameters
-
-        # Parse context JSON
-        try:
-            context_payload = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse context JSON: {e}")
-            return parameters
-
-        # Check pending update count (non-blocking, fast path)
-        pending_warning = _check_pending_updates_threshold()
-
-        # Build context update reminder for empty writable sections
-        update_reminder = _build_context_update_reminder(subagent_type)
-
-        # Inject context into prompt (skills are injected natively by Claude Code
-        # via the 'skills:' field in the agent's frontmatter)
-        enriched_prompt = f"""# Project Context (Auto-Injected)
-
-{json.dumps(context_payload, indent=2)}
-
-{pending_warning}---
-{update_reminder}
-# User Task
-
-{prompt}
-"""
-
-        # Modify parameters
-        parameters["prompt"] = enriched_prompt
-
-        # Add metadata for TaskValidator to know the original user task
-        # This prevents T3 keyword detection in injected context
-        parameters["_original_user_task"] = prompt
-
-        # Check for anomaly signal flag created by subagent_stop.py
-        enriched_prompt = _consume_anomaly_flag(enriched_prompt)
-        parameters["prompt"] = enriched_prompt
-
-        sections_count = len(context_payload.get("contract", {}))
-        rules_count = context_payload.get("metadata", {}).get("rules_count", 0)
-
-        logger.info(
-            f"✅ Context injected for {subagent_type} "
-            f"(sections={sections_count}, rules={rules_count})"
-        )
-
-        return parameters
-
-    except subprocess.TimeoutExpired:
-        logger.error("context_provider.py timed out (15s)")
-        return parameters
-    except Exception as e:
-        logger.error(f"Error injecting context: {e}", exc_info=True)
-        return parameters
-
-
-def _build_response_contract_repair_block(repair_payload: dict) -> str:
-    """Build a deterministic block message for pending contract repair."""
-    agent_id = repair_payload.get("agent_id", "<unknown>")
-    missing = repair_payload.get("missing", [])
-    invalid = repair_payload.get("invalid", [])
-    attempts = int(repair_payload.get("repair_attempts", 0))
-
-    return (
-        "❌ Previous agent response contract is incomplete\n\n"
-        f"Resume the same agent first: `{agent_id}`\n"
-        f"Repair attempts so far: {attempts}\n\n"
-        "Missing fields:\n"
-        f"{_format_field_list(missing, indent='  ')}\n\n"
-        "Invalid fields:\n"
-        f"{_format_field_list(invalid, indent='  ')}\n\n"
-        "Correct pattern:\n"
-        "Task(\n"
-        f"    resume=\"{agent_id}\",\n"
-        "    prompt=\"Repair the previous response contract only. Do not re-run commands unless required to fill missing evidence.\"\n"
-        ")\n"
-    )
-
-
-def _build_response_contract_escalation_block(repair_payload: dict) -> str:
-    """Build a deterministic escalation message after auto-repair retries are exhausted."""
-    agent_id = repair_payload.get("agent_id", "<unknown>")
-    attempts = int(repair_payload.get("repair_attempts", 0))
-    missing = repair_payload.get("missing", [])
-    invalid = repair_payload.get("invalid", [])
-
-    return (
-        "❌ Agent response contract repair did not converge\n\n"
-        f"Agent: `{agent_id}`\n"
-        f"Automatic repair retry limit reached: {attempts}/{MAX_REPAIR_ATTEMPTS}\n\n"
-        "Missing fields:\n"
-        f"{_format_field_list(missing, indent='  ')}\n\n"
-        "Invalid fields:\n"
-        f"{_format_field_list(invalid, indent='  ')}\n\n"
-        "Do not continue delegating automatically.\n"
-        "Summarize the failure, ask the user how to proceed, and only then decide whether to retry,"
-        " restart the investigation, or abandon the task.\n"
-    )
-
-
-def _apply_response_contract_guard(parameters: dict) -> tuple[str | None, dict]:
-    """Enforce pending response-contract repairs before new Task work proceeds."""
-    repair_payload = load_pending_repair()
-    if not repair_payload:
-        return None, parameters
-
-    attempts = int(repair_payload.get("repair_attempts", 0))
-    if attempts >= MAX_REPAIR_ATTEMPTS:
-        clear_pending_repair(repair_payload.get("agent_id", ""))
-        logger.warning(
-            "BLOCKED Task: response-contract auto-repair limit reached for %s",
-            repair_payload.get("agent_id", "<unknown>"),
-        )
-        return _build_response_contract_escalation_block(repair_payload), parameters
-
-    resume_id = parameters.get("resume", "")
-    if not resume_id:
-        return _build_response_contract_repair_block(repair_payload), parameters
-
-    if resume_id != repair_payload.get("agent_id", ""):
-        return _build_response_contract_repair_block(repair_payload), parameters
-
-    # Same agent resume: inject deterministic repair instructions unless the prompt
-    # is trying to do something else (e.g. APPROVE:<nonce>).
-    prompt = parameters.get("prompt", "")
-    if _classify_resume_prompt(prompt) != "standard":
-        return _build_response_contract_repair_block(repair_payload), parameters
-
-    repair_prompt = build_repair_prompt(repair_payload)
-    if repair_prompt in prompt:
-        return None, parameters
-
-    updated = dict(parameters)
-    updated["prompt"] = f"{repair_prompt}\n{prompt}".strip()
-    mark_repair_attempt(resume_id)
-    logger.info("Injected response-contract repair instructions for resume %s", resume_id)
-    return None, updated
-
-
-def _filter_events_for_agent(events: list, agent: str) -> list:
-    """
-    Filter events relevant to agent domain.
-
-    Args:
-        events: List of critical events from session
-        agent: Agent type (e.g., "gitops-operator")
-
-    Returns:
-        Filtered list of events relevant to agent
-    """
-    # Define which events each agent should see
-    filters = {
-        "terraform-architect": ["git_commit", "infrastructure_change"],
-        "gitops-operator": ["git_commit", "git_push", "infrastructure_change"],
-        "devops-developer": ["git_commit", "file_modifications"],
-        "cloud-troubleshooter": "*",  # All events (needs full history for diagnosis)
-        "gaia": "*"  # All events (workflow analysis)
-    }
-
-    agent_filter = filters.get(agent, [])
-
-    # Return all events for wildcard agents
-    if agent_filter == "*":
-        return events[-10:]  # Last 10 events
-
-    # Filter by event type and return max 10
-    filtered = [
-        e for e in events[-20:]  # Search last 20
-        if e.get("event_type") in agent_filter
-    ]
-
-    return filtered[:10]  # Return max 10
-
-
-def _format_events_summary(events: list) -> str:
-    """
-    Format events as readable summary for agent context.
-
-    Args:
-        events: List of filtered events
-
-    Returns:
-        Formatted markdown string
-    """
-    if not events:
-        return "No recent events"
-
-    lines = []
-
-    for event in events:
-        etype = event.get("event_type", "")
-        ts = event.get("timestamp", "")[:16]  # YYYY-MM-DDTHH:MM
-
-        if etype == "git_commit":
-            msg = event.get("commit_message", "")
-            hash_val = event.get("commit_hash", "")[:7]
-            if hash_val and msg:
-                lines.append(f"- [{ts}] Commit {hash_val}: {msg}")
-
-        elif etype == "git_push":
-            branch = event.get("branch", "")
-            if branch:
-                lines.append(f"- [{ts}] Pushed to {branch}")
-
-        elif etype == "file_modifications":
-            count = event.get("modification_count", 0)
-            if count:
-                lines.append(f"- [{ts}] Modified {count} files")
-
-        elif etype == "infrastructure_change":
-            cmd = event.get("command", "")
-            if cmd:
-                lines.append(f"- [{ts}] Infrastructure: {cmd}")
-
-    return "\n".join(lines) if lines else "No recent events"
+    """Inject project context. Delegates to modules.context.context_injector."""
+    return inject_project_context(parameters, PROJECT_AGENTS, _HOOKS_DIR)
 
 
 def _inject_session_events(parameters: dict) -> dict:
-    """
-    Inject relevant session events for agent context.
-
-    Filters events by agent domain to avoid noise.
-    Only injects for project agents on new tasks (not resume).
-
-    Args:
-        parameters: Task tool parameters
-
-    Returns:
-        Modified parameters with events injected into prompt
-    """
-    subagent_type = parameters.get("subagent_type", "")
-
-    # Only inject for project agents
-    if subagent_type not in PROJECT_AGENTS:
-        logger.debug(f"Skipping session events for non-project agent: {subagent_type}")
-        return parameters
-
-    # Skip for resume operations (already has context from phase 1)
-    if parameters.get("resume"):
-        logger.debug(f"Skipping session events for resume: {parameters.get('resume')}")
-        return parameters
-
-    # Get session events
-    context_path = Path(".claude/session/active/context.json")
-    if not context_path.exists():
-        logger.debug("No session context file found")
-        return parameters
-
-    try:
-        with open(context_path, 'r') as f:
-            context = json.load(f)
-
-        events = context.get("critical_events", [])
-        if not events:
-            logger.debug("No critical events in session")
-            return parameters
-
-        # Filter by agent domain
-        filtered = _filter_events_for_agent(events, subagent_type)
-
-        if not filtered:
-            logger.debug(f"No relevant events for {subagent_type}")
-            return parameters
-
-        # Format events summary
-        events_summary = _format_events_summary(filtered)
-
-        # Inject into prompt (before # User Task marker if present)
-        prompt = parameters.get("prompt", "")
-        marker = "# User Task"
-
-        if marker in prompt:
-            idx = prompt.index(marker)
-            enriched_prompt = (
-                f"{prompt[:idx]}"
-                f"# Recent Session Events (Auto-Injected, Last 24h)\n"
-                f"{events_summary}\n\n"
-                f"{prompt[idx:]}"
-            )
-        else:
-            enriched_prompt = f"""{prompt}
-
-# Recent Session Events (Auto-Injected, Last 24h)
-{events_summary}
-"""
-
-        parameters["prompt"] = enriched_prompt
-        logger.info(f"✅ Session events injected for {subagent_type} ({len(filtered)} events)")
-
-        return parameters
-
-    except Exception as e:
-        logger.warning(f"Failed to inject session events: {e}")
-        return parameters
+    """Inject session events. Delegates to modules.session.session_event_injector."""
+    return inject_session_events(parameters, PROJECT_AGENTS)
 
 
 # ============================================================================
@@ -850,10 +211,6 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     # PROJECT CONTEXT INJECTION (for new tasks only, not resume)
     # ========================================================================
     original_prompt = parameters.get("prompt", "")
-    contract_error, parameters = _apply_response_contract_guard(parameters)
-    if contract_error:
-        logger.warning("BLOCKED Task: pending response-contract repair required")
-        return contract_error
     if not parameters.get("resume"):
         parameters = _inject_project_context(parameters)
         parameters = _inject_session_events(parameters)
@@ -912,16 +269,6 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         save_hook_state(state)
 
         logger.info(f"ALLOWED Resume: agent {resume_id} - prompt length: {len(prompt)}")
-        if parameters.get("prompt", "") != original_prompt:
-            updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "Response-contract repair instructions injected",
-                    "updatedInput": updated_input,
-                }
-            }
         return None  # Allow resume
 
     # ========================================================================
@@ -1073,18 +420,6 @@ def _run_tests():
     print("\nTest completed")
 
 
-def has_stdin_data() -> bool:
-    """Check if there's data available on stdin."""
-    if sys.stdin.isatty():
-        return False
-    # Check if stdin has data available (non-blocking)
-    try:
-        readable, _, _ = select.select([sys.stdin], [], [], 0)
-        return bool(readable)
-    except Exception:
-        return not sys.stdin.isatty()
-
-
 # ============================================================================
 # STDIN HANDLER (Claude Code integration)
 # ============================================================================
@@ -1099,10 +434,7 @@ if __name__ == "__main__":
             adapter = ClaudeCodeAdapter()
 
             # Coexistence check: warn if both plugin and npm channels are active
-            from adapters.channel import is_dual_channel_active, detect_distribution_channel
-            channel = detect_distribution_channel()
-            if is_dual_channel_active():
-                logger.warning("Both plugin and npm channels detected. Plugin channel takes precedence.")
+            warn_if_dual_channel()
 
             stdin_data = sys.stdin.read()
 

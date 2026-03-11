@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 from .base import HookAdapter
 from .types import (
     AgentCompletion,
+    BootstrapResult,
     CompletionResult,
     ContextResult,
     DistributionChannel,
@@ -27,9 +28,11 @@ from .types import (
     HookEventType,
     HookResponse,
     PermissionDecision,
+    QualityResult,
     ToolResult,
     ValidationRequest,
     ValidationResult,
+    VerificationResult,
 )
 
 
@@ -169,9 +172,11 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def format_context_response(self, result: ContextResult) -> HookResponse:
-        """Format a ContextResult for UserPromptSubmit (future).
+        """Format a ContextResult for context injection hooks.
 
         Returns additionalContext field that Claude Code appends to the prompt.
+        Note: UserPromptSubmit was simplified to a static echo in settings.json.
+        This method is retained for SubagentStart and future context injection hooks.
         """
         output: Dict[str, Any] = {}
 
@@ -180,6 +185,50 @@ class ClaudeCodeAdapter(HookAdapter):
 
         if result.sections_provided:
             output["sections_provided"] = result.sections_provided
+
+        return HookResponse(output=output, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # P1: adapt_session_start
+    # ------------------------------------------------------------------ #
+
+    def adapt_session_start(self, raw: dict) -> BootstrapResult:
+        """Parse SessionStart event and return bootstrap actions.
+
+        SessionStart payload contains session_type which determines
+        what bootstrap actions to take:
+        - startup: full scan + refresh
+        - resume: refresh only (no scan)
+        - clear/compact: no scan, no refresh
+        """
+        session_type = raw.get("session_type", "startup")
+        return BootstrapResult(
+            should_scan=session_type == "startup",
+            should_refresh=session_type in ("startup", "resume"),
+            session_type=session_type,
+        )
+
+    # ------------------------------------------------------------------ #
+    # P1: format_bootstrap_response
+    # ------------------------------------------------------------------ #
+
+    def format_bootstrap_response(self, result: BootstrapResult) -> HookResponse:
+        """Format a BootstrapResult for SessionStart.
+
+        SessionStart hooks are informational -- exit code is always 0.
+        """
+        output: Dict[str, Any] = {
+            "session_type": result.session_type,
+            "should_scan": result.should_scan,
+            "should_refresh": result.should_refresh,
+        }
+
+        if result.project_scanned:
+            output["project_scanned"] = True
+        if result.context_path:
+            output["context_path"] = str(result.context_path)
+        if result.tools_detected:
+            output["tools_detected"] = result.tools_detected
 
         return HookResponse(output=output, exit_code=0)
 
@@ -330,4 +379,122 @@ class ClaudeCodeAdapter(HookAdapter):
                 "permissionDecisionReason": reason,
             }
         }
+        return HookResponse(output=output, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # P2: adapt_stop
+    # ------------------------------------------------------------------ #
+
+    def adapt_stop(self, raw: dict) -> QualityResult:
+        """Parse Stop event and assess response quality.
+
+        Extracts the response content from the Stop payload and evaluates
+        whether the output meets evidence quality thresholds.
+
+        Returns:
+            QualityResult with quality assessment.
+            Default: quality_sufficient=True (passthrough until business logic wired).
+        """
+        # Extract stop reason and response content for future quality checks
+        _stop_reason = raw.get("stop_reason", "")
+        _last_message = raw.get("last_assistant_message", "")
+
+        # TODO: integrate with contracts.validate_evidence_quality() when available
+        return QualityResult(
+            quality_sufficient=True,
+            score=1.0,
+            missing_elements=[],
+            recommendation="continue",
+        )
+
+    # ------------------------------------------------------------------ #
+    # P2: adapt_task_completed
+    # ------------------------------------------------------------------ #
+
+    def adapt_task_completed(self, raw: dict) -> VerificationResult:
+        """Parse TaskCompleted event and verify completion criteria.
+
+        Extracts task output and metadata from the TaskCompleted payload.
+        Checks if the task's acceptance criteria are met.
+
+        Returns:
+            VerificationResult with criteria assessment.
+            Default: criteria_met=True (passthrough until business logic wired).
+        """
+        # Extract task details for future verification logic
+        _task_id = raw.get("task_id", "")
+        _task_output = raw.get("task_output", "")
+
+        # TODO: integrate with contracts.verify_completion_criteria() when available
+        return VerificationResult(
+            criteria_met=True,
+            verified_items=[],
+            failed_items=[],
+            block_completion=False,
+        )
+
+    # ------------------------------------------------------------------ #
+    # P2: adapt_subagent_start
+    # ------------------------------------------------------------------ #
+
+    def adapt_subagent_start(self, raw: dict) -> ContextResult:
+        """Parse SubagentStart event and prepare agent context.
+
+        Extracts the agent type and task description from the SubagentStart
+        payload. Prepares agent-specific context (surface routing, investigation
+        brief) for injection.
+
+        Returns:
+            ContextResult with agent-specific context.
+            Default: no additional context (passthrough until business logic wired).
+        """
+        _agent_type = raw.get("agent_type", "")
+        _task_description = raw.get("task_description", "")
+
+        # TODO: integrate with context.inject_agent_context() when available
+        return ContextResult(
+            context_injected=False,
+            additional_context=None,
+            sections_provided=[],
+        )
+
+    # ------------------------------------------------------------------ #
+    # P2: format_quality_response
+    # ------------------------------------------------------------------ #
+
+    def format_quality_response(self, result: QualityResult) -> HookResponse:
+        """Format a QualityResult for CLI consumption.
+
+        Stop events are informational -- exit code is always 0.
+        """
+        output: Dict[str, Any] = {
+            "quality_sufficient": result.quality_sufficient,
+            "score": result.score,
+            "recommendation": result.recommendation,
+        }
+
+        if result.missing_elements:
+            output["missing_elements"] = result.missing_elements
+
+        return HookResponse(output=output, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # P2: format_verification_response
+    # ------------------------------------------------------------------ #
+
+    def format_verification_response(self, result: VerificationResult) -> HookResponse:
+        """Format a VerificationResult for CLI consumption.
+
+        TaskCompleted events are informational -- exit code is always 0.
+        """
+        output: Dict[str, Any] = {
+            "criteria_met": result.criteria_met,
+            "block_completion": result.block_completion,
+        }
+
+        if result.verified_items:
+            output["verified_items"] = result.verified_items
+        if result.failed_items:
+            output["failed_items"] = result.failed_items
+
         return HookResponse(output=output, exit_code=0)

@@ -22,14 +22,19 @@ def temp_project_context(tmp_path: Path) -> Path:
 
     mock_context = {
         "metadata": {
-            "version": "1.0",
+            "version": "3.0",
             "last_updated": "2025-01-01T00:00:00Z",
             "project_name": "Test Project",
             "cloud_provider": "GCP",
             "environment": "non-prod"
         },
         "sections": {
-            "project_details": {"id": "test-project", "region": "us-central1"},
+            "project_identity": {"name": "test-project", "type": "application"},
+            "stack": {"languages": [{"name": "typescript"}], "frameworks": [{"name": "nodejs"}], "build_tools": [{"name": "npm"}]},
+            "git": {"platform": "github", "remotes": [], "default_branch": "main"},
+            "environment": {"runtimes": [{"name": "node", "version": "20"}], "os": {"platform": "linux"}},
+            "infrastructure": {"cloud_providers": [{"name": "gcp", "project_id": "test-project", "region": "us-central1"}], "ci_cd": []},
+            "orchestration": {},
             "terraform_infrastructure": {"layout": {"base_path": "infra/test"}},
             "gitops_configuration": {"repository": {"path": "gitops/test"}},
             "cluster_details": {"name": "test-cluster"},
@@ -38,10 +43,9 @@ def temp_project_context(tmp_path: Path) -> Path:
                 {"name": "frontend-app", "port": 80},
                 {"name": "backend-api", "port": 5000}
             ],
-            "application_architecture": {"framework": "nodejs"},
-            "development_standards": {"linter": "eslint"},
             "operational_guidelines": {"commit_standards": "conventional"},
             "monitoring_observability": {"metrics": "prometheus"},
+            "architecture_overview": {},
             "security_policies": {"iam": "strict"}
         }
     }
@@ -73,14 +77,18 @@ def run_script(context_file: Path, agent: str, task: str) -> dict:
 # ============================================================================
 
 def test_terraform_architect_contract(temp_project_context: Path):
-    """Verify terraform-architect gets all contracted sections."""
+    """Verify terraform-architect gets all contracted v2 sections."""
     result = run_script(temp_project_context, "terraform-architect", "Create a new GCS bucket.")
 
     assert "contract" in result
     contract = result["contract"]
 
-    # Base contract reads
-    assert "project_details" in contract
+    # v2 base sections
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "terraform_infrastructure" in contract
     assert "infrastructure_topology" in contract
     assert "operational_guidelines" in contract
@@ -88,17 +96,20 @@ def test_terraform_architect_contract(temp_project_context: Path):
     assert "application_services" in contract
 
     # Should NOT have sections outside its contract
-    assert "gitops_configuration" not in contract
     assert "monitoring_observability" not in contract
 
 def test_gitops_operator_contract(temp_project_context: Path):
-    """Verify gitops-operator gets all contracted sections."""
+    """Verify gitops-operator gets all contracted v2 sections."""
     result = run_script(temp_project_context, "gitops-operator", "Deploy the frontend-app.")
 
     assert "contract" in result
     contract = result["contract"]
 
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "gitops_configuration" in contract
     assert "cluster_details" in contract
     assert "operational_guidelines" in contract
@@ -109,14 +120,17 @@ def test_gitops_operator_contract(temp_project_context: Path):
     assert "monitoring_observability" not in contract
 
 def test_troubleshooter_contract(temp_project_context: Path):
-    """Verify cloud-troubleshooter gets all contracted sections (broadest read)."""
+    """Verify cloud-troubleshooter gets all contracted v2 sections (broadest read)."""
     result = run_script(temp_project_context, "cloud-troubleshooter", "Why is backend-api crashing?")
 
     assert "contract" in result
     contract = result["contract"]
 
-    # Should have all 7 base sections
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "cluster_details" in contract
     assert "infrastructure_topology" in contract
     assert "terraform_infrastructure" in contract
@@ -125,34 +139,38 @@ def test_troubleshooter_contract(temp_project_context: Path):
     assert "monitoring_observability" in contract
 
 def test_devops_developer_contract(temp_project_context: Path):
-    """Verify devops-developer gets all contracted sections."""
+    """Verify devops-developer gets all contracted v2 sections."""
     result = run_script(temp_project_context, "devops-developer", "Fix the login bug.")
 
     assert "contract" in result
     contract = result["contract"]
 
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "application_services" in contract
-    assert "application_architecture" in contract
-    assert "development_standards" in contract
     assert "operational_guidelines" in contract
 
-    # Should NOT have infra sections
+    # Should NOT have infra-specific sections
     assert "terraform_infrastructure" not in contract
     assert "gitops_configuration" not in contract
     assert "cluster_details" not in contract
 
 def test_speckit_planner_contract(temp_project_context: Path):
-    """Verify speckit-planner gets all contracted sections."""
+    """Verify speckit-planner gets all contracted v2 sections."""
     result = run_script(temp_project_context, "speckit-planner", "Plan the auth feature.")
 
     assert "contract" in result
     contract = result["contract"]
 
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "operational_guidelines" in contract
-    assert "application_architecture" in contract
-    assert "development_standards" in contract
     assert "application_services" in contract
 
 def test_gaia_is_meta_agent_without_contracts(temp_project_context: Path):

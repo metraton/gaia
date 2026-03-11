@@ -1,8 +1,0 @@
-{
-  "name": "gaia-agents",
-  "version": "4.1.1",
-  "description": "Specialized DevOps agents for cloud, terraform, gitops, and development",
-  "keywords": ["agents", "devops"],
-  "agents": "../../agents/",
-  "skills": "../../skills/"
-}

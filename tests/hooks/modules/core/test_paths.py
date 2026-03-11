@@ -71,8 +71,17 @@ class TestFindClaudeDir:
 
     def test_falls_back_to_current_claude(self, tmp_path):
         """Test fallback when no .claude found."""
-        # tmp_path has no .claude
-        with patch("modules.core.paths.Path.cwd", return_value=tmp_path):
+        # tmp_path has no .claude, but /tmp/.claude may exist on the host.
+        # Patch Path.exists to isolate from real filesystem above tmp_path.
+        orig_exists = Path.exists
+
+        def isolated_exists(p):
+            if p.name == ".claude" and not str(p).startswith(str(tmp_path)):
+                return False
+            return orig_exists(p)
+
+        with patch("modules.core.paths.Path.cwd", return_value=tmp_path), \
+             patch.object(Path, "exists", isolated_exists):
             clear_path_cache()
             result = find_claude_dir()
             # Should return tmp_path/.claude (even if doesn't exist)

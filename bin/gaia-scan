@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Shell wrapper for gaia-scan CLI.
+# Invokes the Python scanner with all forwarded arguments.
+# Used as the npm bin entry point for `npx gaia-scan` / `npx gaia scan`.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Ensure PYTHONPATH includes the plugin root so `tools.scan` resolves
+export PYTHONPATH="${PLUGIN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
+exec python3 "${SCRIPT_DIR}/gaia-scan.py" "$@"

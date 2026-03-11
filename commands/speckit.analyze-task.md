@@ -1,12 +1,12 @@
 ---
 
 **USAGE**: This command requires: `<speckit-root> <feature-name>`
-**Example**: `/speckit.analyze-task spec-kit-tcm-plan 004-feature-name`
+**Example**: `/speckit.analyze-task specs 004-feature-name`
 description: Deep-dive analysis of a specific task before execution. Auto-triggered for high-risk tasks (T2/T3).
 ---
 
 **USAGE**: This command requires: `<speckit-root> <feature-name>`
-**Example**: `/speckit.analyze-task spec-kit-tcm-plan 004-feature-name`
+**Example**: `/speckit.analyze-task specs 004-feature-name`
 
 The text typed after `/speckit.analyze-task` is the task identifier or description you must inspect. Treat `$ARGUMENTS` literally as that input and reference it throughout the analysis.
 
@@ -59,7 +59,7 @@ Provide a thorough explanation of **one** task without executing it. Clarify wha
 /speckit.analyze-task "Verify health-check BackendConfig"
 ```
 
-**Note:** This command is automatically triggered when executing high-risk tasks (T2/T3) via `/speckit.implement`. You can also call it manually to analyze any task before execution.
+**Note:** This command is automatically triggered when the orchestrator encounters high-risk tasks (T2/T3) during task execution. You can also call it manually to analyze any task before execution.
 
 ## Output expectations
 Deliver a concise, well-structured answer (sections or bullet points) so the user can immediately understand intent, impact, and verification steps without running the task.

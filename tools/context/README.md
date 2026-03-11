@@ -74,26 +74,22 @@ sections = reader.get_sections_for_agent("gitops-operator")
 
 ## Agent Contracts
 
-Each agent receives specific context sections (defined in `config/context-contracts.json`):
+Each agent receives specific v2 context sections (defined in `config/context-contracts.json` v3):
 
 **terraform-architect:**
-- project_details
-- terraform_infrastructure
-- operational_guidelines
+- project_identity, stack, git, environment, infrastructure, orchestration
+- terraform_infrastructure, infrastructure_topology
+- operational_guidelines, cluster_details, application_services, architecture_overview
 
 **gitops-operator:**
-- project_details
-- gitops_configuration
-- infrastructure_topology
-- cluster_details
-- operational_guidelines
+- project_identity, stack, git, environment, infrastructure, orchestration
+- gitops_configuration, cluster_details
+- operational_guidelines, application_services, architecture_overview
 
 **cloud-troubleshooter:**
-- project_details
-- infrastructure_topology
-- terraform_infrastructure
-- gitops_configuration
-- cloud_provider_details
+- project_identity, stack, git, environment, infrastructure, orchestration
+- cluster_details, infrastructure_topology, terraform_infrastructure
+- gitops_configuration, application_services, monitoring_observability, architecture_overview
 
 The same contracts are also exposed under `context_update_contract`:
 - `readable_sections`

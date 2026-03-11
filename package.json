@@ -5,7 +5,6 @@
   "main": "index.js",
   "type": "module",
   "bin": {
-    "gaia-init": "bin/gaia-init.js",
     "gaia-doctor": "bin/gaia-doctor.js",
     "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
     "gaia-cleanup": "bin/gaia-cleanup.js",
@@ -14,7 +13,8 @@
     "gaia-review": "bin/gaia-review.js",
     "gaia-status": "bin/gaia-status.js",
     "gaia-history": "bin/gaia-history.js",
-    "gaia-update": "bin/gaia-update.js"
+    "gaia-update": "bin/gaia-update.js",
+    "gaia-scan": "bin/gaia-scan"
   },
   "keywords": [
     "claude-code",
@@ -55,7 +55,6 @@
     "skills/",
     "README.md",
     "INSTALL.md",
-    "PRE_PUBLISH_WORKFLOW.md",
     "CHANGELOG.md",
     "ARCHITECTURE.md",
     "CONTRIBUTING.md",

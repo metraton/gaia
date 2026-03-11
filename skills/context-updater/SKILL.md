@@ -19,7 +19,7 @@ Do NOT emit if findings match existing data exactly.
 
 ## Format
 
-Place this block after analysis and any `EVIDENCE_REPORT`, and before `AGENT_STATUS`:
+Place this block after analysis and before the `json:contract` block:
 
 ```
 CONTEXT_UPDATE:

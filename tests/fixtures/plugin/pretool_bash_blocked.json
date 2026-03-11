@@ -1,0 +1,8 @@
+{
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git reset --hard"
+  },
+  "hook_event_name": "PreToolUse",
+  "session_id": "e2e-test-blocked-003"
+}

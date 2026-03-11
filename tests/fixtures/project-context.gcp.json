@@ -13,12 +13,27 @@
     "app_services": "./app-services"
   },
   "sections": {
-    "project_details": {
-      "project_id": "test-gcp-project",
-      "region": "us-central1",
-      "environment": "non-prod",
-      "cluster_name": "test-gke-cluster",
-      "cloud_provider": "gcp"
+    "project_identity": {
+      "name": "test-gcp-project",
+      "type": "application"
+    },
+    "stack": {
+      "languages": [],
+      "frameworks": [],
+      "build_tools": []
+    },
+    "git": {
+      "platform": "github",
+      "remotes": [],
+      "default_branch": "main"
+    },
+    "environment": {
+      "runtimes": [],
+      "os": {"platform": "linux"}
+    },
+    "infrastructure": {
+      "cloud_providers": [{"name": "gcp", "project_id": "test-gcp-project", "region": "us-central1"}],
+      "ci_cd": []
     },
     "terraform_infrastructure": {
       "layout": {

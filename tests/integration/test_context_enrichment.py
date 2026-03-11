@@ -122,7 +122,8 @@ class TestFreshInstallFirstEnrichment:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {}
             }
         }
@@ -179,7 +180,8 @@ class TestIncrementalEnrichment:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {
                     "namespaces": {
                         "application": ["adm", "dev", "test"],
@@ -241,7 +243,8 @@ class TestDriftDetection:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {
                     "helm_releases": [
                         {"name": "orders-service", "chart_version": "0.53.0", "namespace": "application"},
@@ -303,7 +306,8 @@ class TestPermissionRejection:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "application_services": {
                     "base_path": "./services",
                     "services": [
@@ -365,7 +369,8 @@ class TestBackwardCompatibility:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {"status": "RUNNING"}
             }
         }
@@ -414,7 +419,8 @@ class TestMalformedJson:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {"status": "RUNNING"}
             }
         }
@@ -461,7 +467,8 @@ class TestMultiSectionUpdate:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {
                     "namespaces": {"application": ["dev"]},
                     "status": "RUNNING"
@@ -564,7 +571,8 @@ class TestLLMRealisticOutput:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {}
             }
         }
@@ -620,7 +628,8 @@ class TestLLMRealisticOutput:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {}
             }
         }

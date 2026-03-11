@@ -1,51 +1,57 @@
 #!/usr/bin/env python3
 """
-Subagent stop hook for Claude Code Agent System (with Episodic Memory)
+Subagent stop hook for Claude Code Agent System.
 
-Handles workflow metrics capture, anomaly detection, and episodic memory storage
-when agents complete execution.
+Thin gate: parse stdin -> delegate to modules -> format response -> exit.
 
-Responsibilities:
-1. Capture workflow execution metrics (duration, exit code, agent)
-2. Detect anomalies (slow execution, failures, consecutive failures)
-3. Signal Gaia for analysis when anomalies are detected
-4. Store workflow as episodic memory for future reference
-
-Architecture:
-- Metrics stored in .claude/project-context/workflow-episodic-memory/
-- Episodes stored in .claude/project-context/episodic-memory/
-- Anomaly signals trigger Gaia analysis
-- Minimal footprint - no bundle creation
-
-Integration:
-- Executed automatically after agent tool completes
-- Integrates with memory/episodic.py for context enrichment
+Business logic lives in hooks/modules/:
+- modules.session.session_manager          : Session ID generation
+- modules.agents.contract_validator        : Contract validation + evidence parsing
+- modules.agents.transcript_reader         : Transcript I/O
+- modules.agents.task_info_builder         : Hook payload -> task_info mapping
+- modules.audit.workflow_recorder          : Workflow metrics capture
+- modules.audit.workflow_auditor           : Anomaly detection + Gaia signaling
+- modules.memory.episode_writer            : Episodic memory storage + session events
+- modules.context.context_writer           : Progressive context enrichment
+- modules.security.approval_cleanup        : Approval file consumption
+- modules.agents.response_contract         : Response contract validation
 """
 
-import os
-import sys
 import json
 import logging
-import re
-import select
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import hashlib
+from typing import Any, Dict, List, Optional
 
 # Add hooks dir to path for adapter imports (matches pre_tool_use.py pattern)
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Adapter layer: normalize stdin parsing and response formatting
+# Adapter layer
 from adapters.claude_code import ClaudeCodeAdapter
+from adapters.utils import has_stdin_data, warn_if_dual_channel
 
+# --- Module imports (all business logic) ---
+from modules.agents.contract_validator import (
+    extract_commands_from_evidence,
+    extract_exit_code_from_output,
+    extract_plan_status_from_output,
+    requires_consolidation_report,
+    validate as validate_contract,
+)
 from modules.agents.response_contract import (
-    clear_pending_repair,
-    save_pending_repair,
     save_validation_result,
     validate_response_contract,
     _resolve_agent_id,
 )
+from modules.agents.task_info_builder import build_task_info_from_hook_data
+from modules.agents.transcript_reader import read_transcript
+from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
+from modules.audit.workflow_recorder import record as record_workflow
+from modules.context.context_writer import process_context_updates
+from modules.memory.episode_writer import write as write_episode
+from modules.security.approval_cleanup import cleanup as cleanup_approval
+from modules.session.session_manager import get_or_create_session_id
 
 # Configure structured logging with file handler (matching pre_tool_use.py pattern)
 try:
@@ -66,624 +72,95 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_workflow_memory_dir() -> Path:
+# ============================================================================
+# Backward-compatible aliases (tests and e2e import these underscore names)
+# ============================================================================
+
+_extract_commands_from_evidence = extract_commands_from_evidence
+_extract_exit_code_from_output = extract_exit_code_from_output
+_extract_plan_status_from_output = extract_plan_status_from_output
+_requires_consolidation_report = requires_consolidation_report
+_read_transcript = read_transcript
+_consume_approval_file = cleanup_approval
+_process_context_updates = process_context_updates
+
+# Backward-compatible aliases for old function names used in tests
+capture_episodic_memory = write_episode
+detect_anomalies = audit_workflow
+capture_workflow_metrics = record_workflow
+consume_approval_file = cleanup_approval
+
+
+def _build_task_info_from_hook_data(
+    hook_data: Dict[str, Any],
+    agent_output: str = "",
+) -> Dict[str, Any]:
+    """Backward-compatible wrapper for build_task_info_from_hook_data."""
+    return build_task_info_from_hook_data(hook_data, agent_output)
+
+
+from modules.audit.workflow_recorder import get_workflow_memory_dir  # noqa: E402,F811
+
+
+
+# ============================================================================
+# Main processing chain
+# ============================================================================
+
+def subagent_stop_hook(task_info, agent_output):
     """
-    Get workflow memory directory path.
-
-    Supports override via WORKFLOW_MEMORY_BASE_PATH env var for testing.
-    In production, uses .claude/project-context/workflow-episodic-memory relative to CWD.
-    """
-    base_path = os.environ.get("WORKFLOW_MEMORY_BASE_PATH")
-    if base_path:
-        return Path(base_path) / "project-context" / "workflow-episodic-memory"
-    return Path(".claude/project-context/workflow-episodic-memory")
-
-
-def _find_claude_dir() -> Path:
-    """Find the .claude directory by searching upward from current location"""
-    current = Path.cwd()
-
-    # If we're already in a .claude directory, go up one level
-    if current.name == ".claude":
-        return current
-
-    # Look for .claude in current directory
-    claude_dir = current / ".claude"
-    if claude_dir.exists():
-        return claude_dir
-
-    # Search upward through parent directories
-    for parent in current.parents:
-        claude_dir = parent / ".claude"
-        if claude_dir.exists():
-            return claude_dir
-
-    # Default fallback - create .claude in current directory
-    logger.warning("No .claude directory found, creating in current directory")
-    claude_dir = current / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    return claude_dir
-
-
-def _get_or_create_session_id() -> str:
-    """Get existing session ID or create new one"""
-    session_id = os.environ.get("CLAUDE_SESSION_ID")
-    if not session_id:
-        timestamp = datetime.now().strftime("%H%M%S")
-        hash_input = f"{timestamp}-{os.getpid()}"
-        session_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
-        session_id = f"session-{timestamp}-{session_hash}"
-        os.environ["CLAUDE_SESSION_ID"] = session_id
-        logger.debug(f"Generated new session_id: {session_id}")
-    return session_id
-
-
-def get_session_events() -> Dict[str, Any]:
-    """
-    Get critical events from active session context.
-
-    Returns:
-        Dict with categorized session events (commits, pushes, file_mods, speckit)
-    """
-    context_path = Path(".claude/session/active/context.json")
-
-    if not context_path.exists():
-        logger.debug("No session context found")
-        return {}
-
-    try:
-        with open(context_path, 'r') as f:
-            context = json.load(f)
-
-        critical_events = context.get("critical_events", [])
-
-        if not critical_events:
-            return {}
-
-        # Extract git commits
-        commits = [
-            {
-                "hash": e.get("commit_hash", ""),
-                "message": e.get("commit_message", ""),
-                "timestamp": e.get("timestamp", "")
-            }
-            for e in critical_events
-            if e.get("event_type") == "git_commit" and e.get("commit_hash")
-        ]
-
-        # Extract git pushes
-        pushes = [
-            {
-                "branch": e.get("branch", ""),
-                "timestamp": e.get("timestamp", "")
-            }
-            for e in critical_events
-            if e.get("event_type") == "git_push" and e.get("branch")
-        ]
-
-        # Extract file modifications
-        file_mods = [
-            {
-                "count": e.get("modification_count", 0),
-                "timestamp": e.get("timestamp", "")
-            }
-            for e in critical_events
-            if e.get("event_type") == "file_modifications"
-        ]
-
-        # Extract spec-kit milestones
-        speckit = [
-            {
-                "command": e.get("command", ""),
-                "timestamp": e.get("timestamp", "")
-            }
-            for e in critical_events
-            if e.get("event_type") == "speckit_milestone"
-        ]
-
-        # Build result
-        result = {}
-        if commits:
-            result["git_commits"] = commits
-        if pushes:
-            result["git_pushes"] = pushes
-        if file_mods:
-            result["file_modifications"] = file_mods
-        if speckit:
-            result["speckit_milestones"] = speckit
-
-        if result:
-            logger.info(f"Found {len(critical_events)} session events")
-
-        return result
-
-    except Exception as e:
-        logger.warning(f"Failed to read session events: {e}")
-        return {}
-
-
-def capture_workflow_metrics(task_info: Dict[str, Any], agent_output: str, session_context: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Capture workflow execution metrics for analysis.
-
-    Args:
-        task_info: Task metadata
-        agent_output: Output from agent execution
-        session_context: Current session context
-
-    Returns:
-        Dict with duration, exit_code, agent, tier, etc.
-    """
-    # Duration cannot be reliably measured from within this hook because
-    # it fires only at agent completion (no start timestamp available).
-    # The previous regex-based extraction almost never matched real output.
-    duration_ms = None
-
-    # Use exit_code from task_info (derived from AGENT_STATUS block) instead
-    # of naive text matching which gives false positives on "No errors found".
-    exit_code = task_info.get("exit_code", 0)
-
-    # Approximate token count: 4 chars per token is a reliable heuristic for LLM output
-    output_tokens_approx = len(agent_output) // 4
-
-    metrics = {
-        "timestamp": session_context["timestamp"],
-        "session_id": session_context["session_id"],
-        "task_id": task_info.get("task_id", "unknown"),
-        "agent": task_info.get("agent", "unknown"),
-        "tier": task_info.get("tier", "T0"),
-        "duration_ms": duration_ms,
-        "exit_code": exit_code,
-        "plan_status": task_info.get("plan_status", ""),
-        "output_length": len(agent_output),
-        "output_tokens_approx": output_tokens_approx,
-        "tags": task_info.get("tags", []),
-        "prompt": task_info.get("description", ""),  # Store for episodic
-    }
-
-    # Save to workflow memory (gated behind env var; default: no write)
-    if os.environ.get("GAIA_WRITE_WORKFLOW_METRICS") == "1":
-        workflow_memory_dir = get_workflow_memory_dir()
-        workflow_memory_dir.mkdir(parents=True, exist_ok=True)
-
-        metrics_file = workflow_memory_dir / "metrics.jsonl"
-        with open(metrics_file, "a") as f:
-            f.write(json.dumps(metrics) + "\n")
-
-    logger.debug(f"Captured workflow metrics: {metrics['agent']} (duration: {duration_ms}ms, exit: {exit_code})")
-
-    return metrics
-
-
-def detect_anomalies(metrics: Dict[str, Any]) -> List[Dict[str, str]]:
-    """
-    Detect anomalies in workflow execution.
-
-    Checks:
-    - Slow execution (> 120s)
-    - Failed executions (exit_code != 0)
-    - Consecutive failures (3+ in a row)
-
-    Returns:
-        List of anomaly descriptions
-    """
-    anomalies = []
-
-    # Check exit code
-    if metrics.get("exit_code", 0) != 0:
-        anomalies.append({
-            "type": "execution_failure",
-            "severity": "error",
-            "message": f"Agent {metrics['agent']} failed with exit code {metrics['exit_code']}"
-        })
-
-    # Check consecutive failures (read last N metrics)
-    try:
-        workflow_memory_dir = get_workflow_memory_dir()
-        metrics_file = workflow_memory_dir / "metrics.jsonl"
-
-        if metrics_file.exists():
-            from collections import deque
-            with open(metrics_file) as f:
-                recent = list(deque(f, maxlen=7))
-            # Get last 5 metrics (excluding current which is the last line)
-            last_5 = [json.loads(line) for line in recent[:-1]][-5:] if len(recent) > 1 else []
-
-            # Count recent failures for same agent
-            agent = metrics["agent"]
-            recent_failures = [
-                m for m in last_5
-                if m.get("agent") == agent and m.get("exit_code", 0) != 0
-            ]
-
-            # If current also failed and we have 2+ previous failures
-            if metrics.get("exit_code", 0) != 0 and len(recent_failures) >= 2:
-                anomalies.append({
-                    "type": "consecutive_failures",
-                    "severity": "critical",
-                    "message": f"Agent {agent} has failed {len(recent_failures) + 1} times consecutively"
-                })
-    except Exception as e:
-        logger.debug(f"Could not check consecutive failures: {e}")
-
-    return anomalies
-
-
-def signal_gaia_analysis(anomalies: List[Dict], metrics: Dict[str, Any]):
-    """
-    Signal that Gaia analysis is needed.
-
-    Creates a flag file that orchestrator can detect.
-    """
-    try:
-        signals_dir = get_workflow_memory_dir() / "signals"
-        signals_dir.mkdir(parents=True, exist_ok=True)
-
-        signal_file = signals_dir / "needs_analysis.flag"
-
-        signal_data = {
-            "timestamp": datetime.now().isoformat(),
-            "created_at": datetime.now().isoformat(),
-            "ttl_hours": 1,
-            "anomalies": anomalies,
-            "metrics_summary": {
-                "agent": metrics["agent"],
-                "task_id": metrics["task_id"],
-                "duration_ms": metrics.get("duration_ms"),
-                "exit_code": metrics.get("exit_code")
-            },
-            "suggested_action": "Invoke /gaia for system analysis"
-        }
-
-        with open(signal_file, "w") as f:
-            json.dump(signal_data, f, indent=2)
-
-        logger.info(f"Gaia analysis signal created: {signal_file}")
-
-        # Also log to a permanent anomaly log
-        anomaly_log = signals_dir.parent / "anomalies.jsonl"
-        with open(anomaly_log, "a") as f:
-            f.write(json.dumps({
-                "timestamp": datetime.now().isoformat(),
-                "anomalies": anomalies,
-                "metrics": metrics
-            }) + "\n")
-
-    except Exception as e:
-        logger.warning(f"Could not create analysis signal: {e}")
-
-
-_NOT_RUN_INDICATORS = re.compile(
-    r"\b(not\s+run|not\s+executed|skipped|n/a)\b",
-    re.IGNORECASE,
-)
-
-_LITERAL_NONE_COMMANDS = {"none", "not run", "not executed", "n/a", "skipped"}
-
-
-def _extract_commands_from_evidence(agent_output: str) -> List[str]:
-    """Extract command strings from the EVIDENCE_REPORT COMMANDS_RUN field.
-
-    Parses lines between ``COMMANDS_RUN:`` and the next field header (a line
-    ending with ``:`` that matches a known evidence field name). Each bullet
-    line (``- `cmd` -> result`` or ``- cmd``) is extracted as a command string.
-
-    Commands whose result indicates they were NOT actually run (e.g. "not run",
-    "skipped", "n/a", "not executed") are excluded from the returned list.
-
-    Returns a list of command strings (without surrounding backticks).
-    """
-    commands: List[str] = []
-    in_commands_section = False
-    # Known field headers that end the COMMANDS_RUN section
-    _FIELD_HEADERS = {
-        "PATTERNS_CHECKED:", "FILES_CHECKED:", "COMMANDS_RUN:",
-        "KEY_OUTPUTS:", "VERBATIM_OUTPUTS:", "CROSS_LAYER_IMPACTS:", "OPEN_GAPS:",
-    }
-
-    for raw_line in agent_output.splitlines():
-        line = raw_line.strip()
-        if line == "COMMANDS_RUN:":
-            in_commands_section = True
-            continue
-        if in_commands_section:
-            # Stop at the next field header or block boundary
-            if line in _FIELD_HEADERS or line.startswith("<!-- "):
-                break
-            if line.startswith("- "):
-                entry = line[2:].strip()
-                # Extract command from backtick-quoted format: `cmd` -> result
-                cmd = ""
-                if entry.startswith("`"):
-                    end_tick = entry.find("`", 1)
-                    if end_tick > 1:
-                        cmd = entry[1:end_tick]
-                    else:
-                        # Single backtick without closing — take the whole entry
-                        cmd = entry.lstrip("`").strip()
-                elif entry and entry.lower() not in _LITERAL_NONE_COMMANDS:
-                    cmd = entry
-
-                if not cmd or cmd.lower() in _LITERAL_NONE_COMMANDS:
-                    continue
-
-                # Check if the rest of the line (after the command) indicates
-                # the command was not actually run
-                remainder = entry[entry.find(cmd) + len(cmd):]
-                if _NOT_RUN_INDICATORS.search(remainder):
-                    continue
-
-                commands.append(cmd)
-    return commands
-
-
-def capture_episodic_memory(
-    metrics: Dict[str, Any],
-    anomalies: Optional[List[Dict[str, str]]] = None,
-    commands_executed: Optional[List[str]] = None,
-) -> Optional[str]:
-    """
-    Capture workflow as episodic memory.
-
-    Args:
-        metrics: Subagent metrics from workflow (includes plan_status, tier, task description)
-        anomalies: Detected anomalies from detect_anomalies(), stored in episode context
-
-    Returns:
-        Episode ID if stored, None otherwise
-    """
-    try:
-        import importlib.util
-
-        # Find memory module
-        candidates = [
-            Path(__file__).parent.parent / "tools" / "memory" / "episodic.py",
-            Path(".claude/tools/memory/episodic.py"),
-        ]
-
-        episodic_module = None
-        for path in candidates:
-            if path.exists():
-                try:
-                    spec = importlib.util.spec_from_file_location("episodic", path)
-                    if spec and spec.loader:
-                        episodic_module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(episodic_module)
-                        logger.debug(f"Loaded episodic module from {path}")
-                        break
-                except Exception as e:
-                    logger.debug(f"Could not load episodic from {path}: {e}")
-                    continue
-
-        if not episodic_module:
-            logger.debug("Episodic memory module not found - skipping episode capture")
-            return None
-
-        # Initialize memory
-        memory = episodic_module.EpisodicMemory()
-
-        # Use the real task description captured from the transcript.
-        # metrics["prompt"] now holds the first user message (task description)
-        # rather than the generic "SubagentStop for <agent>".
-        prompt = metrics.get("prompt", "")
-        if not prompt:
-            prompt = f"Task for {metrics.get('agent', 'unknown')}"
-
-        subagent_type = metrics.get("agent", "unknown")
-        duration_seconds = metrics.get("duration_ms", 0) / 1000.0 if metrics.get("duration_ms") else None
-
-        # Determine outcome: prefer plan_status string, fall back to exit_code
-        plan_status = metrics.get("plan_status", "")
-        exit_code = metrics.get("exit_code", 0)
-        if plan_status:
-            if "COMPLETE" in plan_status:
-                outcome = "success"
-                success = True
-            elif "BLOCKED" in plan_status or "ERROR" in plan_status:
-                outcome = "failed"
-                success = False
-            else:
-                # INVESTIGATING, PLANNING, NEEDS_INPUT → partial
-                outcome = "partial"
-                success = None
-        elif exit_code == 0:
-            outcome = "success"
-            success = True
-        else:
-            outcome = "failed"
-            success = False
-
-        # Tags from metrics — filter empty strings defensively
-        tags = [t for t in metrics.get("tags", []) if t]
-        if not tags and subagent_type and subagent_type != "unknown":
-            tags = [subagent_type]
-
-        # Enrich with session events and anomalies
-        session_events = get_session_events()
-        context = {"metrics": metrics}
-        if session_events:
-            context["session_events"] = session_events
-            logger.info(f"Enriched episode with session events: {list(session_events.keys())}")
-        if anomalies:
-            context["anomalies"] = anomalies
-            logger.info(f"Episode has {len(anomalies)} anomaly/anomalies")
-
-        # Store episode (pass workflow metrics for P3 CLI compatibility fields)
-        episode_id = memory.store_episode(
-            prompt=prompt,
-            clarifications={},
-            enriched_prompt=prompt,
-            context=context,
-            tags=tags,
-            outcome=outcome,
-            success=success,
-            duration_seconds=duration_seconds,
-            commands_executed=commands_executed or [],
-            workflow_metrics=metrics
-        )
-
-        logger.info(f"Captured episode: {episode_id} (outcome: {outcome}, plan_status: {plan_status})")
-        return episode_id
-
-    except Exception as e:
-        logger.debug(f"Failed to capture episodic memory: {e}")
-        return None
-
-
-def _process_context_updates(agent_output: str, task_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Process CONTEXT_UPDATE blocks from agent output via context_writer.
-
-    Loads the context_writer module dynamically and calls process_agent_output()
-    to apply progressive enrichment to project-context.json.
-
-    This function MUST NOT break the existing hook flow -- all errors are caught
-    and logged, returning None on failure.
-
-    Args:
-        agent_output: Complete output from agent execution
-        task_info: Task metadata (agent, description, task_id)
-
-    Returns:
-        Result dict from context_writer.process_agent_output, or None on error
-    """
-    try:
-        import importlib.util
-
-        # Load context_writer module
-        writer_path = Path(__file__).parent / "modules" / "context" / "context_writer.py"
-        if not writer_path.exists():
-            logger.debug("context_writer module not found, skipping context updates")
-            return None
-
-        spec = importlib.util.spec_from_file_location("context_writer", writer_path)
-        if not spec or not spec.loader:
-            return None
-        writer_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(writer_mod)
-
-        # Find project-context.json via _find_claude_dir
-        claude_dir = _find_claude_dir()
-        context_path = claude_dir / "project-context" / "project-context.json"
-
-        if not context_path.exists():
-            logger.debug("project-context.json not found at %s, skipping context updates", context_path)
-            return None
-
-        # Determine config_dir (inside .claude directory)
-        config_dir = claude_dir / "config"
-
-        # Build task_info dict for context_writer
-        agent_type = task_info.get("agent", "unknown")
-        task_info_for_writer = {
-            "agent_type": agent_type,
-            "context_path": str(context_path),
-            "config_dir": str(config_dir),
-        }
-
-        result = writer_mod.process_agent_output(agent_output, task_info_for_writer)
-
-        if result and result.get("updated"):
-            logger.info(
-                "Context updated by %s: sections=%s",
-                agent_type, result.get("sections_updated", []),
-            )
-        if result and result.get("rejected"):
-            logger.debug(
-                "Context sections rejected for %s: %s",
-                agent_type, result.get("rejected", []),
-            )
-
-        return result
-
-    except Exception as e:
-        logger.debug("Context update processing failed (non-fatal): %s", e)
-        return None
-
-
-def _consume_approval_file(agent_type: str) -> bool:
-    """
-    Delete .claude/approvals/pending.json if it exists and matches agent_type.
-
-    The orchestrator writes this file when resuming an approved T3 operation.
-    Consuming it here confirms the approval was used and prevents reuse.
-
-    Returns:
-        True if a matching approval file was consumed, False otherwise.
-    """
-    try:
-        approval_path = Path(".claude/approvals/pending.json")
-        if not approval_path.exists():
-            return False
-
-        data = json.loads(approval_path.read_text())
-        if data.get("agent") == agent_type:
-            approval_path.unlink()
-            logger.info(
-                "Consumed approval for agent '%s' (operation: %s)",
-                agent_type,
-                data.get("operation", "unknown"),
-            )
-            return True
-
-        # File exists but for a different agent — leave it alone
-        logger.debug(
-            "Approval file exists for agent '%s', not '%s' — leaving intact",
-            data.get("agent"),
-            agent_type,
-        )
-        return False
-    except Exception as e:
-        logger.debug("Failed to consume approval file (non-fatal): %s", e)
-        return False
-
-
-def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str, Any]:
-    """
-    Main subagent stop hook - captures metrics, detects anomalies, stores episodes.
+    Main subagent stop hook - validates contracts, captures metrics, detects anomalies, stores episodes.
+
+    Execution order:
+        1. contract_validator.validate() - structural contract check
+        2. approval_cleanup.cleanup() - consume approval file
+        3. workflow_recorder.record() - capture workflow metrics
+        4. workflow_auditor.audit() - detect anomalies
+        5. episode_writer.write() - store episodic memory
+        6. context_writer.update() - progressive context enrichment
 
     Args:
         task_info: Task information including ID, description, agent, etc.
         agent_output: Complete output from agent execution
 
     Returns:
-        Success confirmation with metrics info
+        Success confirmation with metrics info, or contract_rejected dict on validation failure.
     """
     try:
-        session_id = _get_or_create_session_id()
+        from datetime import datetime as _dt
+        session_id = get_or_create_session_id()
         agent_type = task_info.get("agent", "unknown")
 
-        # Step 0: Consume approval file if present for this agent
-        _consume_approval_file(agent_type)
+        # Step 1: Contract validation (early gate)
+        contract_result = validate_contract(agent_output, task_info)
+        if not contract_result.is_valid:
+            logger.warning(
+                "Contract validation failed for %s: %s",
+                agent_type, contract_result.error_message,
+            )
 
-        # Create session context for metrics
+        # Step 2: Consume approval file if present for this agent
+        cleanup_approval(agent_type)
+
+        # Step 3: Capture workflow metrics
         session_context = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": _dt.now().isoformat(),
             "session_id": session_id,
-            "task_id": task_info.get('task_id', 'unknown'),
+            "task_id": task_info.get("task_id", "unknown"),
             "agent": agent_type,
         }
+        workflow_metrics = record_workflow(task_info, agent_output, session_context)
 
-        # Step 1: Capture workflow metrics
-        workflow_metrics = capture_workflow_metrics(task_info, agent_output, session_context)
-
-        # Step 2: Validate deterministic response contract
+        # Step 3b: Validate deterministic response contract (existing detailed validation)
         response_contract = validate_response_contract(
             agent_output,
             task_agent_id=_resolve_agent_id(task_info),
-            consolidation_required=_requires_consolidation_report(task_info),
+            consolidation_required=requires_consolidation_report(task_info),
         )
         save_validation_result(task_info, response_contract)
 
-        repair_file = None
-        contract_agent_id = response_contract.agent_status.agent_id or _resolve_agent_id(task_info)
-        if response_contract.valid:
-            clear_pending_repair(contract_agent_id)
-        else:
-            repair_file = save_pending_repair(task_info, response_contract)
-
-        # Step 3: Check for anomalies
-        anomalies = detect_anomalies(workflow_metrics)
+        # Step 4: Check for anomalies (expanded auditor)
+        anomalies = audit_workflow(workflow_metrics, agent_output, task_info)
         if not response_contract.valid:
             missing = ", ".join(response_contract.missing) or "none"
             invalid = ", ".join(response_contract.invalid) or "none"
@@ -700,18 +177,25 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        # Step 4: Extract commands from EVIDENCE_REPORT for episodic memory
-        commands_executed = _extract_commands_from_evidence(agent_output)
-
-        # Step 5: Capture as episodic memory (include anomalies for context)
-        episode_id = capture_episodic_memory(
+        # Step 5: Extract commands + capture as episodic memory
+        commands_executed = extract_commands_from_evidence(agent_output)
+        episode_id = write_episode(
             workflow_metrics,
             anomalies=anomalies if anomalies else None,
             commands_executed=commands_executed,
         )
 
         # Step 6: Process context updates (progressive enrichment)
-        context_update_result = _process_context_updates(agent_output, task_info)
+        context_update_result = process_context_updates(agent_output, task_info)
+
+        # Derive contract_attempts from response_contract repair state
+        contract_attempts = 0
+        if not response_contract.valid:
+            try:
+                repair_data = response_contract.to_dict()
+                contract_attempts = int(repair_data.get("repair_attempts", 0))
+            except Exception:
+                contract_attempts = 0
 
         return {
             "success": True,
@@ -722,7 +206,8 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
             "episode_id": episode_id,
             "context_updated": context_update_result.get("updated", False) if context_update_result else False,
             "response_contract": response_contract.to_dict(),
-            "contract_repair_pending": repair_file is not None,
+            "contract_validated": contract_result.is_valid,
+            "contract_attempts": contract_attempts,
         }
 
     except Exception as e:
@@ -734,259 +219,12 @@ def subagent_stop_hook(task_info: Dict[str, Any], agent_output: str) -> Dict[str
         }
 
 
-def _read_transcript(transcript_path: str) -> str:
-    """Read agent transcript from file path provided by Claude Code.
-
-    Claude Code provides ``agent_transcript_path`` pointing to a JSONL file.
-    Each line has the structure:
-        {"type": "assistant", "message": {"role": "assistant", "content": [...]}, ...}
-    The role/content are nested inside the ``message`` field.
-
-    Falls back to empty string on any error so the hook never crashes.
-    """
-    try:
-        # Expand ~ to home directory (Claude Code may use ~ in paths)
-        path = Path(transcript_path).expanduser()
-        logger.debug("Reading transcript from: %s", path)
-
-        if not path.exists():
-            logger.warning("Transcript file not found: %s", path)
-            return ""
-
-        lines = path.read_text().strip().splitlines()
-
-        text_parts: List[str] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-
-                # Claude Code transcript format: content is inside entry["message"]
-                msg = entry.get("message", entry)  # fallback to entry itself for simple format
-                role = msg.get("role", "")
-                if role != "assistant":
-                    continue
-
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    text_parts.append(content)
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-        result = "\n".join(text_parts)
-        logger.debug("Extracted %d text parts, total length: %d chars", len(text_parts), len(result))
-        return result
-
-    except Exception as e:
-        logger.debug("Failed to read transcript from %s: %s", transcript_path, e)
-        return ""
-
-
-def _read_first_user_content_from_transcript(transcript_path: str) -> Optional[str]:
-    """Read the raw content string of the first user message from a transcript JSONL.
-
-    Handles: empty path guard, path expansion, existence check, JSONL iteration,
-    JSON parse, role=="user" check, content normalization (str vs list).
-    Returns the raw content string or None.
-    """
-    if not transcript_path:
-        return None
-    try:
-        path = Path(transcript_path).expanduser()
-        if not path.exists():
-            return None
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    msg = entry.get("message", entry)
-                    if msg.get("role") != "user":
-                        continue
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        return content
-                    elif isinstance(content, list):
-                        return " ".join(
-                            b.get("text", "") for b in content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                    return None
-                except (json.JSONDecodeError, TypeError):
-                    continue
-    except Exception as e:
-        logger.debug("Failed to read first user content from transcript: %s", e)
-    return None
-
-
-def _extract_task_description_from_transcript(transcript_path: str) -> str:
-    """Read the first user message from the subagent transcript JSONL.
-
-    Claude Code's agent_transcript_path contains the full subagent conversation.
-    The first ``role: "user"`` entry is the task prompt sent by the orchestrator --
-    which is the most meaningful description of what the agent was asked to do.
-
-    Returns empty string on any error so the hook never crashes.
-    """
-    content = _read_first_user_content_from_transcript(transcript_path)
-    if not content:
-        return ""
-
-    text = content.strip()
-    # Pattern 2: pre_tool_use injected project context before the real prompt.
-    # The injected block ends with "\n\n---\n\n# User Task\n\n" followed by
-    # the actual task description sent by the orchestrator.
-    if text.startswith("# Project Context (Auto-Injected)"):
-        sep_full = "\n\n---\n\n# User Task\n\n"
-        sep_bare = "\n\n---\n\n"
-        pos = text.find(sep_full)
-        if pos != -1:
-            text = text[pos + len(sep_full):].strip()
-        else:
-            pos = text.find(sep_bare)
-            if pos != -1:
-                text = text[pos + len(sep_bare):].strip()
-            else:
-                text = ""  # Cannot extract real prompt
-
-    if text:
-        # Truncate to 500 chars -- enough context, not too much
-        return text[:500]
-    return ""
-
-
-def _extract_injected_context_payload_from_transcript(transcript_path: str) -> Dict[str, Any]:
-    """Extract the auto-injected JSON context payload from the first user message."""
-    content = _read_first_user_content_from_transcript(transcript_path)
-    if not content:
-        return {}
-    if not content.startswith("# Project Context (Auto-Injected)"):
-        return {}
-    try:
-        start = content.find("{")
-        end = content.find("\n\n---\n\n")
-        if start == -1 or end == -1 or end <= start:
-            return {}
-        return json.loads(content[start:end].strip())
-    except Exception:
-        return {}
-
-
-def _requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
-    """Determine whether runtime should require a CONSOLIDATION_REPORT block."""
-    payload = task_info.get("injected_context") or {}
-    if not payload:
-        # Fallback: read from transcript if injected_context was not pre-extracted
-        payload = _extract_injected_context_payload_from_transcript(
-            task_info.get("agent_transcript_path", "")
-        )
-    if not payload:
-        return False
-
-    investigation_brief = payload.get("investigation_brief", {}) or {}
-    surface_routing = payload.get("surface_routing", {}) or {}
-    return bool(
-        investigation_brief.get("consolidation_required")
-        or investigation_brief.get("cross_check_required")
-        or surface_routing.get("multi_surface")
-    )
-
-
-def _extract_plan_status_from_output(agent_output: str) -> str:
-    """Extract the PLAN_STATUS string from the last AGENT_STATUS block.
-
-    Returns the raw status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT")
-    or empty string if not found.
-    """
-    status_match = None
-    for m in re.finditer(r"PLAN_STATUS:\s*(\S+)", agent_output):
-        status_match = m
-    if status_match:
-        return status_match.group(1).upper().rstrip(".,;")
-    return ""
-
-
-def _extract_exit_code_from_output(agent_output: str) -> int:
-    """Derive exit code from the LAST AGENT_STATUS block in agent output.
-
-    Looks for PLAN_STATUS in the final assistant message.  If the status
-    contains COMPLETE -> 0, BLOCKED or ERROR -> 1.  Falls back to 0 when
-    no AGENT_STATUS is found (optimistic default).
-    """
-    status_value = _extract_plan_status_from_output(agent_output)
-    if status_value:
-        if "COMPLETE" in status_value:
-            return 0
-        if "BLOCKED" in status_value or "ERROR" in status_value:
-            return 1
-    return 0
-
-
-def _build_task_info_from_hook_data(hook_data: Dict[str, Any], agent_output: str = "") -> Dict[str, Any]:
-    """Build a task_info dict from the Claude Code SubagentStop stdin payload.
-
-    Claude Code sends these fields for SubagentStop:
-      - hook_event_name: "SubagentStop"
-      - session_id: str
-      - agent_type: str  (e.g. "cloud-troubleshooter")
-      - agent_id: str
-      - transcript_path: str  (session-level JSONL)
-      - agent_transcript_path: str  (subagent JSONL)
-      - last_assistant_message: str  (final agent response text, no I/O needed)
-      - cwd: str
-      - stop_hook_active: bool
-      - permission_mode: str
-
-    We map these to the task_info format expected by subagent_stop_hook().
-    The exit_code is derived from the agent's AGENT_STATUS block.
-    task_description is extracted from the first user message in the transcript.
-    tier_real is parsed from the AGENT_STATUS block (not hardcoded T0).
-    """
-    exit_code = _extract_exit_code_from_output(agent_output) if agent_output else 0
-    plan_status = _extract_plan_status_from_output(agent_output) if agent_output else ""
-
-    # Extract tier from agent output (e.g. agents report tier in their context)
-    # Look for explicit tier references in agent output: T0, T1, T2, T3
-    tier_real = "T0"
-    if agent_output:
-        tier_match = re.search(r"\bT([0-3])\b", agent_output)
-        if tier_match:
-            tier_real = f"T{tier_match.group(1)}"
-
-    # Extract real task description from the first user message in the transcript
-    transcript_path = hook_data.get("agent_transcript_path", "")
-    task_description = _extract_task_description_from_transcript(transcript_path)
-    injected_context = _extract_injected_context_payload_from_transcript(transcript_path)
-    agent_type = hook_data.get("agent_type", "") or "unknown"
-    if not task_description:
-        task_description = f"SubagentStop for {agent_type}"
-
-    return {
-        "task_id": hook_data.get("agent_id", "unknown"),
-        "agent_id": hook_data.get("agent_id", "unknown"),
-        "agent_transcript_path": transcript_path,
-        "description": task_description,
-        "agent": agent_type,
-        "tier": tier_real,
-        "tags": [agent_type] if agent_type != "unknown" else [],
-        "exit_code": exit_code,
-        "plan_status": plan_status,
-        "injected_context": injected_context,
-    }
-
+# ============================================================================
+# CLI interface
+# ============================================================================
 
 def main():
-    """CLI interface for testing metrics capture"""
-
+    """CLI interface for testing metrics capture."""
     if len(sys.argv) < 2:
         print("Usage: python subagent_stop.py --test")
         sys.exit(1)
@@ -999,20 +237,15 @@ def main():
             "tier": "T1",
             "tags": ["#terraform", "#infrastructure"],
         }
-
-        test_output = """
-# Terraform Architect Execution Log
-
-## Task: T006 - Terraform plan for infrastructure
-
-### Results:
-- Configuration validated successfully
-- Plan generated with 12 resources
-- Duration: 45000 ms
-"""
-
+        test_output = (
+            "# Terraform Architect Execution Log\n\n"
+            "## Task: T006 - Terraform plan for infrastructure\n\n"
+            "### Results:\n"
+            "- Configuration validated successfully\n"
+            "- Plan generated with 12 resources\n"
+            "- Duration: 45000 ms\n"
+        )
         result = subagent_stop_hook(test_task_info, test_output)
-
         if result["success"]:
             print("Test completed successfully!")
             print(f"Session ID: {result['session_id']}")
@@ -1020,20 +253,8 @@ def main():
             print(f"Episode ID: {result.get('episode_id', 'none')}")
         else:
             print(f"Test failed: {result.get('error', 'Unknown error')}")
-
     else:
         print("Unknown command. Use --test to run test.")
-
-
-def has_stdin_data() -> bool:
-    """Check if there's data available on stdin."""
-    if sys.stdin.isatty():
-        return False
-    try:
-        readable, _, _ = select.select([sys.stdin], [], [], 0)
-        return bool(readable)
-    except Exception:
-        return not sys.stdin.isatty()
 
 
 # ============================================================================
@@ -1041,13 +262,12 @@ def has_stdin_data() -> bool:
 # ============================================================================
 
 if __name__ == "__main__":
-    # Check if running from CLI with arguments
     if len(sys.argv) > 1:
         main()
     elif has_stdin_data():
         try:
-            # --- Adapter: parse stdin ---
             adapter = ClaudeCodeAdapter()
+            warn_if_dual_channel()
             stdin_data = sys.stdin.read()
 
             try:
@@ -1060,32 +280,34 @@ if __name__ == "__main__":
                     print(f"Error: {error_msg}")
                 sys.exit(1)
 
-            # Compatibility: expose raw payload for business logic
             hook_data = event.payload
+            logger.info(
+                f"Hook event: {hook_data.get('hook_event_name')}, "
+                f"agent: {hook_data.get('agent_type', 'unknown')}"
+            )
 
-            logger.info(f"Hook event: {hook_data.get('hook_event_name')}, agent: {hook_data.get('agent_type', 'unknown')}")
-
-            # Use adapter helper to extract typed agent completion data
             completion = adapter.parse_agent_completion(hook_data)
 
-            # Use last_assistant_message directly — no transcript I/O needed for AGENT_STATUS parsing.
-            # Falls back to reading the transcript if last_assistant_message is absent (older Claude Code).
+            # Use last_assistant_message directly; fall back to transcript
             agent_output = completion.last_message
             if not agent_output:
                 transcript_path = completion.transcript_path
-                agent_output = _read_transcript(transcript_path) if transcript_path else ""
+                agent_output = read_transcript(transcript_path) if transcript_path else ""
                 logger.info(f"Agent output: {len(agent_output)} chars from transcript (fallback)")
             else:
                 logger.info(f"Agent output: {len(agent_output)} chars from last_assistant_message")
 
-            # Build task_info from Claude Code SubagentStop payload
-            # (needs agent_output to derive exit_code from AGENT_STATUS)
-            task_info = _build_task_info_from_hook_data(hook_data, agent_output)
-
-            # Run the full processing chain
+            task_info = build_task_info_from_hook_data(hook_data, agent_output)
             result = subagent_stop_hook(task_info, agent_output)
 
-            # Output result as JSON for Claude Code
+            if result.get("contract_rejected"):
+                print(
+                    f"HOOK ERROR: Contract rejected: {result.get('error', 'unknown')}",
+                    file=sys.stderr,
+                )
+                print(json.dumps(result))
+                sys.exit(2)
+
             print(json.dumps(result))
             sys.exit(0)
 
@@ -1098,7 +320,6 @@ if __name__ == "__main__":
             print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
             sys.exit(1)
     else:
-        # No args and no stdin - show usage
         print("Usage: python subagent_stop.py --test")
         print("       echo '{...}' | python subagent_stop.py  (stdin mode)")
         sys.exit(1)

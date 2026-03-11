@@ -10,7 +10,7 @@ No dependencies on any existing gaia-ops module -- this is standalone.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +42,12 @@ class HookEventType(enum.Enum):
 
     # P4
     NOTIFICATION = "Notification"
+
+    # P5 - Additional events
+    TEAMMATE_IDLE = "TeammateIdle"
+    WORKTREE_CREATE = "WorktreeCreate"
+    WORKTREE_REMOVE = "WorktreeRemove"
+    PROMPT_SUBMIT = "PromptSubmit"  # Deprecated alias for USER_PROMPT_SUBMIT
 
 
 class PermissionDecision(enum.Enum):
@@ -138,6 +144,8 @@ class ContextResult:
     context_injected: bool = False
     additional_context: Optional[str] = None
     sections_provided: List[str] = field(default_factory=list)
+    # Reserved for future adapter use
+    prompt_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,6 +155,30 @@ class BootstrapResult:
     project_scanned: bool = False
     context_path: Optional[Path] = None
     tools_detected: List[str] = field(default_factory=list)
+    # P1 fields: SessionStart adapter populates these
+    should_scan: bool = False
+    should_refresh: bool = False
+    session_type: str = "startup"
+
+
+@dataclass(frozen=True)
+class QualityResult:
+    """Result of a Stop event -- whether evidence quality meets threshold."""
+
+    quality_sufficient: bool = True
+    score: float = 1.0
+    missing_elements: List[str] = field(default_factory=list)
+    recommendation: str = "continue"
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    """Result of a TaskCompleted event -- whether completion criteria are met."""
+
+    criteria_met: bool = True
+    verified_items: List[str] = field(default_factory=list)
+    failed_items: List[str] = field(default_factory=list)
+    block_completion: bool = False
 
 
 @dataclass(frozen=True)

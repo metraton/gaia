@@ -94,6 +94,10 @@ hooks/
 ├── pre_tool_use.py        (~1125 lines) - Main guardian (v2 modular)
 ├── post_tool_use.py       (~270 lines) - Main auditor
 ├── subagent_stop.py       (~1010 lines) - Workflow metrics + anomaly detection
+├── session_start.py       - Session start event handler
+├── stop_hook.py           - Stop event handler
+├── subagent_start.py      - Subagent start event handler
+├── task_completed.py      - Task completed event handler
 └── modules/               - Modular architecture (see modules/README.md)
     ├── core/              - Shared utilities (paths, state)
     ├── security/          - Tier classification, safe/blocked commands
@@ -109,7 +113,7 @@ hooks/
 
 ---
 
-**Version:** 4.0.0
-**Last updated:** 2026-03-03
-**Total hooks:** 3 active hooks (1 pre, 1 post, 1 metrics)
+**Version:** 4.1.1
+**Last updated:** 2026-03-11
+**Total hooks:** 7 hook scripts (3 primary + 4 event handlers)
 **Maintained by:** Gaia (meta-agent)

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Plugin distribution: `.claude-plugin/plugin.json` manifest for Claude Code native plugin system
-- Self-hosted marketplace: `.claude-plugin/marketplace.json` with 3 sub-plugin tiers (gaia-security, gaia-agents, gaia-full)
+- Self-hosted marketplace: `.claude-plugin/marketplace.json` with 2 sub-plugin tiers (gaia-security, gaia-ops)
 - Adapter layer: `hooks/adapters/` with normalized types, abstract base, and Claude Code adapter
 - `hooks/hooks.json` for plugin-channel hook configuration
 - Distribution channel detection (`hooks/adapters/channel.py`)

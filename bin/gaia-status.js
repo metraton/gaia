@@ -194,7 +194,7 @@ async function main() {
   const claudeDir = join(CWD, '.claude');
   if (!existsSync(claudeDir)) {
     console.log(chalk.yellow('\n  gaia-ops not installed in this directory'));
-    console.log(chalk.gray('  Run: npx gaia-init\n'));
+    console.log(chalk.gray('  Run: npx gaia-scan\n'));
     process.exit(1);
   }
 
@@ -253,7 +253,7 @@ async function main() {
   if (contextUpdated) {
     console.log(`  Context:      project-context.json — ${chalk.gray('updated ' + formatTime(contextUpdated))}`);
   } else {
-    console.log(`  Context:      ${chalk.yellow('project-context.json missing — run gaia-init')}`);
+    console.log(`  Context:      ${chalk.yellow('project-context.json missing — run gaia-scan')}`);
   }
 
   // Governance

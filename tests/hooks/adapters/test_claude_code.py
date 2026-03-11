@@ -529,14 +529,14 @@ class TestFormatContextResponse:
         result = ContextResult(
             context_injected=True,
             additional_context="# Project Context\nRegion: us-east4\nCluster: dev",
-            sections_provided=["project_details", "development_standards"],
+            sections_provided=["project_identity", "environment"],
         )
         resp = adapter.format_context_response(result)
 
         assert resp.exit_code == 0
         assert "additionalContext" in resp.output
         assert "Project Context" in resp.output["additionalContext"]
-        assert resp.output["sections_provided"] == ["project_details", "development_standards"]
+        assert resp.output["sections_provided"] == ["project_identity", "environment"]
 
     def test_no_context(self, adapter):
         """No context injection produces empty output."""

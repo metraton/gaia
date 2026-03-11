@@ -42,7 +42,7 @@ If Project Context includes an `investigation_brief`, use it to prioritize:
 - which surface you own
 - which adjacent surface must still be checked
 - which required checks must appear in your evidence
-- whether you must return a `CONSOLIDATION_REPORT` for Gaia to merge findings
+- whether you must return a `consolidation` object in your `json:contract` block for Gaia to merge findings
 
 ## 4. Pattern Analysis
 
@@ -94,7 +94,7 @@ If critical gaps remain → run another validation round. Never propose on shaky
 
 ## 8. Evidence Contract
 
-When you report investigation findings, populate the protocol-mandated `EVIDENCE_REPORT` block.
+When you report investigation findings, populate the `evidence` object in the protocol-mandated `json:contract` block.
 
 Interpret the fields this way:
 
@@ -125,7 +125,7 @@ Gaia merge parallel or cross-surface work. That means:
 - say who should continue if it is no longer your surface
 
 Do not wait for the orchestrator to infer this from prose. Put it in the
-protocol-mandated `CONSOLIDATION_REPORT`.
+protocol-mandated `consolidation` object in your `json:contract` block.
 
 ## Anti-Patterns
 

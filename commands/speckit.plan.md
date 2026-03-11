@@ -9,12 +9,12 @@ User input:
 $ARGUMENTS
 
 **IMPORTANT**: This command now requires TWO arguments:
-1. `<speckit-root>`: Path to spec-kit root directory (e.g., `spec-kit-tcm-plan` or `/absolute/path/to/spec-kit-tcm-plan`)
+1. `<speckit-root>`: Path to spec-kit root directory (e.g., `specs` or `/absolute/path/to/specs`)
 2. `<feature-name>`: Feature name (e.g., `004-project-guidance-deployment`)
 
 **Example usage**:
 ```
-/speckit.plan spec-kit-tcm-plan 004-project-guidance-deployment
+/speckit.plan specs 004-project-guidance-deployment
 ```
 
 Given the implementation details provided as an argument, do this:
@@ -53,38 +53,12 @@ Given the implementation details provided as an argument, do this:
 
    All future file paths must be absolute.
 
-3. **Automatic Clarification (Integrated)**:
-   BEFORE proceeding with planning, perform ambiguity detection and clarification:
-
-   a) **Scan for ambiguities** across these categories:
-      - Functional Scope (user goals, out-of-scope, roles)
-      - Data Model (entities, relationships, lifecycle)
-      - Non-Functional (performance, security, reliability targets)
-      - Integration (external APIs, failure modes)
-      - Edge Cases (error handling, conflicts)
-      - Terminology (vague adjectives like "robust", "intuitive")
-
-   b) **Generate clarification questions** (max 5 total):
-      - Only ask if answer materially impacts architecture, data model, or testing
-      - Prioritize by Impact × Uncertainty heuristic
-      - Use multiple-choice (2-5 options) or short-answer (≤5 words)
-      - Skip if already answered in spec or low-impact
-
-   c) **Interactive questioning** (if needed):
-      - Present ONE question at a time
-      - For multiple-choice, use markdown table with options
-      - After answer, validate and integrate IMMEDIATELY into spec
-      - Create `## Clarifications / ### Session YYYY-MM-DD` section
-      - Update appropriate sections (Functional Requirements, Data Model, etc.)
-      - Save spec after EACH answer (atomic updates)
-      - Stop when: all critical ambiguities resolved, user says "done", or 5 questions reached
-
-   d) **Clarification Results**:
-      - If NO ambiguities found: Report "No critical ambiguities detected" and continue
-      - If clarifications made: Report count, sections updated, suggest proceeding
-      - If high-impact areas still unresolved: Warn user about rework risk
-
-   **CRITICAL**: Clarification is automatic and integrated. No separate command invocation required.
+3. **Verify spec completeness**:
+   The spec.md is provided by the orchestrator (created conversationally with the user).
+   Read the spec and verify:
+   - No unresolved `[NEEDS CLARIFICATION]` markers remain
+   - Functional requirements are present and testable
+   - If critical gaps exist, report them and ask the user to resolve before proceeding
 
 4. Read and analyze the feature specification to understand:
    - The feature requirements and user stories

@@ -26,7 +26,7 @@ Configure symlinks  Remove files
 
 | Script | Description |
 |--------|-------------|
-| `gaia-init.js` | Main installer (interactive or non-interactive) |
+| `gaia-scan` | Project scanner and installer (Python) |
 | `gaia-update.js` | Configuration updater (postinstall hook) |
 
 ### Diagnostics and Monitoring
@@ -60,7 +60,7 @@ Defined in `package.json`:
 ```json
 {
   "bin": {
-    "gaia-init": "bin/gaia-init.js",
+    "gaia-scan": "bin/gaia-scan",
     "gaia-doctor": "bin/gaia-doctor.js",
     "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
     "gaia-cleanup": "bin/gaia-cleanup.js",
@@ -80,7 +80,7 @@ Defined in `package.json`:
 
 ```bash
 npm install @jaguilar87/gaia-ops
-npx gaia-init
+npx gaia-scan
 claude
 ```
 
@@ -137,7 +137,7 @@ npm uninstall @jaguilar87/gaia-ops
 ```bash
 export CLAUDE_GITOPS_DIR="./my-gitops"
 export CLAUDE_PROJECT_ID="my-gcp-project"
-npx gaia-init --non-interactive
+npx gaia-scan --non-interactive
 ```
 
 ## References

@@ -144,7 +144,7 @@ async function main() {
   const claudeDir = join(CWD, '.claude');
   if (!existsSync(claudeDir)) {
     console.log(chalk.yellow('\n  gaia-ops not installed in this directory'));
-    console.log(chalk.gray('  Run: npx gaia-init\n'));
+    console.log(chalk.gray('  Run: npx gaia-scan\n'));
     process.exit(1);
   }
 

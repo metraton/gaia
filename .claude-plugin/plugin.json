@@ -9,6 +9,8 @@
   "repository": "https://github.com/metraton/gaia-ops",
   "license": "MIT",
   "keywords": ["security", "devops", "orchestrator", "governance", "terraform", "kubernetes", "gitops"],
+  "engines": { "claude-code": ">=2.1.0" },
+  "categories": ["devops", "security", "orchestration"],
   "commands": "./commands/",
   "agents": "./agents/",
   "skills": "./skills/"

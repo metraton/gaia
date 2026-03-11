@@ -1,0 +1,6 @@
+{
+  "agent_type": "cloud-troubleshooter",
+  "task_description": "Diagnose pod failures in staging namespace",
+  "hook_event_name": "SubagentStart",
+  "session_id": "e2e-test-substart-001"
+}

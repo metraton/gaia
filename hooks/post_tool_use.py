@@ -1,234 +1,81 @@
 #!/usr/bin/env python3
 """
-Post-tool use hook v2 - Modular Architecture
+Post-tool use hook - Thin gate.
 
-Thin entry point that uses the new modular hook system.
-Reads state from pre-hook and records metrics/events.
+Reads state from pre-hook, logs execution via audit module, detects critical
+events, and writes them to session context via session_context_writer.
 
-Features:
-- State sharing with pre-hook
-- Audit logging
-- Metrics collection
-- Critical event detection
-- Context updates
+Architecture:
+- Thin gate: parse_event -> audit log -> detect events -> write context -> exit
+- Business logic in modules.audit.* and modules.session.session_context_writer
+- Metrics CLI eliminated (use bin/gaia-metrics.js instead)
 """
 
 import sys
 import json
 import logging
-import os
-import fcntl
-import select
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Add modules to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from modules.core.paths import get_logs_dir, get_session_dir
-
-# Adapter layer: normalize stdin parsing
+from modules.core.paths import get_logs_dir
 from adapters.claude_code import ClaudeCodeAdapter
+from adapters.utils import has_stdin_data, warn_if_dual_channel
 from modules.core.state import get_hook_state, clear_hook_state
 from modules.audit.logger import log_execution
 from modules.audit.event_detector import detect_critical_event
+from modules.session.session_context_writer import SessionContextWriter
 
-# Configure logging — all hooks share hooks-YYYY-MM-DD.log for easy tailing
+# Configure logging
 log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [post_tool_use] %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-    ]
+    handlers=[logging.FileHandler(log_file)],
 )
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# CONTEXT UPDATER
-# ============================================================================
-
-class ActiveContextUpdater:
-    """Update active session context for critical events."""
-
-    def __init__(self):
-        self.context_path = get_session_dir() / "context.json"
-
-    def update_context(self, event_data: dict) -> None:
-        """Update active context with event data."""
-        try:
-            self.context_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # File lock to prevent race conditions from parallel tool calls
-            lock_path = self.context_path.with_suffix('.lock')
-            with open(lock_path, 'w') as lock_file:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                try:
-                    # Load existing context
-                    context = {}
-                    if self.context_path.exists():
-                        with open(self.context_path, 'r') as f:
-                            context = json.load(f)
-
-                    # Initialize events list if not exists
-                    if "critical_events" not in context:
-                        context["critical_events"] = []
-
-                    # Add timestamp to event
-                    event_data["timestamp"] = datetime.now().isoformat()
-
-                    # Append new event
-                    context["critical_events"].append(event_data)
-
-                    # Keep only events from last 24 hours
-                    retention_hours = int(os.environ.get("SESSION_RETENTION_HOURS", "24"))
-                    cutoff = datetime.now() - timedelta(hours=retention_hours)
-
-                    context["critical_events"] = [
-                        event for event in context["critical_events"]
-                        if event.get("timestamp")
-                        and datetime.fromisoformat(event["timestamp"]) > cutoff
-                    ]
-
-                    # Update last_modified
-                    context["last_modified"] = datetime.now().isoformat()
-
-                    # Write back
-                    with open(self.context_path, 'w') as f:
-                        json.dump(context, f, indent=2)
-                finally:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-            logger.info(f"Updated context with event: {event_data.get('event_type', 'unknown')}")
-
-        except Exception as e:
-            logger.error(f"Error updating active context: {e}")
-
-
-# ============================================================================
-# MAIN HOOK LOGIC
-# ============================================================================
-
 def post_tool_use_hook(
     tool_name: str,
     parameters: dict,
-    result: any,
+    result: object,
     duration: float,
-    success: bool = True
+    success: bool = True,
 ) -> None:
-    """
-    Post-tool use hook implementation.
-
-    Args:
-        tool_name: Name of the tool that was invoked
-        parameters: Tool parameters
-        result: Tool execution result
-        duration: Execution duration in seconds
-        success: Whether execution was successful
-    """
+    """Post-tool use hook: audit + event detection + context update."""
     try:
-        # Get state from pre-hook
         pre_state = get_hook_state()
         tier = pre_state.tier if pre_state else "unknown"
 
-        # Compute duration from pre-hook timestamp when available.
-        # Claude Code's duration_ms is unreliable (often 0), so we
-        # measure wall-clock time between pre-hook and post-hook.
+        # Prefer wall-clock duration from pre-hook timestamp
         computed_duration = duration
         if pre_state and pre_state.start_time_epoch > 0:
             computed_duration = time.time() - pre_state.start_time_epoch
 
-        # Log execution
-        exit_code = 0 if success else 1
         log_execution(
             tool_name=tool_name,
             parameters=parameters,
             result=result,
             duration=computed_duration,
-            exit_code=exit_code,
+            exit_code=0 if success else 1,
             tier=tier,
         )
 
-        # Metrics recording disabled: audit logs (audit-*.jsonl) are the SSOT
-        # for command metrics. The metrics-*.jsonl files were a strict subset
-        # with no unique data (command_type is derivable from the audit command).
-        # To re-enable, set GAIA_WRITE_METRICS=1.
-
-        # Detect critical events
         events = detect_critical_event(tool_name, parameters, result, success)
-
         if events:
-            context_updater = ActiveContextUpdater()
+            writer = SessionContextWriter()
             for event in events:
-                context_updater.update_context(event.to_dict())
+                writer.update_context(event.to_dict())
 
-        # Clear pre-hook state
         clear_hook_state()
-
-        logger.debug(f"Post-hook completed for {tool_name}")
+        logger.debug("Post-hook completed for %s", tool_name)
 
     except Exception as e:
-        logger.error(f"Error in post_tool_use_hook: {e}", exc_info=True)
-
-
-# ============================================================================
-# CLI INTERFACE
-# ============================================================================
-
-def main():
-    """CLI interface for testing and metrics."""
-    if len(sys.argv) < 2:
-        print("Usage: python post_tool_use_v2.py --metrics")
-        print("       python post_tool_use_v2.py --test")
-        sys.exit(1)
-
-    if sys.argv[1] == "--metrics":
-        from modules.audit.metrics import generate_summary
-        summary = generate_summary(days=7)
-
-        print("Execution Metrics Summary")
-        print(f"Period: {summary['period_days']} days")
-        print(f"Total executions: {summary['total_executions']}")
-        print(f"Success rate: {summary['success_rate']:.1%}")
-        print(f"Average duration: {summary['avg_duration_ms']:.1f}ms")
-
-        if summary['top_commands']:
-            print("\nTop command types:")
-            for cmd in summary['top_commands'][:5]:
-                print(f"  {cmd['type']}: {cmd['count']}")
-
-        if summary['tier_distribution']:
-            print("\nTier distribution:")
-            for tier, count in summary['tier_distribution'].items():
-                print(f"  {tier}: {count}")
-
-    elif sys.argv[1] == "--test":
-        print("Testing Post-Tool Use Hook v2...")
-
-        test_params = {"command": "kubectl get pods"}
-        test_result = "pod/test-pod   1/1   Running   0   1m"
-
-        post_tool_use_hook("bash", test_params, test_result, 0.5, True)
-
-        print("Test completed successfully!")
-        print(f"Check {get_logs_dir()} for audit logs")
-
-    else:
-        print(f"Unknown command: {sys.argv[1]}")
-        sys.exit(1)
-
-
-def has_stdin_data() -> bool:
-    """Check if there's data available on stdin."""
-    if sys.stdin.isatty():
-        return False
-    try:
-        readable, _, _ = select.select([sys.stdin], [], [], 0)
-        return bool(readable)
-    except Exception:
-        return not sys.stdin.isatty()
+        logger.error("Error in post_tool_use_hook: %s", e, exc_info=True)
 
 
 # ============================================================================
@@ -236,52 +83,46 @@ def has_stdin_data() -> bool:
 # ============================================================================
 
 if __name__ == "__main__":
-    # Check if running from CLI with arguments
-    if len(sys.argv) > 1:
-        main()
-    elif has_stdin_data():
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        post_tool_use_hook(
+            "bash", {"command": "kubectl get pods"},
+            "pod/test-pod   1/1   Running   0   1m", 0.5, True,
+        )
+        print(f"Test completed. Check {get_logs_dir()} for audit logs")
+        sys.exit(0)
+
+    if has_stdin_data():
         try:
-            # --- Adapter: parse stdin ---
             adapter = ClaudeCodeAdapter()
-            stdin_data = sys.stdin.read()
+            warn_if_dual_channel()
 
-            try:
-                event = adapter.parse_event(stdin_data)
-            except ValueError as e:
-                error_msg = str(e)
-                logger.error(f"Adapter parse failed: {error_msg}")
-                print(f"HOOK ERROR: {error_msg}", file=sys.stderr)
-                if "Empty stdin" in error_msg:
-                    print(f"Error: {error_msg}")
-                sys.exit(1)
-
-            # Use adapter helper to extract typed tool result data
+            event = adapter.parse_event(sys.stdin.read())
             tool_result_data = adapter.parse_post_tool_use(event.payload)
+            logger.info("Post-hook event: %s", event.payload.get("hook_event_name"))
 
-            logger.info(f"Post-hook event: {event.payload.get('hook_event_name')}")
-
-            tool_name = tool_result_data.tool_name
-            tool_input = event.payload.get("tool_input", {})
-
-            # Extract result and duration from typed ToolResult
-            result = tool_result_data.output
             raw_tool_result = event.payload.get("tool_result", {})
-            duration = raw_tool_result.get("duration_ms", 0) / 1000.0
-            success = tool_result_data.exit_code == 0
-
-            post_tool_use_hook(tool_name, tool_input, result, duration, success)
+            post_tool_use_hook(
+                tool_name=tool_result_data.tool_name,
+                parameters=event.payload.get("tool_input", {}),
+                result=tool_result_data.output,
+                duration=raw_tool_result.get("duration_ms", 0) / 1000.0,
+                success=tool_result_data.exit_code == 0,
+            )
             sys.exit(0)
 
+        except ValueError as e:
+            logger.error("Adapter parse failed: %s", e)
+            print(f"HOOK ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON from stdin: {e}")
+            logger.error("Invalid JSON from stdin: %s", e)
             print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
             sys.exit(1)
         except Exception as e:
-            logger.error(f"Error processing hook: {e}", exc_info=True)
-            print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
+            logger.error("Error processing hook: %s", e, exc_info=True)
+            print(f"HOOK ERROR: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        # No args and no stdin - show usage
-        print("Usage: python post_tool_use_v2.py --metrics")
-        print("       python post_tool_use_v2.py --test")
+        print("Usage: echo '{...}' | python post_tool_use.py  (stdin mode)")
+        print("       python post_tool_use.py --test           (self-test mode)")
         sys.exit(1)

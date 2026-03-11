@@ -9,7 +9,7 @@ Validates:
 4. hooks.json has PreToolUse, PostToolUse, SubagentStop events
 5. hooks.json uses ${CLAUDE_PLUGIN_ROOT} in all command paths
 6. marketplace.json exists and is valid JSON
-7. marketplace.json has 3 plugins (gaia-security, gaia-agents, gaia-full)
+7. marketplace.json has 2 plugins (gaia-security, gaia-ops)
 8. Sub-plugin plugin.json files exist and are valid
 9. All version fields match across all manifest files
 """
@@ -74,6 +74,25 @@ class TestPluginJson:
         assert "hooks" not in data, (
             "plugin.json should not have a 'hooks' field -- "
             "Claude Code v2.1+ auto-loads hooks/hooks.json by convention"
+        )
+
+    def test_plugin_json_has_engines(self):
+        """plugin.json must have engines.claude-code field with >=2.1.0."""
+        data = json.loads(self.plugin_path.read_text())
+        assert "engines" in data, "Missing 'engines' field"
+        assert "claude-code" in data["engines"], "Missing 'engines.claude-code' field"
+        assert data["engines"]["claude-code"] == ">=2.1.0", (
+            f"Expected engines.claude-code '>=2.1.0', got '{data['engines']['claude-code']}'"
+        )
+
+    def test_plugin_json_has_categories(self):
+        """plugin.json must have categories array with devops, security, orchestration."""
+        data = json.loads(self.plugin_path.read_text())
+        assert "categories" in data, "Missing 'categories' field"
+        assert isinstance(data["categories"], list), "categories must be a list"
+        assert data["categories"] == ["devops", "security", "orchestration"], (
+            f"Expected categories ['devops', 'security', 'orchestration'], "
+            f"got {data['categories']}"
         )
 
 
@@ -146,12 +165,21 @@ class TestHooksJson:
                     )
 
     def test_hooks_json_matches_settings_template_events(self):
-        """hooks.json must cover the same events as settings.template.json."""
+        """hooks.json must cover the same events as settings.template.json.
+
+        UserPromptSubmit is excluded: it is a static echo in settings.json
+        (not a Python hook in the plugin), because plugin hook output is
+        discarded by Claude Code for this event.
+        """
         settings_path = PROJECT_ROOT / "templates" / "settings.template.json"
         settings_data = json.loads(settings_path.read_text())
         hooks_data = json.loads(self.hooks_path.read_text())
 
-        settings_events = set(settings_data["hooks"].keys())
+        # UserPromptSubmit is a static echo in settings.json only --
+        # no corresponding Python hook in hooks.json
+        static_echo_events = {"UserPromptSubmit"}
+
+        settings_events = set(settings_data["hooks"].keys()) - static_echo_events
         hooks_events = set(hooks_data["hooks"].keys())
         assert hooks_events == settings_events, (
             f"Event mismatch: hooks.json has {hooks_events}, "
@@ -175,34 +203,147 @@ class TestMarketplaceJson:
         data = json.loads(self.marketplace_path.read_text())
         assert isinstance(data, dict)
 
-    def test_marketplace_has_plugins(self):
-        """marketplace.json must have a 'plugins' array."""
+    def test_marketplace_has_marketplace_wrapper(self):
+        """marketplace.json must have a top-level 'marketplace' wrapper."""
         data = json.loads(self.marketplace_path.read_text())
-        assert "plugins" in data
-        assert isinstance(data["plugins"], list)
+        assert "marketplace" in data, "Missing top-level 'marketplace' wrapper"
+        assert isinstance(data["marketplace"], dict), "'marketplace' must be a dict"
 
-    def test_marketplace_has_three_plugins(self):
-        """marketplace.json must have exactly 3 plugins."""
+    def test_marketplace_has_plugins(self):
+        """marketplace.json must have a 'plugins' array inside marketplace wrapper."""
         data = json.loads(self.marketplace_path.read_text())
-        assert len(data["plugins"]) == 3, (
-            f"Expected 3 plugins, got {len(data['plugins'])}"
+        marketplace = data["marketplace"]
+        assert "plugins" in marketplace, "Missing 'plugins' in marketplace wrapper"
+        assert isinstance(marketplace["plugins"], list)
+
+    def test_marketplace_has_two_plugins(self):
+        """marketplace.json must have exactly 2 plugins."""
+        data = json.loads(self.marketplace_path.read_text())
+        plugins = data["marketplace"]["plugins"]
+        assert len(plugins) == 2, (
+            f"Expected 2 plugins, got {len(plugins)}"
         )
 
     def test_marketplace_plugin_names(self):
-        """marketplace.json must have gaia-security, gaia-agents, gaia-full."""
+        """marketplace.json must have gaia-security, gaia-ops."""
         data = json.loads(self.marketplace_path.read_text())
-        names = {p["name"] for p in data["plugins"]}
-        expected = {"gaia-security", "gaia-agents", "gaia-full"}
+        names = {p["name"] for p in data["marketplace"]["plugins"]}
+        expected = {"gaia-security", "gaia-ops"}
         assert names == expected, f"Expected {expected}, got {names}"
 
     def test_marketplace_plugins_have_required_fields(self):
         """Each marketplace plugin must have name, description, version, source."""
         data = json.loads(self.marketplace_path.read_text())
-        for plugin in data["plugins"]:
+        for plugin in data["marketplace"]["plugins"]:
             assert "name" in plugin, f"Plugin missing 'name': {plugin}"
             assert "description" in plugin, f"Plugin missing 'description': {plugin}"
             assert "version" in plugin, f"Plugin missing 'version': {plugin}"
             assert "source" in plugin, f"Plugin missing 'source': {plugin}"
+
+    def test_marketplace_plugins_have_dependencies(self):
+        """Each marketplace plugin must have a 'dependencies' field."""
+        data = json.loads(self.marketplace_path.read_text())
+        for plugin in data["marketplace"]["plugins"]:
+            assert "dependencies" in plugin, (
+                f"Plugin '{plugin['name']}' missing 'dependencies' field"
+            )
+            assert isinstance(plugin["dependencies"], list), (
+                f"Plugin '{plugin['name']}' dependencies must be a list"
+            )
+
+    def test_marketplace_plugins_have_includes(self):
+        """Each marketplace plugin must have an 'includes' array."""
+        data = json.loads(self.marketplace_path.read_text())
+        for plugin in data["marketplace"]["plugins"]:
+            assert "includes" in plugin, (
+                f"Plugin '{plugin['name']}' missing 'includes' field"
+            )
+            assert isinstance(plugin["includes"], list), (
+                f"Plugin '{plugin['name']}' includes must be a list"
+            )
+            assert len(plugin["includes"]) > 0, (
+                f"Plugin '{plugin['name']}' includes must not be empty"
+            )
+
+    def test_gaia_security_has_no_dependencies(self):
+        """gaia-security must have no dependencies (standalone)."""
+        data = json.loads(self.marketplace_path.read_text())
+        security = next(
+            p for p in data["marketplace"]["plugins"] if p["name"] == "gaia-security"
+        )
+        assert security["dependencies"] == [], (
+            f"gaia-security should have no dependencies, got {security['dependencies']}"
+        )
+
+    def test_gaia_security_includes(self):
+        """gaia-security must include hooks, modules, adapters, config."""
+        data = json.loads(self.marketplace_path.read_text())
+        security = next(
+            p for p in data["marketplace"]["plugins"] if p["name"] == "gaia-security"
+        )
+        expected = [
+            "hooks/pre_tool_use.py",
+            "hooks/post_tool_use.py",
+            "hooks/subagent_stop.py",
+            "hooks/stop_hook.py",
+            "hooks/modules/security/",
+            "hooks/modules/tools/",
+            "hooks/adapters/",
+            "config/",
+        ]
+        assert security["includes"] == expected, (
+            f"gaia-security includes mismatch: expected {expected}, got {security['includes']}"
+        )
+
+    def test_gaia_ops_has_no_dependencies(self):
+        """gaia-ops must have no dependencies (self-contained, includes security)."""
+        data = json.loads(self.marketplace_path.read_text())
+        ops = next(
+            p for p in data["marketplace"]["plugins"] if p["name"] == "gaia-ops"
+        )
+        assert ops["dependencies"] == [], (
+            f"gaia-ops should have no dependencies, got {ops['dependencies']}"
+        )
+
+    def test_gaia_ops_includes_root(self):
+        """gaia-ops must include root directory."""
+        data = json.loads(self.marketplace_path.read_text())
+        ops = next(
+            p for p in data["marketplace"]["plugins"] if p["name"] == "gaia-ops"
+        )
+        assert ops["includes"] == ["."], (
+            f"gaia-ops includes must be ['.'], got {ops['includes']}"
+        )
+
+
+class TestMarketplaceRegistrable:
+    """Test marketplace.json has all required fields for /plugin marketplace add."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.marketplace_path = PROJECT_ROOT / ".claude-plugin" / "marketplace.json"
+        raw = json.loads(self.marketplace_path.read_text())
+        self.marketplace = raw["marketplace"]
+
+    def test_marketplace_has_name(self):
+        """marketplace.json must have a 'name' field for marketplace registration."""
+        assert "name" in self.marketplace, "Missing 'name' field in marketplace wrapper"
+
+    def test_marketplace_has_owner(self):
+        """marketplace.json must have an 'owner' field for marketplace registration."""
+        assert "owner" in self.marketplace, "Missing 'owner' field in marketplace wrapper"
+
+    def test_marketplace_has_plugins_field(self):
+        """marketplace.json must have a 'plugins' field for marketplace registration."""
+        assert "plugins" in self.marketplace, "Missing 'plugins' field in marketplace wrapper"
+
+    def test_marketplace_owner_has_name(self):
+        """marketplace.json owner must have a non-empty 'name'."""
+        assert self.marketplace["owner"].get("name"), "Owner 'name' is missing or empty"
+
+    def test_marketplace_owner_has_email(self):
+        """marketplace.json owner must have a non-empty 'email'."""
+        assert self.marketplace["owner"].get("email"), "Owner 'email' is missing or empty"
 
 
 class TestSubPluginManifests:
@@ -213,8 +354,8 @@ class TestSubPluginManifests:
         self.security_path = (
             PROJECT_ROOT / "plugins" / "gaia-security" / ".claude-plugin" / "plugin.json"
         )
-        self.agents_path = (
-            PROJECT_ROOT / "plugins" / "gaia-agents" / ".claude-plugin" / "plugin.json"
+        self.ops_path = (
+            PROJECT_ROOT / "plugins" / "gaia-ops" / ".claude-plugin" / "plugin.json"
         )
 
     def test_gaia_security_plugin_json_exists(self):
@@ -231,29 +372,29 @@ class TestSubPluginManifests:
         data = json.loads(self.security_path.read_text())
         assert data["name"] == "gaia-security"
 
-    def test_gaia_agents_plugin_json_exists(self):
-        """gaia-agents/plugin.json must exist."""
-        assert self.agents_path.exists(), f"Missing: {self.agents_path}"
+    def test_gaia_ops_plugin_json_exists(self):
+        """gaia-ops/plugin.json must exist."""
+        assert self.ops_path.exists(), f"Missing: {self.ops_path}"
 
-    def test_gaia_agents_plugin_json_valid(self):
-        """gaia-agents/plugin.json must be valid JSON."""
-        data = json.loads(self.agents_path.read_text())
+    def test_gaia_ops_plugin_json_valid(self):
+        """gaia-ops/plugin.json must be valid JSON."""
+        data = json.loads(self.ops_path.read_text())
         assert isinstance(data, dict)
 
-    def test_gaia_agents_name(self):
-        """gaia-agents plugin name must be 'gaia-agents'."""
-        data = json.loads(self.agents_path.read_text())
-        assert data["name"] == "gaia-agents"
+    def test_gaia_ops_name(self):
+        """gaia-ops plugin name must be 'gaia-ops'."""
+        data = json.loads(self.ops_path.read_text())
+        assert data["name"] == "gaia-ops"
 
-    def test_gaia_agents_has_agents_path(self):
-        """gaia-agents must reference agents directory."""
-        data = json.loads(self.agents_path.read_text())
-        assert "agents" in data, "gaia-agents plugin.json missing 'agents' field"
+    def test_gaia_ops_has_agents_path(self):
+        """gaia-ops must reference agents directory."""
+        data = json.loads(self.ops_path.read_text())
+        assert "agents" in data, "gaia-ops plugin.json missing 'agents' field"
 
-    def test_gaia_agents_has_skills_path(self):
-        """gaia-agents must reference skills directory."""
-        data = json.loads(self.agents_path.read_text())
-        assert "skills" in data, "gaia-agents plugin.json missing 'skills' field"
+    def test_gaia_ops_has_skills_path(self):
+        """gaia-ops must reference skills directory."""
+        data = json.loads(self.ops_path.read_text())
+        assert "skills" in data, "gaia-ops plugin.json missing 'skills' field"
 
 
 class TestVersionSync:
@@ -267,8 +408,8 @@ class TestVersionSync:
         self.security_path = (
             PROJECT_ROOT / "plugins" / "gaia-security" / ".claude-plugin" / "plugin.json"
         )
-        self.agents_path = (
-            PROJECT_ROOT / "plugins" / "gaia-agents" / ".claude-plugin" / "plugin.json"
+        self.ops_path = (
+            PROJECT_ROOT / "plugins" / "gaia-ops" / ".claude-plugin" / "plugin.json"
         )
 
     def _get_version(self, path: Path) -> str:
@@ -282,7 +423,7 @@ class TestVersionSync:
         manifest_files = {
             "plugin.json": self.plugin_path,
             "gaia-security/plugin.json": self.security_path,
-            "gaia-agents/plugin.json": self.agents_path,
+            "gaia-ops/plugin.json": self.ops_path,
         }
 
         mismatches = []
@@ -301,7 +442,7 @@ class TestVersionSync:
         marketplace_data = json.loads(self.marketplace_path.read_text())
 
         mismatches = []
-        for plugin in marketplace_data["plugins"]:
+        for plugin in marketplace_data["marketplace"]["plugins"]:
             if plugin["version"] != expected:
                 mismatches.append(f"{plugin['name']}: {plugin['version']}")
 

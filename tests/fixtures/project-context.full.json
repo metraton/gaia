@@ -7,11 +7,28 @@
     "environment": "non-prod"
   },
   "sections": {
-    "project_details": {
-      "id": "gaia-ops-test",
-      "region": "us-central1",
-      "environment": "non-prod",
+    "project_identity": {
+      "name": "gaia-ops-test",
+      "type": "application",
       "description": "Test project for gaia-ops tools"
+    },
+    "stack": {
+      "languages": [{"name": "typescript", "primary": true}],
+      "frameworks": [{"name": "nestjs"}],
+      "build_tools": [{"name": "npm"}]
+    },
+    "git": {
+      "platform": "github",
+      "remotes": [{"name": "origin", "url": "https://github.com/org/gaia-ops-test.git"}],
+      "default_branch": "main"
+    },
+    "environment": {
+      "runtimes": [{"name": "node", "version": "20.10.0"}],
+      "os": {"platform": "linux", "architecture": "x64"}
+    },
+    "infrastructure": {
+      "cloud_providers": [{"name": "gcp", "project_id": "gaia-ops-test", "region": "us-central1"}],
+      "ci_cd": []
     },
     "application_services": [
       {

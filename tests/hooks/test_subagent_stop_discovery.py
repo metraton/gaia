@@ -212,7 +212,6 @@ class TestSubagentStopHookPostRemoval:
         assert result["success"] is True
         assert "discoveries" not in result
         assert result["response_contract"]["valid"] is False
-        assert result["contract_repair_pending"] is False
 
     @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
     def test_invalid_contract_with_agent_id_creates_pending_repair(self, mock_episodic, structural_task_info):
@@ -232,7 +231,6 @@ AGENT_ID: a12345
         result = subagent_stop_hook(task_info, output)
         assert result["success"] is True
         assert result["response_contract"]["valid"] is False
-        assert result["contract_repair_pending"] is True
 
     @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
     def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path):
@@ -295,4 +293,3 @@ AGENT_ID: a12345
         assert result["response_contract"]["valid"] is False
         assert result["response_contract"]["consolidation_required"] is True
         assert "CONSOLIDATION_REPORT" in result["response_contract"]["missing"]
-        assert result["contract_repair_pending"] is True

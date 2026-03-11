@@ -56,19 +56,32 @@ _deep_merge = _import_deep_merge()
 # ---------------------------------------------------------------------------
 LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
     "terraform-architect": [
-        "project_details",
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
         "terraform_infrastructure",
+        "infrastructure_topology",
         "operational_guidelines",
     ],
     "gitops-operator": [
-        "project_details",
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
         "gitops_configuration",
         "infrastructure_topology",
         "cluster_details",
         "operational_guidelines",
     ],
     "cloud-troubleshooter": [
-        "project_details",
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
         "infrastructure_topology",
         "terraform_infrastructure",
         "gitops_configuration",
@@ -77,10 +90,12 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
         "cluster_details",
     ],
     "devops-developer": [
-        "project_details",
-        "application_architecture",
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
         "application_services",
-        "development_standards",
         "operational_guidelines",
     ],
 }
@@ -450,3 +465,78 @@ def _load_contracts_with_dir(provider: str, config_dir: Path) -> dict:
     the same provider. Uses the same base+cloud merge strategy as load_contracts.
     """
     return _merge_base_and_cloud(provider, Path(config_dir))
+
+
+# ============================================================================
+# 6. process_context_updates (thin wrapper for subagent_stop integration)
+# ============================================================================
+
+def process_context_updates(
+    agent_output: str,
+    task_info: dict,
+    find_claude_dir_fn=None,
+) -> Optional[dict]:
+    """
+    Process CONTEXT_UPDATE blocks from agent output via context_writer.
+
+    Loads project-context.json, resolves config_dir from .claude, and calls
+    process_agent_output() to apply progressive enrichment.
+
+    This function MUST NOT break the existing hook flow -- all errors are caught
+    and logged, returning None on failure.
+
+    Args:
+        agent_output: Complete output from agent execution
+        task_info: Task metadata (agent, description, task_id)
+        find_claude_dir_fn: Callable that returns the .claude Path. Defaults to
+            modules.core.paths.find_claude_dir if not provided.
+
+    Returns:
+        Result dict from process_agent_output, or None on error
+    """
+    try:
+        if find_claude_dir_fn is None:
+            from ..core.paths import find_claude_dir
+            find_claude_dir_fn = find_claude_dir
+
+        # Find project-context.json via find_claude_dir
+        claude_dir = find_claude_dir_fn()
+        context_path = claude_dir / "project-context" / "project-context.json"
+
+        if not context_path.exists():
+            logger.debug("project-context.json not found at %s, skipping context updates", context_path)
+            return None
+
+        # Determine config_dir (inside .claude directory)
+        config_dir = claude_dir / "config"
+
+        # Build task_info dict for process_agent_output
+        agent_type = task_info.get("agent", "unknown")
+        task_info_for_writer = {
+            "agent_type": agent_type,
+            "context_path": str(context_path),
+            "config_dir": str(config_dir),
+        }
+
+        result = process_agent_output(agent_output, task_info_for_writer)
+
+        if result and result.get("updated"):
+            logger.info(
+                "Context updated by %s: sections=%s",
+                agent_type, result.get("sections_updated", []),
+            )
+        if result and result.get("rejected"):
+            logger.debug(
+                "Context sections rejected for %s: %s",
+                agent_type, result.get("rejected", []),
+            )
+
+        return result
+
+    except Exception as e:
+        logger.debug("Context update processing failed (non-fatal): %s", e)
+        return None
+
+
+# Module-level alias for shorter import name
+update = process_context_updates

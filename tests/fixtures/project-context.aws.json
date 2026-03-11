@@ -13,12 +13,27 @@
     "app_services": "./app-services"
   },
   "sections": {
-    "project_details": {
-      "account_id": "123456789012",
-      "region": "us-east-1",
-      "environment": "non-prod",
-      "cluster_name": "test-eks-cluster",
-      "cloud_provider": "aws"
+    "project_identity": {
+      "name": "test-aws-project",
+      "type": "application"
+    },
+    "stack": {
+      "languages": [],
+      "frameworks": [],
+      "build_tools": []
+    },
+    "git": {
+      "platform": "github",
+      "remotes": [],
+      "default_branch": "main"
+    },
+    "environment": {
+      "runtimes": [],
+      "os": {"platform": "linux"}
+    },
+    "infrastructure": {
+      "cloud_providers": [{"name": "aws", "account_id": "123456789012", "region": "us-east-1"}],
+      "ci_cd": []
     },
     "terraform_infrastructure": {
       "layout": {

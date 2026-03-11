@@ -50,7 +50,7 @@ class UpdateStatus(str, Enum):
 # Mapping of categories to valid target sections
 CATEGORY_TO_SECTIONS = {
     "new_resource": ["application_services", "cluster_details", "infrastructure_topology"],
-    "configuration_issue": ["project_details", "terraform_infrastructure", "gitops_configuration", "application_services"],
+    "configuration_issue": ["infrastructure", "terraform_infrastructure", "gitops_configuration", "application_services"],
     "drift_detected": ["application_services", "cluster_details", "gitops_configuration", "terraform_infrastructure"],
     "dependency_discovered": ["application_services", "infrastructure_topology"],
     "topology_change": ["infrastructure_topology", "cluster_details"],

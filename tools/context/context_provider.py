@@ -92,7 +92,14 @@ def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> 
 # ============================================================================
 
 def detect_cloud_provider(project_context: Dict[str, Any]) -> str:
-    """Detects the cloud provider from project-context.json."""
+    """Detects the cloud provider from project-context.json.
+
+    Detection priority:
+      1. metadata.cloud_provider (explicit user/scanner setting)
+      2. infrastructure.cloud_providers[0].name (v2 scanner section)
+      3. metadata.project_id presence -> gcp
+      4. Fallback -> gcp
+    """
     metadata = project_context.get("metadata", {})
     if "cloud_provider" in metadata:
         provider = metadata["cloud_provider"].lower()
@@ -102,17 +109,22 @@ def detect_cloud_provider(project_context: Dict[str, Any]) -> str:
         return provider
 
     sections = project_context.get("sections", {})
-    project_details = sections.get("project_details", {})
-    if "cloud_provider" in project_details:
-        provider = project_details["cloud_provider"].lower()
-        if provider == "multi-cloud":
-            return "gcp"
-        return provider
 
-    if "account_id" in project_details or "aws_account" in project_details:
-        return "aws"
+    # v2: read from infrastructure.cloud_providers
+    infra = sections.get("infrastructure", {})
+    if isinstance(infra, dict):
+        cloud_providers = infra.get("cloud_providers", [])
+        if isinstance(cloud_providers, list) and cloud_providers:
+            primary = cloud_providers[0]
+            if isinstance(primary, dict):
+                name = primary.get("name", "")
+                if name:
+                    provider = name.lower()
+                    if provider == "multi-cloud":
+                        return "gcp"
+                    return provider
 
-    if "project_id" in project_details or "project_id" in metadata:
+    if "project_id" in metadata:
         return "gcp"
 
     print("Could not detect cloud provider, defaulting to GCP", file=sys.stderr)

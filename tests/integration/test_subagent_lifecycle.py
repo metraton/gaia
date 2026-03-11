@@ -85,9 +85,11 @@ def test_project(tmp_path):
             "primary_region": "us-east4",
         },
         "sections": {
-            "project_details": {
-                "cluster_name": "test-cluster"
-            },
+            "project_identity": {"name": "test-lifecycle", "type": "application"},
+            "stack": {},
+            "git": {"platform": "github"},
+            "environment": {"runtimes": []},
+            "infrastructure": {"cloud_providers": [{"name": "gcp", "region": "us-east4"}]},
             # These are empty - agents should fill them via CONTEXT_UPDATE
             "cluster_details": {},
             "infrastructure_topology": {},

@@ -68,12 +68,13 @@ pytestmark = pytest.mark.skipif(
 # ============================================================================
 
 MOCK_CONTRACTS = {
-    "version": "1.0",
+    "version": "3.0",
     "provider": "gcp",
     "agents": {
         "cloud-troubleshooter": {
             "read": [
-                "project_details", "cluster_details", "infrastructure_topology",
+                "project_identity", "stack", "git", "environment", "infrastructure",
+                "cluster_details", "infrastructure_topology",
                 "terraform_infrastructure", "gitops_configuration",
                 "application_services", "monitoring_observability",
             ],
@@ -81,22 +82,24 @@ MOCK_CONTRACTS = {
         },
         "gitops-operator": {
             "read": [
-                "project_details", "gitops_configuration", "cluster_details",
+                "project_identity", "stack", "git", "environment", "infrastructure",
+                "gitops_configuration", "cluster_details",
                 "operational_guidelines",
             ],
             "write": ["gitops_configuration", "cluster_details"],
         },
         "terraform-architect": {
             "read": [
-                "project_details", "terraform_infrastructure",
+                "project_identity", "stack", "git", "environment", "infrastructure",
+                "terraform_infrastructure",
                 "infrastructure_topology", "operational_guidelines",
             ],
             "write": ["terraform_infrastructure", "infrastructure_topology"],
         },
         "devops-developer": {
             "read": [
-                "project_details", "application_services",
-                "application_architecture", "development_standards",
+                "project_identity", "stack", "git", "environment", "infrastructure",
+                "application_services",
                 "operational_guidelines",
             ],
             "write": ["application_services"],
@@ -106,19 +109,24 @@ MOCK_CONTRACTS = {
 
 LEGACY_CONTRACTS = {
     "terraform-architect": [
-        "project_details", "terraform_infrastructure", "operational_guidelines",
+        "project_identity", "stack", "git", "environment", "infrastructure",
+        "terraform_infrastructure", "infrastructure_topology", "operational_guidelines",
     ],
     "gitops-operator": [
-        "project_details", "gitops_configuration", "infrastructure_topology",
+        "project_identity", "stack", "git", "environment", "infrastructure",
+        "gitops_configuration", "infrastructure_topology",
         "cluster_details", "operational_guidelines",
     ],
     "cloud-troubleshooter": [
-        "project_details", "infrastructure_topology", "terraform_infrastructure",
+        "project_identity", "stack", "git", "environment", "infrastructure",
+        "infrastructure_topology", "terraform_infrastructure",
         "gitops_configuration", "application_services", "monitoring_observability",
+        "cluster_details",
     ],
     "devops-developer": [
-        "project_details", "application_architecture", "application_services",
-        "development_standards", "operational_guidelines",
+        "project_identity", "stack", "git", "environment", "infrastructure",
+        "application_services",
+        "operational_guidelines",
     ],
 }
 
@@ -492,7 +500,7 @@ class TestLoadContracts:
         config_dir = contracts_file.parent
         result = load_contracts("gcp", config_dir)
 
-        assert result["version"] == "1.0"
+        assert result["version"] == "3.0"
         assert result["provider"] == "gcp"
         assert "cloud-troubleshooter" in result["agents"]
         assert "write" in result["agents"]["cloud-troubleshooter"]

@@ -91,7 +91,8 @@ INITIAL_CONTEXT = {
         "project_name": "test-project",
     },
     "sections": {
-        "project_details": {"project_id": "test-project-id"},
+        "project_identity": {"name": "test-project-id", "type": "application"},
+        "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
         "cluster_details": {},
     },
 }

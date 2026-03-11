@@ -38,9 +38,9 @@ from adapters.types import (
 class TestHookEventType:
     """Test HookEventType enum completeness."""
 
-    def test_has_15_event_types(self):
-        """HookEventType must have exactly 15 members."""
-        assert len(HookEventType) == 15
+    def test_has_19_event_types(self):
+        """HookEventType must have exactly 19 members."""
+        assert len(HookEventType) == 19
 
     def test_p0_events(self):
         """P0 (currently implemented) events exist."""
@@ -71,6 +71,19 @@ class TestHookEventType:
     def test_p4_events(self):
         """P4 events exist."""
         assert HookEventType.NOTIFICATION.value == "Notification"
+
+    def test_p5_events(self):
+        """P5 (additional) events exist."""
+        assert HookEventType.TEAMMATE_IDLE.value == "TeammateIdle"
+        assert HookEventType.WORKTREE_CREATE.value == "WorktreeCreate"
+        assert HookEventType.WORKTREE_REMOVE.value == "WorktreeRemove"
+        assert HookEventType.PROMPT_SUBMIT.value == "PromptSubmit"
+
+    def test_prompt_submit_is_deprecated_alias(self):
+        """PROMPT_SUBMIT is a distinct enum value (deprecated alias concept)."""
+        # PROMPT_SUBMIT has its own value "PromptSubmit", distinct from
+        # USER_PROMPT_SUBMIT which has value "UserPromptSubmit"
+        assert HookEventType.PROMPT_SUBMIT.value != HookEventType.USER_PROMPT_SUBMIT.value
 
     @pytest.mark.parametrize("event_type", list(HookEventType))
     def test_all_values_are_strings(self, event_type):
@@ -315,7 +328,7 @@ class TestContextResult:
         result = ContextResult(
             context_injected=True,
             additional_context="Extra prompt context here.",
-            sections_provided=["project_details", "development_standards"],
+            sections_provided=["project_identity", "environment"],
         )
         assert result.context_injected is True
         assert len(result.sections_provided) == 2

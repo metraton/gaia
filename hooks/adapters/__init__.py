@@ -22,10 +22,13 @@ from .types import (
     CompletionResult,
     ContextResult,
     BootstrapResult,
+    QualityResult,
+    VerificationResult,
     HookResponse,
 )
 from .base import HookAdapter
 from .claude_code import ClaudeCodeAdapter
+from .utils import has_stdin_data, warn_if_dual_channel
 
 __all__ = [
     "HookEventType",
@@ -39,7 +42,11 @@ __all__ = [
     "CompletionResult",
     "ContextResult",
     "BootstrapResult",
+    "QualityResult",
+    "VerificationResult",
     "HookResponse",
     "HookAdapter",
     "ClaudeCodeAdapter",
+    "has_stdin_data",
+    "warn_if_dual_channel",
 ]

@@ -56,10 +56,10 @@ async function checkSymlinks() {
         valid++;
         results.push({ name, status: 'ok' });
       } catch {
-        results.push({ name, status: 'broken', fix: `rm .claude/${name} && gaia-init` });
+        results.push({ name, status: 'broken', fix: `rm .claude/${name} && gaia-scan` });
       }
     } else {
-      results.push({ name, status: 'missing', fix: 'Run gaia-init to recreate' });
+      results.push({ name, status: 'missing', fix: 'Run gaia-scan to recreate' });
     }
   }
 
@@ -67,7 +67,7 @@ async function checkSymlinks() {
     name: 'Symlinks',
     ok: valid === names.length,
     detail: `${valid}/${names.length} valid`,
-    fix: valid < names.length ? 'Run gaia-init to recreate symlinks' : null,
+    fix: valid < names.length ? 'Run gaia-scan to recreate symlinks' : null,
     sub: results
   };
 }
@@ -76,7 +76,7 @@ async function checkClaudeMd() {
   const path = join(CWD, 'CLAUDE.md');
 
   if (!existsSync(path)) {
-    return { name: 'CLAUDE.md', ok: false, detail: 'Missing', fix: 'Run gaia-init' };
+    return { name: 'CLAUDE.md', ok: false, detail: 'Missing', fix: 'Run gaia-scan' };
   }
 
   const content = await fs.readFile(path, 'utf-8');
@@ -95,7 +95,7 @@ async function checkClaudeMd() {
   }
 
   if (issues.length > 0) {
-    return { name: 'CLAUDE.md', ok: false, detail: issues.join('; '), fix: 'Run gaia-init to regenerate' };
+    return { name: 'CLAUDE.md', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan to regenerate' };
   }
 
   const lines = content.split('\n').length;
@@ -106,7 +106,7 @@ async function checkSettingsJson() {
   const path = join(CWD, '.claude', 'settings.json');
 
   if (!existsSync(path)) {
-    return { name: 'settings.json', ok: false, detail: 'Missing', fix: 'Run gaia-init' };
+    return { name: 'settings.json', ok: false, detail: 'Missing', fix: 'Run gaia-scan' };
   }
 
   try {
@@ -128,14 +128,14 @@ async function checkSettingsJson() {
     }
 
     if (issues.length > 0) {
-      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-init' };
+      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan' };
     }
 
     const hookCount = data.hooks ? Object.keys(data.hooks).length : 0;
     const permCount = data.permissions ? Object.values(data.permissions).flat().length : 0;
     return { name: 'settings.json', ok: true, detail: `${hookCount} hook types, ${permCount} rules` };
   } catch {
-    return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-init' };
+    return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-scan' };
   }
 }
 
@@ -143,7 +143,7 @@ async function checkProjectContext() {
   const path = join(CWD, '.claude', 'project-context', 'project-context.json');
 
   if (!existsSync(path)) {
-    return { name: 'project-context', ok: false, detail: 'Missing', fix: 'Run gaia-init or /speckit.init' };
+    return { name: 'project-context', ok: false, detail: 'Missing', fix: 'Run gaia-scan or /speckit.init' };
   }
 
   try {
@@ -225,7 +225,7 @@ async function checkHooks() {
   }
 
   if (issues.length > 0) {
-    return { name: 'Hooks', ok: false, detail: issues.join('; '), fix: 'Recreate symlinks: gaia-init' };
+    return { name: 'Hooks', ok: false, detail: issues.join('; '), fix: 'Recreate symlinks: gaia-scan' };
   }
 
   return { name: 'Hooks', ok: true, detail: `${valid}/${hooks.length} found` };
@@ -236,7 +236,7 @@ async function checkMemoryDirs() {
     {
       path: join(CWD, '.claude', 'project-context', 'speckit-project-specs'),
       label: 'speckit-project-specs',
-      fix: 'Run gaia-init or /speckit.init'
+      fix: 'Run gaia-scan or /speckit.init'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md'),
@@ -246,7 +246,7 @@ async function checkMemoryDirs() {
     {
       path: join(CWD, '.claude', 'project-context', 'workflow-episodic-memory'),
       label: 'workflow-episodic-memory',
-      fix: 'Run gaia-init to create workflow memory directory'
+      fix: 'Run gaia-scan to create workflow memory directory'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'episodic-memory'),

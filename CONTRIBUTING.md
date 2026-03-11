@@ -67,7 +67,7 @@ See [README.md](./README.md) for the full directory tree. Key areas for contribu
 | `tools/` | Orchestration tools (context provider, memory, validation) |
 | `config/` | Configuration files (contracts, git standards, rules) |
 | `tests/` | Test suite organized by layer |
-| `bin/` | CLI utilities (`gaia-init`, `gaia-doctor`, etc.) |
+| `bin/` | CLI utilities (`gaia-scan`, `gaia-doctor`, etc.) |
 
 ## Coding Standards
 
