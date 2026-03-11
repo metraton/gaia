@@ -10,7 +10,7 @@
       {
         "name": "gaia-security",
         "description": "Security hooks, approval system, audit logging, metrics, and anomaly detection for Claude Code",
-        "version": "4.2.0",
+        "version": "4.4.0-beta.1",
         "source": "./plugins/gaia-security",
         "category": "security",
         "tags": ["security", "hooks", "audit", "metrics", "approval"],
@@ -20,7 +20,7 @@
       {
         "name": "gaia-ops",
         "description": "Complete DevOps orchestration system: agents, scanning, context injection, episodic memory, speckit planning, and CLI tools \u2014 includes gaia-security",
-        "version": "4.2.0",
+        "version": "4.4.0-beta.1",
         "source": "./plugins/gaia-ops",
         "category": "devops",
         "tags": ["devops", "agents", "scanning", "orchestration", "speckit", "ops"],
