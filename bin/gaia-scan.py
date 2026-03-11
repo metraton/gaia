@@ -38,10 +38,21 @@ _PLUGIN_ROOT = _SCRIPT_DIR.parent
 if str(_PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_ROOT))
 
-from tools.scan import __version__ as scanner_version
 from tools.scan.config import ScanConfig, load_scan_config
 from tools.scan.orchestrator import ScanOrchestrator
 from tools.scan.registry import ScannerRegistry
+
+
+def _get_version():
+    """Read version from package.json."""
+    try:
+        pkg_path = Path(__file__).resolve().parent.parent / "package.json"
+        return json.load(open(pkg_path))["version"]
+    except Exception:
+        return "unknown"
+
+
+scanner_version = _get_version()
 
 
 def _is_context_fresh(project_root: Path, staleness_hours: int) -> bool:
@@ -492,7 +503,7 @@ def main(argv: list = None) -> int:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"gaia-scan {scanner_version}",
+        version=f"gaia-scan {_get_version()}",
     )
 
     # New setup flags (from gaia-init)
