@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for runtime agent response contract validation."""
+"""Tests for runtime agent response contract validation.
 
+All fixtures use the ``json:contract`` fenced-block format parsed by
+``contract_validator.parse_contract()``.
+"""
+
+import json
 import sys
 from pathlib import Path
 
@@ -20,75 +25,53 @@ from modules.agents.response_contract import (
 )
 
 
-VALID_OUTPUT = """\
-## Findings
+def _make_contract_output(contract_dict: dict) -> str:
+    """Wrap a dict as a json:contract fenced block inside agent prose."""
+    block = json.dumps(contract_dict, indent=2)
+    return f"## Findings\n\n```json:contract\n{block}\n```\n"
 
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- compared sibling terraform modules
-FILES_CHECKED:
-- terraform/main.tf
-COMMANDS_RUN:
-- `terraform plan -no-color` -> plan succeeded
-KEY_OUTPUTS:
-- plan adds one bucket and no destroys
-VERBATIM_OUTPUTS:
-- none
-CROSS_LAYER_IMPACTS:
-- app_ci_tooling needs TURBO cache env vars updated
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Report findings to the orchestrator
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+_BASE_EVIDENCE = {
+    "patterns_checked": ["compared sibling terraform modules"],
+    "files_checked": ["terraform/main.tf"],
+    "commands_run": ["`terraform plan -no-color` -> plan succeeded"],
+    "key_outputs": ["plan adds one bucket and no destroys"],
+    "verbatim_outputs": ["none"],
+    "cross_layer_impacts": ["app_ci_tooling needs TURBO cache env vars updated"],
+    "open_gaps": ["none"],
+}
 
-VALID_MULTI_SURFACE_OUTPUT = """\
-## Findings
+_BASE_STATUS = {
+    "plan_status": "COMPLETE",
+    "pending_steps": "[]",
+    "next_action": "Report findings to the orchestrator",
+    "agent_id": "a12345",
+}
 
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- compared sibling terraform modules
-FILES_CHECKED:
-- terraform/main.tf
-COMMANDS_RUN:
-- `terraform plan -no-color` -> plan succeeded
-KEY_OUTPUTS:
-- plan adds one bucket and no destroys
-VERBATIM_OUTPUTS:
-- none
-CROSS_LAYER_IMPACTS:
-- app_ci_tooling needs TURBO cache env vars updated
-OPEN_GAPS:
-- secret injection path still needs runtime validation
-<!-- /EVIDENCE_REPORT -->
+_VALID_CONTRACT = {
+    "agent_status": _BASE_STATUS,
+    "evidence_report": _BASE_EVIDENCE,
+}
 
-<!-- CONSOLIDATION_REPORT -->
-OWNERSHIP_ASSESSMENT: cross_surface_dependency
-CONFIRMED_FINDINGS:
-- terraform module defines the bucket correctly
-SUSPECTED_FINDINGS:
-- runtime token source may be misconfigured
-CONFLICTS:
-- none
-OPEN_GAPS:
-- cloud-troubleshooter should validate the live secret mapping
-NEXT_BEST_AGENT:
-- cloud-troubleshooter
-<!-- /CONSOLIDATION_REPORT -->
+VALID_OUTPUT = _make_contract_output(_VALID_CONTRACT)
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Report findings to the orchestrator
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+_VALID_MULTI_SURFACE_CONTRACT = {
+    "agent_status": _BASE_STATUS,
+    "evidence_report": {
+        **_BASE_EVIDENCE,
+        "open_gaps": ["secret injection path still needs runtime validation"],
+    },
+    "consolidation_report": {
+        "ownership_assessment": "cross_surface_dependency",
+        "confirmed_findings": ["terraform module defines the bucket correctly"],
+        "suspected_findings": ["runtime token source may be misconfigured"],
+        "conflicts": ["none"],
+        "open_gaps": ["cloud-troubleshooter should validate the live secret mapping"],
+        "next_best_agent": ["cloud-troubleshooter"],
+    },
+}
+
+VALID_MULTI_SURFACE_OUTPUT = _make_contract_output(_VALID_MULTI_SURFACE_CONTRACT)
 
 
 class TestParseResponseBlocks:
@@ -115,16 +98,10 @@ class TestValidateResponseContract:
         assert result.invalid == []
 
     def test_missing_evidence_report_requires_repair(self):
-        output = """\
-## Findings
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Done
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+        contract = {
+            "agent_status": _BASE_STATUS,
+        }
+        output = _make_contract_output(contract)
         result = validate_response_contract(output, task_agent_id="a12345")
         assert result.valid is False
         assert result.recommended_action == "resume_same_agent_contract_repair"
@@ -132,43 +109,32 @@ AGENT_ID: a12345
         assert "PATTERNS_CHECKED" in result.missing
 
     def test_missing_verbatim_outputs_requires_repair(self):
-        output = """\
-## Findings
-
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- compared sibling terraform modules
-FILES_CHECKED:
-- terraform/main.tf
-COMMANDS_RUN:
-- `terraform plan -no-color` -> plan succeeded
-KEY_OUTPUTS:
-- plan adds one bucket and no destroys
-CROSS_LAYER_IMPACTS:
-- app_ci_tooling needs TURBO cache env vars updated
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Report findings to the orchestrator
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+        evidence_no_verbatim = {k: v for k, v in _BASE_EVIDENCE.items() if k != "verbatim_outputs"}
+        contract = {
+            "agent_status": _BASE_STATUS,
+            "evidence_report": evidence_no_verbatim,
+        }
+        output = _make_contract_output(contract)
         result = validate_response_contract(output, task_agent_id="a12345")
         assert result.valid is False
         assert "VERBATIM_OUTPUTS" in result.missing
 
     def test_invalid_plan_status_is_rejected(self):
-        output = VALID_OUTPUT.replace("PLAN_STATUS: COMPLETE", "PLAN_STATUS: DONE")
+        contract = {
+            "agent_status": {**_BASE_STATUS, "plan_status": "DONE"},
+            "evidence_report": _BASE_EVIDENCE,
+        }
+        output = _make_contract_output(contract)
         result = validate_response_contract(output, task_agent_id="a12345")
         assert result.valid is False
         assert "PLAN_STATUS:DONE" in result.invalid
 
     def test_missing_agent_id_without_task_id_escalates(self):
-        output = VALID_OUTPUT.replace("AGENT_ID: a12345\n", "")
+        contract = {
+            "agent_status": {k: v for k, v in _BASE_STATUS.items() if k != "agent_id"},
+            "evidence_report": _BASE_EVIDENCE,
+        }
+        output = _make_contract_output(contract)
         result = validate_response_contract(output, task_agent_id="")
         assert result.valid is False
         assert result.recommended_action == "escalate_contract_repair"
@@ -193,43 +159,25 @@ AGENT_ID: a12345
         assert result.consolidation_required is True
         assert result.consolidation_report.ownership_assessment == "cross_surface_dependency"
 
-VALID_OUTPUT_WITH_FENCED_VERBATIM = """\
-## Findings
 
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- compared sibling terraform modules
-FILES_CHECKED:
-- terraform/main.tf
-COMMANDS_RUN:
-- `terraform plan -no-color` -> plan succeeded
-- `kubectl get pods -n staging` -> 3 pods found
-KEY_OUTPUTS:
-- plan adds one bucket and no destroys
-VERBATIM_OUTPUTS:
-- `kubectl get pods -n staging`:
-  ```
-  NAME            READY   STATUS
-  api-gateway     0/1     OOMKilled
-  redis-cache     1/1     Running
-  ```
-- `terraform plan -no-color`:
-  ```
-  Plan: 1 to add, 0 to change, 0 to destroy.
-  ```
-CROSS_LAYER_IMPACTS:
-- app_ci_tooling needs TURBO cache env vars updated
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
+_VERBATIM_EVIDENCE = {
+    **_BASE_EVIDENCE,
+    "commands_run": [
+        "`terraform plan -no-color` -> plan succeeded",
+        "`kubectl get pods -n staging` -> 3 pods found",
+    ],
+    "verbatim_outputs": [
+        "`kubectl get pods -n staging`:\n  NAME            READY   STATUS\n  api-gateway     0/1     OOMKilled\n  redis-cache     1/1     Running",
+        "`terraform plan -no-color`:\n  Plan: 1 to add, 0 to change, 0 to destroy.",
+    ],
+}
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Report findings to the orchestrator
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+_VERBATIM_CONTRACT = {
+    "agent_status": _BASE_STATUS,
+    "evidence_report": _VERBATIM_EVIDENCE,
+}
+
+VALID_OUTPUT_WITH_FENCED_VERBATIM = _make_contract_output(_VERBATIM_CONTRACT)
 
 
 class TestVerbatimOutputsWithFencedBlocks:
@@ -241,8 +189,8 @@ class TestVerbatimOutputsWithFencedBlocks:
         )
         assert result.valid is True
         verbatim = result.evidence_report.fields.get("VERBATIM_OUTPUTS", [])
-        assert len(verbatim) == 1, "VERBATIM_OUTPUTS should have one raw text entry"
-        raw_text = verbatim[0]
+        assert len(verbatim) >= 1, "VERBATIM_OUTPUTS should have entries"
+        raw_text = " ".join(verbatim)
         assert "OOMKilled" in raw_text
         assert "redis-cache" in raw_text
         assert "Plan: 1 to add" in raw_text

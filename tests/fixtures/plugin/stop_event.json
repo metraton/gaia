@@ -1,6 +1,0 @@
-{
-  "hook_event_name": "Stop",
-  "session_id": "e2e-test-stop-001",
-  "stop_reason": "user_requested",
-  "last_assistant_message": "Task complete. All tests passed."
-}

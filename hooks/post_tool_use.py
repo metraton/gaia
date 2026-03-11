@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from modules.core.paths import get_logs_dir
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.utils import has_stdin_data, warn_if_dual_channel
+from modules.core.stdin import has_stdin_data
+from adapters.utils import warn_if_dual_channel
 from modules.core.state import get_hook_state, clear_hook_state
 from modules.audit.logger import log_execution
 from modules.audit.event_detector import detect_critical_event

@@ -29,6 +29,7 @@ from ..security.mutative_verbs import (
 )
 from ..security.approval_grants import (
     check_approval_grant,
+    confirm_grant,
     generate_nonce,
     write_pending_approval,
 )
@@ -196,6 +197,26 @@ class BashValidator:
             # Check for an active approval grant before blocking.
             grant = check_approval_grant(command)
             if grant is not None:
+                if not grant.confirmed:
+                    # First execution after nonce activation: return "ask"
+                    # to trigger Claude Code's native permission dialog
+                    # (double-barrier security). Mark the grant as confirmed
+                    # so subsequent executions within TTL auto-allow.
+                    confirm_grant(command)
+                    logger.info(
+                        "T3 command requires native confirmation: %s (scope='%s')",
+                        command[:80], grant.approved_scope,
+                    )
+                    hook_ask = build_hook_permission_response(
+                        "ask",
+                        "T3 operation approved. Confirm execution.",
+                    )
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason="T3 approved by user, confirming execution via native dialog",
+                        block_response=hook_ask,
+                    )
                 logger.info(
                     "T3 command allowed via approval grant: %s (scope='%s')",
                     command[:80], grant.approved_scope,

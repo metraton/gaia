@@ -1,5 +1,0 @@
-{
-  "hook_event_name": "UserPromptSubmit",
-  "session_id": "e2e-test-prompt-001",
-  "prompt": "Investigate the failing deployment in staging"
-}

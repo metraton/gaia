@@ -1,7 +1,8 @@
 ---
 name: output-format
 description: Use when reporting findings, errors, or results to the user — defines report structure, status icons, and finding classification
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Output Format Standards

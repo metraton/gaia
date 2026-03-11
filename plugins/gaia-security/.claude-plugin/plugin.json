@@ -1,6 +1,6 @@
 {
   "name": "gaia-security",
-  "version": "4.1.1",
+  "version": "4.2.0",
   "description": "Security hooks, approval system, audit logging, metrics, and anomaly detection for Claude Code",
   "keywords": ["security", "hooks", "audit", "metrics", "approval"]
 }

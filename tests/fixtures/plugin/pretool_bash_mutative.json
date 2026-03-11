@@ -1,8 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input": {
-    "command": "git commit -m 'feat: add login'"
-  },
-  "hook_event_name": "PreToolUse",
-  "session_id": "e2e-test-mutative-001"
-}

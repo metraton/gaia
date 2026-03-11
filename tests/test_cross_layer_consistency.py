@@ -401,13 +401,21 @@ class TestSkillsCrossReferences:
         )
 
     def test_claude_template_references_latest_blocked_command_nonce(self):
-        """CLAUDE template must instruct the orchestrator to relay the canonical nonce."""
-        content = (TEMPLATES_DIR / "CLAUDE.template.md").read_text().lower()
-        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "CLAUDE.template.md must mention the canonical nonce token"
+        """Canonical nonce token must be documented in the template or orchestrator-approval skill.
+
+        The simplified CLAUDE.md delegates approval protocol details to the
+        orchestrator-approval skill. The nonce contract must exist in the system.
+        """
+        template_content = (TEMPLATES_DIR / "CLAUDE.template.md").read_text().lower()
+        approval_skill_path = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
+        combined = template_content
+        if approval_skill_path.exists():
+            combined += "\n" + approval_skill_path.read_text().lower()
+        assert CANONICAL_APPROVAL_TOKEN.lower() in combined, (
+            "System must mention the canonical nonce token (template or orchestrator-approval skill)"
         )
-        assert LATEST_BLOCKED_COMMAND_PHRASE in content, (
-            "CLAUDE.template.md must state that the token comes from the latest blocked command"
+        assert LATEST_BLOCKED_COMMAND_PHRASE in combined, (
+            "System must state that the token comes from the latest blocked command"
         )
 
     def test_security_tiers_t3_references_agent_protocol(self):

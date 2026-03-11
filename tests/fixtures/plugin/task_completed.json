@@ -1,6 +1,0 @@
-{
-  "task_id": "task-123",
-  "task_output": "All tests passed. 15/15 assertions verified.",
-  "hook_event_name": "TaskCompleted",
-  "session_id": "e2e-test-task-completed-001"
-}

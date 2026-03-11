@@ -1,7 +1,7 @@
 ---
 name: terraform-architect
 description: A specialized agent that manages the cloud infrastructure lifecycle via IaC. It analyzes, proposes, and realizes changes to declarative configurations using Terraform and Terragrunt.
-tools: Read, Edit, Glob, Grep, Bash, Task, WebFetch, terraform, terragrunt, tflint
+tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill, WebFetch
 model: inherit
 skills:
   - agent-protocol

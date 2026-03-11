@@ -113,7 +113,7 @@ hooks/
 
 ---
 
-**Version:** 4.1.1
+**Version:** 4.2.0
 **Last updated:** 2026-03-11
 **Total hooks:** 7 hook scripts (3 primary + 4 event handlers)
 **Maintained by:** Gaia (meta-agent)

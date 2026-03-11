@@ -1,7 +1,7 @@
 ---
 name: speckit-planner
 description: Specialized agent for implementation planning and task generation using the Spec-Kit framework. Receives a completed spec and produces plan + tasks.
-tools: Read, Edit, Glob, Grep, Bash, Task, AskUserQuestion
+tools: Read, Edit, Write, Glob, Grep, Task, Skill, AskUserQuestion
 model: inherit
 skills:
   - agent-protocol

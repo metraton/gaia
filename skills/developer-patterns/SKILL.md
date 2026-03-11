@@ -1,7 +1,8 @@
 ---
 name: developer-patterns
 description: Use when creating, modifying, or reviewing application code in Node.js/TypeScript or Python
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Developer Patterns

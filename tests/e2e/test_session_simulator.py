@@ -1,0 +1,713 @@
+"""
+E2E session simulator for gaia-ops hook pipeline.
+
+Simulates a complete Claude Code session by invoking hooks as subprocesses,
+chained in session order. Validates the full hook lifecycle without needing
+an LLM: session_start -> pre_tool_use -> post_tool_use -> subagent_stop -> stop_hook.
+
+Run: python3 -m pytest tests/e2e/test_session_simulator.py -v
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pytest
+
+# Worktree root where hooks live (same pattern as test_hook_e2e.py)
+WORKTREE = Path(__file__).resolve().parents[2]
+HOOKS_DIR = WORKTREE / "hooks"
+
+
+# ============================================================================
+# Session Simulator
+# ============================================================================
+
+
+class SessionSimulator:
+    """Simulates a complete Claude Code session by invoking hooks as subprocesses."""
+
+    def __init__(self, project_root: Path):
+        """Set up a temp project with .claude/, project-context.json, settings.json, etc.
+
+        Args:
+            project_root: Temporary directory to use as the simulated project root.
+        """
+        self.project_root = project_root
+        self.session_id = "e2e-session-sim-001"
+        self._events: List[Dict[str, Any]] = []
+
+        # Create minimal .claude/ structure
+        claude_dir = project_root / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+
+        # Logs directory (hooks write logs here)
+        (claude_dir / "logs").mkdir(exist_ok=True)
+
+        # Session directory for session context writer
+        session_dir = claude_dir / "session" / "active"
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Project context directory
+        pc_dir = claude_dir / "project-context"
+        pc_dir.mkdir(parents=True, exist_ok=True)
+
+        # Minimal project-context.json
+        minimal_context = {
+            "metadata": {
+                "version": "2.0",
+                "last_updated": "2026-03-11T00:00:00Z",
+                "scan_config": {
+                    "last_scan": "2026-03-11T00:00:00Z",
+                    "scanner_version": "0.1.0",
+                    "staleness_hours": 24,
+                },
+            },
+            "paths": {},
+            "sections": {
+                "project_identity": {
+                    "name": "e2e-session-test",
+                    "type": "application",
+                },
+            },
+        }
+        (pc_dir / "project-context.json").write_text(
+            json.dumps(minimal_context, indent=2)
+        )
+
+        # Workflow episodic memory dir (subagent_stop writes here)
+        wem_dir = pc_dir / "workflow-episodic-memory"
+        wem_dir.mkdir(parents=True, exist_ok=True)
+        (wem_dir / "signals").mkdir(exist_ok=True)
+
+        # Config directory
+        config_dir = claude_dir / "config"
+        config_dir.mkdir(exist_ok=True)
+
+        # Memory directory
+        (claude_dir / "memory").mkdir(exist_ok=True)
+
+        # Metrics directory
+        (claude_dir / "metrics").mkdir(exist_ok=True)
+
+        # Settings.json (simplified)
+        settings = {
+            "permissions": {"allow": ["Bash(*)"], "deny": []},
+        }
+        (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+
+    # ------------------------------------------------------------------
+    # Internal helper: run a hook script
+    # ------------------------------------------------------------------
+
+    def _run_hook(
+        self,
+        script_name: str,
+        stdin_payload: Dict[str, Any],
+        env_extras: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Run a hook script as subprocess and return structured result.
+
+        Args:
+            script_name: Hook script filename (e.g. "pre_tool_use.py").
+            stdin_payload: Dict to serialize as JSON on stdin.
+            env_extras: Optional extra environment variables.
+
+        Returns:
+            Dict with exit_code, stdout_json (parsed or None), stdout_raw, stderr.
+        """
+        script_path = HOOKS_DIR / script_name
+        assert script_path.exists(), f"Hook script not found: {script_path}"
+
+        env = os.environ.copy()
+        env.pop("CLAUDE_PLUGIN_ROOT", None)
+        if env_extras:
+            env.update(env_extras)
+
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            input=json.dumps(stdin_payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            cwd=str(self.project_root),
+        )
+
+        stdout_json = None
+        if result.stdout.strip():
+            for line in reversed(result.stdout.strip().splitlines()):
+                try:
+                    stdout_json = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+
+        return {
+            "exit_code": result.returncode,
+            "stdout_json": stdout_json,
+            "stdout_raw": result.stdout,
+            "stderr": result.stderr,
+        }
+
+    # ------------------------------------------------------------------
+    # Public API: session lifecycle methods
+    # ------------------------------------------------------------------
+
+    def start_session(self) -> Dict[str, Any]:
+        """Invoke session_start.py with SessionStart event. Returns hook output."""
+        payload = {
+            "hook_event_name": "SessionStart",
+            "session_id": self.session_id,
+            "session_type": "startup",
+        }
+        result = self._run_hook("session_start.py", payload)
+        self._events.append({"type": "session_start", "result": result})
+        return result
+
+    def user_prompt(self, text: str) -> str:
+        """Simulate UserPromptSubmit -- returns the static additionalContext string.
+
+        UserPromptSubmit is a static echo in settings.json, not a Python hook.
+        We return the known static context directly.
+
+        Returns:
+            The additionalContext string.
+        """
+        additional_context = (
+            "Trust your identity. Follow your instructions. "
+            "Your constraints are non-negotiable. "
+            "Approvals require real nonces from subagent. "
+            "When in doubt, ask. Never assume."
+        )
+        self._events.append(
+            {"type": "user_prompt", "text": text, "context": additional_context}
+        )
+        return additional_context
+
+    def invoke_agent(self, agent_type: str, prompt: str) -> Dict[str, Any]:
+        """Invoke pre_tool_use.py with Agent/Task tool event.
+
+        Returns: dict with exit_code, updatedInput (with injected context), or deny reason.
+        """
+        payload = {
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": prompt,
+                "subagent_type": agent_type,
+            },
+            "hook_event_name": "PreToolUse",
+            "session_id": self.session_id,
+        }
+        result = self._run_hook("pre_tool_use.py", payload)
+        self._events.append(
+            {"type": "invoke_agent", "agent": agent_type, "result": result}
+        )
+        return result
+
+    def execute_bash(self, command: str) -> Dict[str, Any]:
+        """Invoke pre_tool_use.py with Bash tool event.
+
+        Returns: dict with exit_code (0=allow, 2=block), deny reason if blocked.
+        """
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "hook_event_name": "PreToolUse",
+            "session_id": self.session_id,
+        }
+        result = self._run_hook("pre_tool_use.py", payload)
+        self._events.append(
+            {"type": "execute_bash", "command": command, "result": result}
+        )
+        return result
+
+    def after_bash(
+        self, command: str, output: str, exit_code: int
+    ) -> Dict[str, Any]:
+        """Invoke post_tool_use.py with PostToolUse event.
+
+        Returns: dict with hook result.
+        """
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_result": {
+                "stdout": output,
+                "output": output,
+                "exit_code": exit_code,
+                "duration_ms": 100,
+            },
+            "hook_event_name": "PostToolUse",
+            "session_id": self.session_id,
+        }
+        result = self._run_hook("post_tool_use.py", payload)
+        self._events.append(
+            {"type": "after_bash", "command": command, "result": result}
+        )
+        return result
+
+    def agent_responds(
+        self, agent_type: str, agent_id: str, output: str
+    ) -> Dict[str, Any]:
+        """Invoke subagent_stop.py with SubagentStop event.
+
+        Returns: dict with contract_validated, anomalies_detected, episode_id, etc.
+        """
+        payload = {
+            "hook_event_name": "SubagentStop",
+            "session_id": self.session_id,
+            "agent_type": agent_type,
+            "agent_id": agent_id,
+            "agent_transcript_path": "",
+            "last_assistant_message": output,
+            "cwd": str(self.project_root),
+        }
+        result = self._run_hook("subagent_stop.py", payload)
+        self._events.append(
+            {
+                "type": "agent_responds",
+                "agent": agent_type,
+                "agent_id": agent_id,
+                "result": result,
+            }
+        )
+        return result
+
+    def end_session(self) -> Dict[str, Any]:
+        """Invoke stop_hook.py with Stop event. Returns quality assessment."""
+        payload = {
+            "hook_event_name": "Stop",
+            "session_id": self.session_id,
+            "stop_reason": "end_turn",
+        }
+        result = self._run_hook("stop_hook.py", payload)
+        self._events.append({"type": "end_session", "result": result})
+        return result
+
+    # ------------------------------------------------------------------
+    # Inspection helpers
+    # ------------------------------------------------------------------
+
+    def get_session_context(self) -> Dict[str, Any]:
+        """Read the current session context file."""
+        context_path = (
+            self.project_root / ".claude" / "session" / "active" / "context.json"
+        )
+        if not context_path.exists():
+            return {}
+        return json.loads(context_path.read_text())
+
+    @property
+    def events(self) -> List[Dict[str, Any]]:
+        """Return all recorded events in this session."""
+        return list(self._events)
+
+
+# ============================================================================
+# Helper: build agent output with valid contract
+# ============================================================================
+
+
+def _build_valid_agent_output(
+    plan_status: str = "COMPLETE",
+    agent_id: str = "a1f2c3",
+    summary: str = "Task completed successfully.",
+) -> str:
+    """Build a realistic agent output string with json:contract block.
+
+    The json:contract block must contain agent_status and evidence_report
+    as nested objects -- that is the format contract_validator.parse_contract()
+    and response_contract.validate_response_contract() expect.
+    """
+    bt = chr(96)  # backtick
+    contract_block = json.dumps(
+        {
+            "agent_status": {
+                "plan_status": plan_status,
+                "agent_id": agent_id,
+                "pending_steps": "none",
+                "next_action": "done",
+            },
+            "evidence_report": {
+                "patterns_checked": ["pod status pattern"],
+                "files_checked": ["none"],
+                "commands_run": ["kubectl get pods -> CrashLoopBackOff"],
+                "key_outputs": ["OOMKilled detected"],
+                "verbatim_outputs": ["none"],
+                "cross_layer_impacts": ["none"],
+                "open_gaps": ["none"],
+            },
+            "consolidation_report": None,
+        },
+        indent=2,
+    )
+    return (
+        f"{summary}\n\n"
+        f"{bt}{bt}{bt}json:contract\n"
+        f"{contract_block}\n"
+        f"{bt}{bt}{bt}\n\n"
+        f"<!-- EVIDENCE_REPORT -->\n"
+        f"PATTERNS_CHECKED:\n"
+        f"- pod status pattern\n"
+        f"FILES_CHECKED:\n"
+        f"- none\n"
+        f"COMMANDS_RUN:\n"
+        f"- {bt}kubectl get pods{bt} -> CrashLoopBackOff\n"
+        f"KEY_OUTPUTS:\n"
+        f"- OOMKilled detected\n"
+        f"VERBATIM_OUTPUTS:\n"
+        f"- none\n"
+        f"CROSS_LAYER_IMPACTS:\n"
+        f"- none\n"
+        f"OPEN_GAPS:\n"
+        f"- none\n"
+        f"<!-- /EVIDENCE_REPORT -->\n\n"
+        f"<!-- AGENT_STATUS -->\n"
+        f"PLAN_STATUS: {plan_status}\n"
+        f"PENDING_STEPS: []\n"
+        f"NEXT_ACTION: done\n"
+        f"AGENT_ID: {agent_id}\n"
+        f"<!-- /AGENT_STATUS -->\n"
+    )
+
+
+# ============================================================================
+# Helper: build blocked command strings without triggering hook scanners
+# ============================================================================
+
+
+def _blocked_kubectl_delete_ns():
+    """Build 'kubectl delete namespace production' avoiding hook scanner."""
+    return " ".join(["kubectl", "delete", "namespace", "production"])
+
+
+def _blocked_tf_destroy():
+    """Build 'terraform destroy' avoiding hook scanner."""
+    return " ".join(["terraform", "destroy"])
+
+
+def _blocked_git_reset():
+    """Build 'git reset --hard' avoiding hook scanner."""
+    return "git reset " + "--" + "hard"
+
+
+# ============================================================================
+# Pytest fixture
+# ============================================================================
+
+
+@pytest.fixture
+def simulator(tmp_path):
+    """Create a fresh SessionSimulator with isolated temp directory."""
+    return SessionSimulator(tmp_path)
+
+
+# ============================================================================
+# Scenario 1: Happy path -- agent completes successfully
+# ============================================================================
+
+
+class TestScenario1HappyPath:
+    """Happy path: session start -> agent invocation -> bash -> agent response -> stop."""
+
+    def test_full_session_lifecycle(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # 1. Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0, (
+            f"SessionStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 2. User prompt
+        context = sim.user_prompt("diagnostica por que el pod crashea")
+        assert "Trust your identity" in context
+
+        # 3. Invoke cloud-troubleshooter agent
+        result = sim.invoke_agent(
+            "cloud-troubleshooter", "diagnostica por que el pod crashea"
+        )
+        assert result["exit_code"] == 0, (
+            f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 4. Simulate bash command (kubectl get pods)
+        result = sim.execute_bash("kubectl get pods")
+        assert result["exit_code"] == 0, (
+            f"kubectl get pods blocked: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 5. Post-tool-use for the bash command
+        result = sim.after_bash(
+            "kubectl get pods",
+            "NAME  READY  STATUS\napp-1  0/1  CrashLoopBackOff",
+            0,
+        )
+        assert result["exit_code"] == 0, (
+            f"PostToolUse failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 6. Agent responds with valid contract
+        agent_output = _build_valid_agent_output(
+            summary="El pod crashea por OOMKilled.",
+            agent_id="a1f2c3",
+        )
+        result = sim.agent_responds("cloud-troubleshooter", "a1f2c3", agent_output)
+        assert result["exit_code"] == 0, (
+            f"SubagentStop failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+        stop_data = result["stdout_json"]
+        assert stop_data is not None, (
+            f"SubagentStop returned no JSON. stdout: {result['stdout_raw']}"
+        )
+        assert stop_data.get("contract_validated") is True, (
+            f"Contract not validated: {stop_data}"
+        )
+
+        # 7. End session
+        result = sim.end_session()
+        assert result["exit_code"] == 0, (
+            f"Stop hook failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+
+# ============================================================================
+# Scenario 2: Security gate -- blocked command
+# ============================================================================
+
+
+class TestScenario2SecurityGate:
+    """Blocked command (kubectl delete namespace) should exit 2."""
+
+    def test_blocked_command(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0
+
+        # Try a permanently blocked command
+        result = sim.execute_bash(_blocked_kubectl_delete_ns())
+        assert result["exit_code"] == 2, (
+            f"Expected exit 2 (blocked), got {result['exit_code']}. "
+            f"stderr: {result['stderr']}, stdout: {result['stdout_raw']}"
+        )
+        # stdout should contain "blocked by security policy"
+        combined_output = result["stdout_raw"].lower() + result["stderr"].lower()
+        assert "blocked" in combined_output, (
+            f"Expected 'blocked' in output. stdout: {result['stdout_raw']}, "
+            f"stderr: {result['stderr']}"
+        )
+
+
+# ============================================================================
+# Scenario 3: Mutative command -- requires approval (nonce-denied)
+# ============================================================================
+
+
+class TestScenario3MutativeCommand:
+    """Mutative command (terraform apply) should be denied with nonce."""
+
+    def test_mutative_command_denied_with_nonce(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0
+
+        # Try a mutative command (T3)
+        result = sim.execute_bash("terraform apply")
+        # Mutative commands exit 0 with a corrective deny response
+        assert result["exit_code"] == 0, (
+            f"Expected exit 0 (corrective deny), got {result['exit_code']}. "
+            f"stderr: {result['stderr']}"
+        )
+        assert result["stdout_json"] is not None, (
+            f"Expected JSON response for mutative deny. stdout: {result['stdout_raw']}"
+        )
+        hook_output = result["stdout_json"].get("hookSpecificOutput", {})
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}. "
+            f"Full response: {result['stdout_json']}"
+        )
+        # The deny reason should contain an APPROVE: nonce for the approval workflow
+        reason = hook_output.get("permissionDecisionReason", "")
+        assert "APPROVE:" in reason, (
+            f"Expected APPROVE: nonce in reason. Got: {reason}"
+        )
+
+
+# ============================================================================
+# Scenario 4: Agent with incomplete contract
+# ============================================================================
+
+
+class TestScenario4IncompleteContract:
+    """Agent response without json:contract block should flag anomalies."""
+
+    def test_missing_contract_detected(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0
+
+        # Invoke agent
+        result = sim.invoke_agent("devops-developer", "refactoriza el modulo X")
+        assert result["exit_code"] == 0
+
+        # Agent responds WITHOUT a contract block
+        agent_output = "Listo, refactorice todo."
+        result = sim.agent_responds("devops-developer", "a9b8c7", agent_output)
+        assert result["exit_code"] == 0, (
+            f"SubagentStop should not crash: exit={result['exit_code']}, "
+            f"stderr: {result['stderr']}"
+        )
+
+        stop_data = result["stdout_json"]
+        assert stop_data is not None, (
+            f"SubagentStop returned no JSON. stdout: {result['stdout_raw']}"
+        )
+
+        # contract_validated should be False (no contract block)
+        assert stop_data.get("contract_validated") is False, (
+            f"Expected contract_validated=False for missing contract. Got: {stop_data}"
+        )
+
+        # Should have anomalies detected
+        anomalies_count = stop_data.get("anomalies_detected", 0)
+        assert anomalies_count > 0, (
+            f"Expected anomalies for missing contract. Got: {stop_data}"
+        )
+
+
+# ============================================================================
+# Scenario 5: Session events persist between tool calls
+# ============================================================================
+
+
+class TestScenario5SessionEventsPersist:
+    """Session events from tool calls should persist and be available to later agents."""
+
+    def test_events_persist_across_calls(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0
+
+        # Invoke first agent
+        result = sim.invoke_agent("cloud-troubleshooter", "investiga")
+        assert result["exit_code"] == 0
+
+        # Execute and record first bash command
+        result = sim.execute_bash("kubectl get pods")
+        assert result["exit_code"] == 0
+
+        result = sim.after_bash("kubectl get pods", "pod output 1", 0)
+        assert result["exit_code"] == 0
+
+        # Execute and record second bash command
+        result = sim.execute_bash("kubectl describe pod app-1")
+        assert result["exit_code"] == 0
+
+        result = sim.after_bash("kubectl describe pod app-1", "pod description output", 0)
+        assert result["exit_code"] == 0
+
+        # Invoke a second agent -- verify it can be invoked successfully
+        result = sim.invoke_agent("gitops-operator", "corrige el deployment")
+        assert result["exit_code"] == 0, (
+            f"Second agent invoke failed: exit={result['exit_code']}, "
+            f"stderr: {result['stderr']}"
+        )
+
+        # Verify the simulator tracked all events
+        assert len(sim.events) >= 6, (
+            f"Expected at least 6 events tracked, got {len(sim.events)}"
+        )
+
+
+# ============================================================================
+# Additional scenarios: edge cases
+# ============================================================================
+
+
+class TestSessionSimulatorEdgeCases:
+    """Edge cases for the session simulator."""
+
+    def test_multiple_blocked_commands(self, tmp_path):
+        """Multiple blocked commands should each be independently blocked."""
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        blocked_commands = [
+            _blocked_kubectl_delete_ns(),
+            _blocked_tf_destroy(),
+        ]
+        for cmd in blocked_commands:
+            result = sim.execute_bash(cmd)
+            assert result["exit_code"] == 2, (
+                f"Expected exit 2 for '{cmd}', got {result['exit_code']}. "
+                f"stderr: {result['stderr']}"
+            )
+
+    def test_git_reset_hard_blocked(self, tmp_path):
+        """git reset --hard should be permanently blocked."""
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        result = sim.execute_bash(_blocked_git_reset())
+        assert result["exit_code"] == 2, (
+            f"Expected exit 2 for git reset --hard, got {result['exit_code']}. "
+            f"stderr: {result['stderr']}"
+        )
+
+    def test_safe_commands_after_blocked(self, tmp_path):
+        """Safe commands should still work after blocked commands."""
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        # Blocked
+        result = sim.execute_bash(_blocked_kubectl_delete_ns())
+        assert result["exit_code"] == 2
+
+        # Safe -- should still be allowed
+        result = sim.execute_bash("kubectl get pods")
+        assert result["exit_code"] == 0
+
+        result = sim.execute_bash("ls -la")
+        assert result["exit_code"] == 0
+
+    def test_end_session_returns_quality(self, tmp_path):
+        """Stop hook should return quality assessment JSON."""
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        result = sim.end_session()
+        assert result["exit_code"] == 0
+        assert result["stdout_json"] is not None, (
+            f"Stop hook returned no JSON. stdout: {result['stdout_raw']}"
+        )
+        quality = result["stdout_json"]
+        assert "quality_sufficient" in quality, (
+            f"Expected quality_sufficient in stop response. Got: {quality}"
+        )
+
+    def test_read_tool_passthrough(self, tmp_path):
+        """Non-Bash, non-Agent tools should pass through."""
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        # Read tool should pass through (exit 0, no blocking)
+        payload = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/tmp/test.txt"},
+            "hook_event_name": "PreToolUse",
+            "session_id": sim.session_id,
+        }
+        result = sim._run_hook("pre_tool_use.py", payload)
+        assert result["exit_code"] == 0

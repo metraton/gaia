@@ -1,8 +1,9 @@
 ---
 name: investigation
 description: Use when starting an investigation, analyzing existing code or infrastructure, or building findings before proposing changes
-user-invocable: false
-type: core
+metadata:
+  user-invocable: false
+  type: core
 ---
 
 # Investigation Skill

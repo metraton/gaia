@@ -23,8 +23,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.utils import has_stdin_data
+from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
+from modules.audit.workflow_recorder import record_agent_skill_snapshot
 
 # Configure logging
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -36,26 +37,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _handle_subagent_start(stdin_data: str) -> None:
+def _handle_subagent_start(event) -> None:
     """Process a SubagentStart event.
 
     Prepares agent-specific context for injection.
     For MVP, returns minimal context (passthrough).
 
     Args:
-        stdin_data: Raw JSON from stdin.
+        event: Parsed HookEvent from the adapter layer.
     """
     adapter = ClaudeCodeAdapter()
-
-    try:
-        event = adapter.parse_event(stdin_data)
-    except ValueError as e:
-        logger.error("Adapter parse failed: %s", e)
-        sys.exit(1)
 
     # Parse subagent start event via adapter
     context_result = adapter.adapt_subagent_start(event.payload)
     agent_type = event.payload.get("agent_type", "unknown")
+    task_description = event.payload.get("task_description", "")
+
+    if agent_type and agent_type != "unknown":
+        skill_snapshot = record_agent_skill_snapshot(
+            agent_type,
+            session_context={
+                "timestamp": datetime.now().isoformat(),
+                "session_id": event.session_id,
+            },
+            task_description=task_description,
+        )
+        logger.info(
+            "Recorded runtime defaults for %s (skills=%s)",
+            agent_type,
+            skill_snapshot.get("skills_count", 0),
+        )
 
     logger.info(
         "SubagentStart: agent_type=%s, context_injected=%s",
@@ -74,13 +85,4 @@ def _handle_subagent_start(stdin_data: str) -> None:
 # ============================================================================
 
 if __name__ == "__main__":
-    if has_stdin_data():
-        try:
-            stdin_data = sys.stdin.read()
-            _handle_subagent_start(stdin_data)
-        except Exception as e:
-            logger.error("Error processing SubagentStart hook: %s", e)
-            sys.exit(1)
-    else:
-        print("Usage: echo '{...}' | python subagent_start.py  (stdin mode)")
-        sys.exit(1)
+    run_hook(_handle_subagent_start, hook_name="subagent_start")

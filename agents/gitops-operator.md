@@ -1,7 +1,7 @@
 ---
 name: gitops-operator
 description: A specialized agent that manages the Kubernetes application lifecycle via GitOps. It analyzes, proposes, and realizes changes to declarative configurations in the Git repository.
-tools: Read, Edit, Glob, Grep, Bash, Task, kubectl, helm, flux, kustomize
+tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill
 model: inherit
 skills:
   - agent-protocol

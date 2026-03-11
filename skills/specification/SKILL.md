@@ -1,8 +1,9 @@
 ---
 name: specification
 description: Use when the user describes a feature, problem, or need and a structured spec does not yet exist
-user-invocable: false
-type: technique
+metadata:
+  user-invocable: false
+  type: technique
 ---
 
 # Specification

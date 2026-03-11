@@ -126,6 +126,62 @@ READ_ONLY_VERBS: FrozenSet[str] = frozenset({
     "version", "help", "whoami", "which", "explain",
     "top", "stat", "history", "blame", "tree", "shortlog", "reflog",
     "env", "auth", "config", "cluster-info", "api-resources", "ls",
+    # Compound subcommands that look mutative after hyphen-split but are read-only
+    "merge-base",
+})
+
+
+# ============================================================================
+# Compound Read-Only Subcommands
+# ============================================================================
+# Full subcommand tokens that must be matched BEFORE the hyphen-split logic.
+# Without this, "merge-base" would be split to "merge" and flagged as MUTATIVE.
+
+COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
+    "merge-base",
+})
+
+
+# ============================================================================
+# Verb+Flag Overrides (mutative verb downgraded to READ_ONLY by a flag)
+# ============================================================================
+# Map of (cli_family, verb) -> frozenset of flag tokens that override to READ_ONLY.
+# Checked AFTER a mutative verb is found but BEFORE returning the MUTATIVE result.
+
+VERB_FLAG_READ_ONLY_OVERRIDES: Dict[Tuple[str, str], FrozenSet[str]] = {
+    # "git tag -l" / "git tag --list" is listing, not creating/deleting
+    ("git", "tag"): frozenset({"-l", "--list"}),
+}
+
+
+# ============================================================================
+# Inline Code Dangerous Patterns (python3 -c, python -c)
+# ============================================================================
+# When the base command is a runtime interpreter with inline code (-c flag),
+# scan the code string for dangerous patterns instead of verb-matching tokens.
+import re as _re
+
+_DANGEROUS_INLINE_PATTERNS: Tuple[Tuple[_re.Pattern, str], ...] = (
+    (_re.compile(r"os\.remove\b"), "os.remove"),
+    (_re.compile(r"os\.unlink\b"), "os.unlink"),
+    (_re.compile(r"os\.rmdir\b"), "os.rmdir"),
+    (_re.compile(r"os\.rename\b"), "os.rename"),
+    (_re.compile(r"os\.makedirs?\b"), "os.makedirs"),
+    (_re.compile(r"os\.system\b"), "os.system"),
+    (_re.compile(r"shutil\.rmtree\b"), "shutil.rmtree"),
+    (_re.compile(r"shutil\.move\b"), "shutil.move"),
+    (_re.compile(r"shutil\.copy\b"), "shutil.copy"),
+    # NOTE: subprocess intentionally omitted -- commonly used for read-only
+    # inspection (e.g., subprocess.run(["echo","hello"])). The actual command
+    # inside the subprocess will be evaluated by the hook when it runs.
+    (_re.compile(r"open\s*\([^)]*['\"][wWaA]['\"]"), "file write via open()"),
+    (_re.compile(r"\.write\s*\("), "file write"),
+    (_re.compile(r"pathlib\.Path\([^)]*\)\.(unlink|rmdir|rename|write_)"), "pathlib mutation"),
+)
+
+# CLIs that accept -c for inline code execution
+_INLINE_CODE_CLIS: FrozenSet[str] = frozenset({
+    "python", "python3", "python3.10", "python3.11", "python3.12", "python3.13",
 })
 
 
@@ -400,9 +456,28 @@ def detect_mutative_command(command: str) -> MutativeResult:
             reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
 
+    # --- Step 3b: Inline code safety check (python3 -c "...") ---
+    # For runtime interpreters with -c, scan the code string for dangerous
+    # patterns instead of verb-matching tokens (which would false-positive on
+    # generic keywords like "import", "create", etc.).
+    if base_cmd in _INLINE_CODE_CLIS and "-c" in semantics.flag_tokens:
+        return _check_inline_code(command, base_cmd, family)
+
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
+        # Check compound read-only subcommands BEFORE hyphen-split.
+        # Without this, "merge-base" would be split to "merge" -> MUTATIVE.
+        if token in COMPOUND_READ_ONLY_SUBCOMMANDS:
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb=token,
+                cli_family=family,
+                confidence="high",
+                reason=f"Compound read-only subcommand '{token}'",
+            )
+
         # Split hyphenated tokens: "delete-stack" -> check "delete"
         candidate = token.split("-", 1)[0] if "-" in token else token
 
@@ -426,6 +501,22 @@ def detect_mutative_command(command: str) -> MutativeResult:
 
         if candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
             verb = candidate if candidate in MUTATIVE_VERBS else full_lower
+
+            # Check verb+flag overrides: some verbs become READ_ONLY with
+            # specific flags (e.g., "git tag -l" is listing, not creating).
+            override_key = (family, verb)
+            if override_key in VERB_FLAG_READ_ONLY_OVERRIDES:
+                override_flags = VERB_FLAG_READ_ONLY_OVERRIDES[override_key]
+                if override_flags & frozenset(semantics.flag_tokens):
+                    return MutativeResult(
+                        is_mutative=False,
+                        category=CATEGORY_READ_ONLY,
+                        verb=verb,
+                        cli_family=family,
+                        confidence="high",
+                        reason=f"Verb '{verb}' overridden to read-only by flag",
+                    )
+
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
             flag_detail = (
                 f" with dangerous flags {dangerous_flags}"
@@ -517,6 +608,43 @@ def detect_mutative_command(command: str) -> MutativeResult:
 # ============================================================================
 # Helpers
 # ============================================================================
+
+def _check_inline_code(command: str, base_cmd: str, family: str) -> MutativeResult:
+    """Check inline code (python3 -c "...") for dangerous patterns.
+
+    Instead of verb-matching tokens (which false-positive on generic keywords
+    like "import", "create"), scan the raw code string for known dangerous
+    function calls.
+
+    Args:
+        command: Full raw command string.
+        base_cmd: The interpreter (e.g., "python3").
+        family: CLI family hint.
+
+    Returns:
+        MutativeResult -- MUTATIVE if dangerous patterns found, else safe.
+    """
+    for pattern, label in _DANGEROUS_INLINE_PATTERNS:
+        if pattern.search(command):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=label,
+                cli_family=family,
+                confidence="medium",
+                reason=f"Inline code contains dangerous pattern: {label}",
+            )
+
+    # No dangerous patterns found -- safe inline code
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="inline-code",
+        cli_family=family,
+        confidence="medium",
+        reason=f"Inline code ({base_cmd} -c) with no dangerous patterns",
+    )
+
 
 def _find_first_non_flag(tokens: List[str] | tuple) -> tuple:
     """Find the first semantic token after tokens[0].

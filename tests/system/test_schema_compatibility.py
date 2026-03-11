@@ -49,17 +49,20 @@ class TestSchemaCompatibility:
         assert "delegate" in template_content.lower(), (
             "Template must instruct delegation to specialist agents"
         )
-        assert "Task" in template_content, (
-            "Template must reference the Task tool for agent invocation"
+        # The simplified template uses "subagent" instead of "Task" tool
+        assert "subagent" in template_content.lower() or "Task" in template_content, (
+            "Template must reference delegation via subagent or Task tool"
         )
 
     def test_template_has_surface_routing_contract(self, template_content):
-        """Template must contain the final surface routing contract."""
-        assert "## Surface Routing" in template_content
+        """Template must contain a routing section with surfaces and agents.
+
+        The simplified template uses ## Routing instead of ## Surface Routing.
+        Consolidation details, investigation briefs, and loop caps are now
+        handled by hooks and the agent-protocol skill, not the orchestrator template.
+        """
+        assert "## Routing" in template_content
         assert "## Agent Routing" not in template_content
-        assert "surface_routing" in template_content
-        assert "investigation_brief" in template_content
-        assert "CONSOLIDATION_REPORT" in template_content
         for surface in [
             "live_runtime",
             "gitops_desired_state",
@@ -69,7 +72,7 @@ class TestSchemaCompatibility:
             "gaia_system",
         ]:
             assert f"`{surface}`" in template_content, (
-                f"Template surface routing must include {surface}"
+                f"Template routing must include {surface}"
             )
 
         for agent in [
@@ -81,24 +84,13 @@ class TestSchemaCompatibility:
             "gaia",
         ]:
             assert agent in template_content, (
-                f"Template surface routing must include {agent}"
+                f"Template routing must include {agent}"
             )
 
         lowered = template_content.lower()
-        assert "gaia consolidates" in lowered, (
-            "Template must state that Gaia consolidates multi-surface findings"
-        )
-        assert "two or more surfaces are active" in lowered, (
+        # Multi-agent dispatch must still be documented
+        assert "two or more agents" in lowered or "parallel" in lowered, (
             "Template must define when to use multi-agent dispatch"
-        )
-        assert "recommended_action" in lowered, (
-            "Template must define the multi-surface consolidation output"
-        )
-        assert "consolidation loop" in lowered, (
-            "Template must define the multi-surface consolidation loop"
-        )
-        assert "2 consolidation rounds after the initial pass" in template_content, (
-            "Template must cap automatic consolidation rounds"
         )
 
     def test_template_documents_plan_status(self, template_content, package_root):
@@ -124,23 +116,54 @@ class TestSchemaCompatibility:
                 f"PLAN_STATUS '{status}' not found in template or agent-protocol skill"
             )
 
-    def test_template_references_agent_status(self, template_content):
-        """Template must reference AGENT_STATUS and AGENT_ID for resume support."""
-        assert "AGENT_STATUS" in template_content, (
-            "Template must reference AGENT_STATUS block"
+    def test_template_references_agent_status(self, template_content, package_root):
+        """Agent status and ID must be documented in the template or agent-protocol skill.
+
+        The simplified template delegates status block details to agent-protocol.
+        The agent-protocol skill uses json:contract with plan_status and agent_id fields.
+        """
+        agent_protocol_path = package_root / "skills" / "agent-protocol" / "SKILL.md"
+        combined = template_content
+        if agent_protocol_path.exists():
+            combined += "\n" + agent_protocol_path.read_text()
+
+        # Accept either legacy AGENT_STATUS or json:contract plan_status
+        has_status = "AGENT_STATUS" in combined or "plan_status" in combined
+        assert has_status, (
+            "Agent status must be documented in template or agent-protocol skill "
+            "(as AGENT_STATUS or plan_status)"
         )
-        assert "AGENT_ID" in template_content, (
-            "Template must reference AGENT_ID for resume operations"
+        has_id = "AGENT_ID" in combined or "agent_id" in combined
+        assert has_id, (
+            "Agent ID must be documented in template or agent-protocol skill "
+            "(as AGENT_ID or agent_id)"
         )
 
     def test_template_documents_cross_agent_context(self, template_content):
-        """Template should preserve cross-agent summary guidance."""
-        assert "Cross-agent context" in template_content
+        """Template should preserve cross-agent summary guidance.
+
+        The simplified template uses 'chaining agents' with '2-3 sentence summary'
+        in the Dispatch section instead of a labeled 'Cross-agent context' block.
+        """
+        lowered = template_content.lower()
+        assert "chaining agents" in lowered or "cross-agent context" in lowered, (
+            "Template must document cross-agent context passing"
+        )
         assert "2-3 sentence summary" in template_content
 
-    def test_template_documents_contract_repair_retry_cap(self, template_content):
-        """Template should bound automatic response-contract repair retries."""
-        assert "capped at 2" in template_content
+    def test_template_documents_contract_repair_retry_cap(self, template_content, package_root):
+        """Contract repair retry cap must be documented in the template or agent-protocol skill.
+
+        The simplified template delegates retry cap details to agent-protocol.
+        """
+        agent_protocol_path = package_root / "skills" / "agent-protocol" / "SKILL.md"
+        combined = template_content
+        if agent_protocol_path.exists():
+            combined += "\n" + agent_protocol_path.read_text()
+
+        assert "capped at 2" in combined, (
+            "Contract repair retry cap must be documented in template or agent-protocol"
+        )
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):
         """Test fixture project-context files must have the sections gaia-init generates."""

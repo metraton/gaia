@@ -276,18 +276,19 @@ class TestConvenienceFunction:
 
 
 class TestMutativeWithActiveGrant:
-    """Scenario #3: Mutative command WITH active grant -> allow.
+    """Scenario #3: Mutative command WITH active grant -> allow (if confirmed).
 
-    When a valid approval grant exists for a mutative command,
-    the validator should allow it through.
+    When a valid, confirmed approval grant exists for a mutative command,
+    the validator should allow it through. An unconfirmed grant triggers
+    the native dialog ("ask") first.
     """
 
-    def test_mutative_command_allowed_with_grant(self, validator, tmp_path, monkeypatch):
-        """A mutative command with an active grant should be allowed."""
+    def test_mutative_command_allowed_with_confirmed_grant(self, validator, tmp_path, monkeypatch):
+        """A mutative command with a confirmed active grant should be allowed."""
         import time
         from modules.security.approval_grants import ApprovalGrant
 
-        # Create a fake grant that matches the command
+        # Create a fake grant that matches the command (already confirmed)
         fake_grant = ApprovalGrant(
             session_id="test-session",
             approved_verbs=["apply"],
@@ -295,6 +296,7 @@ class TestMutativeWithActiveGrant:
             granted_at=time.time(),
             ttl_minutes=10,
             used=False,
+            confirmed=True,
         )
 
         # Monkeypatch check_approval_grant to return our fake grant
@@ -307,6 +309,39 @@ class TestMutativeWithActiveGrant:
         assert result.allowed is True
         assert result.tier == SecurityTier.T3_BLOCKED  # tier stays T3 even when granted
         assert "approval grant" in result.reason.lower()
+
+    def test_mutative_command_asks_with_unconfirmed_grant(self, validator, tmp_path, monkeypatch):
+        """A mutative command with an unconfirmed grant should return 'ask'."""
+        import time
+        from modules.security.approval_grants import ApprovalGrant
+
+        # Create a fake grant that matches but is not yet confirmed
+        fake_grant = ApprovalGrant(
+            session_id="test-session",
+            approved_verbs=["apply"],
+            approved_scope="terraform apply",
+            granted_at=time.time(),
+            ttl_minutes=10,
+            used=False,
+            confirmed=False,
+        )
+
+        # Monkeypatch check_approval_grant and confirm_grant
+        monkeypatch.setattr(
+            "modules.tools.bash_validator.check_approval_grant",
+            lambda cmd: fake_grant,
+        )
+        monkeypatch.setattr(
+            "modules.tools.bash_validator.confirm_grant",
+            lambda cmd: True,
+        )
+
+        result = validator.validate("terraform apply")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert result.block_response is not None
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert "Confirm execution" in result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 class TestNonMutativeManagedCLI:

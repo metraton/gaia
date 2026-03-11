@@ -3,24 +3,16 @@ Shared utility functions for Gaia-Ops hooks.
 
 Centralizes common patterns that were previously copy-pasted across all hook
 entry points (has_stdin_data, dual-channel warnings, etc.).
+
+``has_stdin_data`` is now defined in ``modules.core.stdin`` and re-exported
+here for backward compatibility with existing imports.
 """
 
 import logging
-import select
-import sys
+
+from modules.core.stdin import has_stdin_data  # noqa: F401 -- re-export
 
 logger = logging.getLogger(__name__)
-
-
-def has_stdin_data() -> bool:
-    """Check if there is data available on stdin."""
-    if sys.stdin.isatty():
-        return False
-    try:
-        readable, _, _ = select.select([sys.stdin], [], [], 0)
-        return bool(readable)
-    except Exception:
-        return not sys.stdin.isatty()
 
 
 def warn_if_dual_channel() -> None:

@@ -8,6 +8,8 @@ Full flow integration: adapter parse SubagentStop -> extract AgentCompletion
 Tests that the ClaudeCodeAdapter correctly parses SubagentStop events and
 that the response contract validator detects valid/invalid agent outputs.
 
+All fixtures use the ``json:contract`` fenced-block format.
+
 Modules under test:
   - hooks/adapters/claude_code.py (ClaudeCodeAdapter.parse_agent_completion, format_completion_response)
   - hooks/modules/agents/response_contract.py (validate_response_contract)
@@ -44,97 +46,82 @@ from modules.agents.response_contract import (
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_contract_output(contract_dict: dict) -> str:
+    """Wrap a dict as a json:contract fenced block inside agent prose."""
+    block = json.dumps(contract_dict, indent=2)
+    return f"## Findings\n\n```json:contract\n{block}\n```\n"
+
+
+# ---------------------------------------------------------------------------
 # Test data constants
 # ---------------------------------------------------------------------------
 
-VALID_AGENT_OUTPUT = """\
-## Investigation Complete
+_VALID_EVIDENCE = {
+    "patterns_checked": ["Existing pod health check patterns in cluster_details"],
+    "files_checked": ["/home/user/project/.claude/project-context/project-context.json"],
+    "commands_run": ["`kubectl get pods -n default` -> 3 pods found, all Running"],
+    "key_outputs": ["All 3 pods are Running with 0 restarts"],
+    "verbatim_outputs": [
+        "`kubectl get pods -n default`:\n"
+        "  NAME       READY   STATUS    RESTARTS   AGE\n"
+        "  nginx-1    1/1     Running   0          2h\n"
+        "  nginx-2    1/1     Running   0          2h\n"
+        "  nginx-3    1/1     Running   0          2h"
+    ],
+    "cross_layer_impacts": ["none"],
+    "open_gaps": ["none"],
+}
 
-Found 3 pods in the default namespace, all healthy.
+_VALID_STATUS = {
+    "plan_status": "COMPLETE",
+    "pending_steps": "none",
+    "next_action": "Report findings to orchestrator",
+    "agent_id": "a1b2c3d4e5",
+}
 
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- Existing pod health check patterns in cluster_details
-FILES_CHECKED:
-- /home/user/project/.claude/project-context/project-context.json
-COMMANDS_RUN:
-- `kubectl get pods -n default` -> 3 pods found, all Running
-KEY_OUTPUTS:
-- All 3 pods are Running with 0 restarts
-VERBATIM_OUTPUTS:
-- `kubectl get pods -n default`:
-  ```
-  NAME       READY   STATUS    RESTARTS   AGE
-  nginx-1    1/1     Running   0          2h
-  nginx-2    1/1     Running   0          2h
-  nginx-3    1/1     Running   0          2h
-  ```
-CROSS_LAYER_IMPACTS:
-- none
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
+VALID_AGENT_OUTPUT = _make_contract_output({
+    "agent_status": _VALID_STATUS,
+    "evidence_report": _VALID_EVIDENCE,
+})
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: none
-NEXT_ACTION: Report findings to orchestrator
-AGENT_ID: a1b2c3d4e5
-<!-- /AGENT_STATUS -->
-"""
+MISSING_EVIDENCE_AGENT_OUTPUT = _make_contract_output({
+    "agent_status": _VALID_STATUS,
+})
 
-MISSING_EVIDENCE_AGENT_OUTPUT = """\
-## Investigation Complete
+_VERBATIM_EVIDENCE = {
+    "patterns_checked": ["Helm release naming conventions"],
+    "files_checked": ["/home/user/project/charts/values.yaml"],
+    "commands_run": [
+        "`helm list -A` -> 5 releases found",
+        "`kubectl get pods -n app` -> 2 pods running",
+    ],
+    "key_outputs": ["5 helm releases across 3 namespaces"],
+    "verbatim_outputs": [
+        "`helm list -A`:\n"
+        "  NAME            NAMESPACE  REVISION  STATUS    CHART\n"
+        "  orders-svc      app        3         deployed  orders-0.53.0\n"
+        "  payments-api    app        1         deployed  payments-1.2.0",
+        "`kubectl get pods -n app`:\n"
+        "  NAME                          READY   STATUS\n"
+        "  orders-svc-abc123             1/1     Running\n"
+        "  payments-api-def456           1/1     Running",
+    ],
+    "cross_layer_impacts": ["GitOps desired state matches live runtime"],
+    "open_gaps": ["none"],
+}
 
-Found pods but forgot the evidence report.
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: none
-NEXT_ACTION: Report findings
-AGENT_ID: a1b2c3d4e5
-<!-- /AGENT_STATUS -->
-"""
-
-AGENT_OUTPUT_WITH_VERBATIM = """\
-## Diagnostic Report
-
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- Helm release naming conventions
-FILES_CHECKED:
-- /home/user/project/charts/values.yaml
-COMMANDS_RUN:
-- `helm list -A` -> 5 releases found
-- `kubectl get pods -n app` -> 2 pods running
-KEY_OUTPUTS:
-- 5 helm releases across 3 namespaces
-VERBATIM_OUTPUTS:
-- `helm list -A`:
-  ```
-  NAME            NAMESPACE  REVISION  STATUS    CHART
-  orders-svc      app        3         deployed  orders-0.53.0
-  payments-api    app        1         deployed  payments-1.2.0
-  ```
-- `kubectl get pods -n app`:
-  ```
-  NAME                          READY   STATUS
-  orders-svc-abc123             1/1     Running
-  payments-api-def456           1/1     Running
-  ```
-CROSS_LAYER_IMPACTS:
-- GitOps desired state matches live runtime
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: none
-NEXT_ACTION: Report findings
-AGENT_ID: af097c4abc
-<!-- /AGENT_STATUS -->
-"""
+AGENT_OUTPUT_WITH_VERBATIM = _make_contract_output({
+    "agent_status": {
+        "plan_status": "COMPLETE",
+        "pending_steps": "none",
+        "next_action": "Report findings",
+        "agent_id": "af097c4abc",
+    },
+    "evidence_report": _VERBATIM_EVIDENCE,
+})
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +264,7 @@ class TestVerbatimOutputsExtraction:
         verbatim = evidence.fields.get("VERBATIM_OUTPUTS", [])
         assert len(verbatim) > 0
         # The raw block should contain helm and kubectl commands
-        raw_text = verbatim[0] if verbatim else ""
+        raw_text = " ".join(verbatim)
         assert "helm list -A" in raw_text
         assert "kubectl get pods -n app" in raw_text
 
@@ -318,47 +305,31 @@ class TestVerbatimOutputsExtraction:
 class TestConsolidationRequired:
     """SubagentStop: multi-surface task requires CONSOLIDATION_REPORT."""
 
-    VALID_WITH_CONSOLIDATION = """\
-## Multi-Surface Investigation
-
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- Existing deployment patterns
-FILES_CHECKED:
-- /home/user/project/terraform/main.tf
-COMMANDS_RUN:
-- `terraform plan` -> no changes
-KEY_OUTPUTS:
-- Infrastructure matches desired state
-VERBATIM_OUTPUTS:
-- none
-CROSS_LAYER_IMPACTS:
-- GitOps manifests are aligned with Terraform state
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
-
-<!-- CONSOLIDATION_REPORT -->
-OWNERSHIP_ASSESSMENT: owned_here
-CONFIRMED_FINDINGS:
-- Infrastructure matches desired state
-SUSPECTED_FINDINGS:
-- none
-CONFLICTS:
-- none
-OPEN_GAPS:
-- none
-NEXT_BEST_AGENT:
-- none
-<!-- /CONSOLIDATION_REPORT -->
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: none
-NEXT_ACTION: Report to orchestrator
-AGENT_ID: ab1234cdef
-<!-- /AGENT_STATUS -->
-"""
+    VALID_WITH_CONSOLIDATION = _make_contract_output({
+        "agent_status": {
+            "plan_status": "COMPLETE",
+            "pending_steps": "none",
+            "next_action": "Report to orchestrator",
+            "agent_id": "ab1234cdef",
+        },
+        "evidence_report": {
+            "patterns_checked": ["Existing deployment patterns"],
+            "files_checked": ["/home/user/project/terraform/main.tf"],
+            "commands_run": ["`terraform plan` -> no changes"],
+            "key_outputs": ["Infrastructure matches desired state"],
+            "verbatim_outputs": ["none"],
+            "cross_layer_impacts": ["GitOps manifests are aligned with Terraform state"],
+            "open_gaps": ["none"],
+        },
+        "consolidation_report": {
+            "ownership_assessment": "owned_here",
+            "confirmed_findings": ["Infrastructure matches desired state"],
+            "suspected_findings": ["none"],
+            "conflicts": ["none"],
+            "open_gaps": ["none"],
+            "next_best_agent": ["none"],
+        },
+    })
 
     def test_consolidation_report_validated_when_required(self):
         """When consolidation_required=True, CONSOLIDATION_REPORT must be present."""
@@ -429,31 +400,23 @@ class TestSubagentEdgeCases:
 
     def test_invalid_plan_status_detected(self):
         """Invalid PLAN_STATUS value -> invalid field reported."""
-        bad_output = """\
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- test
-FILES_CHECKED:
-- test
-COMMANDS_RUN:
-- test
-KEY_OUTPUTS:
-- test
-VERBATIM_OUTPUTS:
-- none
-CROSS_LAYER_IMPACTS:
-- none
-OPEN_GAPS:
-- none
-<!-- /EVIDENCE_REPORT -->
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: INVALID_STATUS
-PENDING_STEPS: none
-NEXT_ACTION: none
-AGENT_ID: a12345abcde
-<!-- /AGENT_STATUS -->
-"""
+        bad_output = _make_contract_output({
+            "agent_status": {
+                "plan_status": "INVALID_STATUS",
+                "pending_steps": "none",
+                "next_action": "none",
+                "agent_id": "a12345abcde",
+            },
+            "evidence_report": {
+                "patterns_checked": ["test"],
+                "files_checked": ["test"],
+                "commands_run": ["test"],
+                "key_outputs": ["test"],
+                "verbatim_outputs": ["none"],
+                "cross_layer_impacts": ["none"],
+                "open_gaps": ["none"],
+            },
+        })
         validation = validate_response_contract(bad_output, task_agent_id="a12345abcde")
 
         assert validation.valid is False

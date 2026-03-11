@@ -32,13 +32,17 @@ def build_hook_permission_response(decision: str, reason: str) -> dict:
     """Build a hookSpecificOutput dict for a PreToolUse permission decision.
 
     Args:
-        decision: "allow" or "deny".
+        decision: "allow", "deny", or "ask".
         reason: Human-readable explanation forwarded to the agent.
 
     Returns:
         Dict suitable for ``json.dumps()`` and ``print()`` in the hook
         entry point.
     """
+    if decision == "ask":
+        response = _adapter.format_ask_response(reason)
+        return response.output
+
     vr = ValidationResult(
         allowed=(decision == "allow"),
         reason=reason,

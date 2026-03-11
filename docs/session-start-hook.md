@@ -38,7 +38,7 @@ def is_stale(context_path):
     return age > STALE_THRESHOLD
 ```
 
-## Implementation (Future)
+## Implementation
 
 Add to hooks/hooks.json:
 

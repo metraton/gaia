@@ -247,6 +247,54 @@ class TestPhase1SkillsInjection:
         finally:
             os.chdir(original_cwd)
 
+    def test_subagent_start_records_runtime_skill_history(self, test_project):
+        """SubagentStart should persist the agent's default skills snapshot."""
+        tmp_path, claude_dir = test_project
+
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            import importlib.util
+
+            start_hook_path = claude_dir / "hooks" / "subagent_start.py"
+            spec = importlib.util.spec_from_file_location("subagent_start_runtime", str(start_hook_path))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            stdin_payload = json.dumps({
+                "hook_event_name": "SubagentStart",
+                "session_id": "sess-subagent-start-001",
+                "agent_type": "cloud-troubleshooter",
+                "task_description": "Investigate rollout telemetry drift",
+            })
+
+            # _handle_subagent_start now accepts a pre-parsed HookEvent,
+            # so parse the payload via the adapter first.
+            from adapters.claude_code import ClaudeCodeAdapter
+            adapter = ClaudeCodeAdapter()
+            event = adapter.parse_event(stdin_payload)
+
+            with pytest.raises(SystemExit) as exc:
+                mod._handle_subagent_start(event)
+
+            assert exc.value.code == 0
+
+            skills_path = (
+                claude_dir
+                / "project-context"
+                / "workflow-episodic-memory"
+                / "agent-skills.jsonl"
+            )
+            assert skills_path.exists(), "SubagentStart should persist agent-skills.jsonl"
+
+            skill_entry = json.loads(skills_path.read_text().strip().splitlines()[-1])
+            assert skill_entry["agent"] == "cloud-troubleshooter"
+            assert skill_entry["session_id"] == "sess-subagent-start-001"
+            assert "agent-protocol" in skill_entry["skills"]
+            assert skill_entry["skills_count"] >= 1
+        finally:
+            os.chdir(original_cwd)
+
 
 # ============================================================================
 # PHASE 2: CONTEXT_UPDATE Parsing (context_writer)
@@ -690,13 +738,41 @@ class TestPhase5SubagentStopHook:
 
             # Set env var so metrics go to tmp dir
             os.environ["WORKFLOW_MEMORY_BASE_PATH"] = str(claude_dir)
+            os.environ["GAIA_WRITE_WORKFLOW_METRICS"] = "1"
 
             task_info = {
                 "task_id": "test-lifecycle-001",
+                "agent_id": "test-lifecycle-001",
                 "description": "Diagnose cluster health",
                 "agent": "cloud-troubleshooter",
                 "tier": "T0",
                 "tags": ["#diagnostic"],
+                "injected_context": {
+                    "contract": {
+                        "cluster_details": {},
+                    },
+                    "metadata": {
+                        "cloud_provider": "gcp",
+                        "contract_version": "3.0",
+                        "rules_count": 4,
+                        "surface_routing_version": "1.0",
+                        "active_surfaces_count": 1,
+                    },
+                    "surface_routing": {
+                        "primary_surface": "live_runtime",
+                        "active_surfaces": ["live_runtime"],
+                        "dispatch_mode": "single_surface",
+                        "recommended_agents": ["cloud-troubleshooter"],
+                    },
+                    "investigation_brief": {
+                        "agent_role": "primary",
+                        "primary_surface": "live_runtime",
+                    },
+                    "context_update_contract": {
+                        "readable_sections": ["cluster_details"],
+                        "writable_sections": ["cluster_details"],
+                    },
+                },
             }
 
             agent_output = """
@@ -739,9 +815,22 @@ NEXT_ACTION: Report to orchestrator
             assert cd["health_status"] == "HEALTHY"
             assert cd["node_count"] == 3
 
+            workflow_dir = claude_dir / "project-context" / "workflow-episodic-memory"
+            run_snapshots = (workflow_dir / "run-snapshots.jsonl").read_text().strip().splitlines()
+            metrics_entries = (workflow_dir / "metrics.jsonl").read_text().strip().splitlines()
+            latest_run = json.loads(run_snapshots[-1])
+            latest_metrics = json.loads(metrics_entries[-1])
+
+            assert latest_run["context_snapshot"]["surface_routing"]["primary_surface"] == "live_runtime"
+            assert latest_run["context_sections_updated"] == ["cluster_details"]
+            assert "agent-protocol" in latest_run["default_skills_snapshot"]["skills"]
+            assert latest_metrics["context_updated"] is True
+            assert latest_metrics["commands_executed_count"] == 0
+
         finally:
             os.chdir(original_cwd)
             os.environ.pop("WORKFLOW_MEMORY_BASE_PATH", None)
+            os.environ.pop("GAIA_WRITE_WORKFLOW_METRICS", None)
 
     def test_subagent_stop_without_context_update(self, test_project):
         """When agent output has no CONTEXT_UPDATE, context_updated should be False."""

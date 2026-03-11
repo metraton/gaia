@@ -1,7 +1,8 @@
 ---
 name: security-tiers
 description: Use when classifying any operation before executing it, or deciding whether user approval is required
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Security Tiers

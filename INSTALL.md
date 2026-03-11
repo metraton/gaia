@@ -274,7 +274,7 @@ When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templ
 | File | Behavior | Recommended Action |
 |------|----------|-------------------|
 | `CLAUDE.md` | ⚠️ **Overwritten** | Backup if you customize |
-| `.claude/settings.json` | ⚠️ **Overwritten** | Backup if you customize |
+| `.claude/settings.json` | ✅ **Merged** (hooks/permissions deep-merged, custom rules preserved) | Safe |
 | `.claude/project-context/project-context.json` | ✅ **Preserved** | Safe |
 | `.claude/logs/` | ✅ **Preserved** | Safe |
 | Other `.claude/` files | ✅ **Auto-updated via symlinks** | Safe |
@@ -282,18 +282,17 @@ When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templ
 ### Update Process
 
 ```bash
-# 1. Backup (optional, if you customized)
+# 1. Backup (optional, if you customized CLAUDE.md)
 cp CLAUDE.md CLAUDE.md.backup
-cp .claude/settings.json .claude/settings.json.backup
 
 # 2. Update package
 npm install @jaguilar87/gaia-ops@latest
 
-# 3. Postinstall hook automatically regenerates:
-#    - CLAUDE.md
-#    - .claude/settings.json
+# 3. Postinstall hook automatically:
+#    - Overwrites CLAUDE.md (static orchestrator config)
+#    - Merges settings.json (hooks/permissions deep-merged, custom rules preserved)
 
-# 4. If you made backup, compare and merge changes
+# 4. If you made a CLAUDE.md backup, compare and merge changes
 diff CLAUDE.md CLAUDE.md.backup
 ```
 
@@ -376,7 +375,7 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 **Solution:**
 ```bash
 # Re-run installation
-npx gaia-scan --force
+npx gaia-scan
 ```
 
 ---
@@ -445,7 +444,7 @@ A: `npm update @jaguilar87/gaia-ops` - symlinks point to the new version automat
 
 ---
 
-**Version:** 4.0.0
-**Last updated:** 2026-03-03
+**Version:** 4.2.0
+**Last updated:** 2026-03-11
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
 

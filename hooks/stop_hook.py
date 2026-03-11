@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.utils import has_stdin_data
+from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
 
 # Configure logging
@@ -36,22 +36,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _handle_stop(stdin_data: str) -> None:
+def _handle_stop(event) -> None:
     """Process a Stop event.
 
     Evaluates response quality and decides whether to allow the stop.
     For MVP, always allows stop (exit 0).
 
     Args:
-        stdin_data: Raw JSON from stdin.
+        event: Parsed HookEvent from the adapter layer.
     """
     adapter = ClaudeCodeAdapter()
-
-    try:
-        event = adapter.parse_event(stdin_data)
-    except ValueError as e:
-        logger.error("Adapter parse failed: %s", e)
-        sys.exit(1)
 
     # Parse stop event via adapter
     quality_result = adapter.adapt_stop(event.payload)
@@ -75,13 +69,4 @@ def _handle_stop(stdin_data: str) -> None:
 # ============================================================================
 
 if __name__ == "__main__":
-    if has_stdin_data():
-        try:
-            stdin_data = sys.stdin.read()
-            _handle_stop(stdin_data)
-        except Exception as e:
-            logger.error("Error processing Stop hook: %s", e)
-            sys.exit(1)
-    else:
-        print("Usage: echo '{...}' | python stop_hook.py  (stdin mode)")
-        sys.exit(1)
+    run_hook(_handle_stop, hook_name="stop_hook")

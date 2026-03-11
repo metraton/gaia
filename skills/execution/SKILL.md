@@ -1,7 +1,8 @@
 ---
 name: execution
 description: Use when the user has approved a T3 operation and execution is about to begin
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Execution

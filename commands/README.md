@@ -211,7 +211,7 @@ commands/
 
 ---
 
-**Version:** 5.0.0
+**Version:** 4.2.0
 **Last updated:** 2026-03-11
 **Total commands:** 5 spec-kit
 **Maintained by:** Gaia (meta-agent)

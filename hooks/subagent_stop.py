@@ -29,20 +29,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Adapter layer
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.utils import has_stdin_data, warn_if_dual_channel
+from modules.core.stdin import has_stdin_data
+from adapters.utils import warn_if_dual_channel
 
 # --- Module imports (all business logic) ---
 from modules.agents.contract_validator import (
     extract_commands_from_evidence,
     extract_exit_code_from_output,
     extract_plan_status_from_output,
+    parse_contract,
     requires_consolidation_report,
     validate as validate_contract,
 )
 from modules.agents.response_contract import (
     save_validation_result,
     validate_response_contract,
-    _resolve_agent_id,
+    resolve_agent_id,
 )
 from modules.agents.task_info_builder import build_task_info_from_hook_data
 from modules.agents.transcript_reader import read_transcript
@@ -114,10 +116,10 @@ def subagent_stop_hook(task_info, agent_output):
     Execution order:
         1. contract_validator.validate() - structural contract check
         2. approval_cleanup.cleanup() - consume approval file
-        3. workflow_recorder.record() - capture workflow metrics
-        4. workflow_auditor.audit() - detect anomalies
-        5. episode_writer.write() - store episodic memory
-        6. context_writer.update() - progressive context enrichment
+        3. context_writer.update() - progressive context enrichment
+        4. workflow_recorder.record() - capture workflow metrics + telemetry
+        5. workflow_auditor.audit() - detect anomalies
+        6. episode_writer.write() - store episodic memory
 
     Args:
         task_info: Task information including ID, description, agent, etc.
@@ -131,6 +133,9 @@ def subagent_stop_hook(task_info, agent_output):
         session_id = get_or_create_session_id()
         agent_type = task_info.get("agent", "unknown")
 
+        # Step 0: Parse json:contract once, share across validators
+        parsed_contract = parse_contract(agent_output)
+
         # Step 1: Contract validation (early gate)
         contract_result = validate_contract(agent_output, task_info)
         if not contract_result.is_valid:
@@ -142,25 +147,43 @@ def subagent_stop_hook(task_info, agent_output):
         # Step 2: Consume approval file if present for this agent
         cleanup_approval(agent_type)
 
-        # Step 3: Capture workflow metrics
+        # Step 3: Extract command evidence and apply context updates first so
+        # workflow telemetry can capture the additive outcome.
+        commands_executed = extract_commands_from_evidence(agent_output)
+        context_update_result = process_context_updates(agent_output, task_info)
+
+        # Step 4: Capture workflow metrics
         session_context = {
             "timestamp": _dt.now().isoformat(),
             "session_id": session_id,
             "task_id": task_info.get("task_id", "unknown"),
+            "agent_id": task_info.get("agent_id", "unknown"),
             "agent": agent_type,
         }
-        workflow_metrics = record_workflow(task_info, agent_output, session_context)
+        workflow_metrics = record_workflow(
+            task_info,
+            agent_output,
+            session_context,
+            commands_executed=commands_executed,
+            context_update_result=context_update_result,
+        )
 
-        # Step 3b: Validate deterministic response contract (existing detailed validation)
+        # Step 4b: Validate deterministic response contract (reuse parsed contract)
         response_contract = validate_response_contract(
             agent_output,
-            task_agent_id=_resolve_agent_id(task_info),
+            task_agent_id=resolve_agent_id(task_info),
             consolidation_required=requires_consolidation_report(task_info),
+            parsed_contract=parsed_contract,
         )
         save_validation_result(task_info, response_contract)
 
-        # Step 4: Check for anomalies (expanded auditor)
-        anomalies = audit_workflow(workflow_metrics, agent_output, task_info)
+        # Step 5: Check for anomalies (expanded auditor)
+        anomalies = audit_workflow(
+            workflow_metrics,
+            agent_output,
+            task_info,
+            rejected_sections=(context_update_result or {}).get("rejected", []),
+        )
         if not response_contract.valid:
             missing = ", ".join(response_contract.missing) or "none"
             invalid = ", ".join(response_contract.invalid) or "none"
@@ -177,16 +200,15 @@ def subagent_stop_hook(task_info, agent_output):
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")
             signal_gaia_analysis(anomalies, workflow_metrics)
 
-        # Step 5: Extract commands + capture as episodic memory
-        commands_executed = extract_commands_from_evidence(agent_output)
+        workflow_metrics["anomalies_detected"] = len(anomalies)
+        workflow_metrics["anomaly_types"] = [a.get("type", "") for a in anomalies]
+
+        # Step 6: Capture as episodic memory
         episode_id = write_episode(
             workflow_metrics,
             anomalies=anomalies if anomalies else None,
             commands_executed=commands_executed,
         )
-
-        # Step 6: Process context updates (progressive enrichment)
-        context_update_result = process_context_updates(agent_output, task_info)
 
         # Derive contract_attempts from response_contract repair state
         contract_attempts = 0

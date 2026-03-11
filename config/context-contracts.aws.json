@@ -32,6 +32,11 @@
                "infrastructure", "application_services",
                "operational_guidelines"],
       "write": ["application_services"]
+    },
+    "speckit-planner": {
+      "read": ["project_identity", "stack", "git", "environment",
+               "infrastructure", "operational_guidelines"],
+      "write": ["operational_guidelines"]
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "gaia-ops",
-  "version": "4.1.1",
+  "version": "4.2.0",
   "description": "Complete DevOps orchestration system: agents, scanning, context injection, episodic memory, speckit planning, and CLI tools",
   "keywords": ["devops", "agents", "scanning", "orchestration", "speckit", "ops"],
   "agents": "../../agents/",

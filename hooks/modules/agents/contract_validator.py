@@ -2,13 +2,8 @@
 Contract validation for agent output: structural checks, evidence parsing,
 command extraction, PLAN_STATUS parsing, and exit code derivation.
 
-Supports two contract formats:
-    1. Legacy HTML-comment blocks (<!-- AGENT_STATUS -->, <!-- EVIDENCE_REPORT -->, etc.)
-    2. JSON contract blocks (```json:contract ... ```)
-
-When a ``json:contract`` fenced block is present, parse_contract() extracts and
-returns the structured dict. The validate() function checks both formats,
-preferring the JSON contract when available.
+Only the ``json:contract`` fenced-block format is supported.  Legacy
+HTML-comment blocks (``<!-- AGENT_STATUS -->``, etc.) are **not** parsed here.
 
 Provides:
     - parse_contract(): Extract structured dict from json:contract fenced block
@@ -33,22 +28,6 @@ _NOT_RUN_INDICATORS = re.compile(
 )
 
 _LITERAL_NONE_COMMANDS = {"none", "not run", "not executed", "n/a", "skipped"}
-
-# Evidence report markers
-_EVIDENCE_REPORT_RE = re.compile(
-    r"<!-- EVIDENCE_REPORT -->\s*(.*?)\s*<!-- /EVIDENCE_REPORT -->", re.DOTALL
-)
-_AGENT_STATUS_RE = re.compile(
-    r"<!-- AGENT_STATUS -->\s*(.*?)\s*<!-- /AGENT_STATUS -->", re.DOTALL
-)
-_CONSOLIDATION_REPORT_RE = re.compile(
-    r"<!-- CONSOLIDATION_REPORT -->\s*(.*?)\s*<!-- /CONSOLIDATION_REPORT -->", re.DOTALL
-)
-
-# JSON contract block pattern
-_JSON_CONTRACT_RE = re.compile(
-    r'```json:contract\s*\n(.*?)```', re.DOTALL
-)
 
 # Required evidence fields
 _EVIDENCE_REQUIRED_FIELDS = [
@@ -181,94 +160,13 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
 
 
 # ============================================================================
-# Legacy HTML-comment block validation helpers
-# ============================================================================
-
-def _check_agent_status(agent_output: str) -> List[str]:
-    """Check for AGENT_STATUS block with plan_status and agent_id.
-
-    Returns list of missing field names (empty if all present).
-    """
-    missing = []
-    match = None
-    for m in _AGENT_STATUS_RE.finditer(agent_output):
-        match = m
-    if match is None:
-        # Check for unstructured PLAN_STATUS as fallback
-        if not re.search(r"PLAN_STATUS:\s*\S+", agent_output):
-            missing.append("AGENT_STATUS")
-            missing.append("PLAN_STATUS")
-            missing.append("AGENT_ID")
-            return missing
-        # Has PLAN_STATUS but no structured block
-        if not re.search(r"AGENT_ID:\s*\S+", agent_output):
-            missing.append("AGENT_ID")
-        return missing
-
-    block_text = match.group(1)
-    if not re.search(r"PLAN_STATUS:\s*\S+", block_text):
-        missing.append("PLAN_STATUS")
-    if not re.search(r"AGENT_ID:\s*\S+", block_text):
-        missing.append("AGENT_ID")
-    return missing
-
-
-def _check_evidence_report(agent_output: str) -> List[str]:
-    """Check for EVIDENCE_REPORT block with required fields.
-
-    Returns list of missing field names (empty if all present).
-    """
-    missing = []
-    match = None
-    for m in _EVIDENCE_REPORT_RE.finditer(agent_output):
-        match = m
-    if match is None:
-        missing.append("EVIDENCE_REPORT")
-        return missing
-
-    block_text = match.group(1)
-    for field in _EVIDENCE_REQUIRED_FIELDS:
-        # Check that field header exists
-        pattern = re.compile(rf"^{field}:", re.MULTILINE)
-        if not pattern.search(block_text):
-            missing.append(field)
-    return missing
-
-
-def _check_consolidation_report(agent_output: str, task_info: Dict[str, Any]) -> List[str]:
-    """Check for CONSOLIDATION_REPORT block when multi-surface task requires it.
-
-    Only checks when injected_context indicates consolidation is required.
-    Returns list of missing field names (empty if not required or all present).
-    """
-    if not requires_consolidation_report(task_info):
-        return []
-
-    missing = []
-    match = None
-    for m in _CONSOLIDATION_REPORT_RE.finditer(agent_output):
-        match = m
-    if match is None:
-        missing.append("CONSOLIDATION_REPORT")
-        return missing
-
-    block_text = match.group(1)
-    for field in _CONSOLIDATION_REQUIRED_FIELDS:
-        pattern = re.compile(rf"^{field}:", re.MULTILINE)
-        if not pattern.search(block_text):
-            missing.append(field)
-    return missing
-
-
-# ============================================================================
 # Main validation entry point
 # ============================================================================
 
 def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     """Validate agent output against contract requirements.
 
-    Tries JSON contract format first (``json:contract`` fenced block).
-    Falls back to legacy HTML-comment block parsing if no JSON contract found.
+    Only the ``json:contract`` fenced-block format is supported.
 
     Checks:
     1. AGENT_STATUS block with plan_status and agent_id
@@ -282,47 +180,22 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     Returns:
         ValidationResult with is_valid, missing fields list, and error_message.
     """
-    # Prefer JSON contract format when present
     contract = parse_contract(agent_output)
     if contract is not None:
         return _validate_from_json_contract(contract, task_info)
 
-    # Fallback: legacy HTML-comment block parsing
-    all_missing: List[str] = []
-
-    # 1. Check AGENT_STATUS
-    status_missing = _check_agent_status(agent_output)
-    all_missing.extend(status_missing)
-
-    # Only check evidence if we have a plan_status that requires it
-    plan_status = extract_plan_status_from_output(agent_output)
-    # APPROVED_EXECUTING does not require evidence
-    statuses_requiring_evidence = {
-        "INVESTIGATING", "PLANNING", "PENDING_APPROVAL",
-        "FIXING", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
-    }
-    if plan_status in statuses_requiring_evidence:
-        # 2. Check EVIDENCE_REPORT
-        evidence_missing = _check_evidence_report(agent_output)
-        all_missing.extend(evidence_missing)
-
-    # 3. Check CONSOLIDATION_REPORT (only when required)
-    consolidation_missing = _check_consolidation_report(agent_output, task_info)
-    all_missing.extend(consolidation_missing)
-
-    if all_missing:
-        fields_str = ", ".join(all_missing)
-        error_message = (
-            f"Contract incomplete. Missing: {fields_str}. "
-            f"Include: patterns_checked, files_checked, commands_run, key_outputs."
-        )
-        return ValidationResult(
-            is_valid=False,
-            missing=all_missing,
-            error_message=error_message,
-        )
-
-    return ValidationResult(is_valid=True, missing=[], error_message="")
+    # No json:contract block found -- report everything as missing.
+    all_missing = ["AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"]
+    fields_str = ", ".join(all_missing)
+    error_message = (
+        f"Contract incomplete. Missing: {fields_str}. "
+        f"A json:contract fenced block is required."
+    )
+    return ValidationResult(
+        is_valid=False,
+        missing=all_missing,
+        error_message=error_message,
+    )
 
 
 # ============================================================================
@@ -332,79 +205,33 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
 def extract_commands_from_evidence(agent_output: str) -> List[str]:
     """Extract command strings from the EVIDENCE_REPORT COMMANDS_RUN field.
 
-    Supports both JSON contract format and legacy HTML-comment blocks.
-
-    For JSON contract format, extracts from evidence_report.commands_run list.
-    For legacy format, parses lines between ``COMMANDS_RUN:`` and the next field
-    header (a line ending with ``:`` that matches a known evidence field name).
-    Each bullet line (``- `cmd` -> result`` or ``- cmd``) is extracted as a
-    command string.
+    Only the ``json:contract`` fenced-block format is supported.
+    Extracts from ``evidence_report.commands_run`` list entries.
 
     Commands whose result indicates they were NOT actually run (e.g. "not run",
     "skipped", "n/a", "not executed") are excluded from the returned list.
 
     Returns a list of command strings (without surrounding backticks).
     """
-    # Try JSON contract format first
     contract = parse_contract(agent_output)
-    if contract is not None:
-        evidence = contract.get("evidence_report", {}) or {}
-        commands_run = evidence.get("commands_run", [])
-        if isinstance(commands_run, list):
-            commands = []
-            for entry in commands_run:
-                if isinstance(entry, dict):
-                    cmd = entry.get("command", entry.get("cmd", ""))
-                elif isinstance(entry, str):
-                    cmd = entry
-                else:
-                    continue
-                if cmd and cmd.lower() not in _LITERAL_NONE_COMMANDS:
-                    if not _NOT_RUN_INDICATORS.search(cmd):
-                        commands.append(cmd)
-            return commands
+    if contract is None:
+        return []
 
-    # Legacy HTML-comment block parsing
+    evidence = contract.get("evidence_report", {}) or {}
+    commands_run = evidence.get("commands_run", [])
+    if not isinstance(commands_run, list):
+        return []
+
     commands: List[str] = []
-    in_commands_section = False
-    # Known field headers that end the COMMANDS_RUN section
-    _FIELD_HEADERS = {
-        "PATTERNS_CHECKED:", "FILES_CHECKED:", "COMMANDS_RUN:",
-        "KEY_OUTPUTS:", "VERBATIM_OUTPUTS:", "CROSS_LAYER_IMPACTS:", "OPEN_GAPS:",
-    }
-
-    for raw_line in agent_output.splitlines():
-        line = raw_line.strip()
-        if line == "COMMANDS_RUN:":
-            in_commands_section = True
+    for entry in commands_run:
+        if isinstance(entry, dict):
+            cmd = entry.get("command", entry.get("cmd", ""))
+        elif isinstance(entry, str):
+            cmd = entry
+        else:
             continue
-        if in_commands_section:
-            # Stop at the next field header or block boundary
-            if line in _FIELD_HEADERS or line.startswith("<!-- "):
-                break
-            if line.startswith("- "):
-                entry = line[2:].strip()
-                # Extract command from backtick-quoted format: `cmd` -> result
-                cmd = ""
-                if entry.startswith("`"):
-                    end_tick = entry.find("`", 1)
-                    if end_tick > 1:
-                        cmd = entry[1:end_tick]
-                    else:
-                        # Single backtick without closing -- take the whole entry
-                        cmd = entry.lstrip("`").strip()
-                elif entry and entry.lower() not in _LITERAL_NONE_COMMANDS:
-                    cmd = entry
-
-                if not cmd or cmd.lower() in _LITERAL_NONE_COMMANDS:
-                    continue
-
-                # Check if the rest of the line (after the command) indicates
-                # the command was not actually run
-                remainder = entry[entry.find(cmd) + len(cmd):]
-                if _NOT_RUN_INDICATORS.search(remainder):
-                    continue
-
+        if cmd and cmd.lower() not in _LITERAL_NONE_COMMANDS:
+            if not _NOT_RUN_INDICATORS.search(cmd):
                 commands.append(cmd)
     return commands
 
@@ -440,26 +267,19 @@ def requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
 def extract_plan_status_from_output(agent_output: str) -> str:
     """Extract the PLAN_STATUS string from agent output.
 
-    Tries JSON contract format first, falls back to regex on the last
-    AGENT_STATUS block.
+    Only the ``json:contract`` fenced-block format is supported.
 
     Returns the raw status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT")
     or empty string if not found.
     """
-    # Try JSON contract format first
     contract = parse_contract(agent_output)
-    if contract is not None:
-        agent_status = contract.get("agent_status", {}) or {}
-        plan_status = agent_status.get("plan_status", "")
-        if plan_status:
-            return str(plan_status).upper().rstrip(".,;")
+    if contract is None:
+        return ""
 
-    # Legacy regex parsing
-    status_match = None
-    for m in re.finditer(r"PLAN_STATUS:\s*(\S+)", agent_output):
-        status_match = m
-    if status_match:
-        return status_match.group(1).upper().rstrip(".,;")
+    agent_status = contract.get("agent_status", {}) or {}
+    plan_status = agent_status.get("plan_status", "")
+    if plan_status:
+        return str(plan_status).upper().rstrip(".,;")
     return ""
 
 

@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.utils import has_stdin_data
+from modules.core.stdin import has_stdin_data  # session_start uses inline logic
 from modules.core.paths import get_logs_dir
 from modules.context.context_freshness import check_freshness
 from modules.scanning.scan_trigger import trigger_lightweight_scan

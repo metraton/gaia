@@ -199,12 +199,85 @@ def load_project_context(context_path: Path) -> Dict[str, Any]:
 # CONTEXT EXTRACTION
 # ============================================================================
 
+def get_relevant_sections(
+    sections: Dict[str, Any],
+    contract_keys: List[str],
+    surface_routing: Optional[Dict[str, Any]] = None,
+    routing_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Filter sections by surface relevance, with fallback to all readable sections.
+
+    Args:
+        sections: All available sections from project-context.json.
+        contract_keys: The agent's permitted read keys (from context-contracts).
+        surface_routing: The routing result from classify_surfaces().
+        routing_config: The full surface-routing.json config (has contract_sections per surface).
+
+    Returns:
+        Filtered dict of sections. Falls back to all readable sections when:
+        - No surface_routing or routing_config provided
+        - No active surfaces detected
+        - Surface has no contract_sections defined
+        - Intersection of surface sections and agent permissions is empty
+    """
+    all_readable = {k: sections[k] for k in contract_keys if k in sections}
+
+    if not surface_routing or not routing_config:
+        return all_readable
+
+    active_surfaces = surface_routing.get("active_surfaces", [])
+    if not active_surfaces:
+        return all_readable
+
+    surfaces_cfg = routing_config.get("surfaces", {})
+
+    # Collect relevant sections from all active surfaces
+    relevant: set = set()
+    for surface in active_surfaces:
+        surface_config = surfaces_cfg.get(surface, {})
+        surface_sections = surface_config.get("contract_sections", [])
+        relevant.update(surface_sections)
+
+    if not relevant:
+        # Surfaces have no contract_sections defined -- inject all (fallback)
+        return all_readable
+
+    # Filter: agent permissions AND surface relevance
+    filtered = {k: sections[k] for k in contract_keys if k in sections and k in relevant}
+
+    if not filtered:
+        # Nothing matched -- inject all (fallback)
+        return all_readable
+
+    omitted = set(all_readable.keys()) - set(filtered.keys())
+    if omitted:
+        print(
+            f"Surface gating: {len(filtered)} sections injected, "
+            f"{len(omitted)} omitted ({', '.join(sorted(omitted))})",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"Surface gating: all {len(filtered)} readable sections match active surfaces",
+            file=sys.stderr,
+        )
+
+    return filtered
+
+
 def get_contract_context(
     project_context: Dict[str, Any],
     agent_name: str,
-    provider_contracts: Dict[str, Any]
+    provider_contracts: Dict[str, Any],
+    surface_routing: Optional[Dict[str, Any]] = None,
+    routing_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Extracts the contract-defined context sections for a given agent."""
+    """Extracts the contract-defined context sections for a given agent.
+
+    When surface_routing and routing_config are provided, sections are filtered
+    to only those relevant to the active surface(s).  Falls back to returning
+    all readable sections when routing is unavailable or yields an empty set.
+    """
     agent_contract = provider_contracts.get("agents", {}).get(agent_name)
     if not agent_contract:
         print(f"ERROR: Invalid agent '{agent_name}'. Available: {list(provider_contracts.get('agents', {}).keys())}", file=sys.stderr)
@@ -216,7 +289,11 @@ def get_contract_context(
     if not sections:
         raise KeyError("project-context.json must contain a 'sections' object.")
 
-    return {key: sections[key] for key in contract_keys if key in sections}
+    return get_relevant_sections(
+        sections, contract_keys,
+        surface_routing=surface_routing,
+        routing_config=routing_config,
+    )
 
 
 def get_context_update_contract(
@@ -341,8 +418,20 @@ def main():
     cloud_provider = detect_cloud_provider(project_context)
     provider_contracts = load_provider_contracts(cloud_provider)
 
-    # Extract contracted sections
-    contract_context = get_contract_context(project_context, args.agent_name, provider_contracts)
+    # Compute surface routing BEFORE extracting sections so we can gate by surface
+    surface_routing_config = load_surface_routing_config()
+    surface_routing = classify_surfaces(
+        args.user_task,
+        current_agent=args.agent_name,
+        routing_config=surface_routing_config,
+    )
+
+    # Extract contracted sections (surface-gated when routing is available)
+    contract_context = get_contract_context(
+        project_context, args.agent_name, provider_contracts,
+        surface_routing=surface_routing,
+        routing_config=surface_routing_config,
+    )
     context_update_contract = get_context_update_contract(args.agent_name, provider_contracts)
 
     # Load historical episodes
@@ -350,12 +439,6 @@ def main():
 
     # Load universal rules
     rules_context = load_universal_rules(args.agent_name)
-    surface_routing_config = load_surface_routing_config()
-    surface_routing = classify_surfaces(
-        args.user_task,
-        current_agent=args.agent_name,
-        routing_config=surface_routing_config,
-    )
     investigation_brief = build_investigation_brief(
         args.user_task,
         args.agent_name,

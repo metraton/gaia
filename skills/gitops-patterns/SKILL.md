@@ -1,7 +1,8 @@
 ---
 name: gitops-patterns
 description: Use when creating, modifying, or reviewing Kubernetes manifests, HelmReleases, or Flux configuration
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # GitOps Patterns

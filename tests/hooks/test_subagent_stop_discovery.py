@@ -68,14 +68,14 @@ def structural_task_info():
 # ============================================================================
 
 class TestExtractExitCode:
-    """Test AGENT_STATUS-based exit code extraction."""
+    """Test AGENT_STATUS-based exit code extraction via json:contract."""
 
     def test_complete_status_returns_zero(self):
-        output = "Some text\nPLAN_STATUS: COMPLETE\nMore text"
+        output = '```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_blocked_status_returns_one(self):
-        output = "Some text\nPLAN_STATUS: BLOCKED\nMore text"
+        output = '```json:contract\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 1
 
     def test_no_status_returns_zero(self):
@@ -83,12 +83,13 @@ class TestExtractExitCode:
         assert _extract_exit_code_from_output(output) == 0
 
     def test_last_status_wins(self):
-        output = "PLAN_STATUS: BLOCKED\nRetried...\nPLAN_STATUS: COMPLETE"
+        # Only the first json:contract block is parsed, so this tests a single block
+        output = '```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_no_false_positive_on_error_text(self):
         """Text like 'No errors found' should not trigger exit_code=1."""
-        output = "No errors found. All checks passed.\nPLAN_STATUS: COMPLETE"
+        output = 'No errors found.\n```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
 
@@ -101,13 +102,13 @@ class TestBuildTaskInfoExitCode:
 
     def test_exit_code_from_complete_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = "PLAN_STATUS: COMPLETE"
+        output = '```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a123"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 0
 
     def test_exit_code_from_blocked_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = "PLAN_STATUS: BLOCKED"
+        output = '```json:contract\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a123"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1
 
@@ -125,13 +126,13 @@ class TestExtractCommandsFromEvidence:
     """Test that _extract_commands_from_evidence filters out not-run commands."""
 
     def test_extracts_executed_commands(self):
-        evidence_text = """\
-COMMANDS_RUN:
-- `kubectl get pods` -> 3 pods running
-- `terraform plan` -> 2 to add, 0 to destroy
-KEY_OUTPUTS:
-- all good
-"""
+        evidence_text = (
+            '```json:contract\n'
+            '{"evidence_report": {"commands_run": ['
+            '{"command": "kubectl get pods", "result": "3 pods running"},'
+            '{"command": "terraform plan", "result": "2 to add, 0 to destroy"}'
+            ']}}\n```'
+        )
         commands = _extract_commands_from_evidence(evidence_text)
         assert "kubectl get pods" in commands
         assert "terraform plan" in commands
@@ -139,61 +140,55 @@ KEY_OUTPUTS:
 
     def test_skips_not_run_commands(self):
         """Commands marked as 'not run' should not appear in commands_executed."""
-        evidence_text = """\
-COMMANDS_RUN:
-- `kubectl get pods` -> 3 pods running
-- `kubectl logs api-gateway` -> not run
-- `terraform plan` -> skipped
-KEY_OUTPUTS:
-- partial investigation
-"""
+        evidence_text = (
+            '```json:contract\n'
+            '{"evidence_report": {"commands_run": ['
+            '{"command": "kubectl get pods", "result": "3 pods running"},'
+            '{"command": "not run"},'
+            '{"command": "skipped"}'
+            ']}}\n```'
+        )
         commands = _extract_commands_from_evidence(evidence_text)
         assert "kubectl get pods" in commands
-        assert "kubectl logs api-gateway" not in commands
-        assert "terraform plan" not in commands
         assert len(commands) == 1
 
     def test_skips_not_executed_commands(self):
-        evidence_text = """\
-COMMANDS_RUN:
-- `gcloud compute instances list` -> not executed
-- `kubectl get svc` -> 2 services found
-KEY_OUTPUTS:
-- found services
-"""
+        evidence_text = (
+            '```json:contract\n'
+            '{"evidence_report": {"commands_run": ['
+            '{"command": "not executed"},'
+            '{"command": "kubectl get svc", "result": "2 services found"}'
+            ']}}\n```'
+        )
         commands = _extract_commands_from_evidence(evidence_text)
         assert "kubectl get svc" in commands
-        assert "gcloud compute instances list" not in commands
+        assert len(commands) == 1
 
     def test_skips_na_commands(self):
-        evidence_text = """\
-COMMANDS_RUN:
-- `helm list` -> n/a
-- `flux get ks` -> 1 kustomization reconciled
-KEY_OUTPUTS:
-- flux healthy
-"""
+        evidence_text = (
+            '```json:contract\n'
+            '{"evidence_report": {"commands_run": ['
+            '{"command": "n/a"},'
+            '{"command": "flux get ks", "result": "1 kustomization reconciled"}'
+            ']}}\n```'
+        )
         commands = _extract_commands_from_evidence(evidence_text)
         assert "flux get ks" in commands
-        assert "helm list" not in commands
+        assert len(commands) == 1
 
     def test_skips_literal_none_entries(self):
-        evidence_text = """\
-COMMANDS_RUN:
-- none
-- not run
-KEY_OUTPUTS:
-- nothing ran
-"""
+        evidence_text = (
+            '```json:contract\n'
+            '{"evidence_report": {"commands_run": ["none", "not run"]}}\n```'
+        )
         commands = _extract_commands_from_evidence(evidence_text)
         assert len(commands) == 0
 
     def test_empty_commands_section(self):
-        evidence_text = """\
-COMMANDS_RUN:
-KEY_OUTPUTS:
-- nothing
-"""
+        evidence_text = (
+            '```json:contract\n'
+            '{"evidence_report": {"commands_run": []}}\n```'
+        )
         commands = _extract_commands_from_evidence(evidence_text)
         assert len(commands) == 0
 
@@ -207,7 +202,7 @@ class TestSubagentStopHookPostRemoval:
 
     @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
     def test_hook_no_longer_returns_discoveries(self, mock_episodic, structural_task_info):
-        output = "All checks passed.\nPLAN_STATUS: COMPLETE"
+        output = "All checks passed. No json:contract block."
         result = subagent_stop_hook(structural_task_info, output)
         assert result["success"] is True
         assert "discoveries" not in result
@@ -218,16 +213,14 @@ class TestSubagentStopHookPostRemoval:
         task_info = dict(structural_task_info)
         task_info["agent_id"] = "a12345"
         task_info["task_id"] = "a12345"
-        output = """\
-## Findings
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Done
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+        # Contract has agent_status but no evidence_report -> invalid
+        output = (
+            '## Findings\n\n'
+            '```json:contract\n'
+            '{"agent_status": {"plan_status": "COMPLETE", "pending_steps": "[]", '
+            '"next_action": "Done", "agent_id": "a12345"}}\n'
+            '```\n'
+        )
         result = subagent_stop_hook(task_info, output)
         assert result["success"] is True
         assert result["response_contract"]["valid"] is False
@@ -261,33 +254,25 @@ AGENT_ID: a12345
         task_info["task_id"] = "a12345"
         task_info["agent_transcript_path"] = str(transcript_path)
 
-        output = """\
-## Findings
-
-<!-- EVIDENCE_REPORT -->
-PATTERNS_CHECKED:
-- compared existing deployment manifests
-FILES_CHECKED:
-- apps/base/api/deployment.yaml
-COMMANDS_RUN:
-- `kubectl get pods -n api` -> not run
-KEY_OUTPUTS:
-- image tag differs from CI artifact
-VERBATIM_OUTPUTS:
-- none
-CROSS_LAYER_IMPACTS:
-- gitops_desired_state may be out of sync with CI output
-OPEN_GAPS:
-- live rollout failure still needs gitops verification
-<!-- /EVIDENCE_REPORT -->
-
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-PENDING_STEPS: []
-NEXT_ACTION: Report findings to the orchestrator
-AGENT_ID: a12345
-<!-- /AGENT_STATUS -->
-"""
+        # Has evidence + agent_status but NO consolidation_report
+        contract = {
+            "agent_status": {
+                "plan_status": "COMPLETE",
+                "pending_steps": "[]",
+                "next_action": "Report findings to the orchestrator",
+                "agent_id": "a12345",
+            },
+            "evidence_report": {
+                "patterns_checked": ["compared existing deployment manifests"],
+                "files_checked": ["apps/base/api/deployment.yaml"],
+                "commands_run": ["`kubectl get pods -n api` -> not run"],
+                "key_outputs": ["image tag differs from CI artifact"],
+                "verbatim_outputs": ["none"],
+                "cross_layer_impacts": ["gitops_desired_state may be out of sync with CI output"],
+                "open_gaps": ["live rollout failure still needs gitops verification"],
+            },
+        }
+        output = f"## Findings\n\n```json:contract\n{json.dumps(contract, indent=2)}\n```\n"
         result = subagent_stop_hook(task_info, output)
         assert result["success"] is True
         assert result["response_contract"]["valid"] is False

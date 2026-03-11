@@ -1,7 +1,8 @@
 ---
 name: skill-creation
 description: Use when creating a new skill, improving an existing skill, or deciding what a skill should contain and how it should be structured
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Skill Creation

@@ -1,7 +1,8 @@
 ---
 name: context-updater
 description: Use when investigation reveals data that is missing from or differs from project-context.json
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Context Updater Protocol

@@ -1,7 +1,8 @@
 ---
 name: agent-protocol
 description: Use when starting any agent task, reporting status, or handling errors — defines json:contract format, state machine, and search protocol
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Agent Protocol

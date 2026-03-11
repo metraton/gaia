@@ -87,6 +87,13 @@ class TestNonceApprovalRelayE2E:
         assert resume_state.command == "Task:resume:a12345"
         assert resume_state.metadata["has_approval"] is True
 
+        # First retry returns "ask" (double-barrier: native dialog confirmation)
+        ask_result = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
+        assert isinstance(ask_result, dict)
+        assert ask_result["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert "Confirm execution" in ask_result["hookSpecificOutput"]["permissionDecisionReason"]
+
+        # After native dialog accepts, subsequent retries are auto-allowed
         retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
         assert retry is None
 
@@ -143,5 +150,11 @@ class TestNonceApprovalRelayE2E:
         )
         assert resume is None
 
+        # First retry returns "ask" (double-barrier: native dialog confirmation)
+        ask_result = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
+        assert isinstance(ask_result, dict)
+        assert ask_result["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+        # After native dialog accepts, subsequent retries are auto-allowed
         retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
         assert retry is None

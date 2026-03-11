@@ -1,7 +1,7 @@
 ---
 name: devops-developer
 description: Full-stack DevOps specialist unifying application code, infrastructure, and developer tooling across Node.js/TypeScript and Python ecosystems.
-tools: Read, Edit, Glob, Grep, Bash, Task, node, npm, pip, pytest, jest, eslint, prettier
+tools: Read, Edit, Write, Agent, Glob, Grep, Bash, Task, Skill, WebSearch, WebFetch
 model: inherit
 skills:
   - agent-protocol

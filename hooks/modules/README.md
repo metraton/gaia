@@ -46,7 +46,6 @@ modules/
 │   ├── approval_messages.py  # Approval denial message formatting
 │   ├── approval_scopes.py   # Approval scope definitions
 │   ├── command_semantics.py  # Command semantic analysis
-│   ├── interactive_handler.py # Auto-append non-interactive flags
 │   └── gitops_validator.py # kubectl/helm/flux validation
 │
 ├── tools/                # Tool-specific validators
@@ -73,9 +72,6 @@ modules/
 ├── validation/           # Commit validation
 │   ├── __init__.py
 │   └── commit_validator.py # Conventional Commits enforcement
-│
-├── workflow/             # Workflow support (reserved)
-│   └── __init__.py
 │
 ├── audit/                # Logging and metrics
 │   ├── __init__.py

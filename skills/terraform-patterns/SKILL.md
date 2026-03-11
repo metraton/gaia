@@ -1,7 +1,8 @@
 ---
 name: terraform-patterns
 description: Use when creating, modifying, or reviewing Terraform or Terragrunt configuration files
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Terraform Patterns

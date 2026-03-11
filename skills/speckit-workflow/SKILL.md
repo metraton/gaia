@@ -1,7 +1,8 @@
 ---
 name: speckit-workflow
 description: Use when planning features using the Spec-Kit framework (plan, tasks)
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Spec-Kit Workflow

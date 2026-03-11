@@ -125,6 +125,7 @@ class ApprovalGrant:
     granted_at: float = 0.0
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES
     used: bool = False
+    confirmed: bool = False
 
     def is_expired(self) -> bool:
         """Check if the grant has expired."""
@@ -567,6 +568,61 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
         logger.error("Error checking approval grants: %s", e)
 
     return None
+
+
+def confirm_grant(command: str) -> bool:
+    """Mark the first unconfirmed grant matching command as confirmed.
+
+    Called after the native permission dialog accepts the first T3 execution.
+    Subsequent T3 commands within the TTL window will see ``confirmed=True``
+    and be auto-allowed without a native dialog.
+
+    Args:
+        command: The shell command whose grant should be confirmed.
+
+    Returns:
+        True if a grant was found and confirmed, False otherwise.
+    """
+    session_id = _get_session_id()
+
+    try:
+        grants_dir = _get_grants_dir()
+        if not grants_dir.exists():
+            return False
+
+        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
+            try:
+                data = json.loads(grant_file.read_text())
+                grant = ApprovalGrant(**data)
+
+                if not grant.is_valid():
+                    if grant.is_expired():
+                        _cleanup_grant(grant_file)
+                    continue
+
+                if grant.confirmed:
+                    continue
+
+                signature = grant.get_signature()
+                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
+                    continue
+
+                if grant.matches_command(command):
+                    data["confirmed"] = True
+                    grant_file.write_text(json.dumps(data, indent=2))
+                    logger.info(
+                        "Grant confirmed: command='%s', grant=%s",
+                        command[:80], grant_file.name,
+                    )
+                    return True
+
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    except Exception as e:
+        logger.error("Error confirming grant: %s", e)
+
+    return False
 
 
 def cleanup_expired_grants() -> int:

@@ -1,10 +1,13 @@
 """
 Runtime validation for agent response contracts.
 
-Validates the deterministic blocks returned by agents:
-- EVIDENCE_REPORT
-- CONSOLIDATION_REPORT (for multi-surface / cross-check tasks)
-- AGENT_STATUS
+Validates the structured JSON contract block returned by agents
+(``json:contract`` fenced blocks parsed by ``contract_validator.parse_contract``).
+
+Validated sections:
+- agent_status  (plan_status, agent_id, pending_steps, next_action)
+- evidence_report  (patterns_checked, files_checked, commands_run, key_outputs, ...)
+- consolidation_report  (ownership_assessment, confirmed_findings, ...)
 
 """
 
@@ -20,6 +23,7 @@ from typing import Dict, List, Optional
 
 from ..core.paths import get_session_dir
 from ..core.state import get_session_id
+from .contract_validator import parse_contract
 
 
 VALID_PLAN_STATUSES = {
@@ -62,17 +66,6 @@ RECOMMENDED_ACTION_NONE = "none"
 
 _AGENT_ID_PATTERN = re.compile(r"^a[0-9a-f]{5,}$")
 
-_AGENT_STATUS_BLOCK_RE = re.compile(
-    r"<!-- AGENT_STATUS -->\s*(.*?)\s*<!-- /AGENT_STATUS -->", re.DOTALL
-)
-_EVIDENCE_REPORT_BLOCK_RE = re.compile(
-    r"<!-- EVIDENCE_REPORT -->\s*(.*?)\s*<!-- /EVIDENCE_REPORT -->", re.DOTALL
-)
-_CONSOLIDATION_REPORT_BLOCK_RE = re.compile(
-    r"<!-- CONSOLIDATION_REPORT -->\s*(.*?)\s*<!-- /CONSOLIDATION_REPORT -->",
-    re.DOTALL,
-)
-
 
 @dataclass(frozen=True)
 class AgentStatusBlock:
@@ -113,124 +106,151 @@ class ResponseContractValidation:
         return asdict(self)
 
 
-def _extract_last_marked_block(text: str, pattern: re.Pattern[str]) -> tuple[str, bool]:
-    last = None
-    for m in pattern.finditer(text):
-        last = m
-    if last is not None:
-        return last.group(1).strip(), True
-    return "", False
+# ============================================================================
+# JSON contract -> dataclass extraction helpers
+# ============================================================================
+
+def _get_str(d: dict, key: str) -> str:
+    """Get a string value from a dict, trying both lower-case and UPPER-CASE keys."""
+    return str(d.get(key, "") or d.get(key.upper(), "") or "")
 
 
-def _parse_key_value_lines(block_text: str) -> Dict[str, str]:
-    parsed: Dict[str, str] = {}
-    for line in block_text.splitlines():
-        stripped = line.strip()
-        if not stripped or ":" not in stripped:
-            continue
-        key, _, value = stripped.partition(":")
-        parsed[key.strip().upper()] = value.strip()
-    return parsed
+def _get_list(d: dict, key: str) -> List[str]:
+    """Get a list-of-strings value, trying both lower-case and UPPER-CASE keys.
 
-
-def _parse_bullet_field_block(
-    block_text: str,
-    fields: List[str],
-) -> Dict[str, List[str]]:
-    """Parse a block of text into field-keyed content.
-
-    Collects ALL lines between one field header and the next (or end of block)
-    as a single raw text entry per field.  This preserves fenced code blocks,
-    indented continuation lines, and other multiline content that a
-    bullet-only parser would drop.
-
-    Each field value is a list:
-    - ``[]`` when no content exists between the header and the next header
-    - ``[raw_text]`` (single-element list) with the raw text block otherwise
-
-    The raw text block has leading/trailing blank lines stripped but internal
-    structure (indentation, blank lines, fenced code markers) is preserved.
+    If the value is a list of dicts (e.g. commands_run entries with {command, result}),
+    each dict is serialised to a readable string.
     """
-    parsed: Dict[str, List[str]] = {field: [] for field in fields}
-    current_field: Optional[str] = None
-    accumulator: List[str] = []
-
-    def _flush(field: Optional[str], lines: List[str]) -> None:
-        if field is None:
-            return
-        raw = "\n".join(lines).strip()
-        if raw:
-            parsed[field] = [raw]
-
-    for raw_line in block_text.splitlines():
-        stripped = raw_line.strip()
-        # Detect a field header: a known field name followed by ":"
-        if stripped.endswith(":") and stripped[:-1] in fields:
-            _flush(current_field, accumulator)
-            current_field = stripped[:-1]
-            accumulator = []
-            continue
-        if current_field is not None:
-            accumulator.append(raw_line)
-
-    # Flush the last field
-    _flush(current_field, accumulator)
-    return parsed
+    val = d.get(key) or d.get(key.upper()) or []
+    if not isinstance(val, list):
+        return [str(val)] if val else []
+    result: List[str] = []
+    for item in val:
+        if isinstance(item, dict):
+            # e.g. {"command": "ls", "result": "ok"} -> "`ls` -> ok"
+            cmd = item.get("command", item.get("cmd", ""))
+            res = item.get("result", item.get("output", ""))
+            result.append(f"`{cmd}` -> {res}" if cmd else str(item))
+        else:
+            result.append(str(item))
+    return result
 
 
-def parse_agent_status(agent_output: str) -> AgentStatusBlock:
-    """Parse the last AGENT_STATUS block from agent output."""
-    body, marker_present = _extract_last_marked_block(
-        agent_output,
-        _AGENT_STATUS_BLOCK_RE,
-    )
+def _extract_agent_status(contract: dict) -> AgentStatusBlock:
+    """Build an AgentStatusBlock from the parsed JSON contract dict."""
+    agent_status = contract.get("agent_status")
+    if not agent_status or not isinstance(agent_status, dict):
+        return AgentStatusBlock(
+            marker_present=False,
+            plan_status="",
+            pending_steps="",
+            next_action="",
+            agent_id="",
+        )
 
-    source = body if body else agent_output
-    parsed = _parse_key_value_lines(source)
+    plan_status = _get_str(agent_status, "plan_status").upper().rstrip(".,;")
+    pending_steps = _get_str(agent_status, "pending_steps")
+    next_action = _get_str(agent_status, "next_action")
+    agent_id = _get_str(agent_status, "agent_id")
 
     return AgentStatusBlock(
-        marker_present=marker_present,
-        plan_status=parsed.get("PLAN_STATUS", "").upper().rstrip(".,;"),
-        pending_steps=parsed.get("PENDING_STEPS", ""),
-        next_action=parsed.get("NEXT_ACTION", ""),
-        agent_id=parsed.get("AGENT_ID", ""),
+        marker_present=True,
+        plan_status=plan_status,
+        pending_steps=pending_steps,
+        next_action=next_action,
+        agent_id=agent_id,
     )
 
 
-def parse_evidence_report(agent_output: str) -> EvidenceReportBlock:
-    """Parse the last EVIDENCE_REPORT block from agent output."""
-    body, marker_present = _extract_last_marked_block(
-        agent_output,
-        _EVIDENCE_REPORT_BLOCK_RE,
-    )
-    fields = _parse_bullet_field_block(body, EVIDENCE_FIELDS) if body else {field: [] for field in EVIDENCE_FIELDS}
+def _extract_evidence_report(contract: dict) -> EvidenceReportBlock:
+    """Build an EvidenceReportBlock from the parsed JSON contract dict."""
+    evidence = contract.get("evidence_report")
+    if not evidence or not isinstance(evidence, dict):
+        return EvidenceReportBlock(
+            marker_present=False,
+            fields={field: [] for field in EVIDENCE_FIELDS},
+        )
 
-    return EvidenceReportBlock(marker_present=marker_present, fields=fields)
+    fields: Dict[str, List[str]] = {}
+    for field_name in EVIDENCE_FIELDS:
+        key_lower = field_name.lower()
+        values = _get_list(evidence, key_lower)
+        fields[field_name] = values
+
+    return EvidenceReportBlock(marker_present=True, fields=fields)
 
 
-def parse_consolidation_report(agent_output: str) -> ConsolidationReportBlock:
-    """Parse the last CONSOLIDATION_REPORT block from agent output."""
-    body, marker_present = _extract_last_marked_block(
-        agent_output,
-        _CONSOLIDATION_REPORT_BLOCK_RE,
-    )
-    parsed = _parse_key_value_lines(body) if body else {}
-    fields = _parse_bullet_field_block(body, CONSOLIDATION_FIELDS) if body else {
-        field: [] for field in CONSOLIDATION_FIELDS
-    }
+def _extract_consolidation_report(contract: dict) -> ConsolidationReportBlock:
+    """Build a ConsolidationReportBlock from the parsed JSON contract dict."""
+    consolidation = contract.get("consolidation_report")
+    if not consolidation or not isinstance(consolidation, dict):
+        return ConsolidationReportBlock(
+            marker_present=False,
+            ownership_assessment="",
+            fields={field: [] for field in CONSOLIDATION_FIELDS},
+        )
+
+    ownership = _get_str(consolidation, "ownership_assessment")
+
+    fields: Dict[str, List[str]] = {}
+    for field_name in CONSOLIDATION_FIELDS:
+        key_lower = field_name.lower()
+        values = _get_list(consolidation, key_lower)
+        fields[field_name] = values
 
     return ConsolidationReportBlock(
-        marker_present=marker_present,
-        ownership_assessment=parsed.get("OWNERSHIP_ASSESSMENT", "").strip(),
+        marker_present=True,
+        ownership_assessment=ownership,
         fields=fields,
     )
+
+
+# ============================================================================
+# Public parse helpers (operate on agent_output string via parse_contract)
+# ============================================================================
+
+def parse_agent_status(agent_output: str, parsed_contract: Optional[dict] = None) -> AgentStatusBlock:
+    """Parse agent_status from agent output using the json:contract block."""
+    contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
+    if contract is None:
+        return AgentStatusBlock(
+            marker_present=False, plan_status="", pending_steps="",
+            next_action="", agent_id="",
+        )
+    return _extract_agent_status(contract)
+
+
+def parse_evidence_report(agent_output: str, parsed_contract: Optional[dict] = None) -> EvidenceReportBlock:
+    """Parse evidence_report from agent output using the json:contract block."""
+    contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
+    if contract is None:
+        return EvidenceReportBlock(
+            marker_present=False,
+            fields={field: [] for field in EVIDENCE_FIELDS},
+        )
+    return _extract_evidence_report(contract)
+
+
+def parse_consolidation_report(agent_output: str, parsed_contract: Optional[dict] = None) -> ConsolidationReportBlock:
+    """Parse consolidation_report from agent output using the json:contract block."""
+    contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
+    if contract is None:
+        return ConsolidationReportBlock(
+            marker_present=False, ownership_assessment="",
+            fields={field: [] for field in CONSOLIDATION_FIELDS},
+        )
+    return _extract_consolidation_report(contract)
 
 
 def _is_resume_agent_id(value: str) -> bool:
     return bool(_AGENT_ID_PATTERN.match(value or ""))
 
 
-def _resolve_agent_id(task_info: dict) -> str:
+def resolve_agent_id(task_info: dict) -> str:
+    """Extract the agent ID from a task_info dict.
+
+    Falls back to ``task_id`` when ``agent_id`` is absent.
+    """
     return str(task_info.get("agent_id", "") or task_info.get("task_id", ""))
 
 
@@ -239,12 +259,55 @@ def validate_response_contract(
     *,
     task_agent_id: str = "",
     consolidation_required: bool = False,
+    parsed_contract: Optional[dict] = None,
 ) -> ResponseContractValidation:
-    """Validate deterministic response blocks emitted by an agent."""
-    status = parse_agent_status(agent_output)
-    evidence = parse_evidence_report(agent_output)
+    """Validate deterministic response blocks emitted by an agent.
+
+    Args:
+        agent_output: Raw agent output text.
+        task_agent_id: Agent ID from task_info, used as fallback.
+        consolidation_required: Whether a CONSOLIDATION_REPORT is required.
+        parsed_contract: Pre-parsed dict from parse_contract(). If provided,
+            avoids re-parsing agent_output. If None, parse_contract() is
+            called internally.
+    """
+    contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
+
+    if contract is None:
+        # No json:contract block found -- everything is missing.
+        empty_evidence = EvidenceReportBlock(
+            marker_present=False,
+            fields={field: [] for field in EVIDENCE_FIELDS},
+        )
+        empty_consolidation = ConsolidationReportBlock(
+            marker_present=False, ownership_assessment="",
+            fields={field: [] for field in CONSOLIDATION_FIELDS},
+        )
+        empty_status = AgentStatusBlock(
+            marker_present=False, plan_status="", pending_steps="",
+            next_action="", agent_id="",
+        )
+        missing = ["AGENT_STATUS", "PLAN_STATUS", "PENDING_STEPS", "NEXT_ACTION", "AGENT_ID"]
+        recommended_action = "escalate_contract_repair" if not task_agent_id else "resume_same_agent_contract_repair"
+        if not _is_resume_agent_id(task_agent_id):
+            recommended_action = "escalate_contract_repair"
+        return ResponseContractValidation(
+            valid=False,
+            severity="hard",
+            missing=missing,
+            invalid=[],
+            evidence_required=False,
+            consolidation_required=consolidation_required,
+            recommended_action=recommended_action,
+            agent_status=empty_status,
+            evidence_report=empty_evidence,
+            consolidation_report=empty_consolidation,
+        )
+
+    status = _extract_agent_status(contract)
+    evidence = _extract_evidence_report(contract)
     if consolidation_required:
-        consolidation = parse_consolidation_report(agent_output)
+        consolidation = _extract_consolidation_report(contract)
     else:
         consolidation = ConsolidationReportBlock(
             marker_present=False, ownership_assessment="",
@@ -364,7 +427,7 @@ def save_validation_result(task_info: Dict[str, object], validation: ResponseCon
         "created_at_epoch": time.time(),
         "session_id": session_id,
         "agent": task_info.get("agent", ""),
-        "agent_id": _resolve_agent_id(task_info),
+        "agent_id": resolve_agent_id(task_info),
         "task_id": task_info.get("task_id", ""),
         "validation": validation.to_dict(),
     }
@@ -389,6 +452,6 @@ __all__ = [
     "validate_response_contract",
     "save_validation_result",
     "load_last_validation",
-    "_resolve_agent_id",
+    "resolve_agent_id",
     "clear_contract_dir_cache",
 ]

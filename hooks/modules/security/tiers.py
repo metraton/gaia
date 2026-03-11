@@ -137,7 +137,11 @@ def _classify_command_tier_cached(
     return SecurityTier.T0_READ_ONLY
 
 
-def classify_command_tier(command: str) -> SecurityTier:
+def classify_command_tier(
+    command: str,
+    *,
+    pre_computed_tier: "SecurityTier | None" = None,
+) -> SecurityTier:
     """
     Classify command into security tier.
 
@@ -146,7 +150,11 @@ def classify_command_tier(command: str) -> SecurityTier:
     order (blocked -> safe -> dangerous verbs -> GitOps -> tier) is the primary
     security gate.
 
-    Classification order:
+    If *pre_computed_tier* is provided (e.g. from a ``BashValidationResult``
+    that already determined the tier during validation), it is returned
+    immediately without re-computing.
+
+    Classification order (when no pre-computed tier):
     1. Ultra-common T0 fast-path (ls, git status, etc.)
     2. Blocked patterns (T3) -- checked against pre-compiled patterns
     3. Dry-run/simulation (T2) -- --dry-run, plan, diff, template
@@ -156,10 +164,16 @@ def classify_command_tier(command: str) -> SecurityTier:
 
     Args:
         command: Shell command to classify
+        pre_computed_tier: Optional tier already determined by an upstream
+            validator.  When provided the function returns it directly.
 
     Returns:
         SecurityTier classification
     """
+    # Fast path: caller already knows the tier (e.g. BashValidationResult).
+    if pre_computed_tier is not None:
+        return pre_computed_tier
+
     if not command or not command.strip():
         return SecurityTier.T3_BLOCKED
 

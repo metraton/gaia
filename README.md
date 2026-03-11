@@ -129,7 +129,7 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **4.1.1**
+Current version: **4.2.0**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 

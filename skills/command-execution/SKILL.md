@@ -1,7 +1,8 @@
 ---
 name: command-execution
 description: Use when executing any bash command, CLI tool, or shell operation
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Command Execution

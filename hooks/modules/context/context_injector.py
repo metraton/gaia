@@ -20,6 +20,68 @@ from .contracts_loader import build_context_update_reminder
 logger = logging.getLogger(__name__)
 
 
+def _prune_empty_values(data: dict) -> dict:
+    """Drop keys with empty telemetry values while preserving False/0."""
+    pruned = {}
+    for key, value in data.items():
+        if value in (None, "", [], {}):
+            continue
+        pruned[key] = value
+    return pruned
+
+
+def build_context_telemetry_snapshot(context_payload: dict) -> dict:
+    """Build a compact telemetry snapshot from injected context payload data."""
+    if not isinstance(context_payload, dict) or not context_payload:
+        return {}
+
+    contract = context_payload.get("contract") or {}
+    metadata = context_payload.get("metadata") or {}
+    surface_routing = context_payload.get("surface_routing") or {}
+    investigation_brief = context_payload.get("investigation_brief") or {}
+    context_update_contract = context_payload.get("context_update_contract") or {}
+
+    contract_sections = sorted(contract.keys())
+    readable_sections = sorted(context_update_contract.get("readable_sections") or [])
+    writable_sections = sorted(context_update_contract.get("writable_sections") or [])
+
+    return _prune_empty_values({
+        "contract_sections": contract_sections,
+        "contract_sections_count": len(contract_sections),
+        "metadata": _prune_empty_values({
+            "cloud_provider": metadata.get("cloud_provider"),
+            "contract_version": metadata.get("contract_version"),
+            "rules_count": metadata.get("rules_count"),
+            "historical_episodes_count": metadata.get("historical_episodes_count"),
+            "surface_routing_version": metadata.get("surface_routing_version"),
+            "active_surfaces_count": metadata.get("active_surfaces_count"),
+            "surface_routing_confidence": metadata.get("surface_routing_confidence"),
+        }),
+        "surface_routing": _prune_empty_values({
+            "primary_surface": surface_routing.get("primary_surface"),
+            "active_surfaces": sorted(surface_routing.get("active_surfaces") or []),
+            "dispatch_mode": surface_routing.get("dispatch_mode"),
+            "multi_surface": surface_routing.get("multi_surface"),
+            "recommended_agents": sorted(surface_routing.get("recommended_agents") or []),
+        }),
+        "investigation_brief": _prune_empty_values({
+            "agent_role": investigation_brief.get("agent_role"),
+            "primary_surface": investigation_brief.get("primary_surface"),
+            "adjacent_surfaces": sorted(investigation_brief.get("adjacent_surfaces") or []),
+            "cross_check_required": investigation_brief.get("cross_check_required"),
+            "consolidation_required": investigation_brief.get("consolidation_required"),
+            "required_checks_count": len(investigation_brief.get("required_checks") or []),
+            "evidence_required": sorted(investigation_brief.get("evidence_required") or []),
+        }),
+        "context_update_scope": _prune_empty_values({
+            "readable_sections": readable_sections,
+            "readable_sections_count": len(readable_sections),
+            "writable_sections": writable_sections,
+            "writable_sections_count": len(writable_sections),
+        }),
+    })
+
+
 def should_inject_on_resume(parameters: dict) -> bool:
     """
     Determine if context should be injected on a resume operation.

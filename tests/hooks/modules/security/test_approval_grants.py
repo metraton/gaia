@@ -63,9 +63,15 @@ def _write_active_grant(
     ttl_minutes: int = 10,
     granted_at: float | None = None,
     used: bool = False,
+    confirmed: bool = True,
     session_id: str = "test-session-123",
 ) -> Path:
-    """Write an active grant file directly for grant-matching tests."""
+    """Write an active grant file directly for grant-matching tests.
+
+    Note: ``confirmed`` defaults to True so that grant-matching tests
+    exercise the "auto-allow" path. Set ``confirmed=False`` to test the
+    double-barrier "ask" flow.
+    """
     signature = build_approval_signature(command, scope_type=scope_type)
     assert signature is not None
     grant = ApprovalGrant(
@@ -77,6 +83,7 @@ def _write_active_grant(
         granted_at=granted_at if granted_at is not None else time.time(),
         ttl_minutes=ttl_minutes,
         used=used,
+        confirmed=confirmed,
     )
     grant_file = grants_dir / f"grant-{session_id}-{int(time.time() * 1000)}.json"
     grant_file.write_text(json.dumps(asdict(grant), indent=2))
@@ -558,7 +565,7 @@ class TestCleanup:
 class TestNonceEndToEnd:
     """The full nonce flow should still work end-to-end."""
 
-    def test_full_flow_block_activate_allow(self, clean_grants_dir):
+    def test_full_flow_block_activate_ask_then_allow(self, clean_grants_dir):
         from modules.tools.bash_validator import BashValidator
 
         validator = BashValidator()
@@ -578,8 +585,16 @@ class TestNonceEndToEnd:
         assert activation.success is True
         assert not pending_file.exists()
 
+        # First retry after activation returns "ask" (double-barrier)
         result2 = validator.validate('git commit -m "feat(auth): add login endpoint"')
-        assert result2.allowed is True
+        assert result2.allowed is False
+        assert result2.block_response is not None
+        assert result2.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert "Confirm execution" in result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+
+        # Second retry after native dialog confirmation returns allowed
+        result3 = validator.validate('git commit -m "feat(auth): add login endpoint"')
+        assert result3.allowed is True
 
     def test_blocked_t3_is_queryable_via_latest_pending_helper(self, clean_grants_dir):
         from modules.tools.bash_validator import BashValidator

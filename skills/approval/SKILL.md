@@ -1,7 +1,8 @@
 ---
 name: approval
 description: Use when a T3 operation is ready and needs to be presented to the user for approval before execution
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Approval
@@ -81,6 +82,11 @@ You MUST include this nonce in your PENDING_APPROVAL output so the orchestrator 
 When the user approves, the orchestrator resumes you with `APPROVE:<nonce>` from
 the latest blocked command. Do not improvise approval text and do not paraphrase
 the token.
+
+**After relaying the nonce**, Claude Code will show a native confirmation dialog
+to the user for the first execution. This is expected -- it is the final security
+gate (double-barrier). Subsequent commands within the approval TTL window proceed
+without the native dialog.
 
 **If you lose the nonce** (e.g., the block response is not in your context), re-attempt the
 command. The hook will generate a fresh nonce.

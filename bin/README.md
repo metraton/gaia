@@ -147,4 +147,4 @@ npx gaia-scan --non-interactive
 
 ---
 
-**Version:** 4.0.0 | **Updated:** 2026-03-03 | **Scripts:** 11
+**Version:** 4.2.0 | **Updated:** 2026-03-11 | **Scripts:** 11

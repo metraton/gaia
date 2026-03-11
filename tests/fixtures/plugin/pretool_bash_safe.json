@@ -1,8 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input": {
-    "command": "kubectl get pods -n staging"
-  },
-  "hook_event_name": "PreToolUse",
-  "session_id": "e2e-test-safe-001"
-}

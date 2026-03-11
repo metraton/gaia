@@ -32,7 +32,8 @@ from modules.core.paths import get_logs_dir
 # Adapter layer: normalize stdin parsing and response formatting
 from adapters.claude_code import ClaudeCodeAdapter
 from adapters.types import ValidationResult
-from adapters.utils import has_stdin_data, warn_if_dual_channel
+from modules.core.stdin import has_stdin_data
+from adapters.utils import warn_if_dual_channel
 
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.approval_constants import (

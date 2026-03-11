@@ -1,7 +1,8 @@
 ---
 name: gaia-patterns
 description: Use when analyzing, designing, or modifying the gaia-ops orchestration system architecture
-user-invocable: false
+metadata:
+  user-invocable: false
 ---
 
 # Gaia-Ops Patterns

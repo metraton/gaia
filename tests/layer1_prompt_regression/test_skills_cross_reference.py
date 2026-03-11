@@ -109,8 +109,11 @@ class TestAgentSkillReferences:
 
         # Check CLAUDE.md (orchestrator) for skill references
         # Some skills are orchestrator-only and won't appear in agent frontmatter
+        # Match both "skills/name" paths and "name skill" / "name`" references
         for skill_dir in all_skill_dirs:
             if f"skills/{skill_dir.name}" in claude_md_content:
+                all_referenced.add(skill_dir.name)
+            elif f"{skill_dir.name} skill" in claude_md_content:
                 all_referenced.add(skill_dir.name)
 
         for skill_dir in all_skill_dirs:

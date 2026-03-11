@@ -79,8 +79,9 @@ Workflow skills are loaded on-demand -- agents read them from disk when needed r
 ---
 name: skill-name
 description: When Claude should use this skill
-user-invocable: false  # Background knowledge, not a slash command
-type: core             # Optional: core, common, domain, workflow
+metadata:
+  user-invocable: false  # Background knowledge, not a slash command
+  type: core             # Optional: core, common, domain, workflow
 ---
 
 # Skill Content
@@ -91,7 +92,7 @@ Instructions and patterns the agent follows.
 ## Development Guidelines
 
 - Keep skills focused and specific
-- Use `user-invocable: false` for background knowledge
+- Use `metadata.user-invocable: false` for background knowledge
 - Keep injected skills under 100 lines (move details to supporting files)
 - Reference workflow skills as readable files, not injected content
 - Avoid duplicating content across skills -- use references instead

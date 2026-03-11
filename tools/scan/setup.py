@@ -8,7 +8,7 @@ functionality that gaia-scan needs when operating on a fresh project
 Functions:
 - create_claude_directory: mkdir .claude/ with symlinks and subdirs
 - copy_claude_md: copy CLAUDE.template.md to project root
-- copy_settings_json: copy or shallow-merge settings.template.json
+- copy_settings_json: copy or deep-merge settings.template.json
 - install_git_hooks: copy commit-msg hook to all git repos
 - generate_governance: interpolate governance.template.md
 - ensure_gaia_ops_package: npm install @jaguilar87/gaia-ops
@@ -253,13 +253,40 @@ def copy_claude_md(project_root: Path) -> bool:
         return False
 
 
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge *override* into *base*.
+
+    - Dicts are merged recursively (nested keys preserved from both sides).
+    - Lists are unioned (override items first, then base items not already present).
+    - Scalars from *override* win.
+
+    Used by ``copy_settings_json`` to deep-merge the ``hooks`` and
+    ``permissions`` sections so that new template entries are added
+    without discarding user customizations.
+    """
+    merged = dict(base)
+    for key, val in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge_dict(merged[key], val)
+        elif key in merged and isinstance(merged[key], list) and isinstance(val, list):
+            combined = list(val)
+            for item in merged[key]:
+                if item not in combined:
+                    combined.append(item)
+            merged[key] = combined
+        else:
+            merged[key] = val
+    return merged
+
+
 def copy_settings_json(project_root: Path) -> bool:
-    """Copy or shallow-merge settings.template.json to .claude/settings.json.
+    """Copy or deep-merge settings.template.json to .claude/settings.json.
 
     Behavior:
     - If settings.json does NOT exist: copy template as-is.
     - If settings.json EXISTS: template is base, existing values win on conflict.
-      Array keys are unioned (existing first).
+      The ``hooks`` and ``permissions`` dicts are deep-merged so nested keys
+      from both sides are preserved. All other array keys are unioned.
 
     Args:
         project_root: Project root directory.
@@ -290,11 +317,16 @@ def copy_settings_json(project_root: Path) -> bool:
             logger.info("settings.json regenerated (previous file was invalid)")
             return True
 
-        # Shallow merge: template keys as base, existing keys override
-        # For array keys, union both sets
+        # Deep merge for hooks and permissions dicts so nested keys
+        # (e.g. new hook events, new permission entries) are merged
+        # rather than overwritten.  All other top-level keys use the
+        # original shallow-merge logic (arrays unioned, scalars from
+        # existing win).
         merged = dict(template_data)
         for key, val in existing_data.items():
-            if isinstance(val, list) and isinstance(merged.get(key), list):
+            if key in ("hooks", "permissions") and isinstance(val, dict) and isinstance(merged.get(key), dict):
+                merged[key] = _deep_merge_dict(merged[key], val)
+            elif isinstance(val, list) and isinstance(merged.get(key), list):
                 combined = list(val)
                 for item in merged[key]:
                     if item not in combined:

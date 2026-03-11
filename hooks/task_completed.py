@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.utils import has_stdin_data
+from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
 
 # Configure logging
@@ -35,22 +35,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _handle_task_completed(stdin_data: str) -> None:
+def _handle_task_completed(event) -> None:
     """Process a TaskCompleted event.
 
     Checks whether task completion criteria are met.
     For MVP, always allows completion.
 
     Args:
-        stdin_data: Raw JSON from stdin.
+        event: Parsed HookEvent from the adapter layer.
     """
     adapter = ClaudeCodeAdapter()
-
-    try:
-        event = adapter.parse_event(stdin_data)
-    except ValueError as e:
-        logger.error("Adapter parse failed: %s", e)
-        sys.exit(1)
 
     # Parse task completed event via adapter
     verification_result = adapter.adapt_task_completed(event.payload)
@@ -74,13 +68,4 @@ def _handle_task_completed(stdin_data: str) -> None:
 # ============================================================================
 
 if __name__ == "__main__":
-    if has_stdin_data():
-        try:
-            stdin_data = sys.stdin.read()
-            _handle_task_completed(stdin_data)
-        except Exception as e:
-            logger.error("Error processing TaskCompleted hook: %s", e)
-            sys.exit(1)
-    else:
-        print("Usage: echo '{...}' | python task_completed.py  (stdin mode)")
-        sys.exit(1)
+    run_hook(_handle_task_completed, hook_name="task_completed")
