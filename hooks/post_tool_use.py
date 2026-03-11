@@ -27,6 +27,9 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).parent))
 
 from modules.core.paths import get_logs_dir, get_session_dir
+
+# Adapter layer: normalize stdin parsing
+from adapters.claude_code import ClaudeCodeAdapter
 from modules.core.state import get_hook_state, clear_hook_state
 from modules.audit.logger import log_execution
 from modules.audit.event_detector import detect_critical_event
@@ -238,24 +241,33 @@ if __name__ == "__main__":
         main()
     elif has_stdin_data():
         try:
+            # --- Adapter: parse stdin ---
+            adapter = ClaudeCodeAdapter()
             stdin_data = sys.stdin.read()
-            if not stdin_data.strip():
-                print("Error: Empty stdin data", file=sys.stderr)
-                print("Error: Empty stdin data")
+
+            try:
+                event = adapter.parse_event(stdin_data)
+            except ValueError as e:
+                error_msg = str(e)
+                logger.error(f"Adapter parse failed: {error_msg}")
+                print(f"HOOK ERROR: {error_msg}", file=sys.stderr)
+                if "Empty stdin" in error_msg:
+                    print(f"Error: {error_msg}")
                 sys.exit(1)
 
-            hook_data = json.loads(stdin_data)
+            # Use adapter helper to extract typed tool result data
+            tool_result_data = adapter.parse_post_tool_use(event.payload)
 
-            logger.info(f"Post-hook event: {hook_data.get('hook_event_name')}")
+            logger.info(f"Post-hook event: {event.payload.get('hook_event_name')}")
 
-            tool_name = hook_data.get("tool_name", "")
-            tool_input = hook_data.get("tool_input", {})
-            tool_result = hook_data.get("tool_result", {})
+            tool_name = tool_result_data.tool_name
+            tool_input = event.payload.get("tool_input", {})
 
-            # Extract result and duration
-            result = tool_result.get("output", "")
-            duration = tool_result.get("duration_ms", 0) / 1000.0
-            success = tool_result.get("exit_code", 0) == 0
+            # Extract result and duration from typed ToolResult
+            result = tool_result_data.output
+            raw_tool_result = event.payload.get("tool_result", {})
+            duration = raw_tool_result.get("duration_ms", 0) / 1000.0
+            success = tool_result_data.exit_code == 0
 
             post_tool_use_hook(tool_name, tool_input, result, duration, success)
             sys.exit(0)

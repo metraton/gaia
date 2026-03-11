@@ -1,0 +1,6 @@
+{
+  "name": "gaia-security",
+  "version": "4.1.1",
+  "description": "Command validation hooks: blocked commands, mutative verb detection, nonce-based approval",
+  "keywords": ["security", "hooks", "governance"]
+}

@@ -23,7 +23,26 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 
 ## Installation
 
-### Quick Start
+### Via Claude Code Plugin (recommended)
+```bash
+# Add the marketplace
+/plugin marketplace add metraton/gaia-ops
+
+# Install the full system
+/plugin install gaia-full
+
+# Or install individual components
+/plugin install gaia-security    # Security hooks only
+/plugin install gaia-agents      # Specialized agents only
+```
+
+### Via npm (advanced setup)
+```bash
+npm install @jaguilar87/gaia-ops
+npx gaia-init
+```
+
+### Quick Start (npm)
 
 ```bash
 # Run directly with npx

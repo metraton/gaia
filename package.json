@@ -40,11 +40,15 @@
     "email": "jaguilar1897@gmail.com"
   },
   "files": [
+    ".claude-plugin/",
     "bin/",
     "agents/",
     "tools/",
     "hooks/",
+    "hooks/adapters/",
+    "hooks/hooks.json",
     "commands/",
+    "plugins/",
     "templates/",
     "config/",
     "speckit/",

@@ -29,6 +29,10 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 
+# Adapter layer: normalize stdin parsing and response formatting
+from adapters.claude_code import ClaudeCodeAdapter
+from adapters.types import ValidationResult
+
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.approval_constants import (
     NONCE_APPROVAL_PREFIX,
@@ -1091,13 +1095,29 @@ if __name__ == "__main__":
         main()
     elif has_stdin_data():
         try:
+            # --- Adapter: parse stdin ---
+            adapter = ClaudeCodeAdapter()
+
+            # Coexistence check: warn if both plugin and npm channels are active
+            from adapters.channel import is_dual_channel_active, detect_distribution_channel
+            channel = detect_distribution_channel()
+            if is_dual_channel_active():
+                logger.warning("Both plugin and npm channels detected. Plugin channel takes precedence.")
+
             stdin_data = sys.stdin.read()
-            if not stdin_data.strip():
-                print("Error: Empty stdin data", file=sys.stderr)
-                print("Error: Empty stdin data")
+
+            try:
+                event = adapter.parse_event(stdin_data)
+            except ValueError as e:
+                error_msg = str(e)
+                logger.error(f"Adapter parse failed: {error_msg}")
+                print(f"HOOK ERROR: {error_msg}", file=sys.stderr)
+                if "Empty stdin" in error_msg:
+                    print(f"Error: {error_msg}")
                 sys.exit(1)
 
-            hook_data = json.loads(stdin_data)
+            # Compatibility: expose raw payload for business logic
+            hook_data = event.payload
 
             logger.info(f"Hook event: {hook_data.get('hook_event_name')}")
 

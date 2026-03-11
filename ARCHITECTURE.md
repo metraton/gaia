@@ -177,6 +177,30 @@ Every agent response must end with an AGENT_STATUS block. The contract validator
 
 Invalid responses trigger a repair loop: save pending-repair.json, pre_tool_use guard blocks new tasks, orchestrator must resume the same agent for repair (max 2 attempts before escalation).
 
+## Adapter Layer
+
+The adapter layer decouples business logic from CLI-specific protocols. Located at `hooks/adapters/`.
+
+### Components
+- `types.py` -- Normalized dataclasses (HookEvent, ValidationRequest, ValidationResult, etc.)
+- `base.py` -- Abstract HookAdapter interface
+- `claude_code.py` -- Claude Code adapter (stdin JSON <-> normalized types)
+- `channel.py` -- Distribution channel detection (plugin vs npm)
+
+### Flow
+```
+Claude Code stdin JSON -> ClaudeCodeAdapter.parse_event() -> normalized HookEvent
+    -> Business logic (unchanged) ->
+ClaudeCodeAdapter.format_validation_response() -> Claude Code stdout JSON
+```
+
+### Plugin Distribution
+gaia-ops is distributable as a Claude Code plugin via `.claude-plugin/plugin.json`.
+The plugin is auto-discovered by Claude Code -- agents, skills, commands, and hooks
+are loaded from their respective directories.
+
+See `.claude-plugin/marketplace.json` for the self-hosted marketplace with sub-plugins.
+
 ## Key Files Reference
 
 | File | Purpose |

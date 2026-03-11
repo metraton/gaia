@@ -1,0 +1,35 @@
+{
+  "name": "gaia-ops-marketplace",
+  "version": "1.0.0",
+  "description": "Security, governance, and multi-agent orchestration for AI coding",
+  "owner": {
+    "name": "gaia-ops",
+    "email": "jaguilar87@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "gaia-security",
+      "description": "Command validation hooks: blocked commands, mutative verb detection, nonce-based approval",
+      "version": "4.1.1",
+      "source": "./plugins/gaia-security",
+      "category": "security",
+      "tags": ["hooks", "governance", "approval", "command-validation"]
+    },
+    {
+      "name": "gaia-agents",
+      "description": "Specialized DevOps agents: cloud-troubleshooter, terraform-architect, gitops-operator, devops-developer, speckit-planner",
+      "version": "4.1.1",
+      "source": "./plugins/gaia-agents",
+      "category": "development",
+      "tags": ["agents", "devops", "terraform", "kubernetes", "gitops"]
+    },
+    {
+      "name": "gaia-full",
+      "description": "Complete orchestration system: security hooks, specialized agents, skills, context injection, episodic memory",
+      "version": "4.1.1",
+      "source": ".",
+      "category": "development",
+      "tags": ["orchestrator", "devops", "security", "governance", "multi-agent"]
+    }
+  ]
+}

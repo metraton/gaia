@@ -32,9 +32,9 @@ def pytest_collection_modifyitems(config, items):
     skip_e2e = pytest.mark.skip(reason="E2E tests skipped by default (use -m e2e)")
 
     for item in items:
-        if "llm" in item.keywords:
+        if item.get_closest_marker("llm"):
             item.add_marker(skip_llm)
-        if "e2e" in item.keywords:
+        if item.get_closest_marker("e2e"):
             item.add_marker(skip_e2e)
 
 

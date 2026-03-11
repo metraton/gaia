@@ -5,6 +5,21 @@ All notable changes to the CLAUDE.md orchestrator instructions are documented in
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Plugin distribution: `.claude-plugin/plugin.json` manifest for Claude Code native plugin system
+- Self-hosted marketplace: `.claude-plugin/marketplace.json` with 3 sub-plugin tiers (gaia-security, gaia-agents, gaia-full)
+- Adapter layer: `hooks/adapters/` with normalized types, abstract base, and Claude Code adapter
+- `hooks/hooks.json` for plugin-channel hook configuration
+- Distribution channel detection (`hooks/adapters/channel.py`)
+- Integration tests for adapter -> business logic -> response flow
+- Plugin manifest validation tests
+
+### Changed
+- Hook entry points (pre_tool_use.py, post_tool_use.py, subagent_stop.py) now use adapter layer for stdin/stdout
+- hook_response.py delegates to ClaudeCodeAdapter internally
+
 ## [4.0.0] - 2026-03-03
 
 ### Breaking: Contracts as Single Source of Truth

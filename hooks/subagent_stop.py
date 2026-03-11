@@ -33,6 +33,12 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import hashlib
 
+# Add hooks dir to path for adapter imports (matches pre_tool_use.py pattern)
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Adapter layer: normalize stdin parsing and response formatting
+from adapters.claude_code import ClaudeCodeAdapter
+
 from modules.agents.response_contract import (
     clear_pending_repair,
     save_pending_repair,
@@ -1040,21 +1046,33 @@ if __name__ == "__main__":
         main()
     elif has_stdin_data():
         try:
+            # --- Adapter: parse stdin ---
+            adapter = ClaudeCodeAdapter()
             stdin_data = sys.stdin.read()
-            if not stdin_data.strip():
-                print("Error: Empty stdin data", file=sys.stderr)
-                print("Error: Empty stdin data")
+
+            try:
+                event = adapter.parse_event(stdin_data)
+            except ValueError as e:
+                error_msg = str(e)
+                logger.error(f"Adapter parse failed: {error_msg}")
+                print(f"HOOK ERROR: {error_msg}", file=sys.stderr)
+                if "Empty stdin" in error_msg:
+                    print(f"Error: {error_msg}")
                 sys.exit(1)
 
-            hook_data = json.loads(stdin_data)
+            # Compatibility: expose raw payload for business logic
+            hook_data = event.payload
 
             logger.info(f"Hook event: {hook_data.get('hook_event_name')}, agent: {hook_data.get('agent_type', 'unknown')}")
 
+            # Use adapter helper to extract typed agent completion data
+            completion = adapter.parse_agent_completion(hook_data)
+
             # Use last_assistant_message directly — no transcript I/O needed for AGENT_STATUS parsing.
             # Falls back to reading the transcript if last_assistant_message is absent (older Claude Code).
-            agent_output = hook_data.get("last_assistant_message", "")
+            agent_output = completion.last_message
             if not agent_output:
-                transcript_path = hook_data.get("agent_transcript_path", "")
+                transcript_path = completion.transcript_path
                 agent_output = _read_transcript(transcript_path) if transcript_path else ""
                 logger.info(f"Agent output: {len(agent_output)} chars from transcript (fallback)")
             else:
