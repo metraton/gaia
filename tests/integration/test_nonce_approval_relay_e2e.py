@@ -93,7 +93,12 @@ class TestNonceApprovalRelayE2E:
         assert ask_result["hookSpecificOutput"]["permissionDecision"] == "ask"
         assert "Confirm execution" in ask_result["hookSpecificOutput"]["permissionDecisionReason"]
 
-        # After native dialog accepts, subsequent retries are auto-allowed
+        # Simulate post_tool_use confirming the grant after native dialog accepts.
+        # In production, post_tool_use.py fires after the command executes and
+        # confirms the grant. The bash_validator no longer confirms inline.
+        approval_grants.confirm_grant(command)
+
+        # After grant is confirmed, subsequent retries are auto-allowed
         retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
         assert retry is None
 
@@ -155,6 +160,9 @@ class TestNonceApprovalRelayE2E:
         assert isinstance(ask_result, dict)
         assert ask_result["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        # After native dialog accepts, subsequent retries are auto-allowed
+        # Simulate post_tool_use confirming the grant after native dialog accepts
+        approval_grants.confirm_grant("terraform apply")
+
+        # After grant is confirmed, subsequent retries are auto-allowed
         retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
         assert retry is None

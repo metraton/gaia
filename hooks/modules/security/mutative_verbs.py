@@ -88,7 +88,9 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "move", "rename", "copy", "sync",
     "import", "export", "migrate", "transfer",
     # Attachment
-    "attach", "bind", "connect", "mount", "link",
+    # NOTE: "link" removed -- false positive in shell variable names (e.g., "for link in ...").
+    #       The `ln` command is already covered as a COMMAND_ALIAS.
+    "attach", "bind", "connect", "mount",
     # Execution
     # NOTE: "run" removed -- safe by elimination (e.g., docker run is common dev workflow)
     "exec", "execute", "invoke", "trigger", "send",
@@ -690,7 +692,7 @@ def build_t3_block_response(
         )
 
     message = (
-        f"BLOCKED: {danger.category} operation detected.\n"
+        f"[T3_APPROVAL_REQUIRED] {danger.category} operation detected.\n"
         f"Command: {command}\n"
         f"Verb: '{danger.verb}' (CLI family: {danger.cli_family})\n"
         f"Confidence: {danger.confidence}\n"

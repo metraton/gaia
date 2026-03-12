@@ -51,7 +51,7 @@ If your identity restricts you to local/code-only operations, skip LIVE entirely
 Mismatch found → update your map, continue investigating with the new reality.
 Only escalate (`BLOCKED`/`NEEDS_INPUT`) if the mismatch is CRITICAL to completing the task.
 
-**REPORT** — Every response ends with a `json:contract` block. When you investigated, validated, reviewed, or gathered live/local evidence, include the `evidence` object in that block.
+**REPORT** — Every response ends with a `json:contract` block. When you investigated, validated, reviewed, or gathered live/local evidence, include the `evidence_report` object in that block.
 Use `output-format` for the human-facing summary around the contract block; this skill
 remains the authority for the block schema itself.
 
@@ -61,9 +61,9 @@ For investigation methodology and pattern hierarchy, follow the `investigation` 
 
 Every response MUST end with a single `json:contract` fenced block. This block unifies evidence, consolidation, and status into one structured object.
 
-The `evidence` object is mandatory whenever your response is based on code reading, config reading, command execution, review findings, or other concrete evidence. This applies to most `INVESTIGATING`, `PLANNING`, `BLOCKED`, `NEEDS_INPUT`, and evidence-backed `COMPLETE` responses. It is also required for `PENDING_APPROVAL` and `FIXING`, because those states still need to show the evidence that justified the plan or the fix attempt.
+The `evidence_report` object is mandatory whenever your response is based on code reading, config reading, command execution, review findings, or other concrete evidence. This applies to most `INVESTIGATING`, `PLANNING`, `BLOCKED`, `NEEDS_INPUT`, and evidence-backed `COMPLETE` responses. It is also required for `PENDING_APPROVAL` and `FIXING`, because those states still need to show the evidence that justified the plan or the fix attempt.
 
-The `consolidation` object is mandatory when `investigation_brief.consolidation_required` is `true`. It exists so Gaia can consolidate multiple agent responses without guessing. Set it to `null` when not required.
+The `consolidation_report` object is mandatory when `investigation_brief.consolidation_required` is `true`. It exists so Gaia can consolidate multiple agent responses without guessing. Set it to `null` when not required.
 
 If an evidence field does not apply, use an empty array `[]` or `"not run"` instead of omitting the key.
 
@@ -71,11 +71,13 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "a1f2c3",
-  "pending_steps": [],
-  "next_action": "done",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "a1f2c3",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
     "patterns_checked": ["existing pattern or convention you compared against"],
     "files_checked": ["file or path"],
     "commands_run": ["exact command -> concise result"],
@@ -84,7 +86,7 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
     "cross_layer_impacts": ["affected adjacent surface, contract, or subsystem"],
     "open_gaps": ["remaining unknown, validation gap"]
   },
-  "consolidation": {
+  "consolidation_report": {
     "ownership_assessment": "owned_here|cross_surface_dependency|not_my_surface",
     "confirmed_findings": ["facts confirmed by code, config, commands, or docs"],
     "suspected_findings": ["plausible but not yet confirmed findings"],
@@ -118,11 +120,13 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
 **COMPLETE** (task finished, evidence-backed):
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "b7e4d2",
-  "pending_steps": [],
-  "next_action": "done",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "b7e4d2",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
     "patterns_checked": ["existing HelmRelease naming convention in flux/apps/"],
     "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
     "commands_run": ["kubectl get hr -n qxo -> all reconciled"],
@@ -131,18 +135,20 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
     "cross_layer_impacts": [],
     "open_gaps": []
   },
-  "consolidation": null
+  "consolidation_report": null
 }
 ```
 
 **BLOCKED** (cannot proceed):
 ```json:contract
 {
-  "plan_status": "BLOCKED",
-  "agent_id": "c3a1f9",
-  "pending_steps": ["validate IAM binding", "apply terraform change"],
-  "next_action": "User must grant roles/container.admin to SA",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "BLOCKED",
+    "agent_id": "c3a1f9",
+    "pending_steps": ["validate IAM binding", "apply terraform change"],
+    "next_action": "User must grant roles/container.admin to SA"
+  },
+  "evidence_report": {
     "patterns_checked": ["SA binding pattern in terraform/iam/"],
     "files_checked": ["terraform/iam/main.tf", "terraform/iam/variables.tf"],
     "commands_run": ["gcloud iam service-accounts get-iam-policy sa@proj.iam -> missing binding"],
@@ -151,18 +157,20 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
     "cross_layer_impacts": ["GKE node pool scaling depends on this SA"],
     "open_gaps": ["Whether SA should get role directly or via workload identity"]
   },
-  "consolidation": null
+  "consolidation_report": null
 }
 ```
 
 **NEEDS_INPUT** (missing information):
 ```json:contract
 {
-  "plan_status": "NEEDS_INPUT",
-  "agent_id": "d9f2b1",
-  "pending_steps": ["create namespace manifest", "configure HelmRelease"],
-  "next_action": "User must choose: Option A (shared namespace) or Option B (dedicated namespace)",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "NEEDS_INPUT",
+    "agent_id": "d9f2b1",
+    "pending_steps": ["create namespace manifest", "configure HelmRelease"],
+    "next_action": "User must choose: Option A (shared namespace) or Option B (dedicated namespace)"
+  },
+  "evidence_report": {
     "patterns_checked": ["namespace conventions in flux/clusters/"],
     "files_checked": ["flux/clusters/dev/namespaces/"],
     "commands_run": [],
@@ -171,18 +179,20 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
     "cross_layer_impacts": ["Network policies differ per pattern"],
     "open_gaps": ["User preference for namespace isolation"]
   },
-  "consolidation": null
+  "consolidation_report": null
 }
 ```
 
 **PENDING_APPROVAL** (T3 plan ready):
 ```json:contract
 {
-  "plan_status": "PENDING_APPROVAL",
-  "agent_id": "e5c8a3",
-  "pending_steps": ["execute terraform apply", "verify state"],
-  "next_action": "Awaiting user approval for terraform apply",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "PENDING_APPROVAL",
+    "agent_id": "e5c8a3",
+    "pending_steps": ["execute terraform apply", "verify state"],
+    "next_action": "Awaiting user approval for terraform apply"
+  },
+  "evidence_report": {
     "patterns_checked": ["existing bucket naming in terraform/gcs/"],
     "files_checked": ["terraform/gcs/main.tf", "terraform/gcs/variables.tf"],
     "commands_run": ["terraform plan -out=tfplan -> 1 to add, 0 to change, 0 to destroy"],
@@ -191,7 +201,7 @@ If an evidence field does not apply, use an empty array `[]` or `"not run"` inst
     "cross_layer_impacts": ["Flux ExternalSecret must reference new bucket"],
     "open_gaps": []
   },
-  "consolidation": null
+  "consolidation_report": null
 }
 ```
 
@@ -252,7 +262,7 @@ If any check fails, fix before emitting COMPLETE. Do not flag self-review to the
 
 If runtime resumes you with instructions to repair your previous response contract, treat that as a structural fix request:
 
-- Reissue a complete response with the required `json:contract` block (including `evidence` and optional `consolidation`) and any optional `CONTEXT_UPDATE`
+- Reissue a complete response with the required `json:contract` block (including `evidence_report` and optional `consolidation_report`) and any optional `CONTEXT_UPDATE`
 - Do not rerun the full investigation unless missing evidence truly requires one more command or file read
 - Preserve the task's real status; contract repair is not a license to fabricate evidence or mark work complete prematurely
 

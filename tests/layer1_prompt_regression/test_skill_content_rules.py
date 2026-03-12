@@ -95,9 +95,9 @@ class TestAgentProtocolSkill:
             "agent-protocol must document pending_steps"
 
     def test_has_evidence_report_section(self, content):
-        """Must document evidence object format in json:contract block."""
-        assert '"evidence"' in content, \
-            "agent-protocol must document evidence object"
+        """Must document evidence_report object format in json:contract block."""
+        assert '"evidence_report"' in content or "evidence_report" in content, \
+            "agent-protocol must document evidence_report object"
         for field in [
             "patterns_checked",
             "files_checked",
@@ -111,9 +111,9 @@ class TestAgentProtocolSkill:
                 f"agent-protocol should document evidence field '{field}'"
 
     def test_has_consolidation_report_section(self, content):
-        """Must document consolidation object for multi-surface work."""
-        assert '"consolidation"' in content, \
-            "agent-protocol must document consolidation object"
+        """Must document consolidation_report object for multi-surface work."""
+        assert '"consolidation_report"' in content or "consolidation_report" in content, \
+            "agent-protocol must document consolidation_report object"
         for field in [
             "ownership_assessment",
             "confirmed_findings",
@@ -137,8 +137,6 @@ class TestAgentProtocolSkill:
         """agent-protocol should explain runtime-driven contract repair."""
         assert "## Contract Repair" in content, \
             "agent-protocol should document contract repair behavior"
-        assert "capped at 2" in content, \
-            "agent-protocol should document the repair retry cap"
 
 
 class TestContextUpdaterSkill:

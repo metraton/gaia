@@ -34,8 +34,8 @@ def audit(
     Checks:
     - execution_failure: exit_code != 0
     - consecutive_failures: 3+ failures in a row for same agent
-    - missing_evidence: COMPLETE but no EVIDENCE_REPORT
-    - empty_evidence: EVIDENCE_REPORT exists but COMMANDS_RUN empty or all "not run"
+    - missing_evidence: COMPLETE but no evidence in json:contract block
+    - empty_evidence: json:contract evidence exists but commands_run empty or all "not run"
     - skipped_verification: task has verify command in injected_context but not in commands_run
     - scope_escalation: rejected_sections exist (agent tried to write outside its scope)
 
@@ -98,76 +98,59 @@ def audit(
     if agent_output:
         plan_status = metrics.get("plan_status", "")
         if "COMPLETE" in plan_status:
-            has_evidence = bool(re.search(
-                r"<!-- EVIDENCE_REPORT -->", agent_output
-            ))
+            from ..agents.contract_validator import parse_contract
+            contract = parse_contract(agent_output)
+            has_evidence = (
+                contract is not None
+                and isinstance(contract.get("evidence_report"), dict)
+                and bool(contract["evidence_report"])
+            )
             if not has_evidence:
                 anomalies.append({
                     "type": "missing_evidence",
                     "severity": "warning",
                     "message": (
                         f"Agent {metrics['agent']} completed but "
-                        f"did not include EVIDENCE_REPORT block"
+                        f"did not include evidence in json:contract block"
                     ),
                 })
 
     # --- NEW: empty_evidence ---
     if agent_output:
-        evidence_match = re.search(
-            r"<!-- EVIDENCE_REPORT -->\s*(.*?)\s*<!-- /EVIDENCE_REPORT -->",
-            agent_output,
-            re.DOTALL,
-        )
-        if evidence_match:
-            evidence_body = evidence_match.group(1)
-            # Extract COMMANDS_RUN section
-            commands_section = ""
-            in_commands = False
-            _FIELD_HEADERS = {
-                "PATTERNS_CHECKED:", "FILES_CHECKED:", "COMMANDS_RUN:",
-                "KEY_OUTPUTS:", "VERBATIM_OUTPUTS:", "CROSS_LAYER_IMPACTS:",
-                "OPEN_GAPS:",
-            }
-            for line in evidence_body.splitlines():
-                stripped = line.strip()
-                if stripped == "COMMANDS_RUN:":
-                    in_commands = True
-                    continue
-                if in_commands:
-                    if stripped in _FIELD_HEADERS or stripped.startswith("<!-- "):
-                        break
-                    commands_section += stripped + "\n"
-
-            # Check if commands section is empty or all "not run"
-            if commands_section.strip():
-                not_run_pattern = re.compile(
-                    r"\b(not\s+run|not\s+executed|skipped|n/a|none)\b",
-                    re.IGNORECASE,
-                )
-                lines = [
-                    l.strip() for l in commands_section.splitlines()
-                    if l.strip().startswith("- ")
-                ]
-                if lines and all(not_run_pattern.search(l) for l in lines):
-                    anomalies.append({
-                        "type": "empty_evidence",
-                        "severity": "warning",
-                        "message": (
-                            f"Agent {metrics['agent']} has EVIDENCE_REPORT but "
-                            f"all COMMANDS_RUN entries indicate 'not run'"
-                        ),
-                    })
-            elif not commands_section.strip():
-                # COMMANDS_RUN header exists but no content
-                if "COMMANDS_RUN:" in evidence_body:
-                    anomalies.append({
-                        "type": "empty_evidence",
-                        "severity": "warning",
-                        "message": (
-                            f"Agent {metrics['agent']} has EVIDENCE_REPORT but "
-                            f"COMMANDS_RUN section is empty"
-                        ),
-                    })
+        from ..agents.contract_validator import parse_contract
+        contract = parse_contract(agent_output)
+        if contract is not None:
+            evidence = contract.get("evidence_report")
+            if isinstance(evidence, dict):
+                commands_run = evidence.get("commands_run", [])
+                if isinstance(commands_run, list):
+                    not_run_pattern = re.compile(
+                        r"\b(not\s+run|not\s+executed|skipped|n/a|none)\b",
+                        re.IGNORECASE,
+                    )
+                    if not commands_run:
+                        # commands_run key exists but is empty list
+                        anomalies.append({
+                            "type": "empty_evidence",
+                            "severity": "warning",
+                            "message": (
+                                f"Agent {metrics['agent']} has evidence in "
+                                f"json:contract but commands_run is empty"
+                            ),
+                        })
+                    elif all(
+                        isinstance(c, str) and not_run_pattern.search(c)
+                        for c in commands_run
+                    ):
+                        anomalies.append({
+                            "type": "empty_evidence",
+                            "severity": "warning",
+                            "message": (
+                                f"Agent {metrics['agent']} has evidence in "
+                                f"json:contract but all commands_run entries "
+                                f"indicate 'not run'"
+                            ),
+                        })
 
     # --- NEW: skipped_verification ---
     injected = task_info.get("injected_context") or {}

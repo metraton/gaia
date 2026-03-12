@@ -31,6 +31,7 @@ from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     generate_nonce,
+    last_check_found_expired,
     write_pending_approval,
 )
 from ..security.approval_messages import (
@@ -200,9 +201,15 @@ class BashValidator:
                 if not grant.confirmed:
                     # First execution after nonce activation: return "ask"
                     # to trigger Claude Code's native permission dialog
-                    # (double-barrier security). Mark the grant as confirmed
-                    # so subsequent executions within TTL auto-allow.
-                    confirm_grant(command)
+                    # (double-barrier security).
+                    #
+                    # DO NOT call confirm_grant() here. The native dialog
+                    # has not been answered yet. If the user declines, the
+                    # grant must stay unconfirmed. Confirmation happens on
+                    # the NEXT hook invocation: if we see the same command
+                    # with an unconfirmed grant again, the native dialog
+                    # must have succeeded (the command executed and the
+                    # agent is retrying or a new matching command arrived).
                     logger.info(
                         "T3 command requires native confirmation: %s (scope='%s')",
                         command[:80], grant.approved_scope,
@@ -227,6 +234,16 @@ class BashValidator:
                     reason=f"Command allowed via approval grant (tier T3)",
                 )
             else:
+                # If a matching grant was found but expired, prepend a clear
+                # expiry message so the agent knows the previous approval lapsed.
+                expired_prefix = ""
+                if last_check_found_expired():
+                    expired_prefix = (
+                        "[EXPIRED] Approval grant has expired (TTL exceeded). "
+                        "Retry the command to generate a fresh nonce and "
+                        "restart the approval workflow.\n\n"
+                    )
+
                 # Generate a cryptographic nonce and write a pending approval.
                 nonce = generate_nonce()
                 pending_file = write_pending_approval(
@@ -248,7 +265,7 @@ class BashValidator:
                     )
 
                 t3_block = build_t3_block_response(command, result, nonce=nonce)
-                hook_block = build_hook_permission_response("deny", t3_block["message"])
+                hook_block = build_hook_permission_response("deny", expired_prefix + t3_block["message"])
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,

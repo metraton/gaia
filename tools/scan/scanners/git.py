@@ -383,6 +383,7 @@ class GitScanner(BaseScanner):
 
         if not git_dir.is_dir():
             # No .git directory: return minimal section
+            # Note: monorepo detection is owned by StackScanner, not duplicated here
             section: Dict[str, Any] = {
                 "platform": None,
                 "remotes": [],
@@ -392,7 +393,7 @@ class GitScanner(BaseScanner):
                     "pattern": None,
                     "indicators": [],
                 },
-                "monorepo": _detect_monorepo(root),
+                "monorepo": {"workspace_config": None},
             }
             elapsed = (time.monotonic() * 1000) - start_ms
             return self.make_result(
@@ -414,15 +415,13 @@ class GitScanner(BaseScanner):
         # Detect branch strategy
         branch_strategy = _detect_branch_strategy(git_dir)
 
-        # Detect monorepo workspace config
-        monorepo = _detect_monorepo(root)
-
+        # Note: monorepo detection is owned by StackScanner, not duplicated here
         section = {
             "platform": platform,
             "remotes": remotes,
             "default_branch": default_branch,
             "branch_strategy": branch_strategy,
-            "monorepo": monorepo,
+            "monorepo": {"workspace_config": None},
         }
 
         elapsed = (time.monotonic() * 1000) - start_ms

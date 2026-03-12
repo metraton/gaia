@@ -35,7 +35,7 @@ class TestToolScannerBasics:
         assert scanner.SCANNER_NAME == "tools"
 
     def test_scanner_version(self, scanner: ToolScanner) -> None:
-        assert scanner.SCANNER_VERSION == "1.0.0"
+        assert scanner.SCANNER_VERSION == "1.1.0"
 
     def test_owned_sections(self, scanner: ToolScanner) -> None:
         assert "environment.tools" in scanner.OWNED_SECTIONS
@@ -51,41 +51,25 @@ class TestToolScannerBasics:
 
 
 class TestToolDetection:
-    """Test tool detection via command -v."""
+    """Test tool detection via shutil.which."""
 
-    def test_detect_tool_via_command_v(self, scanner: ToolScanner) -> None:
-        """Verify command -v is used (not which)."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "/usr/bin/python3\n"
-        mock_result.stderr = ""
-
-        with patch("tools.scan.scanners.tools.subprocess.run", return_value=mock_result) as mock_run:
+    def test_detect_tool_via_shutil_which(self, scanner: ToolScanner) -> None:
+        """Verify shutil.which is used for path detection."""
+        with patch("tools.scan.scanners.tools.shutil.which", return_value="/usr/bin/python3") as mock_which:
             path = scanner._detect_path("python3")
-            # Check that bash -c 'command -v ...' was called
-            mock_run.assert_called_once()
-            args = mock_run.call_args
-            assert "command -v" in args[0][0][2]  # ['bash', '-c', 'command -v python3']
+            mock_which.assert_called_once_with("python3")
             assert path == "/usr/bin/python3"
 
-    def test_command_v_not_which(self, scanner: ToolScanner) -> None:
-        """Ensure 'which' is not used."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "/usr/bin/git\n"
-
-        with patch("tools.scan.scanners.tools.subprocess.run", return_value=mock_result) as mock_run:
-            scanner._detect_path("git")
-            args_str = str(mock_run.call_args)
-            assert "which" not in args_str
+    def test_no_subprocess_for_path_detection(self, scanner: ToolScanner) -> None:
+        """Ensure subprocess is NOT used for path detection."""
+        with patch("tools.scan.scanners.tools.shutil.which", return_value="/usr/bin/git"):
+            with patch("tools.scan.scanners.tools.subprocess.run") as mock_run:
+                scanner._detect_path("git")
+                mock_run.assert_not_called()
 
     def test_missing_tool_returns_none(self, scanner: ToolScanner) -> None:
-        """Tool not found by command -v returns None."""
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-
-        with patch("tools.scan.scanners.tools.subprocess.run", return_value=mock_result):
+        """Tool not found by shutil.which returns None."""
+        with patch("tools.scan.scanners.tools.shutil.which", return_value=None):
             path = scanner._detect_path("nonexistent_tool_xyz")
             assert path is None
 
@@ -98,23 +82,18 @@ class TestToolDetection:
             category=ToolCategory.UTILITY,
         )
 
-        # Mock detect_path returns a path
-        detect_result = MagicMock()
-        detect_result.returncode = 0
-        detect_result.stdout = "/usr/local/bin/test-tool\n"
-        detect_result.stderr = ""
-
-        # Mock version extraction
+        # Mock version extraction (subprocess is only used for --version now)
         version_result = MagicMock()
         version_result.returncode = 0
         version_result.stdout = "test-tool 1.2.3\n"
         version_result.stderr = ""
 
-        with patch(
-            "tools.scan.scanners.tools.subprocess.run",
-            side_effect=[detect_result, version_result],
-        ):
-            tool_info = scanner._probe_tool(tool_def)
+        with patch("tools.scan.scanners.tools.shutil.which", return_value="/usr/local/bin/test-tool"):
+            with patch(
+                "tools.scan.scanners.tools.subprocess.run",
+                return_value=version_result,
+            ):
+                tool_info = scanner._probe_tool(tool_def)
 
         assert tool_info is not None
         assert tool_info["name"] == "test-tool"
@@ -213,22 +192,19 @@ class TestToolPreferences:
             ),
         ]
 
-        def mock_run(args, **kwargs):
-            result = MagicMock()
-            name = args[2].split()[-1] if len(args) > 2 else ""  # 'command -v <name>'
-            if name in ("bat", "stern"):
-                result.returncode = 0
-                result.stdout = f"/usr/bin/{name}\n"
-            else:
-                result.returncode = 0
-                result.stdout = f"{name} 1.0.0\n"
-            result.stderr = ""
-            return result
+        def mock_which(name):
+            return f"/usr/bin/{name}" if name in ("bat", "stern") else None
+
+        version_result = MagicMock()
+        version_result.returncode = 0
+        version_result.stdout = "1.0.0\n"
+        version_result.stderr = ""
 
         with patch("tools.scan.config.TOOL_DEFINITIONS", mock_defs):
             with patch("tools.scan.scanners.tools.TOOL_DEFINITIONS", mock_defs):
-                with patch("tools.scan.scanners.tools.subprocess.run", side_effect=mock_run):
-                    result = scanner.scan(tmp_path)
+                with patch("tools.scan.scanners.tools.shutil.which", side_effect=mock_which):
+                    with patch("tools.scan.scanners.tools.subprocess.run", return_value=version_result):
+                        result = scanner.scan(tmp_path)
 
         env = result.sections["environment"]
         prefs = env["tool_preferences"]
@@ -252,22 +228,19 @@ class TestToolPreferences:
             ),
         ]
 
-        def mock_run(args, **kwargs):
-            result = MagicMock()
-            name = args[2].split()[-1] if len(args) > 2 else ""
-            if name in ("docker", "podman"):
-                result.returncode = 0
-                result.stdout = f"/usr/bin/{name}\n"
-            else:
-                result.returncode = 0
-                result.stdout = f"{name} 1.0.0\n"
-            result.stderr = ""
-            return result
+        def mock_which(name):
+            return f"/usr/bin/{name}" if name in ("docker", "podman") else None
+
+        version_result = MagicMock()
+        version_result.returncode = 0
+        version_result.stdout = "1.0.0\n"
+        version_result.stderr = ""
 
         with patch("tools.scan.config.TOOL_DEFINITIONS", mock_defs):
             with patch("tools.scan.scanners.tools.TOOL_DEFINITIONS", mock_defs):
-                with patch("tools.scan.scanners.tools.subprocess.run", side_effect=mock_run):
-                    result = scanner.scan(tmp_path)
+                with patch("tools.scan.scanners.tools.shutil.which", side_effect=mock_which):
+                    with patch("tools.scan.scanners.tools.subprocess.run", return_value=version_result):
+                        result = scanner.scan(tmp_path)
 
         env = result.sections["environment"]
         assert env["tool_preferences"]["container_runtime"] == "docker"
@@ -285,14 +258,9 @@ class TestToolPreferences:
             ),
         ]
 
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
         with patch("tools.scan.config.TOOL_DEFINITIONS", mock_defs):
             with patch("tools.scan.scanners.tools.TOOL_DEFINITIONS", mock_defs):
-                with patch("tools.scan.scanners.tools.subprocess.run", return_value=mock_result):
+                with patch("tools.scan.scanners.tools.shutil.which", return_value=None):
                     result = scanner.scan(tmp_path)
 
         env = result.sections["environment"]
@@ -336,36 +304,17 @@ class TestFullScanMocked:
         self, scanner: ToolScanner, tmp_path: Path
     ) -> None:
         """Full scan produces environment section with tools and preferences."""
-        # Mock all tools as not found except python3
-        def mock_run(args, **kwargs):
-            result = MagicMock()
-            if isinstance(args, list) and len(args) >= 3:
-                cmd = args[2] if len(args) > 2 else str(args)
-                if "command -v python3" in cmd:
-                    result.returncode = 0
-                    result.stdout = "/usr/bin/python3\n"
-                    result.stderr = ""
-                    return result
-                elif "command -v" in cmd:
-                    result.returncode = 1
-                    result.stdout = ""
-                    result.stderr = ""
-                    return result
+        def mock_which(name):
+            return "/usr/bin/python3" if name == "python3" else None
 
-            # Version call for python3
-            if isinstance(args, list) and args[0] == "/usr/bin/python3":
-                result.returncode = 0
-                result.stdout = "Python 3.11.5\n"
-                result.stderr = ""
-                return result
+        version_result = MagicMock()
+        version_result.returncode = 0
+        version_result.stdout = "Python 3.11.5\n"
+        version_result.stderr = ""
 
-            result.returncode = 1
-            result.stdout = ""
-            result.stderr = ""
-            return result
-
-        with patch("tools.scan.scanners.tools.subprocess.run", side_effect=mock_run):
-            result = scanner.scan(tmp_path)
+        with patch("tools.scan.scanners.tools.shutil.which", side_effect=mock_which):
+            with patch("tools.scan.scanners.tools.subprocess.run", return_value=version_result):
+                result = scanner.scan(tmp_path)
 
         assert "environment" in result.sections
         env = result.sections["environment"]
@@ -378,18 +327,14 @@ class TestFullScanMocked:
         """A tool that throws an exception during probe doesn't abort scan."""
         call_count = 0
 
-        def mock_run(args, **kwargs):
+        def mock_which(name):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise OSError("Simulated failure")
-            result = MagicMock()
-            result.returncode = 1
-            result.stdout = ""
-            result.stderr = ""
-            return result
+            return None
 
-        with patch("tools.scan.scanners.tools.subprocess.run", side_effect=mock_run):
+        with patch("tools.scan.scanners.tools.shutil.which", side_effect=mock_which):
             result = scanner.scan(tmp_path)
 
         # Scanner should still return a valid result
@@ -398,12 +343,7 @@ class TestFullScanMocked:
     def test_scan_result_has_source_tag(
         self, scanner: ToolScanner, tmp_path: Path
     ) -> None:
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with patch("tools.scan.scanners.tools.subprocess.run", return_value=mock_result):
+        with patch("tools.scan.scanners.tools.shutil.which", return_value=None):
             result = scanner.scan(tmp_path)
 
         assert result.sections["environment"]["_source"] == "scanner:tools"

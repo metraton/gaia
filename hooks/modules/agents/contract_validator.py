@@ -147,8 +147,30 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
     if all_missing:
         fields_str = ", ".join(all_missing)
         error_message = (
-            f"Contract incomplete. Missing: {fields_str}. "
-            f"Include: patterns_checked, files_checked, commands_run, key_outputs."
+            f"Contract incomplete. Missing: {fields_str}.\n"
+            f"\n"
+            f"Repair: reissue your response ending with a json:contract block:\n"
+            f"\n"
+            f"```json:contract\n"
+            f'{{\n'
+            f'  "agent_status": {{\n'
+            f'    "plan_status": "<STATUS>",\n'
+            f'    "agent_id": "<your-id>",\n'
+            f'    "pending_steps": [],\n'
+            f'    "next_action": "<done or next step>"\n'
+            f"  }},\n"
+            f'  "evidence_report": {{\n'
+            f'    "patterns_checked": [],\n'
+            f'    "files_checked": [],\n'
+            f'    "commands_run": [],\n'
+            f'    "key_outputs": []\n'
+            f"  }},\n"
+            f'  "consolidation_report": null\n'
+            f"}}\n"
+            f"```\n"
+            f"\n"
+            f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
+            f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs"
         )
         return ValidationResult(
             is_valid=False,
@@ -189,7 +211,30 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     fields_str = ", ".join(all_missing)
     error_message = (
         f"Contract incomplete. Missing: {fields_str}. "
-        f"A json:contract fenced block is required."
+        f"No json:contract fenced block found.\n"
+        f"\n"
+        f"Repair: your response MUST end with a json:contract block:\n"
+        f"\n"
+        f"```json:contract\n"
+        f'{{\n'
+        f'  "agent_status": {{\n'
+        f'    "plan_status": "<STATUS>",\n'
+        f'    "agent_id": "<your-id>",\n'
+        f'    "pending_steps": [],\n'
+        f'    "next_action": "<done or next step>"\n'
+        f"  }},\n"
+        f'  "evidence_report": {{\n'
+        f'    "patterns_checked": [],\n'
+        f'    "files_checked": [],\n'
+        f'    "commands_run": [],\n'
+        f'    "key_outputs": []\n'
+        f"  }},\n"
+        f'  "consolidation_report": null\n'
+        f"}}\n"
+        f"```\n"
+        f"\n"
+        f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
+        f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs"
     )
     return ValidationResult(
         is_valid=False,

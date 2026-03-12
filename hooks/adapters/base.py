@@ -166,3 +166,54 @@ class HookAdapter(ABC):
         how gaia-ops was installed.
         """
         ...
+
+    # ------------------------------------------------------------------ #
+    # Full hook lifecycle adapters (thin-gate pattern)
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def adapt_pre_tool_use(self, event: HookEvent) -> HookResponse:
+        """Run all pre-tool-use business logic and return a formatted response.
+
+        Orchestrates: routing (bash vs task), validation, state management,
+        context injection, approval handling, and response formatting.
+
+        Preconditions:
+            - event is a parsed HookEvent with event_type PRE_TOOL_USE
+
+        Postconditions:
+            - Returns HookResponse ready for stdout + sys.exit()
+        """
+        ...
+
+    @abstractmethod
+    def adapt_post_tool_use(self, event: HookEvent) -> HookResponse:
+        """Run all post-tool-use business logic and return a formatted response.
+
+        Orchestrates: state retrieval, duration computation, audit logging,
+        T3 grant confirmation, critical event detection, session context
+        writing, and state cleanup.
+
+        Preconditions:
+            - event is a parsed HookEvent with event_type POST_TOOL_USE
+
+        Postconditions:
+            - Returns HookResponse (always exit 0, post-hook never blocks)
+        """
+        ...
+
+    @abstractmethod
+    def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
+        """Run all subagent-stop business logic and return a formatted response.
+
+        Orchestrates: contract parsing and validation, approval cleanup,
+        context updates, workflow recording, response contract validation,
+        anomaly detection, episodic memory, and result assembly.
+
+        Preconditions:
+            - event is a parsed HookEvent with event_type SUBAGENT_STOP
+
+        Postconditions:
+            - Returns HookResponse (exit 0 for success, exit 2 for contract rejection)
+        """
+        ...

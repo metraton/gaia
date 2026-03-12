@@ -154,6 +154,18 @@ class ApprovalGrant:
 
 _grants_dir_created: bool = False
 
+# Module-level flag: set by check_approval_grant() when it encounters and
+# cleans up an expired grant for the requested command.  Callers (e.g.
+# bash_validator) can read this via last_check_found_expired() to emit a
+# clear expiry message instead of a generic "no grant found" block.
+_last_check_found_expired: bool = False
+
+
+def last_check_found_expired() -> bool:
+    """Return True if the most recent check_approval_grant() call cleaned up
+    an expired grant that would have matched the command."""
+    return _last_check_found_expired
+
 
 def _get_grants_dir() -> Path:
     """Get the directory for approval grant files."""
@@ -525,6 +537,9 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
     Returns:
         The matching ApprovalGrant if found and valid, None otherwise.
     """
+    global _last_check_found_expired
+    _last_check_found_expired = False
+
     session_id = _get_session_id()
 
     try:
@@ -540,8 +555,10 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
 
                 # Skip expired or used grants
                 if not grant.is_valid():
-                    # Clean up expired grants
+                    # Clean up expired grants; track if it would have matched
                     if grant.is_expired():
+                        if grant.matches_command(command):
+                            _last_check_found_expired = True
                         _cleanup_grant(grant_file)
                     continue
 

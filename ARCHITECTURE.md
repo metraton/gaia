@@ -169,7 +169,7 @@ Nonce-based T3 approval lifecycle:
 
 ## Response Contract Validation
 
-Every agent response must end with an AGENT_STATUS block. The contract validator (`hooks/modules/agents/response_contract.py`) enforces:
+Every agent response must end with a `json:contract` block containing `agent_status`. The contract validator (`hooks/modules/agents/contract_validator.py`) enforces:
 
 - **AGENT_STATUS**: PLAN_STATUS (from 8 valid states), PENDING_STEPS, NEXT_ACTION, AGENT_ID
 - **EVIDENCE_REPORT**: required for all states except APPROVED_EXECUTING. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS

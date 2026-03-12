@@ -42,6 +42,7 @@ class ToolDefinition:
         version_regex: Regex to extract version from output (None = first line).
         preference_key: If this tool is a preferred alternative, the preference key.
         preference_priority: Higher = more preferred (e.g., bat=10, cat=1).
+        extended: If True, only scanned with --full flag (low-value tools).
     """
 
     name: str
@@ -50,6 +51,7 @@ class ToolDefinition:
     version_regex: Optional[str] = None
     preference_key: Optional[str] = None
     preference_priority: int = 0
+    extended: bool = False
 
 
 @dataclass
@@ -87,26 +89,36 @@ class ScanConfig:
 # Default tool definitions per data-model.md section 5.3
 TOOL_DEFINITIONS: List[ToolDefinition] = [
     # Kubernetes
-    ToolDefinition(name="kubectl", category=ToolCategory.KUBERNETES),
-    ToolDefinition(name="helm", category=ToolCategory.KUBERNETES),
-    ToolDefinition(name="kustomize", category=ToolCategory.KUBERNETES),
-    ToolDefinition(name="k9s", category=ToolCategory.KUBERNETES),
+    ToolDefinition(
+        name="kubectl",
+        category=ToolCategory.KUBERNETES,
+        version_flag="version --client",
+        version_regex=r"Client Version:\s*(.+)",
+    ),
+    ToolDefinition(
+        name="helm",
+        category=ToolCategory.KUBERNETES,
+        version_flag="version --short",
+    ),
+    ToolDefinition(name="kustomize", category=ToolCategory.KUBERNETES, extended=True),
+    ToolDefinition(name="k9s", category=ToolCategory.KUBERNETES, extended=True),
     ToolDefinition(
         name="stern",
         category=ToolCategory.KUBERNETES,
         preference_key="log_viewer",
         preference_priority=10,
+        extended=True,
     ),
-    ToolDefinition(name="kubens", category=ToolCategory.KUBERNETES),
-    ToolDefinition(name="kubectx", category=ToolCategory.KUBERNETES),
+    ToolDefinition(name="kubens", category=ToolCategory.KUBERNETES, extended=True),
+    ToolDefinition(name="kubectx", category=ToolCategory.KUBERNETES, extended=True),
     # Cloud
     ToolDefinition(name="gcloud", category=ToolCategory.CLOUD),
     ToolDefinition(name="aws", category=ToolCategory.CLOUD),
-    ToolDefinition(name="az", category=ToolCategory.CLOUD),
+    ToolDefinition(name="az", category=ToolCategory.CLOUD, extended=True),
     # IaC
     ToolDefinition(name="terraform", category=ToolCategory.IAC),
     ToolDefinition(name="terragrunt", category=ToolCategory.IAC),
-    ToolDefinition(name="pulumi", category=ToolCategory.IAC),
+    ToolDefinition(name="pulumi", category=ToolCategory.IAC, extended=True),
     # Container
     ToolDefinition(
         name="docker",
@@ -119,12 +131,14 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
         category=ToolCategory.CONTAINER,
         preference_key="container_runtime",
         preference_priority=5,
+        extended=True,
     ),
     ToolDefinition(
         name="nerdctl",
         category=ToolCategory.CONTAINER,
         preference_key="container_runtime",
         preference_priority=3,
+        extended=True,
     ),
     # File viewing
     ToolDefinition(
@@ -132,6 +146,7 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
         category=ToolCategory.FILE_VIEWER,
         preference_key="file_viewer",
         preference_priority=10,
+        extended=True,
     ),
     # File search
     ToolDefinition(
@@ -139,14 +154,16 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
         category=ToolCategory.FILE_SEARCH,
         preference_key="file_search",
         preference_priority=10,
+        extended=True,
     ),
     ToolDefinition(
         name="rg",
         category=ToolCategory.FILE_SEARCH,
         preference_key="content_search",
         preference_priority=10,
+        extended=True,
     ),
-    ToolDefinition(name="fzf", category=ToolCategory.FILE_SEARCH),
+    ToolDefinition(name="fzf", category=ToolCategory.FILE_SEARCH, extended=True),
     # Git
     ToolDefinition(
         name="gh",
@@ -165,27 +182,28 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
     ToolDefinition(name="python3", category=ToolCategory.LANGUAGE_RUNTIME),
     ToolDefinition(name="node", category=ToolCategory.LANGUAGE_RUNTIME),
     ToolDefinition(name="go", category=ToolCategory.LANGUAGE_RUNTIME),
-    ToolDefinition(name="cargo", category=ToolCategory.LANGUAGE_RUNTIME),
-    ToolDefinition(name="rustc", category=ToolCategory.LANGUAGE_RUNTIME),
-    ToolDefinition(name="java", category=ToolCategory.LANGUAGE_RUNTIME),
-    ToolDefinition(name="ruby", category=ToolCategory.LANGUAGE_RUNTIME),
-    ToolDefinition(name="php", category=ToolCategory.LANGUAGE_RUNTIME),
+    ToolDefinition(name="cargo", category=ToolCategory.LANGUAGE_RUNTIME, extended=True),
+    ToolDefinition(name="rustc", category=ToolCategory.LANGUAGE_RUNTIME, extended=True),
+    ToolDefinition(name="java", category=ToolCategory.LANGUAGE_RUNTIME, extended=True),
+    ToolDefinition(name="ruby", category=ToolCategory.LANGUAGE_RUNTIME, extended=True),
+    ToolDefinition(name="php", category=ToolCategory.LANGUAGE_RUNTIME, extended=True),
     # Build tools
     ToolDefinition(name="make", category=ToolCategory.BUILD),
     ToolDefinition(name="npm", category=ToolCategory.BUILD),
     ToolDefinition(name="pnpm", category=ToolCategory.BUILD),
     ToolDefinition(name="yarn", category=ToolCategory.BUILD),
     ToolDefinition(name="pip", category=ToolCategory.BUILD),
-    ToolDefinition(name="poetry", category=ToolCategory.BUILD),
-    ToolDefinition(name="gradle", category=ToolCategory.BUILD),
+    ToolDefinition(name="poetry", category=ToolCategory.BUILD, extended=True),
+    ToolDefinition(name="gradle", category=ToolCategory.BUILD, extended=True),
     ToolDefinition(
-        name="maven", category=ToolCategory.BUILD, version_flag="-version"
+        name="maven", category=ToolCategory.BUILD, version_flag="-version",
+        extended=True,
     ),
     # Utilities
     ToolDefinition(name="jq", category=ToolCategory.UTILITY),
     ToolDefinition(name="yq", category=ToolCategory.UTILITY),
-    ToolDefinition(name="curl", category=ToolCategory.UTILITY),
-    ToolDefinition(name="wget", category=ToolCategory.UTILITY),
+    ToolDefinition(name="curl", category=ToolCategory.UTILITY, extended=True),
+    ToolDefinition(name="wget", category=ToolCategory.UTILITY, extended=True),
     # AI assistants
     ToolDefinition(name="claude", category=ToolCategory.AI_ASSISTANT),
 ]
@@ -224,3 +242,6 @@ def load_scan_config(project_root: Path) -> ScanConfig:
 
 
 DEFAULT_SCAN_CONFIG = ScanConfig()
+
+# Path to the context-contracts.json file (relative to the gaia-ops-plugin root)
+CONTRACT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "context-contracts.json"

@@ -304,9 +304,9 @@ class CommitMessageValidator:
             Formatted error message string
         """
         if validation.valid:
-            return "✅ Commit message is valid"
+            return "[OK] Commit message is valid"
 
-        lines = ["❌ Commit message validation failed:\n"]
+        lines = ["[ERROR] Commit message validation failed:\n"]
 
         for error in validation.errors:
             lines.append(f"  [{error['type']}]")
@@ -321,7 +321,7 @@ class CommitMessageValidator:
             lines.append("")
 
         if validation.warnings:
-            lines.append("⚠️  Warnings:")
+            lines.append("[WARNING] Warnings:")
             for warning in validation.warnings:
                 lines.append(f"  - {warning['message']}")
             lines.append("")

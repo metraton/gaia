@@ -31,7 +31,7 @@ Before executing ANY approved operation:
 - [ ] Credentials available — can access cloud/cluster
 - [ ] Commands configured for non-interactive mode (no prompts mid-execution)
 
-If ANY check fails → STOP and report with `PLAN_STATUS: BLOCKED`
+If ANY check fails → STOP and emit a `json:contract` block with `agent_status.plan_status` set to `BLOCKED`
 
 ## Approval Token (Canonical)
 
@@ -100,7 +100,7 @@ Verification: All criteria passed ✅
 Next Steps: [Follow-up or "None - deployment complete"]
 ```
 
-Then emit `PLAN_STATUS: COMPLETE`.
+Then emit a `json:contract` block with `agent_status.plan_status` set to `COMPLETE`.
 
 ---
 

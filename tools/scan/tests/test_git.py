@@ -197,45 +197,50 @@ class TestDefaultBranchDetection:
 
 
 class TestMonorepoWorkspaceDetection:
-    """Test monorepo workspace config detection."""
+    """Test monorepo workspace field in git scanner.
 
-    def test_detect_turborepo(
+    Note: Monorepo detection is now owned by StackScanner. The git scanner
+    always returns workspace_config=None. These tests verify the git scanner
+    no longer duplicates monorepo detection.
+    """
+
+    def test_monorepo_always_none_with_turbo(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
         create_git_dir(tmp_path)
         (tmp_path / "turbo.json").write_text("{}")
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["monorepo"]["workspace_config"] == "turborepo"
+        assert git_section["monorepo"]["workspace_config"] is None
 
-    def test_detect_nx(
+    def test_monorepo_always_none_with_nx(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
         create_git_dir(tmp_path)
         (tmp_path / "nx.json").write_text("{}")
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["monorepo"]["workspace_config"] == "nx"
+        assert git_section["monorepo"]["workspace_config"] is None
 
-    def test_detect_lerna(
+    def test_monorepo_always_none_with_lerna(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
         create_git_dir(tmp_path)
         (tmp_path / "lerna.json").write_text("{}")
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["monorepo"]["workspace_config"] == "lerna"
+        assert git_section["monorepo"]["workspace_config"] is None
 
-    def test_detect_pnpm_workspaces(
+    def test_monorepo_always_none_with_pnpm(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
         create_git_dir(tmp_path)
         (tmp_path / "pnpm-workspace.yaml").write_text("packages:\n  - 'packages/*'\n")
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["monorepo"]["workspace_config"] == "pnpm"
+        assert git_section["monorepo"]["workspace_config"] is None
 
-    def test_detect_npm_workspaces(
+    def test_monorepo_always_none_with_npm(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
         create_git_dir(tmp_path)
@@ -243,7 +248,7 @@ class TestMonorepoWorkspaceDetection:
         (tmp_path / "package.json").write_text(json.dumps(pkg))
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["monorepo"]["workspace_config"] == "npm"
+        assert git_section["monorepo"]["workspace_config"] is None
 
     def test_no_workspace_config(
         self, scanner: GitScanner, git_project_github: Path

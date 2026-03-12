@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.scan.scanners.base import BaseScanner, ScanResult
+from tools.scan.walk import walk_project, walk_project_named
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +192,7 @@ class InfrastructureScanner(BaseScanner):
         warnings: List[str],
     ) -> None:
         """Scan .tf files for provider blocks."""
-        tf_files = list(root.rglob("*.tf"))
-        for tf_file in tf_files:
+        for tf_file in walk_project(root, [".tf"]):
             try:
                 content = tf_file.read_text(encoding="utf-8", errors="replace")
                 for cloud_name, pattern in _TF_PROVIDER_PATTERNS.items():
@@ -262,7 +262,13 @@ class InfrastructureScanner(BaseScanner):
 
         for marker in _IAC_MARKERS:
             try:
-                found_files = sorted(root.rglob(marker["rglob"]))
+                rglob_pattern = marker["rglob"]
+                # Use walk_project for extension-based patterns, walk_project_named for exact names
+                if rglob_pattern.startswith("*."):
+                    ext = rglob_pattern[1:]  # e.g., "*.tf" -> ".tf"
+                    found_files = sorted(walk_project(root, [ext]))
+                else:
+                    found_files = sorted(walk_project_named(root, [rglob_pattern]))
                 if found_files:
                     # Determine base path from the first detected file
                     relative_files = [
@@ -293,14 +299,29 @@ class InfrastructureScanner(BaseScanner):
 
         for container_def in _CONTAINER_GLOBS:
             found: List[str] = []
-            for rglob_pattern in container_def["rglob_patterns"]:
-                try:
-                    matches = sorted(root.rglob(rglob_pattern))
-                    found.extend(str(m.relative_to(root)) for m in matches)
-                except OSError as exc:
-                    warnings.append(
-                        f"Container detection error for {container_def['tool']}: {exc}"
-                    )
+            try:
+                # Separate exact names from prefix patterns (e.g., "Dockerfile.*")
+                exact_names = []
+                prefixes = []
+                for pattern in container_def["rglob_patterns"]:
+                    if "*" in pattern:
+                        # "Dockerfile.*" -> prefix "Dockerfile."
+                        prefixes.append(pattern.replace("*", ""))
+                    else:
+                        exact_names.append(pattern)
+
+                for match in walk_project_named(root, exact_names):
+                    found.append(str(match.relative_to(root)))
+
+                # Handle prefix patterns (e.g., "Dockerfile.*") via walk
+                if prefixes:
+                    from tools.scan.walk import walk_project_prefix
+                    for match in walk_project_prefix(root, prefixes):
+                        found.append(str(match.relative_to(root)))
+            except OSError as exc:
+                warnings.append(
+                    f"Container detection error for {container_def['tool']}: {exc}"
+                )
 
             if found:
                 results.append(

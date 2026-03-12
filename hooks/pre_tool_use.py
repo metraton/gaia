@@ -6,22 +6,15 @@ Entry point for Bash and Task/Agent tool validation. The hook is the primary
 security gate: with Bash(*) in the settings.json allow list, all commands
 reach this hook regardless of settings.json permissions.
 
-This file is a thin gate: parse -> delegate -> format -> exit.
-All business logic lives in modules under hooks/modules/.
-
-Responsibilities:
-- Bash: delegates to BashValidator (blocked commands, safe detection,
-  dangerous verb detector with nonce-based approval flow)
-- Task/Agent: delegates to prompt_validator, contracts_loader,
-  context_injector, and session_event_injector
-- State sharing with post-hook via hook state files
-- Periodic cleanup of expired approval grants
+Architecture:
+- Uses adapter layer to parse and process the full PreToolUse lifecycle
+- All business logic lives in ClaudeCodeAdapter.adapt_pre_tool_use()
+- This file is stdin/stdout glue only
 """
 
 import sys
 import json
 import logging
-import re
 from pathlib import Path
 from datetime import datetime
 
@@ -29,34 +22,10 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 
-# Adapter layer: normalize stdin parsing and response formatting
+# Adapter layer
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.types import ValidationResult
 from modules.core.stdin import has_stdin_data
 from adapters.utils import warn_if_dual_channel
-
-from modules.core.state import create_pre_hook_state, save_hook_state
-from modules.security.approval_constants import (
-    NONCE_APPROVAL_PREFIX,
-    NONCE_APPROVAL_PATTERN,
-)
-from modules.security.approval_messages import (
-    build_activation_failed_message,
-    build_deprecated_approval_message,
-    build_invalid_nonce_message,
-)
-from modules.security.approval_grants import (
-    activate_pending_approval,
-    cleanup_expired_grants,
-)
-from modules.tools.bash_validator import BashValidator, create_permission_allow_response
-from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
-
-# Extracted modules
-from modules.security.prompt_validator import classify_resume_prompt
-from modules.context.context_injector import inject_project_context
-from modules.context.context_injector import should_inject_on_resume
-from modules.session.session_event_injector import inject_session_events
 
 # Configure logging -- all hooks share hooks-YYYY-MM-DD.log for easy tailing
 log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -71,22 +40,35 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# DERIVED CONSTANTS
+# BACKWARD-COMPATIBLE API
 # ============================================================================
+# Tests and e2e scripts import these names directly. They delegate to the
+# adapter internally but preserve the original call signatures.
 
-# Derive from task_validator lists: project agents = available minus meta
+from modules.tools.bash_validator import BashValidator
+from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
+from modules.security.prompt_validator import classify_resume_prompt
+from modules.context.context_injector import inject_project_context
+from modules.session.session_event_injector import inject_session_events
+from modules.core.state import create_pre_hook_state, save_hook_state
+from modules.security.approval_constants import (
+    NONCE_APPROVAL_PREFIX,
+    NONCE_APPROVAL_PATTERN,
+)
+from modules.security.approval_messages import (
+    build_activation_failed_message,
+    build_deprecated_approval_message,
+    build_invalid_nonce_message,
+)
+from modules.security.approval_grants import (
+    activate_pending_approval,
+    cleanup_expired_grants,
+)
+
+# Derived constants used by backward-compat wrappers
 PROJECT_AGENTS = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
-
-# Hooks directory for module fallback path resolution
 _HOOKS_DIR = Path(__file__).parent
 
-
-# ============================================================================
-# THIN DELEGATION WRAPPERS
-# ============================================================================
-# These wrappers maintain the original private API so that existing tests
-# (which monkeypatch pre_tool_use._handle_task, etc.) continue to work.
-# They delegate all logic to the extracted modules.
 
 def _classify_resume_prompt(prompt: str) -> str:
     """Classify a resume prompt. Delegates to modules.security.prompt_validator."""
@@ -103,42 +85,33 @@ def _inject_session_events(parameters: dict) -> dict:
     return inject_session_events(parameters, PROJECT_AGENTS)
 
 
-# ============================================================================
-# MAIN HOOK LOGIC
-# ============================================================================
-
 def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
     """
-    Pre-tool use hook implementation.
+    Pre-tool use hook implementation (backward-compatible API).
 
-    Args:
-        tool_name: Name of the tool being invoked
-        parameters: Tool parameters
-
-    Returns:
+    Delegates to adapter but preserves the original return signature:
         None: allowed (no modification)
-        str: blocked (error message, triggers exit 2)
-        dict: allowed with modification (JSON with updatedInput, exit 0)
+        str: blocked (error message)
+        dict: allowed with modification (JSON with updatedInput)
     """
+    adapter = ClaudeCodeAdapter()
+
+    # Build a minimal HookEvent-like payload for the adapter's internal methods
     logger.info(f"Hook invoked: tool={tool_name}, params={json.dumps(parameters)[:200]}")
 
     try:
-        # Periodic cleanup of expired approval grants (fast no-op if none exist)
         cleanup_expired_grants()
 
-        # Validate inputs
         if not isinstance(tool_name, str):
             return "Error: Invalid tool name"
         if not isinstance(parameters, dict):
             return "Error: Invalid parameters"
 
-        # Route to appropriate validator
         if tool_name.lower() == "bash":
             return _handle_bash(tool_name, parameters)
         elif tool_name.lower() in ("task", "agent"):
             return _handle_task(tool_name, parameters)
         else:
-            # Other tools pass through
             return None
 
     except Exception as e:
@@ -159,20 +132,15 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
     if not command:
         return "Error: Bash tool requires a command"
 
-    # Validate command
     validator = BashValidator()
     result = validator.validate(command)
 
     if not result.allowed:
         logger.warning(f"BLOCKED: {command[:100]} - {result.reason}")
-        # Structured block responses (e.g. cloud pipe violations) must be returned
-        # as a JSON dict (exit 0) so the agent receives the correction message
-        # and adjusts — not as a plain string (exit 2) which terminates the agent.
         if result.block_response is not None:
             return result.block_response
         return _format_blocked_message(result)
 
-    # Save state for post-hook (ONLY for allowed commands)
     effective_command = result.modified_input.get("command", command) if result.modified_input else command
     state = create_pre_hook_state(
         tool_name=tool_name,
@@ -182,9 +150,8 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
     )
     save_hook_state(state)
 
-    # If validator modified the command (e.g., stripped footer), emit updatedInput
     if result.modified_input:
-        logger.info(f"MODIFIED: {command[:80]} → stripped footer - tier={result.tier}")
+        logger.info(f"MODIFIED: {command[:80]} -> stripped footer - tier={result.tier}")
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -202,46 +169,34 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     """
     Handle Task tool validation with resume support.
 
-    Validates both new Task invocations and resume operations.
-    Resume operations skip heavy validations since agent was already validated.
-
-    NEW: Automatically injects project context for project agents.
-    Returns updatedInput when prompt is modified so Claude Code applies changes.
+    Backward-compatible entry point that uses module-level names
+    (allowing monkeypatching in tests).
     """
-    # ========================================================================
-    # PROJECT CONTEXT INJECTION (for new tasks only, not resume)
-    # ========================================================================
+    import re
+
     original_prompt = parameters.get("prompt", "")
     if not parameters.get("resume"):
         parameters = _inject_project_context(parameters)
         parameters = _inject_session_events(parameters)
 
-    # ========================================================================
-    # RESUME DETECTION AND VALIDATION
-    # ========================================================================
     resume_id = parameters.get("resume")
 
     if resume_id:
-        # This is a resume operation - validate differently
-
-        # Step 24: Validate agentId format
-        # Pattern: a###### where # is 0-9 or a-f (6-7 chars after 'a')
         if not re.match(r'^a[0-9a-f]{5,}$', resume_id):
             logger.warning(f"BLOCKED Resume: Invalid agentId format '{resume_id}'")
             return (
-                f"❌ Invalid resume ID format: '{resume_id}'\n\n"
+                f"[ERROR] Invalid resume ID format: '{resume_id}'\n\n"
                 "Agent ID should be 'a' followed by hex characters.\n"
                 "Example: a12345f or a51a0cbbf6afb831d\n\n"
                 "The agent ID is returned at the end of agent responses.\n"
                 "Look for: 'agentId: a...' in the previous agent output."
             )
 
-        # Step 25: Validate that prompt exists
         prompt = parameters.get("prompt", "")
         if not prompt or not prompt.strip():
             logger.warning(f"BLOCKED Resume: Missing prompt for agent {resume_id}")
             return (
-                "❌ Resume requires a prompt\n\n"
+                "[ERROR] Resume requires a prompt\n\n"
                 "When resuming an agent, you must provide instructions:\n\n"
                 "Task(\n"
                 "    resume=\"a12345\",\n"
@@ -250,31 +205,26 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
                 "The prompt tells the agent what to do next."
             )
 
-        # Step 26: Skip heavy validations (agent already validated in phase 1)
-        # Step 27: Log resume operation
-        logger.info(f"✅ RESUME: Continuing agent {resume_id}")
+        logger.info(f"RESUME: Continuing agent {resume_id}")
 
         approval_error, has_approval = _handle_resume_approval(resume_id, prompt)
         if approval_error:
             return approval_error
 
-        # Step 28: Save state for post-hook
         state = create_pre_hook_state(
             tool_name=tool_name,
             command=f"Task:resume:{resume_id}",
-            tier="T0",  # Resume doesn't change tier
+            tier="T0",
             allowed=True,
-            is_t3=False,  # Approval already handled in phase 1
+            is_t3=False,
             has_approval=has_approval,
         )
         save_hook_state(state)
 
         logger.info(f"ALLOWED Resume: agent {resume_id} - prompt length: {len(prompt)}")
-        return None  # Allow resume
+        return None
 
-    # ========================================================================
-    # STANDARD TASK VALIDATION (new task, not resume)
-    # ========================================================================
+    # Standard task validation
     validator = TaskValidator()
     result = validator.validate(parameters)
 
@@ -282,19 +232,17 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
         logger.warning(f"BLOCKED Task: {result.agent_name} - {result.reason}")
         return result.reason
 
-    # Save state for post-hook (ONLY for allowed tasks)
     state = create_pre_hook_state(
         tool_name=tool_name,
         command=f"Task:{result.agent_name}",
         tier=str(result.tier),
-        allowed=True,  # Always true here
+        allowed=True,
         is_t3=result.is_t3_operation,
     )
     save_hook_state(state)
 
     logger.info(f"ALLOWED Task: {result.agent_name}")
 
-    # Return updatedInput if prompt was modified by context/skills injection
     if parameters.get("prompt", "") != original_prompt:
         updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
         logger.info(f"Returning updatedInput for {result.agent_name} (context injected)")
@@ -360,7 +308,7 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
 def _format_blocked_message(result) -> str:
     """Format blocked command message."""
     msg = (
-        f"Command blocked by security policy\n\n"
+        f"[BLOCKED] Command blocked by security policy\n\n"
         f"Tier: {result.tier}\n"
         f"Reason: {result.reason}\n"
     )
@@ -380,8 +328,8 @@ def _format_blocked_message(result) -> str:
 def main():
     """CLI interface for testing."""
     if len(sys.argv) < 2:
-        print("Usage: python pre_tool_use_v2.py <command>")
-        print("       python pre_tool_use_v2.py --test")
+        print("Usage: python pre_tool_use.py <command>")
+        print("       python pre_tool_use.py --test")
         sys.exit(1)
 
     if sys.argv[1] == "--test":
@@ -398,7 +346,7 @@ def main():
 
 def _run_tests():
     """Run validation tests."""
-    print("Testing Pre-Tool Use Hook v2...\n")
+    print("Testing Pre-Tool Use Hook...\n")
 
     test_cases = [
         ("terraform validate", True, "T1"),
@@ -431,10 +379,7 @@ if __name__ == "__main__":
         main()
     elif has_stdin_data():
         try:
-            # --- Adapter: parse stdin ---
             adapter = ClaudeCodeAdapter()
-
-            # Coexistence check: warn if both plugin and npm channels are active
             warn_if_dual_channel()
 
             stdin_data = sys.stdin.read()
@@ -449,46 +394,22 @@ if __name__ == "__main__":
                     print(f"Error: {error_msg}")
                 sys.exit(1)
 
-            # Compatibility: expose raw payload for business logic
-            hook_data = event.payload
+            response = adapter.adapt_pre_tool_use(event)
 
-            logger.info(f"Hook event: {hook_data.get('hook_event_name')}")
-
-            tool_name = hook_data.get("tool_name") or ""
-            tool_input = hook_data.get("tool_input", {})
-
-            # Standard validation (auto-approval handled in BashValidator)
-            result = pre_tool_use_hook(tool_name, tool_input)
-            if isinstance(result, dict):
-                # Dict = allowed with modification (updatedInput)
-                # Output JSON so Claude Code applies the modified parameters
-                #
-                # Special case: structured block responses (e.g. cloud pipe violations)
-                # use permissionDecision: "deny" inside a dict.  Claude Code still
-                # shows the agent the reason, but stderr output ensures the USER also
-                # sees WHY the command was blocked in the hook output panel.
-                hook_output = result.get("hookSpecificOutput", {})
+            if isinstance(response.output, dict) and response.output:
+                hook_output = response.output.get("hookSpecificOutput", {})
                 if hook_output.get("permissionDecision") in ("block", "deny"):
                     reason = hook_output.get("permissionDecisionReason", "Command blocked by hook policy")
-                    # One-line summary for stderr (first line of the reason)
                     summary = reason.split('\n')[0]
                     print(f"BLOCKED: {summary}", file=sys.stderr)
-                print(json.dumps(result))
-                sys.exit(0)
-            elif isinstance(result, str):
-                # String = BLOCKING error - Claude MUST stop execution
-                # Exit code 2 = blocking, exit code 1 = non-blocking
-                # See: https://docs.anthropic.com/en/docs/claude-code/hooks
-                #
-                # Write the rejection reason to stderr so Claude Code displays
-                # it to the user.  stdout carries the full message for the agent;
-                # stderr carries a concise summary for the human operator.
-                summary = result.split('\n')[0]
+                print(json.dumps(response.output))
+                sys.exit(response.exit_code)
+            elif isinstance(response.output, str) and response.output:
+                summary = response.output.split('\n')[0]
                 print(f"BLOCKED: {summary}", file=sys.stderr)
-                print(result)
-                sys.exit(2)
+                print(response.output)
+                sys.exit(response.exit_code)
             else:
-                # None = allowed, no modification
                 sys.exit(0)
 
         except json.JSONDecodeError as e:
@@ -501,8 +422,7 @@ if __name__ == "__main__":
             print(f"Hook error: {str(e)}")
             sys.exit(1)
     else:
-        # No args and no stdin - show usage
-        print("Usage: python pre_tool_use_v2.py <command>")
-        print("       python pre_tool_use_v2.py --test")
-        print("       echo '{\"tool_name\":\"bash\",\"tool_input\":{\"command\":\"ls\"}}' | python pre_tool_use_v2.py")
+        print("Usage: python pre_tool_use.py <command>")
+        print("       python pre_tool_use.py --test")
+        print("       echo '{\"tool_name\":\"bash\",\"tool_input\":{\"command\":\"ls\"}}' | python pre_tool_use.py")
         sys.exit(1)

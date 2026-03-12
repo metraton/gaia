@@ -75,13 +75,20 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Investigation
-PENDING_STEPS: []
-NEXT_ACTION: Task complete
-AGENT_ID: cloud-troubleshooter
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "plan_status": "COMPLETE",
+  "agent_id": "cloud-troubleshooter",
+  "pending_steps": [],
+  "next_action": "done",
+  "evidence": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": []
+  }
+}
+```
 """
 
 INITIAL_CONTEXT = {

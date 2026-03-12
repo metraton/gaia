@@ -117,7 +117,7 @@ def subagent_stop_payload():
         "agent_type": "cloud-troubleshooter",
         "agent_id": "a1b2c3d",
         "agent_transcript_path": "/tmp/transcripts/a1b2c3d.jsonl",
-        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n<!-- AGENT_STATUS -->\nPLAN_STATUS: COMPLETE\nPENDING_STEPS: none\nNEXT_ACTION: none\nAGENT_ID: a1b2c3d\n<!-- /AGENT_STATUS -->",
+        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```json:contract\n{\"plan_status\": \"COMPLETE\", \"agent_id\": \"a1b2c3d\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
         "cwd": "/home/user/project",
         "stop_hook_active": True,
         "permission_mode": "default",
@@ -348,7 +348,7 @@ class TestParseAgentCompletion:
         assert comp.agent_type == "cloud-troubleshooter"
         assert comp.agent_id == "a1b2c3d"
         assert comp.transcript_path == "/tmp/transcripts/a1b2c3d.jsonl"
-        assert "PLAN_STATUS: COMPLETE" in comp.last_message
+        assert '"plan_status": "COMPLETE"' in comp.last_message
         assert comp.session_id == "sess-ghi789"
 
     def test_missing_fields(self, adapter):

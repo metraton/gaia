@@ -25,6 +25,7 @@ from modules.security.approval_grants import (
     activate_pending_approval,
     check_approval_grant,
     cleanup_expired_grants,
+    confirm_grant,
     generate_nonce,
     get_latest_pending_approval,
     write_pending_approval,
@@ -592,7 +593,11 @@ class TestNonceEndToEnd:
         assert result2.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
         assert "Confirm execution" in result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
 
-        # Second retry after native dialog confirmation returns allowed
+        # Simulate post_tool_use confirming the grant after native dialog accepts.
+        # The bash_validator no longer confirms inline; post_tool_use does it.
+        confirm_grant('git commit -m "feat(auth): add login endpoint"')
+
+        # After grant is confirmed, subsequent retries are auto-allowed
         result3 = validator.validate('git commit -m "feat(auth): add login endpoint"')
         assert result3.allowed is True
 

@@ -321,12 +321,20 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Complete
-PENDING_STEPS: None
-NEXT_ACTION: Report findings to orchestrator
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "plan_status": "COMPLETE",
+  "agent_id": "test-agent",
+  "pending_steps": [],
+  "next_action": "done",
+  "evidence": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": []
+  }
+}
+```
 """
         result = parse_context_update(agent_output)
 
@@ -344,9 +352,14 @@ NEXT_ACTION: Report findings to orchestrator
 
 No new data found.
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "plan_status": "COMPLETE",
+  "agent_id": "test-agent",
+  "pending_steps": [],
+  "next_action": "done"
+}
+```
 """
         result = parse_context_update(agent_output)
         assert result is None
@@ -411,13 +424,20 @@ CONTEXT_UPDATE:
             "}\n"
             "```\n"
             "\n"
-            "<!-- AGENT_STATUS -->\n"
-            "PLAN_STATUS: COMPLETE\n"
-            "CURRENT_PHASE: Complete\n"
-            "PENDING_STEPS: None\n"
-            "NEXT_ACTION: None - task complete\n"
-            "AGENT_ID: cloud-troubleshooter\n"
-            "<!-- /AGENT_STATUS -->"
+            "```json:contract\n"
+            "{\n"
+            '  "plan_status": "COMPLETE",\n'
+            '  "agent_id": "cloud-troubleshooter",\n'
+            '  "pending_steps": [],\n'
+            '  "next_action": "done",\n'
+            '  "evidence": {\n'
+            '    "patterns_checked": [],\n'
+            '    "files_checked": [],\n'
+            '    "commands_run": [],\n'
+            '    "key_outputs": []\n'
+            "  }\n"
+            "}\n"
+            "```"
         )
         result = parse_context_update(agent_output)
 
@@ -535,12 +555,20 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Complete
-PENDING_STEPS: None
-NEXT_ACTION: Report findings to orchestrator
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "plan_status": "COMPLETE",
+  "agent_id": "test-agent",
+  "pending_steps": [],
+  "next_action": "done",
+  "evidence": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": []
+  }
+}
+```
 """
 
         # --- PROCESS via context_writer ---
@@ -789,12 +817,20 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Complete
-PENDING_STEPS: None
-NEXT_ACTION: Report to orchestrator
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "plan_status": "COMPLETE",
+  "agent_id": "test-agent",
+  "pending_steps": [],
+  "next_action": "done",
+  "evidence": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": []
+  }
+}
+```
 """
 
             result = mod.subagent_stop_hook(task_info, agent_output)
@@ -861,9 +897,14 @@ NEXT_ACTION: Report to orchestrator
 ## Report
 Everything looks fine. No changes needed.
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "plan_status": "COMPLETE",
+  "agent_id": "test-agent",
+  "pending_steps": [],
+  "next_action": "done"
+}
+```
 """
 
             result = mod.subagent_stop_hook(task_info, agent_output)

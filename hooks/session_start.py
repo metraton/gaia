@@ -84,6 +84,11 @@ if __name__ == "__main__":
                     logger.warning(
                         "Auto-refresh failed, suggest running /gaia:scan-project manually"
                     )
+                    print(
+                        "[WARNING] Auto-refresh scan failed. "
+                        "Run /gaia:scan-project manually to update project context.",
+                        file=sys.stderr,
+                    )
 
             # Build response with scan result (BootstrapResult is frozen)
             if project_scanned:

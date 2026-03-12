@@ -223,82 +223,82 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
 # Suggestions for permanently blocked commands
 BLOCKED_COMMAND_SUGGESTIONS = {
     # AWS suggestions
-    "aws ec2 delete-vpc": "BLOCKED: VPC deletion is irreversible - use Terraform/Terragrunt",
-    "aws ec2 delete-subnet": "BLOCKED: Subnet deletion is irreversible - use Terraform/Terragrunt",
-    "aws ec2 delete-internet-gateway": "BLOCKED: Internet gateway deletion is irreversible - use Terraform/Terragrunt",
-    "aws ec2 delete-route-table": "BLOCKED: Route table deletion is irreversible - use Terraform/Terragrunt",
-    "aws ec2 delete-route": "BLOCKED: Route deletion should be done via Terraform/Terragrunt",
-    "aws ec2 terminate-instances": "BLOCKED: Instance termination is irreversible - use Terraform/Terragrunt",
-    "aws rds delete-db-instance": "BLOCKED: Use Terraform/Terragrunt for RDS lifecycle management",
-    "aws rds delete-db-cluster": "BLOCKED: Use Terraform/Terragrunt for RDS cluster management",
-    "aws dynamodb delete-table": "BLOCKED: Table deletion loses all data - use Terraform/Terragrunt",
-    "aws s3 rb": "BLOCKED: Bucket removal is irreversible - use Terraform/Terragrunt",
-    "aws s3api delete-bucket": "BLOCKED: Bucket deletion is irreversible - use Terraform/Terragrunt",
-    "aws eks delete-cluster": "BLOCKED: Use Terraform/Terragrunt for EKS management",
-    "aws elasticache delete": "BLOCKED: Use Terraform/Terragrunt for ElastiCache management",
-    "aws kms schedule-key-deletion": "BLOCKED: KMS key deletion renders all encrypted data permanently unrecoverable",
-    "aws organizations delete-organization": "BLOCKED: Organization deletion is irreversible",
-    "aws route53 delete-hosted-zone": "BLOCKED: DNS zone deletion causes widespread outage",
+    "aws ec2 delete-vpc": "[BLOCKED] VPC deletion is irreversible - use Terraform/Terragrunt",
+    "aws ec2 delete-subnet": "[BLOCKED] Subnet deletion is irreversible - use Terraform/Terragrunt",
+    "aws ec2 delete-internet-gateway": "[BLOCKED] Internet gateway deletion is irreversible - use Terraform/Terragrunt",
+    "aws ec2 delete-route-table": "[BLOCKED] Route table deletion is irreversible - use Terraform/Terragrunt",
+    "aws ec2 delete-route": "[BLOCKED] Route deletion should be done via Terraform/Terragrunt",
+    "aws ec2 terminate-instances": "[BLOCKED] Instance termination is irreversible - use Terraform/Terragrunt",
+    "aws rds delete-db-instance": "[BLOCKED] Use Terraform/Terragrunt for RDS lifecycle management",
+    "aws rds delete-db-cluster": "[BLOCKED] Use Terraform/Terragrunt for RDS cluster management",
+    "aws dynamodb delete-table": "[BLOCKED] Table deletion loses all data - use Terraform/Terragrunt",
+    "aws s3 rb": "[BLOCKED] Bucket removal is irreversible - use Terraform/Terragrunt",
+    "aws s3api delete-bucket": "[BLOCKED] Bucket deletion is irreversible - use Terraform/Terragrunt",
+    "aws eks delete-cluster": "[BLOCKED] Use Terraform/Terragrunt for EKS management",
+    "aws elasticache delete": "[BLOCKED] Use Terraform/Terragrunt for ElastiCache management",
+    "aws kms schedule-key-deletion": "[BLOCKED] KMS key deletion renders all encrypted data permanently unrecoverable",
+    "aws organizations delete-organization": "[BLOCKED] Organization deletion is irreversible",
+    "aws route53 delete-hosted-zone": "[BLOCKED] DNS zone deletion causes widespread outage",
 
     # GCP suggestions
-    "gcloud projects delete": "BLOCKED: Project deletion is irreversible - must be done via Cloud Console",
-    "gcloud container clusters delete": "BLOCKED: Use Terraform/Terragrunt for GKE management",
-    "gcloud sql instances delete": "BLOCKED: Use Terraform/Terragrunt for Cloud SQL management",
-    "gcloud sql databases delete": "BLOCKED: Database deletion loses all data - use Terraform/Terragrunt",
-    "gcloud services disable": "BLOCKED: Disabling services can break dependent resources",
-    "gsutil rb": "BLOCKED: Bucket removal is irreversible",
-    "gsutil rm -r": "BLOCKED: Recursive deletion of cloud storage is irreversible",
+    "gcloud projects delete": "[BLOCKED] Project deletion is irreversible - must be done via Cloud Console",
+    "gcloud container clusters delete": "[BLOCKED] Use Terraform/Terragrunt for GKE management",
+    "gcloud sql instances delete": "[BLOCKED] Use Terraform/Terragrunt for Cloud SQL management",
+    "gcloud sql databases delete": "[BLOCKED] Database deletion loses all data - use Terraform/Terragrunt",
+    "gcloud services disable": "[BLOCKED] Disabling services can break dependent resources",
+    "gsutil rb": "[BLOCKED] Bucket removal is irreversible",
+    "gsutil rm -r": "[BLOCKED] Recursive deletion of cloud storage is irreversible",
 
     # Kubernetes suggestions
-    "kubectl delete namespace": "BLOCKED: Namespace deletion destroys all resources within it",
-    "kubectl delete ns": "BLOCKED: Namespace deletion destroys all resources within it",
-    "kubectl delete node": "BLOCKED: Node deletion removes the node from the cluster",
-    "kubectl delete cluster": "BLOCKED: Cluster deletion is irreversible and impacts all workloads",
-    "kubectl delete pv": "BLOCKED: Persistent volume deletion loses data",
-    "kubectl delete pvc": "BLOCKED: PVC deletion can trigger PV reclaim and data loss",
-    "kubectl delete crd": "BLOCKED: CRD deletion destroys all custom resources of that type",
-    "kubectl delete mutatingwebhookconfiguration": "BLOCKED: Webhook deletion can break admission control and cluster safety",
-    "kubectl delete validatingwebhookconfiguration": "BLOCKED: Webhook deletion can break admission control and cluster safety",
-    "kubectl drain": "BLOCKED: Node draining can cause service disruption",
-    "kubectl delete --all": "BLOCKED: Bulk deletion of all resources is irreversible",
+    "kubectl delete namespace": "[BLOCKED] Namespace deletion destroys all resources within it",
+    "kubectl delete ns": "[BLOCKED] Namespace deletion destroys all resources within it",
+    "kubectl delete node": "[BLOCKED] Node deletion removes the node from the cluster",
+    "kubectl delete cluster": "[BLOCKED] Cluster deletion is irreversible and impacts all workloads",
+    "kubectl delete pv": "[BLOCKED] Persistent volume deletion loses data",
+    "kubectl delete pvc": "[BLOCKED] PVC deletion can trigger PV reclaim and data loss",
+    "kubectl delete crd": "[BLOCKED] CRD deletion destroys all custom resources of that type",
+    "kubectl delete mutatingwebhookconfiguration": "[BLOCKED] Webhook deletion can break admission control and cluster safety",
+    "kubectl delete validatingwebhookconfiguration": "[BLOCKED] Webhook deletion can break admission control and cluster safety",
+    "kubectl drain": "[BLOCKED] Node draining can cause service disruption",
+    "kubectl delete --all": "[BLOCKED] Bulk deletion of all resources is irreversible",
 
     # Terraform / Terragrunt suggestions
-    "terraform destroy": "BLOCKED: terraform destroy without -target destroys entire state - use terraform destroy -target=<resource>",
-    "terragrunt destroy": "BLOCKED: terragrunt destroy without -target destroys entire state",
-    "terragrunt run-all destroy": "BLOCKED: Recursive destruction of all modules",
-    "terragrunt destroy-all": "BLOCKED: Recursive destruction of all modules",
+    "terraform destroy": "[BLOCKED] terraform destroy without -target destroys entire state - use terraform destroy -target=<resource>",
+    "terragrunt destroy": "[BLOCKED] terragrunt destroy without -target destroys entire state",
+    "terragrunt run-all destroy": "[BLOCKED] Recursive destruction of all modules",
+    "terragrunt destroy-all": "[BLOCKED] Recursive destruction of all modules",
 
     # Docker suggestions
-    "docker system prune": "BLOCKED: docker system prune with -a or --volumes removes all unused resources",
-    "docker volume prune": "BLOCKED: docker volume prune removes all unused volumes and data",
+    "docker system prune": "[BLOCKED] docker system prune with -a or --volumes removes all unused resources",
+    "docker volume prune": "[BLOCKED] docker volume prune removes all unused volumes and data",
 
     # Flux suggestions
-    "flux uninstall": "BLOCKED: flux uninstall removes ALL Flux components from the cluster",
+    "flux uninstall": "[BLOCKED] flux uninstall removes ALL Flux components from the cluster",
 
     # Git suggestions
-    "git push --force": "BLOCKED: Force push rewrites history - use git push --force-with-lease",
-    "git push -f": "BLOCKED: Force push rewrites history - use git push --force-with-lease",
-    "git reset --hard": "BLOCKED: git reset --hard permanently discards uncommitted changes",
+    "git push --force": "[BLOCKED] Force push rewrites history - use git push --force-with-lease",
+    "git push -f": "[BLOCKED] Force push rewrites history - use git push --force-with-lease",
+    "git reset --hard": "[BLOCKED] git reset --hard permanently discards uncommitted changes",
 
     # GitHub/GitLab suggestions
-    "gh repo delete": "BLOCKED: Repository deletion is irreversible - destroys all code and history",
-    "glab project delete": "BLOCKED: Project deletion is irreversible - destroys all code and history",
+    "gh repo delete": "[BLOCKED] Repository deletion is irreversible - destroys all code and history",
+    "glab project delete": "[BLOCKED] Project deletion is irreversible - destroys all code and history",
 
     # npm suggestions
-    "npm unpublish": "BLOCKED: npm unpublish without @version removes entire package from registry",
+    "npm unpublish": "[BLOCKED] npm unpublish without @version removes entire package from registry",
 
     # SQL suggestions
-    "drop database": "BLOCKED: DROP DATABASE is irreversible - destroys all data",
-    "drop table": "BLOCKED: DROP TABLE is irreversible - destroys all data",
+    "drop database": "[BLOCKED] DROP DATABASE is irreversible - destroys all data",
+    "drop table": "[BLOCKED] DROP TABLE is irreversible - destroys all data",
 
     # Disk operations
-    "dd": "BLOCKED: Low-level disk operations can destroy data",
-    "fdisk": "BLOCKED: Disk partitioning can destroy data",
-    "mkfs": "BLOCKED: Filesystem creation destroys all data on target",
+    "dd": "[BLOCKED] Low-level disk operations can destroy data",
+    "fdisk": "[BLOCKED] Disk partitioning can destroy data",
+    "mkfs": "[BLOCKED] Filesystem creation destroys all data on target",
 
     # rm critical
-    "rm -rf /": "BLOCKED: Filesystem destruction is irreversible",
-    "rm -rf ~": "BLOCKED: Home directory destruction is irreversible",
+    "rm -rf /": "[BLOCKED] Filesystem destruction is irreversible",
+    "rm -rf ~": "[BLOCKED] Home directory destruction is irreversible",
 }
 
 # Structured deny signatures complement the raw regex patterns above.

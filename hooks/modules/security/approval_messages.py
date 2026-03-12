@@ -18,7 +18,7 @@ CANONICAL_APPROVAL_FORMAT_GUIDANCE = (
 def build_activation_failed_message(nonce: str, status: str, reason: str) -> str:
     """Return the canonical deny message for failed nonce activation."""
     return (
-        "❌ Approval activation failed\n\n"
+        "[ERROR] Approval activation failed\n\n"
         f"Nonce: {nonce}\n"
         f"Status: {status}\n"
         f"Reason: {reason}\n\n"
@@ -30,7 +30,7 @@ def build_activation_failed_message(nonce: str, status: str, reason: str) -> str
 def build_invalid_nonce_message() -> str:
     """Return the canonical deny message for malformed approval tokens."""
     return (
-        "❌ Invalid approval token\n\n"
+        "[ERROR] Invalid approval token\n\n"
         f"Expected format: {CANONICAL_APPROVAL_TOKEN_FORMAT}\n\n"
         "The token after APPROVE: must be the 32-character hex nonce from the latest "
         "blocked command. Do not use an operation name, scope label, or placeholder "
@@ -43,7 +43,7 @@ def build_invalid_nonce_message() -> str:
 def build_deprecated_approval_message() -> str:
     """Return the canonical deny message for removed legacy approval syntax."""
     return (
-        "❌ Deprecated approval format\n\n"
+        "[ERROR] Deprecated approval format\n\n"
         "String-based approval tokens are no longer supported.\n"
         f"{CANONICAL_APPROVAL_FORMAT_GUIDANCE}"
     )

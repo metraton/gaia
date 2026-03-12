@@ -1,0 +1,787 @@
+{
+  "version": "4.4.0-beta.4",
+  "generated": "2026-03-12",
+  "hooks": {
+    "pre_tool_use": {
+      "entry": "hooks/pre_tool_use.py",
+      "event_types": ["PreToolUse"],
+      "matchers": ["Bash", "Task", "Agent"],
+      "pattern": "custom_stdin",
+      "adapter_method": "adapt_pre_tool_use",
+      "adapter_helpers": [
+        {
+          "name": "_adapt_bash",
+          "description": "Validates bash commands through security pipeline: blocked check, footer stripping, commit validation, cloud pipe check, mutative verb detection",
+          "modules_called": [
+            {"module": "modules/tools/bash_validator.py", "class": "BashValidator", "methods": ["validate"]},
+            {"module": "modules/core/state.py", "functions": ["create_pre_hook_state", "save_hook_state"]},
+            {"module": "modules/security/approval_grants.py", "functions": ["cleanup_expired_grants"]}
+          ]
+        },
+        {
+          "name": "_adapt_task",
+          "description": "Validates task/agent invocations with context injection and T3 detection",
+          "modules_called": [
+            {"module": "modules/tools/task_validator.py", "class": "TaskValidator", "methods": ["validate"]},
+            {"module": "modules/context/context_injector.py", "functions": ["inject_project_context"]},
+            {"module": "modules/session/session_event_injector.py", "functions": ["inject_session_events"]},
+            {"module": "modules/core/state.py", "functions": ["create_pre_hook_state", "save_hook_state"]}
+          ]
+        },
+        {
+          "name": "_adapt_task_resume",
+          "description": "Validates Task resume with agentId format check, prompt validation, and nonce approval processing",
+          "modules_called": [
+            {"module": "modules/core/state.py", "functions": ["create_pre_hook_state", "save_hook_state"]}
+          ]
+        },
+        {
+          "name": "_adapt_resume_approval",
+          "description": "Processes nonce approval indicators for Task resume: classifies prompt, activates pending approvals, handles deprecated/malformed tokens",
+          "modules_called": [
+            {"module": "modules/security/prompt_validator.py", "functions": ["classify_resume_prompt"]},
+            {"module": "modules/security/approval_constants.py", "constants": ["NONCE_APPROVAL_PATTERN"]},
+            {"module": "modules/security/approval_grants.py", "functions": ["activate_pending_approval"]},
+            {"module": "modules/security/approval_messages.py", "functions": ["build_activation_failed_message", "build_deprecated_approval_message", "build_invalid_nonce_message"]}
+          ]
+        },
+        {
+          "name": "_format_blocked_message",
+          "description": "Formats blocked command error message with tier, reason, and suggestions",
+          "modules_called": []
+        }
+      ],
+      "entry_point_flow": [
+        "has_stdin_data() check",
+        "ClaudeCodeAdapter() instantiation",
+        "warn_if_dual_channel()",
+        "adapter.parse_event(stdin_data)",
+        "adapter.adapt_pre_tool_use(event)",
+        "JSON output + sys.exit(response.exit_code)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["ValidationRequest", "BashValidationResult", "TaskValidationResult"]
+      },
+      "status": "fully_decoupled"
+    },
+    "post_tool_use": {
+      "entry": "hooks/post_tool_use.py",
+      "event_types": ["PostToolUse"],
+      "matchers": ["Bash"],
+      "pattern": "run_hook",
+      "adapter_method": "adapt_post_tool_use",
+      "adapter_helpers": [],
+      "adapter_calls": [
+        {
+          "name": "adapt_post_tool_use",
+          "description": "State retrieval, duration computation, audit logging, T3 grant confirmation, critical event detection, session context writing, state cleanup",
+          "modules_called": [
+            {"module": "modules/core/state.py", "functions": ["get_hook_state", "clear_hook_state"]},
+            {"module": "modules/audit/logger.py", "functions": ["log_execution"]},
+            {"module": "modules/audit/event_detector.py", "functions": ["detect_critical_event"]},
+            {"module": "modules/session/session_context_writer.py", "class": "SessionContextWriter", "methods": ["update_context"]},
+            {"module": "modules/security/approval_grants.py", "functions": ["check_approval_grant", "confirm_grant"]}
+          ]
+        }
+      ],
+      "entry_point_flow": [
+        "run_hook(_handle_post_tool_use, hook_name='post_tool_use')",
+        "adapter.adapt_post_tool_use(event)",
+        "JSON output + sys.exit(response.exit_code)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["ToolResult", "HookState", "CriticalEvent"]
+      },
+      "status": "fully_decoupled"
+    },
+    "subagent_stop": {
+      "entry": "hooks/subagent_stop.py",
+      "event_types": ["SubagentStop"],
+      "matchers": ["*"],
+      "pattern": "run_hook",
+      "adapter_method": "adapt_subagent_stop",
+      "adapter_helpers": [],
+      "adapter_calls": [
+        {
+          "name": "adapt_subagent_stop",
+          "description": "Contract parsing/validation, approval cleanup, context updates, workflow recording, response contract validation, anomaly detection, episodic memory, result assembly",
+          "modules_called": [
+            {"module": "modules/agents/contract_validator.py", "functions": ["parse_contract", "validate", "extract_commands_from_evidence", "requires_consolidation_report"]},
+            {"module": "modules/agents/response_contract.py", "functions": ["validate_response_contract", "save_validation_result", "resolve_agent_id"]},
+            {"module": "modules/agents/task_info_builder.py", "functions": ["build_task_info_from_hook_data"]},
+            {"module": "modules/agents/transcript_reader.py", "functions": ["read_transcript"]},
+            {"module": "modules/audit/workflow_recorder.py", "functions": ["record"]},
+            {"module": "modules/audit/workflow_auditor.py", "functions": ["audit", "signal_gaia_analysis"]},
+            {"module": "modules/context/context_writer.py", "functions": ["process_context_updates"]},
+            {"module": "modules/memory/episode_writer.py", "functions": ["write"]},
+            {"module": "modules/security/approval_cleanup.py", "functions": ["cleanup"]},
+            {"module": "modules/session/session_manager.py", "functions": ["get_or_create_session_id"]}
+          ]
+        }
+      ],
+      "entry_point_flow": [
+        "run_hook(_handle_subagent_stop, hook_name='subagent_stop')",
+        "adapter.adapt_subagent_stop(event)",
+        "JSON output + sys.exit(response.exit_code)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["AgentCompletion", "CompletionResult", "ValidationResult", "ResponseContractValidation"]
+      },
+      "status": "fully_decoupled"
+    },
+    "session_start": {
+      "entry": "hooks/session_start.py",
+      "event_types": ["SessionStart"],
+      "matchers": ["startup"],
+      "pattern": "inline_stdin",
+      "adapter_method": "adapt_session_start",
+      "adapter_helpers": [],
+      "adapter_calls": [
+        {
+          "name": "adapt_session_start",
+          "description": "Parses session type, determines should_scan and should_refresh based on session_type (startup/resume/clear/compact)",
+          "modules_called": []
+        },
+        {
+          "name": "format_bootstrap_response",
+          "description": "Formats BootstrapResult into JSON output for Claude Code",
+          "modules_called": []
+        }
+      ],
+      "entry_point_modules": [
+        {"module": "modules/context/context_freshness.py", "functions": ["check_freshness"]},
+        {"module": "modules/scanning/scan_trigger.py", "functions": ["trigger_lightweight_scan"]}
+      ],
+      "entry_point_flow": [
+        "has_stdin_data() check",
+        "adapter.parse_event(stdin_data)",
+        "adapter.adapt_session_start(event.payload)",
+        "check_freshness()",
+        "trigger_lightweight_scan() if stale",
+        "adapter.format_bootstrap_response(bootstrap)",
+        "JSON output + sys.exit(0)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["BootstrapResult", "FreshnessResult"]
+      },
+      "status": "fully_decoupled"
+    },
+    "stop_hook": {
+      "entry": "hooks/stop_hook.py",
+      "event_types": ["Stop"],
+      "matchers": [],
+      "pattern": "run_hook",
+      "adapter_method": "adapt_stop",
+      "adapter_helpers": [],
+      "adapter_calls": [
+        {
+          "name": "adapt_stop",
+          "description": "Parses Stop event, assesses response quality (passthrough for MVP)",
+          "modules_called": []
+        },
+        {
+          "name": "format_quality_response",
+          "description": "Formats QualityResult into JSON output",
+          "modules_called": []
+        }
+      ],
+      "entry_point_flow": [
+        "run_hook(_handle_stop, hook_name='stop_hook')",
+        "adapter.adapt_stop(event.payload)",
+        "adapter.format_quality_response(quality_result)",
+        "JSON output + sys.exit(0)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["QualityResult"]
+      },
+      "status": "fully_decoupled",
+      "note": "MVP passthrough - quality checks wired in future iteration"
+    },
+    "task_completed": {
+      "entry": "hooks/task_completed.py",
+      "event_types": ["TaskCompleted"],
+      "matchers": [],
+      "pattern": "run_hook",
+      "adapter_method": "adapt_task_completed",
+      "adapter_helpers": [],
+      "adapter_calls": [
+        {
+          "name": "adapt_task_completed",
+          "description": "Parses TaskCompleted event, verifies completion criteria (passthrough for MVP)",
+          "modules_called": []
+        },
+        {
+          "name": "format_verification_response",
+          "description": "Formats VerificationResult into JSON output",
+          "modules_called": []
+        }
+      ],
+      "entry_point_flow": [
+        "run_hook(_handle_task_completed, hook_name='task_completed')",
+        "adapter.adapt_task_completed(event.payload)",
+        "adapter.format_verification_response(verification_result)",
+        "JSON output + sys.exit(0)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["VerificationResult"]
+      },
+      "status": "fully_decoupled",
+      "note": "MVP passthrough - completion checks wired in future iteration"
+    },
+    "subagent_start": {
+      "entry": "hooks/subagent_start.py",
+      "event_types": ["SubagentStart"],
+      "matchers": ["*"],
+      "pattern": "run_hook",
+      "adapter_method": "adapt_subagent_start",
+      "adapter_helpers": [],
+      "adapter_calls": [
+        {
+          "name": "adapt_subagent_start",
+          "description": "Parses SubagentStart event, prepares agent context (passthrough for MVP)",
+          "modules_called": []
+        },
+        {
+          "name": "format_context_response",
+          "description": "Formats ContextResult into JSON output with additionalContext field",
+          "modules_called": []
+        }
+      ],
+      "entry_point_modules": [
+        {"module": "modules/audit/workflow_recorder.py", "functions": ["record_agent_skill_snapshot"]}
+      ],
+      "entry_point_flow": [
+        "run_hook(_handle_subagent_start, hook_name='subagent_start')",
+        "adapter.adapt_subagent_start(event.payload)",
+        "record_agent_skill_snapshot(agent_type, session_context)",
+        "adapter.format_context_response(context_result)",
+        "JSON output + sys.exit(0)"
+      ],
+      "data_types": {
+        "input": "HookEvent",
+        "output": "HookResponse",
+        "internal": ["ContextResult"]
+      },
+      "status": "fully_decoupled",
+      "note": "MVP passthrough - full context injection wired in future iteration"
+    }
+  },
+  "adapter": {
+    "base_class": "hooks/adapters/base.py",
+    "implementation": "hooks/adapters/claude_code.py",
+    "types": "hooks/adapters/types.py",
+    "utils": "hooks/adapters/utils.py",
+    "abstract_methods": {
+      "parse_event": {"input": "str (stdin JSON)", "output": "HookEvent"},
+      "format_validation_response": {"input": "ValidationResult", "output": "HookResponse"},
+      "format_completion_response": {"input": "CompletionResult", "output": "HookResponse"},
+      "format_context_response": {"input": "ContextResult", "output": "HookResponse"},
+      "format_bootstrap_response": {"input": "BootstrapResult", "output": "HookResponse"},
+      "format_quality_response": {"input": "QualityResult", "output": "HookResponse"},
+      "format_verification_response": {"input": "VerificationResult", "output": "HookResponse"},
+      "adapt_session_start": {"input": "dict (raw payload)", "output": "BootstrapResult"},
+      "adapt_stop": {"input": "dict (raw payload)", "output": "QualityResult"},
+      "adapt_task_completed": {"input": "dict (raw payload)", "output": "VerificationResult"},
+      "adapt_subagent_start": {"input": "dict (raw payload)", "output": "ContextResult"},
+      "adapt_pre_tool_use": {"input": "HookEvent", "output": "HookResponse"},
+      "adapt_post_tool_use": {"input": "HookEvent", "output": "HookResponse"},
+      "adapt_subagent_stop": {"input": "HookEvent", "output": "HookResponse"},
+      "detect_channel": {"input": "none", "output": "DistributionChannel"}
+    },
+    "concrete_helpers": {
+      "parse_pre_tool_use": {"input": "dict", "output": "ValidationRequest"},
+      "parse_post_tool_use": {"input": "dict", "output": "ToolResult"},
+      "parse_agent_completion": {"input": "dict", "output": "AgentCompletion"},
+      "format_ask_response": {"input": "str (reason)", "output": "HookResponse"},
+      "_get_plugin_root": {"input": "none", "output": "Optional[Path]"},
+      "_adapt_bash": {"input": "str, dict", "output": "HookResponse"},
+      "_adapt_task": {"input": "str, dict, list, Path", "output": "HookResponse"},
+      "_adapt_task_resume": {"input": "str, dict, str", "output": "HookResponse"},
+      "_adapt_resume_approval": {"input": "str, str", "output": "tuple[str|None, bool]"},
+      "_format_blocked_message": {"input": "BashValidationResult", "output": "str"}
+    }
+  },
+  "data_types": {
+    "HookEventType": {
+      "type": "enum",
+      "values": ["PreToolUse", "PostToolUse", "SubagentStop", "SessionStart", "UserPromptSubmit", "PermissionRequest", "Stop", "TaskCompleted", "SubagentStart", "PreCompact", "ConfigChange", "SessionEnd", "InstructionsLoaded", "PostToolUseFailure", "Notification", "TeammateIdle", "WorktreeCreate", "WorktreeRemove", "PromptSubmit"],
+      "priority_groups": {"P0": ["PreToolUse", "PostToolUse", "SubagentStop"], "P1": ["SessionStart", "UserPromptSubmit"], "P2": ["PermissionRequest", "Stop", "TaskCompleted", "SubagentStart"]}
+    },
+    "PermissionDecision": {
+      "type": "enum",
+      "values": ["allow", "deny", "ask"]
+    },
+    "DistributionChannel": {
+      "type": "enum",
+      "values": ["npm", "plugin"]
+    },
+    "HookEvent": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["event_type: HookEventType", "session_id: str", "payload: Dict[str, Any]", "channel: DistributionChannel", "plugin_root: Optional[Path]"]
+    },
+    "ValidationRequest": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["tool_name: str", "command: str", "tool_input: Dict[str, Any]", "session_id: str"]
+    },
+    "ValidationResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["allowed: bool", "reason: str", "tier: str", "modified_input: Optional[Dict]", "suggestions: List[str]", "nonce: Optional[str]"]
+    },
+    "ToolResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["tool_name: str", "command: str", "output: str", "exit_code: int", "session_id: str"]
+    },
+    "AgentCompletion": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["agent_type: str", "agent_id: str", "transcript_path: str", "last_message: str", "session_id: str"]
+    },
+    "CompletionResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["contract_valid: bool", "episode_id: Optional[str]", "context_updated: bool", "anomalies: List[Dict]", "repair_needed: bool"]
+    },
+    "ContextResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["context_injected: bool", "additional_context: Optional[str]", "sections_provided: List[str]", "prompt_text: str"]
+    },
+    "BootstrapResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["project_scanned: bool", "context_path: Optional[Path]", "tools_detected: List[str]", "should_scan: bool", "should_refresh: bool", "session_type: str"]
+    },
+    "QualityResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["quality_sufficient: bool", "score: float", "missing_elements: List[str]", "recommendation: str"]
+    },
+    "VerificationResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["criteria_met: bool", "verified_items: List[str]", "failed_items: List[str]", "block_completion: bool"]
+    },
+    "HookResponse": {
+      "type": "dataclass",
+      "frozen": true,
+      "fields": ["output: Dict[str, Any]", "exit_code: int"],
+      "methods": ["to_dict"]
+    },
+    "BashValidationResult": {
+      "type": "dataclass",
+      "module": "modules/tools/bash_validator.py",
+      "fields": ["allowed: bool", "tier: SecurityTier", "reason: str", "suggestions: List[str]", "modified_input: Optional[Dict]", "block_response: Optional[Dict]"]
+    },
+    "TaskValidationResult": {
+      "type": "dataclass",
+      "module": "modules/tools/task_validator.py",
+      "fields": ["allowed: bool", "tier: SecurityTier", "reason: str", "agent_name: str", "has_context: bool", "is_t3_operation: bool"]
+    },
+    "MutativeResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/security/mutative_verbs.py",
+      "fields": ["is_mutative: bool", "category: str", "verb: str", "dangerous_flags: Tuple[str]", "cli_family: str", "confidence: str", "reason: str"]
+    },
+    "BlockedCommandResult": {
+      "type": "dataclass",
+      "module": "modules/security/blocked_commands.py",
+      "fields": ["is_blocked: bool", "pattern_matched: Optional[str]", "category: Optional[str]", "suggestion: Optional[str]"]
+    },
+    "SecurityTier": {
+      "type": "enum",
+      "module": "modules/security/tiers.py",
+      "values": ["T0_READ_ONLY (T0)", "T1_VALIDATION (T1)", "T2_DRY_RUN (T2)", "T3_BLOCKED (T3)"],
+      "properties": ["requires_approval", "description"]
+    },
+    "HookState": {
+      "type": "dataclass",
+      "module": "modules/core/state.py",
+      "fields": ["tool_name: str", "command: str", "tier: str", "start_time: str", "start_time_epoch: float", "session_id: str", "pre_hook_result: str", "metadata: Dict"]
+    },
+    "ApprovalGrant": {
+      "type": "dataclass",
+      "module": "modules/security/approval_grants.py",
+      "fields": ["session_id: str", "approved_verbs: List[str]", "approved_scope: str", "scope_type: str", "scope_signature: Optional[dict]", "granted_at: float", "ttl_minutes: int", "used: bool", "confirmed: bool"],
+      "methods": ["is_expired", "is_valid", "get_signature", "matches_command"]
+    },
+    "ApprovalActivationResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/security/approval_grants.py",
+      "fields": ["success: bool", "status: str", "reason: str", "grant_path: Optional[Path]"]
+    },
+    "ApprovalSignature": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/security/approval_scopes.py",
+      "fields": ["version: int", "scope_type: str", "base_cmd: str", "cli_family: str", "danger_category: str", "verb: str", "semantic_tokens: Tuple[str]", "normalized_flags: Tuple[str]", "dangerous_flags: Tuple[str]", "exact_tokens: Tuple[str]"],
+      "methods": ["to_dict", "from_dict"]
+    },
+    "CommandSemantics": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/security/command_semantics.py",
+      "fields": ["raw_command: str", "tokens: Tuple[str]", "base_cmd: str", "args: Tuple[str]", "flag_tokens: Tuple[str]", "non_flag_tokens: Tuple[str]", "semantic_tokens: Tuple[str]", "semantic_head_tokens: Tuple[str]"],
+      "properties": ["normalized_command"],
+      "methods": ["has_flag"]
+    },
+    "FreshnessResult": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/context/context_freshness.py",
+      "fields": ["is_fresh: bool", "reason: str", "age_hours: float"]
+    },
+    "CriticalEvent": {
+      "type": "dataclass",
+      "module": "modules/audit/event_detector.py",
+      "fields": ["event_type: EventType", "data: Dict", "timestamp: str"],
+      "methods": ["to_dict"]
+    },
+    "GitOpsValidationResult": {
+      "type": "dataclass",
+      "module": "modules/security/gitops_validator.py",
+      "fields": ["allowed: bool", "reason: str", "severity: str", "suggestions: List[str]"]
+    },
+    "ResponseContractValidation": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/agents/response_contract.py",
+      "fields": ["valid: bool", "severity: str", "missing: List[str]", "invalid: List[str]", "evidence_required: bool", "consolidation_required: bool", "recommended_action: str", "agent_status: AgentStatusBlock", "evidence_report: EvidenceReportBlock", "consolidation_report: ConsolidationReportBlock"],
+      "methods": ["to_dict"]
+    },
+    "SemanticBlockedRule": {
+      "type": "dataclass",
+      "frozen": true,
+      "module": "modules/security/blocked_commands.py",
+      "fields": ["category: str", "sequence: Tuple[str]", "suggestion_key: str", "required_flags: Tuple[str]", "forbidden_flags: Tuple[str]", "head_only: bool"],
+      "methods": ["matches"]
+    }
+  },
+  "modules": {
+    "modules/core/paths.py": {
+      "description": "Unified path resolution for .claude directory and subdirectories",
+      "functions": ["find_claude_dir", "get_logs_dir", "get_metrics_dir", "get_memory_dir", "get_session_dir", "get_hooks_config_dir", "clear_path_cache"],
+      "called_by": ["modules/core/state.py", "modules/audit/logger.py", "modules/audit/event_detector.py", "modules/security/approval_grants.py", "modules/security/approval_cleanup.py", "modules/session/session_context_writer.py", "modules/context/context_freshness.py", "modules/agents/response_contract.py"]
+    },
+    "modules/core/state.py": {
+      "description": "Hook state management: shares state between pre and post hooks via temp file",
+      "class": "HookState",
+      "functions": ["save_hook_state", "get_hook_state", "clear_hook_state", "create_pre_hook_state", "get_session_id"],
+      "calls": ["modules/core/paths.py:find_claude_dir"],
+      "called_by": ["adapters/claude_code.py:_adapt_bash", "adapters/claude_code.py:_adapt_task", "adapters/claude_code.py:_adapt_task_resume", "adapters/claude_code.py:adapt_post_tool_use"]
+    },
+    "modules/core/stdin.py": {
+      "description": "Stdin availability check using select for hook entrypoints",
+      "functions": ["has_stdin_data"],
+      "called_by": ["hooks/pre_tool_use.py", "hooks/post_tool_use.py", "hooks/subagent_stop.py", "hooks/session_start.py", "modules/core/hook_entry.py", "adapters/utils.py"]
+    },
+    "modules/core/hook_entry.py": {
+      "description": "Common hook entrypoint boilerplate: stdin read, adapter parse, handler dispatch, error handling",
+      "functions": ["run_hook"],
+      "calls": ["modules/core/stdin.py:has_stdin_data", "adapters/claude_code.py:ClaudeCodeAdapter"],
+      "called_by": ["hooks/post_tool_use.py", "hooks/subagent_stop.py", "hooks/stop_hook.py", "hooks/task_completed.py", "hooks/subagent_start.py"]
+    },
+    "modules/tools/bash_validator.py": {
+      "class": "BashValidator",
+      "public_methods": ["validate"],
+      "private_methods": ["_has_operators", "_validate_single_command", "_validate_compound_command", "_detect_claude_footers", "_strip_claude_footers", "_validate_commit_message", "_extract_commit_message"],
+      "convenience_functions": ["validate_bash_command", "create_permission_allow_response"],
+      "description": "Primary security gate for all Bash tool invocations. Pipeline: blocked_commands -> footer stripping -> commit validation -> cloud pipe check -> mutative verb detection -> safe by elimination",
+      "calls": [
+        "modules/security/blocked_commands.py:is_blocked_command",
+        "modules/security/mutative_verbs.py:detect_mutative_command",
+        "modules/security/mutative_verbs.py:build_t3_block_response",
+        "modules/security/gitops_validator.py:validate_gitops_workflow",
+        "modules/security/approval_grants.py:check_approval_grant",
+        "modules/security/approval_grants.py:confirm_grant",
+        "modules/security/approval_grants.py:generate_nonce",
+        "modules/security/approval_grants.py:write_pending_approval",
+        "modules/security/approval_grants.py:last_check_found_expired",
+        "modules/security/approval_messages.py:build_pending_approval_unavailable_message",
+        "modules/security/approval_messages.py:build_t3_approval_instructions",
+        "modules/tools/shell_parser.py:get_shell_parser",
+        "modules/tools/cloud_pipe_validator.py:validate_cloud_pipe",
+        "modules/tools/hook_response.py:build_hook_permission_response",
+        "modules/validation/commit_validator.py:validate_commit_message"
+      ],
+      "called_by": ["adapters/claude_code.py:_adapt_bash"]
+    },
+    "modules/tools/task_validator.py": {
+      "class": "TaskValidator",
+      "public_methods": ["validate"],
+      "private_methods": ["_check_context_provisioning", "_is_t3_operation"],
+      "convenience_functions": ["validate_task_invocation"],
+      "module_functions": ["_sanitize_candidate_fragment", "_extract_command_candidates", "_scan_text_for_t3"],
+      "constants": ["AVAILABLE_AGENTS", "META_AGENTS", "T3_KEYWORDS"],
+      "description": "Validates Task tool invocations: agent existence, context provisioning, T3 detection using verb detector",
+      "calls": [
+        "modules/security/mutative_verbs.py:detect_mutative_command",
+        "modules/security/mutative_verbs.py:CLI_FAMILY_LOOKUP",
+        "modules/security/mutative_verbs.py:COMMAND_ALIASES"
+      ],
+      "called_by": ["adapters/claude_code.py:_adapt_task"]
+    },
+    "modules/tools/shell_parser.py": {
+      "class": "ShellCommandParser",
+      "public_methods": ["parse", "parse_with_operators", "contains_operators", "is_simple_command"],
+      "private_methods": ["_split_on_operators"],
+      "convenience_functions": ["get_shell_parser", "parse_command", "is_compound_command"],
+      "description": "Native Python shell command parser: splits on operators (|, &&, ||, ;) while preserving quoted strings",
+      "called_by": ["modules/tools/bash_validator.py"]
+    },
+    "modules/tools/cloud_pipe_validator.py": {
+      "functions": ["validate_cloud_pipe", "build_block_response"],
+      "private_functions": ["_find_violation", "_strip_quoted_sections"],
+      "description": "Detects pipe/redirect/chaining violations in cloud CLI commands (gcloud, kubectl, aws, terraform, helm, flux)",
+      "calls": ["modules/tools/hook_response.py:build_hook_permission_response"],
+      "called_by": ["modules/tools/bash_validator.py"]
+    },
+    "modules/tools/hook_response.py": {
+      "functions": ["build_hook_permission_response"],
+      "description": "Shared builder for hookSpecificOutput responses, delegates to adapter format methods",
+      "calls": ["adapters/claude_code.py:ClaudeCodeAdapter.format_validation_response", "adapters/claude_code.py:ClaudeCodeAdapter.format_ask_response"],
+      "called_by": ["modules/tools/bash_validator.py", "modules/tools/cloud_pipe_validator.py"]
+    },
+    "modules/security/blocked_commands.py": {
+      "functions": ["is_blocked_command", "get_blocked_patterns", "get_blocked_patterns_by_category", "get_suggestion_for_blocked"],
+      "private_functions": ["_match_semantic_block_rule"],
+      "constants": ["BLOCKED_PATTERNS", "BLOCKED_COMMAND_SUGGESTIONS", "SEMANTIC_BLOCKED_RULES"],
+      "classes": ["BlockedCommandResult", "SemanticBlockedRule"],
+      "description": "Permanently blocked destructive operations (exit 2, no nonce, never approvable). Regex patterns + semantic ordered-token signatures",
+      "calls": ["modules/security/command_semantics.py:analyze_command", "modules/security/command_semantics.py:_contains_ordered_sequence"],
+      "called_by": ["modules/tools/bash_validator.py", "modules/security/tiers.py"]
+    },
+    "modules/security/mutative_verbs.py": {
+      "functions": ["detect_mutative_command", "build_t3_block_response"],
+      "private_functions": ["_scan_dangerous_flags", "_check_inline_code", "_find_first_non_flag"],
+      "constants": ["MUTATIVE_VERBS", "SIMULATION_VERBS", "READ_ONLY_VERBS", "COMPOUND_READ_ONLY_SUBCOMMANDS", "VERB_FLAG_READ_ONLY_OVERRIDES", "COMMAND_ALIASES", "SIMULATION_FLAGS", "DANGEROUS_FLAGS", "CLI_FAMILY_LOOKUP", "CATEGORY_MUTATIVE", "CATEGORY_SIMULATION", "CATEGORY_READ_ONLY", "CATEGORY_UNKNOWN"],
+      "classes": ["MutativeResult"],
+      "description": "CLI-agnostic verb detection: tokenize -> aliases -> simulation flag override -> verb taxonomy scan -> dangerous flags. Three categories: MUTATIVE (nonce approval), SIMULATION, READ_ONLY",
+      "calls": ["modules/security/command_semantics.py:analyze_command", "modules/security/approval_messages.py:build_t3_approval_instructions"],
+      "called_by": ["modules/tools/bash_validator.py", "modules/tools/task_validator.py", "modules/security/tiers.py", "modules/security/approval_scopes.py"]
+    },
+    "modules/security/tiers.py": {
+      "class": "SecurityTier",
+      "functions": ["classify_command_tier", "tier_from_string"],
+      "private_functions": ["_classify_command_tier_cached"],
+      "constants": ["T1_PATTERNS", "T2_PATTERNS", "ULTRA_COMMON_T0_COMMANDS"],
+      "description": "Security tier classification (T0-T3) for logging and state tracking. Not the primary security gate -- bash_validator enforces decisions",
+      "calls": ["modules/security/mutative_verbs.py:detect_mutative_command", "modules/security/blocked_commands.py:get_blocked_patterns"],
+      "called_by": ["modules/tools/bash_validator.py", "modules/tools/task_validator.py"]
+    },
+    "modules/security/gitops_validator.py": {
+      "functions": ["validate_gitops_workflow", "is_safe_gitops_command", "is_forbidden_gitops_command", "to_dict"],
+      "classes": ["GitOpsValidationResult"],
+      "description": "GitOps workflow validation for kubectl/helm/flux: ensures commands follow GitOps principles (no direct cluster modifications)",
+      "called_by": ["modules/tools/bash_validator.py"]
+    },
+    "modules/security/command_semantics.py": {
+      "functions": ["analyze_command", "tokenize_command"],
+      "private_functions": ["_contains_ordered_sequence", "_pathless", "_is_flag", "_normalize_flag_token"],
+      "classes": ["CommandSemantics"],
+      "description": "CLI-agnostic semantic command analysis: tokenization, flag/non-flag separation, semantic head extraction for policy matching",
+      "called_by": ["modules/security/mutative_verbs.py", "modules/security/blocked_commands.py", "modules/security/approval_scopes.py"]
+    },
+    "modules/security/approval_grants.py": {
+      "functions": ["generate_nonce", "write_pending_approval", "activate_pending_approval", "check_approval_grant", "confirm_grant", "cleanup_expired_grants", "last_check_found_expired", "get_latest_pending_approval"],
+      "private_functions": ["_is_ttl_expired", "_get_grants_dir", "_get_pending_index_path", "_read_json_file", "_rebuild_pending_index", "_get_session_id", "_cleanup_grant"],
+      "classes": ["ApprovalGrant", "ApprovalActivationResult", "ActivationStatus"],
+      "description": "Two-phase nonce-based T3 approval flow: blocking (pending file) -> activation (grant file). Session-scoped, time-limited, cryptographic nonces",
+      "calls": ["modules/core/paths.py:find_claude_dir", "modules/core/state.py:get_session_id", "modules/security/approval_scopes.py:build_approval_signature", "modules/security/approval_scopes.py:matches_approval_signature"],
+      "called_by": ["modules/tools/bash_validator.py", "adapters/claude_code.py:_adapt_resume_approval", "adapters/claude_code.py:adapt_post_tool_use", "adapters/claude_code.py:adapt_pre_tool_use"]
+    },
+    "modules/security/approval_scopes.py": {
+      "functions": ["build_approval_signature", "matches_approval_signature"],
+      "private_functions": ["_sorted_unique_lower"],
+      "classes": ["ApprovalSignature"],
+      "constants": ["SCOPE_EXACT_COMMAND", "SCOPE_SEMANTIC_SIGNATURE", "SUPPORTED_SCOPE_TYPES", "APPROVAL_SCOPE_VERSION"],
+      "description": "Approval scope builders and matching: exact_command (token match) and semantic_signature (same command + normalized flags)",
+      "calls": ["modules/security/command_semantics.py:analyze_command", "modules/security/command_semantics.py:tokenize_command", "modules/security/mutative_verbs.py:detect_mutative_command"],
+      "called_by": ["modules/security/approval_grants.py"]
+    },
+    "modules/security/approval_constants.py": {
+      "constants": ["NONCE_APPROVAL_PREFIX", "NONCE_APPROVAL_PATTERN", "DEPRECATED_APPROVAL_PHRASES"],
+      "description": "Canonical nonce approval token regex and deprecated approval phrases",
+      "called_by": ["modules/security/prompt_validator.py", "modules/security/approval_messages.py", "adapters/claude_code.py:_adapt_resume_approval"]
+    },
+    "modules/security/approval_messages.py": {
+      "functions": ["build_activation_failed_message", "build_invalid_nonce_message", "build_deprecated_approval_message", "build_pending_approval_unavailable_message", "build_t3_approval_instructions"],
+      "constants": ["CANONICAL_APPROVAL_TOKEN", "CANONICAL_APPROVAL_TOKEN_FORMAT", "LATEST_BLOCKED_COMMAND_PHRASE", "PENDING_APPROVAL_STATUS"],
+      "description": "Canonical approval/resume text builders for hooks, skills, and tests",
+      "calls": ["modules/security/approval_constants.py:NONCE_APPROVAL_PREFIX"],
+      "called_by": ["modules/tools/bash_validator.py", "modules/security/mutative_verbs.py", "adapters/claude_code.py:_adapt_resume_approval"]
+    },
+    "modules/security/approval_cleanup.py": {
+      "functions": ["cleanup"],
+      "aliases": ["consume_approval_file"],
+      "description": "Cleans up pending approval files after agent completion (session-scoped)",
+      "calls": ["modules/core/paths.py:find_claude_dir", "modules/core/state.py:get_session_id"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/security/prompt_validator.py": {
+      "functions": ["classify_resume_prompt"],
+      "description": "Validates and classifies resume prompts: nonce, malformed_nonce, deprecated, standard",
+      "calls": ["modules/security/approval_constants.py:NONCE_APPROVAL_PREFIX", "modules/security/approval_constants.py:NONCE_APPROVAL_PATTERN", "modules/security/approval_constants.py:DEPRECATED_APPROVAL_PHRASES"],
+      "called_by": ["adapters/claude_code.py:_adapt_resume_approval", "modules/context/context_injector.py"]
+    },
+    "modules/audit/logger.py": {
+      "class": "AuditLogger",
+      "public_methods": ["log_execution"],
+      "private_methods": ["_sanitize_params", "_write_record"],
+      "convenience_functions": ["get_audit_logger", "log_execution"],
+      "description": "Audit logger for tool executions: writes to daily JSONL files with sensitive data redaction",
+      "calls": ["modules/core/paths.py:get_logs_dir", "modules/core/state.py:get_session_id"],
+      "called_by": ["adapters/claude_code.py:adapt_post_tool_use"]
+    },
+    "modules/audit/event_detector.py": {
+      "class": "CriticalEventDetector",
+      "public_methods": ["detect_git_commit", "detect_git_push", "detect_all"],
+      "convenience_functions": ["get_detector", "detect_critical_event"],
+      "classes": ["CriticalEvent", "EventType"],
+      "description": "Detects critical events (git commits, pushes, file modifications) from tool execution results",
+      "calls": ["modules/core/paths.py:get_session_dir"],
+      "called_by": ["adapters/claude_code.py:adapt_post_tool_use"]
+    },
+    "modules/audit/workflow_recorder.py": {
+      "functions": ["record", "get_workflow_memory_dir", "record_agent_skill_snapshot", "load_agent_runtime_profile"],
+      "private_functions": ["_append_jsonl", "_parse_frontmatter", "_parse_tools_field", "_resolve_agent_file"],
+      "aliases": ["capture_workflow_metrics"],
+      "description": "Workflow metrics capture and persistence: builds metrics dict, writes to JSONL, captures agent skill snapshots",
+      "calls": ["modules/context/context_injector.py:build_context_telemetry_snapshot"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop", "hooks/subagent_start.py", "modules/audit/workflow_auditor.py"]
+    },
+    "modules/audit/workflow_auditor.py": {
+      "functions": ["audit", "signal_gaia_analysis"],
+      "aliases": ["detect_anomalies"],
+      "description": "Anomaly detection suite: execution_failure, consecutive_failures, missing_evidence, empty_evidence, skipped_verification, scope_escalation. Creates flag files for Gaia analysis",
+      "calls": ["modules/audit/workflow_recorder.py:get_workflow_memory_dir", "modules/agents/contract_validator.py:parse_contract", "modules/agents/contract_validator.py:extract_commands_from_evidence"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/audit/metrics.py": {
+      "class": "MetricsCollector",
+      "public_methods": ["record_execution", "generate_summary"],
+      "private_methods": ["_classify_command", "_load_records_since"],
+      "convenience_functions": ["get_metrics_collector", "record_metric", "generate_summary"],
+      "description": "Execution metrics collection and aggregation. Disabled by default (audit logs are SSOT); re-enable via GAIA_WRITE_METRICS=1",
+      "calls": ["modules/core/paths.py:get_metrics_dir"]
+    },
+    "modules/agents/contract_validator.py": {
+      "functions": ["parse_contract", "validate", "extract_commands_from_evidence", "requires_consolidation_report", "extract_plan_status_from_output", "extract_exit_code_from_output"],
+      "private_functions": ["_validate_from_json_contract"],
+      "classes": ["ValidationResult"],
+      "aliases": ["extract_plan_status", "extract_exit_code"],
+      "description": "Contract validation for agent output: parses json:contract fenced blocks, validates structural completeness (agent_status, evidence_report, consolidation_report)",
+      "calls": ["modules/agents/transcript_reader.py:extract_injected_context_payload_from_transcript"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop", "modules/audit/workflow_auditor.py", "modules/agents/response_contract.py", "modules/agents/task_info_builder.py"]
+    },
+    "modules/agents/response_contract.py": {
+      "functions": ["validate_response_contract", "save_validation_result", "load_last_validation", "resolve_agent_id", "parse_agent_status", "parse_evidence_report", "parse_consolidation_report", "clear_contract_dir_cache"],
+      "private_functions": ["_extract_agent_status", "_extract_evidence_report", "_extract_consolidation_report", "_get_str", "_get_list", "_is_resume_agent_id", "_get_session_id", "_get_contract_dir", "_read_json"],
+      "classes": ["ResponseContractValidation", "AgentStatusBlock", "EvidenceReportBlock", "ConsolidationReportBlock"],
+      "description": "Runtime validation for structured JSON contract blocks: validates agent_status, evidence_report, consolidation_report sections",
+      "calls": ["modules/agents/contract_validator.py:parse_contract", "modules/core/paths.py:get_session_dir", "modules/core/state.py:get_session_id"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/agents/task_info_builder.py": {
+      "functions": ["build_task_info_from_hook_data"],
+      "description": "Maps Claude Code SubagentStop stdin payload to task_info format: extracts exit_code, plan_status, tier, task description from transcripts",
+      "calls": ["modules/agents/contract_validator.py:extract_exit_code_from_output", "modules/agents/contract_validator.py:extract_plan_status_from_output", "modules/agents/transcript_reader.py:extract_task_description_from_transcript", "modules/agents/transcript_reader.py:extract_injected_context_payload_from_transcript"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/agents/transcript_reader.py": {
+      "functions": ["read_transcript", "read_first_user_content_from_transcript", "extract_task_description_from_transcript", "extract_injected_context_payload_from_transcript"],
+      "description": "Reads and parses Claude Code agent transcripts (JSONL format): extracts assistant messages, first user message, task description, injected context payload",
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop", "modules/agents/task_info_builder.py", "modules/agents/contract_validator.py"]
+    },
+    "modules/context/context_injector.py": {
+      "functions": ["inject_project_context", "should_inject_on_resume", "check_pending_updates_threshold", "check_recent_critical_anomalies", "consume_anomaly_flag", "build_context_telemetry_snapshot"],
+      "private_functions": ["_prune_empty_values"],
+      "description": "Core context injection: runs context_provider.py subprocess to get filtered context, injects into agent prompts with pending update warnings and anomaly alerts",
+      "calls": ["modules/security/prompt_validator.py:classify_resume_prompt", "modules/context/contracts_loader.py:build_context_update_reminder"],
+      "called_by": ["adapters/claude_code.py:_adapt_task", "modules/audit/workflow_recorder.py"]
+    },
+    "modules/context/contracts_loader.py": {
+      "functions": ["build_context_update_reminder"],
+      "private_functions": ["_detect_cloud_from_infrastructure"],
+      "description": "Loads context contracts and identifies empty writable sections for context update reminders",
+      "called_by": ["modules/context/context_injector.py"]
+    },
+    "modules/context/context_writer.py": {
+      "functions": ["process_context_updates", "process_agent_output", "parse_context_update", "validate_permissions", "apply_update", "load_contracts"],
+      "private_functions": ["_import_deep_merge", "_merge_base_and_cloud", "_load_contracts_with_dir"],
+      "aliases": ["update"],
+      "description": "Progressive context enrichment: parses CONTEXT_UPDATE blocks, validates write permissions against contracts, applies deep-merge updates to project-context.json",
+      "calls": ["modules/core/paths.py:find_claude_dir"],
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/context/context_freshness.py": {
+      "functions": ["check_freshness"],
+      "private_functions": ["_get_context_path", "_read_staleness_from_context", "_get_effective_threshold"],
+      "classes": ["FreshnessResult"],
+      "description": "Checks if project-context.json is fresh (< configurable staleness threshold). Uses metadata.scan_config.last_scan or file mtime",
+      "calls": ["modules/core/paths.py:find_claude_dir"],
+      "called_by": ["hooks/session_start.py"]
+    },
+    "modules/session/session_manager.py": {
+      "functions": ["get_or_create_session_id"],
+      "description": "Session ID generation from CLAUDE_SESSION_ID env var or time+PID hash",
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/session/session_context_writer.py": {
+      "class": "SessionContextWriter",
+      "public_methods": ["update_context"],
+      "description": "Thread-safe session context writer: appends critical events to context.json with file locking and time-based retention",
+      "calls": ["modules/core/paths.py:get_session_dir"],
+      "called_by": ["adapters/claude_code.py:adapt_post_tool_use"]
+    },
+    "modules/session/session_event_injector.py": {
+      "functions": ["inject_session_events", "filter_events_for_agent", "format_events_summary"],
+      "constants": ["AGENT_EVENT_FILTERS"],
+      "description": "Filters session events by agent domain and injects into agent prompts. Includes hardcoded agent-to-event mapping",
+      "called_by": ["adapters/claude_code.py:_adapt_task"]
+    },
+    "modules/memory/episode_writer.py": {
+      "functions": ["write", "get_session_events"],
+      "aliases": ["capture_episodic_memory"],
+      "description": "Episodic memory capture: stores workflow episodes with metrics, session events, anomalies via EpisodicMemory.store_episode()",
+      "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
+    },
+    "modules/scanning/scan_trigger.py": {
+      "functions": ["trigger_lightweight_scan"],
+      "description": "Runs lightweight project scan via gaia-scan.py CLI subprocess (<3s target, 10s timeout)",
+      "called_by": ["hooks/session_start.py"]
+    },
+    "modules/validation/commit_validator.py": {
+      "class": "CommitMessageValidator",
+      "public_methods": ["validate", "get_examples", "get_allowed_types", "format_error_message"],
+      "private_methods": ["_load_config", "_check_forbidden_footers", "_check_conventional_format", "_check_subject_rules", "_check_body_rules", "_log_violation"],
+      "convenience_functions": ["validate_commit_message", "safe_validate_before_commit"],
+      "description": "Git commit message validation against project standards (forbidden footers, conventional commits format, subject/body rules)",
+      "called_by": ["modules/tools/bash_validator.py"]
+    }
+  },
+  "shared_infrastructure": {
+    "adapters/utils.py": {
+      "functions": ["warn_if_dual_channel"],
+      "re_exports": ["has_stdin_data"],
+      "description": "Shared utility functions: dual-channel warning, stdin re-export for backward compatibility"
+    }
+  }
+}

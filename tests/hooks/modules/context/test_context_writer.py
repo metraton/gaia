@@ -254,9 +254,14 @@ class TestParseContextUpdate:
             "}\n"
             "```\n"
             "\n"
-            "<!-- AGENT_STATUS -->\n"
-            "PLAN_STATUS: COMPLETE\n"
-            "<!-- /AGENT_STATUS -->\n"
+            "```json:contract\n"
+            "{\n"
+            '  "plan_status": "COMPLETE",\n'
+            '  "agent_id": "test-agent",\n'
+            '  "pending_steps": [],\n'
+            '  "next_action": "done"\n'
+            "}\n"
+            "```\n"
         )
         result = parse_context_update(agent_output)
         assert result is not None, (
@@ -304,18 +309,25 @@ class TestParseContextUpdate:
             "}\n"
             "```\n"
             "\n"
-            "<!-- AGENT_STATUS -->\n"
-            "PLAN_STATUS: COMPLETE\n"
-            "CURRENT_PHASE: Complete\n"
-            "PENDING_STEPS: None\n"
-            "NEXT_ACTION: None - task complete\n"
-            "AGENT_ID: cloud-troubleshooter\n"
-            "<!-- /AGENT_STATUS -->\n"
+            "```json:contract\n"
+            "{\n"
+            '  "plan_status": "COMPLETE",\n'
+            '  "agent_id": "cloud-troubleshooter",\n'
+            '  "pending_steps": [],\n'
+            '  "next_action": "done",\n'
+            '  "evidence": {\n'
+            '    "patterns_checked": [],\n'
+            '    "files_checked": [],\n'
+            '    "commands_run": [],\n'
+            '    "key_outputs": []\n'
+            "  }\n"
+            "}\n"
+            "```\n"
         )
         result = parse_context_update(agent_output)
         assert result is not None, (
             "Parser must handle realistic LLM output with markdown "
-            "tables, ```json fences, and AGENT_STATUS blocks"
+            "tables, ```json fences, and json:contract blocks"
         )
         assert result["cluster_details"]["cluster_name"] == "oci-pos-dev-cluster-01"
         assert result["cluster_details"]["namespaces_inspected"]["test"]["pod_count"] == 1

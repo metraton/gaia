@@ -596,9 +596,14 @@ class TestLLMRealisticOutput:
             "  }\n"
             "}\n"
             "```\n\n"
-            "<!-- AGENT_STATUS -->\n"
-            "PLAN_STATUS: COMPLETE\n"
-            "<!-- /AGENT_STATUS -->\n"
+            "```json:contract\n"
+            "{\n"
+            '  "plan_status": "COMPLETE",\n'
+            '  "agent_id": "cloud-troubleshooter",\n'
+            '  "pending_steps": [],\n'
+            '  "next_action": "done"\n'
+            "}\n"
+            "```\n"
         )
 
         result = process_agent_output(

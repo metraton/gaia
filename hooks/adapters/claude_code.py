@@ -13,7 +13,10 @@ Distribution channel detection:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -34,6 +37,8 @@ from .types import (
     ValidationResult,
     VerificationResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeCodeAdapter(HookAdapter):
@@ -380,6 +385,520 @@ class ClaudeCodeAdapter(HookAdapter):
             }
         }
         return HookResponse(output=output, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # adapt_pre_tool_use: full pre-tool-use lifecycle
+    # ------------------------------------------------------------------ #
+
+    def adapt_pre_tool_use(self, event: HookEvent) -> HookResponse:
+        """Run all pre-tool-use business logic and return a formatted response.
+
+        Orchestrates: routing (bash vs task), validation, state management,
+        context injection, approval handling, and response formatting.
+        """
+        from modules.core.state import create_pre_hook_state, save_hook_state
+        from modules.security.approval_constants import (
+            NONCE_APPROVAL_PATTERN,
+        )
+        from modules.security.approval_messages import (
+            build_activation_failed_message,
+            build_deprecated_approval_message,
+            build_invalid_nonce_message,
+        )
+        from modules.security.approval_grants import (
+            activate_pending_approval,
+            cleanup_expired_grants,
+        )
+        from modules.tools.bash_validator import BashValidator
+        from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
+        from modules.security.prompt_validator import classify_resume_prompt
+        from modules.context.context_injector import inject_project_context
+        from modules.session.session_event_injector import inject_session_events
+
+        hook_data = event.payload
+        tool_name = hook_data.get("tool_name") or ""
+        tool_input = hook_data.get("tool_input", {})
+
+        logger.info("Hook invoked: tool=%s, params=%s", tool_name, json.dumps(tool_input)[:200])
+
+        try:
+            # Periodic cleanup of expired approval grants
+            cleanup_expired_grants()
+
+            if not isinstance(tool_name, str):
+                return HookResponse(output="Error: Invalid tool name", exit_code=2)
+            if not isinstance(tool_input, dict):
+                return HookResponse(output="Error: Invalid parameters", exit_code=2)
+
+            if tool_name.lower() == "bash":
+                return self._adapt_bash(tool_name, tool_input)
+            elif tool_name.lower() in ("task", "agent"):
+                hooks_dir = Path(__file__).parent.parent
+                project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
+                return self._adapt_task(
+                    tool_name, tool_input, project_agents, hooks_dir,
+                )
+            else:
+                # Other tools pass through
+                return HookResponse(output={}, exit_code=0)
+
+        except Exception as e:
+            logger.error("Unexpected error in adapt_pre_tool_use: %s", e, exc_info=True)
+            return HookResponse(
+                output=f"Error during security validation: {str(e)}",
+                exit_code=2,
+            )
+
+    def _adapt_bash(self, tool_name: str, parameters: dict) -> HookResponse:
+        """Handle Bash tool validation within the adapter."""
+        from modules.core.state import create_pre_hook_state, save_hook_state
+        from modules.tools.bash_validator import BashValidator
+
+        command = parameters.get("command", "")
+        if not command:
+            return HookResponse(output="Error: Bash tool requires a command", exit_code=2)
+
+        validator = BashValidator()
+        result = validator.validate(command)
+
+        if not result.allowed:
+            logger.warning("BLOCKED: %s - %s", command[:100], result.reason)
+            # Structured block responses must be returned as JSON dict (exit 0)
+            if result.block_response is not None:
+                return HookResponse(output=result.block_response, exit_code=0)
+            return HookResponse(
+                output=self._format_blocked_message(result),
+                exit_code=2,
+            )
+
+        # Save state for post-hook
+        effective_command = result.modified_input.get("command", command) if result.modified_input else command
+        state = create_pre_hook_state(
+            tool_name=tool_name,
+            command=effective_command,
+            tier=str(result.tier),
+            allowed=True,
+        )
+        save_hook_state(state)
+
+        if result.modified_input:
+            logger.info("MODIFIED: %s -> stripped footer - tier=%s", command[:80], result.tier)
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": result.reason,
+                    "updatedInput": result.modified_input,
+                }
+            }
+            return HookResponse(output=output, exit_code=0)
+
+        logger.info("ALLOWED: %s - tier=%s", command[:100], result.tier)
+        return HookResponse(output={}, exit_code=0)
+
+    def _adapt_task(
+        self,
+        tool_name: str,
+        parameters: dict,
+        project_agents: list,
+        hooks_dir: Path,
+    ) -> HookResponse:
+        """Handle Task/Agent tool validation within the adapter."""
+        from modules.core.state import create_pre_hook_state, save_hook_state
+        from modules.tools.task_validator import TaskValidator
+        from modules.context.context_injector import inject_project_context
+        from modules.session.session_event_injector import inject_session_events
+
+        original_prompt = parameters.get("prompt", "")
+        if not parameters.get("resume"):
+            parameters = inject_project_context(parameters, project_agents, hooks_dir)
+            parameters = inject_session_events(parameters, project_agents)
+
+        resume_id = parameters.get("resume")
+
+        if resume_id:
+            return self._adapt_task_resume(tool_name, parameters, resume_id)
+
+        # Standard task validation
+        validator = TaskValidator()
+        result = validator.validate(parameters)
+
+        if not result.allowed:
+            logger.warning("BLOCKED Task: %s - %s", result.agent_name, result.reason)
+            return HookResponse(output=result.reason, exit_code=2)
+
+        state = create_pre_hook_state(
+            tool_name=tool_name,
+            command=f"Task:{result.agent_name}",
+            tier=str(result.tier),
+            allowed=True,
+            is_t3=result.is_t3_operation,
+        )
+        save_hook_state(state)
+
+        logger.info("ALLOWED Task: %s", result.agent_name)
+
+        if parameters.get("prompt", "") != original_prompt:
+            updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
+            logger.info("Returning updatedInput for %s (context injected)", result.agent_name)
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": f"Context injected for {result.agent_name}",
+                    "updatedInput": updated_input,
+                }
+            }
+            return HookResponse(output=output, exit_code=0)
+
+        return HookResponse(output={}, exit_code=0)
+
+    def _adapt_task_resume(
+        self, tool_name: str, parameters: dict, resume_id: str,
+    ) -> HookResponse:
+        """Handle Task resume validation within the adapter."""
+        from modules.core.state import create_pre_hook_state, save_hook_state
+
+        # Validate agentId format
+        if not re.match(r'^a[0-9a-f]{5,}$', resume_id):
+            logger.warning("BLOCKED Resume: Invalid agentId format '%s'", resume_id)
+            msg = (
+                f"[ERROR] Invalid resume ID format: '{resume_id}'\n\n"
+                "Agent ID should be 'a' followed by hex characters.\n"
+                "Example: a12345f or a51a0cbbf6afb831d\n\n"
+                "The agent ID is returned at the end of agent responses.\n"
+                "Look for: 'agentId: a...' in the previous agent output."
+            )
+            return HookResponse(output=msg, exit_code=2)
+
+        prompt = parameters.get("prompt", "")
+        if not prompt or not prompt.strip():
+            logger.warning("BLOCKED Resume: Missing prompt for agent %s", resume_id)
+            msg = (
+                "[ERROR] Resume requires a prompt\n\n"
+                "When resuming an agent, you must provide instructions:\n\n"
+                "Task(\n"
+                "    resume=\"a12345\",\n"
+                "    prompt=\"Continue with the latest user instruction.\"\n"
+                ")\n\n"
+                "The prompt tells the agent what to do next."
+            )
+            return HookResponse(output=msg, exit_code=2)
+
+        logger.info("RESUME: Continuing agent %s", resume_id)
+
+        approval_error, has_approval = self._adapt_resume_approval(resume_id, prompt)
+        if approval_error:
+            return HookResponse(output=approval_error, exit_code=2)
+
+        state = create_pre_hook_state(
+            tool_name=tool_name,
+            command=f"Task:resume:{resume_id}",
+            tier="T0",
+            allowed=True,
+            is_t3=False,
+            has_approval=has_approval,
+        )
+        save_hook_state(state)
+
+        logger.info("ALLOWED Resume: agent %s - prompt length: %d", resume_id, len(prompt))
+        return HookResponse(output={}, exit_code=0)
+
+    def _adapt_resume_approval(
+        self, resume_id: str, prompt: str,
+    ) -> tuple[str | None, bool]:
+        """Process nonce approval indicators for Task resume."""
+        from modules.security.approval_constants import NONCE_APPROVAL_PATTERN
+        from modules.security.approval_messages import (
+            build_activation_failed_message,
+            build_deprecated_approval_message,
+            build_invalid_nonce_message,
+        )
+        from modules.security.approval_grants import activate_pending_approval
+        from modules.security.prompt_validator import classify_resume_prompt
+
+        classification = classify_resume_prompt(prompt)
+
+        if classification == "nonce":
+            nonce = NONCE_APPROVAL_PATTERN.search(prompt).group(1)
+            activation = activate_pending_approval(nonce)
+            status_text = getattr(activation.status, "value", str(activation.status))
+            if activation.success:
+                grant_path = activation.grant_path
+                grant_name = grant_path.name if grant_path else "<unknown>"
+                logger.info(
+                    "Nonce approval activated for resume %s: nonce=%s, file=%s",
+                    resume_id, nonce, grant_name,
+                )
+                return None, True
+
+            logger.warning(
+                "Denied resume %s: nonce approval activation failed for nonce=%s "
+                "(status=%s, reason=%s)",
+                resume_id, nonce, status_text, activation.reason,
+            )
+            return build_activation_failed_message(nonce, status_text, activation.reason), False
+
+        if classification == "malformed_nonce":
+            logger.warning(
+                "Denied resume %s: malformed nonce approval token in prompt='%s'",
+                resume_id, prompt[:120],
+            )
+            return build_invalid_nonce_message(), False
+
+        if classification == "deprecated":
+            logger.warning(
+                "Denied resume %s: deprecated legacy approval phrase detected",
+                resume_id,
+            )
+            return build_deprecated_approval_message(), False
+
+        return None, False
+
+    @staticmethod
+    def _format_blocked_message(result) -> str:
+        """Format blocked command message."""
+        msg = (
+            f"[BLOCKED] Command blocked by security policy\n\n"
+            f"Tier: {result.tier}\n"
+            f"Reason: {result.reason}\n"
+        )
+        if result.suggestions:
+            msg += "\nSuggestions:\n"
+            for suggestion in result.suggestions:
+                msg += f"  - {suggestion}\n"
+        return msg
+
+    # ------------------------------------------------------------------ #
+    # adapt_post_tool_use: full post-tool-use lifecycle
+    # ------------------------------------------------------------------ #
+
+    def adapt_post_tool_use(self, event: HookEvent) -> HookResponse:
+        """Run all post-tool-use business logic and return a formatted response.
+
+        Orchestrates: state retrieval, duration computation, audit logging,
+        T3 grant confirmation, critical event detection, session context
+        writing, and state cleanup.
+        """
+        from modules.core.state import get_hook_state, clear_hook_state
+        from modules.audit.logger import log_execution
+        from modules.audit.event_detector import detect_critical_event
+        from modules.session.session_context_writer import SessionContextWriter
+        from modules.security.approval_grants import check_approval_grant, confirm_grant
+
+        hook_data = event.payload
+        tool_result_data = self.parse_post_tool_use(hook_data)
+        logger.info("Post-hook event: %s", hook_data.get("hook_event_name"))
+
+        raw_tool_result = hook_data.get("tool_result", {})
+        tool_name = tool_result_data.tool_name
+        parameters = hook_data.get("tool_input", {})
+        output = tool_result_data.output
+        duration = raw_tool_result.get("duration_ms", 0) / 1000.0
+        success = tool_result_data.exit_code == 0
+
+        try:
+            pre_state = get_hook_state()
+            tier = pre_state.tier if pre_state else "unknown"
+
+            # Prefer wall-clock duration from pre-hook timestamp
+            computed_duration = duration
+            if pre_state and pre_state.start_time_epoch > 0:
+                computed_duration = time.time() - pre_state.start_time_epoch
+
+            log_execution(
+                tool_name=tool_name,
+                parameters=parameters,
+                result=output,
+                duration=computed_duration,
+                exit_code=0 if success else 1,
+                tier=tier,
+            )
+
+            # Confirm unconfirmed T3 grants after successful Bash execution
+            if tool_name == "Bash" and success:
+                command = parameters.get("command", "")
+                if command:
+                    grant = check_approval_grant(command)
+                    if grant is not None and not grant.confirmed:
+                        confirm_grant(command)
+                        logger.info(
+                            "T3 grant confirmed post-execution: %s", command[:80],
+                        )
+
+            events = detect_critical_event(tool_name, parameters, output, success)
+            if events:
+                writer = SessionContextWriter()
+                for evt in events:
+                    writer.update_context(evt.to_dict())
+
+            clear_hook_state()
+            logger.debug("Post-hook completed for %s", tool_name)
+
+        except Exception as e:
+            logger.error("Error in adapt_post_tool_use: %s", e, exc_info=True)
+
+        return HookResponse(output={}, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # adapt_subagent_stop: full subagent-stop lifecycle
+    # ------------------------------------------------------------------ #
+
+    def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
+        """Run all subagent-stop business logic and return a formatted response.
+
+        Orchestrates: contract parsing/validation, approval cleanup,
+        context updates, workflow recording, response contract validation,
+        anomaly detection, episodic memory, and result assembly.
+        """
+        from modules.agents.contract_validator import (
+            extract_commands_from_evidence,
+            parse_contract,
+            requires_consolidation_report,
+            validate as validate_contract,
+        )
+        from modules.agents.response_contract import (
+            save_validation_result,
+            validate_response_contract,
+            resolve_agent_id,
+        )
+        from modules.agents.task_info_builder import build_task_info_from_hook_data
+        from modules.agents.transcript_reader import read_transcript
+        from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
+        from modules.audit.workflow_recorder import record as record_workflow
+        from modules.context.context_writer import process_context_updates
+        from modules.memory.episode_writer import write as write_episode
+        from modules.security.approval_cleanup import cleanup as cleanup_approval
+        from modules.session.session_manager import get_or_create_session_id
+
+        hook_data = event.payload
+        logger.info(
+            "Hook event: %s, agent: %s",
+            hook_data.get("hook_event_name"),
+            hook_data.get("agent_type", "unknown"),
+        )
+
+        # Parse agent completion data
+        completion = self.parse_agent_completion(hook_data)
+
+        # Resolve agent output: prefer last_assistant_message, fall back to transcript
+        agent_output = completion.last_message
+        if not agent_output:
+            transcript_path = completion.transcript_path
+            agent_output = read_transcript(transcript_path) if transcript_path else ""
+            logger.info("Agent output: %d chars from transcript (fallback)", len(agent_output))
+        else:
+            logger.info("Agent output: %d chars from last_assistant_message", len(agent_output))
+
+        task_info = build_task_info_from_hook_data(hook_data, agent_output)
+
+        # Run the main processing chain
+        try:
+            from datetime import datetime as _dt
+            session_id = get_or_create_session_id()
+            agent_type = task_info.get("agent", "unknown")
+
+            parsed_contract = parse_contract(agent_output)
+
+            contract_result = validate_contract(agent_output, task_info)
+            if not contract_result.is_valid:
+                logger.warning(
+                    "Contract validation failed for %s: %s",
+                    agent_type, contract_result.error_message,
+                )
+
+            cleanup_approval(agent_type)
+
+            commands_executed = extract_commands_from_evidence(agent_output)
+            context_update_result = process_context_updates(agent_output, task_info)
+
+            session_context = {
+                "timestamp": _dt.now().isoformat(),
+                "session_id": session_id,
+                "task_id": task_info.get("task_id", "unknown"),
+                "agent_id": task_info.get("agent_id", "unknown"),
+                "agent": agent_type,
+            }
+            workflow_metrics = record_workflow(
+                task_info,
+                agent_output,
+                session_context,
+                commands_executed=commands_executed,
+                context_update_result=context_update_result,
+            )
+
+            response_contract = validate_response_contract(
+                agent_output,
+                task_agent_id=resolve_agent_id(task_info),
+                consolidation_required=requires_consolidation_report(task_info),
+                parsed_contract=parsed_contract,
+            )
+            save_validation_result(task_info, response_contract)
+
+            anomalies = audit_workflow(
+                workflow_metrics,
+                agent_output,
+                task_info,
+                rejected_sections=(context_update_result or {}).get("rejected", []),
+            )
+            if not response_contract.valid:
+                missing = ", ".join(response_contract.missing) or "none"
+                invalid = ", ".join(response_contract.invalid) or "none"
+                anomalies.append({
+                    "type": "response_contract_violation",
+                    "severity": "critical",
+                    "message": (
+                        f"Agent response contract invalid for {task_info.get('agent', 'unknown')}: "
+                        f"missing=[{missing}] invalid=[{invalid}]"
+                    ),
+                })
+
+            if anomalies:
+                logger.warning("%d anomalies detected in workflow", len(anomalies))
+                signal_gaia_analysis(anomalies, workflow_metrics)
+
+            workflow_metrics["anomalies_detected"] = len(anomalies)
+            workflow_metrics["anomaly_types"] = [a.get("type", "") for a in anomalies]
+
+            episode_id = write_episode(
+                workflow_metrics,
+                anomalies=anomalies if anomalies else None,
+                commands_executed=commands_executed,
+            )
+
+            contract_attempts = 0
+            if not response_contract.valid:
+                try:
+                    repair_data = response_contract.to_dict()
+                    contract_attempts = int(repair_data.get("repair_attempts", 0))
+                except Exception:
+                    contract_attempts = 0
+
+            result = {
+                "success": True,
+                "session_id": session_id,
+                "status": "metrics_captured",
+                "metrics_captured": True,
+                "anomalies_detected": len(anomalies) if anomalies else 0,
+                "episode_id": episode_id,
+                "context_updated": context_update_result.get("updated", False) if context_update_result else False,
+                "response_contract": response_contract.to_dict(),
+                "contract_validated": contract_result.is_valid,
+                "contract_attempts": contract_attempts,
+            }
+
+        except Exception as e:
+            logger.error("Error in adapt_subagent_stop: %s", e, exc_info=True)
+            result = {
+                "success": False,
+                "error": str(e),
+                "status": "partial_update",
+            }
+
+        if result.get("contract_rejected"):
+            return HookResponse(output=result, exit_code=2)
+
+        return HookResponse(output=result, exit_code=0)
 
     # ------------------------------------------------------------------ #
     # P2: adapt_stop

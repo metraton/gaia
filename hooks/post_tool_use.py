@@ -2,19 +2,15 @@
 """
 Post-tool use hook - Thin gate.
 
-Reads state from pre-hook, logs execution via audit module, detects critical
-events, and writes them to session context via session_context_writer.
-
 Architecture:
-- Thin gate: parse_event -> audit log -> detect events -> write context -> exit
-- Business logic in modules.audit.* and modules.session.session_context_writer
-- Metrics CLI eliminated (use bin/gaia-metrics.js instead)
+- Uses adapter layer to parse and process the full PostToolUse lifecycle
+- All business logic lives in ClaudeCodeAdapter.adapt_post_tool_use()
+- This file is stdin/stdout glue only
 """
 
 import sys
 import json
 import logging
-import time
 from pathlib import Path
 from datetime import datetime
 
@@ -25,10 +21,7 @@ from modules.core.paths import get_logs_dir
 from adapters.claude_code import ClaudeCodeAdapter
 from modules.core.stdin import has_stdin_data
 from adapters.utils import warn_if_dual_channel
-from modules.core.state import get_hook_state, clear_hook_state
-from modules.audit.logger import log_execution
-from modules.audit.event_detector import detect_critical_event
-from modules.session.session_context_writer import SessionContextWriter
+from modules.core.hook_entry import run_hook
 
 # Configure logging
 log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -40,6 +33,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _handle_post_tool_use(event) -> None:
+    """Process a PostToolUse event.
+
+    Delegates all business logic to the adapter.
+
+    Args:
+        event: Parsed HookEvent from the adapter layer.
+    """
+    adapter = ClaudeCodeAdapter()
+    response = adapter.adapt_post_tool_use(event)
+
+    if response.output:
+        print(json.dumps(response.output))
+    sys.exit(response.exit_code)
+
+
+# ============================================================================
+# Backward-compatible API for direct callers (e.g. --test mode)
+# ============================================================================
+
 def post_tool_use_hook(
     tool_name: str,
     parameters: dict,
@@ -47,12 +60,21 @@ def post_tool_use_hook(
     duration: float,
     success: bool = True,
 ) -> None:
-    """Post-tool use hook: audit + event detection + context update."""
+    """Post-tool use hook: audit + event detection + context update.
+
+    Backward-compatible entry point that calls the same modules as the adapter.
+    """
+    import time
+    from modules.core.state import get_hook_state, clear_hook_state
+    from modules.audit.logger import log_execution
+    from modules.audit.event_detector import detect_critical_event
+    from modules.session.session_context_writer import SessionContextWriter
+    from modules.security.approval_grants import check_approval_grant, confirm_grant
+
     try:
         pre_state = get_hook_state()
         tier = pre_state.tier if pre_state else "unknown"
 
-        # Prefer wall-clock duration from pre-hook timestamp
         computed_duration = duration
         if pre_state and pre_state.start_time_epoch > 0:
             computed_duration = time.time() - pre_state.start_time_epoch
@@ -65,6 +87,16 @@ def post_tool_use_hook(
             exit_code=0 if success else 1,
             tier=tier,
         )
+
+        if tool_name == "Bash" and success:
+            command = parameters.get("command", "")
+            if command:
+                grant = check_approval_grant(command)
+                if grant is not None and not grant.confirmed:
+                    confirm_grant(command)
+                    logger.info(
+                        "T3 grant confirmed post-execution: %s", command[:80],
+                    )
 
         events = detect_critical_event(tool_name, parameters, result, success)
         if events:
@@ -92,38 +124,4 @@ if __name__ == "__main__":
         print(f"Test completed. Check {get_logs_dir()} for audit logs")
         sys.exit(0)
 
-    if has_stdin_data():
-        try:
-            adapter = ClaudeCodeAdapter()
-            warn_if_dual_channel()
-
-            event = adapter.parse_event(sys.stdin.read())
-            tool_result_data = adapter.parse_post_tool_use(event.payload)
-            logger.info("Post-hook event: %s", event.payload.get("hook_event_name"))
-
-            raw_tool_result = event.payload.get("tool_result", {})
-            post_tool_use_hook(
-                tool_name=tool_result_data.tool_name,
-                parameters=event.payload.get("tool_input", {}),
-                result=tool_result_data.output,
-                duration=raw_tool_result.get("duration_ms", 0) / 1000.0,
-                success=tool_result_data.exit_code == 0,
-            )
-            sys.exit(0)
-
-        except ValueError as e:
-            logger.error("Adapter parse failed: %s", e)
-            print(f"HOOK ERROR: {e}", file=sys.stderr)
-            sys.exit(1)
-        except json.JSONDecodeError as e:
-            logger.error("Invalid JSON from stdin: %s", e)
-            print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
-            sys.exit(1)
-        except Exception as e:
-            logger.error("Error processing hook: %s", e, exc_info=True)
-            print(f"HOOK ERROR: {e}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print("Usage: echo '{...}' | python post_tool_use.py  (stdin mode)")
-        print("       python post_tool_use.py --test           (self-test mode)")
-        sys.exit(1)
+    run_hook(_handle_post_tool_use, hook_name="post_tool_use")

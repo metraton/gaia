@@ -41,6 +41,7 @@ if str(_PLUGIN_ROOT) not in sys.path:
 from tools.scan.config import ScanConfig, load_scan_config
 from tools.scan.orchestrator import ScanOrchestrator
 from tools.scan.registry import ScannerRegistry
+from tools.scan.scanners.tools import ToolScanner
 
 
 def _get_version():
@@ -571,6 +572,12 @@ def main(argv: list = None) -> int:
         dest="scan_only",
         help="Run scanners only, do not perform setup or sync",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help="Scan all tools including extended (low-value) ones",
+    )
 
     args = parser.parse_args(argv)
 
@@ -591,6 +598,10 @@ def main(argv: list = None) -> int:
                 file=sys.stdout,
             )
             return 1
+
+        # Set extended tool scanning flag before registry discovers scanners
+        if args.full:
+            ToolScanner.scan_extended = True
 
         # Load scan config from existing project-context.json
         scan_config = load_scan_config(project_root)

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.scan.scanners.base import BaseScanner, ScanResult
+from tools.scan.walk import walk_project, walk_project_named
 
 logger = logging.getLogger(__name__)
 
@@ -368,10 +369,7 @@ class OrchestrationScanner(BaseScanner):
         charts: List[str] = []
 
         try:
-            for chart_yaml in root.rglob("Chart.yaml"):
-                # Skip hidden directories and common non-chart locations
-                if self._should_skip_path(chart_yaml):
-                    continue
+            for chart_yaml in walk_project_named(root, ["Chart.yaml"]):
                 rel_path = str(chart_yaml.relative_to(root))
                 charts.append(rel_path)
         except Exception:
@@ -393,13 +391,10 @@ class OrchestrationScanner(BaseScanner):
         files: List[str] = []
 
         try:
-            for kustomization_name in ("kustomization.yaml", "kustomization.yml", "Kustomization"):
-                for kust_file in root.rglob(kustomization_name):
-                    if self._should_skip_path(kust_file):
-                        continue
-                    rel_path = str(kust_file.relative_to(root))
-                    if rel_path not in files:
-                        files.append(rel_path)
+            for kust_file in walk_project_named(root, ["kustomization.yaml", "kustomization.yml", "Kustomization"]):
+                rel_path = str(kust_file.relative_to(root))
+                if rel_path not in files:
+                    files.append(rel_path)
         except Exception:
             warnings.append("Failed to scan for kustomization.yaml files")
 
@@ -480,6 +475,9 @@ class OrchestrationScanner(BaseScanner):
     def _find_yaml_files(self, root: Path) -> List[Path]:
         """Find YAML files in the project, respecting scan limits.
 
+        Uses walk_project for filtered os.walk (skips node_modules, .git, etc.)
+        instead of rglob which traverses all directories.
+
         Caches results on the instance for reuse across detection methods
         within the same scan() call.
         """
@@ -496,27 +494,15 @@ class OrchestrationScanner(BaseScanner):
         count = 0
 
         try:
-            for p in root.rglob("*.yaml"):
-                if self._should_skip_path(p):
-                    continue
+            for p in walk_project(root, [".yaml", ".yml"]):
                 yaml_files.append(p)
                 count += 1
                 if count >= _MAX_YAML_FILES:
                     break
-
-            for p in root.rglob("*.yml"):
-                if self._should_skip_path(p):
-                    continue
-                if p not in yaml_files:
-                    yaml_files.append(p)
-                    count += 1
-                    if count >= _MAX_YAML_FILES:
-                        break
         except Exception:
             pass
 
-        # Cache on instance (not persisted across scan() calls since
-        # BaseScanner instances may be reused)
+        # Cache on instance
         object.__setattr__(self, cache_attr, yaml_files)
         object.__setattr__(self, cache_root_attr, root)
 

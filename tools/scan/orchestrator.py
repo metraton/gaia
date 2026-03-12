@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.scan import __version__ as scanner_package_version
-from tools.scan.config import ScanConfig
+from tools.scan.config import CONTRACT_CONFIG_PATH, ScanConfig
 from tools.scan.merge import (
     AGENT_ENRICHED_SECTIONS,
     collect_scanner_sections,
@@ -173,6 +173,11 @@ class ScanOrchestrator:
         metadata["version"] = metadata.get("version", "2.0")
         metadata["last_updated"] = now_iso
 
+        # Read contract_version from context-contracts.json
+        contract_version = self._read_contract_version()
+        if contract_version:
+            metadata["contract_version"] = contract_version
+
         # Ensure scan_config sub-section exists
         scan_config = metadata.get("scan_config", {})
         if not isinstance(scan_config, dict):
@@ -183,6 +188,24 @@ class ScanOrchestrator:
         metadata["scan_config"] = scan_config
 
         return metadata
+
+    @staticmethod
+    def _read_contract_version() -> Optional[str]:
+        """Read the version field from config/context-contracts.json.
+
+        Returns:
+            Version string (e.g. "3.0"), or None if file is missing or unreadable.
+        """
+        try:
+            if CONTRACT_CONFIG_PATH.is_file():
+                with open(CONTRACT_CONFIG_PATH, "r") as f:
+                    data = json.load(f)
+                version = data.get("version")
+                if isinstance(version, str) and version:
+                    return version
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("Failed to read contract version: %s", exc)
+        return None
 
     def _atomic_write(self, output_path: Path, data: Dict[str, Any]) -> None:
         """Atomically write data to JSON file.

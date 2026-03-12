@@ -4,6 +4,7 @@ Handles:
 - inject_project_context: main context injection into agent prompts
 - should_inject_on_resume: determines if context is needed on resume
 - check_pending_updates_threshold: warns when pending updates accumulate
+- check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
 - consume_anomaly_flag: reads and deletes anomaly signal flags
 """
 
@@ -173,6 +174,63 @@ def check_pending_updates_threshold() -> str:
 
     except Exception as e:
         logger.debug(f"Pending updates check failed (non-fatal): {e}")
+        return ""
+
+
+def check_recent_critical_anomalies() -> str:
+    """Check anomalies.jsonl for recent critical anomalies and return a summary.
+
+    Scans the last 20 lines of the anomaly log for critical-severity entries
+    from the past hour.  Returns a short warning string suitable for context
+    injection, or empty string if nothing noteworthy is found.
+
+    This is intentionally lightweight: reads only the tail of the file and
+    returns at most a one-line count + type summary.
+    """
+    anomaly_log = Path(
+        ".claude/project-context/workflow-episodic-memory/anomalies.jsonl"
+    )
+    if not anomaly_log.exists():
+        return ""
+
+    try:
+        # Read only the tail (last 20 lines) for speed
+        lines = anomaly_log.read_text().splitlines()[-20:]
+        one_hour_ago = datetime.now().timestamp() - 3600
+        critical_types: list[str] = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = entry.get("timestamp", "")
+            if ts:
+                try:
+                    entry_time = datetime.fromisoformat(ts).timestamp()
+                except (ValueError, TypeError):
+                    continue
+                if entry_time < one_hour_ago:
+                    continue
+            for anomaly in entry.get("anomalies", []):
+                if anomaly.get("severity") == "critical":
+                    critical_types.append(anomaly.get("type", "unknown"))
+
+        if not critical_types:
+            return ""
+
+        # Deduplicate and summarize
+        unique_types = sorted(set(critical_types))
+        return (
+            f"\n# Recent Critical Anomalies\n"
+            f"{len(critical_types)} critical anomaly(ies) in the last hour "
+            f"(types: {', '.join(unique_types)}). "
+            f"Consider investigating with /gaia.\n"
+        )
+    except Exception as e:
+        logger.debug(f"Critical anomaly check failed (non-fatal): {e}")
         return ""
 
 
@@ -350,6 +408,12 @@ def inject_project_context(
 
         # Check for anomaly signal flag created by subagent_stop.py
         enriched_prompt = consume_anomaly_flag(enriched_prompt)
+
+        # Surface recent critical anomalies from the JSONL log
+        critical_summary = check_recent_critical_anomalies()
+        if critical_summary:
+            enriched_prompt += critical_summary
+
         parameters["prompt"] = enriched_prompt
 
         sections_count = len(context_payload.get("contract", {}))
