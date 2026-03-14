@@ -127,7 +127,7 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
     # Pattern 2: pre_tool_use injected project context before the real prompt.
     # The injected block ends with "\n\n---\n\n# User Task\n\n" followed by
     # the actual task description sent by the orchestrator.
-    if text.startswith("# Project Context (Auto-Injected)"):
+    if text.startswith("# Project Context"):
         sep_full = "\n\n---\n\n# User Task\n\n"
         sep_bare = "\n\n---\n\n"
         pos = text.find(sep_full)
@@ -149,17 +149,26 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
 def extract_injected_context_payload_from_transcript(
     transcript_path: str,
 ) -> Dict[str, Any]:
-    """Extract the auto-injected JSON context payload from the first user message."""
+    """Extract the auto-injected JSON context payload from the first user message.
+
+    The injection template embeds a machine-readable comment line:
+    ``<!-- context_payload:{json} -->`` just before the ``---`` separator.
+    """
     content = read_first_user_content_from_transcript(transcript_path)
     if not content:
         return {}
-    if not content.startswith("# Project Context (Auto-Injected)"):
+    if not content.startswith("# Project Context"):
         return {}
     try:
-        start = content.find("{")
-        end = content.find("\n\n---\n\n")
-        if start == -1 or end == -1 or end <= start:
+        # Look for the machine-readable comment marker
+        marker = "<!-- context_payload:"
+        idx = content.find(marker)
+        if idx == -1:
             return {}
-        return json.loads(content[start:end].strip())
+        start = idx + len(marker)
+        end = content.find(" -->", start)
+        if end == -1:
+            return {}
+        return json.loads(content[start:end])
     except Exception:
         return {}

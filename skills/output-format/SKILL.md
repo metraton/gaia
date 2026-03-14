@@ -2,6 +2,7 @@
 name: output-format
 description: Use when reporting findings, errors, or results to the user — defines report structure, status icons, and finding classification
 metadata:
+  type: reference
   user-invocable: false
 ---
 
@@ -9,12 +10,12 @@ metadata:
 
 This skill controls the human-facing shape of your answer.
 It does **not** redefine runtime contracts. `agent-protocol` is the authority for
-the `json:contract` block (`evidence`, `consolidation`, `plan_status`) and its required fields.
+the `json:contract` block (`evidence_report`, `consolidation_report`, `plan_status`) and its required fields.
 
 ## Report Structure
 
 ```
-[STATUS ICON] [PHASE] COMPLETE
+[STATUS ICON] INVESTIGATION COMPLETE
 
 [Summary Section]
 - Key finding 1
@@ -28,7 +29,7 @@ the `json:contract` block (`evidence`, `consolidation`, `plan_status`) and its r
 ```
 
 When a response is grounded in investigation, validation, review, or diagnostics,
-include the protocol-mandated `json:contract` block with the `evidence` object populated.
+include the protocol-mandated `json:contract` block with the `evidence_report` object populated.
 Follow the exact field names and schema from `agent-protocol`.
 
 ## Status Icons

@@ -82,8 +82,8 @@ def test_terraform_architect_contract(temp_project_context: Path):
     """Verify terraform-architect gets surface-gated sections for a terraform task."""
     result = run_script(temp_project_context, "terraform-architect", "Create a new GCS bucket.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
     # v2 base sections present in terraform_iac surface contract_sections
     assert "project_identity" in contract
@@ -106,8 +106,8 @@ def test_gitops_operator_contract(temp_project_context: Path):
     """Verify gitops-operator gets all contracted v2 sections."""
     result = run_script(temp_project_context, "gitops-operator", "Deploy the frontend-app.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
     assert "project_identity" in contract
     assert "stack" in contract
@@ -135,8 +135,8 @@ def test_troubleshooter_contract(temp_project_context: Path):
         "Check pod logs using kubectl for the backend-api runtime outage.",
     )
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
     # live_runtime surface contract_sections
     assert "project_identity" in contract
@@ -159,8 +159,8 @@ def test_devops_developer_contract(temp_project_context: Path):
     """Verify devops-developer gets all contracted v2 sections."""
     result = run_script(temp_project_context, "devops-developer", "Fix the login bug.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
     assert "project_identity" in contract
     assert "stack" in contract
@@ -179,8 +179,8 @@ def test_speckit_planner_contract(temp_project_context: Path):
     """Verify speckit-planner gets all contracted v2 sections."""
     result = run_script(temp_project_context, "speckit-planner", "Plan the auth feature.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
     assert "project_identity" in contract
     assert "stack" in contract
@@ -217,8 +217,8 @@ def test_payload_structure(temp_project_context: Path):
     """Verify the output payload has the expected structure."""
     result = run_script(temp_project_context, "terraform-architect", "check status")
 
-    assert "contract" in result
-    assert "context_update_contract" in result
+    assert "project_knowledge" in result
+    assert "write_permissions" in result
     assert "rules" in result
     assert "metadata" in result
     assert "surface_routing" in result
@@ -239,16 +239,16 @@ def test_payload_structure(temp_project_context: Path):
     assert "surface_routing_confidence" in metadata
 
 
-def test_context_update_contract_matches_agent_write_scope(temp_project_context: Path):
-    """Injected context_update_contract should reflect the agent's SSOT write scope."""
+def test_write_permissions_matches_agent_write_scope(temp_project_context: Path):
+    """Injected write_permissions should reflect the agent's SSOT write scope."""
     result = run_script(temp_project_context, "terraform-architect", "Review terraform drift.")
 
-    context_update_contract = result["context_update_contract"]
-    writable_sections = set(context_update_contract["writable_sections"])
+    write_perms = result["write_permissions"]
+    writable_sections = set(write_perms["writable_sections"])
     assert {"terraform_infrastructure", "infrastructure_topology"} <= writable_sections
     assert {"gcp_services", "workload_identity", "static_ips"} <= writable_sections
-    assert "terraform_infrastructure" in context_update_contract["readable_sections"]
-    assert "application_services" in context_update_contract["readable_sections"]
+    assert "terraform_infrastructure" in write_perms["readable_sections"]
+    assert "application_services" in write_perms["readable_sections"]
 
 
 def test_surface_routing_single_surface_for_terraform_task(temp_project_context: Path):

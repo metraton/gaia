@@ -3,6 +3,7 @@ name: terraform-patterns
 description: Use when creating, modifying, or reviewing Terraform or Terragrunt configuration files
 metadata:
   user-invocable: false
+  type: domain
 ---
 
 # Terraform Patterns

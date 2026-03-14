@@ -229,7 +229,7 @@ class TestSubagentStopHookPostRemoval:
     def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path):
         transcript_path = tmp_path / "agent.jsonl"
         injected_payload = {
-            "contract": {"application_services": {}},
+            "project_knowledge": {"application_services": {}},
             "surface_routing": {
                 "active_surfaces": ["app_ci_tooling", "gitops_desired_state"],
                 "primary_surface": "app_ci_tooling",
@@ -240,9 +240,11 @@ class TestSubagentStopHookPostRemoval:
                 "consolidation_required": True,
             },
         }
+        compact_payload = json.dumps(injected_payload, separators=(',', ':'))
         user_prompt = (
-            "# Project Context (Auto-Injected)\n\n"
-            f"{json.dumps(injected_payload, indent=2)}\n\n---\n\n"
+            "# Project Context -- READ THIS FIRST\n\n"
+            f"{json.dumps(injected_payload, indent=2)}\n\n"
+            f"<!-- context_payload:{compact_payload} -->\n\n---\n\n"
             "# User Task\n\nInvestigate rollout failure after CI image change."
         )
         transcript_path.write_text(

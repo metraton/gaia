@@ -50,12 +50,10 @@ CONTEXT_UPDATE:
 ## Writable Sections Source of Truth
 
 Do **not** memorize a static table from this skill.
-Use the injected `context_update_contract` as the source of truth:
+Your write permissions are shown in the injected context under
+**Your Write Permissions**. The `writable_sections` list there is the source of truth.
 
-- `readable_sections` — the context sections available to you
-- `writable_sections` — the only sections you may update
-
-If `context_update_contract` is absent, fall back to your agent contract in
+If `write_permissions` is absent, fall back to your agent contract in
 `config/context-contracts.json`. Do not invent section names.
 
 Writing to a section you do not own will be rejected by the hook.

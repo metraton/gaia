@@ -239,7 +239,7 @@ class TestPhase1SkillsInjection:
             assert isinstance(result, dict), "Task call should return updatedInput when context is injected"
             updated = result["hookSpecificOutput"]["updatedInput"]["prompt"]
 
-            assert "# Project Context (Auto-Injected)" in updated
+            assert "# Project Context -- READ THIS FIRST" in updated
             assert "# User Task" in updated
             assert "Diagnose pod health in namespace test" in updated
             assert "AGENT_STATUS" not in updated, \
@@ -776,7 +776,7 @@ class TestPhase5SubagentStopHook:
                 "tier": "T0",
                 "tags": ["#diagnostic"],
                 "injected_context": {
-                    "contract": {
+                    "project_knowledge": {
                         "cluster_details": {},
                     },
                     "metadata": {
@@ -796,7 +796,7 @@ class TestPhase5SubagentStopHook:
                         "agent_role": "primary",
                         "primary_surface": "live_runtime",
                     },
-                    "context_update_contract": {
+                    "write_permissions": {
                         "readable_sections": ["cluster_details"],
                         "writable_sections": ["cluster_details"],
                     },

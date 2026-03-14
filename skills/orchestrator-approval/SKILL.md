@@ -3,6 +3,7 @@ name: orchestrator-approval
 description: Use when processing PENDING_APPROVAL from a subagent -- enforces showing values before asking for user consent
 metadata:
   user-invocable: false
+  type: discipline
 ---
 
 # Orchestrator Approval

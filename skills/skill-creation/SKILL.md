@@ -3,6 +3,7 @@ name: skill-creation
 description: Use when creating a new skill, improving an existing skill, or deciding what a skill should contain and how it should be structured
 metadata:
   user-invocable: false
+  type: technique
 ---
 
 # Skill Creation
@@ -67,7 +68,7 @@ description: Use when executing any bash command, cloud CLI, or shell operation
 
 ---
 
-## Step 4: Respect the token budget
+## Step 4: Respect the line budget
 
 | Injection method | Budget | Reason |
 |-----------------|--------|--------|

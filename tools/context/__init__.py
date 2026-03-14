@@ -8,7 +8,7 @@ agents receive the necessary context for execution.
 Main functions:
 - load_project_context(): Load project context from JSON
 - get_contract_context(): Get context for an agent based on its contract
-- get_context_update_contract(): Get readable/writable CONTEXT_UPDATE contract
+- get_context_update_contract(): Get readable/writable write permissions
 - load_provider_contracts(): Load cloud provider-specific contracts
 """
 

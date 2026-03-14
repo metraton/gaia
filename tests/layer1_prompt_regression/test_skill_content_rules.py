@@ -150,8 +150,8 @@ class TestContextUpdaterSkill:
         """Must document CONTEXT_UPDATE format."""
         assert "CONTEXT_UPDATE" in content, \
             "context-updater must document CONTEXT_UPDATE format"
-        assert "context_update_contract" in content, \
-            "context-updater should reference injected context_update_contract as SSOT"
+        assert "write_permissions" in content, \
+            "context-updater should reference injected write_permissions as SSOT"
 
     def test_documents_merge_rules(self, content):
         """Should document merge rules."""
@@ -195,27 +195,25 @@ class TestInvestigationSkill:
     def content(self, skills_dir):
         return (skills_dir / "investigation" / "SKILL.md").read_text()
 
-    def test_documents_evidence_contract(self, content):
-        """investigation should define the meaning of evidence fields."""
-        assert "Evidence Contract" in content, \
-            "investigation should document the evidence contract"
+    def test_documents_evidence_reporting(self, content):
+        """investigation should reference evidence reporting and key evidence fields."""
+        assert "Report Evidence" in content or "evidence_report" in content, \
+            "investigation should document evidence reporting"
         for field in [
-            "PATTERNS_CHECKED",
-            "FILES_CHECKED",
-            "COMMANDS_RUN",
-            "KEY_OUTPUTS",
-            "VERBATIM_OUTPUTS",
-            "CROSS_LAYER_IMPACTS",
-            "OPEN_GAPS",
+            "patterns_checked",
+            "files_checked",
+            "commands_run",
+            "key_outputs",
+            "cross_layer_impacts",
         ]:
             assert field in content, \
-                f"investigation should explain '{field}'"
+                f"investigation should reference '{field}'"
 
-    def test_documents_consolidation_contract(self, content):
-        """investigation should explain the consolidation contract for cross-surface work."""
-        assert "Consolidation Contract" in content, \
-            "investigation should document the consolidation contract"
-        assert "consolidation" in content, \
+    def test_documents_consolidation(self, content):
+        """investigation should explain the consolidation requirement for cross-surface work."""
+        assert "Consolidation" in content or "consolidation_report" in content, \
+            "investigation should document consolidation"
+        assert "consolidation" in content.lower(), \
             "investigation should reference consolidation (json:contract format)"
 
 

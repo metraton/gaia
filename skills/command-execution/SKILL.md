@@ -3,6 +3,7 @@ name: command-execution
 description: Use when executing any bash command, CLI tool, or shell operation
 metadata:
   user-invocable: false
+  type: discipline
 ---
 
 # Command Execution
@@ -42,7 +43,7 @@ File I/O belongs to the tool layer, not the shell.
 
 The working directory is not reliable across tool calls. Use absolute paths so each command is fully self-describing.
 
-## Rule 7: Quote Variables
+## Rule 5: Quote Variables
 
 Always `"${VAR}"` to prevent word-splitting.
 
@@ -56,7 +57,31 @@ If you are forming any of these thoughts, stop. You are about to violate the ato
 - *"Let me save with `>`"* -- Rule 3: use the Write tool
 - *"Let me `cat` this file"* -- Rule 3: use the Read tool
 - *"Let me `cd` first"* -- Rule 4: use absolute path with `-chdir` or equivalent
-- *"No spaces in this variable"* -- Rule 7: always quote
+- *"No spaces in this variable"* -- Rule 5: always quote
 - *"I'll cd to the worktree and then run the command"* -- Rule 2: run `cd` as a separate Bash call, then run the command in the next call. Never chain with `&&`.
+
+## Rationalizations
+
+| Excuse | Reality |
+|--------|---------|
+| "I need to pipe for formatting" | Use `--format`, `--output`, or `-o` flags. The CLI already formats. |
+| "I need to chain commands for efficiency" | Two fast commands with verified exit codes beat one fragile chain. |
+| "This read-only command is safe to pipe" | Pipes still hide exit codes and trigger extra permission prompts. Safe does not mean atomic. |
+| "I'll just use grep instead of the Grep tool" | Rule 3: use the Grep tool. Bash grep loses structured output and wastes a permission prompt. |
+| "I need jq to parse JSON output" | Use `--format json` or `--output-format` at the source. If unavoidable, run jq as a separate command on a saved file. |
+| "A heredoc is the cleanest way to pass multi-line input" | Rule 3: use the Write tool. Heredocs fail in batch contexts. |
+| "I'll cd first, then run the command" | Rule 4: use absolute paths. Rule 2: never chain cd with &&. |
+
+## Anti-Patterns
+
+- Piping `kubectl get` to `grep` instead of using `-l` label selectors or `--field-selector`
+- Chaining `cd dir && terraform plan` instead of `terraform -chdir=/absolute/path plan`
+- Using `cat file | wc -l` instead of reading the file with the Read tool
+- Running `echo "content" > file` instead of using the Write tool
+- Using `find . -name "*.tf"` instead of the Glob tool
+
+## Hook Enforcement
+
+The `cloud_pipe_validator.py` hook module also enforces the no-pipes rule at runtime, rejecting commands that contain pipe operators.
 
 For mutation-specific rules (dry-run before apply, files over inline data), timeout tables, and cloud CLI examples, see `reference.md` in this skill directory.

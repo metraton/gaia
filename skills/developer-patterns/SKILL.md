@@ -3,6 +3,7 @@ name: developer-patterns
 description: Use when creating, modifying, or reviewing application code in Node.js/TypeScript or Python
 metadata:
   user-invocable: false
+  type: domain
 ---
 
 # Developer Patterns

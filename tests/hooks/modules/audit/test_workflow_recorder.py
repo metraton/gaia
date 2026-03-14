@@ -43,7 +43,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 def test_build_context_telemetry_snapshot_compacts_injected_payload():
     payload = {
-        "contract": {
+        "project_knowledge": {
             "cluster_details": {},
             "application_services": {},
         },
@@ -72,7 +72,7 @@ def test_build_context_telemetry_snapshot_compacts_injected_payload():
             "required_checks": ["verify rollout", "check logs"],
             "evidence_required": ["PATTERNS_CHECKED", "CROSS_LAYER_IMPACTS"],
         },
-        "context_update_contract": {
+        "write_permissions": {
             "readable_sections": ["cluster_details", "application_services"],
             "writable_sections": ["cluster_details"],
         },
@@ -99,7 +99,7 @@ def test_record_persists_additive_run_telemetry(tmp_path):
         "plan_status": "COMPLETE",
         "tags": ["cloud-troubleshooter"],
         "injected_context": {
-            "contract": {
+            "project_knowledge": {
                 "cluster_details": {},
                 "application_services": {},
             },
@@ -121,7 +121,7 @@ def test_record_persists_additive_run_telemetry(tmp_path):
                 "primary_surface": "live_runtime",
                 "evidence_required": ["PATTERNS_CHECKED"],
             },
-            "context_update_contract": {
+            "write_permissions": {
                 "readable_sections": ["cluster_details", "application_services"],
                 "writable_sections": ["cluster_details"],
             },

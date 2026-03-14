@@ -3,6 +3,7 @@ name: approval
 description: Use when a T3 operation is ready and needs to be presented to the user for approval before execution
 metadata:
   user-invocable: false
+  type: technique
 ---
 
 # Approval

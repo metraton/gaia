@@ -3,30 +3,46 @@ name: investigation
 description: Use when starting an investigation, analyzing existing code or infrastructure, or building findings before proposing changes
 metadata:
   user-invocable: false
-  type: core
+  type: technique
 ---
 
 # Investigation Skill
 
 Investigation is about understanding a problem well enough to propose a correct solution.
-**How to search** is defined in `agent-protocol`. This skill defines **how to think**.
+This skill defines **how to think** -- the methodology for building evidence.
+For the mandatory `json:contract` response format, see `agent-protocol`.
 
-## 1. Decompose First
+## Phase 1: Read Injected Context
 
-Before searching anything, define what you need to know:
-- What is the expected state vs what might be wrong or missing?
-- What are the knowns (injected context) vs the unknowns?
-- What evidence would confirm or disprove my hypothesis?
+Before your first tool call, list the key anchors from your injected Project Knowledge
+that you will target: paths, service names, resource IDs. This is your investigation
+starting point -- name them explicitly so your first tool calls go directly to them.
 
-Starting a search without a clear question produces noise, not findings.
+Extract what you already know from injected Project Context (PC):
+- Paths: `infrastructure.paths`, `orchestration.gitops.config_path`, service directories
+- Tech stack: languages, frameworks, CI tools, cloud provider
+- Known issues or constraints noted in PC metadata
+- Resource names, cluster names, project IDs
 
-## 2. Gather Evidence
+Define what you need to know that PC does NOT already answer. Those are your unknowns.
 
-Follow the local-first order from `agent-protocol`. For each area of investigation:
+## Phase 2: Target Known Paths
+
+Use context anchors for focused exploration. For each path or name PC gave you:
+- Read the file or directory directly -- no Glob needed
 - Read 2-3 similar existing resources to understand what is already implemented
 - Extract: naming conventions, directory structure, dependencies, config patterns
 
-## 3. Explore Before Concluding
+If PC includes an `investigation_brief`, use it to prioritize:
+- which surface you own
+- which adjacent surface must still be checked
+- which required checks must appear in your evidence
+- whether you must return a `consolidation` object in your `json:contract` block for Gaia to merge findings
+
+## Phase 3: Discover Unknowns
+
+Only now search for things NOT covered by context. Use Glob and Grep for unknowns
+that PC could not answer.
 
 After gathering initial evidence, resist the pull to stop at the first answer.
 
@@ -39,13 +55,13 @@ After gathering initial evidence, resist the pull to stop at the first answer.
 
 Stop exploring when new files confirm what you already know rather than adding new information.
 
-If Project Context includes an `investigation_brief`, use it to prioritize:
-- which surface you own
-- which adjacent surface must still be checked
-- which required checks must appear in your evidence
-- whether you must return a `consolidation` object in your `json:contract` block for Gaia to merge findings
+## Phase 4: Live State
 
-## 4. Pattern Analysis
+Only if drift is suspected or the task explicitly requires runtime data.
+Use CLI tools for live verification.
+If you have the `fast-queries` skill, run triage first.
+
+## Phase 5: Pattern Analysis
 
 Apply this hierarchy — in order, without skipping levels:
 
@@ -69,7 +85,7 @@ If neither codebase nor domain skill has a pattern for what you need, use your t
 skill, emit `CONTEXT_UPDATE`. Otherwise, note the discovery in your report for the
 orchestrator to route.
 
-## 5. Validate Your Hypothesis
+## Phase 6: Validate Your Hypothesis
 
 Before treating findings as fact:
 - Does local code agree with project-context? If not → investigate drift first
@@ -78,14 +94,14 @@ Before treating findings as fact:
 
 Never plan on assumptions. If in doubt, validate.
 
-## 6. Surface Options
+## Phase 7: Surface Options
 
 When multiple valid approaches exist:
 - List them explicitly: **Option A** (trade-offs), **Option B** (trade-offs)
 - Evaluate each against existing project patterns and constraints
 - Do NOT pick silently — surface them and set status: `NEEDS_INPUT`
 
-## 7. Qualify Confidence Before Proposing
+## Phase 8: Qualify Confidence Before Proposing
 
 Before findings feed into a plan, explicitly state:
 - What is **confirmed** (seen in code, validated by CLI or docs)
@@ -93,43 +109,29 @@ Before findings feed into a plan, explicitly state:
 
 If critical gaps remain → run another validation round. Never propose on shaky ground.
 
-## 8. Evidence Contract
+## Phase 9: Report Evidence
 
-When you report investigation findings, populate the `evidence` object in the protocol-mandated `json:contract` block.
+Populate the `evidence_report` in your `json:contract` block using the schema
+and field definitions from `agent-protocol`. Minimum expectations for investigations:
 
-Interpret the fields this way:
+- Always populate `patterns_checked` and `files_checked` for local/code work
+- Populate `commands_run` and `key_outputs` whenever you touched live state or ran diagnostics
+- Populate `cross_layer_impacts` whenever the issue crosses surfaces
+- Use `[]` when a field truly does not apply
 
-- `PATTERNS_CHECKED` — existing repo patterns, sibling resources, or conventions you compared against
-- `FILES_CHECKED` — concrete files, directories, manifests, modules, or docs you inspected
-- `COMMANDS_RUN` — exact read-only or validation commands you executed, plus a terse result
-- `KEY_OUTPUTS` — 1-2 sentence summary of what changed your conclusion
-- `VERBATIM_OUTPUTS` — literal command outputs that back up your findings. The orchestrator shows these to the user on request. Format each entry as the command in backticks followed by a fenced code block with the raw output. Truncate outputs longer than ~100 lines with `[truncated]`. Write `- none` when no commands were executed.
-- `CROSS_LAYER_IMPACTS` — adjacent surfaces, systems, or contracts affected by the finding
-- `OPEN_GAPS` — what is still unverified, inaccessible, or assumed
+The goal is not verbosity. The goal is evidence that another agent or the user can verify quickly.
 
-Minimum expectations:
-- Always populate `PATTERNS_CHECKED` and `FILES_CHECKED` for local/code investigations
-- Populate `COMMANDS_RUN` and `KEY_OUTPUTS` whenever you touched live state, validation commands, or diagnostics
-- Populate `CROSS_LAYER_IMPACTS` whenever the issue crosses app, infra, GitOps, runtime, hooks, skills, or docs
-- Use `- none` or `- not run` when a field truly does not apply
+## Phase 10: Consolidation
 
-The goal is not verbosity. The goal is evidence that another agent, the orchestrator, or the user can verify quickly.
-
-## 9. Consolidation Contract
-
-When `investigation_brief.consolidation_required` is true, your response must help
-Gaia merge parallel or cross-surface work. That means:
-
-- say what is confirmed vs only suspected
-- say whether the problem is owned here or depends on another surface
-- say what still blocks a final conclusion
-- say who should continue if it is no longer your surface
-
-Do not wait for the orchestrator to infer this from prose. Put it in the
-protocol-mandated `consolidation` object in your `json:contract` block.
+When consolidation is required (see `agent-protocol` for triggers and the full
+`consolidation_report` schema), your response must help Gaia merge parallel work.
+Separate confirmed findings from suspected ones, state surface ownership, identify
+blockers, and name who should continue. Put this in the `consolidation_report`
+object -- do not leave it for the orchestrator to infer from prose.
 
 ## Anti-Patterns
 
+- Running Glob or Grep across the entire repo before checking if Project Context already has the path
 - Searching before knowing what question you're trying to answer
 - Planning before all critical unknowns are resolved
 - Picking an approach without surfacing alternatives

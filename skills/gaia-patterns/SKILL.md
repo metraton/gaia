@@ -3,6 +3,7 @@ name: gaia-patterns
 description: Use when analyzing, designing, or modifying the gaia-ops orchestration system architecture
 metadata:
   user-invocable: false
+  type: domain
 ---
 
 # Gaia-Ops Patterns
@@ -14,7 +15,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 ```
 1. User sends prompt
    ↓
-2. Orchestrator (CLAUDE.md) — routes or answers directly (<200 tokens → direct)
+2. Orchestrator (CLAUDE.md) — routes to the correct agent
    ↓
 3. Pre-Tool Hook (pre_tool_use.py)
    ├─ Inject project-context.json (relevant sections per agent)
@@ -33,7 +34,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 
 ## Key Concepts
 
-- **Binary Delegation:** <200 tokens + only Read needed → answer directly. Otherwise → delegate.
+- **Binary Delegation:** The orchestrator always delegates. Its only tools are Agent and AskUserQuestion.
 - **Agent Instantiation:** identity (.md) + skills (injected) + project-context (contracts) + orchestrator request.
 - **Security Tiers:** T0 (read) → T1 (validate) → T2 (simulate) → T3 (realize, requires approval).
 - **Two-Phase T3:** PLANNING → PENDING_APPROVAL → APPROVED_EXECUTING → COMPLETE.
@@ -52,13 +53,13 @@ The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritat
 4. **Be concise** — leave room for growth
 5. **Be measurable** — goals with numbers, not subjective terms
 
-## Token Budget
+## Line Budget
 
 | Document | Target | Max |
 |----------|--------|-----|
-| Agent `.md` | 2,000 tokens | 3,000 |
-| `CLAUDE.md` | 1,500 tokens | 2,500 |
-| Skill (injected) | 500 tokens | 1,000 |
+| Agent `.md` | 80 lines | 120 |
+| `CLAUDE.md` | 60 lines | 100 |
+| Skill (injected) | < 100 lines | 100 |
 
 ## Agent Creation Standards
 

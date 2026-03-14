@@ -5,7 +5,7 @@
 ## Overview
 
 This module manages the SSOT (Single Source of Truth) context that agents receive. It loads project configuration, filters by agent contract (defined in `config/context-contracts.json` + cloud extensions), and provides context to agents.
-It also classifies the task into generic Gaia surfaces, emits an `investigation_brief`, and injects a `context_update_contract` so agents receive deterministic cross-surface guidance and writable-section ownership, not just raw project data.
+It also classifies the task into generic Gaia surfaces, emits an `investigation_brief`, and injects `write_permissions` so agents receive deterministic cross-surface guidance and writable-section ownership, not just raw project data.
 
 ## Core Functions
 
@@ -91,12 +91,12 @@ Each agent receives specific v2 context sections (defined in `config/context-con
 - cluster_details, infrastructure_topology, terraform_infrastructure
 - gitops_configuration, application_services, monitoring_observability, architecture_overview
 
-The same contracts are also exposed under `context_update_contract`:
+The same contracts are also exposed under `write_permissions`:
 - `readable_sections`
 - `writable_sections`
 
-Agents should use that injected contract, not a hardcoded table in a skill, when
-deciding whether a `CONTEXT_UPDATE` is allowed.
+Agents should use the injected `write_permissions`, not a hardcoded table in a skill,
+when deciding whether a `CONTEXT_UPDATE` is allowed.
 
 ## Command Line Usage
 

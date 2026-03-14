@@ -8,7 +8,9 @@ metadata:
 
 # Specification
 
-Conversational skill for the orchestrator. The orchestrator drives spec creation
+**Orchestrator-only skill.** This skill is executed by the orchestrator, which
+cannot read files, write files, or run commands. Every file I/O step must name
+the delegation target (agent) explicitly. The orchestrator drives spec creation
 through dialogue -- it never delegates spec authoring to an agent.
 
 A spec captures WHAT to build and WHY.
@@ -38,9 +40,14 @@ Do NOT activate when:
 
 ## Step 1: Load Context and Constraints
 
-Before asking the first question, delegate to an agent to read:
+Before asking the first question, delegate to the `gaia` agent to read:
 - `governance.md` from the speckit root -- architectural principles, stack constraints
 - `project-context.json` -- existing services, infrastructure, paths
+
+**Discovering `speckit_root`:** The path is stored in `project-context.json` at
+`paths.speckit_root`. The `gaia` agent resolves this during the read above. If
+the key is missing, default to `specs/` relative to project root; if that also
+does not exist, set status `BLOCKED` and ask the user for the path.
 
 Extract:
 - Mandatory architectural principles (GitOps, Workload Identity, etc.)
@@ -147,14 +154,16 @@ show the updated section (not the full spec again), confirm.
 
 ## Step 6: Save
 
-When the user approves, delegate to an agent to save `spec.md` in the
-feature directory: `{speckit_root}/{feature-name}/spec.md`.
+When the user approves, delegate to the `devops-developer` agent to save
+`spec.md` in the feature directory: `{speckit_root}/{feature-name}/spec.md`.
 
 The feature directory name: lowercase, hyphenated, descriptive.
 Example: `payment-gateway`, `user-notifications`, `report-export`.
 
 After saving, suggest: "The spec is ready. Want me to start planning?"
-This transitions to the `speckit-planner` agent via `/speckit.plan`.
+This transitions to the `speckit-planner` agent via the `/speckit.plan` skill
+invocation (not a shell command -- it is a slash-command that the orchestrator
+dispatches as a skill).
 
 ## Quality Checks
 

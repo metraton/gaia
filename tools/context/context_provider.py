@@ -449,8 +449,8 @@ def main():
 
     # Build final payload
     final_payload = {
-        "contract": contract_context,
-        "context_update_contract": context_update_contract,
+        "project_knowledge": contract_context,
+        "write_permissions": context_update_contract,
         "rules": rules_context,
         "surface_routing": surface_routing,
         "investigation_brief": investigation_brief,

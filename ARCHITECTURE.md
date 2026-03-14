@@ -140,8 +140,8 @@ context_provider.py <agent_name> <user_task>
     |
     v
     JSON payload:
-      contract:               {sections the agent may read}
-      context_update_contract: {readable/writable section lists}
+      project_knowledge:      {sections the agent may read}
+      write_permissions:      {readable/writable section lists}
       rules:                  {universal + agent-specific rules}
       surface_routing:        {active surfaces, dispatch mode, confidence}
       investigation_brief:    {role, required checks, stop conditions}

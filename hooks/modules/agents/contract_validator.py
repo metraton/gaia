@@ -344,6 +344,121 @@ def extract_exit_code_from_output(agent_output: str) -> int:
     return 0
 
 
+# ============================================================================
+# Context-usage anomaly detection
+# ============================================================================
+
+# Reuse the anchor extraction regex from anchor_tracker for consistency
+_ANCHOR_FIELDS_RE = re.compile(
+    r"(path|name|cluster|project|region|namespace|service|image|"
+    r"base_path|config_path|module_path|repository|bucket|sa$|"
+    r"service_account|pod_name|terragrunt_path)",
+    re.IGNORECASE,
+)
+
+_MIN_ANCHOR_LEN = 4
+
+
+def _extract_context_anchors(project_knowledge: Dict[str, Any]) -> set:
+    """Extract anchor strings (paths, names, IDs) from project_knowledge sections.
+
+    Walks the project_knowledge dict and collects string values from fields
+    whose names match anchor-worthy patterns (paths, service names, clusters, etc.).
+
+    Args:
+        project_knowledge: The project_knowledge dict from the injected context.
+
+    Returns:
+        Set of anchor strings.
+    """
+    anchors: set = set()
+
+    def _walk(obj: Any, depth: int = 0) -> None:
+        if depth > 10:
+            return
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, str) and value and _ANCHOR_FIELDS_RE.search(key):
+                    clean = value.lstrip("./")
+                    if len(clean) >= _MIN_ANCHOR_LEN:
+                        anchors.add(clean)
+                elif isinstance(value, (dict, list)):
+                    _walk(value, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item, depth + 1)
+
+    _walk(project_knowledge)
+    return anchors
+
+
+def check_context_usage(
+    project_knowledge: Dict[str, Any],
+    evidence_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Soft check: detect when an agent ignores injected project context.
+
+    Extracts anchors from project_knowledge and checks whether ANY of them
+    appear in the agent's evidence_report (files_checked, patterns_checked,
+    commands_run). If zero overlap, flags ``context_ignored: true``.
+
+    This is a soft check -- it never fails validation, only adds a flag.
+
+    Args:
+        project_knowledge: The ``project_knowledge`` dict from injected context.
+        evidence_report: The ``evidence_report`` dict from the agent's json:contract.
+
+    Returns:
+        Dict with ``context_ignored`` (bool), ``anchors_found`` (int),
+        ``anchors_in_evidence`` (int), and ``overlap`` (list of matched anchors).
+    """
+    if not project_knowledge or not evidence_report:
+        return {
+            "context_ignored": False,
+            "anchors_found": 0,
+            "anchors_in_evidence": 0,
+            "overlap": [],
+        }
+
+    anchors = _extract_context_anchors(project_knowledge)
+    if not anchors:
+        return {
+            "context_ignored": False,
+            "anchors_found": 0,
+            "anchors_in_evidence": 0,
+            "overlap": [],
+        }
+
+    # Build a single searchable string from evidence fields
+    evidence_parts: List[str] = []
+
+    for field in ("files_checked", "patterns_checked", "commands_run"):
+        entries = evidence_report.get(field, [])
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, str):
+                    evidence_parts.append(entry)
+                elif isinstance(entry, dict):
+                    # commands_run may be dicts with "command" or "cmd" keys
+                    evidence_parts.append(
+                        entry.get("command", entry.get("cmd", str(entry)))
+                    )
+
+    evidence_text = " ".join(evidence_parts)
+
+    matched: List[str] = []
+    for anchor in anchors:
+        if anchor in evidence_text:
+            matched.append(anchor)
+
+    return {
+        "context_ignored": len(matched) == 0,
+        "anchors_found": len(anchors),
+        "anchors_in_evidence": len(matched),
+        "overlap": sorted(matched),
+    }
+
+
 # Aliases for shorter import names
 extract_plan_status = extract_plan_status_from_output
 extract_exit_code = extract_exit_code_from_output

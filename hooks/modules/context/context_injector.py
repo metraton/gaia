@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ..security.prompt_validator import classify_resume_prompt
+from ..session.session_manager import get_or_create_session_id
+from .anchor_tracker import extract_anchors, save_anchors
 from .contracts_loader import build_context_update_reminder
 
 logger = logging.getLogger(__name__)
@@ -36,15 +38,15 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
     if not isinstance(context_payload, dict) or not context_payload:
         return {}
 
-    contract = context_payload.get("contract") or {}
+    project_knowledge = context_payload.get("project_knowledge") or {}
     metadata = context_payload.get("metadata") or {}
     surface_routing = context_payload.get("surface_routing") or {}
     investigation_brief = context_payload.get("investigation_brief") or {}
-    context_update_contract = context_payload.get("context_update_contract") or {}
+    write_permissions = context_payload.get("write_permissions") or {}
 
-    contract_sections = sorted(contract.keys())
-    readable_sections = sorted(context_update_contract.get("readable_sections") or [])
-    writable_sections = sorted(context_update_contract.get("writable_sections") or [])
+    contract_sections = sorted(project_knowledge.keys())
+    readable_sections = sorted(write_permissions.get("readable_sections") or [])
+    writable_sections = sorted(write_permissions.get("writable_sections") or [])
 
     return _prune_empty_values({
         "contract_sections": contract_sections,
@@ -378,6 +380,18 @@ def inject_project_context(
             logger.error(f"Failed to parse context JSON: {e}")
             return parameters
 
+        # Extract and save context anchors for hit tracking
+        try:
+            anchors = extract_anchors(context_payload)
+            if anchors:
+                session_id = get_or_create_session_id()
+                save_anchors(session_id, subagent_type, anchors)
+                logger.debug(
+                    "Saved %d context anchors for %s", len(anchors), subagent_type,
+                )
+        except Exception as exc:
+            logger.debug("Anchor extraction failed (non-fatal): %s", exc)
+
         # Check pending update count (non-blocking, fast path)
         pending_warning = check_pending_updates_threshold()
 
@@ -388,12 +402,70 @@ def inject_project_context(
 
         # Inject context into prompt (skills are injected natively by Claude Code
         # via the 'skills:' field in the agent's frontmatter)
-        enriched_prompt = f"""# Project Context (Auto-Injected)
+        project_knowledge = context_payload.get("project_knowledge", {})
+        write_perms = context_payload.get("write_permissions", {})
+        investigation_brief = context_payload.get("investigation_brief", {})
+        rules = context_payload.get("rules", {})
+        surface_routing_data = context_payload.get("surface_routing", {})
+        metadata = context_payload.get("metadata", {})
+        historical = context_payload.get("historical_context", {})
 
-{json.dumps(context_payload, indent=2)}
+        writable_list = ", ".join(write_perms.get("writable_sections", []))
+        readable_list = ", ".join(write_perms.get("readable_sections", []))
 
-{pending_warning}---
-{update_reminder}
+        # Build investigation brief prose
+        brief_lines = []
+        if investigation_brief:
+            role = investigation_brief.get("agent_role", "")
+            primary = investigation_brief.get("primary_surface", "")
+            adjacent = investigation_brief.get("adjacent_surfaces", [])
+            if role:
+                brief_lines.append(f"- Role: {role}")
+            if primary:
+                brief_lines.append(f"- Primary surface: {primary}")
+            if adjacent:
+                brief_lines.append(f"- Adjacent surfaces: {', '.join(adjacent)}")
+            if investigation_brief.get("consolidation_required"):
+                brief_lines.append("- Consolidation required: yes")
+            if investigation_brief.get("cross_check_required"):
+                brief_lines.append("- Cross-check required: yes")
+        brief_section = "\n".join(brief_lines) if brief_lines else "No investigation brief provided."
+
+        # Optional sections
+        rules_section = f"\n## Rules\n\n{json.dumps(rules, indent=2)}\n" if rules.get("universal") or rules.get("agent_specific") else ""
+        routing_section = f"\n## Surface Routing\n\n{json.dumps(surface_routing_data, indent=2)}\n" if surface_routing_data else ""
+        metadata_section = f"\n## Metadata\n\n{json.dumps(metadata, indent=2)}\n" if metadata else ""
+        historical_section = f"\n## Historical Context\n\n{json.dumps(historical, indent=2)}\n" if historical else ""
+
+        enriched_prompt = f"""# Project Context -- READ THIS FIRST
+
+You have been given structured project knowledge. Use it as your
+starting point before searching. Paths, names, and IDs below are
+confirmed facts -- go directly to them instead of searching.
+
+## Your Project Knowledge
+
+The sections below are filtered for your role. Each section contains
+confirmed project data (paths, configurations, resource names). Use
+these as direct targets in your first tool calls.
+
+{json.dumps(project_knowledge, indent=2)}
+
+## Your Investigation Brief
+
+{brief_section}
+
+## Your Write Permissions
+
+You may update these sections when you discover new or changed data.
+Emit a CONTEXT_UPDATE block (see context-updater skill).
+- Writable: {writable_list or "none"}
+- Readable: {readable_list or "none"}
+{rules_section}{routing_section}{metadata_section}{historical_section}
+{pending_warning}{update_reminder}<!-- context_payload:{json.dumps(context_payload, separators=(',', ':'))} -->
+
+---
+
 # User Task
 
 {prompt}
@@ -416,7 +488,7 @@ def inject_project_context(
 
         parameters["prompt"] = enriched_prompt
 
-        sections_count = len(context_payload.get("contract", {}))
+        sections_count = len(context_payload.get("project_knowledge", {}))
         rules_count = context_payload.get("metadata", {}).get("rules_count", 0)
 
         logger.info(
