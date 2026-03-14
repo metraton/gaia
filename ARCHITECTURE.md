@@ -45,7 +45,7 @@ subagent_stop.py  (SubagentStop hook)
     v
 Orchestrator processes AGENT_STATUS
     |  COMPLETE -> summarize to user
-    |  PENDING_APPROVAL -> get approval -> resume
+    |  AWAITING_APPROVAL -> get approval -> resume
     |  NEEDS_INPUT -> ask user -> resume
     |  BLOCKED -> report blocker
 ```
@@ -171,8 +171,8 @@ Nonce-based T3 approval lifecycle:
 
 Every agent response must end with a `json:contract` block containing `agent_status`. The contract validator (`hooks/modules/agents/contract_validator.py`) enforces:
 
-- **AGENT_STATUS**: PLAN_STATUS (from 8 valid states), PENDING_STEPS, NEXT_ACTION, AGENT_ID
-- **EVIDENCE_REPORT**: required for all states except APPROVED_EXECUTING. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS
+- **AGENT_STATUS**: PLAN_STATUS (from 6 valid states: COMPLETE, NEEDS_INPUT, REVIEW, AWAITING_APPROVAL, BLOCKED, IN_PROGRESS), PENDING_STEPS, NEXT_ACTION, AGENT_ID
+- **EVIDENCE_REPORT**: required for all valid states. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS
 - **CONSOLIDATION_REPORT**: required when multi-surface or cross-check. Fields: OWNERSHIP_ASSESSMENT (enum), CONFIRMED_FINDINGS, SUSPECTED_FINDINGS, CONFLICTS, OPEN_GAPS, NEXT_BEST_AGENT
 
 Invalid responses trigger a repair loop: save pending-repair.json, pre_tool_use guard blocks new tasks, orchestrator must resume the same agent for repair (max 2 attempts before escalation).

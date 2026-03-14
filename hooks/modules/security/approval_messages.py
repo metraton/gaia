@@ -5,7 +5,7 @@ from .approval_constants import NONCE_APPROVAL_PREFIX
 CANONICAL_APPROVAL_TOKEN = "APPROVE:<nonce>"
 CANONICAL_APPROVAL_TOKEN_FORMAT = f"{NONCE_APPROVAL_PREFIX}<32-char-hex>"
 LATEST_BLOCKED_COMMAND_PHRASE = "latest blocked command"
-PENDING_APPROVAL_STATUS = "PENDING_APPROVAL"
+AWAITING_APPROVAL_STATUS = "AWAITING_APPROVAL"
 
 CANONICAL_APPROVAL_TOKEN_GUIDANCE = (
     f"Use only {CANONICAL_APPROVAL_TOKEN} from the {LATEST_BLOCKED_COMMAND_PHRASE}."
@@ -61,13 +61,13 @@ def build_pending_approval_unavailable_message() -> str:
 def build_t3_approval_instructions(nonce: str | None = None) -> str:
     """Return explicit T3 approval workflow steps for blocked commands."""
     if nonce:
-        step_two = f"2. Include the approval code NONCE:{nonce} in your {PENDING_APPROVAL_STATUS} output.\n"
+        step_two = f"2. Include the approval code NONCE:{nonce} in your {AWAITING_APPROVAL_STATUS} output.\n"
         step_four = (
             f"4. Wait for explicit user approval. When resumed, expect APPROVE:{nonce} "
             f"and then retry the command. {CANONICAL_APPROVAL_TOKEN_GUIDANCE}\n"
         )
     else:
-        step_two = f"2. Retry the blocked command if you need a fresh approval code for {PENDING_APPROVAL_STATUS}.\n"
+        step_two = f"2. Retry the blocked command if you need a fresh approval code for {AWAITING_APPROVAL_STATUS}.\n"
         step_four = (
             f"4. Wait for explicit user approval before executing. {CANONICAL_APPROVAL_TOKEN_GUIDANCE}\n"
         )
@@ -76,6 +76,8 @@ def build_t3_approval_instructions(nonce: str | None = None) -> str:
         "This is a T3 (state-modifying) operation. Follow the approval workflow:\n"
         "1. Present a plan with scope, impact, and rollback steps.\n"
         f"{step_two}"
-        f"3. Set PLAN_STATUS: {PENDING_APPROVAL_STATUS}.\n"
+        f"3. Set PLAN_STATUS: {AWAITING_APPROVAL_STATUS}.\n"
         f"{step_four}"
+        "5. Include an `approval_request` object in your json:contract with:\n"
+        "   operation, exact_content, scope, risk_level, rollback, verification\n"
     )

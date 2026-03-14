@@ -22,7 +22,8 @@ See `SKILL.md` for the schema definition and field rules.
     "cross_layer_impacts": [],
     "open_gaps": []
   },
-  "consolidation_report": null
+  "consolidation_report": null,
+  "approval_request": null
 }
 ```
 
@@ -45,7 +46,8 @@ See `SKILL.md` for the schema definition and field rules.
     "cross_layer_impacts": ["GKE node pool scaling depends on this SA"],
     "open_gaps": ["Whether SA should get role directly or via workload identity"]
   },
-  "consolidation_report": null
+  "consolidation_report": null,
+  "approval_request": null
 }
 ```
 
@@ -68,19 +70,20 @@ See `SKILL.md` for the schema definition and field rules.
     "cross_layer_impacts": ["Network policies differ per pattern"],
     "open_gaps": ["User preference for namespace isolation"]
   },
-  "consolidation_report": null
+  "consolidation_report": null,
+  "approval_request": null
 }
 ```
 
-## PENDING_APPROVAL (T3 plan ready)
+## REVIEW (plan ready for user feedback, no nonce)
 
 ```json:contract
 {
   "agent_status": {
-    "plan_status": "PENDING_APPROVAL",
+    "plan_status": "REVIEW",
     "agent_id": "ae5c8a3",
     "pending_steps": ["execute terraform apply", "verify state"],
-    "next_action": "Awaiting user approval for terraform apply"
+    "next_action": "Awaiting user feedback on terraform apply plan"
   },
   "evidence_report": {
     "patterns_checked": ["existing bucket naming in terraform/gcs/"],
@@ -91,7 +94,47 @@ See `SKILL.md` for the schema definition and field rules.
     "cross_layer_impacts": ["Flux ExternalSecret must reference new bucket"],
     "open_gaps": []
   },
-  "consolidation_report": null
+  "consolidation_report": null,
+  "approval_request": {
+    "operation": "Create GCS bucket qxo-events-dev",
+    "exact_content": "terraform apply -auto-approve",
+    "scope": "terraform/gcs/main.tf, GCS bucket in us-east4",
+    "risk_level": "MEDIUM",
+    "rollback": "terraform destroy -target=google_storage_bucket.events",
+    "verification": "gcloud storage buckets describe gs://qxo-events-dev"
+  }
+}
+```
+
+## AWAITING_APPROVAL (hook blocked T3 command, nonce present)
+
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "AWAITING_APPROVAL",
+    "agent_id": "af1d9b7",
+    "pending_steps": ["execute git push", "verify Flux reconciliation"],
+    "next_action": "Hook blocked git push -- awaiting nonce-based approval"
+  },
+  "evidence_report": {
+    "patterns_checked": ["git branch naming in flux/clusters/"],
+    "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
+    "commands_run": ["git diff HEAD -> 1 file changed", "git push origin main -> BLOCKED by hook"],
+    "key_outputs": ["Push blocked by mutative_verbs hook, nonce issued"],
+    "verbatim_outputs": ["APPROVAL REQUIRED. Present your plan to the user and include this approval code: NONCE:a1b2c3..."],
+    "cross_layer_impacts": ["Flux will reconcile HelmRelease on push"],
+    "open_gaps": []
+  },
+  "consolidation_report": null,
+  "approval_request": {
+    "operation": "Push HelmRelease changes to main",
+    "exact_content": "git push origin main",
+    "scope": "flux/apps/qxo-api/helmrelease.yaml",
+    "risk_level": "MEDIUM",
+    "rollback": "git revert HEAD && git push",
+    "verification": "flux get hr -n qxo -> reconciled",
+    "nonce": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+  }
 }
 ```
 
@@ -121,6 +164,7 @@ See `SKILL.md` for the schema definition and field rules.
     "conflicts": [],
     "open_gaps": ["HPA config in flux not verified -- gitops-operator should check"],
     "next_best_agent": "gitops-operator"
-  }
+  },
+  "approval_request": null
 }
 ```

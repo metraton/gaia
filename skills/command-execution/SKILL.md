@@ -9,79 +9,56 @@ metadata:
 # Command Execution
 
 ```
+ONE COMMAND. ONE RESULT. ONE EXIT CODE.
 NO PIPES. NO CHAINS. NO REDIRECTS.
-One command. One result. One exit code.
 ```
 
 ## Mental Model
 
-Every command you run is **atomic and self-contained**: inputs via flags, output to stdout, one exit code. You never pipe to reshape output -- use the CLI's own `--format` and `--filter` flags. You never redirect to files -- use the Write tool. You never chain -- run one command, confirm it succeeded, then run the next. When you reach for a pipe, you have not looked for the flag yet.
+When you reach for a pipe, you have not looked for the flag yet.
+CLIs have `--format`, `--filter`, `--limit` flags that do what pipes
+do — without hiding exit codes or triggering extra permission prompts.
 
-## Rule 1: No Pipes
+When you want to chain with `&&`, stop. Run one command, verify the
+exit code, then run the next. Two verified commands beat one fragile chain.
 
-The CLI already has the flag you are looking for. Pipes hide exit codes, split the atomic contract, and trigger extra permission prompts. For unbounded outputs, use native limit flags (`--limit=50`, `--freshness=1h`) -- never pipe to `head`.
+For file I/O, always use Claude Code tools over Bash:
 
-## Rule 2: One Command Per Step
+| Bash | Claude Code tool |
+|---|---|
+| `cat`, `head`, `tail` | Read |
+| `echo >`, heredocs | Write |
+| `sed -i`, `awk` | Edit |
+| `grep -r`, `rg` | Grep |
+| `find` | Glob |
 
-Chaining with `&&` or `;` breaks atomicity: you lose exit-code isolation and risk interactive prompts mid-chain blocking Claude Code.
+## Rules
 
-## Rule 3: Use Claude Code Tools Over Bash
+1. **No pipes** — find the CLI's native flag first.
+2. **One command per step** — no `&&` or `;`.
+3. **Tools over Bash** — for file I/O, always.
+4. **Absolute paths** — working directory is not reliable.
+5. **Quote variables** — always `"${VAR}"`.
 
-File I/O belongs to the tool layer, not the shell.
+## Traps
 
-| Instead of | Use |
-|------------|-----|
-| `cat`, `head`, `tail` | Read tool |
-| `echo >`, heredocs | Write tool |
-| `sed -i`, `awk` | Edit tool |
-| `grep -r`, `rg` | Grep tool |
-| `find` | Glob tool |
+| If you're thinking... | The reality is... |
+|---|---|
+| "I'll pipe to grep/awk/jq to filter" | Find `--filter` or `--format` flag |
+| "I'll chain with && for efficiency" | Run separately, verify each exit code |
+| "Let me cat/head this file" | Use the Read tool |
+| "Let me cd first, then run" | Use absolute path or `-chdir` |
+| "I need jq to parse JSON" | Use `--format json` at source |
+| "A heredoc is cleanest for multi-line" | Use Write tool. Heredocs fail in batch. |
+| "This pipe is read-only, it's safe" | Pipes still hide exit codes |
 
-**Never use heredocs** -- they fail in batch contexts. Exception: `git commit -m "$(cat <<'EOF' ...)"`.
-
-## Rule 4: Absolute Paths
-
-The working directory is not reliable across tool calls. Use absolute paths so each command is fully self-describing.
-
-## Rule 5: Quote Variables
-
-Always `"${VAR}"` to prevent word-splitting.
-
-## Red Flags -- Stop Before Executing
-
-If you are forming any of these thoughts, stop. You are about to violate the atomic contract:
-
-- *"I'll use `|` to limit output"* -- Rule 1: use `--limit` or `--format`
-- *"I'll pipe to `grep`/`awk`/`jq`"* -- Rule 1: use `--filter` and `--format`
-- *"I'll chain with `&&`"* -- Rule 2: run separately, verify each exit code
-- *"Let me save with `>`"* -- Rule 3: use the Write tool
-- *"Let me `cat` this file"* -- Rule 3: use the Read tool
-- *"Let me `cd` first"* -- Rule 4: use absolute path with `-chdir` or equivalent
-- *"No spaces in this variable"* -- Rule 5: always quote
-- *"I'll cd to the worktree and then run the command"* -- Rule 2: run `cd` as a separate Bash call, then run the command in the next call. Never chain with `&&`.
-
-## Rationalizations
-
-| Excuse | Reality |
-|--------|---------|
-| "I need to pipe for formatting" | Use `--format`, `--output`, or `-o` flags. The CLI already formats. |
-| "I need to chain commands for efficiency" | Two fast commands with verified exit codes beat one fragile chain. |
-| "This read-only command is safe to pipe" | Pipes still hide exit codes and trigger extra permission prompts. Safe does not mean atomic. |
-| "I'll just use grep instead of the Grep tool" | Rule 3: use the Grep tool. Bash grep loses structured output and wastes a permission prompt. |
-| "I need jq to parse JSON output" | Use `--format json` or `--output-format` at the source. If unavoidable, run jq as a separate command on a saved file. |
-| "A heredoc is the cleanest way to pass multi-line input" | Rule 3: use the Write tool. Heredocs fail in batch contexts. |
-| "I'll cd first, then run the command" | Rule 4: use absolute paths. Rule 2: never chain cd with &&. |
+**Exception:** `git commit -m "$(cat <<'EOF' ...)"` heredocs are allowed.
 
 ## Anti-Patterns
 
-- Piping `kubectl get` to `grep` instead of using `-l` label selectors or `--field-selector`
-- Chaining `cd dir && terraform plan` instead of `terraform -chdir=/absolute/path plan`
-- Using `cat file | wc -l` instead of reading the file with the Read tool
-- Running `echo "content" > file` instead of using the Write tool
-- Using `find . -name "*.tf"` instead of the Glob tool
+- `kubectl get pods | grep Error` → use `-l` label selectors or `--field-selector`
+- `cd dir && terraform plan` → `terraform -chdir=/absolute/path plan`
+- `cat file | wc -l` → Read tool
 
-## Hook Enforcement
-
-The `cloud_pipe_validator.py` hook module also enforces the no-pipes rule at runtime, rejecting commands that contain pipe operators.
-
-For mutation-specific rules (dry-run before apply, files over inline data), timeout tables, and cloud CLI examples, see `reference.md` in this skill directory.
+The `cloud_pipe_validator.py` hook enforces no-pipes at runtime.
+For mutation rules and cloud CLI examples, see `reference.md`.

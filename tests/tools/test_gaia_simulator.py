@@ -1,5 +1,5 @@
 """
-Tests for the replay testing module.
+Tests for the gaia simulator testing module.
 
 Tests cover:
 1. LogExtractor: parsing hooks logs and audit JSONL
@@ -8,7 +8,7 @@ Tests cover:
 4. Regression detection: mocked hook returning different decisions
 5. CLI: argument parsing and wiring
 
-Run: python3 -m pytest tests/tools/test_replay.py -v
+Run: python3 -m pytest tests/tools/test_gaia_simulator.py -v
 """
 
 from __future__ import annotations
@@ -20,18 +20,18 @@ from pathlib import Path
 
 import pytest
 
-# Add the tools directory to sys.path so 'replay' package is importable
-# Pattern: tests/tools/test_replay.py -> tests/tools -> tests -> gaia-ops-plugin -> tools
+# Add the tools directory to sys.path so 'gaia_simulator' package is importable
+# Pattern: tests/tools/test_gaia_simulator.py -> tests/tools -> tests -> gaia-ops-plugin -> tools
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if TOOLS_DIR.is_symlink():
     TOOLS_DIR = TOOLS_DIR.resolve()
 sys.path.insert(0, str(TOOLS_DIR))
 
 # Module under test
-from replay.cli import main as replay_cli_main  # noqa: E402
-from replay.extractor import LogExtractor, ReplayEvent  # noqa: E402
-from replay.runner import HookRunner, ReplayResult, _parse_decision_from_output, _classify_regression  # noqa: E402
-from replay.reporter import ReplayReporter  # noqa: E402
+from gaia_simulator.cli import main as gaia_simulator_cli_main  # noqa: E402
+from gaia_simulator.extractor import LogExtractor, ReplayEvent  # noqa: E402
+from gaia_simulator.runner import HookRunner, ReplayResult, _parse_decision_from_output, _classify_regression  # noqa: E402
+from gaia_simulator.reporter import ReplayReporter  # noqa: E402
 
 
 # ============================================================================
@@ -779,11 +779,11 @@ class TestIntegration:
 # ============================================================================
 
 
-class TestReplayCli:
+class TestGaiaSimulatorCli:
     """Tests for CLI output behavior."""
 
     def test_extract_only_json_keeps_stdout_machine_readable(self, logs_dir: Path, hooks_dir: Path, capsys):
-        exit_code = replay_cli_main([
+        exit_code = gaia_simulator_cli_main([
             "--logs-dir", str(logs_dir),
             "--hooks-dir", str(hooks_dir),
             "--extract-only",
@@ -798,7 +798,7 @@ class TestReplayCli:
         assert "Extracting events from:" in captured.err
 
     def test_json_report_writes_progress_to_stderr(self, logs_dir: Path, hooks_dir: Path, capsys):
-        exit_code = replay_cli_main([
+        exit_code = gaia_simulator_cli_main([
             "--logs-dir", str(logs_dir),
             "--hooks-dir", str(hooks_dir),
             "--report-format", "json",

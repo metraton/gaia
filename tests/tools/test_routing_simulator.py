@@ -17,20 +17,20 @@ from pathlib import Path
 
 import pytest
 
-# Add the tools directory to sys.path so replay package is importable
+# Add the tools directory to sys.path so gaia_simulator package is importable
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if TOOLS_DIR.is_symlink():
     TOOLS_DIR = TOOLS_DIR.resolve()
 sys.path.insert(0, str(TOOLS_DIR))
 
 # Module under test
-from replay.routing_simulator import (  # noqa: E402
+from gaia_simulator.routing_simulator import (  # noqa: E402
     RoutingResult,
     RoutingSimulator,
     _parse_frontmatter,
     format_routing_result,
 )
-from replay.skills_mapper import (  # noqa: E402
+from gaia_simulator.skills_mapper import (  # noqa: E402
     AgentProfile,
     SkillMapping,
     SkillsMapper,

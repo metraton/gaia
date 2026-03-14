@@ -225,6 +225,33 @@ class SessionSimulator:
         )
         return result
 
+    def resume_agent(self, agent_id: str, prompt: str) -> Dict[str, Any]:
+        """Invoke pre_tool_use.py with a Task resume event.
+
+        Used to simulate the orchestrator resuming an agent, e.g. with an
+        APPROVE:<nonce> token after a T3 command was blocked.
+
+        Args:
+            agent_id: The agent ID to resume (e.g. "a1f2c3d4e5").
+            prompt: The resume prompt (e.g. "APPROVE:<32-char-hex>").
+
+        Returns: dict with exit_code, stdout_json, stdout_raw, stderr.
+        """
+        payload = {
+            "tool_name": "Agent",
+            "tool_input": {
+                "prompt": prompt,
+                "resume": agent_id,
+            },
+            "hook_event_name": "PreToolUse",
+            "session_id": self.session_id,
+        }
+        result = self._run_hook("pre_tool_use.py", payload)
+        self._events.append(
+            {"type": "resume_agent", "agent_id": agent_id, "prompt": prompt, "result": result}
+        )
+        return result
+
     def after_bash(
         self, command: str, output: str, exit_code: int
     ) -> Dict[str, Any]:
@@ -342,6 +369,7 @@ def _build_valid_agent_output(
                 "open_gaps": ["none"],
             },
             "consolidation_report": None,
+            "approval_request": None,
         },
         indent=2,
     )
@@ -565,11 +593,126 @@ class TestScenario4IncompleteContract:
 
 
 # ============================================================================
-# Scenario 5: Session events persist between tool calls
+# Scenario 5: Invalid plan_status in contract -- selective enforcement
 # ============================================================================
 
 
-class TestScenario5SessionEventsPersist:
+class TestScenario5InvalidPlanStatus:
+    """Agent response with json:contract but invalid plan_status should be rejected (exit=2)."""
+
+    def test_invalid_plan_status_rejected(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0
+
+        # Invoke agent
+        result = sim.invoke_agent("devops-developer", "refactoriza el modulo X")
+        assert result["exit_code"] == 0
+
+        # Agent responds with a json:contract block but INVALID plan_status
+        agent_output = _build_valid_agent_output(
+            plan_status="RANDOM_STATUS",
+            agent_id="a5e6f7",
+            summary="Refactoring done.",
+        )
+        result = sim.agent_responds("devops-developer", "a5e6f7", agent_output)
+        assert result["exit_code"] == 2, (
+            f"Invalid plan_status should trigger rejection (exit=2): exit={result['exit_code']}, "
+            f"stderr: {result['stderr']}"
+        )
+
+        stop_data = result["stdout_json"]
+        assert stop_data is not None, (
+            f"SubagentStop returned no JSON. stdout: {result['stdout_raw']}"
+        )
+
+        # contract_rejected should be True
+        assert stop_data.get("contract_rejected") is True, (
+            f"Expected contract_rejected=True for invalid plan_status. Got: {stop_data}"
+        )
+
+        # Rejection reason should mention the invalid status
+        reason = stop_data.get("contract_rejection_reason", "")
+        assert "RANDOM_STATUS" in reason, (
+            f"Expected rejection reason to mention 'RANDOM_STATUS'. Got: {reason}"
+        )
+
+
+# ============================================================================
+# Scenario 6: Valid plan_status but empty evidence -- advisory only
+# ============================================================================
+
+
+class TestScenario6EmptyEvidenceAdvisory:
+    """Agent response with valid plan_status but empty evidence fields should NOT be blocked."""
+
+    def test_empty_evidence_allowed(self, tmp_path):
+        sim = SessionSimulator(tmp_path)
+
+        # Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0
+
+        # Invoke agent
+        result = sim.invoke_agent("cloud-troubleshooter", "diagnostica el pod")
+        assert result["exit_code"] == 0
+
+        # Build agent output with valid plan_status but ALL evidence fields empty
+        bt = chr(96)
+        contract_block = json.dumps(
+            {
+                "agent_status": {
+                    "plan_status": "COMPLETE",
+                    "agent_id": "ab12cd",
+                    "pending_steps": [],
+                    "next_action": "done",
+                },
+                "evidence_report": {
+                    "patterns_checked": [],
+                    "files_checked": [],
+                    "commands_run": [],
+                    "key_outputs": [],
+                    "verbatim_outputs": [],
+                    "cross_layer_impacts": [],
+                    "open_gaps": [],
+                },
+                "consolidation_report": None,
+                "approval_request": None,
+            },
+            indent=2,
+        )
+        agent_output = (
+            f"Diagnostico completado.\n\n"
+            f"{bt}{bt}{bt}json:contract\n"
+            f"{contract_block}\n"
+            f"{bt}{bt}{bt}\n\n"
+        )
+
+        result = sim.agent_responds("cloud-troubleshooter", "ab12cd", agent_output)
+        assert result["exit_code"] == 0, (
+            f"Empty evidence with valid plan_status should be advisory (exit=0): "
+            f"exit={result['exit_code']}, stderr: {result['stderr']}"
+        )
+
+        stop_data = result["stdout_json"]
+        assert stop_data is not None, (
+            f"SubagentStop returned no JSON. stdout: {result['stdout_raw']}"
+        )
+
+        # Should NOT have contract_rejected
+        assert stop_data.get("contract_rejected") is not True, (
+            f"Expected no contract rejection for empty evidence. Got: {stop_data}"
+        )
+
+
+# ============================================================================
+# Scenario 7: Session events persist between tool calls
+# ============================================================================
+
+
+class TestScenario7SessionEventsPersist:
     """Session events from tool calls should persist and be available to later agents."""
 
     def test_events_persist_across_calls(self, tmp_path):
@@ -690,3 +833,169 @@ class TestSessionSimulatorEdgeCases:
         }
         result = sim._run_hook("pre_tool_use.py", payload)
         assert result["exit_code"] == 0
+
+
+# ============================================================================
+# Scenario 8: Full T3 approval cycle -- block -> nonce -> approve -> execute
+# ============================================================================
+
+
+class TestScenario8FullApprovalCycle:
+    """Complete T3 approval lifecycle: block, extract nonce, activate, re-execute."""
+
+    def test_full_approval_cycle(self, tmp_path):
+        """Simulate the exact flow: T3 block -> nonce -> APPROVE:<nonce> -> command allowed.
+
+        Steps:
+        1. Start session and invoke an agent.
+        2. Agent tries a T3 bash command (git push origin main) -- hook blocks it with nonce.
+        3. Extract the 32-char hex nonce from the hook deny response.
+        4. Resume the agent with APPROVE:<nonce> in the prompt -- hook activates the pending approval.
+        5. Retry the SAME command -- hook finds the active grant and allows it (or asks via native dialog).
+        """
+        import re
+
+        sim = SessionSimulator(tmp_path)
+
+        # 1. Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0, (
+            f"SessionStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 2. Invoke gaia agent
+        result = sim.invoke_agent("gaia", "push changes to main branch")
+        assert result["exit_code"] == 0, (
+            f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 3. Agent tries a T3 command -- should be blocked with nonce
+        t3_command = "git push origin main"
+        result = sim.execute_bash(t3_command)
+        assert result["exit_code"] == 0, (
+            f"Expected exit 0 (corrective deny), got {result['exit_code']}. "
+            f"stderr: {result['stderr']}"
+        )
+        assert result["stdout_json"] is not None, (
+            f"Expected JSON response for T3 deny. stdout: {result['stdout_raw']}"
+        )
+        hook_output = result["stdout_json"].get("hookSpecificOutput", {})
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}. "
+            f"Full response: {result['stdout_json']}"
+        )
+
+        # 4. Extract the nonce from the deny reason
+        reason = hook_output.get("permissionDecisionReason", "")
+        nonce_match = re.search(r"APPROVE:([a-f0-9]{32})", reason)
+        assert nonce_match is not None, (
+            f"Could not find APPROVE:<32-char-hex> nonce in deny reason. "
+            f"Reason: {reason}"
+        )
+        nonce = nonce_match.group(1)
+
+        # Also verify the NONCE: token is present (for agent to include in AWAITING_APPROVAL output)
+        assert f"NONCE:{nonce}" in reason, (
+            f"Expected NONCE:{nonce} in deny reason for agent to present. "
+            f"Reason: {reason}"
+        )
+
+        # 5. Resume agent with APPROVE:<nonce> -- activates the pending approval
+        agent_id = "a1f2c3d4e5"
+        resume_prompt = f"APPROVE:{nonce}"
+        result = sim.resume_agent(agent_id, resume_prompt)
+        assert result["exit_code"] == 0, (
+            f"Resume with APPROVE:{nonce} should succeed (activate pending approval). "
+            f"exit={result['exit_code']}, stderr={result['stderr']}, "
+            f"stdout: {result['stdout_raw']}"
+        )
+
+        # 6. Retry the SAME T3 command -- should now be allowed via active grant
+        result = sim.execute_bash(t3_command)
+        assert result["exit_code"] == 0, (
+            f"Expected exit 0 after approval, got {result['exit_code']}. "
+            f"stderr: {result['stderr']}"
+        )
+
+        # The grant is unconfirmed on first use, so the hook returns "ask"
+        # (triggering Claude Code's native permission dialog as double-barrier).
+        # This is the expected behavior -- the command is NOT denied.
+        if result["stdout_json"] is not None:
+            hook_output = result["stdout_json"].get("hookSpecificOutput", {})
+            decision = hook_output.get("permissionDecision", "")
+            # Must be "ask" (native dialog) or "allow" -- never "deny"
+            assert decision in ("ask", "allow", ""), (
+                f"After approval, command should be 'ask' or 'allow', not '{decision}'. "
+                f"Full response: {result['stdout_json']}"
+            )
+            assert decision != "deny", (
+                f"Command was denied AFTER nonce approval. This is the bug this test guards against. "
+                f"Full response: {result['stdout_json']}"
+            )
+        # If stdout_json is None, the hook returned nothing (passthrough allow) -- also OK
+
+    def test_approval_cycle_with_terraform_apply(self, tmp_path):
+        """Same approval cycle but with terraform apply, validating semantic matching."""
+        import re
+
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        # Invoke agent
+        result = sim.invoke_agent("terraform-architect", "apply the plan")
+        assert result["exit_code"] == 0
+
+        # Try terraform apply -- blocked with nonce
+        t3_command = "terraform apply"
+        result = sim.execute_bash(t3_command)
+        assert result["exit_code"] == 0
+        hook_output = result["stdout_json"].get("hookSpecificOutput", {})
+        assert hook_output.get("permissionDecision") == "deny"
+
+        # Extract nonce
+        reason = hook_output.get("permissionDecisionReason", "")
+        nonce_match = re.search(r"APPROVE:([a-f0-9]{32})", reason)
+        assert nonce_match is not None, f"No nonce found in: {reason}"
+        nonce = nonce_match.group(1)
+
+        # Activate via resume
+        result = sim.resume_agent("a2b3c4d5e6", f"APPROVE:{nonce}")
+        assert result["exit_code"] == 0, (
+            f"Nonce activation failed: stderr={result['stderr']}, stdout={result['stdout_raw']}"
+        )
+
+        # Retry -- should be allowed (ask or allow)
+        result = sim.execute_bash(t3_command)
+        assert result["exit_code"] == 0
+        if result["stdout_json"] is not None:
+            decision = result["stdout_json"].get("hookSpecificOutput", {}).get(
+                "permissionDecision", ""
+            )
+            assert decision != "deny", (
+                f"terraform apply denied after approval: {result['stdout_json']}"
+            )
+
+    def test_nonce_cannot_be_reused(self, tmp_path):
+        """A nonce can only be activated once. Second activation should fail."""
+        import re
+
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        # Block a T3 command to get a nonce
+        result = sim.execute_bash("git push origin main")
+        reason = result["stdout_json"]["hookSpecificOutput"]["permissionDecisionReason"]
+        nonce = re.search(r"APPROVE:([a-f0-9]{32})", reason).group(1)
+
+        # First activation succeeds
+        result = sim.resume_agent("a1f2c3d4e5", f"APPROVE:{nonce}")
+        assert result["exit_code"] == 0, (
+            f"First activation should succeed. stderr={result['stderr']}"
+        )
+
+        # Second activation with same nonce should fail (pending file deleted)
+        result = sim.resume_agent("a1f2c3d4e5", f"APPROVE:{nonce}")
+        assert result["exit_code"] == 2, (
+            f"Second activation should fail (nonce already used). "
+            f"exit={result['exit_code']}, stdout={result['stdout_raw']}"
+        )

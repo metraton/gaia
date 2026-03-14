@@ -54,7 +54,7 @@ Conditional commands like `git branch` are safe for listing but T3 with mutative
 
 ## T3 Workflow
 
-For T3 operations, follow the state flow in `agent-protocol`: PLANNING -- PENDING_APPROVAL -- APPROVED_EXECUTING -- COMPLETE.
+For T3 operations, follow the state flow in `agent-protocol`: IN_PROGRESS -- REVIEW -- IN_PROGRESS -- COMPLETE (plan-first) or IN_PROGRESS -- AWAITING_APPROVAL -- IN_PROGRESS -- COMPLETE (hook-blocked).
 
 On-demand workflow skills (read from disk when needed):
 - `.claude/skills/approval/SKILL.md` -- informed-consent plan quality and approval presentation

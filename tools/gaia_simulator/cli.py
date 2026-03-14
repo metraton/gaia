@@ -1,19 +1,19 @@
-#\!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 CLI entry point for gaia-ops hook replay testing and routing analysis.
 
 Usage:
-    python3 tools/replay/cli.py                          # replay all logs
-    python3 tools/replay/cli.py --logs-dir /path/to/logs # custom log dir
-    python3 tools/replay/cli.py --date 2026-03-11        # specific date
-    python3 tools/replay/cli.py --hook pre_tool_use      # specific hook only
-    python3 tools/replay/cli.py --regressions-only       # show only failures
-    python3 tools/replay/cli.py --output results.json    # save results
-    python3 tools/replay/cli.py --extract-only           # extract without running
-    python3 tools/replay/cli.py --simulate "prompt"       # simulate routing
-    python3 tools/replay/cli.py --simulate-logs --date D  # simulate from logs
-    python3 tools/replay/cli.py --skills-map             # show skills map
-    python3 tools/replay/cli.py --agent-profiles         # show agent profiles
+    python3 tools/gaia_simulator/cli.py                          # replay all logs
+    python3 tools/gaia_simulator/cli.py --logs-dir /path/to/logs # custom log dir
+    python3 tools/gaia_simulator/cli.py --date 2026-03-11        # specific date
+    python3 tools/gaia_simulator/cli.py --hook pre_tool_use      # specific hook only
+    python3 tools/gaia_simulator/cli.py --regressions-only       # show only failures
+    python3 tools/gaia_simulator/cli.py --output results.json    # save results
+    python3 tools/gaia_simulator/cli.py --extract-only           # extract without running
+    python3 tools/gaia_simulator/cli.py --simulate "prompt"       # simulate routing
+    python3 tools/gaia_simulator/cli.py --simulate-logs --date D  # simulate from logs
+    python3 tools/gaia_simulator/cli.py --skills-map             # show skills map
+    python3 tools/gaia_simulator/cli.py --agent-profiles         # show agent profiles
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def _find_defaults() -> tuple[Path, Path, Path]:
     Returns:
         (hooks_dir, logs_dir, plugin_root) tuple.
     """
-    # tools/replay/cli.py -> tools/replay -> tools -> plugin_root
+    # tools/gaia_simulator/cli.py -> tools/gaia_simulator -> tools -> plugin_root
     cli_path = Path(__file__).resolve()
     plugin_root = cli_path.parent.parent.parent
     hooks_dir = plugin_root / "hooks"
@@ -45,7 +45,7 @@ def _find_defaults() -> tuple[Path, Path, Path]:
 
 def _handle_simulate(prompt: str, plugin_root: Path) -> int:
     """Handle --simulate command: simulate routing for a prompt."""
-    from replay.routing_simulator import RoutingSimulator, format_routing_result
+    from gaia_simulator.routing_simulator import RoutingSimulator, format_routing_result
 
     config_dir = plugin_root / "config"
     agents_dir = plugin_root / "agents"
@@ -57,8 +57,8 @@ def _handle_simulate(prompt: str, plugin_root: Path) -> int:
 
 def _handle_simulate_logs(logs_dir: Path, date_filter: str, plugin_root: Path) -> int:
     """Handle --simulate-logs command: simulate routing for log events."""
-    from replay.extractor import LogExtractor
-    from replay.routing_simulator import RoutingSimulator, format_routing_result
+    from gaia_simulator.extractor import LogExtractor
+    from gaia_simulator.routing_simulator import RoutingSimulator, format_routing_result
 
     config_dir = plugin_root / "config"
     agents_dir = plugin_root / "agents"
@@ -96,7 +96,7 @@ def _handle_simulate_logs(logs_dir: Path, date_filter: str, plugin_root: Path) -
 
 def _handle_skills_map(plugin_root: Path) -> int:
     """Handle --skills-map command: show skills mapping report."""
-    from replay.skills_mapper import SkillsMapper
+    from gaia_simulator.skills_mapper import SkillsMapper
 
     mapper = SkillsMapper(
         agents_dir=plugin_root / "agents",
@@ -109,7 +109,7 @@ def _handle_skills_map(plugin_root: Path) -> int:
 
 def _handle_agent_profiles(plugin_root: Path) -> int:
     """Handle --agent-profiles command: show agent profiles."""
-    from replay.skills_mapper import SkillsMapper
+    from gaia_simulator.skills_mapper import SkillsMapper
 
     mapper = SkillsMapper(
         agents_dir=plugin_root / "agents",
@@ -141,7 +141,7 @@ def _handle_agent_profiles(plugin_root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Main entry point for the replay CLI.
+    """Main entry point for the gaia simulator CLI.
 
     Args:
         argv: Command-line arguments (defaults to sys.argv[1:]).
@@ -268,9 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # Lazy module loading to keep CLI fast for --help
-    from replay.extractor import LogExtractor
-    from replay.runner import HookRunner
-    from replay.reporter import ReplayReporter
+    from gaia_simulator.extractor import LogExtractor
+    from gaia_simulator.runner import HookRunner
+    from gaia_simulator.reporter import ReplayReporter
 
     # Step 1: Extract events
     extractor = LogExtractor()

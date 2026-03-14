@@ -766,6 +766,8 @@ class ClaudeCodeAdapter(HookAdapter):
             parse_contract,
             requires_consolidation_report,
             validate as validate_contract,
+            validate_approval_request,
+            validate_awaiting_approval_has_nonce,
             validate_verbatim_outputs_consistency,
         )
         from modules.agents.response_contract import (
@@ -922,6 +924,34 @@ class ClaudeCodeAdapter(HookAdapter):
                     "Verbatim outputs consistency warning for %s: %s",
                     agent_type, verbatim_check.get("message", ""),
                 )
+
+            # ----------------------------------------------------------
+            # False pending-approval detection
+            # Advisory only -- adds to anomalies but never blocks.
+            # ----------------------------------------------------------
+            _plan_status = ""
+            if parsed_contract and isinstance(parsed_contract.get("agent_status"), dict):
+                _plan_status = str(parsed_contract["agent_status"].get("plan_status", ""))
+            false_pa_check = validate_awaiting_approval_has_nonce(agent_output, _plan_status)
+            if false_pa_check:
+                anomalies.append(false_pa_check)
+                logger.info(
+                    "AWAITING_APPROVAL without nonce for %s: %s",
+                    agent_type, false_pa_check.get("detail", ""),
+                )
+
+            # ----------------------------------------------------------
+            # Approval request validation
+            # Advisory only -- adds to anomalies but never blocks.
+            # ----------------------------------------------------------
+            if parsed_contract is not None:
+                approval_check = validate_approval_request(parsed_contract, _plan_status)
+                if approval_check:
+                    anomalies.append(approval_check)
+                    logger.info(
+                        "Approval request validation for %s: %s",
+                        agent_type, approval_check.get("detail", ""),
+                    )
 
             # ----------------------------------------------------------
             # Option B: Selective enforcement for critical structural failures.

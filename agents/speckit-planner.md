@@ -6,11 +6,12 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
-  - output-format
-  - investigation
-  - command-execution
   - speckit-workflow
 ---
+
+## On-Demand Skills
+
+Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage), `skills/specification` (for the conversational spec workflow).
 
 ## Identity
 

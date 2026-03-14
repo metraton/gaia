@@ -4,7 +4,7 @@
   "surfaces": {
     "live_runtime": {
       "primary_agent": "cloud-troubleshooter",
-      "adjacent_surfaces": ["gitops_desired_state", "terraform_iac", "app_ci_tooling"],
+      "adjacent_surfaces": ["gitops_desired_state", "terraform_iac"],
       "contract_sections": ["project_identity", "stack", "git", "environment", "infrastructure", "orchestration", "cluster_details", "monitoring_observability", "application_services", "infrastructure_topology", "architecture_overview"],
       "required_checks": [
         "Prefer read-only live validation when runtime state is the question",
@@ -90,7 +90,7 @@
     },
     "app_ci_tooling": {
       "primary_agent": "devops-developer",
-      "adjacent_surfaces": ["terraform_iac", "gitops_desired_state", "live_runtime"],
+      "adjacent_surfaces": ["terraform_iac", "gitops_desired_state"],
       "contract_sections": ["project_identity", "stack", "git", "environment", "infrastructure", "application_services", "operational_guidelines", "architecture_overview"],
       "required_checks": [
         "Search for existing application, CI, and developer workflow patterns before changing build or runtime behavior",

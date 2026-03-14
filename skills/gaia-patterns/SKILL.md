@@ -27,7 +27,8 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 5. Post-Tool Hook — audit + metrics
    ↓
 6. Orchestrator processes `json:contract` block (plan_status)
-   ├─ PENDING_APPROVAL → get approval → resume
+   ├─ REVIEW → present plan, get feedback → resume
+   ├─ AWAITING_APPROVAL → present plan + nonce relay → resume
    ├─ NEEDS_INPUT → ask user → resume
    └─ COMPLETE → respond to user
 ```
@@ -37,7 +38,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 - **Binary Delegation:** The orchestrator always delegates. Its only tools are Agent and AskUserQuestion.
 - **Agent Instantiation:** identity (.md) + skills (injected) + project-context (contracts) + orchestrator request.
 - **Security Tiers:** T0 (read) → T1 (validate) → T2 (simulate) → T3 (realize, requires approval).
-- **Two-Phase T3:** PLANNING → PENDING_APPROVAL → APPROVED_EXECUTING → COMPLETE.
+- **T3 Flow:** IN_PROGRESS → REVIEW → IN_PROGRESS → COMPLETE (plan-first) or IN_PROGRESS → AWAITING_APPROVAL → IN_PROGRESS → COMPLETE (hook-blocked).
 - **Consolidation Loop:** for multi-surface work, Gaia may dispatch more than one round of agents, but only while gaps are actionable and evidence is still improving.
 - **Principle:** Skills teach process. Agents teach identity and domain knowledge. Runtime enforces deterministic contracts. Never duplicate.
 
@@ -68,7 +69,7 @@ The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritat
 3. **Scope** — CAN DO / CANNOT DO → DELEGATE table with agent names
 4. **Domain Errors** — domain-specific errors only
 
-**Canonical injected skills order:** `agent-protocol` → `security-tiers` → `output-format` → `investigation` → `command-execution` → domain skill → `context-updater` → `fast-queries`
+**Canonical injected skills order:** `agent-protocol` → `security-tiers` → `investigation` → `command-execution` → domain skill → `context-updater` → `fast-queries`
 
 **On-demand workflow skills:** `approval`, `execution`, `git-conventions`
 

@@ -13,8 +13,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from replay.extractor import ReplayEvent
-from replay.runner import ReplayResult
+from gaia_simulator.extractor import ReplayEvent
+from gaia_simulator.runner import ReplayResult
 
 
 class ReplayReporter:

@@ -6,12 +6,13 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
-  - output-format
-  - investigation
-  - command-execution
   - gaia-patterns
   - skill-creation
 ---
+
+## On-Demand Skills
+
+Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage).
 
 ## Identity
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from replay.extractor import ReplayEvent
+from gaia_simulator.extractor import ReplayEvent
 
 
 @dataclass(frozen=True)

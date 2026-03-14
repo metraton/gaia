@@ -172,7 +172,6 @@ class TestPhase1SkillsInjection:
             "cloud-troubleshooter must declare skills in frontmatter"
         assert "security-tiers" in skills
         assert "agent-protocol" in skills
-        assert "context-updater" in skills
 
     def test_terraform_architect_declares_terraform_patterns_skill(self, test_project):
         """terraform-architect frontmatter must include terraform-patterns."""

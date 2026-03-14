@@ -1,6 +1,7 @@
 # Approval Plan Template
 
 Use this template when presenting a T3 plan for user approval.
+The fields below map directly to the `approval_request` object in your `json:contract` block.
 
 ```markdown
 ## Deployment Plan
@@ -16,7 +17,7 @@ Use this template when presenting a T3 plan for user approval.
 - [Resource]: [Description]
 
 **Resources to MODIFY:**
-- [Resource]: [What changes] (before → after)
+- [Resource]: [What changes] (before -> after)
 
 **Resources to DELETE:**
 - [Resource]: [Why deletion]
@@ -24,41 +25,28 @@ Use this template when presenting a T3 plan for user approval.
 ### Validation Results
 
 **Dry-run status:**
-- ✅ `[simulation command]` - [result summary]
+- `[simulation command]` - [result summary]
 
 **Dependencies verified:**
-- [Dependency]: Available ✓
+- [Dependency]: Available
 
-### Risk Assessment
+### approval_request fields
 
-**Risk Level:** [LOW | MEDIUM | HIGH | CRITICAL]
+These 6 fields MUST appear in the `approval_request` object of your `json:contract`:
 
-**Potential Risks:**
-1. [Risk]: [Impact]
-   - Mitigation: [How we handle it]
+| Field | Example value |
+|-------|---------------|
+| `operation` | `"apply Terraform changes to dev VPC"` |
+| `exact_content` | `"terraform -chdir=/infra/dev apply -auto-approve"` |
+| `scope` | `"infra/dev/vpc.tf, infra/dev/subnets.tf -- dev environment only"` |
+| `risk_level` | `"MEDIUM"` |
+| `rollback` | `"terraform -chdir=/infra/dev apply -target=module.vpc -var='cidr=10.0.0.0/16'"` |
+| `verification` | `"terraform -chdir=/infra/dev output vpc_id -- expect vpc-xxx"` |
 
-**Rollback Plan:**
-- If operation fails: [Rollback steps]
-- Recovery time estimate: [time]
-
-### Execution Steps
-
-When approved, will execute:
-1. [Step 1]
-2. [Step 2]
-3. [Step 3]
-
-### Verification Criteria
-
-After execution, these checks MUST pass before emitting COMPLETE:
-- `[read-only command] [args]` → [expected output or state]
-
-### Approval Required
-
-**Approval Code:** `NONCE:<hex from hook block response>`
-**Operation:** [what will be executed]
-**Environment:** [dev / staging / prod]
-**Risk Level:** [LOW / MEDIUM / HIGH / CRITICAL]
+For `AWAITING_APPROVAL`, also include:
+| Field | Example value |
+|-------|---------------|
+| `nonce` | `"a1b2c3d4e5f6..."` (hex from hook block response) |
 
 ### Files Affected
 

@@ -1,6 +1,6 @@
 ---
 name: orchestrator-approval
-description: Use when processing PENDING_APPROVAL from a subagent -- enforces showing values before asking for user consent
+description: Use when processing AWAITING_APPROVAL from a subagent -- enforces showing values before asking for user consent (not for REVIEW)
 metadata:
   user-invocable: false
   type: discipline
@@ -9,6 +9,8 @@ metadata:
 # Orchestrator Approval
 
 ```
+THIS SKILL HANDLES ONLY AWAITING_APPROVAL (hook-blocked T3 with nonce).
+REVIEW states are handled directly by the orchestrator -- this skill does not apply.
 NEVER RELAY APPROVE:<nonce> WITHOUT SHOWING THE USER
 (1) WHAT WILL HAPPEN, (2) EXACT CONTENT/COMMAND, (3) WHAT IT MODIFIES.
 ```
@@ -19,17 +21,22 @@ The orchestrator sits between the subagent and the user. The subagent presents a
 
 The agent-facing approval skill (`skills/approval/SKILL.md`) ensures the subagent builds a complete plan. This skill ensures the orchestrator presents that plan faithfully before asking for consent.
 
+**Scope:** This skill applies ONLY when a subagent emits `AWAITING_APPROVAL` (a hook blocked a T3 command and a nonce is present). When a subagent emits `REVIEW` (plan-first, no nonce), the orchestrator handles it directly by summarizing and asking the user -- no nonce relay is involved.
+
 ## Mandatory Presentation Block
 
-Every `PENDING_APPROVAL` presented to the user MUST include these fields:
+Every `AWAITING_APPROVAL` presented to the user MUST include these 5 fields.
+Read them from the `approval_request` object in the agent's `json:contract` block:
 
-| Field | Required | Content |
-|-------|----------|---------|
-| **OPERATION** | yes | What will happen (verb + target) |
-| **EXACT_CONTENT** | yes | The literal command, file content, or config values |
-| **SCOPE** | yes | What gets modified (files, resources, environments) |
-| **RISK_LEVEL** | yes | From the subagent's plan (LOW / MEDIUM / HIGH / CRITICAL) |
-| **ROLLBACK** | yes | How to undo if wrong |
+| Field | Source in `approval_request` | Content |
+|-------|------------------------------|---------|
+| **OPERATION** | `approval_request.operation` | What will happen (verb + target) |
+| **EXACT_CONTENT** | `approval_request.exact_content` | The literal command, file content, or config values |
+| **SCOPE** | `approval_request.scope` | What gets modified (files, resources, environments) |
+| **RISK_LEVEL** | `approval_request.risk_level` | LOW / MEDIUM / HIGH / CRITICAL |
+| **ROLLBACK** | `approval_request.rollback` | How to undo if wrong |
+
+The nonce comes from `approval_request.nonce` (present only for `AWAITING_APPROVAL`).
 
 Present these fields, then use AskUserQuestion with labeled options: **Approve / Modify / Reject**.
 
@@ -48,11 +55,11 @@ If the user approves but no nonce exists yet, store that as intent only. Resume 
 When a nonce arrives, compare the blocked command's scope to what the user originally approved. If the command expands scope, changes operation, or targets something materially different -- present the new scope and ask again.
 
 **5. Fresh presentation every time.**
-Each `PENDING_APPROVAL` requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
+Each `AWAITING_APPROVAL` requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
 ## Nonce Relay Procedure
 
-1. Extract from the subagent's output: action summary, exact content/command, risk level, rollback plan, and nonce (if present in a `NONCE:<hex>` block).
+1. Extract the 5 mandatory fields from `approval_request` in the subagent's `json:contract` block. Extract the nonce from `approval_request.nonce` (present only for `AWAITING_APPROVAL`).
 2. Present to the user via AskUserQuestion with all mandatory fields populated. Options: **Approve / Modify / Reject**. Never include the nonce in user-facing text.
 3. On user approval:
    - If nonce exists: silently resume the subagent with `APPROVE:<nonce>`.
@@ -73,7 +80,7 @@ If you are forming any of these thoughts, stop. You are about to violate the pre
 - *"The subagent already showed the user the plan"* -- Show it again in the approval prompt.
 - *"It's just a git commit / small edit"* -- Size does not change the contract.
 - *"I'll show details if they ask"* -- Show BEFORE asking, not after.
-- *"The user already approved this type of operation"* -- Each PENDING_APPROVAL requires fresh presentation.
+- *"The user already approved this type of operation"* -- Each AWAITING_APPROVAL requires fresh presentation.
 - *"I can construct the nonce from the operation description"* -- Nonces are hex tokens from the hook, never synthesized.
 
 ## Anti-Patterns
@@ -81,5 +88,5 @@ If you are forming any of these thoughts, stop. You are about to violate the pre
 - **Summary-only approval** -- presenting "Deploy to dev?" without the exact command, files, or rollback.
 - **Stale nonce** -- relaying a nonce from a previous blocked command instead of the latest one.
 - **Nonce in user text** -- showing the hex token to the user. The nonce is a machine handshake, never user-facing.
-- **Implicit carry-forward** -- treating a prior approval as valid for a new PENDING_APPROVAL.
+- **Implicit carry-forward** -- treating a prior approval as valid for a new AWAITING_APPROVAL.
 - **Details on demand** -- offering to show the plan instead of showing it upfront.

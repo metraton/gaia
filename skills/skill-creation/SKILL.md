@@ -27,16 +27,16 @@ Type determines structure. Choose before writing anything.
 ## Step 2: Apply the type structure
 
 ### Discipline
-Iron Law → Mental Model → Rules → Red Flags → Rationalization table → Anti-patterns
+Iron Law → Mental Model → Rules → Traps → Anti-patterns
 
-Discipline skills enforce behavior agents will try to avoid. Every rationalization you don't name explicitly is a loophole.
+Discipline skills enforce behavior agents will try to avoid. Every trap you don't name explicitly is a loophole.
 
 **Checklist:**
 - [ ] Iron Law in a code block at the top — the rule, stated bluntly
 - [ ] Mental model explains WHY (not just what not to do)
-- [ ] Red Flags section — specific thoughts that mean STOP
-- [ ] Rationalization table — every known excuse + the reality
-- [ ] Anti-patterns with real examples
+- [ ] Rules — the concrete constraints
+- [ ] Traps table — "If you're thinking X → the reality is Y" (fuses red flags + rationalizations)
+- [ ] Anti-patterns with real code examples
 
 ### Technique
 Overview (core principle + when to use) → Process (numbered steps) → Anti-patterns

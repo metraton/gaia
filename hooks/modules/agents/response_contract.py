@@ -27,17 +27,16 @@ from .contract_validator import parse_contract
 
 
 VALID_PLAN_STATUSES = {
-    "INVESTIGATING",
-    "PLANNING",
-    "PENDING_APPROVAL",
-    "APPROVED_EXECUTING",
-    "FIXING",
+    "IN_PROGRESS",
+    "REVIEW",
+    "AWAITING_APPROVAL",
     "COMPLETE",
     "BLOCKED",
     "NEEDS_INPUT",
 }
 
-EVIDENCE_REQUIRED_PLAN_STATUSES = VALID_PLAN_STATUSES - {"APPROVED_EXECUTING"}
+# Evidence is required for ALL valid states -- no exclusions.
+EVIDENCE_REQUIRED_PLAN_STATUSES = VALID_PLAN_STATUSES
 
 EVIDENCE_FIELDS = [
     "PATTERNS_CHECKED",
@@ -63,6 +62,22 @@ CONSOLIDATION_FIELDS = [
 ]
 
 RECOMMENDED_ACTION_NONE = "none"
+
+# Statuses that should carry an approval_request block
+APPROVAL_REQUEST_STATUSES = {"REVIEW", "AWAITING_APPROVAL"}
+
+APPROVAL_REQUEST_REQUIRED_FIELDS = [
+    "operation",
+    "exact_content",
+    "scope",
+    "risk_level",
+    "rollback",
+    "verification",
+]
+
+VALID_RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+_NONCE_HEX_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 _AGENT_ID_PATTERN = re.compile(r"^a[0-9a-f]{5,}$")
 
@@ -95,6 +110,7 @@ class ResponseContractValidation:
     severity: str
     missing: List[str]
     invalid: List[str]
+    warnings: List[str]
     evidence_required: bool
     consolidation_required: bool
     recommended_action: str
@@ -296,6 +312,7 @@ def validate_response_contract(
             severity="hard",
             missing=missing,
             invalid=[],
+            warnings=[],
             evidence_required=False,
             consolidation_required=consolidation_required,
             recommended_action=recommended_action,
@@ -354,6 +371,28 @@ def validate_response_contract(
             if not consolidation.fields.get(field, []):
                 missing.append(field)
 
+    # ------------------------------------------------------------------
+    # Approval request validation (advisory -- warnings only, not blocking)
+    # ------------------------------------------------------------------
+    warnings: List[str] = []
+    if status.plan_status in APPROVAL_REQUEST_STATUSES:
+        approval_req = contract.get("approval_request")
+        if not approval_req or not isinstance(approval_req, dict):
+            warnings.append("APPROVAL_REQUEST_MISSING")
+        else:
+            for field in APPROVAL_REQUEST_REQUIRED_FIELDS:
+                if not approval_req.get(field):
+                    warnings.append(f"APPROVAL_REQUEST_FIELD_MISSING:{field}")
+            risk = str(approval_req.get("risk_level", "")).upper()
+            if risk and risk not in VALID_RISK_LEVELS:
+                warnings.append(f"APPROVAL_REQUEST_INVALID_RISK_LEVEL:{risk}")
+            if status.plan_status == "AWAITING_APPROVAL":
+                nonce_val = str(approval_req.get("nonce", ""))
+                if not nonce_val:
+                    warnings.append("APPROVAL_REQUEST_NONCE_MISSING")
+                elif not _NONCE_HEX_PATTERN.match(nonce_val):
+                    warnings.append(f"APPROVAL_REQUEST_NONCE_INVALID:{nonce_val}")
+
     valid = not missing and not invalid
     recommended_action = RECOMMENDED_ACTION_NONE if valid else "resume_same_agent_contract_repair"
     severity = "none" if valid else "hard"
@@ -367,6 +406,7 @@ def validate_response_contract(
         severity=severity,
         missing=missing,
         invalid=invalid,
+        warnings=warnings,
         evidence_required=evidence_required,
         consolidation_required=consolidation_required,
         recommended_action=recommended_action,
@@ -446,6 +486,9 @@ __all__ = [
     "VALID_OWNERSHIP_ASSESSMENTS",
     "CONSOLIDATION_FIELDS",
     "RECOMMENDED_ACTION_NONE",
+    "APPROVAL_REQUEST_STATUSES",
+    "APPROVAL_REQUEST_REQUIRED_FIELDS",
+    "VALID_RISK_LEVELS",
     "parse_agent_status",
     "parse_evidence_report",
     "parse_consolidation_report",

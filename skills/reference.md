@@ -12,7 +12,6 @@ tools: Tool1, Tool2, Tool3
 model: inherit
 skills:
   - security-tiers
-  - output-format
   - agent-protocol
   - context-updater
   - investigation

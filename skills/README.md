@@ -9,7 +9,7 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 ├── agent-protocol/        # json:contract format, search protocol, repair flow
 ├── security-tiers/        # T0-T3 classification
 │   └── reference.md
-├── output-format/         # Human-facing report structure, verification sections, and icons
+├── output-format/         # Deprecated — retained for reference only
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── command-execution/     # Defensive execution, safe shell patterns
 │   └── reference.md
@@ -42,7 +42,6 @@ Skills are assigned to agents via the `skills:` field in agent frontmatter (`.cl
 name: cloud-troubleshooter
 skills:
   - security-tiers
-  - output-format
   - agent-protocol
   - context-updater
   - fast-queries
@@ -55,18 +54,18 @@ skills:
 
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
-| cloud-troubleshooter | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | fast-queries |
-| terraform-architect | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | terraform-patterns, fast-queries |
-| gitops-operator | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | gitops-patterns, fast-queries |
-| devops-developer | agent-protocol, security-tiers, output-format, investigation, command-execution, context-updater | developer-patterns, fast-queries |
-| gaia | agent-protocol, security-tiers, output-format, investigation, command-execution | gaia-patterns, skill-creation |
-| speckit-planner | agent-protocol, security-tiers, output-format, investigation, command-execution | speckit-workflow |
+| cloud-troubleshooter | agent-protocol, security-tiers | fast-queries |
+| terraform-architect | agent-protocol, security-tiers, terraform-patterns | fast-queries |
+| gitops-operator | agent-protocol, security-tiers, gitops-patterns | fast-queries |
+| devops-developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
+| gaia | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
+| speckit-planner | agent-protocol, security-tiers, speckit-workflow | - |
 
 ## Skill Types
 
 | Type | Injection | Examples |
 |------|-----------|----------|
-| **Core** | Always via `skills:` | agent-protocol, security-tiers, output-format, investigation |
+| **Core** | Always via `skills:` | agent-protocol, security-tiers |
 | **Common** | Most agents via `skills:` | command-execution, context-updater |
 | **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns |
 | **Workflow** | On-demand (agent reads file) | approval, execution, git-conventions |

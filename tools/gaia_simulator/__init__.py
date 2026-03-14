@@ -1,8 +1,8 @@
 """
-Replay testing module for gaia-ops hooks.
+Gaia simulator module for gaia-ops hooks.
 
 Extracts real hook events from production logs, replays them against the current
-hooks, and detects regressions.
+hooks, and detects regressions. Also provides routing simulation and skills mapping.
 
 Modules:
     extractor          - Log parser: ReplayEvent + LogExtractor
@@ -13,11 +13,11 @@ Modules:
     cli                - Command-line entry point
 """
 
-from replay.extractor import LogExtractor, ReplayEvent
-from replay.runner import HookRunner, ReplayResult
-from replay.reporter import ReplayReporter
-from replay.routing_simulator import RoutingSimulator, RoutingResult
-from replay.skills_mapper import SkillsMapper, SkillMapping, AgentProfile
+from gaia_simulator.extractor import LogExtractor, ReplayEvent
+from gaia_simulator.runner import HookRunner, ReplayResult
+from gaia_simulator.reporter import ReplayReporter
+from gaia_simulator.routing_simulator import RoutingSimulator, RoutingResult
+from gaia_simulator.skills_mapper import SkillsMapper, SkillMapping, AgentProfile
 
 __all__ = [
     "LogExtractor",

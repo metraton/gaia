@@ -19,7 +19,7 @@ _TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
-from replay.routing_simulator import _parse_frontmatter
+from gaia_simulator.routing_simulator import _parse_frontmatter
 
 
 # ---------------------------------------------------------------------------
