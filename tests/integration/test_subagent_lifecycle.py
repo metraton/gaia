@@ -323,16 +323,22 @@ CONTEXT_UPDATE:
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "test-agent",
-  "pending_steps": [],
-  "next_action": "done",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
     "patterns_checked": [],
     "files_checked": [],
     "commands_run": [],
-    "key_outputs": []
-  }
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
 }
 ```
 """
@@ -354,10 +360,22 @@ No new data found.
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "test-agent",
-  "pending_steps": [],
-  "next_action": "done"
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
 }
 ```
 """
@@ -426,16 +444,22 @@ CONTEXT_UPDATE:
             "\n"
             "```json:contract\n"
             "{\n"
-            '  "plan_status": "COMPLETE",\n'
-            '  "agent_id": "cloud-troubleshooter",\n'
-            '  "pending_steps": [],\n'
-            '  "next_action": "done",\n'
-            '  "evidence": {\n'
+            '  "agent_status": {\n'
+            '    "plan_status": "COMPLETE",\n'
+            '    "agent_id": "cloud-troubleshooter",\n'
+            '    "pending_steps": [],\n'
+            '    "next_action": "done"\n'
+            "  },\n"
+            '  "evidence_report": {\n'
             '    "patterns_checked": [],\n'
             '    "files_checked": [],\n'
             '    "commands_run": [],\n'
-            '    "key_outputs": []\n'
-            "  }\n"
+            '    "key_outputs": [],\n'
+            '    "verbatim_outputs": [],\n'
+            '    "cross_layer_impacts": [],\n'
+            '    "open_gaps": []\n'
+            "  },\n"
+            '  "consolidation_report": null\n'
             "}\n"
             "```"
         )
@@ -557,16 +581,22 @@ CONTEXT_UPDATE:
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "test-agent",
-  "pending_steps": [],
-  "next_action": "done",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
     "patterns_checked": [],
     "files_checked": [],
     "commands_run": [],
-    "key_outputs": []
-  }
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
 }
 ```
 """
@@ -819,16 +849,22 @@ CONTEXT_UPDATE:
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "test-agent",
-  "pending_steps": [],
-  "next_action": "done",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
     "patterns_checked": [],
     "files_checked": [],
     "commands_run": [],
-    "key_outputs": []
-  }
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
 }
 ```
 """
@@ -899,10 +935,22 @@ Everything looks fine. No changes needed.
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "test-agent",
-  "pending_steps": [],
-  "next_action": "done"
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
 }
 ```
 """

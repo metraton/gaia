@@ -19,7 +19,7 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 - **Approval gates** for T3 operations
 - **Git commit validation** with Conventional Commits
 - **16 skills** - Injected procedural knowledge modules for agents
-- **1900+ tests** at 100% passing
+- **1800+ tests** at 100% passing
 
 ## Installation
 
@@ -109,7 +109,7 @@ node_modules/@jaguilar87/gaia-ops/
 ├── templates/           # Installation templates
 ├── speckit/             # Spec-Kit framework (scripts + templates)
 ├── bin/                 # CLI utilities (11 scripts)
-└── tests/               # Test suite (1900+ tests)
+└── tests/               # Test suite (1800+ tests)
 ```
 
 ## API

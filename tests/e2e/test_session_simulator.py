@@ -539,10 +539,11 @@ class TestScenario4IncompleteContract:
         assert result["exit_code"] == 0
 
         # Agent responds WITHOUT a contract block
+        # Missing contract triggers exit_code=2 (selective enforcement)
         agent_output = "Listo, refactorice todo."
         result = sim.agent_responds("devops-developer", "a9b8c7", agent_output)
-        assert result["exit_code"] == 0, (
-            f"SubagentStop should not crash: exit={result['exit_code']}, "
+        assert result["exit_code"] == 2, (
+            f"Missing contract should trigger rejection (exit=2): exit={result['exit_code']}, "
             f"stderr: {result['stderr']}"
         )
 

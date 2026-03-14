@@ -154,24 +154,31 @@ class PrePublishValidator {
   bumpVersion() {
     this.log(`Step 3: Bumping version (${this.versionBump})...`, 'info');
 
-    const parts = this.currentVersion.split('.');
+    // Handle prerelease versions (e.g., 4.4.0-beta.7)
+    const prereleaseMatch = this.currentVersion.match(/^(.+)-(.+)\.(\d+)$/);
+    if (prereleaseMatch) {
+      const [, baseVersion, prereleaseTag, prereleaseNum] = prereleaseMatch;
+      this.newVersion = `${baseVersion}-${prereleaseTag}.${parseInt(prereleaseNum) + 1}`;
+    } else {
+      const parts = this.currentVersion.split('.');
 
-    switch (this.versionBump) {
-      case 'major':
-        parts[0] = String(parseInt(parts[0]) + 1);
-        parts[1] = '0';
-        parts[2] = '0';
-        break;
-      case 'minor':
-        parts[1] = String(parseInt(parts[1]) + 1);
-        parts[2] = '0';
-        break;
-      case 'patch':
-      default:
-        parts[2] = String(parseInt(parts[2]) + 1);
+      switch (this.versionBump) {
+        case 'major':
+          parts[0] = String(parseInt(parts[0]) + 1);
+          parts[1] = '0';
+          parts[2] = '0';
+          break;
+        case 'minor':
+          parts[1] = String(parseInt(parts[1]) + 1);
+          parts[2] = '0';
+          break;
+        case 'patch':
+        default:
+          parts[2] = String(parseInt(parts[2]) + 1);
+      }
+
+      this.newVersion = parts.join('.');
     }
-
-    this.newVersion = parts.join('.');
 
     if (this.dryRun) {
       this.log(`[DRY RUN] Would bump version to: ${this.newVersion}`, 'info');

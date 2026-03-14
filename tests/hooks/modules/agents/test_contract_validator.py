@@ -1,5 +1,6 @@
-"""Tests for contract_validator context-usage anomaly detection."""
+"""Tests for contract_validator: context-usage anomaly detection and evidence field validation."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -7,7 +8,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "hooks"))
 
-from modules.agents.contract_validator import check_context_usage
+from modules.agents.contract_validator import (
+    _EVIDENCE_REQUIRED_FIELDS,
+    check_context_usage,
+    validate,
+)
 
 
 class TestCheckContextUsage:
@@ -31,6 +36,9 @@ class TestCheckContextUsage:
             "patterns_checked": ["terraform module structure"],
             "commands_run": [],
             "key_outputs": ["Module uses standard layout"],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
         }
         result = check_context_usage(project_knowledge, evidence_report)
         assert result["context_ignored"] is False
@@ -57,6 +65,9 @@ class TestCheckContextUsage:
             "patterns_checked": ["generic pattern"],
             "commands_run": ["ls /tmp"],
             "key_outputs": ["Nothing found"],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
         }
         result = check_context_usage(project_knowledge, evidence_report)
         assert result["context_ignored"] is True
@@ -79,6 +90,9 @@ class TestCheckContextUsage:
             "patterns_checked": [],
             "commands_run": [],
             "key_outputs": [],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
         }
         result = check_context_usage(project_knowledge, evidence_report)
         assert result["context_ignored"] is False
@@ -118,6 +132,9 @@ class TestCheckContextUsage:
                 {"command": "kubectl get pods --context oci-pos-dev-cluster"},
             ],
             "key_outputs": [],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
         }
         result = check_context_usage(project_knowledge, evidence_report)
         assert result["context_ignored"] is False
@@ -135,6 +152,9 @@ class TestCheckContextUsage:
             "patterns_checked": [],
             "commands_run": ["kubectl get pods -n cart-service-ns -> 3 pods running"],
             "key_outputs": [],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
         }
         result = check_context_usage(project_knowledge, evidence_report)
         assert result["context_ignored"] is False
@@ -151,7 +171,72 @@ class TestCheckContextUsage:
             "patterns_checked": [],
             "commands_run": [],
             "key_outputs": [],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
         }
         result = check_context_usage(project_knowledge, evidence_report)
         assert result["context_ignored"] is False
         assert result["anchors_found"] == 0
+
+
+class TestEvidenceRequiredFields:
+    """Tests that _EVIDENCE_REQUIRED_FIELDS aligns with response_contract.py."""
+
+    def test_all_seven_fields_present(self):
+        """_EVIDENCE_REQUIRED_FIELDS must contain all 7 evidence fields."""
+        expected = [
+            "PATTERNS_CHECKED", "FILES_CHECKED", "COMMANDS_RUN", "KEY_OUTPUTS",
+            "VERBATIM_OUTPUTS", "CROSS_LAYER_IMPACTS", "OPEN_GAPS",
+        ]
+        assert _EVIDENCE_REQUIRED_FIELDS == expected
+
+    def test_validate_reports_missing_new_fields(self):
+        """validate() flags missing VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS."""
+        # Contract with only the original 4 fields -- missing the 3 new ones
+        contract = {
+            "agent_status": {
+                "plan_status": "COMPLETE",
+                "agent_id": "a1f2c3d4",
+                "pending_steps": [],
+                "next_action": "done",
+            },
+            "evidence_report": {
+                "patterns_checked": ["some pattern"],
+                "files_checked": ["some/file.py"],
+                "commands_run": ["ls -> ok"],
+                "key_outputs": ["all good"],
+            },
+            "consolidation_report": None,
+        }
+        output = f"Some analysis.\n\n```json:contract\n{json.dumps(contract)}\n```"
+        result = validate(output, {})
+        assert not result.is_valid
+        assert "VERBATIM_OUTPUTS" in result.missing
+        assert "CROSS_LAYER_IMPACTS" in result.missing
+        assert "OPEN_GAPS" in result.missing
+
+    def test_validate_passes_with_all_seven_fields(self):
+        """validate() passes when all 7 evidence fields are provided."""
+        contract = {
+            "agent_status": {
+                "plan_status": "COMPLETE",
+                "agent_id": "a1f2c3d4",
+                "pending_steps": [],
+                "next_action": "done",
+            },
+            "evidence_report": {
+                "patterns_checked": ["some pattern"],
+                "files_checked": ["some/file.py"],
+                "commands_run": ["ls -> ok"],
+                "key_outputs": ["all good"],
+                "verbatim_outputs": ["output here"],
+                "cross_layer_impacts": ["none"],
+                "open_gaps": ["none"],
+            },
+            "consolidation_report": None,
+        }
+        output = f"Some analysis.\n\n```json:contract\n{json.dumps(contract)}\n```"
+        result = validate(output, {})
+        assert result.is_valid
+        assert result.missing == []

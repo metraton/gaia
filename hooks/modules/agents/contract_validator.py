@@ -32,6 +32,7 @@ _LITERAL_NONE_COMMANDS = {"none", "not run", "not executed", "n/a", "skipped"}
 # Required evidence fields
 _EVIDENCE_REQUIRED_FIELDS = [
     "PATTERNS_CHECKED", "FILES_CHECKED", "COMMANDS_RUN", "KEY_OUTPUTS",
+    "VERBATIM_OUTPUTS", "CROSS_LAYER_IMPACTS", "OPEN_GAPS",
 ]
 
 # Required consolidation fields
@@ -163,14 +164,17 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
             f'    "patterns_checked": [],\n'
             f'    "files_checked": [],\n'
             f'    "commands_run": [],\n'
-            f'    "key_outputs": []\n'
+            f'    "key_outputs": [],\n'
+            f'    "verbatim_outputs": [],\n'
+            f'    "cross_layer_impacts": [],\n'
+            f'    "open_gaps": []\n'
             f"  }},\n"
             f'  "consolidation_report": null\n'
             f"}}\n"
             f"```\n"
             f"\n"
             f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
-            f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs"
+            f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps"
         )
         return ValidationResult(
             is_valid=False,
@@ -227,14 +231,17 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
         f'    "patterns_checked": [],\n'
         f'    "files_checked": [],\n'
         f'    "commands_run": [],\n'
-        f'    "key_outputs": []\n'
+        f'    "key_outputs": [],\n'
+        f'    "verbatim_outputs": [],\n'
+        f'    "cross_layer_impacts": [],\n'
+        f'    "open_gaps": []\n'
         f"  }},\n"
         f'  "consolidation_report": null\n'
         f"}}\n"
         f"```\n"
         f"\n"
         f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
-        f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs"
+        f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps"
     )
     return ValidationResult(
         is_valid=False,
@@ -456,6 +463,104 @@ def check_context_usage(
         "anchors_found": len(anchors),
         "anchors_in_evidence": len(matched),
         "overlap": sorted(matched),
+    }
+
+
+# ============================================================================
+# Cross-field validation: verbatim_outputs consistency (Option D)
+# ============================================================================
+
+_VERBATIM_PLACEHOLDER_PATTERNS = re.compile(
+    r"^(N/?A|none|no\s+output|no\s+output\s+captured|not\s+applicable|"
+    r"no\s+commands?\s+run|no\s+verbatim\s+output|n/a|\[\]|-|"
+    r"no\s+output\s+to\s+capture|not\s+available)\.?$",
+    re.IGNORECASE,
+)
+
+
+def _is_real_command(entry: str) -> bool:
+    """Return True if the commands_run entry represents a real executed command."""
+    if not entry or not entry.strip():
+        return False
+    normalized = entry.strip().lower()
+    if normalized in _LITERAL_NONE_COMMANDS:
+        return False
+    if _NOT_RUN_INDICATORS.search(normalized):
+        return False
+    return True
+
+
+def _is_placeholder_output(entry: str) -> bool:
+    """Return True if the verbatim_outputs entry is a placeholder, not real output."""
+    if not entry or not entry.strip():
+        return True
+    return bool(_VERBATIM_PLACEHOLDER_PATTERNS.match(entry.strip()))
+
+
+def validate_verbatim_outputs_consistency(
+    parsed_contract: Optional[dict],
+) -> Optional[Dict[str, Any]]:
+    """Cross-field validation: commands_run vs verbatim_outputs.
+
+    If commands_run has 1+ real entries, verbatim_outputs must have at least 1
+    entry that is NOT a placeholder. Returns an anomaly dict if the check fails,
+    None if it passes or does not apply.
+
+    This is advisory only -- it should be logged but never block.
+    """
+    if parsed_contract is None:
+        return None
+
+    evidence = parsed_contract.get("evidence_report")
+    if not evidence or not isinstance(evidence, dict):
+        return None
+
+    commands_run = evidence.get("commands_run", [])
+    if not isinstance(commands_run, list):
+        return None
+
+    # Count real commands
+    real_commands = []
+    for entry in commands_run:
+        if isinstance(entry, dict):
+            cmd = entry.get("command", entry.get("cmd", ""))
+        elif isinstance(entry, str):
+            cmd = entry
+        else:
+            continue
+        if _is_real_command(cmd):
+            real_commands.append(cmd)
+
+    if not real_commands:
+        return None  # No real commands -- check does not apply
+
+    # Check verbatim_outputs for at least 1 non-placeholder entry
+    verbatim_outputs = evidence.get("verbatim_outputs", [])
+    if not isinstance(verbatim_outputs, list):
+        verbatim_outputs = []
+
+    has_real_output = False
+    for entry in verbatim_outputs:
+        text = ""
+        if isinstance(entry, str):
+            text = entry
+        elif isinstance(entry, dict):
+            text = entry.get("output", entry.get("content", str(entry)))
+        if text and not _is_placeholder_output(text):
+            has_real_output = True
+            break
+
+    if has_real_output:
+        return None  # Passes -- real commands have backing output
+
+    return {
+        "type": "verbatim_outputs_missing",
+        "severity": "warning",
+        "message": (
+            f"Agent ran {len(real_commands)} command(s) but verbatim_outputs "
+            f"contains no real output (only placeholders or empty). "
+            f"Commands: {', '.join(c[:60] for c in real_commands[:3])}"
+        ),
     }
 
 

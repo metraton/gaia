@@ -598,10 +598,22 @@ class TestLLMRealisticOutput:
             "```\n\n"
             "```json:contract\n"
             "{\n"
-            '  "plan_status": "COMPLETE",\n'
-            '  "agent_id": "cloud-troubleshooter",\n'
-            '  "pending_steps": [],\n'
-            '  "next_action": "done"\n'
+            '  "agent_status": {\n'
+            '    "plan_status": "COMPLETE",\n'
+            '    "agent_id": "cloud-troubleshooter",\n'
+            '    "pending_steps": [],\n'
+            '    "next_action": "done"\n'
+            "  },\n"
+            '  "evidence_report": {\n'
+            '    "patterns_checked": [],\n'
+            '    "files_checked": [],\n'
+            '    "commands_run": [],\n'
+            '    "key_outputs": [],\n'
+            '    "verbatim_outputs": [],\n'
+            '    "cross_layer_impacts": [],\n'
+            '    "open_gaps": []\n'
+            "  },\n"
+            '  "consolidation_report": null\n'
             "}\n"
             "```\n"
         )

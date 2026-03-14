@@ -151,12 +151,30 @@ async function checkProjectContext() {
     const issues = [];
 
     if (!data.metadata) issues.push('Missing metadata section');
-    if (!data.paths) issues.push('Missing paths section');
     if (!data.sections) issues.push('Missing sections');
 
+    // Detect schema version: v2.0 uses metadata.version, v1.0 does not
+    const isV2 = data.metadata?.version === '2.0' || data.metadata?.created_by === 'gaia-scan';
+
+    // Check paths: v2.0 uses sections.infrastructure.paths, v1.0 uses top-level paths
+    const hasPaths = isV2
+      ? !!data.sections?.infrastructure?.paths
+      : !!data.paths;
+    if (!hasPaths) issues.push('Missing paths section');
+
+    // Check cloud provider: v2.0 in sections.infrastructure.cloud_providers, v1.0 in metadata
     if (data.metadata) {
-      if (!data.metadata.cloud_provider) issues.push('No cloud provider set');
-      if (!data.metadata.primary_region) issues.push('No region set');
+      const cloudProvider = isV2
+        ? data.sections?.infrastructure?.cloud_providers?.[0]?.name
+        : data.metadata.cloud_provider;
+      if (!cloudProvider) issues.push('No cloud provider set');
+
+      // Check region: v2.0 in terraform_infrastructure, v1.0 in metadata
+      const region = isV2
+        ? data.sections?.terraform_infrastructure?.provider_credentials?.gcp?.region
+        : data.metadata.primary_region;
+      // Region is optional in v2.0 (not all providers use gcp credentials)
+      if (!isV2 && !region) issues.push('No region set');
     }
 
     if (data.sections) {
@@ -169,7 +187,9 @@ async function checkProjectContext() {
     }
 
     const sectionCount = Object.keys(data.sections).length;
-    const cloud = data.metadata.cloud_provider?.toUpperCase() || '?';
+    const cloud = isV2
+      ? (data.sections?.infrastructure?.cloud_providers?.[0]?.name?.toUpperCase() || '?')
+      : (data.metadata.cloud_provider?.toUpperCase() || '?');
     return { name: 'project-context', ok: true, detail: `${sectionCount} sections, ${cloud}` };
   } catch {
     return { name: 'project-context', ok: false, detail: 'Invalid JSON', fix: 'Regenerate with /speckit.init' };
@@ -282,7 +302,8 @@ async function checkProjectDirs() {
 
   try {
     const data = JSON.parse(await fs.readFile(contextPath, 'utf-8'));
-    const paths = data.paths || {};
+    // v2.0 stores paths in sections.infrastructure.paths; v1.0 uses top-level paths
+    const paths = data.sections?.infrastructure?.paths || data.paths || {};
     const issues = [];
 
     for (const [key, dirPath] of Object.entries(paths)) {
@@ -352,7 +373,8 @@ async function autoFix() {
   if (existsSync(contextPath)) {
     try {
       const data = JSON.parse(await fs.readFile(contextPath, 'utf-8'));
-      for (const dirPath of Object.values(data.paths || {})) {
+      const paths = data.sections?.infrastructure?.paths || data.paths || {};
+      for (const dirPath of Object.values(paths)) {
         const abs = join(CWD, dirPath);
         if (!existsSync(abs)) {
           await fs.mkdir(abs, { recursive: true });

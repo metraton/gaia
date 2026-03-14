@@ -766,6 +766,7 @@ class ClaudeCodeAdapter(HookAdapter):
             parse_contract,
             requires_consolidation_report,
             validate as validate_contract,
+            validate_verbatim_outputs_consistency,
         )
         from modules.agents.response_contract import (
             save_validation_result,
@@ -910,6 +911,58 @@ class ClaudeCodeAdapter(HookAdapter):
                 except Exception:
                     contract_attempts = 0
 
+            # ----------------------------------------------------------
+            # Option D: Cross-field validation for verbatim_outputs
+            # Advisory only -- adds to anomalies but never blocks.
+            # ----------------------------------------------------------
+            verbatim_check = validate_verbatim_outputs_consistency(parsed_contract)
+            if verbatim_check:
+                anomalies.append(verbatim_check)
+                logger.info(
+                    "Verbatim outputs consistency warning for %s: %s",
+                    agent_type, verbatim_check.get("message", ""),
+                )
+
+            # ----------------------------------------------------------
+            # Option B: Selective enforcement for critical structural failures.
+            # Only 3 cases set contract_rejected=True:
+            #   1. json:contract block completely missing
+            #   2. plan_status missing or not one of the 8 valid statuses
+            #   3. agent_status block missing entirely
+            # ----------------------------------------------------------
+            contract_rejected = False
+            contract_rejection_reason = ""
+
+            if parsed_contract is None:
+                contract_rejected = True
+                contract_rejection_reason = (
+                    "[CONTRACT REJECTED] No json:contract block found in agent response.\n"
+                    "The agent must end its response with a ```json:contract``` fenced block.\n"
+                    "Reissue the response with a complete json:contract block."
+                )
+            elif not parsed_contract.get("agent_status") or not isinstance(
+                parsed_contract.get("agent_status"), dict
+            ):
+                contract_rejected = True
+                contract_rejection_reason = (
+                    "[CONTRACT REJECTED] agent_status block missing from json:contract.\n"
+                    "The json:contract block must include an agent_status object with "
+                    "plan_status, agent_id, pending_steps, and next_action."
+                )
+            else:
+                from modules.agents.response_contract import VALID_PLAN_STATUSES
+                raw_plan_status = parsed_contract["agent_status"].get("plan_status", "")
+                normalized = str(raw_plan_status).upper().rstrip(".,;") if raw_plan_status else ""
+                if not normalized or normalized not in VALID_PLAN_STATUSES:
+                    contract_rejected = True
+                    valid_list = ", ".join(sorted(VALID_PLAN_STATUSES))
+                    contract_rejection_reason = (
+                        f"[CONTRACT REJECTED] plan_status is missing or invalid: "
+                        f"'{raw_plan_status}'.\n"
+                        f"Valid statuses: {valid_list}.\n"
+                        f"Set plan_status to one of these values in agent_status."
+                    )
+
             result = {
                 "success": True,
                 "session_id": session_id,
@@ -923,6 +976,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 "contract_attempts": contract_attempts,
             }
 
+            if contract_rejected:
+                result["contract_rejected"] = True
+                result["contract_rejection_reason"] = contract_rejection_reason
+                logger.warning(
+                    "Contract rejected for %s: %s",
+                    agent_type, contract_rejection_reason.split("\n")[0],
+                )
+
         except Exception as e:
             logger.error("Error in adapt_subagent_stop: %s", e, exc_info=True)
             result = {
@@ -932,6 +993,7 @@ class ClaudeCodeAdapter(HookAdapter):
             }
 
         if result.get("contract_rejected"):
+            logger.warning("Returning exit_code=2 due to contract rejection")
             return HookResponse(output=result, exit_code=2)
 
         return HookResponse(output=result, exit_code=0)

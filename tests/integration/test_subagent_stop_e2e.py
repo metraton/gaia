@@ -77,16 +77,22 @@ CONTEXT_UPDATE:
 
 ```json:contract
 {
-  "plan_status": "COMPLETE",
-  "agent_id": "cloud-troubleshooter",
-  "pending_steps": [],
-  "next_action": "done",
-  "evidence": {
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "cloud-troubleshooter",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
     "patterns_checked": [],
     "files_checked": [],
     "commands_run": [],
-    "key_outputs": []
-  }
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
 }
 ```
 """
@@ -446,9 +452,9 @@ class TestStdinHandler:
             timeout=30,
         )
 
-        # Should still exit 0 (graceful handling)
-        assert result.returncode == 0, (
-            f"subagent_stop.py exited with code {result.returncode}.\n"
+        # Empty transcript means no json:contract block -- selective enforcement rejects (exit 2)
+        assert result.returncode == 2, (
+            f"subagent_stop.py should reject missing contract (exit 2), got {result.returncode}.\n"
             f"stderr: {result.stderr}"
         )
 
@@ -522,11 +528,13 @@ class TestStdinHandler:
             timeout=30,
         )
 
-        assert result.returncode == 0, (
-            f"Exit code: {result.returncode}\nstderr: {result.stderr}"
+        # Transcript has no json:contract block, so selective enforcement rejects (exit 2),
+        # but the context update still happens before the rejection check.
+        assert result.returncode == 2, (
+            f"Expected exit 2 (missing contract), got: {result.returncode}\nstderr: {result.stderr}"
         )
 
-        # Verify project-context.json was updated
+        # Verify project-context.json was updated (happens before contract rejection)
         updated = read_context(context_file)
         namespaces = updated["sections"]["cluster_details"].get("namespaces", {})
         assert "application" in namespaces
