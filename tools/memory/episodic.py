@@ -67,7 +67,6 @@ class Episode:
     def to_dict(self) -> Dict[str, Any]:
         """Convert episode to dictionary."""
         data = asdict(self)
-        # Remove None values to keep storage clean
         return {k: v for k, v in data.items() if v is not None}
 
 
@@ -119,7 +118,6 @@ class EpisodicMemory:
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.episodes_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create empty index if it doesn't exist
         if not self.index_file.exists():
             self._save_index({
                 "episodes": [],
@@ -160,10 +158,8 @@ class EpisodicMemory:
         Returns:
             List of keywords
         """
-        # Convert to lowercase and split
         words = re.findall(r'\b[a-z]+\b', text.lower())
 
-        # Filter common words (basic stopwords)
         stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
                     'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'been', 'be',
                     'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should',
@@ -171,7 +167,6 @@ class EpisodicMemory:
 
         keywords = [w for w in words if w not in stopwords and len(w) > 2]
 
-        # Return unique keywords, preserving order
         seen = set()
         unique_keywords = []
         for kw in keywords:
@@ -245,16 +240,13 @@ class EpisodicMemory:
         Returns:
             Episode ID
         """
-        # Generate episode ID if not provided
         if not episode_id:
             episode_id = f"ep_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
-        # Validate outcome if provided
         if outcome is not None and outcome not in OUTCOME_VALUES:
             print(f"Warning: Invalid outcome '{outcome}'. Must be one of {OUTCOME_VALUES}", file=sys.stderr)
             outcome = None
 
-        # Validate relationships if provided
         validated_relationships = None
         if related_episodes:
             validated_relationships = []
@@ -267,21 +259,17 @@ class EpisodicMemory:
             if not validated_relationships:
                 validated_relationships = None
 
-        # Extract keywords from prompt and enriched prompt
         all_text = prompt
         if enriched_prompt:
             all_text += " " + enriched_prompt
         keywords = self._extract_keywords(all_text)
 
-        # Add tags to keywords if provided
         if tags:
             keywords = list(set(keywords + [t.lower() for t in tags]))
 
-        # Determine episode type and title
         episode_type = self._determine_type(prompt, context or {})
         title = self._generate_title(enriched_prompt or prompt)
 
-        # Create episode
         episode = Episode(
             episode_id=episode_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -303,7 +291,6 @@ class EpisodicMemory:
             related_episodes=validated_relationships
         )
 
-        # Save full episode to file
         episode_file = self.episodes_dir / f"episode-{episode_id}.json"
         with open(episode_file, 'w') as f:
             json.dump(episode.to_dict(), f, indent=2)
@@ -322,7 +309,6 @@ class EpisodicMemory:
         with open(self.episodes_jsonl, 'a') as f:
             f.write(json.dumps(jsonl_entry) + '\n')
 
-        # Update index
         index = self._load_index()
         index_entry = {
             "id": episode_id,
@@ -398,12 +384,10 @@ class EpisodicMemory:
         Returns:
             True if updated successfully, False if episode not found or invalid outcome
         """
-        # Validate outcome
         if outcome not in OUTCOME_VALUES:
             print(f"Error: Invalid outcome '{outcome}'. Must be one of {OUTCOME_VALUES}", file=sys.stderr)
             return False
 
-        # Load the episode
         episode_file = self.episodes_dir / f"episode-{episode_id}.json"
         if not episode_file.exists():
             print(f"Error: Episode {episode_id} not found", file=sys.stderr)
@@ -413,7 +397,6 @@ class EpisodicMemory:
             with open(episode_file, 'r') as f:
                 episode_data = json.load(f)
 
-            # Update outcome fields
             episode_data["outcome"] = outcome
             episode_data["success"] = success
             if duration_seconds is not None:
@@ -421,7 +404,6 @@ class EpisodicMemory:
             if commands_executed is not None:
                 episode_data["commands_executed"] = commands_executed
 
-            # Save updated episode
             with open(episode_file, 'w') as f:
                 json.dump(episode_data, f, indent=2)
 
@@ -438,7 +420,6 @@ class EpisodicMemory:
                 }
                 f.write(json.dumps(outcome_event) + '\n')
 
-            # Update index
             index = self._load_index()
             for ep in index["episodes"]:
                 if ep.get("id") == episode_id:
@@ -472,12 +453,10 @@ class EpisodicMemory:
         Returns:
             True if relationship added successfully, False otherwise
         """
-        # Validate relationship type
         if relationship_type not in RELATIONSHIP_TYPES:
             print(f"Error: Invalid relationship type '{relationship_type}'. Must be one of {RELATIONSHIP_TYPES}", file=sys.stderr)
             return False
 
-        # Check source episode exists
         source_file = self.episodes_dir / f"episode-{source_episode_id}.json"
         if not source_file.exists():
             print(f"Error: Source episode {source_episode_id} not found", file=sys.stderr)
@@ -488,31 +467,25 @@ class EpisodicMemory:
         target_exists = target_file.exists()
 
         try:
-            # Load source episode
             with open(source_file, 'r') as f:
                 source_data = json.load(f)
 
-            # Initialize or get existing relationships
             if "related_episodes" not in source_data or source_data["related_episodes"] is None:
                 source_data["related_episodes"] = []
 
-            # Check if relationship already exists
             for rel in source_data["related_episodes"]:
                 if rel.get("id") == target_episode_id and rel.get("type") == relationship_type:
                     print(f"Relationship already exists: {source_episode_id} --{relationship_type}--> {target_episode_id}", file=sys.stderr)
                     return True  # Not an error, just already exists
 
-            # Add new relationship
             source_data["related_episodes"].append({
                 "id": target_episode_id,
                 "type": relationship_type
             })
 
-            # Save updated episode
             with open(source_file, 'w') as f:
                 json.dump(source_data, f, indent=2)
 
-            # Append relationship event to JSONL
             with open(self.episodes_jsonl, 'a') as f:
                 rel_event = {
                     "event_type": "relationship_added",
@@ -524,7 +497,6 @@ class EpisodicMemory:
                 }
                 f.write(json.dumps(rel_event) + '\n')
 
-            # Update index
             index = self._load_index()
             index["relationships"].append({
                 "source": source_episode_id,
@@ -533,7 +505,6 @@ class EpisodicMemory:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
-            # Update relationship count in episode index entry
             for ep in index["episodes"]:
                 if ep.get("id") == source_episode_id:
                     ep["relationship_count"] = ep.get("relationship_count", 0) + 1
@@ -569,7 +540,6 @@ class EpisodicMemory:
         results = []
         index = self._load_index()
 
-        # Find relationships in index
         for rel in index.get("relationships", []):
             match = False
 
@@ -585,11 +555,9 @@ class EpisodicMemory:
             if not match:
                 continue
 
-            # Filter by type if specified
             if relationship_type and rel.get("type") != relationship_type:
                 continue
 
-            # Load the related episode
             related_episode = self.get_episode(related_id)
             if related_episode:
                 results.append({
@@ -724,7 +692,6 @@ class EpisodicMemory:
         Returns:
             Episode dict or None if not found
         """
-        # First try individual file
         episode_file = self.episodes_dir / f"episode-{episode_id}.json"
         if episode_file.exists():
             try:
@@ -733,7 +700,6 @@ class EpisodicMemory:
             except (json.JSONDecodeError, IOError):
                 pass
 
-        # Fall back to JSONL file
         if self.episodes_jsonl.exists():
             try:
                 with open(self.episodes_jsonl, 'r') as f:
@@ -763,10 +729,8 @@ class EpisodicMemory:
         index = self._load_index()
         episodes = index.get("episodes", [])
 
-        # Sort by timestamp (newest first)
         episodes.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
 
-        # Apply pagination
         return episodes[offset:offset + limit]
 
     def delete_episode(self, episode_id: str) -> bool:
@@ -781,13 +745,11 @@ class EpisodicMemory:
         """
         deleted = False
 
-        # Delete from individual file
         episode_file = self.episodes_dir / f"episode-{episode_id}.json"
         if episode_file.exists():
             episode_file.unlink()
             deleted = True
 
-        # Update index
         index = self._load_index()
         original_count = len(index.get("episodes", []))
         index["episodes"] = [ep for ep in index.get("episodes", [])
@@ -876,7 +838,6 @@ class EpisodicMemory:
                 "recent_episodes": []
             }
 
-        # Count by type
         type_counts = {}
         for ep in episodes:
             ep_type = ep.get("type", "unknown")
@@ -897,10 +858,8 @@ class EpisodicMemory:
             rel_type = rel.get("type", "unknown")
             relationship_counts[rel_type] = relationship_counts.get(rel_type, 0) + 1
 
-        # Get recent episodes
         recent = sorted(episodes, key=lambda x: x.get("timestamp", ""), reverse=True)[:5]
 
-        # Calculate age statistics
         ages = []
         now = datetime.now(timezone.utc)
         for ep in episodes:
@@ -1036,15 +995,12 @@ class EpisodicMemory:
         """Calculate total storage size used by episodic memory."""
         total_size = 0
 
-        # Add index file size
         if self.index_file.exists():
             total_size += self.index_file.stat().st_size
 
-        # Add JSONL file size
         if self.episodes_jsonl.exists():
             total_size += self.episodes_jsonl.stat().st_size
 
-        # Add episode files sizes
         if self.episodes_dir.exists():
             for episode_file in self.episodes_dir.glob("episode-*.json"):
                 total_size += episode_file.stat().st_size

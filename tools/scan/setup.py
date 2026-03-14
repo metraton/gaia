@@ -532,14 +532,18 @@ def _enrich_scan_context(
     meta["last_updated"] = now_iso
     meta["created_by"] = "gaia-scan"
 
-    # Update paths from config (user overrides trump scan)
-    paths = context.setdefault("paths", {})
+    # Update infrastructure.paths from config (user overrides trump scan)
+    sections = context.setdefault("sections", {})
+    infra = sections.setdefault("infrastructure", {})
+    infra_paths = infra.setdefault("paths", {})
     if config.get("gitops"):
-        paths["gitops"] = config["gitops"]
+        infra_paths["gitops"] = config["gitops"]
     if config.get("terraform"):
-        paths["terraform"] = config["terraform"]
+        infra_paths["terraform"] = config["terraform"]
     if config.get("app_services"):
-        paths["app_services"] = config["app_services"]
+        infra_paths["app_services"] = config["app_services"]
+    # Remove top-level paths if present (single source: infrastructure.paths)
+    context.pop("paths", None)
 
     # Ensure operational_guidelines has speckit_root
     sections = context.setdefault("sections", {})
@@ -592,13 +596,15 @@ def _build_minimal_context(
 
     speckit_root = config.get("speckit_root", ".claude/project-context/speckit-project-specs")
 
+    # Build paths dict, filtering out empty strings
+    infra_paths: Dict[str, str] = {}
+    for key in ("gitops", "terraform", "app_services"):
+        val = config.get(key, "")
+        if val:
+            infra_paths[key] = val
+
     context = {
         "metadata": metadata,
-        "paths": {
-            "gitops": config.get("gitops", ""),
-            "terraform": config.get("terraform", ""),
-            "app_services": config.get("app_services", ""),
-        },
         "sections": {
             "project_identity": {
                 "name": project_name,
@@ -618,6 +624,7 @@ def _build_minimal_context(
                     if config.get("ci_platform")
                     else []
                 ),
+                "paths": infra_paths,
             },
             "operational_guidelines": {
                 "speckit_root": speckit_root,
@@ -639,7 +646,14 @@ def _enrich_from_contracts(
     config: Dict[str, Any],
     project_root: Path,
 ) -> None:
-    """Enrich context sections from contract file (progressive context enrichment)."""
+    """Enrich context sections from contract file (progressive context enrichment).
+
+    Only creates empty {} placeholders for scanner-owned sections that agents
+    need to read. Agent-enriched and mixed sections are NOT pre-created --
+    they should only exist when populated with actual data. The exception is
+    architecture_overview, which always exists (even empty) because all agent
+    contracts reference it.
+    """
     try:
         cloud_provider = config.get("cloud_provider", "gcp")
         provider = "gcp" if cloud_provider == "multi-cloud" else cloud_provider
@@ -656,9 +670,20 @@ def _enrich_from_contracts(
             for s in agent.get("write", []):
                 contract_sections.add(s)
 
+        # Sections that should NOT be pre-created as empty {}.
+        # They only exist when an agent or scanner populates them with data.
+        # architecture_overview is the exception -- always present.
+        from tools.scan.merge import AGENT_ENRICHED_SECTIONS, MIXED_SECTION_SCANNER_FIELDS
+        skip_empty = (
+            AGENT_ENRICHED_SECTIONS
+            | frozenset(MIXED_SECTION_SCANNER_FIELDS.keys())
+        ) - {"architecture_overview"}
+
         sections = context.setdefault("sections", {})
         for section in contract_sections:
             if section not in sections:
+                if section in skip_empty:
+                    continue
                 sections[section] = {}
 
     except (json.JSONDecodeError, OSError):
@@ -683,10 +708,6 @@ def _merge_project_context(
             **(existing.get("metadata") or {}),
             **(new_context.get("metadata") or {}),
             "last_updated": datetime.now(timezone.utc).isoformat(),
-        },
-        "paths": {
-            **(existing.get("paths") or {}),
-            **(new_context.get("paths") or {}),
         },
         "sections": {
             # Start from new context sections as schema base,

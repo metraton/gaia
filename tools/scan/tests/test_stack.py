@@ -32,7 +32,7 @@ class TestStackScannerBasics:
         assert scanner.SCANNER_NAME == "stack"
 
     def test_scanner_version(self, scanner: StackScanner) -> None:
-        assert scanner.SCANNER_VERSION == "1.0.0"
+        assert scanner.SCANNER_VERSION == "1.1.0"
 
     def test_owned_sections(self, scanner: StackScanner) -> None:
         assert "project_identity" in scanner.OWNED_SECTIONS
@@ -67,6 +67,42 @@ class TestLanguageDetection:
         lang_names = [lang["name"] for lang in languages]
         assert "typescript" in lang_names
         assert "javascript" not in lang_names
+
+    def test_detect_typescript_with_tsconfig_in_subdirectory(
+        self, scanner: StackScanner, tmp_path: Path
+    ) -> None:
+        """TypeScript detected when tsconfig.json is in a monorepo subdirectory."""
+        pkg = {"name": "mono", "private": True, "workspaces": ["packages/*"]}
+        (tmp_path / "package.json").write_text(json.dumps(pkg))
+        sub = tmp_path / "packages" / "api"
+        sub.mkdir(parents=True)
+        (sub / "package.json").write_text('{"name": "@mono/api"}')
+        (sub / "tsconfig.json").write_text("{}")
+        result = scanner.scan(tmp_path)
+        languages = result.sections["stack"]["languages"]
+        lang_names = [lang["name"] for lang in languages]
+        assert "typescript" in lang_names
+        assert "javascript" not in lang_names
+
+    def test_detect_typescript_with_tsconfig_build_variant(
+        self, scanner: StackScanner, node_project: Path
+    ) -> None:
+        """TypeScript detected from tsconfig.build.json (glob pattern)."""
+        (node_project / "tsconfig.build.json").write_text("{}")
+        result = scanner.scan(node_project)
+        languages = result.sections["stack"]["languages"]
+        lang_names = [lang["name"] for lang in languages]
+        assert "typescript" in lang_names
+
+    def test_detect_typescript_from_ts_extension(
+        self, scanner: StackScanner, node_project: Path
+    ) -> None:
+        """TypeScript detected from .ts file extension even without tsconfig."""
+        (node_project / "index.ts").write_text("console.log('hello');")
+        result = scanner.scan(node_project)
+        languages = result.sections["stack"]["languages"]
+        lang_names = [lang["name"] for lang in languages]
+        assert "typescript" in lang_names
 
     def test_detect_python_from_pyproject_toml(
         self, scanner: StackScanner, python_project: Path
@@ -235,6 +271,24 @@ class TestFrameworkDetection:
         fw_names = [fw["name"] for fw in frameworks]
         assert "django" in fw_names
 
+    def test_nestjs_promoted_above_express(
+        self, scanner: StackScanner, node_project: Path
+    ) -> None:
+        """NestJS should be first framework when both NestJS and Express present."""
+        result = scanner.scan(node_project)
+        frameworks = result.sections["stack"]["frameworks"]
+        fw_names = [fw["name"] for fw in frameworks]
+        assert fw_names[0] == "nestjs"
+
+    def test_express_marked_as_underlying_when_nestjs_present(
+        self, scanner: StackScanner, node_project: Path
+    ) -> None:
+        """Express should be marked as underlying when NestJS is detected."""
+        result = scanner.scan(node_project)
+        frameworks = result.sections["stack"]["frameworks"]
+        express = [fw for fw in frameworks if fw["name"] == "express"][0]
+        assert express.get("role") == "underlying"
+
     def test_detect_vue(
         self, scanner: StackScanner, tmp_path: Path
     ) -> None:
@@ -358,6 +412,38 @@ class TestBuildToolDetection:
         build_tools = result.sections["stack"]["build_tools"]
         tool_names = [t["name"] for t in build_tools]
         assert "pip" in tool_names
+
+    def test_detect_turborepo_in_build_tools(
+        self, scanner: StackScanner, monorepo_project: Path
+    ) -> None:
+        """Turborepo should appear in build_tools when turbo.json exists."""
+        result = scanner.scan(monorepo_project)
+        build_tools = result.sections["stack"]["build_tools"]
+        tool_names = [t["name"] for t in build_tools]
+        assert "turborepo" in tool_names
+
+    def test_turborepo_build_tool_has_config_file(
+        self, scanner: StackScanner, monorepo_project: Path
+    ) -> None:
+        """Turborepo build tool entry should reference the config file."""
+        result = scanner.scan(monorepo_project)
+        build_tools = result.sections["stack"]["build_tools"]
+        turbo = [t for t in build_tools if t["name"] == "turborepo"][0]
+        assert turbo["detected_by"] == "config_file"
+        assert turbo["config_file"] == "turbo.json"
+
+    def test_turborepo_detected_in_subdirectory(
+        self, scanner: StackScanner, tmp_path: Path
+    ) -> None:
+        """Turborepo detected when turbo.json is in a monorepo subdirectory."""
+        sub = tmp_path / "qxo-monorepo"
+        sub.mkdir()
+        (sub / "turbo.json").write_text('{"pipeline": {}}')
+        (sub / "package.json").write_text('{"name": "mono", "private": true}')
+        result = scanner.scan(tmp_path)
+        build_tools = result.sections["stack"]["build_tools"]
+        tool_names = [t["name"] for t in build_tools]
+        assert "turborepo" in tool_names
 
     def test_empty_project_no_build_tools(
         self, scanner: StackScanner, empty_project: Path

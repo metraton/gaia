@@ -19,7 +19,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-# Add hooks dir to path for adapter imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
@@ -48,7 +47,6 @@ def _handle_subagent_start(event) -> None:
     """
     adapter = ClaudeCodeAdapter()
 
-    # Parse subagent start event via adapter
     context_result = adapter.adapt_subagent_start(event.payload)
     agent_type = event.payload.get("agent_type", "unknown")
     task_description = event.payload.get("task_description", "")
@@ -74,7 +72,6 @@ def _handle_subagent_start(event) -> None:
         context_result.context_injected,
     )
 
-    # Format and output context response
     response = adapter.format_context_response(context_result)
     print(json.dumps(response.output))
     sys.exit(0)

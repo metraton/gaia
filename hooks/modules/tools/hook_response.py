@@ -28,19 +28,23 @@ from adapters.types import ValidationResult
 _adapter = ClaudeCodeAdapter()
 
 
-def build_hook_permission_response(decision: str, reason: str) -> dict:
+def build_hook_permission_response(
+    decision: str, reason: str, updated_input: dict | None = None
+) -> dict:
     """Build a hookSpecificOutput dict for a PreToolUse permission decision.
 
     Args:
         decision: "allow", "deny", or "ask".
         reason: Human-readable explanation forwarded to the agent.
+        updated_input: Optional modified tool input to pass through for
+            "ask" decisions (e.g. footer-stripped command).
 
     Returns:
         Dict suitable for ``json.dumps()`` and ``print()`` in the hook
         entry point.
     """
     if decision == "ask":
-        response = _adapter.format_ask_response(reason)
+        response = _adapter.format_ask_response(reason, updated_input=updated_input)
         return response.output
 
     vr = ValidationResult(

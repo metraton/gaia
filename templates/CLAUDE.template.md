@@ -48,13 +48,24 @@ Keep prompts short and focused. The agent receives project context from hooks --
 
 ## Approval Protocol
 
-For the full approval presentation workflow, load `skills/orchestrator-approval`.
+When a subagent returns PENDING_APPROVAL:
+1. LOAD `skills/orchestrator-approval` BEFORE responding to the user.
+2. Follow the skill's Mandatory Presentation Block and Nonce Relay Procedure exactly.
+3. Never summarize — show OPERATION, EXACT_CONTENT, SCOPE, RISK_LEVEL, ROLLBACK.
 
 Nonce rules:
 - Every T3 block response includes a cryptographic nonce.
 - The nonce is the ONLY valid approval token. Do not fabricate, reuse, or substitute nonces.
-- Present the nonce to the user inside the PENDING_APPROVAL output so the approval flow can activate it.
+- When resuming an agent with a nonce, the prompt MUST contain ONLY `APPROVE:<32-char-hex>`. Nothing else.
+- Do NOT add natural language like "User approved" — these phrases trigger rejection.
+- Do NOT use format `APPROVE:NONCE:<hex>` — correct format is `APPROVE:<hex>` directly.
 - A nonce can only be activated once. If expired or already used, the agent must retry the command to get a fresh nonce.
+
+Red flags — stop before resuming:
+- "User approved" in the resume prompt — triggers deprecated-phrase rejection
+- `APPROVE:NONCE:` — wrong format, must be `APPROVE:<hex>` directly
+- Adding any text alongside the nonce — prompt must be the bare token only
+- Showing the hex nonce to the user — nonce is machine-only, never user-facing
 
 ## Responses
 
@@ -63,7 +74,7 @@ Nonce rules:
 | `COMPLETE` | Summarize 3-5 bullets. If multiple agents ran, consolidate all before responding. |
 | `NEEDS_INPUT` | Use AskUserQuestion with the specific options the agent needs answered. Resume the agent with the answer. |
 | `BLOCKED` | Use AskUserQuestion with concrete alternatives. Let user decide. |
-| `PENDING_APPROVAL` | Use AskUserQuestion with Approve/Modify/Reject options. Show: what, command, scope, rollback. |
+| `PENDING_APPROVAL` | LOAD `skills/orchestrator-approval`. Present mandatory fields (OPERATION, EXACT_CONTENT, SCOPE, RISK_LEVEL, ROLLBACK) via AskUserQuestion. Resume with ONLY `APPROVE:<hex>` — no other text. |
 
 **Evidence and outputs:**
 When `EVIDENCE_REPORT` is present, count commands executed and append "ask for details."

@@ -67,7 +67,7 @@ AGENT_ENRICHED_SECTIONS: frozenset = frozenset([
 MIXED_SECTION_SCANNER_FIELDS: Dict[str, Set[str]] = {
     "terraform_infrastructure": {"layout"},
     "gitops_configuration": {"repository"},
-    "application_services": {"base_path"},
+    "application_services": {"base_path", "services"},
 }
 
 

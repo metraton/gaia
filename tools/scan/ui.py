@@ -1,20 +1,19 @@
 """
-Interactive UI for gaia-scan
+Rail UI for gaia-scan
 
-Provides display and prompting functions for the interactive setup flow.
-Uses simple input() for prompts with ANSI colors for terminal output.
+Clack-style rail output for scan results. Zero prompts. Fully automatic.
+All output goes to stderr. stdout is reserved for JSON only.
+
+Classes:
+- RailUI: Clack-style rail output renderer
 
 Functions:
-- display_config: ASCII banner + categorized table showing detected values
-- prompt_gaps: ask for missing values
-- confirm_or_edit: Accept / Edit / Cancel prompt
-- edit_config: full edit mode for all fields
+- format_scanner_results: Transform raw scan output into display sections
 """
 
 import os
 import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -33,336 +32,593 @@ def _supports_color() -> bool:
 _COLOR = _supports_color()
 
 
+def _c(code: str, text: str) -> str:
+    """Apply ANSI color code if color is supported."""
+    return f"\033[{code}m{text}\033[0m" if _COLOR else text
+
+
 def _cyan(text: str) -> str:
-    return f"\033[36m{text}\033[0m" if _COLOR else text
+    return _c("36", text)
 
 
 def _green(text: str) -> str:
-    return f"\033[32m{text}\033[0m" if _COLOR else text
+    return _c("32", text)
 
 
 def _yellow(text: str) -> str:
-    return f"\033[33m{text}\033[0m" if _COLOR else text
+    return _c("33", text)
 
 
-def _red(text: str) -> str:
-    return f"\033[31m{text}\033[0m" if _COLOR else text
-
-
-def _gray(text: str) -> str:
-    return f"\033[90m{text}\033[0m" if _COLOR else text
+def _dim(text: str) -> str:
+    return _c("2", text)
 
 
 def _bold(text: str) -> str:
-    return f"\033[1m{text}\033[0m" if _COLOR else text
+    return _c("1", text)
 
 
 # ---------------------------------------------------------------------------
-# Banner
+# Rail UI
 # ---------------------------------------------------------------------------
 
-BANNER = r"""
-  ██████╗  █████╗ ██╗ █████╗      ██████╗ ██████╗ ███████╗
- ██╔════╝ ██╔══██╗██║██╔══██╗    ██╔═══██╗██╔══██╗██╔════╝
- ██║  ███╗███████║██║███████║    ██║   ██║██████╔╝███████╗
- ██║   ██║██╔══██║██║██╔══██║    ██║   ██║██╔═══╝ ╚════██║
- ╚██████╔╝██║  ██║██║██║  ██║    ╚██████╔╝██║     ███████║
-  ╚═════╝ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝     ╚═════╝ ╚═╝     ╚══════╝
-"""
+class RailUI:
+    """Clack-style rail output for scan results.
 
-
-# ---------------------------------------------------------------------------
-# Display
-# ---------------------------------------------------------------------------
-
-def _print_field(label: str, value: Optional[str], found: bool) -> None:
-    """Print a single config field with status indicator."""
-    padded = label.ljust(14)
-    if value and found:
-        print(_green(f"    {padded} {value}  ✓"), file=sys.stderr)
-    elif value:
-        print(_yellow(f"    {padded} {value}  (will be created)"), file=sys.stderr)
-    else:
-        print(_yellow(f"    {padded} (not detected)  ?"), file=sys.stderr)
-
-
-def display_config(config: Dict[str, Any], project_root: Path) -> List[str]:
-    """Display scan results as a categorized table.
+    All output goes to stderr. The rail character is dimmed.
 
     Args:
-        config: Configuration dict with all detected/user values.
-        project_root: Project root for path validation.
+        version: Scanner version string for the header.
+        color: Whether to use ANSI colors (overrides auto-detect).
+    """
+
+    def __init__(self, version: str, color: Optional[bool] = None):
+        self.version = version
+        self._color = color if color is not None else _COLOR
+
+    def _c(self, code: str, text: str) -> str:
+        """Apply ANSI color code if color is enabled for this instance."""
+        return f"\033[{code}m{text}\033[0m" if self._color else text
+
+    def _cyan(self, text: str) -> str:
+        return self._c("36", text)
+
+    def _green(self, text: str) -> str:
+        return self._c("32", text)
+
+    def _yellow(self, text: str) -> str:
+        return self._c("33", text)
+
+    def _dim(self, text: str) -> str:
+        return self._c("2", text)
+
+    def _bold(self, text: str) -> str:
+        return self._c("1", text)
+
+    def _rail(self) -> str:
+        """Return the dimmed rail character."""
+        return self._dim("\u2502")
+
+    def _write(self, text: str) -> None:
+        """Write a line to stderr."""
+        print(text, file=sys.stderr)
+
+    def start(self) -> None:
+        """Print the header: top-left corner + version."""
+        self._write(self._cyan(f"\u250c  gaia-scan v{self.version}"))
+        self._write(self._rail())
+
+    def scanning(self) -> None:
+        """Print the scanning indicator."""
+        self._write(self._cyan(f"\u25d2  Scanning..."))
+        self._write(self._rail())
+
+    def section(self, name: str, lines: List[str]) -> None:
+        """Print a section with its detail lines.
+
+        Args:
+            name: Section title (e.g. "Stack", "Infrastructure").
+            lines: Detail lines to display under the section.
+        """
+        self._write(f"{self._green('\u25c7')}  {self._cyan(name)}")
+        for line in lines:
+            self._write(f"{self._rail()}  {line}")
+        self._write(self._rail())
+
+    def section_compact(self, names: List[str]) -> None:
+        """Print multiple section names on a single line (scan-only mode).
+
+        Args:
+            names: List of section names to join with middle-dot.
+        """
+        joined = self._cyan(" \u00b7 ".join(names))
+        self._write(f"{self._green('\u25c7')}  {joined}")
+        self._write(self._rail())
+
+    def warning(self, count: int, messages: List[str]) -> None:
+        """Print warnings section.
+
+        Args:
+            count: Total number of warnings.
+            messages: Warning messages to display.
+        """
+        self._write(f"{self._yellow('\u26a0')}  {self._yellow(f'Warnings ({count})')}")
+        for msg in messages:
+            self._write(f"{self._rail()}  {msg}")
+        self._write(self._rail())
+
+    def done(self, duration_s: float, suffix: str = "") -> None:
+        """Print the done marker with duration.
+
+        Args:
+            duration_s: Scan duration in seconds.
+            suffix: Optional text to append after duration.
+        """
+        text = f"\u25c6  Done in {duration_s:.1f}s"
+        if suffix:
+            text += f" \u00b7 {suffix}"
+        self._write(self._green(text))
+        self._write(self._rail())
+
+    def created(self, items: Dict[str, str]) -> None:
+        """Print the 'Created:' summary for fresh installs.
+
+        Args:
+            items: Dict of {name: description} for created items.
+        """
+        self._write(f"{self._rail()}  Created:")
+        for name, desc in items.items():
+            self._write(f"{self._rail()}    {name:<18s} {self._dim(desc)}")
+        self._write(self._rail())
+
+    def updated(self, sections_updated: int, sections_preserved: int) -> None:
+        """Print the 'Updated/Preserved' summary for rescans.
+
+        Args:
+            sections_updated: Number of scanner-updated sections.
+            sections_preserved: Number of agent-enriched preserved sections.
+        """
+        self._write(f"{self._rail()}  Updated: {sections_updated} sections")
+        self._write(f"{self._rail()}  Preserved: {sections_preserved} agent-enriched sections")
+        self._write(f"{self._rail()}  Synced: CLAUDE.md, settings.json")
+        self._write(self._rail())
+
+    def footer(self, message: str) -> None:
+        """Print the footer with closing rail corner.
+
+        Args:
+            message: Footer message text.
+        """
+        self._write(f"{self._dim('\u2514')}  {message}")
+
+
+# ---------------------------------------------------------------------------
+# Format scanner results for display
+# ---------------------------------------------------------------------------
+
+def format_scanner_results(output: Any, project_root: Any = None) -> List[Dict[str, Any]]:
+    """Transform raw scan output into display sections for RailUI.
+
+    Produces a project-aware context summary with:
+    - Project section(s): identity line + infrastructure line
+    - Tools section: detected CLI tools
+    - Runtime section: language runtimes + OS
+
+    Args:
+        output: ScanOutput from the orchestrator (has .context, .scanner_results).
+        project_root: Path to the project root (used for fallback project name).
 
     Returns:
-        List of gap field names (missing values).
+        List of dicts with 'name' and 'lines' keys.
     """
-    print(_cyan(BANNER), file=sys.stderr)
-    print(_bold(_cyan("  Detected Configuration\n")), file=sys.stderr)
+    from pathlib import Path
 
-    # Paths
-    print("  Paths", file=sys.stderr)
-    for label, key in [("GitOps", "gitops"), ("Terraform", "terraform"), ("App Services", "app_services")]:
-        val = config.get(key, "")
-        exists = bool(val) and (project_root / val).exists()
-        _print_field(label, val or None, exists)
+    ctx = output.context
+    scan_sections = ctx.get("sections", {})
+    root = Path(project_root) if project_root else None
 
-    # Cloud
-    print("\n  Cloud", file=sys.stderr)
-    cloud = config.get("cloud_provider", "")
-    _print_field("Provider", cloud.upper() if cloud else None, bool(cloud))
-    _print_field("Project ID", config.get("project_id") or None, bool(config.get("project_id")))
-    _print_field("Region", config.get("region") or None, bool(config.get("region")))
-    _print_field("Cluster", config.get("cluster_name") or None, bool(config.get("cluster_name")))
+    sections: List[Dict[str, Any]] = []
 
-    # Identity
-    print("\n  Identity", file=sys.stderr)
-    _print_field("Project Name", config.get("project_name") or None, bool(config.get("project_name")))
-    _print_field("Git Platform", config.get("git_platform") or None, bool(config.get("git_platform")))
-    _print_field("CI/CD", config.get("ci_platform") or None, bool(config.get("ci_platform")))
+    # --- Project section(s) ---
+    project_sections = _build_project_sections(scan_sections, root)
+    sections.extend(project_sections)
 
-    # Git remotes
-    remotes = config.get("git_remotes", [])
-    if remotes:
-        print("\n  Git Repositories", file=sys.stderr)
-        for r in remotes[:5]:
-            if isinstance(r, dict):
-                path = r.get("path", r.get("name", "."))
-                remote = r.get("remote", r.get("url", ""))
-                print(_gray(f"    {path} -> {remote}"), file=sys.stderr)
-        if len(remotes) > 5:
-            print(_gray(f"    ... and {len(remotes) - 5} more"), file=sys.stderr)
+    # --- Tools ---
+    env = scan_sections.get("environment", {})
+    tool_list = env.get("tools", [])
+    if tool_list:
+        count = len(tool_list)
+        names = [t.get("name", "") for t in tool_list if isinstance(t, dict)]
+        # Show first 6 tools + ellipsis if more
+        if len(names) > 6:
+            display = " \u00b7 ".join(names[:6]) + " ..."
+        else:
+            display = " \u00b7 ".join(names)
+        sections.append({"name": f"Tools ({count})", "lines": [display]})
 
-    # Claude Code
-    claude_code = config.get("claude_code", {})
-    print("\n  Claude Code", file=sys.stderr)
-    if claude_code.get("installed"):
-        print(_green(f"    {claude_code.get('version', 'installed')}  ✓"), file=sys.stderr)
+    # --- Runtime ---
+    os_info = env.get("os", {})
+    runtimes = env.get("runtimes", [])
+
+    rt_parts = []
+    for rt in runtimes:
+        name = _capitalize(rt.get("name", ""))
+        ver = rt.get("version", "")
+        if name and ver:
+            # Use major.minor for cleaner display
+            parts = ver.split(".")
+            short_ver = ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
+            rt_parts.append(f"{name} {short_ver}")
+
+    wsl = os_info.get("wsl", False)
+    if wsl:
+        wsl_ver = os_info.get("wsl_version", "")
+        rt_parts.append(f"WSL{wsl_ver}")
     else:
-        print(_yellow("    Not installed (will be installed automatically)"), file=sys.stderr)
+        platform = os_info.get("platform", "")
+        if platform:
+            rt_parts.append(_capitalize(platform))
 
-    print("", file=sys.stderr)
+    if rt_parts:
+        sections.append({"name": "Runtime", "lines": [" \u00b7 ".join(rt_parts)]})
 
-    # Identify gaps
-    gaps = []
-    for field in ["gitops", "terraform", "app_services", "project_id", "region", "cluster_name"]:
-        if not config.get(field):
-            gaps.append(field)
-
-    return gaps
+    return sections
 
 
-def display_config_noninteractive(config: Dict[str, Any]) -> None:
-    """Display config summary for non-interactive mode (no prompts).
-
-    Args:
-        config: Configuration dict with all detected/user values.
-    """
-    print(_cyan("\n  Configuration (auto-detected + overrides):\n"), file=sys.stderr)
-    fields = [
-        ("GitOps", "gitops"),
-        ("Terraform", "terraform"),
-        ("App Services", "app_services"),
-        ("Cloud", "cloud_provider"),
-        ("Project ID", "project_id"),
-        ("Region", "region"),
-        ("Cluster", "cluster_name"),
-        ("Project Name", "project_name"),
-        ("Git Platform", "git_platform"),
-        ("CI/CD", "ci_platform"),
-    ]
-    for label, key in fields:
-        val = config.get(key, "")
-        if key == "cloud_provider" and val:
-            val = val.upper()
-        display_val = val or "(not detected)"
-        print(_gray(f"    {label + ':':16s} {display_val}"), file=sys.stderr)
-    print("", file=sys.stderr)
-
-
-# ---------------------------------------------------------------------------
-# Prompting
-# ---------------------------------------------------------------------------
-
-def _prompt(message: str, default: str = "") -> str:
-    """Prompt user for input with a default value.
+def _build_project_sections(
+    scan_sections: Dict[str, Any],
+    project_root: Any,
+) -> List[Dict[str, Any]]:
+    """Build project context sections. Returns list for future multi-project support.
 
     Args:
-        message: Prompt message.
-        default: Default value shown in brackets.
+        scan_sections: The 'sections' dict from scan output context.
+        project_root: Path to the project root (for fallback name).
 
     Returns:
-        User's input or default if empty.
+        List of section dicts, one per project.
     """
-    if default:
-        prompt_text = f"  {message} [{default}]: "
-    else:
-        prompt_text = f"  {message}: "
-
-    try:
-        answer = input(prompt_text).strip()
-        return answer if answer else default
-    except (EOFError, KeyboardInterrupt):
-        print(_yellow("\n  Cancelled."), file=sys.stderr)
-        sys.exit(0)
+    projects = []
+    projects.append(_build_single_project(scan_sections, project_root))
+    return projects
 
 
-def prompt_gaps(config: Dict[str, Any], gaps: List[str]) -> Dict[str, Any]:
-    """Prompt user for missing configuration values.
+def _build_single_project(
+    scan_sections: Dict[str, Any],
+    project_root: Any,
+) -> Dict[str, Any]:
+    """Build a single project summary section.
+
+    Line 1: Project type + service count + git platform
+    Line 2: Cloud providers + orchestration + IaC
 
     Args:
-        config: Current configuration dict (for defaults).
-        gaps: List of field names that need values.
+        scan_sections: The 'sections' dict from scan output context.
+        project_root: Path to the project root (for fallback name).
 
     Returns:
-        Updated config dict with user-provided values.
+        Section dict with 'name' and 'lines'.
     """
-    if not gaps:
-        return config
+    from pathlib import Path
 
-    print(_yellow(f"  {len(gaps)} item(s) need your input:\n"), file=sys.stderr)
+    # --- Project name ---
+    project_identity = scan_sections.get("project_identity", {})
+    name = project_identity.get("name", "")
+    # Fallback: if name is npm-init default or empty, use directory name
+    if not name or name == "my-project":
+        if project_root:
+            name = Path(project_root).name
+        else:
+            name = "project"
 
-    gap_labels = {
-        "gitops": ("GitOps directory (Enter to skip)", ""),
-        "terraform": ("Terraform directory (Enter to skip)", ""),
-        "app_services": ("App Services directory (Enter to skip)", ""),
-        "project_id": (
-            "AWS Account ID (Enter to skip)"
-            if config.get("cloud_provider") == "aws"
-            else "Cloud Project ID (Enter to skip)",
-            "",
-        ),
-        "region": (
-            "Primary Region (Enter to skip)",
-            "us-central1" if config.get("cloud_provider") == "gcp" else "us-east-1",
-        ),
-        "cluster_name": ("Cluster Name (Enter to skip)", ""),
+    # --- Line 1: Identity ---
+    line1_parts = []
+
+    # Project type
+    monorepo = project_identity.get("monorepo", {})
+    proj_type = project_identity.get("type", "")
+    if monorepo.get("detected") or proj_type == "monorepo":
+        line1_parts.append("Monorepo")
+    elif proj_type == "library":
+        line1_parts.append("Library")
+    else:
+        line1_parts.append("Single app")
+
+    # Service count from Dockerfiles (non-worktree)
+    infra = scan_sections.get("infrastructure", {})
+    service_count = _count_services(infra)
+    if service_count > 0:
+        if service_count >= 15:
+            line1_parts.append(f"{service_count}+ services")
+        else:
+            line1_parts.append(f"{service_count} services")
+
+    # Git platform
+    git_platform = _detect_git_platform(scan_sections)
+    if git_platform:
+        line1_parts.append(git_platform)
+
+    # --- Line 2: Infrastructure ---
+    line2_parts = []
+
+    # Cloud providers
+    cloud_providers = infra.get("cloud_providers", [])
+    if cloud_providers:
+        cloud_names = []
+        for cp in cloud_providers:
+            cp_name = cp.get("name", "").upper()
+            if cp_name:
+                cloud_names.append(cp_name)
+        if cloud_names:
+            line2_parts.append(" + ".join(cloud_names))
+
+    # Orchestration: Kubernetes + GitOps tool
+    orch_summary = _build_orchestration_summary(scan_sections)
+    if orch_summary:
+        line2_parts.append(orch_summary)
+
+    # IaC tools
+    iac = infra.get("iac", [])
+    if iac:
+        iac_names = []
+        for tool_entry in iac:
+            tool_name = _capitalize(tool_entry.get("tool", ""))
+            if tool_name and tool_name not in iac_names:
+                iac_names.append(tool_name)
+        if iac_names:
+            line2_parts.append("/".join(iac_names))
+
+    lines = []
+    if line1_parts:
+        lines.append(" \u00b7 ".join(line1_parts))
+    if line2_parts:
+        lines.append(" \u00b7 ".join(line2_parts))
+
+    return {"name": name, "lines": lines}
+
+
+def _count_services(infra: Dict[str, Any]) -> int:
+    """Count unique services from Docker container files.
+
+    Counts non-worktree Dockerfiles as a proxy for service count.
+
+    Args:
+        infra: Infrastructure section from scan results.
+
+    Returns:
+        Number of services detected.
+    """
+    containers = infra.get("containers", [])
+    for ct in containers:
+        if ct.get("tool") == "docker":
+            files = ct.get("files", [])
+            # Count non-worktree, non-template, non-example Dockerfiles
+            count = sum(
+                1 for f in files
+                if not f.startswith("worktrees/")
+                and "template" not in f.lower()
+                and not f.endswith(".example")
+            )
+            return count
+    return 0
+
+
+def _detect_git_platform(scan_sections: Dict[str, Any]) -> Optional[str]:
+    """Detect git platform from scan results.
+
+    Checks git.platform first, then parses remotes, then falls back to
+    tool presence (glab -> GitLab, gh -> GitHub).
+
+    Args:
+        scan_sections: The 'sections' dict from scan output.
+
+    Returns:
+        Platform name (e.g. "GitLab", "GitHub") or None.
+    """
+    git = scan_sections.get("git", {})
+
+    # Direct platform detection
+    platform = git.get("platform")
+    if platform:
+        return _capitalize_platform(platform)
+
+    # Parse remotes for platform hints
+    remotes = git.get("remotes", [])
+    for remote in remotes:
+        remote_platform = remote.get("platform")
+        if remote_platform:
+            return _capitalize_platform(remote_platform)
+        url = remote.get("url", "")
+        if "gitlab" in url.lower():
+            return "GitLab"
+        if "github" in url.lower():
+            return "GitHub"
+
+    # Fallback: check for glab or gh tool presence
+    env = scan_sections.get("environment", {})
+    tools = env.get("tools", [])
+    tool_names = {t.get("name", "") for t in tools if isinstance(t, dict)}
+    if "glab" in tool_names:
+        return "GitLab"
+    if "gh" in tool_names:
+        return "GitHub"
+
+    return None
+
+
+def _capitalize_platform(platform: str) -> str:
+    """Capitalize a git platform name.
+
+    Args:
+        platform: Raw platform string (e.g. "gitlab", "github").
+
+    Returns:
+        Human-friendly name (e.g. "GitLab", "GitHub").
+    """
+    platform_map = {
+        "gitlab": "GitLab",
+        "gitlab-ci": "GitLab",
+        "github": "GitHub",
+        "github-actions": "GitHub",
+        "bitbucket": "Bitbucket",
     }
-
-    for field in gaps:
-        if field in gap_labels:
-            label, default = gap_labels[field]
-            answer = _prompt(label, default)
-            if answer:
-                config[field] = answer
-
-    return config
+    return platform_map.get(platform.lower(), platform.capitalize())
 
 
-def confirm_or_edit(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Ask user to Accept / Edit / Cancel the configuration.
+def _build_orchestration_summary(scan_sections: Dict[str, Any]) -> Optional[str]:
+    """Build orchestration summary string.
+
+    Produces strings like "Kubernetes (Flux)" or "Kubernetes".
 
     Args:
-        config: Current configuration dict.
+        scan_sections: The 'sections' dict from scan output.
 
     Returns:
-        Final config dict, or None if cancelled.
+        Orchestration summary string, or None.
     """
-    print("  Proceed with this configuration?", file=sys.stderr)
-    print("    1) Accept and install", file=sys.stderr)
-    print("    2) Edit configuration", file=sys.stderr)
-    print("    3) Cancel", file=sys.stderr)
+    env = scan_sections.get("environment", {})
+    tools = env.get("tools", [])
+    tool_names = {t.get("name", "") for t in tools if isinstance(t, dict)}
 
-    choice = _prompt("Choice", "1")
-
-    if choice == "3":
-        print(_yellow("\n  Installation cancelled.\n"), file=sys.stderr)
+    has_k8s = "kubectl" in tool_names
+    if not has_k8s:
         return None
 
-    if choice == "2":
-        return edit_config(config)
+    # Detect GitOps tool
+    gitops_tool = None
+    if "flux" in tool_names or "fluxctl" in tool_names:
+        gitops_tool = "Flux"
 
-    return config
+    # Check infrastructure for gitops hints (flux files, argocd, etc.)
+    infra = scan_sections.get("infrastructure", {})
+    ci_cd = infra.get("ci_cd", [])
+    for ci in ci_cd:
+        if isinstance(ci, dict):
+            ci_platform = ci.get("platform", "").lower()
+            if "flux" in ci_platform:
+                gitops_tool = "Flux"
+            elif "argo" in ci_platform or "argocd" in ci_platform:
+                gitops_tool = "ArgoCD"
+
+    # Check orchestration section if present
+    orch = scan_sections.get("orchestration", {})
+    if isinstance(orch, dict):
+        k8s = orch.get("kubernetes", {})
+        if isinstance(k8s, dict) and k8s.get("detected"):
+            has_k8s = True
+        gitops = orch.get("gitops", {})
+        if isinstance(gitops, dict) and gitops.get("tool"):
+            gitops_tool = gitops["tool"].capitalize()
+
+    if has_k8s:
+        if gitops_tool:
+            return f"Kubernetes ({gitops_tool})"
+        return "Kubernetes"
+
+    return None
 
 
-def edit_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Let user edit all config fields interactively.
+def collect_warnings(output: Any) -> List[str]:
+    """Collect user-facing warnings from scan output.
 
     Args:
-        config: Current configuration dict.
+        output: ScanOutput from the orchestrator.
 
     Returns:
-        Updated config dict.
+        List of warning message strings.
     """
-    print(_gray("\n  Edit any field (press Enter to keep current value):\n"), file=sys.stderr)
+    warnings = []
 
-    config["gitops"] = _prompt("GitOps directory", config.get("gitops", ""))
-    config["terraform"] = _prompt("Terraform directory", config.get("terraform", ""))
-    config["app_services"] = _prompt("App Services directory", config.get("app_services", ""))
+    # Check for no git directory
+    git_section = output.context.get("sections", {}).get("git", {})
+    remotes = git_section.get("remotes", [])
+    if not remotes and not git_section.get("platform"):
+        warnings.append("No .git directory found at project root")
 
-    print("  Cloud provider:", file=sys.stderr)
-    print("    1) GCP", file=sys.stderr)
-    print("    2) AWS", file=sys.stderr)
-    print("    3) Multi-cloud", file=sys.stderr)
-    current_cloud = config.get("cloud_provider", "gcp")
-    cloud_default = {"gcp": "1", "aws": "2", "multi-cloud": "3"}.get(current_cloud, "1")
-    cloud_choice = _prompt("Choice", cloud_default)
-    config["cloud_provider"] = {"1": "gcp", "2": "aws", "3": "multi-cloud"}.get(
-        cloud_choice, current_cloud
-    )
+    # Include scanner-level warnings (deduplicated, user-facing only)
+    for w in output.warnings:
+        # Skip if already covered by a more descriptive version
+        if w not in warnings and not any(w in existing for existing in warnings):
+            warnings.append(w)
 
-    config["project_id"] = _prompt("Project/Account ID", config.get("project_id", ""))
-    config["region"] = _prompt("Primary region", config.get("region", ""))
-    config["cluster_name"] = _prompt("Cluster name", config.get("cluster_name", ""))
+    return warnings
 
-    return config
+
+def collect_created_summary(project_root: "Path", output: Any) -> Dict[str, str]:
+    """Collect summary of created artifacts for fresh install display.
+
+    Args:
+        project_root: Project root directory.
+        output: ScanOutput from the orchestrator.
+
+    Returns:
+        Dict of {artifact_name: description}.
+    """
+    from pathlib import Path
+
+    items = {}
+    claude_dir = Path(project_root) / ".claude"
+
+    # Count symlinks
+    symlink_count = 0
+    if claude_dir.is_dir():
+        for entry in claude_dir.iterdir():
+            if entry.is_symlink():
+                symlink_count += 1
+    if symlink_count:
+        items[".claude/"] = f"{symlink_count} symlinks"
+
+    # CLAUDE.md
+    claude_md = Path(project_root) / "CLAUDE.md"
+    if claude_md.is_file():
+        items["CLAUDE.md"] = "orchestrator identity"
+
+    # settings.json
+    settings = claude_dir / "settings.json"
+    if settings.is_file():
+        items["settings.json"] = "hooks + permissions"
+
+    # project-context sections
+    ctx_path = claude_dir / "project-context" / "project-context.json"
+    if ctx_path.is_file():
+        try:
+            import json
+            data = json.loads(ctx_path.read_text())
+            section_count = len(data.get("sections", {}))
+            items["project-context"] = f"{section_count} sections detected"
+        except Exception:
+            items["project-context"] = "generated"
+
+    return items
 
 
 # ---------------------------------------------------------------------------
-# Summary display
+# Helpers
 # ---------------------------------------------------------------------------
 
-def print_success(healthy: bool) -> None:
-    """Print the success message and next steps.
+def _capitalize(s: str) -> str:
+    """Capitalize first letter, keep rest. Handle known names."""
+    name_map = {
+        "javascript": "JavaScript",
+        "typescript": "TypeScript",
+        "python": "Python",
+        "go": "Go",
+        "java": "Java",
+        "rust": "Rust",
+        "express": "Express",
+        "terraform": "Terraform",
+        "terragrunt": "Terragrunt",
+        "docker": "Docker",
+        "node": "Node",
+        "python3": "Python",
+        "npm": "npm",
+        "pnpm": "pnpm",
+        "yarn": "yarn",
+        "linux": "Linux",
+        "darwin": "macOS",
+        "win32": "Windows",
+        "terraform_provider": "Terraform",
+        "cli_config": "CLI",
+    }
+    return name_map.get(s, s.capitalize() if s else s)
 
-    Args:
-        healthy: Whether all verification checks passed.
-    """
-    print(_bold(_green("  ✓ Installation complete!\n")), file=sys.stderr)
 
-    if not healthy:
-        print(
-            _yellow("  Some checks have warnings. Run `npx gaia-doctor` for details.\n"),
-            file=sys.stderr,
-        )
-
-    print(_gray("  Next steps:"), file=sys.stderr)
-    print(_gray("    1. Start Claude Code: claude"), file=sys.stderr)
-    print(_gray("    2. Enrich context:    /speckit.init"), file=sys.stderr)
-    print(_gray("    3. Verify health:     npx gaia-doctor\n"), file=sys.stderr)
-
-
-def print_sync_summary(changes: Dict[str, Any]) -> None:
-    """Print summary of what changed during a rescan+sync (Mode 2).
-
-    Args:
-        changes: Dict with keys: sections_updated, sections_preserved,
-                 warnings, symlinks_refreshed, claude_md_synced, etc.
-    """
-    print(_bold(_cyan("\n  Rescan Summary\n")), file=sys.stderr)
-
-    sections = changes.get("sections_updated", [])
-    preserved = changes.get("sections_preserved", [])
-    warnings = changes.get("warnings", [])
-
-    if sections:
-        print(f"  Sections updated: {', '.join(sections)}", file=sys.stderr)
-    if preserved:
-        print(f"  Sections preserved: {', '.join(preserved)}", file=sys.stderr)
-
-    if changes.get("claude_md_synced"):
-        print("  CLAUDE.md synced from template", file=sys.stderr)
-    if changes.get("settings_merged"):
-        print("  settings.json merged with template", file=sys.stderr)
-    if changes.get("symlinks_refreshed"):
-        print(f"  Symlinks refreshed: {changes['symlinks_refreshed']}", file=sys.stderr)
-    if changes.get("hooks_installed"):
-        print(f"  Git hooks installed: {changes['hooks_installed']} repo(s)", file=sys.stderr)
-
-    if warnings:
-        print(_yellow(f"\n  Warnings ({len(warnings)}):"), file=sys.stderr)
-        for w in warnings[:10]:
-            print(_yellow(f"    - {w}"), file=sys.stderr)
-        if len(warnings) > 10:
-            print(_gray(f"    ... and {len(warnings) - 10} more"), file=sys.stderr)
-
-    print("", file=sys.stderr)

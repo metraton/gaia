@@ -380,9 +380,14 @@ class GitScanner(BaseScanner):
         warnings: List[str] = []
 
         git_dir = root / ".git"
+        git_root = root
 
         if not git_dir.is_dir():
-            # No .git directory: return minimal section
+            # Look in immediate subdirectories for .git
+            git_dir, git_root = self._find_git_in_subdirs(root)
+
+        if git_dir is None:
+            # No .git directory found at root or in subdirectories
             # Note: monorepo detection is owned by StackScanner, not duplicated here
             section: Dict[str, Any] = {
                 "platform": None,
@@ -402,6 +407,12 @@ class GitScanner(BaseScanner):
                 duration_ms=elapsed,
             )
 
+        # Track if git was found in a subdirectory
+        if git_root != root:
+            warnings.append(
+                f".git found in subdirectory: {git_root.name}/"
+            )
+
         # Parse remotes from .git/config
         git_config = _parse_git_config(git_dir)
         remotes = git_config["remotes"]
@@ -416,7 +427,7 @@ class GitScanner(BaseScanner):
         branch_strategy = _detect_branch_strategy(git_dir)
 
         # Note: monorepo detection is owned by StackScanner, not duplicated here
-        section = {
+        section: Dict[str, Any] = {
             "platform": platform,
             "remotes": remotes,
             "default_branch": default_branch,
@@ -424,12 +435,41 @@ class GitScanner(BaseScanner):
             "monorepo": {"workspace_config": None},
         }
 
+        # Include git_root when it differs from the scan root
+        if git_root != root:
+            section["git_root"] = str(git_root.relative_to(root))
+
         elapsed = (time.monotonic() * 1000) - start_ms
         return self.make_result(
             sections={"git": section},
             warnings=warnings,
             duration_ms=elapsed,
         )
+
+    @staticmethod
+    def _find_git_in_subdirs(
+        root: Path,
+    ) -> Tuple[Optional[Path], Path]:
+        """Look for .git in immediate subdirectories.
+
+        Args:
+            root: Scan root directory.
+
+        Returns:
+            Tuple of (git_dir, git_root) if found, or (None, root) if not.
+        """
+        try:
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                if entry.name in ("node_modules", "vendor", "__pycache__"):
+                    continue
+                candidate = entry / ".git"
+                if candidate.is_dir():
+                    return candidate, entry
+        except OSError:
+            pass
+        return None, root
 
 
 # Module-level convenience for T009 task verify command compatibility

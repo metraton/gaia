@@ -283,6 +283,11 @@ class OrchestrationScanner(BaseScanner):
                 tool = "flux"
                 config_path = flux_dir
 
+        # If tool is detected but config_path is still None, derive from
+        # kustomize file paths (e.g., qxo-monorepo/gitops/base/kustomization.yaml)
+        if tool is not None and config_path is None:
+            config_path = self._derive_config_path_from_kustomize(root)
+
         return {
             "tool": tool,
             "api_groups": api_groups,
@@ -326,12 +331,33 @@ class OrchestrationScanner(BaseScanner):
         return flux_groups, argocd_groups
 
     def _find_flux_config_path(self, root: Path) -> Optional[str]:
-        """Find the Flux configuration root directory."""
+        """Find the Flux configuration root directory.
+
+        Checks root-level directories first, then searches subdirectories
+        for gitops-related directory names.
+        """
         candidates = ["clusters", "flux-system", "gitops"]
+
+        # Check root-level directories
         for candidate in candidates:
             candidate_path = root / candidate
             if candidate_path.is_dir():
                 return candidate
+
+        # Check one level deeper (e.g., monorepo-root/gitops/)
+        try:
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                if entry.name in ("node_modules", "vendor", "__pycache__"):
+                    continue
+                for candidate in candidates:
+                    nested = entry / candidate
+                    if nested.is_dir():
+                        return str(nested.relative_to(root))
+        except OSError:
+            pass
+
         return None
 
     def _find_argocd_config_path(self, root: Path) -> Optional[str]:
@@ -356,6 +382,34 @@ class OrchestrationScanner(BaseScanner):
         if len(matched_dirs) >= 2:
             return "clusters" if (root / "clusters").is_dir() else matched_dirs[0]
 
+        return None
+
+    def _derive_config_path_from_kustomize(self, root: Path) -> Optional[str]:
+        """Derive gitops config_path from detected kustomize file locations.
+
+        Finds kustomization.yaml files and returns the highest common
+        gitops-related ancestor directory.
+        """
+        gitops_dirs: List[str] = []
+
+        try:
+            for kust_file in walk_project_named(
+                root, ["kustomization.yaml", "kustomization.yml", "Kustomization"]
+            ):
+                rel = kust_file.relative_to(root)
+                # Walk up the path parts looking for a gitops-related directory name
+                parts = rel.parent.parts
+                for i, part in enumerate(parts):
+                    if part.lower() in ("gitops", "flux", "argocd", "deploy", "k8s"):
+                        gitops_path = str(Path(*parts[: i + 1]))
+                        if gitops_path not in gitops_dirs:
+                            gitops_dirs.append(gitops_path)
+                        break
+        except Exception:
+            pass
+
+        if gitops_dirs:
+            return gitops_dirs[0]
         return None
 
     # ------------------------------------------------------------------ #

@@ -38,7 +38,7 @@ class TestInfraScannerBasics:
         assert scanner.SCANNER_VERSION == "1.0.0"
 
     def test_owned_sections(self, scanner: InfrastructureScanner) -> None:
-        assert scanner.OWNED_SECTIONS == ["infrastructure"]
+        assert scanner.OWNED_SECTIONS == ["infrastructure", "application_services"]
 
     def test_source_tag(self, scanner: InfrastructureScanner) -> None:
         assert scanner.source_tag == "scanner:infrastructure"
@@ -239,6 +239,52 @@ class TestCICDDetection:
         infra = result.sections["infrastructure"]
         cicd_platforms = [c["platform"] for c in infra["ci_cd"]]
         assert "gitlab-ci" in cicd_platforms
+
+    def test_gitlab_ci_extracts_stages(
+        self, scanner: InfrastructureScanner, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".gitlab-ci.yml").write_text(
+            "stages:\n  - build\n  - test\n  - deploy\n\njob1:\n  stage: build\n"
+        )
+        result = scanner.scan(tmp_path)
+        infra = result.sections["infrastructure"]
+        gitlab_entry = [c for c in infra["ci_cd"] if c["platform"] == "gitlab-ci"][0]
+        assert gitlab_entry["stages"] == ["build", "test", "deploy"]
+
+    def test_gitlab_ci_detects_related_files(
+        self, scanner: InfrastructureScanner, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".gitlab-ci.yml").write_text("stages:\n  - test\n")
+        (tmp_path / ".gitlab-ci-builder.yml").write_text("# builder\n")
+        gitlab_ci_dir = tmp_path / ".gitlab" / "ci"
+        gitlab_ci_dir.mkdir(parents=True)
+        (gitlab_ci_dir / "templates.yml").write_text("# templates\n")
+        ci_local = tmp_path / ".ci-local"
+        ci_local.mkdir()
+        result = scanner.scan(tmp_path)
+        infra = result.sections["infrastructure"]
+        gitlab_entry = [c for c in infra["ci_cd"] if c["platform"] == "gitlab-ci"][0]
+        assert ".gitlab/ci/" in gitlab_entry["related_files"]
+        assert ".gitlab-ci-builder.yml" in gitlab_entry["related_files"]
+        assert ".ci-local/" in gitlab_entry["related_files"]
+
+    def test_gitlab_ci_no_related_files_when_none_exist(
+        self, scanner: InfrastructureScanner, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".gitlab-ci.yml").write_text("stages:\n  - test\n")
+        result = scanner.scan(tmp_path)
+        infra = result.sections["infrastructure"]
+        gitlab_entry = [c for c in infra["ci_cd"] if c["platform"] == "gitlab-ci"][0]
+        assert "related_files" not in gitlab_entry
+
+    def test_gitlab_ci_no_stages_when_absent(
+        self, scanner: InfrastructureScanner, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".gitlab-ci.yml").write_text("job1:\n  script: echo hi\n")
+        result = scanner.scan(tmp_path)
+        infra = result.sections["infrastructure"]
+        gitlab_entry = [c for c in infra["ci_cd"] if c["platform"] == "gitlab-ci"][0]
+        assert "stages" not in gitlab_entry
 
     def test_detect_jenkins(
         self, scanner: InfrastructureScanner, tmp_path: Path

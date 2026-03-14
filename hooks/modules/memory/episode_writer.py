@@ -44,7 +44,6 @@ def get_session_events() -> Dict[str, Any]:
         if not critical_events:
             return {}
 
-        # Extract git commits
         commits = [
             {
                 "hash": e.get("commit_hash", ""),
@@ -55,7 +54,6 @@ def get_session_events() -> Dict[str, Any]:
             if e.get("event_type") == "git_commit" and e.get("commit_hash")
         ]
 
-        # Extract git pushes
         pushes = [
             {
                 "branch": e.get("branch", ""),
@@ -65,7 +63,6 @@ def get_session_events() -> Dict[str, Any]:
             if e.get("event_type") == "git_push" and e.get("branch")
         ]
 
-        # Extract file modifications
         file_mods = [
             {
                 "count": e.get("modification_count", 0),
@@ -75,7 +72,6 @@ def get_session_events() -> Dict[str, Any]:
             if e.get("event_type") == "file_modifications"
         ]
 
-        # Extract spec-kit milestones
         speckit = [
             {
                 "command": e.get("command", ""),
@@ -85,7 +81,6 @@ def get_session_events() -> Dict[str, Any]:
             if e.get("event_type") == "speckit_milestone"
         ]
 
-        # Build result
         result = {}
         if commits:
             result["git_commits"] = commits
@@ -129,7 +124,6 @@ def write(
     try:
         import importlib.util
 
-        # Find memory module
         candidates = [
             Path(__file__).parent.parent.parent.parent / "tools" / "memory" / "episodic.py",
             Path(".claude/tools/memory/episodic.py"),
@@ -153,7 +147,6 @@ def write(
             logger.debug("Episodic memory module not found - skipping episode capture")
             return None
 
-        # Initialize memory
         memory = episodic_module.EpisodicMemory()
 
         # Use the real task description captured from the transcript.
@@ -202,7 +195,18 @@ def write(
             context["anomalies"] = anomalies
             logger.info(f"Episode has {len(anomalies)} anomaly/anomalies")
 
-        # Store episode (pass workflow metrics for P3 CLI compatibility fields)
+        # Include context anchor hit tracking if available
+        anchor_hits = metrics.get("context_anchor_hits")
+        if anchor_hits:
+            context["context_anchor_hits"] = anchor_hits
+            logger.info(
+                "Episode anchor hits: %d/%d (%.0f%%)",
+                anchor_hits.get("hits", 0),
+                anchor_hits.get("total_checked", 0),
+                anchor_hits.get("hit_rate", 0) * 100,
+            )
+
+        # P3 CLI compatibility fields
         episode_id = memory.store_episode(
             prompt=prompt,
             clarifications={},

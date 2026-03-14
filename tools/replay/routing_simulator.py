@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# Ensure the context module is importable
 _TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))

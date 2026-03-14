@@ -28,7 +28,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-# Add hooks dir to path for adapter imports (matches pre_tool_use.py pattern)
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Adapter layer

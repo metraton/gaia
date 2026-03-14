@@ -417,6 +417,17 @@ function validateAgentSkillWiring(ctx, data, findings, checks) {
     }
   }
 
+  // Scan root CLAUDE.md for skills/ references (orchestrator-consumed skills)
+  const projectClaudeMd = path.join(ctx.projectRoot, "CLAUDE.md");
+  if (exists(projectClaudeMd)) {
+    const claudeMdContent = readText(projectClaudeMd);
+    for (const skillName of data.skillNames) {
+      if (claudeMdContent.includes(`skills/${skillName}`)) {
+        referenced.add(skillName);
+      }
+    }
+  }
+
   const orphanSkills = [...data.skillNames].filter((s) => !referenced.has(s));
   if (orphanSkills.length > 0) {
     addFinding(findings, {
@@ -490,16 +501,6 @@ function validateInjectionWiring(ctx, findings, checks) {
       ok = false;
     }
 
-    if (!content.includes("skills:' field in the agent's frontmatter")) {
-      addFinding(findings, {
-        severity: "info",
-        code: "SKILLS_INJECTION_DOC_MISSING",
-        title: "No explicit inline note about native skills injection",
-        detail: "Could not find an explicit comment clarifying frontmatter-based skill injection.",
-        evidence: preToolUsePath,
-        remediation: "Keep an inline note to reduce ambiguity for future maintainers.",
-      });
-    }
   }
 
   if (ctx.inProject) {

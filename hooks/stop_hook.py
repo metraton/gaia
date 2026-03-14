@@ -19,7 +19,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-# Add hooks dir to path for adapter imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
@@ -47,7 +46,6 @@ def _handle_stop(event) -> None:
     """
     adapter = ClaudeCodeAdapter()
 
-    # Parse stop event via adapter
     quality_result = adapter.adapt_stop(event.payload)
     stop_reason = event.payload.get("stop_reason", "unknown")
 
@@ -58,7 +56,6 @@ def _handle_stop(event) -> None:
         quality_result.score,
     )
 
-    # Format and output quality response
     response = adapter.format_quality_response(quality_result)
     print(json.dumps(response.output))
     sys.exit(0)

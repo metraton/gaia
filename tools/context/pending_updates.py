@@ -134,7 +134,6 @@ class PendingUpdateStore:
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.applied_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create empty index if it doesn't exist
         if not self.index_file.exists():
             self._save_index({
                 "version": "1.0.0",
@@ -187,13 +186,11 @@ class PendingUpdateStore:
         Returns:
             SHA-256 hash (first 12 characters)
         """
-        # Create normalized representation for hashing
         content = json.dumps({
             "section": target_section,
             "change": proposed_change
         }, sort_keys=True)
 
-        # Compute SHA-256 and take first 12 characters
         hash_full = hashlib.sha256(content.encode('utf-8')).hexdigest()
         return hash_full[:12]
 
@@ -212,17 +209,14 @@ class PendingUpdateStore:
         Returns:
             True if valid, False otherwise
         """
-        # Check confidence threshold
         if discovery.confidence < 0.7:
             print(f"Error: Confidence {discovery.confidence} is below threshold 0.7", file=sys.stderr)
             return False
 
-        # Check valid category
         if discovery.category not in CATEGORY_TO_SECTIONS:
             print(f"Error: Invalid category '{discovery.category}'", file=sys.stderr)
             return False
 
-        # Check valid target section for category
         valid_sections = CATEGORY_TO_SECTIONS[discovery.category]
         if discovery.target_section not in valid_sections:
             print(f"Error: Invalid target section '{discovery.target_section}' for category '{discovery.category}'", file=sys.stderr)
@@ -244,17 +238,13 @@ class PendingUpdateStore:
         Raises:
             ValueError: If discovery is invalid
         """
-        # Validate discovery
         if not self._validate_discovery(discovery):
             raise ValueError("Invalid discovery result")
 
-        # Compute content hash for deduplication
         content_hash = self._compute_hash(discovery.target_section, discovery.proposed_change)
 
-        # Load index
         index = self._load_index()
 
-        # Check for existing update with same hash
         existing_id = index["hash_index"].get(content_hash)
 
         now = datetime.now(timezone.utc).isoformat()
@@ -270,10 +260,8 @@ class PendingUpdateStore:
             if discovery.source_agent not in existing["seen_by_agents"]:
                 existing["seen_by_agents"].append(discovery.source_agent)
 
-            # Update index
             self._save_index(index)
 
-            # Log deduplication event
             self._log_event({
                 "event": "dedup_increment",
                 "update_id": existing_id,
@@ -285,7 +273,6 @@ class PendingUpdateStore:
             print(f"Deduplicated update: {existing_id} (seen_count={existing['seen_count']})", file=sys.stderr)
             return existing_id
 
-        # Create new update
         update_id = f"pu_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{content_hash[:4]}"
 
         update = PendingUpdate(
@@ -307,7 +294,6 @@ class PendingUpdateStore:
             seen_by_agents=[discovery.source_agent]
         )
 
-        # Add to index
         index["updates"][update_id] = update.to_dict()
         index["hash_index"][content_hash] = update_id
         index["total_count"] += 1
@@ -316,7 +302,6 @@ class PendingUpdateStore:
 
         self._save_index(index)
 
-        # Log creation event
         self._log_event({
             "event": "created",
             "update_id": update_id,
@@ -406,18 +391,15 @@ class PendingUpdateStore:
         if update_data["status"] != UpdateStatus.PENDING.value:
             raise ValueError(f"Update {update_id} is not pending (status={update_data['status']})")
 
-        # Update status
         old_status = update_data["status"]
         update_data["status"] = UpdateStatus.APPROVED.value
         update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Update counts
         index["pending_count"] -= 1
         index["last_updated"] = update_data["updated_at"]
 
         self._save_index(index)
 
-        # Log status change
         self._log_event({
             "event": "status_change",
             "update_id": update_id,
@@ -451,18 +433,15 @@ class PendingUpdateStore:
         if update_data["status"] != UpdateStatus.PENDING.value:
             raise ValueError(f"Update {update_id} is not pending (status={update_data['status']})")
 
-        # Update status
         old_status = update_data["status"]
         update_data["status"] = UpdateStatus.REJECTED.value
         update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Update counts
         index["pending_count"] -= 1
         index["last_updated"] = update_data["updated_at"]
 
         self._save_index(index)
 
-        # Log status change
         self._log_event({
             "event": "status_change",
             "update_id": update_id,
@@ -497,7 +476,6 @@ class PendingUpdateStore:
         if update_data["status"] != UpdateStatus.APPROVED.value:
             raise ValueError(f"Update {update_id} is not approved (status={update_data['status']})")
 
-        # Determine context file path
         if context_path:
             context_file = Path(context_path)
         else:
@@ -507,11 +485,9 @@ class PendingUpdateStore:
             raise ValueError(f"Project context file not found: {context_file}")
 
         try:
-            # Read current context
             with open(context_file, 'r') as f:
                 context_data = json.load(f)
 
-            # Validate target section exists
             if "sections" not in context_data:
                 raise ValueError("Invalid project-context.json: missing 'sections' key")
 
@@ -519,20 +495,17 @@ class PendingUpdateStore:
             if target_section not in context_data["sections"]:
                 raise ValueError(f"Target section '{target_section}' not found in project-context.json")
 
-            # Create backup
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             backup_path = context_file.parent / f"project-context.backup.{timestamp}.json"
             with open(backup_path, 'w') as f:
                 json.dump(context_data, f, indent=2)
 
-            # Apply JSON merge patch
             section_data = context_data["sections"][target_section]
             proposed_change = update_data["proposed_change"]
 
             # Simple merge: update keys from proposed_change
             self._merge_dicts(section_data, proposed_change)
 
-            # Update metadata
             if "metadata" not in context_data:
                 context_data["metadata"] = {}
             context_data["metadata"]["last_updated"] = datetime.now(timezone.utc).isoformat()
@@ -543,7 +516,6 @@ class PendingUpdateStore:
                 json.dump(context_data, f, indent=2)
             temp_file.rename(context_file)
 
-            # Update status
             old_status = update_data["status"]
             update_data["status"] = UpdateStatus.APPLIED.value
             update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -551,12 +523,10 @@ class PendingUpdateStore:
             index["last_updated"] = update_data["updated_at"]
             self._save_index(index)
 
-            # Archive applied update
             applied_file = self.applied_dir / f"update-{update_id}.json"
             with open(applied_file, 'w') as f:
                 json.dump(update_data, f, indent=2)
 
-            # Log application event
             self._log_event({
                 "event": "status_change",
                 "update_id": update_id,
@@ -612,7 +582,6 @@ class PendingUpdateStore:
             "by_agent": {}
         }
 
-        # Count by status, category, and agent
         for update_data in index["updates"].values():
             status = update_data["status"]
             category = update_data["category"]

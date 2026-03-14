@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-CLI entry point for gaia-scan — the SINGLE entry point for both fresh
+CLI entry point for gaia-scan -- the SINGLE entry point for both fresh
 projects and existing projects.
 
 Modes:
-  Mode 1 (Fresh):    No .claude/ directory — full setup flow.
-  Mode 2 (Existing): .claude/ exists — rescan + sync + verify.
-  Mode 3 (Non-interactive): --non-interactive flag — skips prompts.
+  Mode 1 (Fresh):    No .claude/ directory -- full setup flow (automatic).
+  Mode 2 (Existing): .claude/ exists -- rescan + sync + verify.
+  Mode 3 (Scan-only): --scan-only or --json -- scanners only, JSON output.
 
 Usage:
     gaia-scan                                        # Auto-detect mode
@@ -15,8 +15,8 @@ Usage:
     gaia-scan --output /tmp/ctx.json                 # Custom output path
     gaia-scan --check-staleness                      # Exit 0 if fresh, else scan
     gaia-scan --verbose                              # Scanner-by-scanner progress
-    gaia-scan --json                                 # JSON output to stdout (default)
-    gaia-scan --non-interactive --cloud gcp          # CI/CD mode, no prompts
+    gaia-scan --json                                 # JSON output to stdout
+    gaia-scan --scan-only                            # Scan only, no setup/sync
 
 Exit codes:
     0  Success
@@ -48,7 +48,8 @@ def _get_version():
     """Read version from package.json."""
     try:
         pkg_path = Path(__file__).resolve().parent.parent / "package.json"
-        return json.load(open(pkg_path))["version"]
+        with open(pkg_path) as f:
+            return json.load(f)["version"]
     except Exception:
         return "unknown"
 
@@ -106,49 +107,17 @@ def _build_summary(output) -> dict:
     }
 
 
-def _pretty_print(output, verbose: bool = False) -> None:
-    """Print a human-readable summary to stderr (keeps stdout for JSON)."""
-    n_scanners = len(output.scanner_results)
-    n_sections = len(output.sections_updated)
-    n_warnings = len(output.warnings)
-    duration_s = output.duration_ms / 1000
-
-    print(
-        f"\ngaia scan complete  "
-        f"({n_scanners} scanners, {n_sections} sections, "
-        f"{n_warnings} warnings, {duration_s:.1f}s)",
-        file=sys.stderr,
-    )
-
-    if verbose:
-        print("\nScanner results:", file=sys.stderr)
-        for name, result in sorted(output.scanner_results.items()):
-            sections = ", ".join(result.sections.keys()) if result.sections else "(none)"
-            warns = f"  [{len(result.warnings)} warn]" if result.warnings else ""
-            print(
-                f"  {name}: {sections}  ({result.duration_ms:.0f}ms){warns}",
-                file=sys.stderr,
-            )
-
-    if output.warnings:
-        print(f"\nWarnings ({n_warnings}):", file=sys.stderr)
-        for w in output.warnings[:10]:
-            print(f"  - {w}", file=sys.stderr)
-        if n_warnings > 10:
-            print(f"  ... and {n_warnings - 10} more", file=sys.stderr)
-
-    if output.sections_preserved:
-        print(
-            f"\nPreserved agent-enriched sections: "
-            f"{', '.join(output.sections_preserved)}",
-            file=sys.stderr,
-        )
+def _run_scan(project_root: Path, scan_config: ScanConfig) -> object:
+    """Run the 6 Python scanners and return ScanOutput."""
+    registry = ScannerRegistry()
+    orchestrator = ScanOrchestrator(registry=registry, config=scan_config)
+    return orchestrator.run(project_root=project_root)
 
 
-def _extract_config_from_scan(output, project_root: Path, cli_args) -> dict:
-    """Extract a config dict from scan output, CLI args, and env vars.
+def _extract_config_from_scan(output, project_root: Path) -> dict:
+    """Extract a config dict from scan output for setup functions.
 
-    Priority: CLI args > env vars > scan results > defaults.
+    Priority: env vars > scan results > defaults.
     """
     ctx = output.context
     paths = ctx.get("paths", {})
@@ -163,7 +132,6 @@ def _extract_config_from_scan(output, project_root: Path, cli_args) -> dict:
 
     git_section = sections.get("git", {})
     project_identity = sections.get("project_identity", {})
-    env_section = sections.get("environment", {})
 
     # Extract detected values
     detected_cloud = primary_cloud.get("name") or meta.get("cloud_provider") or "gcp"
@@ -175,68 +143,36 @@ def _extract_config_from_scan(output, project_root: Path, cli_args) -> dict:
     )
     detected_region = primary_cloud.get("region") or meta.get("primary_region") or ""
 
-    # Git remotes for display
-    remotes = git_section.get("remotes", [])
-    git_remotes = []
-    if isinstance(remotes, list):
-        for r in remotes:
-            if isinstance(r, dict):
-                git_remotes.append({
-                    "path": r.get("name", "."),
-                    "remote": r.get("url", ""),
-                })
-
-    # Claude Code status
-    env_tools = env_section.get("tools", [])
-    claude_code = {"installed": False, "version": None}
-    if isinstance(env_tools, list):
-        claude_entry = next(
-            (t for t in env_tools if isinstance(t, dict) and t.get("name") in ("claude", "claude-code")),
-            None,
-        )
-        if claude_entry:
-            claude_code = {"installed": True, "version": claude_entry.get("version")}
-
-    # Build config with priority: CLI > env > scan > defaults
     config = {
         "gitops": (
-            getattr(cli_args, "gitops", None)
-            or os.environ.get("CLAUDE_GITOPS_DIR")
+            os.environ.get("CLAUDE_GITOPS_DIR")
             or paths.get("gitops")
             or infrastructure.get("paths", {}).get("gitops")
             or ""
         ),
         "terraform": (
-            getattr(cli_args, "terraform", None)
-            or os.environ.get("CLAUDE_TERRAFORM_DIR")
+            os.environ.get("CLAUDE_TERRAFORM_DIR")
             or paths.get("terraform")
             or infrastructure.get("paths", {}).get("terraform")
             or ""
         ),
         "app_services": (
-            getattr(cli_args, "app_services", None)
-            or os.environ.get("CLAUDE_APP_SERVICES_DIR")
+            os.environ.get("CLAUDE_APP_SERVICES_DIR")
             or paths.get("app_services")
             or infrastructure.get("paths", {}).get("app_services")
             or ""
         ),
-        "cloud_provider": (
-            getattr(cli_args, "cloud", None)
-            or detected_cloud
-        ),
+        "cloud_provider": detected_cloud,
         "project_id": (
-            getattr(cli_args, "project_id", None)
-            or os.environ.get("CLAUDE_PROJECT_ID")
+            os.environ.get("CLAUDE_PROJECT_ID")
             or detected_project_id
         ),
         "region": (
-            getattr(cli_args, "region", None)
-            or os.environ.get("CLAUDE_REGION")
+            os.environ.get("CLAUDE_REGION")
             or detected_region
         ),
         "cluster_name": (
-            getattr(cli_args, "cluster", None)
-            or os.environ.get("CLAUDE_CLUSTER_NAME")
+            os.environ.get("CLAUDE_CLUSTER_NAME")
             or ""
         ),
         "project_name": (
@@ -246,18 +182,9 @@ def _extract_config_from_scan(output, project_root: Path, cli_args) -> dict:
         ),
         "git_platform": git_section.get("platform"),
         "ci_platform": primary_ci.get("platform") if isinstance(primary_ci, dict) else None,
-        "claude_code": claude_code,
-        "git_remotes": git_remotes,
     }
 
     return config
-
-
-def _run_scan(project_root: Path, scan_config: ScanConfig) -> object:
-    """Run the 6 Python scanners and return ScanOutput."""
-    registry = ScannerRegistry()
-    orchestrator = ScanOrchestrator(registry=registry, config=scan_config)
-    return orchestrator.run(project_root=project_root)
 
 
 # ============================================================================
@@ -265,9 +192,9 @@ def _run_scan(project_root: Path, scan_config: ScanConfig) -> object:
 # ============================================================================
 
 def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
-    """Full setup flow for a fresh project.
+    """Full setup flow for a fresh project. Fully automatic, no prompts.
 
-    Steps: SCAN -> DISPLAY -> GAPS -> CONFIRM -> INSTALL -> VERIFY -> NEXT
+    Steps: SCAN -> DISPLAY -> INSTALL -> VERIFY -> SUMMARY
     """
     from tools.scan.setup import (
         copy_claude_md,
@@ -280,92 +207,65 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
         install_git_hooks,
     )
     from tools.scan.ui import (
-        confirm_or_edit,
-        display_config,
-        display_config_noninteractive,
-        print_success,
-        prompt_gaps,
+        RailUI,
+        collect_created_summary,
+        collect_warnings,
+        format_scanner_results,
     )
-    from tools.scan.verify import print_verification, run_verification
+    from tools.scan.verify import run_verification
 
-    # Step 1: SCAN
+    ui = RailUI(version=scanner_version, color=_use_color(args))
+
+    # Step 1: Header + scanning
+    ui.start()
+    ui.scanning()
+
+    # Step 2: SCAN
     output = _run_scan(project_root, scan_config)
-    _pretty_print(output, verbose=args.verbose)
+
+    # Step 3: DISPLAY results
+    display_sections = format_scanner_results(output, project_root=project_root)
+    for sec in display_sections:
+        ui.section(sec["name"], sec["lines"])
+
+    # Warnings
+    warnings = collect_warnings(output)
+    if warnings:
+        ui.warning(len(warnings), warnings)
 
     # Extract config from scan results
-    config = _extract_config_from_scan(output, project_root, args)
+    config = _extract_config_from_scan(output, project_root)
 
-    non_interactive = getattr(args, "non_interactive", False)
-
-    if non_interactive:
-        # Mode 3: Non-interactive
-        display_config_noninteractive(config)
-    else:
-        # Step 2: DISPLAY
-        gaps = display_config(config, project_root)
-
-        # Step 3: GAPS
-        config = prompt_gaps(config, gaps)
-
-        # Step 4: CONFIRM
-        config = confirm_or_edit(config)
-        if config is None:
-            return 0  # User cancelled
-
-    # Step 5: INSTALL
-    print("\n  Installing...\n", file=sys.stderr)
-
-    # 5.1 Claude Code
+    # Step 4: INSTALL (automatic, no prompts)
     skip_claude = getattr(args, "skip_claude_install", False)
-    claude_status = ensure_claude_code(skip_install=skip_claude)
-    if claude_status.get("installed"):
-        print("  ✓ Claude Code ready", file=sys.stderr)
-    else:
-        print("  ⚠ Claude Code not installed", file=sys.stderr)
+    ensure_claude_code(skip_install=skip_claude)
+    ensure_gaia_ops_package(project_root)
+    create_claude_directory(project_root)
+    copy_claude_md(project_root)
+    copy_settings_json(project_root)
+    install_git_hooks(project_root)
+    generate_project_context(project_root, config, scan_context=output.context)
+    generate_governance(project_root, config)
 
-    # 5.2 npm package
-    if ensure_gaia_ops_package(project_root):
-        print("  ✓ @jaguilar87/gaia-ops installed", file=sys.stderr)
-    else:
-        print("  ⚠ Package install failed (continuing with local files)", file=sys.stderr)
+    # Step 5: VERIFY (silent -- used for health check)
+    run_verification(project_root)
 
-    # 5.3 .claude/ directory with symlinks
-    created = create_claude_directory(project_root)
-    print(f"  ✓ .claude/ directory created ({len(created)} symlinks)", file=sys.stderr)
+    # Step 6: Done + Created summary
+    duration_s = output.duration_ms / 1000
+    ui.done(duration_s)
 
-    # 5.4 CLAUDE.md
-    if copy_claude_md(project_root):
-        print("  ✓ CLAUDE.md synced", file=sys.stderr)
+    created_items = collect_created_summary(project_root, output)
+    if created_items:
+        ui.created(created_items)
 
-    # 5.5 settings.json
-    if copy_settings_json(project_root):
-        print("  ✓ settings.json ready", file=sys.stderr)
+    ui.footer("Run claude to start. Context will enrich automatically.")
 
-    # 5.6 Git hooks
-    hooks_count = install_git_hooks(project_root)
-    if hooks_count > 0:
-        print(f"  ✓ Git hooks installed ({hooks_count} repo(s))", file=sys.stderr)
-
-    # 5.7 project-context.json
-    if generate_project_context(project_root, config, scan_context=output.context):
-        print("  ✓ project-context.json generated", file=sys.stderr)
-
-    # 5.8 governance.md
-    if generate_governance(project_root, config):
-        print("  ✓ governance.md ready", file=sys.stderr)
-
-    # Step 6: VERIFY
-    results = run_verification(project_root)
-    healthy = print_verification(results)
-
-    # Step 7: NEXT
-    print_success(healthy)
-
-    # Also print JSON summary to stdout
+    # JSON summary to stdout (only when --json or piped)
     summary = _build_summary(output)
     summary["status"] = "success"
     summary["mode"] = "fresh"
-    print(json.dumps(summary, indent=2), file=sys.stdout)
+    if _should_print_json(args):
+        print(json.dumps(summary, indent=2), file=sys.stdout)
 
     return 0
 
@@ -375,9 +275,9 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
 # ============================================================================
 
 def _mode_existing(project_root: Path, scan_config: ScanConfig, args) -> int:
-    """Rescan + sync flow for an existing project.
+    """Rescan + sync flow for an existing project. Fully automatic.
 
-    Steps: SCAN -> MERGE -> SYNC -> VERIFY -> SUMMARY
+    Steps: SCAN -> DISPLAY -> SYNC -> SUMMARY
     """
     from tools.scan.setup import (
         copy_claude_md,
@@ -385,68 +285,123 @@ def _mode_existing(project_root: Path, scan_config: ScanConfig, args) -> int:
         create_claude_directory,
         install_git_hooks,
     )
-    from tools.scan.ui import print_sync_summary
-    from tools.scan.verify import print_verification, run_verification
+    from tools.scan.ui import (
+        RailUI,
+        collect_warnings,
+        format_scanner_results,
+    )
+    from tools.scan.verify import run_verification
 
-    changes: dict = {}
+    ui = RailUI(version=scanner_version, color=_use_color(args))
 
-    # Step 1: SCAN (orchestrator handles merge into project-context.json)
+    # Step 1: Header + scanning
+    ui.start()
+    ui.scanning()
+
+    # Step 2: SCAN
     output = _run_scan(project_root, scan_config)
-    _pretty_print(output, verbose=args.verbose)
 
-    changes["sections_updated"] = output.sections_updated
-    changes["sections_preserved"] = output.sections_preserved
-    changes["warnings"] = output.warnings
+    # Step 3: DISPLAY results
+    display_sections = format_scanner_results(output, project_root=project_root)
+    for sec in display_sections:
+        ui.section(sec["name"], sec["lines"])
 
-    # Step 3: SYNC — refresh CLAUDE.md, merge settings.json, refresh symlinks
-    if copy_claude_md(project_root):
-        changes["claude_md_synced"] = True
+    # Warnings
+    warnings = collect_warnings(output)
+    if warnings:
+        ui.warning(len(warnings), warnings)
 
-    if copy_settings_json(project_root):
-        changes["settings_merged"] = True
+    # Step 4: SYNC
+    copy_claude_md(project_root)
+    copy_settings_json(project_root)
+    create_claude_directory(project_root)
+    install_git_hooks(project_root)
 
-    created = create_claude_directory(project_root)
-    if created:
-        changes["symlinks_refreshed"] = len(created)
+    # Step 5: VERIFY (silent)
+    run_verification(project_root)
 
-    hooks_count = install_git_hooks(project_root)
-    if hooks_count > 0:
-        changes["hooks_installed"] = hooks_count
+    # Step 6: Done + Updated summary
+    duration_s = output.duration_ms / 1000
+    ui.done(duration_s)
 
-    # Step 4: VERIFY
-    results = run_verification(project_root)
-    healthy = print_verification(results)
+    sections_updated = len(output.sections_updated)
+    sections_preserved = len(output.sections_preserved)
+    ui.updated(sections_updated, sections_preserved)
 
-    # Step 5: SUMMARY
-    print_sync_summary(changes)
+    ui.footer("Ready.")
 
-    # JSON summary to stdout
+    # JSON summary to stdout (only when --json or piped)
     summary = _build_summary(output)
     summary["status"] = "error" if output.errors else "success"
     summary["mode"] = "existing"
-    print(json.dumps(summary, indent=2), file=sys.stdout)
+    if _should_print_json(args):
+        print(json.dumps(summary, indent=2), file=sys.stdout)
 
     return 1 if output.errors else 0
 
 
 # ============================================================================
-# Legacy scan-only mode
+# Mode 3: Scan-only mode
 # ============================================================================
 
 def _mode_scan_only(project_root: Path, scan_config: ScanConfig, args) -> int:
     """Scan-only mode: run scanners, write context, print JSON.
 
-    This mode runs scanners only, writes context, and prints JSON.
-    Useful for CI/CD or when only scan data is needed.
+    Compact rail output showing section names on one line.
     """
-    output = _run_scan(project_root, scan_config)
-    _pretty_print(output, verbose=args.verbose)
+    from tools.scan.ui import RailUI, format_scanner_results
 
+    ui = RailUI(version=scanner_version, color=_use_color(args))
+
+    # Header (no scanning indicator for compact mode)
+    ui.start()
+
+    # Scan
+    output = _run_scan(project_root, scan_config)
+
+    # Compact section list
+    display_sections = format_scanner_results(output, project_root=project_root)
+    section_names = [sec["name"] for sec in display_sections]
+    if section_names:
+        ui.section_compact(section_names)
+
+    # Done
+    duration_s = output.duration_ms / 1000
+    sections_count = len(output.sections_updated)
+    ui.done(duration_s, suffix=f"{sections_count} sections updated")
+
+    ui.footer("project-context.json updated")
+
+    # JSON summary to stdout (only when --json or piped)
     summary = _build_summary(output)
     summary["status"] = "error" if output.errors else "success"
-    print(json.dumps(summary, indent=2), file=sys.stdout)
+    if _should_print_json(args):
+        print(json.dumps(summary, indent=2), file=sys.stdout)
 
     return 1 if output.errors else 0
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+def _should_print_json(args) -> bool:
+    """Determine if JSON summary should be printed to stdout.
+
+    Print JSON only when --json flag is explicitly passed.
+    Never auto-print based on TTY detection -- this causes spurious stdout
+    output when invoked by tools (e.g., Claude Code) that capture stdout.
+    """
+    return getattr(args, "json", False)
+
+
+def _use_color(args) -> bool:
+    """Determine if color output should be used."""
+    if getattr(args, "no_color", False):
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    return True
 
 
 # ============================================================================
@@ -464,7 +419,7 @@ def main(argv: list = None) -> int:
         ),
     )
 
-    # Existing scan flags (backward compatible)
+    # Core flags
     parser.add_argument(
         "--root",
         type=str,
@@ -506,65 +461,6 @@ def main(argv: list = None) -> int:
         action="version",
         version=f"gaia-scan {_get_version()}",
     )
-
-    # New setup flags (from gaia-init)
-    parser.add_argument(
-        "--non-interactive", "-y",
-        action="store_true",
-        default=False,
-        help="Accept detected values without confirmation (CI/CD mode)",
-    )
-    parser.add_argument(
-        "--cloud",
-        type=str,
-        default=None,
-        help="Override cloud provider (gcp, aws, multi-cloud)",
-    )
-    parser.add_argument(
-        "--region",
-        type=str,
-        default=None,
-        help="Override primary region",
-    )
-    parser.add_argument(
-        "--cluster",
-        type=str,
-        default=None,
-        help="Override cluster name",
-    )
-    parser.add_argument(
-        "--project-id",
-        type=str,
-        default=None,
-        dest="project_id",
-        help="Override cloud project/account ID",
-    )
-    parser.add_argument(
-        "--gitops",
-        type=str,
-        default=None,
-        help="Override GitOps directory path",
-    )
-    parser.add_argument(
-        "--terraform",
-        type=str,
-        default=None,
-        help="Override Terraform directory path",
-    )
-    parser.add_argument(
-        "--app-services",
-        type=str,
-        default=None,
-        dest="app_services",
-        help="Override App Services directory path",
-    )
-    parser.add_argument(
-        "--skip-claude-install",
-        action="store_true",
-        default=False,
-        dest="skip_claude_install",
-        help="Skip Claude Code CLI installation",
-    )
     parser.add_argument(
         "--scan-only",
         action="store_true",
@@ -577,6 +473,28 @@ def main(argv: list = None) -> int:
         action="store_true",
         default=False,
         help="Scan all tools including extended (low-value) ones",
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        default=False,
+        dest="no_color",
+        help="Disable ANSI color output",
+    )
+
+    # Backward compat flags (no-ops, behavior is now always non-interactive)
+    parser.add_argument(
+        "--non-interactive", "-y",
+        action="store_true",
+        default=False,
+        help="(no-op, kept for backward compatibility) Accept detected values without confirmation",
+    )
+    parser.add_argument(
+        "--skip-claude-install",
+        action="store_true",
+        default=False,
+        dest="skip_claude_install",
+        help="Skip Claude Code CLI installation",
     )
 
     args = parser.parse_args(argv)
@@ -627,7 +545,7 @@ def main(argv: list = None) -> int:
                 return 0
 
         # Mode selection
-        # --json or --scan-only: backward-compatible scan-only mode
+        # --json or --scan-only: scan-only mode
         if args.json or args.scan_only:
             return _mode_scan_only(project_root, scan_config, args)
 

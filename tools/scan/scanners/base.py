@@ -11,7 +11,7 @@ Contract: contracts/scanner-interface.md
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -99,7 +99,7 @@ class BaseScanner(ABC):
     def make_result(
         self,
         sections: Dict[str, Any],
-        warnings: List[str] | None = None,
+        warnings: Optional[List[str]] = None,
         duration_ms: float = 0.0,
     ) -> ScanResult:
         """Create a ScanResult with this scanner's metadata.

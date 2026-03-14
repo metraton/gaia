@@ -23,7 +23,6 @@ import json
 import sys
 from pathlib import Path
 
-# Ensure the 'tools' directory is on sys.path so 'replay' package is importable
 _TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))

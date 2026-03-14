@@ -56,20 +56,16 @@ class SessionContextWriter:
             with open(lock_path, "w") as lock_file:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:
-                    # Load existing context
                     context: Dict[str, Any] = {}
                     if self.context_path.exists():
                         with open(self.context_path, "r") as f:
                             context = json.load(f)
 
-                    # Initialize events list if not exists
                     if "critical_events" not in context:
                         context["critical_events"] = []
 
-                    # Add timestamp to event
                     event_data["timestamp"] = datetime.now().isoformat()
 
-                    # Append new event
                     context["critical_events"].append(event_data)
 
                     # Keep only events within retention window
@@ -88,10 +84,8 @@ class SessionContextWriter:
                         and datetime.fromisoformat(event["timestamp"]) > cutoff
                     ]
 
-                    # Update last_modified
                     context["last_modified"] = datetime.now().isoformat()
 
-                    # Write back
                     with open(self.context_path, "w") as f:
                         json.dump(context, f, indent=2)
                 finally:

@@ -266,7 +266,6 @@ class ScanOrchestrator:
         existing_full = self._load_existing_context(output_path)
         existing_sections = existing_full.get("sections", {})
         existing_metadata = existing_full.get("metadata", {})
-        existing_paths = existing_full.get("paths", {})
 
         # Step 2: Run all scanners
         scanners = self.registry.get_all()
@@ -310,19 +309,38 @@ class ScanOrchestrator:
             if name in AGENT_ENRICHED_SECTIONS
         )
 
-        # Build full output document
+        # Ensure architecture_overview exists as empty dict so contract
+        # references are satisfied (it appears in ALL agent contracts).
+        # Other agent-enriched sections are only created when an agent
+        # populates them -- no empty {} placeholders.
+        if "architecture_overview" not in merged_sections:
+            merged_sections["architecture_overview"] = {}
+
+        # --- Derive infrastructure.paths from scanner data ---
+        self._derive_infrastructure_paths(merged_sections)
+
+        # --- Cross-populate git.monorepo.workspace_config ---
+        self._cross_populate_monorepo(merged_sections)
+
+        # --- Remove empty {} placeholders for agent-enriched and mixed sections ---
+        # These sections should only exist when they have actual data.
+        # architecture_overview is the exception -- always present (even empty).
+        from tools.scan.merge import MIXED_SECTION_SCANNER_FIELDS
+        remove_if_empty = (
+            AGENT_ENRICHED_SECTIONS
+            | frozenset(MIXED_SECTION_SCANNER_FIELDS.keys())
+        ) - {"architecture_overview"}
+        for section_name in list(merged_sections.keys()):
+            if section_name in remove_if_empty:
+                if merged_sections[section_name] == {}:
+                    del merged_sections[section_name]
+
+        # Build full output document (no top-level paths -- use
+        # infrastructure.paths as the single source of truth)
         full_context: Dict[str, Any] = {
             "metadata": metadata,
-            "paths": existing_paths,
             "sections": merged_sections,
         }
-
-        # Update paths from infrastructure if available
-        infra = merged_sections.get("infrastructure", {})
-        if isinstance(infra, dict):
-            infra_paths = infra.get("paths", {})
-            if isinstance(infra_paths, dict) and infra_paths:
-                full_context["paths"] = {**existing_paths, **infra_paths}
 
         # Step 7: Atomic write
         if write_output:
@@ -339,6 +357,108 @@ class ScanOrchestrator:
             duration_ms=elapsed_ms,
             scanner_results=scanner_results,
         )
+
+    @staticmethod
+    def _derive_infrastructure_paths(
+        merged_sections: Dict[str, Any],
+    ) -> None:
+        """Derive infrastructure.paths shortcuts from detected scanner data.
+
+        Populates infrastructure.paths.gitops, .terraform, and .app_services
+        from orchestration and infrastructure scanner results when the paths
+        are not already set.
+
+        Args:
+            merged_sections: Merged sections dict (mutated in place).
+        """
+        infra = merged_sections.get("infrastructure")
+        if not isinstance(infra, dict):
+            return
+
+        paths = infra.setdefault("paths", {})
+
+        # --- gitops: derive from orchestration.gitops.config_path ---
+        if not paths.get("gitops"):
+            orch = merged_sections.get("orchestration")
+            if isinstance(orch, dict):
+                gitops = orch.get("gitops", {})
+                if isinstance(gitops, dict) and gitops.get("config_path"):
+                    paths["gitops"] = gitops["config_path"]
+
+        # --- terraform: derive from infrastructure.iac entries ---
+        if not paths.get("terraform"):
+            for iac_entry in infra.get("iac", []):
+                if isinstance(iac_entry, dict) and iac_entry.get("tool") in (
+                    "terraform",
+                    "terragrunt",
+                ):
+                    base_path = iac_entry.get("base_path")
+                    if base_path and base_path != ".":
+                        paths["terraform"] = base_path
+                        break
+
+        # --- app_services: derive from Dockerfile paths common parent ---
+        if not paths.get("app_services"):
+            containers = infra.get("containers", [])
+            dockerfile_dirs: list = []
+            for container in containers:
+                if not isinstance(container, dict):
+                    continue
+                if container.get("tool") != "docker":
+                    continue
+                for fpath in container.get("files", []):
+                    parent = str(Path(fpath).parent)
+                    if parent != ".":
+                        dockerfile_dirs.append(parent)
+
+            if dockerfile_dirs:
+                # Find common parent directory
+                from pathlib import PurePosixPath
+
+                parts_list = [PurePosixPath(d).parts for d in dockerfile_dirs]
+                common: list = []
+                for segments in zip(*parts_list):
+                    if len(set(segments)) == 1:
+                        common.append(segments[0])
+                    else:
+                        break
+                if common:
+                    paths["app_services"] = str(PurePosixPath(*common))
+
+        # Clean up: remove None-valued path entries
+        for key in list(paths.keys()):
+            if paths[key] is None:
+                del paths[key]
+
+    @staticmethod
+    def _cross_populate_monorepo(
+        merged_sections: Dict[str, Any],
+    ) -> None:
+        """Cross-populate git.monorepo.workspace_config from project_identity.
+
+        When the stack scanner detects a monorepo (project_identity.type ==
+        'monorepo' and project_identity.monorepo has data), propagate the
+        workspace_config to git.monorepo so both sections are consistent.
+
+        Args:
+            merged_sections: Merged sections dict (mutated in place).
+        """
+        identity = merged_sections.get("project_identity")
+        git = merged_sections.get("git")
+        if not isinstance(identity, dict) or not isinstance(git, dict):
+            return
+
+        monorepo_data = identity.get("monorepo", {})
+        if not isinstance(monorepo_data, dict):
+            return
+
+        # If project_identity detected a monorepo, populate git.monorepo
+        if monorepo_data.get("detected"):
+            git_monorepo = git.setdefault("monorepo", {})
+            if isinstance(git_monorepo, dict):
+                tool = monorepo_data.get("tool")
+                if tool and not git_monorepo.get("workspace_config"):
+                    git_monorepo["workspace_config"] = tool
 
     def _run_parallel(
         self,
@@ -383,6 +503,7 @@ class ScanOrchestrator:
                         warnings=[error_msg],
                         duration_ms=0.0,
                     )
+                    all_errors.append(error_msg)
 
                 scanner_results[scanner.SCANNER_NAME] = result
                 all_warnings.extend(result.warnings)

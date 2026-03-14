@@ -170,6 +170,7 @@ def record(
     session_context: Dict[str, Any],
     commands_executed: Optional[List[str]] = None,
     context_update_result: Optional[Dict[str, Any]] = None,
+    anchor_hits: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Capture workflow execution metrics for analysis.
@@ -221,6 +222,8 @@ def record(
         "context_sections_updated": context_update_result.get("sections_updated", []),
         "context_rejected_sections": context_update_result.get("rejected", []),
         "default_skills_snapshot": default_skills_snapshot,
+        "context_anchor_hits": anchor_hits,
+        "context_anchor_hit_rate": anchor_hits.get("hit_rate") if anchor_hits else None,
     }
 
     run_snapshot = {
@@ -236,6 +239,8 @@ def record(
         "context_sections_updated": metrics["context_sections_updated"],
         "context_rejected_sections": metrics["context_rejected_sections"],
         "default_skills_snapshot": default_skills_snapshot,
+        "context_anchor_hits": anchor_hits,
+        "context_anchor_hit_rate": anchor_hits.get("hit_rate") if anchor_hits else None,
     }
 
     try:

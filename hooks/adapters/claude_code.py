@@ -371,11 +371,19 @@ class ClaudeCodeAdapter(HookAdapter):
     # format_ask_response: for interactive permission requests
     # ------------------------------------------------------------------ #
 
-    def format_ask_response(self, reason: str) -> HookResponse:
+    def format_ask_response(
+        self, reason: str, updated_input: dict | None = None
+    ) -> HookResponse:
         """Format an 'ask' permission response.
 
         Used when the hook wants Claude Code to ask the user for permission.
         This is distinct from deny (which silently blocks).
+
+        Args:
+            reason: Human-readable explanation forwarded to the agent.
+            updated_input: Optional modified tool input (e.g. footer-stripped
+                command) to include as ``updatedInput`` so the modification
+                survives the native permission dialog.
         """
         output: Dict[str, Any] = {
             "hookSpecificOutput": {
@@ -384,6 +392,8 @@ class ClaudeCodeAdapter(HookAdapter):
                 "permissionDecisionReason": reason,
             }
         }
+        if updated_input:
+            output["hookSpecificOutput"]["updatedInput"] = updated_input
         return HookResponse(output=output, exit_code=0)
 
     # ------------------------------------------------------------------ #
@@ -812,6 +822,31 @@ class ClaudeCodeAdapter(HookAdapter):
             commands_executed = extract_commands_from_evidence(agent_output)
             context_update_result = process_context_updates(agent_output, task_info)
 
+            # Compute context anchor hit tracking
+            anchor_hits = None
+            try:
+                from modules.context.anchor_tracker import (
+                    cleanup_anchors,
+                    compute_anchor_hits,
+                    extract_tool_calls_from_transcript,
+                    load_anchors,
+                )
+                transcript_path = task_info.get("agent_transcript_path", "")
+                anchors = load_anchors(session_id, agent_type)
+                if anchors and transcript_path:
+                    tool_calls = extract_tool_calls_from_transcript(transcript_path)
+                    anchor_hits = compute_anchor_hits(tool_calls, anchors)
+                    logger.info(
+                        "Anchor hits for %s: %d/%d (%.0f%%)",
+                        agent_type,
+                        anchor_hits.get("hits", 0),
+                        anchor_hits.get("total_checked", 0),
+                        anchor_hits.get("hit_rate", 0) * 100,
+                    )
+                    cleanup_anchors(session_id, agent_type)
+            except Exception as exc:
+                logger.debug("Anchor hit tracking failed (non-fatal): %s", exc)
+
             session_context = {
                 "timestamp": _dt.now().isoformat(),
                 "session_id": session_id,
@@ -825,6 +860,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 session_context,
                 commands_executed=commands_executed,
                 context_update_result=context_update_result,
+                anchor_hits=anchor_hits,
             )
 
             response_contract = validate_response_contract(
@@ -918,7 +954,6 @@ class ClaudeCodeAdapter(HookAdapter):
         _stop_reason = raw.get("stop_reason", "")
         _last_message = raw.get("last_assistant_message", "")
 
-        # TODO: integrate with contracts.validate_evidence_quality() when available
         return QualityResult(
             quality_sufficient=True,
             score=1.0,
@@ -944,7 +979,6 @@ class ClaudeCodeAdapter(HookAdapter):
         _task_id = raw.get("task_id", "")
         _task_output = raw.get("task_output", "")
 
-        # TODO: integrate with contracts.verify_completion_criteria() when available
         return VerificationResult(
             criteria_met=True,
             verified_items=[],
@@ -970,7 +1004,6 @@ class ClaudeCodeAdapter(HookAdapter):
         _agent_type = raw.get("agent_type", "")
         _task_description = raw.get("task_description", "")
 
-        # TODO: integrate with context.inject_agent_context() when available
         return ContextResult(
             context_injected=False,
             additional_context=None,

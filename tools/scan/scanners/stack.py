@@ -127,7 +127,7 @@ class StackScanner(BaseScanner):
 
     @property
     def SCANNER_VERSION(self) -> str:
-        return "1.0.0"
+        return "1.1.0"
 
     @property
     def OWNED_SECTIONS(self) -> List[str]:
@@ -225,10 +225,9 @@ class StackScanner(BaseScanner):
                     first_found = False
                 break  # Only need one match per extension type
 
-        # Check for TypeScript (tsconfig.json or .ts files referenced in package.json)
-        tsconfig = root / "tsconfig.json"
-        if tsconfig.is_file() and "javascript" in seen_languages:
-            # Upgrade javascript to typescript when tsconfig exists
+        # Check for TypeScript: tsconfig*.json at root or subdirectories,
+        # or .ts/.tsx file extensions in the project tree
+        if "javascript" in seen_languages and self._has_typescript_indicators(root):
             js_entry = seen_languages.pop("javascript")
             seen_languages["typescript"] = {
                 "name": "typescript",
@@ -237,6 +236,50 @@ class StackScanner(BaseScanner):
             }
 
         return list(seen_languages.values())
+
+    def _has_typescript_indicators(self, root: Path) -> bool:
+        """Check for TypeScript indicators: tsconfig files or .ts/.tsx extensions.
+
+        Searches root and subdirectories (for monorepo support).
+        """
+        # Check for tsconfig*.json at root
+        for f in root.iterdir() if root.is_dir() else []:
+            if f.is_file() and f.name.startswith("tsconfig") and f.name.endswith(".json"):
+                return True
+
+        # Check subdirectories for tsconfig*.json (monorepo workspace roots)
+        for path in self._find_files(root, "tsconfig.json"):
+            return True
+
+        # Also check for tsconfig.*.json patterns in subdirectories
+        try:
+            for entry in self._iter_subdirs(root, depth=0):
+                for f in entry.iterdir():
+                    if f.is_file() and f.name.startswith("tsconfig") and f.name.endswith(".json"):
+                        return True
+        except (PermissionError, OSError):
+            pass
+
+        # Check for .ts or .tsx file extensions
+        for ext in (".ts", ".tsx"):
+            if self._find_files_by_extension(root, ext):
+                return True
+
+        return False
+
+    def _iter_subdirs(self, root: Path, depth: int) -> List[Path]:
+        """Iterate subdirectories respecting MONOREPO_SCAN_DEPTH and SKIP_DIRS."""
+        if depth >= MONOREPO_SCAN_DEPTH:
+            return []
+        results: List[Path] = []
+        try:
+            for entry in sorted(root.iterdir()):
+                if entry.is_dir() and entry.name not in SKIP_DIRS and not entry.name.startswith("."):
+                    results.append(entry)
+                    results.extend(self._iter_subdirs(entry, depth + 1))
+        except PermissionError:
+            pass
+        return results
 
     # ------------------------------------------------------------------
     # Framework detection
@@ -260,6 +303,10 @@ class StackScanner(BaseScanner):
                 for fw in found:
                     if not any(f["name"] == fw["name"] for f in frameworks):
                         frameworks.append(fw)
+
+            # NestJS wraps Express/Fastify -- promote NestJS to primary position
+            # and mark the underlying framework as secondary
+            self._promote_meta_framework(frameworks, "nestjs", ["express", "fastify"])
 
         # Python frameworks from pyproject.toml and requirements.txt
         if "python" in lang_names:
@@ -311,6 +358,37 @@ class StackScanner(BaseScanner):
                 })
 
         return frameworks
+
+    def _promote_meta_framework(
+        self,
+        frameworks: List[Dict[str, Any]],
+        meta_name: str,
+        underlying_names: List[str],
+    ) -> None:
+        """Promote a meta-framework (e.g. NestJS) above its underlying frameworks.
+
+        When a meta-framework like NestJS is detected alongside its underlying
+        framework (Express), move it to the first position and mark the
+        underlying framework as secondary (role='underlying').
+        """
+        meta_idx = None
+        for i, fw in enumerate(frameworks):
+            if fw["name"] == meta_name:
+                meta_idx = i
+                break
+
+        if meta_idx is None:
+            return
+
+        # Move meta-framework to front
+        if meta_idx > 0:
+            meta_fw = frameworks.pop(meta_idx)
+            frameworks.insert(0, meta_fw)
+
+        # Mark underlying frameworks
+        for fw in frameworks:
+            if fw["name"] in underlying_names:
+                fw["role"] = "underlying"
 
     def _detect_python_frameworks_pyproject(
         self, pyproject_path: Path, warnings: List[str]
@@ -448,6 +526,21 @@ class StackScanner(BaseScanner):
                 except OSError:
                     pass
 
+        # Detect monorepo build orchestrators (turbo.json, nx.json, lerna.json)
+        # at root and in subdirectories
+        for config_file, tool_name in MONOREPO_TOOLS.items():
+            if tool_name not in seen_tools:
+                for path in self._find_files(root, config_file):
+                    rel_path = str(path.relative_to(root))
+                    tools.append({
+                        "name": tool_name,
+                        "detected_by": "config_file",
+                        "lock_file": None,
+                        "config_file": rel_path,
+                    })
+                    seen_tools.add(tool_name)
+                    break  # One match per tool is enough
+
         return tools
 
     # ------------------------------------------------------------------
@@ -550,6 +643,11 @@ class StackScanner(BaseScanner):
             except (json.JSONDecodeError, OSError) as exc:
                 warnings.append(f"Cannot read composer.json: {exc}")
 
+        # Before falling back to directory name, check monorepo subdirectory
+        # package.json files for a project name
+        if name is None:
+            name = self._derive_name_from_subdirs(root, warnings)
+
         # Fallback to directory name
         if name is None:
             name = root.name
@@ -579,6 +677,33 @@ class StackScanner(BaseScanner):
             "monorepo": monorepo_info,
         }
 
+    def _derive_name_from_subdirs(
+        self, root: Path, warnings: List[str]
+    ) -> Optional[str]:
+        """Derive project name from package.json in immediate subdirectories.
+
+        Checks subdirectories that look like monorepo roots (contain
+        package.json with a name field) and returns the first name found.
+        """
+        try:
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if entry.name in SKIP_DIRS or entry.name.startswith("."):
+                    continue
+                sub_pkg = entry / "package.json"
+                if sub_pkg.is_file():
+                    try:
+                        data = json.loads(sub_pkg.read_text(encoding="utf-8"))
+                        pkg_name = data.get("name")
+                        if pkg_name and isinstance(pkg_name, str):
+                            return pkg_name
+                    except (json.JSONDecodeError, OSError):
+                        continue
+        except PermissionError:
+            pass
+        return None
+
     # ------------------------------------------------------------------
     # Monorepo detection
     # ------------------------------------------------------------------
@@ -593,21 +718,21 @@ class StackScanner(BaseScanner):
             "workspace_roots": [],
         }
 
-        # Check for monorepo tool config files
+        # Check for monorepo tool config files at root level
         for config_file, tool_name in MONOREPO_TOOLS.items():
             if (root / config_file).is_file():
                 result["detected"] = True
                 result["tool"] = tool_name
                 break
 
-        # Check pnpm workspaces
+        # Check pnpm workspaces at root level
         pnpm_workspace = root / "pnpm-workspace.yaml"
         if pnpm_workspace.is_file():
             result["detected"] = True
             if result["tool"] is None:
                 result["tool"] = "pnpm-workspaces"
 
-        # Check npm/yarn workspaces in package.json
+        # Check npm/yarn workspaces in package.json at root level
         pkg_json = root / "package.json"
         if pkg_json.is_file():
             try:
@@ -629,6 +754,70 @@ class StackScanner(BaseScanner):
                         result["workspace_roots"].append(str(pattern))
             except (json.JSONDecodeError, OSError):
                 pass
+
+        # If not yet detected, scan immediate subdirectories for workspace
+        # config files (handles projects where monorepo root is a subdirectory)
+        if not result["detected"]:
+            result = self._detect_monorepo_in_subdirs(root, result, warnings)
+
+        return result
+
+    def _detect_monorepo_in_subdirs(
+        self,
+        root: Path,
+        result: Dict[str, Any],
+        warnings: List[str],
+    ) -> Dict[str, Any]:
+        """Scan immediate subdirectories for monorepo workspace config files.
+
+        Detects monorepo when a subdirectory contains workspace config files
+        like pnpm-workspace.yaml, pnpm-lock.yaml, lerna.json, etc.
+        """
+        # Workspace config files that indicate a monorepo root
+        workspace_markers = [
+            ("pnpm-workspace.yaml", "pnpm-workspaces"),
+            ("pnpm-lock.yaml", "pnpm-workspaces"),
+            ("lerna.json", "lerna"),
+            ("turbo.json", "turborepo"),
+            ("nx.json", "nx"),
+        ]
+
+        try:
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if entry.name in SKIP_DIRS or entry.name.startswith("."):
+                    continue
+
+                for marker_file, tool_name in workspace_markers:
+                    if (entry / marker_file).is_file():
+                        result["detected"] = True
+                        if result["tool"] is None:
+                            result["tool"] = tool_name
+                        subdir_rel = str(entry.relative_to(root))
+                        if subdir_rel not in result["workspace_roots"]:
+                            result["workspace_roots"].append(subdir_rel)
+                        break
+
+                # Also check for package.json with workspaces in subdirs
+                sub_pkg = entry / "package.json"
+                if sub_pkg.is_file() and not result["detected"]:
+                    try:
+                        data = json.loads(sub_pkg.read_text(encoding="utf-8"))
+                        if data.get("workspaces"):
+                            result["detected"] = True
+                            if result["tool"] is None:
+                                result["tool"] = "npm-workspaces"
+                            subdir_rel = str(entry.relative_to(root))
+                            if subdir_rel not in result["workspace_roots"]:
+                                result["workspace_roots"].append(subdir_rel)
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+                if result["detected"]:
+                    break
+        except PermissionError:
+            pass
 
         return result
 

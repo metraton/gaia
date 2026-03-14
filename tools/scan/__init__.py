@@ -14,7 +14,21 @@ Main components:
 - ScanConfig: Scanner configuration and tool definitions
 """
 
-__version__ = "0.1.0"
+import json as _json
+from pathlib import Path as _Path
+
+
+def _read_version() -> str:
+    """Read version from package.json (single source of truth)."""
+    try:
+        pkg_path = _Path(__file__).resolve().parent.parent.parent / "package.json"
+        with open(pkg_path) as f:
+            return _json.load(f)["version"]
+    except Exception:
+        return "unknown"
+
+
+__version__ = _read_version()
 
 __all__ = [
     "__version__",

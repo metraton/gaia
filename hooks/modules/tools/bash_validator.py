@@ -173,9 +173,21 @@ class BashValidator:
         else:
             result = self._validate_single_command(command)
 
-        # Attach cleaned command for hook to emit via updatedInput
-        if command_was_modified and result.allowed:
+        # Attach cleaned command for hook to emit via updatedInput.
+        # Set regardless of result.allowed so the ask path can include it too.
+        if command_was_modified:
             result.modified_input = {"command": command}
+            # If the result is an "ask" block_response, inject updatedInput
+            # so the modification survives the native permission dialog.
+            if (
+                result.block_response is not None
+                and result.block_response.get("hookSpecificOutput", {}).get(
+                    "permissionDecision"
+                ) == "ask"
+            ):
+                result.block_response["hookSpecificOutput"]["updatedInput"] = {
+                    "command": command
+                }
 
         return result
 

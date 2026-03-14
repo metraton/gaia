@@ -342,3 +342,78 @@ class TestNoGitDirectory:
     ) -> None:
         result = scanner.scan(empty_project)
         assert any("No .git" in w for w in result.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Git in subdirectory (monorepo wrapper / nested repo)
+# ---------------------------------------------------------------------------
+
+
+class TestGitInSubdirectory:
+    """Test that scanner finds .git in immediate subdirectories."""
+
+    def test_finds_git_in_subdirectory(
+        self, scanner: GitScanner, tmp_path: Path
+    ) -> None:
+        sub = tmp_path / "my-monorepo"
+        sub.mkdir()
+        create_git_dir(
+            sub,
+            remote_url="git@gitlab.com:org/my-monorepo.git",
+            default_branch="main",
+        )
+        result = scanner.scan(tmp_path)
+        git_section = result.sections["git"]
+        assert git_section["platform"] == "gitlab"
+        assert git_section["default_branch"] == "main"
+        assert len(git_section["remotes"]) >= 1
+
+    def test_git_root_field_set_when_in_subdir(
+        self, scanner: GitScanner, tmp_path: Path
+    ) -> None:
+        sub = tmp_path / "qxo-monorepo"
+        sub.mkdir()
+        create_git_dir(sub)
+        result = scanner.scan(tmp_path)
+        git_section = result.sections["git"]
+        assert git_section["git_root"] == "qxo-monorepo"
+
+    def test_git_root_not_set_when_at_root(
+        self, scanner: GitScanner, tmp_path: Path
+    ) -> None:
+        create_git_dir(tmp_path)
+        result = scanner.scan(tmp_path)
+        git_section = result.sections["git"]
+        assert "git_root" not in git_section
+
+    def test_warning_when_git_in_subdir(
+        self, scanner: GitScanner, tmp_path: Path
+    ) -> None:
+        sub = tmp_path / "inner-repo"
+        sub.mkdir()
+        create_git_dir(sub)
+        result = scanner.scan(tmp_path)
+        assert any("subdirectory" in w for w in result.warnings)
+
+    def test_no_git_anywhere_returns_nulls(
+        self, scanner: GitScanner, tmp_path: Path
+    ) -> None:
+        (tmp_path / "some-dir").mkdir()
+        result = scanner.scan(tmp_path)
+        git_section = result.sections["git"]
+        assert git_section["platform"] is None
+        assert git_section["remotes"] == []
+
+    def test_skips_dotdirs_and_vendor(
+        self, scanner: GitScanner, tmp_path: Path
+    ) -> None:
+        # .git in a hidden dir should not be picked up as a subdirectory match
+        hidden = tmp_path / ".hidden-repo"
+        hidden.mkdir()
+        create_git_dir(hidden, remote_url="git@github.com:hidden/repo.git")
+        vendor = tmp_path / "vendor"
+        vendor.mkdir()
+        create_git_dir(vendor, remote_url="git@github.com:vendor/repo.git")
+        result = scanner.scan(tmp_path)
+        git_section = result.sections["git"]
+        assert git_section["platform"] is None

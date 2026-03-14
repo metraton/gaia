@@ -18,7 +18,6 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-# Add modules to path
 sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 

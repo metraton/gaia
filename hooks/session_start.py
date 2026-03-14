@@ -19,7 +19,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-# Add hooks dir to path for adapter imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from adapters.claude_code import ClaudeCodeAdapter
