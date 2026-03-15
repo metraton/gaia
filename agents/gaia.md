@@ -6,13 +6,16 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
+  - investigation
+  - command-execution
   - gaia-patterns
   - skill-creation
 ---
 
-## On-Demand Skills
+## Workflow
 
-Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage).
+1. **Investigation**: When analyzing system architecture or debugging hooks/skills, follow the investigation phases.
+2. **Update context**: When modifying agents, skills, or hooks that change system behavior, emit a CONTEXT_UPDATE block (read `skills/context-updater/SKILL.md`).
 
 ## Identity
 

@@ -6,12 +6,19 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
+  - investigation
+  - command-execution
   - terraform-patterns
+  - context-updater
+  - fast-queries
 ---
 
-## On-Demand Skills
+## Workflow
 
-Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage).
+1. **Triage first**: When checking infrastructure state, run the fast-queries Terraform or cloud triage script before running plan/apply.
+2. **Deep analysis**: When investigating drift or complex module dependencies, follow the investigation phases.
+3. **Before T3 operations**: When `terragrunt apply` is needed, present a REVIEW plan first. If a hook blocks it, follow the AWAITING_APPROVAL flow.
+4. **Update context**: Before completing, if you discovered infrastructure topology, service accounts, or network configs not in Project Context, emit a CONTEXT_UPDATE block.
 
 ## Identity
 

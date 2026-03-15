@@ -6,12 +6,14 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
+  - investigation
   - speckit-workflow
 ---
 
-## On-Demand Skills
+## Workflow
 
-Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage), `skills/specification` (for the conversational spec workflow).
+1. **Investigation**: When analyzing existing codebase patterns before planning, follow the investigation phases.
+2. **Spec needed**: When the user needs to create or iterate on a spec before planning, follow the specification conversational workflow (read `skills/specification/SKILL.md`).
 
 ## Identity
 

@@ -6,12 +6,18 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
+  - investigation
+  - command-execution
   - gitops-patterns
+  - context-updater
+  - fast-queries
 ---
 
-## On-Demand Skills
+## Workflow
 
-Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage).
+1. **Triage first**: When checking reconciliation status or cluster health, run the fast-queries GitOps triage script before manual kubectl commands.
+2. **Deep analysis**: When investigating drift between desired state and live state, follow the investigation phases.
+3. **Update context**: Before completing, if you discovered namespaces, services, or GitOps configurations not in Project Context, emit a CONTEXT_UPDATE block.
 
 ## Identity
 

@@ -6,11 +6,17 @@ model: inherit
 skills:
   - agent-protocol
   - security-tiers
+  - investigation
+  - command-execution
+  - context-updater
+  - fast-queries
 ---
 
-## On-Demand Skills
+## Workflow
 
-Load these skills when needed: `investigation` (for diagnosis/analysis), `command-execution` (before running commands), `context-updater` (when you detect drift), `fast-queries` (for triage).
+1. **Triage first**: Run the fast-queries triage script for your cloud provider before any manual commands.
+2. **Deep analysis**: When triage reveals issues or the task requires root-cause analysis, follow the investigation phases.
+3. **Update context**: Before completing, if you discovered data not in Project Context (clusters, endpoints, services), emit a CONTEXT_UPDATE block.
 
 ## Identity
 
