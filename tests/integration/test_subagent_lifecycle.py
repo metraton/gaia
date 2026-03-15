@@ -238,8 +238,8 @@ class TestPhase1SkillsInjection:
             assert isinstance(result, dict), "Task call should return updatedInput when context is injected"
             updated = result["hookSpecificOutput"]["updatedInput"]["prompt"]
 
-            assert "# Project Context -- READ THIS FIRST" in updated
-            assert "# User Task" in updated
+            assert "# Task" in updated
+            assert "# Project Context" in updated
             assert "Diagnose pod health in namespace test" in updated
             assert "AGENT_STATUS" not in updated, \
                 "Hook should not inline agent-protocol skill text into prompt"

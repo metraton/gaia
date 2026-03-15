@@ -125,9 +125,18 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
 
     text = content.strip()
     # Pattern 2: pre_tool_use injected project context before the real prompt.
-    # The injected block ends with "\n\n---\n\n# User Task\n\n" followed by
-    # the actual task description sent by the orchestrator.
-    if text.startswith("# Project Context"):
+    # New format: starts with "# Task\n\n<prompt>" — extract the task directly.
+    # Legacy format: "# Project Context...---\n\n# User Task\n\n<prompt>"
+    if text.startswith("# Task\n"):
+        # New format: task is right after "# Task\n\n"
+        task_text = text[len("# Task\n\n"):]
+        # Task ends at the next # header (Rules, Project Knowledge, etc.)
+        next_header = task_text.find("\n# ")
+        if next_header != -1:
+            text = task_text[:next_header].strip()
+        else:
+            text = task_text.strip()
+    elif text.startswith("# Project Context"):
         sep_full = "\n\n---\n\n# User Task\n\n"
         sep_bare = "\n\n---\n\n"
         pos = text.find(sep_full)
@@ -149,18 +158,34 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
 def extract_injected_context_payload_from_transcript(
     transcript_path: str,
 ) -> Dict[str, Any]:
-    """Extract the auto-injected JSON context payload from the first user message.
+    """Extract the auto-injected JSON context payload.
 
-    The injection template embeds a machine-readable comment line:
-    ``<!-- context_payload:{json} -->`` just before the ``---`` separator.
+    Primary: reads from disk file saved by context_injector.
+    Fallback: parses legacy HTML comment from transcript for backwards compat.
     """
+    import os
+    from pathlib import Path
+
+    # Primary: read from disk (new approach — saved by context_injector)
+    try:
+        payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
+        if payload_dir.exists():
+            agent_file = Path(transcript_path).stem  # e.g. "agent-ae190a4da68d626d4"
+            # Match by agent ID substring
+            for candidate in payload_dir.glob("*.json"):
+                if candidate.stem in agent_file or agent_file in candidate.stem:
+                    return json.loads(candidate.read_text())
+    except Exception:
+        pass
+
+    # Fallback: parse legacy HTML comment from transcript
     content = read_first_user_content_from_transcript(transcript_path)
     if not content:
         return {}
-    if not content.startswith("# Project Context"):
+    # Support both old ("# Project Context") and new ("# Task") headers
+    if not (content.startswith("# Project Context") or content.startswith("# Task")):
         return {}
     try:
-        # Look for the machine-readable comment marker
         marker = "<!-- context_payload:"
         idx = content.find(marker)
         if idx == -1:

@@ -171,6 +171,8 @@ def record(
     commands_executed: Optional[List[str]] = None,
     context_update_result: Optional[Dict[str, Any]] = None,
     anchor_hits: Optional[Dict[str, Any]] = None,
+    transcript_analysis: Optional[Any] = None,
+    compliance_result: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Capture workflow execution metrics for analysis.
@@ -179,6 +181,14 @@ def record(
         task_info: Task metadata
         agent_output: Output from agent execution
         session_context: Current session context
+        commands_executed: List of commands the agent executed.
+        context_update_result: Result of context update processing.
+        anchor_hits: Context anchor hit data.
+        transcript_analysis: Optional TranscriptAnalysis from transcript_analyzer.
+            When provided, real token counts and tool metrics are added to the
+            metrics dict alongside the existing output_tokens_approx.
+        compliance_result: Optional ComplianceScore from transcript_analyzer.
+            When provided, compliance_score and compliance_grade are added.
 
     Returns:
         Dict with duration, exit_code, agent, tier, etc.
@@ -225,6 +235,23 @@ def record(
         "context_anchor_hits": anchor_hits,
         "context_anchor_hit_rate": anchor_hits.get("hit_rate") if anchor_hits else None,
     }
+
+    # --- Transcript-analysis enrichment (T010) ---
+    if transcript_analysis is not None:
+        metrics["input_tokens"] = transcript_analysis.input_tokens
+        metrics["cache_creation_tokens"] = transcript_analysis.cache_creation_tokens
+        metrics["cache_read_tokens"] = transcript_analysis.cache_read_tokens
+        metrics["output_tokens_real"] = transcript_analysis.output_tokens
+        metrics["duration_ms"] = transcript_analysis.duration_ms
+        metrics["tool_call_count"] = transcript_analysis.tool_call_count
+        metrics["skills_injected"] = transcript_analysis.skills_injected
+        metrics["model_used"] = transcript_analysis.model
+        metrics["api_call_count"] = transcript_analysis.api_call_count
+
+    # --- Compliance enrichment (T010) ---
+    if compliance_result is not None:
+        metrics["compliance_score"] = compliance_result.total
+        metrics["compliance_grade"] = compliance_result.grade
 
     run_snapshot = {
         "timestamp": metrics["timestamp"],

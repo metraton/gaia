@@ -17,9 +17,196 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..agents.transcript_analyzer import TranscriptAnalysis
 from .workflow_recorder import get_workflow_memory_dir
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Transcript-analysis check helpers (T009)
+# ---------------------------------------------------------------------------
+
+
+def _check_investigation_skip(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if the agent's first tool call was Bash (skipped investigation)."""
+    if analysis.first_tool_name == "Bash":
+        return {
+            "type": "investigation_skip",
+            "severity": "warning",
+            "message": (
+                "Agent's first tool call was Bash instead of a "
+                "read-only investigation tool (Read/Glob/Grep)"
+            ),
+        }
+    return None
+
+
+def _check_context_ignored(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if the first tool call does not reference project-context paths."""
+    if not analysis.tool_sequence:
+        return None
+    first_call = analysis.tool_sequence[0]
+    args_str = json.dumps(first_call.arguments)
+    # Look for any project-context path references
+    context_indicators = [
+        "project-context",
+        ".claude/",
+        "CLAUDE.md",
+        "context-contracts",
+    ]
+    if not any(indicator in args_str for indicator in context_indicators):
+        return {
+            "type": "context_ignored",
+            "severity": "warning",
+            "message": (
+                "First tool call does not reference any project-context "
+                "paths — agent may have ignored injected context"
+            ),
+        }
+    return None
+
+
+def _check_context_update_missing(
+    analysis: TranscriptAnalysis,
+    agent_output: str,
+) -> Optional[Dict[str, str]]:
+    """Info if context-updater skill was injected but no CONTEXT_UPDATE emitted."""
+    if "context-updater" in analysis.skills_injected:
+        if "CONTEXT_UPDATE" not in agent_output:
+            return {
+                "type": "context_update_missing",
+                "severity": "info",
+                "message": (
+                    "context-updater skill was injected but agent did not "
+                    "emit a CONTEXT_UPDATE block"
+                ),
+            }
+    return None
+
+
+def _check_excessive_tool_calls(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if tool_call_count exceeds 50."""
+    if analysis.tool_call_count > 50:
+        return {
+            "type": "excessive_tool_calls",
+            "severity": "warning",
+            "message": (
+                f"Agent made {analysis.tool_call_count} tool calls "
+                f"(threshold: 50) — may indicate inefficient exploration"
+            ),
+        }
+    return None
+
+
+def _check_token_budget(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Info if cache_creation_tokens exceeds 100000."""
+    if analysis.cache_creation_tokens > 100000:
+        return {
+            "type": "token_budget",
+            "severity": "info",
+            "message": (
+                f"Cache creation tokens ({analysis.cache_creation_tokens}) "
+                f"exceeded 100,000 — large context was created"
+            ),
+        }
+    return None
+
+
+def _check_pipe_retroactive(
+    analysis: TranscriptAnalysis,
+) -> List[Dict[str, str]]:
+    """Warning per pipe command detected in transcript."""
+    results: List[Dict[str, str]] = []
+    for cmd in analysis.pipe_commands:
+        # Truncate long commands for readability
+        display_cmd = cmd[:120] + "..." if len(cmd) > 120 else cmd
+        results.append({
+            "type": "pipe_retroactive",
+            "severity": "warning",
+            "message": f"Pipe command detected in transcript: {display_cmd}",
+        })
+    return results
+
+
+def _check_model_mismatch(
+    analysis: TranscriptAnalysis,
+    metrics: Dict[str, Any],
+) -> Optional[Dict[str, str]]:
+    """Info if transcript model differs from agent definition model."""
+    definition_model = ""
+    snapshot = metrics.get("default_skills_snapshot")
+    if isinstance(snapshot, dict):
+        definition_model = snapshot.get("model", "")
+    if (
+        analysis.model
+        and definition_model
+        and analysis.model != definition_model
+    ):
+        return {
+            "type": "model_mismatch",
+            "severity": "info",
+            "message": (
+                f"Transcript model ({analysis.model}) differs from "
+                f"agent definition model ({definition_model})"
+            ),
+        }
+    return None
+
+
+def _check_skill_order(
+    analysis: TranscriptAnalysis,
+    metrics: Dict[str, Any],
+) -> Optional[Dict[str, str]]:
+    """Info if skills were injected in an unexpected order."""
+    snapshot = metrics.get("default_skills_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    expected_skills = snapshot.get("skills", [])
+    if not expected_skills or not analysis.skills_injected:
+        return None
+    # Check if the injected skills appear in the expected order
+    # (only consider skills that are in the expected list)
+    expected_set = set(expected_skills)
+    actual_ordered = [s for s in analysis.skills_injected if s in expected_set]
+    expected_ordered = [s for s in expected_skills if s in set(actual_ordered)]
+    if actual_ordered and expected_ordered and actual_ordered != expected_ordered:
+        return {
+            "type": "skill_order",
+            "severity": "info",
+            "message": (
+                f"Skills injected in unexpected order: "
+                f"{actual_ordered} (expected: {expected_ordered})"
+            ),
+        }
+    return None
+
+
+def _check_duplicate_tools(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Info if duplicate tool calls were detected."""
+    if analysis.duplicate_tool_calls:
+        dup_summary = ", ".join(
+            f"{d.tool_name}(x{len(d.indices)})"
+            for d in analysis.duplicate_tool_calls
+        )
+        return {
+            "type": "duplicate_tools",
+            "severity": "info",
+            "message": (
+                f"Duplicate tool calls detected: {dup_summary}"
+            ),
+        }
+    return None
 
 
 def audit(
@@ -27,6 +214,7 @@ def audit(
     agent_output: str = "",
     task_info: Optional[Dict[str, Any]] = None,
     rejected_sections: Optional[List[str]] = None,
+    transcript_analysis: Optional[TranscriptAnalysis] = None,
 ) -> List[Dict[str, str]]:
     """
     Detect anomalies in workflow execution.
@@ -39,11 +227,25 @@ def audit(
     - skipped_verification: task has verify command in injected_context but not in commands_run
     - scope_escalation: rejected_sections exist (agent tried to write outside its scope)
 
+    Transcript-analysis checks (only when transcript_analysis is provided):
+    - investigation_skip: first tool was Bash
+    - context_ignored: first tool call has no project-context paths
+    - context_update_missing: context-updater injected but no CONTEXT_UPDATE emitted
+    - excessive_tool_calls: tool_call_count > 50
+    - token_budget: cache_creation_tokens > 100000
+    - pipe_retroactive: pipe commands found in transcript
+    - model_mismatch: transcript model != agent definition model
+    - skill_order: skills injected in unexpected order
+    - duplicate_tools: duplicate tool calls detected
+
     Args:
         metrics: Workflow metrics dict (from workflow_recorder.record()).
         agent_output: Complete agent output string (for evidence checks).
         task_info: Task metadata including injected_context (for verification checks).
         rejected_sections: List of context sections rejected by permission validation.
+        transcript_analysis: Optional TranscriptAnalysis from transcript_analyzer.
+            When None (default), transcript-based checks are skipped for backward
+            compatibility.
 
     Returns:
         List of anomaly descriptions
@@ -186,6 +388,33 @@ def audit(
                 f"unauthorized sections: {', '.join(rejected_sections)}"
             ),
         })
+
+    # --- Transcript-analysis checks (T009) ---
+    if transcript_analysis is not None:
+        for check_fn in (
+            _check_investigation_skip,
+            _check_context_ignored,
+            _check_excessive_tool_calls,
+            _check_token_budget,
+            _check_duplicate_tools,
+        ):
+            result = check_fn(transcript_analysis)
+            if result is not None:
+                anomalies.append(result)
+
+        # Checks that need agent_output
+        result = _check_context_update_missing(transcript_analysis, agent_output)
+        if result is not None:
+            anomalies.append(result)
+
+        # Checks that need metrics
+        for check_fn_m in (_check_model_mismatch, _check_skill_order):
+            result = check_fn_m(transcript_analysis, metrics)
+            if result is not None:
+                anomalies.append(result)
+
+        # Pipe check returns a list (one per pipe command)
+        anomalies.extend(_check_pipe_retroactive(transcript_analysis))
 
     return anomalies
 

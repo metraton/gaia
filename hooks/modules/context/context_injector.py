@@ -437,38 +437,47 @@ def inject_project_context(
         metadata_section = f"\n## Metadata\n\n{json.dumps(metadata, indent=2)}\n" if metadata else ""
         historical_section = f"\n## Historical Context\n\n{json.dumps(historical, indent=2)}\n" if historical else ""
 
-        enriched_prompt = f"""# Project Context -- READ THIS FIRST
+        # Save context_payload to disk for downstream hooks (SubagentStop)
+        # instead of embedding as HTML comment in the prompt
+        try:
+            payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
+            payload_dir.mkdir(parents=True, exist_ok=True)
+            agent_id = parameters.get("_agent_id", "") or subagent_type
+            payload_path = payload_dir / f"{agent_id}.json"
+            payload_path.write_text(json.dumps(context_payload, separators=(',', ':')))
+            logger.debug(f"Context payload saved to {payload_path}")
+        except Exception as exc:
+            logger.debug(f"Failed to save context payload to disk (non-fatal): {exc}")
 
-You have been given structured project knowledge. Use it as your
-starting point before searching. Paths, names, and IDs below are
-confirmed facts -- go directly to them instead of searching.
+        # Build brief as full JSON (all fields, not just 3)
+        brief_json = json.dumps(investigation_brief, indent=2) if investigation_brief else "{}"
 
-## Your Project Knowledge
+        # Build write permissions as JSON
+        write_perms_json = json.dumps({
+            "writable": write_perms.get("writable_sections", []),
+            "readable": write_perms.get("readable_sections", []),
+            "context_update_required": [s for s in write_perms.get("writable_sections", [])
+                                         if not project_knowledge.get(s)]
+        }, indent=2)
 
-The sections below are filtered for your role. Each section contains
-confirmed project data (paths, configurations, resource names). Use
-these as direct targets in your first tool calls.
+        enriched_prompt = f"""# Task
+
+{prompt}
+{rules_section}
+# Project Context
 
 {json.dumps(project_knowledge, indent=2)}
 
-## Your Investigation Brief
+# Routing
+{routing_section}
+# Brief
 
-{brief_section}
+{brief_json}
 
-## Your Write Permissions
+# Permissions
 
-You may update these sections when you discover new or changed data.
-Emit a CONTEXT_UPDATE block (see context-updater skill).
-- Writable: {writable_list or "none"}
-- Readable: {readable_list or "none"}
-{rules_section}{routing_section}{metadata_section}{historical_section}
-{pending_warning}{update_reminder}<!-- context_payload:{json.dumps(context_payload, separators=(',', ':'))} -->
-
----
-
-# User Task
-
-{prompt}
+{write_perms_json}
+{pending_warning}{update_reminder}{metadata_section}{historical_section}
 """
 
         # Modify parameters

@@ -786,6 +786,23 @@ class ClaudeCodeAdapter(HookAdapter):
         # Parse agent completion data
         completion = self.parse_agent_completion(hook_data)
 
+        # ----------------------------------------------------------
+        # Transcript analysis (T011)
+        # ----------------------------------------------------------
+        transcript_analysis = None
+        try:
+            from modules.agents.transcript_analyzer import analyze as analyze_transcript
+            if completion.transcript_path:
+                transcript_analysis = analyze_transcript(completion.transcript_path)
+                logger.info(
+                    "Transcript analysis: %d tool calls, %d API calls, model=%s",
+                    transcript_analysis.tool_call_count,
+                    transcript_analysis.api_call_count,
+                    transcript_analysis.model,
+                )
+        except Exception as exc:
+            logger.debug("Transcript analysis failed (non-fatal): %s", exc)
+
         # Resolve agent output: prefer last_assistant_message, fall back to transcript
         agent_output = completion.last_message
         if not agent_output:
@@ -856,6 +873,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 commands_executed=commands_executed,
                 context_update_result=context_update_result,
                 anchor_hits=anchor_hits,
+                transcript_analysis=transcript_analysis,
             )
 
             response_contract = validate_response_contract(
@@ -871,6 +889,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 agent_output,
                 task_info,
                 rejected_sections=(context_update_result or {}).get("rejected", []),
+                transcript_analysis=transcript_analysis,
             )
             if not response_contract.valid:
                 missing = ", ".join(response_contract.missing) or "none"
@@ -883,6 +902,43 @@ class ClaudeCodeAdapter(HookAdapter):
                         f"missing=[{missing}] invalid=[{invalid}]"
                     ),
                 })
+
+            # ----------------------------------------------------------
+            # Compliance score (T011)
+            # Computed after audit so anomalies are available for
+            # has_scope_escalation detection.
+            # ----------------------------------------------------------
+            compliance_result = None
+            try:
+                from modules.agents.transcript_analyzer import compute_compliance_score
+                if transcript_analysis is not None:
+                    _contract_valid = contract_result.is_valid
+                    _has_scope_escalation = any(
+                        a.get("type") == "scope_escalation"
+                        for a in anomalies
+                    ) if anomalies else False
+                    _anchor_hit_rate = (
+                        anchor_hits.get("hit_rate", 0.0)
+                        if anchor_hits else 0.0
+                    )
+                    compliance_result = compute_compliance_score(
+                        transcript_analysis,
+                        contract_valid=_contract_valid,
+                        has_scope_escalation=_has_scope_escalation,
+                        anchor_hit_rate=_anchor_hit_rate,
+                    )
+                    logger.info(
+                        "Compliance score for %s: %d (%s)",
+                        agent_type, compliance_result.total, compliance_result.grade,
+                    )
+                    workflow_metrics["compliance_score"] = {
+                        "total": compliance_result.total,
+                        "grade": compliance_result.grade,
+                        "factors": compliance_result.factors,
+                        "deductions": compliance_result.deductions,
+                    }
+            except Exception as exc:
+                logger.debug("Compliance score computation failed (non-fatal): %s", exc)
 
             if anomalies:
                 logger.warning("%d anomalies detected in workflow", len(anomalies))

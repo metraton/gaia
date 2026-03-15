@@ -14,7 +14,7 @@ a correct solution. For the `json:contract` response format, see `agent-protocol
 ## Phase 1: Start From Injected Context
 
 Before your first tool call, extract anchors from your injected
-Project Knowledge: paths, service names, resource IDs. These are
+Project Context: paths, service names, resource IDs. These are
 your starting point — go directly to them.
 
 Define what you need to know that the context does NOT answer.
