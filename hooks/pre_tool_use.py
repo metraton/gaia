@@ -305,19 +305,9 @@ def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bo
 
 
 def _format_blocked_message(result) -> str:
-    """Format blocked command message."""
-    msg = (
-        f"[BLOCKED] Command blocked by security policy\n\n"
-        f"Tier: {result.tier}\n"
-        f"Reason: {result.reason}\n"
-    )
-
-    if result.suggestions:
-        msg += "\nSuggestions:\n"
-        for suggestion in result.suggestions:
-            msg += f"  - {suggestion}\n"
-
-    return msg
+    """Format blocked command message. Delegates to blocked_message_formatter."""
+    from modules.security.blocked_message_formatter import format_blocked_message
+    return format_blocked_message(result)
 
 
 # ============================================================================

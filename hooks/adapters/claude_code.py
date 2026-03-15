@@ -667,17 +667,9 @@ class ClaudeCodeAdapter(HookAdapter):
 
     @staticmethod
     def _format_blocked_message(result) -> str:
-        """Format blocked command message."""
-        msg = (
-            f"[BLOCKED] Command blocked by security policy\n\n"
-            f"Tier: {result.tier}\n"
-            f"Reason: {result.reason}\n"
-        )
-        if result.suggestions:
-            msg += "\nSuggestions:\n"
-            for suggestion in result.suggestions:
-                msg += f"  - {suggestion}\n"
-        return msg
+        """Format blocked command message. Delegates to blocked_message_formatter."""
+        from modules.security.blocked_message_formatter import format_blocked_message
+        return format_blocked_message(result)
 
     # ------------------------------------------------------------------ #
     # adapt_post_tool_use: full post-tool-use lifecycle
@@ -952,6 +944,28 @@ class ClaudeCodeAdapter(HookAdapter):
                         "Approval request validation for %s: %s",
                         agent_type, approval_check.get("detail", ""),
                     )
+
+            # ----------------------------------------------------------
+            # Skill injection verification
+            # Advisory only -- adds to anomalies but never blocks.
+            # ----------------------------------------------------------
+            try:
+                from modules.agents.skill_injection_verifier import verify_skill_injection
+                from modules.audit.workflow_recorder import load_agent_runtime_profile
+                agent_profile = load_agent_runtime_profile(agent_type)
+                declared_skills = agent_profile.get("skills", [])
+                if declared_skills and agent_output:
+                    skill_check = verify_skill_injection(
+                        agent_type, agent_output, declared_skills,
+                    )
+                    if skill_check:
+                        anomalies.append(skill_check)
+                        logger.info(
+                            "Skill injection gap for %s: %s",
+                            agent_type, skill_check.get("message", ""),
+                        )
+            except Exception as exc:
+                logger.debug("Skill injection verification failed (non-fatal): %s", exc)
 
             # ----------------------------------------------------------
             # Option B: Selective enforcement for critical structural failures.
