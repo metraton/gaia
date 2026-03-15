@@ -280,8 +280,10 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
 
         # --- Assistant turns ---
         if role == "assistant":
-            # Usage accumulation
-            usage = entry.get("usage", {})
+            # Usage accumulation — check both top-level and nested in message
+            # Claude Code transcripts store usage/model/stop_reason inside
+            # message object, but some formats keep them at entry level.
+            usage = entry.get("usage") or msg.get("usage") or {}
             if isinstance(usage, dict):
                 result.input_tokens += int(usage.get("input_tokens", 0))
                 result.cache_creation_tokens += int(
@@ -292,13 +294,13 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
                 )
                 result.output_tokens += int(usage.get("output_tokens", 0))
 
-            # Model from first assistant turn
-            model = entry.get("model", "")
+            # Model from first assistant turn — check both locations
+            model = entry.get("model") or msg.get("model") or ""
             if isinstance(model, str) and model and not result.model:
                 result.model = model
 
-            # Stop reason
-            stop_reason = entry.get("stop_reason", "")
+            # Stop reason — check both locations
+            stop_reason = entry.get("stop_reason") or msg.get("stop_reason") or ""
             if isinstance(stop_reason, str) and stop_reason:
                 result.stop_reasons.append(stop_reason)
 
