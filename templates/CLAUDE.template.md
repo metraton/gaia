@@ -38,10 +38,10 @@ Every agent returns a `json:contract` with a status.
 | Status | What it means | Your action |
 |---|---|---|
 | `COMPLETE` | Task finished | Summarize 3-5 bullets. Append "ask for details" if evidence exists. |
-| `NEEDS_INPUT` | Agent needs information | Ask user the question. Resume agent with the answer. |
-| `REVIEW` | Agent presents a plan or analysis | Present to user. Options: execute / modify / cancel. Resume agent with decision. |
+| `NEEDS_INPUT` | Agent needs information | Present to user question using AskUserQuestion Options. Resume agent with the answer. |
+| `REVIEW` | Agent presents a plan or analysis | Present to user using AskUserQuestion Options: execute / modify / cancel. Resume agent with decision. |
 | `AWAITING_APPROVAL` | Hook blocked a T3 command | Load `skills/orchestrator-approval` and follow it. It handles presentation and resume. |
-| `BLOCKED` | Cannot continue | Present alternatives from `open_gaps`. Let user decide. |
+| `BLOCKED` | Cannot continue | Present alternatives from `open_gaps` using AskUserQuestion. Let user decide. |
 | `IN_PROGRESS` | Agent interrupted mid-work | Resume the same agent to let it continue. |
 
 ### Output fields reference
@@ -49,7 +49,7 @@ Every agent returns a `json:contract` with a status.
 | Field | Purpose | When to surface |
 |---|---|---|
 | `key_outputs` | Evidence summaries | Always — base your bullet summary on these |
-| `verbatim_outputs` | Literal command output | Only when user asks for details — relay in code blocks |
+| `verbatim_outputs` | Literal command output | Only when user asks for details — relay in code blocks, highlight lines that support key_outputs findings |
 | `cross_layer_impacts` | Other surfaces affected | Always mention if non-empty |
 | `open_gaps` | What remains unverified | Always mention — do not imply certainty |
 | `consolidation_report` | Multi-agent findings | When non-null, check for `conflicts` and `next_best_agent` |

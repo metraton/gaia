@@ -92,14 +92,14 @@ def _check_context_update_missing(
 def _check_excessive_tool_calls(
     analysis: TranscriptAnalysis,
 ) -> Optional[Dict[str, str]]:
-    """Warning if tool_call_count exceeds 50."""
-    if analysis.tool_call_count > 50:
+    """Warning if tool_call_count exceeds 75."""
+    if analysis.tool_call_count > 75:
         return {
             "type": "excessive_tool_calls",
             "severity": "warning",
             "message": (
                 f"Agent made {analysis.tool_call_count} tool calls "
-                f"(threshold: 50) — may indicate inefficient exploration"
+                f"(threshold: 75) — may indicate inefficient exploration"
             ),
         }
     return None
@@ -108,14 +108,14 @@ def _check_excessive_tool_calls(
 def _check_token_budget(
     analysis: TranscriptAnalysis,
 ) -> Optional[Dict[str, str]]:
-    """Info if cache_creation_tokens exceeds 100000."""
-    if analysis.cache_creation_tokens > 100000:
+    """Info if cache_creation_tokens exceeds 200000."""
+    if analysis.cache_creation_tokens > 200000:
         return {
             "type": "token_budget",
             "severity": "info",
             "message": (
                 f"Cache creation tokens ({analysis.cache_creation_tokens}) "
-                f"exceeded 100,000 — large context was created"
+                f"exceeded 200,000 — large context was created"
             ),
         }
     return None
@@ -209,6 +209,106 @@ def _check_duplicate_tools(
     return None
 
 
+def _check_token_explosion(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if total token consumption exceeds 10 million."""
+    total = (
+        analysis.input_tokens
+        + analysis.cache_creation_tokens
+        + analysis.output_tokens
+    )
+    if total > 10_000_000:
+        return {
+            "type": "token_explosion",
+            "severity": "warning",
+            "message": (
+                f"Total token consumption ({total:,}) exceeded 10,000,000 "
+                f"— possible runaway generation"
+            ),
+        }
+    return None
+
+
+def _check_cache_efficiency(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Info if cache read ratio is below 60% with significant token volume."""
+    total = (
+        analysis.cache_read_tokens
+        + analysis.cache_creation_tokens
+        + analysis.input_tokens
+    )
+    if total > 1000:
+        ratio = analysis.cache_read_tokens / total
+        if ratio < 0.60:
+            return {
+                "type": "cache_efficiency",
+                "severity": "info",
+                "message": (
+                    f"Cache read ratio is {ratio:.1%} (below 60%) "
+                    f"with {total:,} total input tokens — cache may be underutilized"
+                ),
+            }
+    return None
+
+
+def _check_duplicate_write_storm(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if Write or Edit tool calls appear 3+ times with identical args."""
+    for dup in analysis.duplicate_tool_calls:
+        if dup.tool_name in ("Write", "Edit") and len(dup.indices) >= 3:
+            return {
+                "type": "duplicate_write_storm",
+                "severity": "warning",
+                "message": (
+                    f"Duplicate {dup.tool_name} storm detected: "
+                    f"{len(dup.indices)} identical calls at indices "
+                    f"{dup.indices}"
+                ),
+            }
+    return None
+
+
+def _check_duration_outlier(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if agent execution exceeded 10 minutes."""
+    if analysis.duration_ms is not None and analysis.duration_ms > 600_000:
+        minutes = analysis.duration_ms / 60_000
+        return {
+            "type": "duration_outlier",
+            "severity": "warning",
+            "message": (
+                f"Agent execution took {minutes:.1f} minutes "
+                f"(threshold: 10 min) — may indicate stalled or inefficient work"
+            ),
+        }
+    return None
+
+
+def _check_tool_call_velocity(
+    analysis: TranscriptAnalysis,
+) -> Optional[Dict[str, str]]:
+    """Warning if tool call rate exceeds 20 calls per minute."""
+    if (
+        analysis.duration_ms is not None
+        and analysis.duration_ms > 0
+        and (analysis.tool_call_count / (analysis.duration_ms / 60_000)) > 20
+    ):
+        velocity = analysis.tool_call_count / (analysis.duration_ms / 60_000)
+        return {
+            "type": "tool_call_velocity",
+            "severity": "warning",
+            "message": (
+                f"Tool call velocity is {velocity:.1f} calls/min "
+                f"(threshold: 20) — agent may be thrashing"
+            ),
+        }
+    return None
+
+
 def audit(
     metrics: Dict[str, Any],
     agent_output: str = "",
@@ -231,8 +331,13 @@ def audit(
     - investigation_skip: first tool was Bash
     - context_ignored: first tool call has no project-context paths
     - context_update_missing: context-updater injected but no CONTEXT_UPDATE emitted
-    - excessive_tool_calls: tool_call_count > 50
-    - token_budget: cache_creation_tokens > 100000
+    - excessive_tool_calls: tool_call_count > 75
+    - token_budget: cache_creation_tokens > 200000
+    - token_explosion: total tokens (input+cache_creation+output) > 10M
+    - cache_efficiency: cache read ratio < 60% with significant volume
+    - duplicate_write_storm: Write/Edit tool with 3+ identical calls
+    - duration_outlier: duration_ms > 600,000 (10 min)
+    - tool_call_velocity: > 20 tool calls per minute
     - pipe_retroactive: pipe commands found in transcript
     - model_mismatch: transcript model != agent definition model
     - skill_order: skills injected in unexpected order
@@ -397,6 +502,11 @@ def audit(
             _check_excessive_tool_calls,
             _check_token_budget,
             _check_duplicate_tools,
+            _check_token_explosion,
+            _check_cache_efficiency,
+            _check_duplicate_write_storm,
+            _check_duration_outlier,
+            _check_tool_call_velocity,
         ):
             result = check_fn(transcript_analysis)
             if result is not None:

@@ -160,17 +160,17 @@ class TestContextUpdateMissing:
 
 
 class TestExcessiveToolCalls:
-    def test_triggers_when_over_50(self):
-        ta = _base_analysis(tool_call_count=51)
+    def test_triggers_when_over_75(self):
+        ta = _base_analysis(tool_call_count=76)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "excessive_tool_calls" in types
         match = next(a for a in anomalies if a["type"] == "excessive_tool_calls")
         assert match["severity"] == "warning"
-        assert "51" in match["message"]
+        assert "76" in match["message"]
 
     def test_no_anomaly_at_boundary(self):
-        ta = _base_analysis(tool_call_count=50)
+        ta = _base_analysis(tool_call_count=75)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "excessive_tool_calls" not in types
@@ -188,8 +188,8 @@ class TestExcessiveToolCalls:
 
 
 class TestTokenBudget:
-    def test_triggers_when_over_100k(self):
-        ta = _base_analysis(cache_creation_tokens=100001)
+    def test_triggers_when_over_200k(self):
+        ta = _base_analysis(cache_creation_tokens=200001)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "token_budget" in types
@@ -197,7 +197,7 @@ class TestTokenBudget:
         assert match["severity"] == "info"
 
     def test_no_anomaly_at_boundary(self):
-        ta = _base_analysis(cache_creation_tokens=100000)
+        ta = _base_analysis(cache_creation_tokens=200000)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "token_budget" not in types
