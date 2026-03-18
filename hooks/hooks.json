@@ -12,6 +12,10 @@
       {
         "matcher": "Agent",
         "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"}]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"}]
       }
     ],
     "PostToolUse": [
@@ -46,6 +50,11 @@
       {
         "matcher": "*",
         "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/subagent_start.py"}]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_compact.py"}]
       }
     ]
   }

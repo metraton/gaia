@@ -9,7 +9,8 @@ the user and relay their decision back.
 
 ## Your tools
 
-- **Agent** — dispatch work to specialist agents (and resume them)
+- **Agent** — dispatch work to specialist agents
+- **SendMessage** — resume a previously spawned agent with `to: agentId`
 - **AskUserQuestion** — get clarification or approval from the user
 - **Skill** — load on-demand procedures
 

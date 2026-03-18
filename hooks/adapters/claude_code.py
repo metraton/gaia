@@ -448,6 +448,8 @@ class ClaudeCodeAdapter(HookAdapter):
                 return self._adapt_task(
                     tool_name, tool_input, project_agents, hooks_dir,
                 )
+            elif tool_name.lower() == "sendmessage":
+                return self._adapt_send_message(tool_name, tool_input)
             else:
                 # Other tools pass through
                 return HookResponse(output={}, exit_code=0)
@@ -513,23 +515,20 @@ class ClaudeCodeAdapter(HookAdapter):
         project_agents: list,
         hooks_dir: Path,
     ) -> HookResponse:
-        """Handle Task/Agent tool validation within the adapter."""
+        """Handle Task/Agent tool validation within the adapter.
+
+        Uses additionalContext (Phase 2) instead of prompt mutation.
+        Validation runs against the original prompt, eliminating T3 false positives.
+        """
         from modules.core.state import create_pre_hook_state, save_hook_state
         from modules.tools.task_validator import TaskValidator
-        from modules.context.context_injector import inject_project_context
-        from modules.session.session_event_injector import inject_session_events
+        from modules.context.context_injector import build_project_context
+        from modules.session.session_event_injector import build_session_events
 
-        original_prompt = parameters.get("prompt", "")
-        if not parameters.get("resume"):
-            parameters = inject_project_context(parameters, project_agents, hooks_dir)
-            parameters = inject_session_events(parameters, project_agents)
+        context_text, _telemetry = build_project_context(parameters, project_agents, hooks_dir)
+        events_text = build_session_events(parameters, project_agents)
 
-        resume_id = parameters.get("resume")
-
-        if resume_id:
-            return self._adapt_task_resume(tool_name, parameters, resume_id)
-
-        # Standard task validation
+        # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
         validator = TaskValidator()
         result = validator.validate(parameters)
 
@@ -548,32 +547,39 @@ class ClaudeCodeAdapter(HookAdapter):
 
         logger.info("ALLOWED Task: %s", result.agent_name)
 
-        if parameters.get("prompt", "") != original_prompt:
-            updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
-            logger.info("Returning updatedInput for %s (context injected)", result.agent_name)
+        additional = "\n".join(filter(None, [context_text, events_text]))
+        if additional:
+            logger.info("Returning additionalContext for %s (context injected)", result.agent_name)
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow",
                     "permissionDecisionReason": f"Context injected for {result.agent_name}",
-                    "updatedInput": updated_input,
+                    "additionalContext": additional,
                 }
             }
             return HookResponse(output=output, exit_code=0)
 
         return HookResponse(output={}, exit_code=0)
 
-    def _adapt_task_resume(
-        self, tool_name: str, parameters: dict, resume_id: str,
+    def _adapt_send_message(
+        self, tool_name: str, parameters: dict,
     ) -> HookResponse:
-        """Handle Task resume validation within the adapter."""
+        """Handle SendMessage tool validation for agent resumption.
+
+        Validates agent ID format and message content, then runs nonce
+        approval checks. Does NOT inject project context (it's a resume).
+        """
         from modules.core.state import create_pre_hook_state, save_hook_state
 
+        agent_id = parameters.get("to", "")
+        message = parameters.get("message", "")
+
         # Validate agentId format
-        if not re.match(r'^a[0-9a-f]{5,}$', resume_id):
-            logger.warning("BLOCKED Resume: Invalid agentId format '%s'", resume_id)
+        if not agent_id or not re.match(r'^a[0-9a-f]{5,}$', agent_id):
+            logger.warning("BLOCKED SendMessage: Invalid agentId format '%s'", agent_id)
             msg = (
-                f"[ERROR] Invalid resume ID format: '{resume_id}'\n\n"
+                f"[ERROR] Invalid agent ID format: '{agent_id}'\n\n"
                 "Agent ID should be 'a' followed by hex characters.\n"
                 "Example: a12345f or a51a0cbbf6afb831d\n\n"
                 "The agent ID is returned at the end of agent responses.\n"
@@ -581,29 +587,28 @@ class ClaudeCodeAdapter(HookAdapter):
             )
             return HookResponse(output=msg, exit_code=2)
 
-        prompt = parameters.get("prompt", "")
-        if not prompt or not prompt.strip():
-            logger.warning("BLOCKED Resume: Missing prompt for agent %s", resume_id)
+        if not message or not message.strip():
+            logger.warning("BLOCKED SendMessage: Missing message for agent %s", agent_id)
             msg = (
-                "[ERROR] Resume requires a prompt\n\n"
-                "When resuming an agent, you must provide instructions:\n\n"
-                "Task(\n"
-                "    resume=\"a12345\",\n"
-                "    prompt=\"Continue with the latest user instruction.\"\n"
+                "[ERROR] SendMessage requires a message\n\n"
+                "When resuming an agent, you must provide a message:\n\n"
+                "SendMessage(\n"
+                "    to=\"a12345\",\n"
+                "    message=\"Continue with the latest user instruction.\"\n"
                 ")\n\n"
-                "The prompt tells the agent what to do next."
+                "The message tells the agent what to do next."
             )
             return HookResponse(output=msg, exit_code=2)
 
-        logger.info("RESUME: Continuing agent %s", resume_id)
+        logger.info("SENDMESSAGE: Resuming agent %s", agent_id)
 
-        approval_error, has_approval = self._adapt_resume_approval(resume_id, prompt)
+        approval_error, has_approval = self._adapt_resume_approval(agent_id, message)
         if approval_error:
             return HookResponse(output=approval_error, exit_code=2)
 
         state = create_pre_hook_state(
             tool_name=tool_name,
-            command=f"Task:resume:{resume_id}",
+            command=f"SendMessage:{agent_id}",
             tier="T0",
             allowed=True,
             is_t3=False,
@@ -611,7 +616,7 @@ class ClaudeCodeAdapter(HookAdapter):
         )
         save_hook_state(state)
 
-        logger.info("ALLOWED Resume: agent %s - prompt length: %d", resume_id, len(prompt))
+        logger.info("ALLOWED SendMessage: agent %s - message length: %d", agent_id, len(message))
         return HookResponse(output={}, exit_code=0)
 
     def _adapt_resume_approval(
@@ -1153,16 +1158,7 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
-        """Parse SubagentStart event and prepare agent context.
-
-        Extracts the agent type and task description from the SubagentStart
-        payload. Prepares agent-specific context (surface routing, investigation
-        brief) for injection.
-
-        Returns:
-            ContextResult with agent-specific context.
-            Default: no additional context (passthrough until business logic wired).
-        """
+        """Parse SubagentStart event. Context injection is handled by PreToolUse."""
         _agent_type = raw.get("agent_type", "")
         _task_description = raw.get("task_description", "")
 

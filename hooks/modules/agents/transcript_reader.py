@@ -117,56 +117,29 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
     The first ``role: "user"`` entry is the task prompt sent by the orchestrator --
     which is the most meaningful description of what the agent was asked to do.
 
+    Since Phase 2, context is delivered via additionalContext (not prompt mutation),
+    so the first user message IS the original prompt without any wrapping.
+
     Returns empty string on any error so the hook never crashes.
     """
     content = read_first_user_content_from_transcript(transcript_path)
     if not content:
         return ""
 
-    text = content.strip()
-    # Pattern 2: pre_tool_use injected project context before the real prompt.
-    # New format: starts with "# Task\n\n<prompt>" — extract the task directly.
-    # Legacy format: "# Project Context...---\n\n# User Task\n\n<prompt>"
-    if text.startswith("# Task\n"):
-        # New format: task is right after "# Task\n\n"
-        task_text = text[len("# Task\n\n"):]
-        # Task ends at the next # header (Rules, Project Knowledge, etc.)
-        next_header = task_text.find("\n# ")
-        if next_header != -1:
-            text = task_text[:next_header].strip()
-        else:
-            text = task_text.strip()
-    elif text.startswith("# Project Context"):
-        sep_full = "\n\n---\n\n# User Task\n\n"
-        sep_bare = "\n\n---\n\n"
-        pos = text.find(sep_full)
-        if pos != -1:
-            text = text[pos + len(sep_full):].strip()
-        else:
-            pos = text.find(sep_bare)
-            if pos != -1:
-                text = text[pos + len(sep_bare):].strip()
-            else:
-                text = ""  # Cannot extract real prompt
-
-    if text:
-        # Truncate to 500 chars -- enough context, not too much
-        return text[:500]
-    return ""
+    return content.strip()[:500]
 
 
 def extract_injected_context_payload_from_transcript(
     transcript_path: str,
 ) -> Dict[str, Any]:
-    """Extract the auto-injected JSON context payload.
+    """Extract the auto-injected context payload from disk cache.
 
-    Primary: reads from disk file saved by context_injector.
-    Fallback: parses legacy HTML comment from transcript for backwards compat.
+    Since Phase 2, context is delivered via additionalContext and the payload
+    is persisted to disk by context_injector. The legacy HTML comment parsing
+    fallback has been removed as prompts no longer contain embedded payloads.
     """
     import os
-    from pathlib import Path
 
-    # Primary: read from disk (new approach — saved by context_injector)
     try:
         payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
         if payload_dir.exists():
@@ -177,23 +150,4 @@ def extract_injected_context_payload_from_transcript(
                     return json.loads(candidate.read_text())
     except Exception:
         pass
-
-    # Fallback: parse legacy HTML comment from transcript
-    content = read_first_user_content_from_transcript(transcript_path)
-    if not content:
-        return {}
-    # Support both old ("# Project Context") and new ("# Task") headers
-    if not (content.startswith("# Project Context") or content.startswith("# Task")):
-        return {}
-    try:
-        marker = "<!-- context_payload:"
-        idx = content.find(marker)
-        if idx == -1:
-            return {}
-        start = idx + len(marker)
-        end = content.find(" -->", start)
-        if end == -1:
-            return {}
-        return json.loads(content[start:end])
-    except Exception:
-        return {}
+    return {}

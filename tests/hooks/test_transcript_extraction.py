@@ -75,38 +75,28 @@ class TestNormalExtraction:
         assert "Check the rollout status" in result
         assert "orders-service" in result
 
-    def test_injected_context_is_stripped(self, tmp_path):
-        """When pre_tool_use injects project context, the real prompt is after the separator."""
-        injected_prefix = (
-            "# Project Context -- READ THIS FIRST\n\n"
-            '{"project_knowledge": {"section": "data"}}\n\n'
-            "---\n\n"
-            "# User Task\n\n"
-        )
-        real_prompt = "Investigate the broken inventory-service deployment."
+    def test_plain_prompt_returned_as_is(self, tmp_path):
+        """Since Phase 2, context goes via additionalContext, so the first user
+        message IS the original prompt -- no stripping needed."""
+        prompt = "Investigate the broken inventory-service deployment."
         transcript = tmp_path / "transcript.jsonl"
         _write_jsonl(transcript, [
-            _make_user_entry(injected_prefix + real_prompt),
+            _make_user_entry(prompt),
         ])
 
         result = extract_task_description_from_transcript(str(transcript))
-        assert result == real_prompt
+        assert result == prompt
 
-    def test_injected_context_with_bare_separator(self, tmp_path):
-        """Fallback: separator without '# User Task' header."""
-        injected_prefix = (
-            "# Project Context -- READ THIS FIRST\n\n"
-            '{"project_knowledge": {}}\n\n'
-            "---\n\n"
-        )
-        real_prompt = "Run terraform plan on the VPC module."
+    def test_prompt_with_markdown_headers_returned_verbatim(self, tmp_path):
+        """Prompts that happen to contain markdown headers are not stripped."""
+        prompt = "# Deploy Plan\n\nRun terraform plan on the VPC module."
         transcript = tmp_path / "transcript.jsonl"
         _write_jsonl(transcript, [
-            _make_user_entry(injected_prefix + real_prompt),
+            _make_user_entry(prompt),
         ])
 
         result = extract_task_description_from_transcript(str(transcript))
-        assert result == real_prompt
+        assert result == prompt
 
 
 # ============================================================================
@@ -204,14 +194,14 @@ class TestEdgeCases:
         assert len(result) == 500
         assert result == "A" * 500
 
-    def test_injected_context_without_any_separator_returns_empty(self, tmp_path):
-        """Injected context header present but no --- separator."""
-        broken = "# Project Context -- READ THIS FIRST\n\nsome data without separator"
-        transcript = tmp_path / "no_sep.jsonl"
-        _write_jsonl(transcript, [_make_user_entry(broken)])
+    def test_any_text_content_is_returned(self, tmp_path):
+        """Any text content in the first user message is returned as-is."""
+        text = "# Project Context -- READ THIS FIRST\n\nsome data without separator"
+        transcript = tmp_path / "any_text.jsonl"
+        _write_jsonl(transcript, [_make_user_entry(text)])
 
         result = extract_task_description_from_transcript(str(transcript))
-        assert result == ""
+        assert result == text
 
     def test_content_list_with_non_text_blocks(self, tmp_path):
         """Content list includes image blocks that should be ignored."""

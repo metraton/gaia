@@ -62,8 +62,8 @@ Each `AWAITING_APPROVAL` requires its own presentation with all mandatory fields
 1. Extract the 5 mandatory fields from `approval_request` in the subagent's `json:contract` block. Extract the nonce from `approval_request.nonce` (present only for `AWAITING_APPROVAL`).
 2. Present to the user via AskUserQuestion with all mandatory fields populated. Options: **Approve / Modify / Reject**. Never include the nonce in user-facing text.
 3. On user approval:
-   - If nonce exists: silently resume the subagent with `APPROVE:<nonce>`.
-   - If no nonce yet: store approval intent. Resume subagent with natural language describing the approved direction.
+   - If nonce exists: resume the subagent via SendMessage(to: agentId) with `APPROVE:<nonce>` as the message.
+   - If no nonce yet: store approval intent. Resume subagent via SendMessage with natural language describing the approved direction.
 4. On scope change: if the eventual blocked command differs materially from what the user approved, present the new scope with all mandatory fields and ask again.
 
 **Note:** After relaying the nonce, Claude Code will show a native confirmation

@@ -226,7 +226,7 @@ class TestSubagentStopHookPostRemoval:
         assert result["response_contract"]["valid"] is False
 
     @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
-    def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path):
+    def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path, monkeypatch):
         transcript_path = tmp_path / "agent.jsonl"
         injected_payload = {
             "project_knowledge": {"application_services": {}},
@@ -240,16 +240,16 @@ class TestSubagentStopHookPostRemoval:
                 "consolidation_required": True,
             },
         }
-        compact_payload = json.dumps(injected_payload, separators=(',', ':'))
-        user_prompt = (
-            "# Project Context -- READ THIS FIRST\n\n"
-            f"{json.dumps(injected_payload, indent=2)}\n\n"
-            f"<!-- context_payload:{compact_payload} -->\n\n---\n\n"
-            "# User Task\n\nInvestigate rollout failure after CI image change."
-        )
+        # Phase 2: context is delivered via additionalContext, payload persisted to disk
+        user_prompt = "Investigate rollout failure after CI image change."
         transcript_path.write_text(
             json.dumps({"message": {"role": "user", "content": user_prompt}}) + "\n"
         )
+        # Write payload to disk cache (as context_injector does in Phase 2)
+        payload_dir = tmp_path / "gaia-context-payloads"
+        payload_dir.mkdir()
+        (payload_dir / "agent.json").write_text(json.dumps(injected_payload))
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
 
         task_info = dict(structural_task_info)
         task_info["agent_id"] = "a12345"

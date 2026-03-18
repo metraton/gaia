@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for Task resume approval handling and classify_resume_prompt edge cases.
+"""Tests for SendMessage resume approval handling and classify_resume_prompt edge cases.
 
 Validates:
-- Approval handling integration via _handle_task
+- Approval handling integration via _handle_send_message
 - Parametrized _classify_resume_prompt edge cases (empty, long, special chars, boundaries)
 """
 
@@ -51,8 +51,8 @@ def saved_states(monkeypatch):
     return captured
 
 
-class TestHandleTaskResumeApproval:
-    """Approval handling for Task resume should be fail-closed and coherent."""
+class TestHandleSendMessageApproval:
+    """Approval handling for SendMessage resume should be fail-closed and coherent."""
 
     def test_valid_nonce_allows_resume_and_marks_approval(self, monkeypatch, saved_states):
         nonce = "deadbeef" * 4
@@ -67,9 +67,9 @@ class TestHandleTaskResumeApproval:
             ),
         )
 
-        result = pre_tool_use._handle_task(
-            "Task",
-            {"resume": "a12345", "prompt": f"APPROVE:{nonce}"},
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": f"APPROVE:{nonce}"},
         )
 
         assert result is None
@@ -88,9 +88,9 @@ class TestHandleTaskResumeApproval:
             ),
         )
 
-        result = pre_tool_use._handle_task(
-            "Task",
-            {"resume": "a12345", "prompt": f"APPROVE:{nonce}"},
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": f"APPROVE:{nonce}"},
         )
 
         assert isinstance(result, str)
@@ -100,9 +100,9 @@ class TestHandleTaskResumeApproval:
         assert saved_states == []
 
     def test_malformed_nonce_token_denies_resume_and_skips_state(self, saved_states):
-        result = pre_tool_use._handle_task(
-            "Task",
-            {"resume": "a12345", "prompt": "APPROVE:commit\n\nRetry the git commit."},
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": "APPROVE:commit\n\nRetry the git commit."},
         )
 
         assert isinstance(result, str)
@@ -111,9 +111,9 @@ class TestHandleTaskResumeApproval:
         assert saved_states == []
 
     def test_deprecated_approval_phrase_denies_resume_and_skips_state(self, saved_states):
-        result = pre_tool_use._handle_task(
-            "Task",
-            {"resume": "a12345", "prompt": "User approved: terraform apply prod/vpc"},
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": "User approved: terraform apply prod/vpc"},
         )
 
         assert isinstance(result, str)
@@ -121,9 +121,9 @@ class TestHandleTaskResumeApproval:
         assert saved_states == []
 
     def test_documentary_nonce_text_is_not_treated_as_malformed_approval(self, saved_states):
-        result = pre_tool_use._handle_task(
-            "Task",
-            {"resume": "a12345", "prompt": "Use APPROVE:<nonce> in the docs and continue."},
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": "Use APPROVE:<nonce> in the docs and continue."},
         )
 
         assert result is None
@@ -131,14 +131,34 @@ class TestHandleTaskResumeApproval:
         assert saved_states[0].metadata["has_approval"] is False
 
     def test_resume_without_approval_token_allows_and_marks_false(self, saved_states):
-        result = pre_tool_use._handle_task(
-            "Task",
-            {"resume": "a12345", "prompt": "Continue with the investigation."},
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": "Continue with the investigation."},
         )
 
         assert result is None
         assert len(saved_states) == 1
         assert saved_states[0].metadata["has_approval"] is False
+
+    def test_invalid_agent_id_blocked(self, saved_states):
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "invalid_id", "message": "Continue."},
+        )
+
+        assert isinstance(result, str)
+        assert "Invalid agent ID format" in result
+        assert saved_states == []
+
+    def test_empty_message_blocked(self, saved_states):
+        result = pre_tool_use._handle_send_message(
+            "SendMessage",
+            {"to": "a12345", "message": ""},
+        )
+
+        assert isinstance(result, str)
+        assert "SendMessage requires a message" in result
+        assert saved_states == []
 
 
 # ============================================================================

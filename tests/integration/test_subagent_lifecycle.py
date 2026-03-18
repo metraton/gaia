@@ -235,14 +235,14 @@ class TestPhase1SkillsInjection:
                 },
             )
 
-            assert isinstance(result, dict), "Task call should return updatedInput when context is injected"
-            updated = result["hookSpecificOutput"]["updatedInput"]["prompt"]
+            assert isinstance(result, dict), "Task call should return additionalContext when context is injected"
+            additional = result["hookSpecificOutput"]["additionalContext"]
 
-            assert "# Task" in updated
-            assert "# Project Context" in updated
-            assert "Diagnose pod health in namespace test" in updated
-            assert "AGENT_STATUS" not in updated, \
-                "Hook should not inline agent-protocol skill text into prompt"
+            assert "# Project Context" in additional
+            assert "updatedInput" not in result["hookSpecificOutput"], \
+                "Phase 2: should use additionalContext, not updatedInput"
+            assert "AGENT_STATUS" not in additional, \
+                "Hook should not inline agent-protocol skill text into context"
         finally:
             os.chdir(original_cwd)
 

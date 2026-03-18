@@ -226,22 +226,22 @@ class SessionSimulator:
         return result
 
     def resume_agent(self, agent_id: str, prompt: str) -> Dict[str, Any]:
-        """Invoke pre_tool_use.py with a Task resume event.
+        """Invoke pre_tool_use.py with a SendMessage resume event.
 
         Used to simulate the orchestrator resuming an agent, e.g. with an
         APPROVE:<nonce> token after a T3 command was blocked.
 
         Args:
             agent_id: The agent ID to resume (e.g. "a1f2c3d4e5").
-            prompt: The resume prompt (e.g. "APPROVE:<32-char-hex>").
+            prompt: The resume message (e.g. "APPROVE:<32-char-hex>").
 
         Returns: dict with exit_code, stdout_json, stdout_raw, stderr.
         """
         payload = {
-            "tool_name": "Agent",
+            "tool_name": "SendMessage",
             "tool_input": {
-                "prompt": prompt,
-                "resume": agent_id,
+                "message": prompt,
+                "to": agent_id,
             },
             "hook_event_name": "PreToolUse",
             "session_id": self.session_id,

@@ -1,8 +1,8 @@
 """Core context injection subsystem for project agents.
 
 Handles:
-- inject_project_context: main context injection into agent prompts
-- should_inject_on_resume: determines if context is needed on resume
+- build_project_context: builds context string without mutating parameters (Phase 2)
+- inject_project_context: legacy wrapper that mutates parameters (backward compat)
 - check_pending_updates_threshold: warns when pending updates accumulate
 - check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
 - consume_anomaly_flag: reads and deletes anomaly signal flags
@@ -15,7 +15,6 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from ..security.prompt_validator import classify_resume_prompt
 from ..session.session_manager import get_or_create_session_id
 from .anchor_tracker import extract_anchors, save_anchors
 from .contracts_loader import build_context_update_reminder
@@ -83,66 +82,6 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
             "writable_sections_count": len(writable_sections),
         }),
     })
-
-
-def should_inject_on_resume(parameters: dict) -> bool:
-    """
-    Determine if context should be injected on a resume operation.
-
-    By default, resume operations skip context injection because the agent
-    already has context from phase 1. However, in some cases we need fresh context:
-
-    Rules:
-    1. If prompt contains a nonce approval token -> NO inject (simple execution)
-    2. If prompt has substantial new information (>100 words) -> YES inject
-    3. If prompt mentions new resources/scope -> YES inject
-    4. Default: NO inject (trust existing context)
-
-    Args:
-        parameters: Task tool parameters with 'prompt' key
-
-    Returns:
-        True if context should be injected, False otherwise
-    """
-    prompt = parameters.get("prompt", "")
-
-    # Case 1: Any approval-related prompt - NO injection needed.
-    classification = classify_resume_prompt(prompt)
-    if classification != "standard":
-        logger.debug("Resume with %s prompt - skipping context injection", classification)
-        return False
-
-    # Case 2: Substantial new information - YES inject
-    # If user is providing a lot of new context, we should refresh
-    word_count = len(prompt.split())
-    if word_count > 100:
-        logger.info(f"Resume with substantial new info ({word_count} words) - injecting context")
-        return True
-
-    # Case 3: New scope/resources mentioned - YES inject
-    # These words indicate the user is expanding the task scope
-    prompt_lower = prompt.lower()
-    scope_expansion_indicators = [
-        "also",
-        "additionally",
-        "another",
-        "new ",
-        "different",
-        "and also",
-        "as well as",
-        "in addition",
-        "plus",
-        "moreover",
-        "furthermore",
-        "besides that"
-    ]
-    if any(indicator in prompt_lower for indicator in scope_expansion_indicators):
-        logger.info("Resume with scope expansion - injecting context")
-        return True
-
-    # Default: Trust existing context
-    logger.debug("Standard resume - skipping context injection")
-    return False
 
 
 def check_pending_updates_threshold() -> str:
@@ -294,25 +233,25 @@ def consume_anomaly_flag(enriched_prompt: str) -> str:
     return enriched_prompt
 
 
-def inject_project_context(
+def build_project_context(
     parameters: dict,
     project_agents: list,
     hooks_dir: Path = None,
-) -> dict:
+) -> tuple:
     """
-    Inject project context for project agents.
+    Build project context string for a project agent without mutating parameters.
 
-    Automatically provisions context from project-context.json for agents that need it.
-    This makes the orchestrator lightweight - it only routes, the hook injects context.
+    Returns the context string suitable for additionalContext injection, plus a
+    telemetry snapshot. Does NOT modify parameters in any way.
 
     Args:
-        parameters: Original Task tool parameters
+        parameters: Task tool parameters (read-only).
         project_agents: List of valid project agent names.
         hooks_dir: Path to the hooks directory (for fallback paths).
             Defaults to Path(__file__).parent.parent.parent if None.
 
     Returns:
-        Modified parameters with context injected into prompt
+        (context_string, telemetry_snapshot) or (None, {}) if no context to inject.
     """
     if hooks_dir is None:
         hooks_dir = Path(__file__).parent.parent.parent
@@ -322,23 +261,22 @@ def inject_project_context(
     # Only inject for project agents (not for generic agents like Explore, general-purpose, etc.)
     if subagent_type not in project_agents:
         logger.debug(f"Skipping context injection for non-project agent: {subagent_type}")
-        return parameters
-
-    # Conditional context injection for resume operations (Phase 4 enhancement)
-    # By default, skip injection for resume (context from phase 1)
-    # But inject if: new info (>100 words), scope expansion, or new resources
-    if parameters.get("resume"):
-        if should_inject_on_resume(parameters):
-            logger.info(f"Resume with new context detected, injecting for: {parameters.get('resume')}")
-            # Continue to context injection below
-        else:
-            logger.debug(f"Standard resume, skipping context injection: {parameters.get('resume')}")
-            return parameters
+        return None, {}
 
     prompt = parameters.get("prompt", "")
     if not prompt:
         logger.warning(f"No prompt provided for {subagent_type}, skipping context injection")
-        return parameters
+        return None, {}
+
+    # Deduplication guard: if context was already injected (e.g., by a
+    # previous hook or retry), do not inject again.  The "# Project Context"
+    # header is the canonical marker written by this function.
+    if "# Project Context" in prompt:
+        logger.warning(
+            "Duplicate context injection prevented for %s — prompt already "
+            "contains '# Project Context' header", subagent_type,
+        )
+        return None, {}
 
     try:
         # Find context_provider.py
@@ -356,10 +294,10 @@ def inject_project_context(
 
         if not context_provider:
             logger.warning("context_provider.py not found, skipping context injection")
-            return parameters
+            return None, {}
 
         # Execute context_provider.py to get filtered context
-        logger.info(f"Injecting context for {subagent_type}...")
+        logger.info(f"Building context for {subagent_type}...")
         result = subprocess.run(
             ["python3", str(context_provider), subagent_type, prompt],
             capture_output=True,
@@ -370,15 +308,14 @@ def inject_project_context(
 
         if result.returncode != 0:
             logger.error(f"context_provider.py failed: {result.stderr}")
-            # Don't block - let agent proceed without context
-            return parameters
+            return None, {}
 
         # Parse context JSON
         try:
             context_payload = json.loads(result.stdout)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse context JSON: {e}")
-            return parameters
+            return None, {}
 
         # Extract and save context anchors for hit tracking
         try:
@@ -400,8 +337,7 @@ def inject_project_context(
             subagent_type, project_agents, hooks_dir
         )
 
-        # Inject context into prompt (skills are injected natively by Claude Code
-        # via the 'skills:' field in the agent's frontmatter)
+        # Build context sections from payload
         project_knowledge = context_payload.get("project_knowledge", {})
         write_perms = context_payload.get("write_permissions", {})
         investigation_brief = context_payload.get("investigation_brief", {})
@@ -410,27 +346,6 @@ def inject_project_context(
         metadata = context_payload.get("metadata", {})
         historical = context_payload.get("historical_context", {})
 
-        writable_list = ", ".join(write_perms.get("writable_sections", []))
-        readable_list = ", ".join(write_perms.get("readable_sections", []))
-
-        # Build investigation brief prose
-        brief_lines = []
-        if investigation_brief:
-            role = investigation_brief.get("agent_role", "")
-            primary = investigation_brief.get("primary_surface", "")
-            adjacent = investigation_brief.get("adjacent_surfaces", [])
-            if role:
-                brief_lines.append(f"- Role: {role}")
-            if primary:
-                brief_lines.append(f"- Primary surface: {primary}")
-            if adjacent:
-                brief_lines.append(f"- Adjacent surfaces: {', '.join(adjacent)}")
-            if investigation_brief.get("consolidation_required"):
-                brief_lines.append("- Consolidation required: yes")
-            if investigation_brief.get("cross_check_required"):
-                brief_lines.append("- Cross-check required: yes")
-        brief_section = "\n".join(brief_lines) if brief_lines else "No investigation brief provided."
-
         # Optional sections
         rules_section = f"\n## Rules\n\n{json.dumps(rules, indent=2)}\n" if rules.get("universal") or rules.get("agent_specific") else ""
         routing_section = f"\n## Surface Routing\n\n{json.dumps(surface_routing_data, indent=2)}\n" if surface_routing_data else ""
@@ -438,7 +353,6 @@ def inject_project_context(
         historical_section = f"\n## Historical Context\n\n{json.dumps(historical, indent=2)}\n" if historical else ""
 
         # Save context_payload to disk for downstream hooks (SubagentStop)
-        # instead of embedding as HTML comment in the prompt
         try:
             payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
             payload_dir.mkdir(parents=True, exist_ok=True)
@@ -460,10 +374,7 @@ def inject_project_context(
                                          if not project_knowledge.get(s)]
         }, indent=2)
 
-        enriched_prompt = f"""# Task
-
-{prompt}
-{rules_section}
+        context_string = f"""{rules_section}
 # Project Context
 
 {json.dumps(project_knowledge, indent=2)}
@@ -477,39 +388,62 @@ def inject_project_context(
 # Permissions
 
 {write_perms_json}
-{pending_warning}{update_reminder}{metadata_section}{historical_section}
-"""
+{pending_warning}{update_reminder}{metadata_section}{historical_section}"""
 
-        # Modify parameters
-        parameters["prompt"] = enriched_prompt
-
-        # Add metadata for TaskValidator to know the original user task
-        # This prevents T3 keyword detection in injected context
-        parameters["_original_user_task"] = prompt
-
-        # Check for anomaly signal flag created by subagent_stop.py
-        enriched_prompt = consume_anomaly_flag(enriched_prompt)
+        # Append anomaly signal flag (consume once)
+        context_string = consume_anomaly_flag(context_string)
 
         # Surface recent critical anomalies from the JSONL log
         critical_summary = check_recent_critical_anomalies()
         if critical_summary:
-            enriched_prompt += critical_summary
+            context_string += critical_summary
 
-        parameters["prompt"] = enriched_prompt
+        # Build telemetry snapshot
+        telemetry = build_context_telemetry_snapshot(context_payload)
 
         sections_count = len(context_payload.get("project_knowledge", {}))
         rules_count = context_payload.get("metadata", {}).get("rules_count", 0)
 
         logger.info(
-            f"Context injected for {subagent_type} "
+            f"Context built for {subagent_type} "
             f"(sections={sections_count}, rules={rules_count})"
         )
 
-        return parameters
+        return context_string, telemetry
 
     except subprocess.TimeoutExpired:
         logger.error("context_provider.py timed out (15s)")
-        return parameters
+        return None, {}
     except Exception as e:
-        logger.error(f"Error injecting context: {e}", exc_info=True)
+        logger.error(f"Error building context: {e}", exc_info=True)
+        return None, {}
+
+
+def inject_project_context(
+    parameters: dict,
+    project_agents: list,
+    hooks_dir: Path = None,
+) -> dict:
+    """
+    Legacy wrapper: inject project context by mutating parameters["prompt"].
+
+    Retained for backward compatibility (tests import this function).
+    New code should use build_project_context() with additionalContext instead.
+
+    Args:
+        parameters: Original Task tool parameters (will be mutated).
+        project_agents: List of valid project agent names.
+        hooks_dir: Path to the hooks directory.
+
+    Returns:
+        Modified parameters with context injected into prompt.
+    """
+    context_string, _telemetry = build_project_context(parameters, project_agents, hooks_dir)
+    if context_string is None:
         return parameters
+
+    prompt = parameters.get("prompt", "")
+    enriched_prompt = f"# Task\n\n{prompt}\n{context_string}"
+    parameters["prompt"] = enriched_prompt
+
+    return parameters

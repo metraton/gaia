@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
-"""
-SubagentStart hook for Claude Code Agent System.
-
-Fires when a subagent is spawned. Injects agent-specific context such as
-surface routing data, investigation briefs, and contract sections relevant
-to the agent's domain. For MVP: logs the event and returns minimal context.
-Full context injection will be wired to context_provider in a future iteration.
-
-Architecture:
-- Uses adapter layer to parse SubagentStart event
-- Calls adapter.adapt_subagent_start() for context preparation
-- Returns context result via adapter format_context_response()
-"""
+"""SubagentStart hook — logs agent dispatch and records skill snapshots.
+Context injection is handled exclusively by PreToolUse (Agent matcher)."""
 
 import sys
 import json
@@ -37,14 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _handle_subagent_start(event) -> None:
-    """Process a SubagentStart event.
-
-    Prepares agent-specific context for injection.
-    For MVP, returns minimal context (passthrough).
-
-    Args:
-        event: Parsed HookEvent from the adapter layer.
-    """
+    """Record skill snapshot and log the agent dispatch."""
     adapter = ClaudeCodeAdapter()
 
     context_result = adapter.adapt_subagent_start(event.payload)

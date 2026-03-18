@@ -91,40 +91,36 @@ def format_events_summary(events: list) -> str:
     return "\n".join(lines) if lines else "No recent events"
 
 
-def inject_session_events(
+def build_session_events(
     parameters: dict,
     project_agents: list,
-) -> dict:
+) -> str | None:
     """
-    Inject relevant session events for agent context.
+    Build session events string for agent context without mutating parameters.
 
     Filters events by agent domain to avoid noise.
-    Only injects for project agents on new tasks (not resume).
+    Returns the events string suitable for additionalContext injection,
+    or None if no events to inject.
 
     Args:
-        parameters: Task tool parameters
+        parameters: Task tool parameters (read-only).
         project_agents: List of valid project agent names.
 
     Returns:
-        Modified parameters with events injected into prompt
+        Session events string, or None if nothing to inject.
     """
     subagent_type = parameters.get("subagent_type", "")
 
     # Only inject for project agents
     if subagent_type not in project_agents:
         logger.debug(f"Skipping session events for non-project agent: {subagent_type}")
-        return parameters
-
-    # Skip for resume operations (already has context from phase 1)
-    if parameters.get("resume"):
-        logger.debug(f"Skipping session events for resume: {parameters.get('resume')}")
-        return parameters
+        return None
 
     # Get session events
     context_path = Path(".claude/session/active/context.json")
     if not context_path.exists():
         logger.debug("No session context file found")
-        return parameters
+        return None
 
     try:
         with open(context_path, 'r') as f:
@@ -133,42 +129,53 @@ def inject_session_events(
         events = context.get("critical_events", [])
         if not events:
             logger.debug("No critical events in session")
-            return parameters
+            return None
 
         # Filter by agent domain
         filtered = filter_events_for_agent(events, subagent_type)
 
         if not filtered:
             logger.debug(f"No relevant events for {subagent_type}")
-            return parameters
+            return None
 
         # Format events summary
         events_summary = format_events_summary(filtered)
 
-        # Inject into prompt (before # User Task marker if present)
-        prompt = parameters.get("prompt", "")
-        marker = "# User Task"
+        events_string = (
+            "# Recent Session Events (Auto-Injected, Last 24h)\n"
+            f"{events_summary}"
+        )
+        logger.info(f"Session events built for {subagent_type} ({len(filtered)} events)")
 
-        if marker in prompt:
-            idx = prompt.index(marker)
-            enriched_prompt = (
-                f"{prompt[:idx]}"
-                f"# Recent Session Events (Auto-Injected, Last 24h)\n"
-                f"{events_summary}\n\n"
-                f"{prompt[idx:]}"
-            )
-        else:
-            enriched_prompt = f"""{prompt}
-
-# Recent Session Events (Auto-Injected, Last 24h)
-{events_summary}
-"""
-
-        parameters["prompt"] = enriched_prompt
-        logger.info(f"Session events injected for {subagent_type} ({len(filtered)} events)")
-
-        return parameters
+        return events_string
 
     except Exception as e:
-        logger.warning(f"Failed to inject session events: {e}")
+        logger.warning(f"Failed to build session events: {e}")
+        return None
+
+
+def inject_session_events(
+    parameters: dict,
+    project_agents: list,
+) -> dict:
+    """
+    Legacy wrapper: inject session events by mutating parameters["prompt"].
+
+    Retained for backward compatibility (tests import this function).
+    New code should use build_session_events() with additionalContext instead.
+
+    Args:
+        parameters: Task tool parameters (will be mutated).
+        project_agents: List of valid project agent names.
+
+    Returns:
+        Modified parameters with events injected into prompt.
+    """
+    events_string = build_session_events(parameters, project_agents)
+    if events_string is None:
         return parameters
+
+    prompt = parameters.get("prompt", "")
+    enriched_prompt = f"{prompt}\n\n{events_string}\n"
+    parameters["prompt"] = enriched_prompt
+    return parameters

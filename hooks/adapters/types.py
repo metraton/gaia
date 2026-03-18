@@ -35,6 +35,7 @@ class HookEventType(enum.Enum):
 
     # P3
     PRE_COMPACT = "PreCompact"
+    POST_COMPACT = "PostCompact"
     CONFIG_CHANGE = "ConfigChange"
     SESSION_END = "SessionEnd"
     INSTRUCTIONS_LOADED = "InstructionsLoaded"

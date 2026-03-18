@@ -3,7 +3,7 @@
 
 These tests exercise the real pre_tool_use hook path across:
   1. Bash T3 block -> pending approval persisted
-  2. Task resume with APPROVE:<nonce> -> pending activates to grant
+  2. SendMessage with APPROVE:<nonce> -> pending activates to grant
   3. Bash retry -> allowed only for the same approved command scope
 
 They intentionally use get_latest_pending_approval() as the deterministic
@@ -56,7 +56,7 @@ def _permission_reason(result: dict) -> str:
 
 
 class TestNonceApprovalRelayE2E:
-    """The nonce relay should work across Bash block, Task resume, and retry."""
+    """The nonce relay should work across Bash block, SendMessage resume, and retry."""
 
     def test_same_command_can_retry_after_nonce_resume(self, isolated_nonce_env):
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
@@ -76,15 +76,15 @@ class TestNonceApprovalRelayE2E:
         assert core_state.get_hook_state() is None
 
         resume = pre_tool_use.pre_tool_use_hook(
-            "Task",
-            {"resume": "a12345", "prompt": f"APPROVE:{pending['nonce']}\n\nRetry the approved commit."},
+            "SendMessage",
+            {"to": "a12345", "message": f"APPROVE:{pending['nonce']}\n\nRetry the approved commit."},
         )
         assert resume is None
         assert approval_grants.get_latest_pending_approval() is None
 
         resume_state = core_state.get_hook_state()
         assert resume_state is not None
-        assert resume_state.command == "Task:resume:a12345"
+        assert resume_state.command == "SendMessage:a12345"
         assert resume_state.metadata["has_approval"] is True
 
         # First retry returns "ask" (double-barrier: native dialog confirmation)
@@ -120,8 +120,8 @@ class TestNonceApprovalRelayE2E:
         assert pending is not None
 
         resume = pre_tool_use.pre_tool_use_hook(
-            "Task",
-            {"resume": "a12345", "prompt": f"APPROVE:{pending['nonce']}"},
+            "SendMessage",
+            {"to": "a12345", "message": f"APPROVE:{pending['nonce']}"},
         )
         assert resume is None
 
@@ -150,8 +150,8 @@ class TestNonceApprovalRelayE2E:
         assert f"NONCE:{pending['nonce']}" in _permission_reason(block)
 
         resume = pre_tool_use.pre_tool_use_hook(
-            "Task",
-            {"resume": "a12345", "prompt": f"APPROVE:{pending['nonce']}\n\nRetry the exact compound command."},
+            "SendMessage",
+            {"to": "a12345", "message": f"APPROVE:{pending['nonce']}\n\nRetry the exact compound command."},
         )
         assert resume is None
 

@@ -27,6 +27,15 @@
             "command": ".claude/hooks/pre_tool_use.py"
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre_tool_use.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -102,29 +111,25 @@
           }
         ]
       }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post_compact.py"
+          }
+        ]
+      }
     ]
   },
   "permissions": {
     "allow": [
-      "BashOutput",
-      "ExitPlanMode",
-      "Glob",
-      "Grep",
-      "KillShell",
-      "Read",
-      "Skill",
-      "SlashCommand",
-      "Task",
+      "Bash(*)",
       "Agent",
-      "TodoWrite",
-      "WebFetch",
-      "WebSearch",
-      "mcp__ide__executeCode",
-      "mcp__ide__getDiagnostics",
-      "Edit(/tmp/*)",
-      "Write(/tmp/*)",
-      "NotebookEdit",
-      "Bash(*)"
+      "Task",
+      "Skill",
+      "SendMessage"
     ],
     "deny": [
       "Bash(aws ec2 delete-vpc:*)",

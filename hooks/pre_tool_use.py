@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 from modules.tools.bash_validator import BashValidator
 from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
 from modules.security.prompt_validator import classify_resume_prompt
-from modules.context.context_injector import inject_project_context
-from modules.session.session_event_injector import inject_session_events
+from modules.context.context_injector import inject_project_context, build_project_context
+from modules.session.session_event_injector import inject_session_events, build_session_events
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.approval_constants import (
     NONCE_APPROVAL_PREFIX,
@@ -110,6 +110,8 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
             return _handle_bash(tool_name, parameters)
         elif tool_name.lower() in ("task", "agent"):
             return _handle_task(tool_name, parameters)
+        elif tool_name.lower() == "sendmessage":
+            return _handle_send_message(tool_name, parameters)
         else:
             return None
 
@@ -166,64 +168,15 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
 
 def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     """
-    Handle Task tool validation with resume support.
+    Handle Task/Agent tool validation for new task dispatches.
 
-    Backward-compatible entry point that uses module-level names
-    (allowing monkeypatching in tests).
+    Uses additionalContext (Phase 2) instead of prompt mutation.
+    Validation runs against the original prompt, eliminating T3 false positives.
     """
-    import re
+    context_text, _telemetry = build_project_context(parameters, PROJECT_AGENTS, _HOOKS_DIR)
+    events_text = build_session_events(parameters, PROJECT_AGENTS)
 
-    original_prompt = parameters.get("prompt", "")
-    if not parameters.get("resume"):
-        parameters = _inject_project_context(parameters)
-        parameters = _inject_session_events(parameters)
-
-    resume_id = parameters.get("resume")
-
-    if resume_id:
-        if not re.match(r'^a[0-9a-f]{5,}$', resume_id):
-            logger.warning(f"BLOCKED Resume: Invalid agentId format '{resume_id}'")
-            return (
-                f"[ERROR] Invalid resume ID format: '{resume_id}'\n\n"
-                "Agent ID should be 'a' followed by hex characters.\n"
-                "Example: a12345f or a51a0cbbf6afb831d\n\n"
-                "The agent ID is returned at the end of agent responses.\n"
-                "Look for: 'agentId: a...' in the previous agent output."
-            )
-
-        prompt = parameters.get("prompt", "")
-        if not prompt or not prompt.strip():
-            logger.warning(f"BLOCKED Resume: Missing prompt for agent {resume_id}")
-            return (
-                "[ERROR] Resume requires a prompt\n\n"
-                "When resuming an agent, you must provide instructions:\n\n"
-                "Task(\n"
-                "    resume=\"a12345\",\n"
-                "    prompt=\"Continue with the latest user instruction.\"\n"
-                ")\n\n"
-                "The prompt tells the agent what to do next."
-            )
-
-        logger.info(f"RESUME: Continuing agent {resume_id}")
-
-        approval_error, has_approval = _handle_resume_approval(resume_id, prompt)
-        if approval_error:
-            return approval_error
-
-        state = create_pre_hook_state(
-            tool_name=tool_name,
-            command=f"Task:resume:{resume_id}",
-            tier="T0",
-            allowed=True,
-            is_t3=False,
-            has_approval=has_approval,
-        )
-        save_hook_state(state)
-
-        logger.info(f"ALLOWED Resume: agent {resume_id} - prompt length: {len(prompt)}")
-        return None
-
-    # Standard task validation
+    # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
     validator = TaskValidator()
     result = validator.validate(parameters)
 
@@ -242,18 +195,76 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
 
     logger.info(f"ALLOWED Task: {result.agent_name}")
 
-    if parameters.get("prompt", "") != original_prompt:
-        updated_input = {k: v for k, v in parameters.items() if not k.startswith("_")}
-        logger.info(f"Returning updatedInput for {result.agent_name} (context injected)")
+    additional = "\n".join(filter(None, [context_text, events_text]))
+    if additional:
+        logger.info(f"Returning additionalContext for {result.agent_name} (context injected)")
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
                 "permissionDecisionReason": f"Context injected for {result.agent_name}",
-                "updatedInput": updated_input
+                "additionalContext": additional,
             }
         }
 
+    return None
+
+
+def _handle_send_message(tool_name: str, parameters: dict) -> str | None:
+    """
+    Handle SendMessage tool validation for agent resumption.
+
+    Validates agent ID format and message content, then runs nonce
+    approval checks. Does NOT inject project context (it's a resume).
+
+    Returns:
+        None: allowed (no modification)
+        str: blocked (error message)
+    """
+    import re
+
+    agent_id = parameters.get("to", "")
+    message = parameters.get("message", "")
+
+    if not agent_id or not re.match(r'^a[0-9a-f]{5,}$', agent_id):
+        logger.warning(f"BLOCKED SendMessage: Invalid agentId format '{agent_id}'")
+        return (
+            f"[ERROR] Invalid agent ID format: '{agent_id}'\n\n"
+            "Agent ID should be 'a' followed by hex characters.\n"
+            "Example: a12345f or a51a0cbbf6afb831d\n\n"
+            "The agent ID is returned at the end of agent responses.\n"
+            "Look for: 'agentId: a...' in the previous agent output."
+        )
+
+    if not message or not message.strip():
+        logger.warning(f"BLOCKED SendMessage: Missing message for agent {agent_id}")
+        return (
+            "[ERROR] SendMessage requires a message\n\n"
+            "When resuming an agent, you must provide a message:\n\n"
+            "SendMessage(\n"
+            "    to=\"a12345\",\n"
+            "    message=\"Continue with the latest user instruction.\"\n"
+            ")\n\n"
+            "The message tells the agent what to do next."
+        )
+
+    logger.info(f"SENDMESSAGE: Resuming agent {agent_id}")
+
+    approval_error, has_approval = _handle_resume_approval(agent_id, message)
+    if approval_error:
+        return approval_error
+
+    state = create_pre_hook_state(
+        tool_name=tool_name,
+        command=f"SendMessage:{agent_id}",
+        tier="T0",
+        allowed=True,
+        is_t3=False,
+        has_approval=has_approval,
+    )
+    save_hook_state(state)
+
+    logger.info(f"ALLOWED SendMessage: agent {agent_id} - message length: {len(message)}")
     return None
 
 

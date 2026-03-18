@@ -41,11 +41,12 @@ AVAILABLE_AGENTS = [
     "Explore",
     "Plan",
     "speckit-planner",
+    "claude-code-guide",
 ]
 
 # Meta-agents that don't require context_provider.
 # speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
-META_AGENTS = ["gaia", "Explore", "Plan"]
+META_AGENTS = ["gaia", "Explore", "Plan", "claude-code-guide"]
 
 # T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
 # to verify that these commands are classified as T3 by the verb detector.
@@ -214,8 +215,9 @@ class TaskValidator:
         prompt = parameters.get("prompt", "")
         description = parameters.get("description", "")
 
-        # Use original user task for T3 detection if available (prevents false positives from injected context)
-        user_task_for_t3_check = parameters.get("_original_user_task", prompt)
+        # Phase 2: additionalContext means prompt is never mutated, so T3 detection
+        # runs directly against the original user prompt -- no workaround needed.
+        user_task_for_t3_check = prompt
 
         logger.info(f"Task tool validation for agent: {agent_name}")
 
