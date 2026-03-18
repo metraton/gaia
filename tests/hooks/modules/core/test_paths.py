@@ -20,6 +20,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.core.paths import (
     find_claude_dir,
+    get_plugin_data_dir,
     get_logs_dir,
     get_metrics_dir,
     get_memory_dir,
@@ -99,6 +100,70 @@ class TestFindClaudeDir:
             assert result1 is result2  # Same object (cached)
 
 
+class TestGetPluginDataDir:
+    """Test get_plugin_data_dir() resolution."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Clear cache before each test."""
+        clear_path_cache()
+
+    def test_returns_env_var_path_when_set(self, tmp_path):
+        """Test uses CLAUDE_PLUGIN_DATA when set."""
+        data_dir = tmp_path / "plugin-data"
+        with patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": str(data_dir)}):
+            clear_path_cache()
+            result = get_plugin_data_dir()
+            assert result == data_dir
+            assert result.exists()  # created automatically
+
+    def test_creates_directory_when_env_set(self, tmp_path):
+        """Test creates CLAUDE_PLUGIN_DATA directory if it does not exist."""
+        data_dir = tmp_path / "nonexistent" / "plugin-data"
+        assert not data_dir.exists()
+        with patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": str(data_dir)}):
+            clear_path_cache()
+            result = get_plugin_data_dir()
+            assert result == data_dir
+            assert result.exists()
+
+    def test_falls_back_to_claude_dir_when_unset(self, tmp_path):
+        """Test falls back to find_claude_dir() when env var is not set."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("modules.core.paths.Path.cwd", return_value=tmp_path):
+            # Ensure CLAUDE_PLUGIN_DATA is not set
+            os.environ.pop("CLAUDE_PLUGIN_DATA", None)
+            clear_path_cache()
+            result = get_plugin_data_dir()
+            assert result == claude_dir
+
+    def test_result_is_cached(self, tmp_path):
+        """Test that result is cached."""
+        data_dir = tmp_path / "plugin-data"
+        with patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": str(data_dir)}):
+            clear_path_cache()
+            result1 = get_plugin_data_dir()
+            result2 = get_plugin_data_dir()
+            assert result1 is result2  # Same object (cached)
+
+    def test_cache_cleared_by_clear_path_cache(self, tmp_path):
+        """Test that clear_path_cache clears the plugin data dir cache too."""
+        data_dir1 = tmp_path / "data1"
+        data_dir2 = tmp_path / "data2"
+
+        with patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": str(data_dir1)}):
+            clear_path_cache()
+            result1 = get_plugin_data_dir()
+
+        with patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": str(data_dir2)}):
+            clear_path_cache()
+            result2 = get_plugin_data_dir()
+
+        assert result1 != result2
+
+
 class TestGetLogsDir:
     """Test get_logs_dir() function."""
 
@@ -106,10 +171,10 @@ class TestGetLogsDir:
     def setup(self, tmp_path):
         """Set up test environment."""
         clear_path_cache()
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        with patch("modules.core.paths.find_claude_dir", return_value=claude_dir):
-            yield claude_dir
+        data_dir = tmp_path / "plugin-data"
+        data_dir.mkdir()
+        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+            yield data_dir
 
     def test_returns_logs_path(self, setup):
         """Test returns correct logs path."""
@@ -131,10 +196,10 @@ class TestGetMetricsDir:
     def setup(self, tmp_path):
         """Set up test environment."""
         clear_path_cache()
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        with patch("modules.core.paths.find_claude_dir", return_value=claude_dir):
-            yield claude_dir
+        data_dir = tmp_path / "plugin-data"
+        data_dir.mkdir()
+        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+            yield data_dir
 
     def test_returns_metrics_path(self, setup):
         """Test returns correct metrics path."""
@@ -156,10 +221,10 @@ class TestGetMemoryDir:
     def setup(self, tmp_path):
         """Set up test environment."""
         clear_path_cache()
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        with patch("modules.core.paths.find_claude_dir", return_value=claude_dir):
-            yield claude_dir
+        data_dir = tmp_path / "plugin-data"
+        data_dir.mkdir()
+        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+            yield data_dir
 
     def test_returns_memory_path(self, setup):
         """Test returns correct memory path."""
@@ -193,10 +258,10 @@ class TestGetSessionDir:
     def setup(self, tmp_path):
         """Set up test environment."""
         clear_path_cache()
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        with patch("modules.core.paths.find_claude_dir", return_value=claude_dir):
-            yield claude_dir
+        data_dir = tmp_path / "plugin-data"
+        data_dir.mkdir()
+        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+            yield data_dir
 
     def test_returns_session_active_path(self, setup):
         """Test returns correct session/active path."""

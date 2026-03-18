@@ -3,6 +3,8 @@ name: cloud-troubleshooter
 description: Diagnostic agent for cloud infrastructure (GCP and AWS). Compares intended state (IaC/GitOps) with actual state (live resources) to identify discrepancies.
 tools: Read, Glob, Grep, Bash, Task, Skill
 model: inherit
+maxTurns: 40
+disallowedTools: [Write, Edit, NotebookEdit]
 skills:
   - agent-protocol
   - security-tiers

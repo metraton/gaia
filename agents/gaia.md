@@ -3,6 +3,8 @@ name: gaia
 description: Meta-agent specialized in the gaia-ops orchestration system. Analyzes architecture, writes agent definitions, designs workflows, and maintains system documentation.
 tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill, Agent, WebSearch, WebFetch
 model: inherit
+maxTurns: 50
+effort: high
 skills:
   - agent-protocol
   - security-tiers

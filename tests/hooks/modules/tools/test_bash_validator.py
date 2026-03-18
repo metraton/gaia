@@ -138,7 +138,7 @@ class TestCompoundCommandValidation:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
         result = validator.validate("ls -la && terraform apply")
@@ -152,7 +152,7 @@ class TestCompoundCommandValidation:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
         result = validator.validate("git commit -m 'feat: test' && git push origin main")

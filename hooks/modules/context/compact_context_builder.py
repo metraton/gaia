@@ -9,6 +9,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from ..core.paths import get_plugin_data_dir
+
 logger = logging.getLogger(__name__)
 
 # Defaults
@@ -70,8 +72,8 @@ def _build_identity_block() -> str:
 
 def _build_activity_block(max_snapshots: int) -> str | None:
     """Build session activity summary from run-snapshots.jsonl."""
-    snapshots_path = Path(
-        ".claude/project-context/workflow-episodic-memory/run-snapshots.jsonl"
+    snapshots_path = (
+        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "run-snapshots.jsonl"
     )
     if not snapshots_path.exists():
         return None
@@ -107,8 +109,8 @@ def _build_activity_block(max_snapshots: int) -> str | None:
 
 def _build_anomalies_block(window_hours: int) -> str | None:
     """Build active anomalies summary from anomalies.jsonl."""
-    anomaly_path = Path(
-        ".claude/project-context/workflow-episodic-memory/anomalies.jsonl"
+    anomaly_path = (
+        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "anomalies.jsonl"
     )
     if not anomaly_path.exists():
         return None

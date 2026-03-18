@@ -15,6 +15,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from ..core.paths import get_plugin_data_dir
 from ..session.session_manager import get_or_create_session_id
 from .anchor_tracker import extract_anchors, save_anchors
 from .contracts_loader import build_context_update_reminder
@@ -128,8 +129,8 @@ def check_recent_critical_anomalies() -> str:
     This is intentionally lightweight: reads only the tail of the file and
     returns at most a one-line count + type summary.
     """
-    anomaly_log = Path(
-        ".claude/project-context/workflow-episodic-memory/anomalies.jsonl"
+    anomaly_log = (
+        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "anomalies.jsonl"
     )
     if not anomaly_log.exists():
         return ""
@@ -186,7 +187,7 @@ def consume_anomaly_flag(enriched_prompt: str) -> str:
     TTL enforcement: flags older than 1 hour (by created_at or file mtime)
     are auto-expired and deleted without injecting a warning.
     """
-    flag_path = Path(".claude/project-context/workflow-episodic-memory/signals/needs_analysis.flag")
+    flag_path = get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "signals" / "needs_analysis.flag"
     if not flag_path.exists():
         return enriched_prompt
     try:

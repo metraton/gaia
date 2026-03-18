@@ -153,7 +153,7 @@ class TestMutativeCommandFlow:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
 
@@ -172,7 +172,7 @@ class TestMutativeCommandFlow:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
 
@@ -186,7 +186,7 @@ class TestMutativeCommandFlow:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
 
@@ -202,7 +202,7 @@ class TestMutativeCommandFlow:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
 
@@ -278,7 +278,7 @@ class TestCompoundCommandFlow:
         import modules.security.approval_grants as ag
         ag._grants_dir_created = False
         monkeypatch.setattr(
-            "modules.security.approval_grants.find_claude_dir",
+            "modules.security.approval_grants.get_plugin_data_dir",
             lambda: tmp_path / ".claude",
         )
 

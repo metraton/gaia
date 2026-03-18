@@ -46,7 +46,7 @@ def clean_grants_dir(tmp_path, monkeypatch):
     grants_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(
-        "modules.security.approval_grants.find_claude_dir",
+        "modules.security.approval_grants.get_plugin_data_dir",
         lambda: tmp_path / ".claude",
     )
     monkeypatch.setenv("CLAUDE_SESSION_ID", "test-session-123")

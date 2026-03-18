@@ -39,7 +39,7 @@ def isolated_nonce_env(tmp_path, monkeypatch):
     approval_grants._last_cleanup_time = 0.0
 
     monkeypatch.setattr(core_state, "find_claude_dir", lambda: claude_dir)
-    monkeypatch.setattr(approval_grants, "find_claude_dir", lambda: claude_dir)
+    monkeypatch.setattr(approval_grants, "get_plugin_data_dir", lambda: claude_dir)
 
     core_state.clear_hook_state()
 

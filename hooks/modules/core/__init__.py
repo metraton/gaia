@@ -7,7 +7,7 @@ Provides:
 - stdin: Stdin availability check (has_stdin_data)
 """
 
-from .paths import find_claude_dir, get_logs_dir, get_metrics_dir, get_memory_dir
+from .paths import find_claude_dir, get_plugin_data_dir, get_logs_dir, get_metrics_dir, get_memory_dir
 from .state import HookState, get_hook_state, save_hook_state, clear_hook_state, get_session_id
 from .stdin import has_stdin_data
 from .hook_entry import run_hook
@@ -15,6 +15,7 @@ from .hook_entry import run_hook
 __all__ = [
     # Paths
     "find_claude_dir",
+    "get_plugin_data_dir",
     "get_logs_dir",
     "get_metrics_dir",
     "get_memory_dir",

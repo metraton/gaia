@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..context.context_injector import build_context_telemetry_snapshot
+from ..core.paths import get_plugin_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,15 @@ def get_workflow_memory_dir() -> Path:
     """
     Get workflow memory directory path.
 
-    Supports override via WORKFLOW_MEMORY_BASE_PATH env var for testing.
-    In production, uses .claude/project-context/workflow-episodic-memory relative to CWD.
+    Resolution order:
+    1. WORKFLOW_MEMORY_BASE_PATH env var (testing override)
+    2. CLAUDE_PLUGIN_DATA / project-context / workflow-episodic-memory
+    3. .claude/project-context/workflow-episodic-memory (backward compat)
     """
     base_path = os.environ.get("WORKFLOW_MEMORY_BASE_PATH")
     if base_path:
         return Path(base_path) / "project-context" / "workflow-episodic-memory"
-    return Path(".claude/project-context/workflow-episodic-memory")
+    return get_plugin_data_dir() / "project-context" / "workflow-episodic-memory"
 
 
 def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:

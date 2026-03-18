@@ -42,7 +42,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..core.paths import find_claude_dir
+from ..core.paths import find_claude_dir, get_plugin_data_dir
 from ..core.state import get_session_id
 from .approval_scopes import (
     ApprovalSignature,
@@ -170,7 +170,7 @@ def last_check_found_expired() -> bool:
 def _get_grants_dir() -> Path:
     """Get the directory for approval grant files."""
     global _grants_dir_created
-    grants_dir = find_claude_dir() / "cache" / "approvals"
+    grants_dir = get_plugin_data_dir() / "cache" / "approvals"
     if not _grants_dir_created:
         grants_dir.mkdir(parents=True, exist_ok=True)
         _grants_dir_created = True

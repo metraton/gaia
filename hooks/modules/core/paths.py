@@ -2,6 +2,11 @@
 Unified path resolution for gaia-ops hooks.
 
 Single source of truth for finding .claude directory and its subdirectories.
+
+Path resolution follows two base directories:
+- PLUGIN_ROOT (.claude/): Code, config, agents, skills, context providers
+- PLUGIN_DATA (CLAUDE_PLUGIN_DATA or .claude/ fallback): Logs, sessions,
+  approval grants, workflow episodic memory — data that survives plugin updates
 """
 
 import os
@@ -52,6 +57,33 @@ def find_claude_dir() -> Path:
     return current / ".claude"
 
 
+@lru_cache(maxsize=1)
+def get_plugin_data_dir() -> Path:
+    """
+    Get the base directory for persistent plugin data.
+
+    Resolution order:
+    1. CLAUDE_PLUGIN_DATA env var (set by Claude Code >= 2.1.78)
+    2. Fallback to find_claude_dir() for backward compatibility
+
+    Data stored here survives plugin updates. Code and config remain
+    under PLUGIN_ROOT (find_claude_dir()).
+
+    Returns:
+        Path to the plugin data directory (created if needed)
+
+    Note:
+        Result is cached for performance. Clear with clear_path_cache()
+    """
+    plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
+    if plugin_data:
+        data_dir = Path(plugin_data)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+    # Fallback: data co-located with code in .claude/
+    return find_claude_dir()
+
+
 def get_logs_dir() -> Path:
     """
     Get the logs directory, creating it if necessary.
@@ -59,7 +91,7 @@ def get_logs_dir() -> Path:
     Returns:
         Path to .claude/logs/
     """
-    logs_dir = find_claude_dir() / "logs"
+    logs_dir = get_plugin_data_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
 
@@ -71,7 +103,7 @@ def get_metrics_dir() -> Path:
     Returns:
         Path to .claude/metrics/
     """
-    metrics_dir = find_claude_dir() / "metrics"
+    metrics_dir = get_plugin_data_dir() / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
     return metrics_dir
 
@@ -86,7 +118,7 @@ def get_memory_dir(subdir: Optional[str] = None) -> Path:
     Returns:
         Path to .claude/memory/ or .claude/memory/{subdir}/
     """
-    memory_dir = find_claude_dir() / "memory"
+    memory_dir = get_plugin_data_dir() / "memory"
     if subdir:
         memory_dir = memory_dir / subdir
     memory_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +132,7 @@ def get_session_dir() -> Path:
     Returns:
         Path to .claude/session/active/
     """
-    session_dir = find_claude_dir() / "session" / "active"
+    session_dir = get_plugin_data_dir() / "session" / "active"
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
 
@@ -119,5 +151,6 @@ def get_hooks_config_dir() -> Path:
 
 
 def clear_path_cache():
-    """Clear the cached claude_dir path (useful for testing)."""
+    """Clear all cached path results (useful for testing)."""
     find_claude_dir.cache_clear()
+    get_plugin_data_dir.cache_clear()
