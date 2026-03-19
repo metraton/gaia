@@ -147,10 +147,14 @@ class TestHooksDirectory:
             assert hook_path.exists(), f"Security hook missing: {hook}"
 
     def test_hooks_are_executable(self, hooks_dir):
-        """Hook files should be executable or have proper permissions"""
+        """Hook files should have functions or a __main__ entry point."""
         for hook_file in hooks_dir.glob("*.py"):
             content = hook_file.read_text()
-            assert "def " in content, f"Hook has no functions: {hook_file.name}"
+            has_functions = "def " in content
+            has_main = '__name__' in content and '__main__' in content
+            assert has_functions or has_main, (
+                f"Hook has no functions or __main__ block: {hook_file.name}"
+            )
 
 
 class TestConfigDirectory:

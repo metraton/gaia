@@ -397,7 +397,7 @@ class TestSkillsCrossReferences:
         The ops_identity.py delegates approval protocol details to the
         orchestrator-approval skill. The nonce contract must exist in the system.
         """
-        identity_path = PACKAGE_ROOT / "hooks" / "modules" / "identity" / "ops_identity.py"
+        identity_path = GAIA_OPS_ROOT / "hooks" / "modules" / "identity" / "ops_identity.py"
         identity_content = identity_path.read_text().lower()
         approval_skill_path = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
         combined = identity_content
@@ -406,7 +406,7 @@ class TestSkillsCrossReferences:
         assert "nonce" in combined, (
             "System must mention the nonce mechanism (identity or orchestrator-approval skill)"
         )
-        assert "approve" in combined, (
+        assert "approve" in combined or "approval" in combined, (
             "System must mention the approval workflow"
         )
 

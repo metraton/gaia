@@ -84,11 +84,20 @@ class TestContractAgentConsistency:
                     f"{name} references unknown agent '{agent}'"
 
     def test_project_agents_in_at_least_one_contract(self, contracts):
-        """All project agents should appear in at least one contract."""
-        project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
-        # speckit-planner doesn't need context contracts (it has its own workflow)
+        """All project agents should appear in at least one contract.
+
+        Excludes meta-agents (both bare and plugin-namespaced forms like
+        gaia-ops:Explore) and optional agents like speckit-planner.
+        """
+        # Build full set of meta-agent names including namespaced forms
+        meta_set = set(META_AGENTS) | {f"gaia-ops:{m}" for m in META_AGENTS}
+        project_agents = [a for a in AVAILABLE_AGENTS if a not in meta_set]
+        # speckit-planner doesn't need context contracts (it has its own workflow);
+        # namespaced project agents are aliases and don't appear in contracts.
         optional_agents = {"speckit-planner"}
-        required_agents = set(project_agents) - optional_agents
+        # Namespaced forms (gaia-ops:agent-name) are routing aliases, not in contracts
+        namespaced = {a for a in project_agents if ":" in a}
+        required_agents = set(project_agents) - optional_agents - namespaced
 
         all_contract_agents = set()
         for data in contracts.values():

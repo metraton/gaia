@@ -36,11 +36,12 @@ class TestOpsIdentity:
         identity = build_ops_identity()
         assert "Orchestrator" in identity
 
-    def test_ops_identity_has_all_agents(self):
+    def test_ops_identity_delegates_to_project_dispatch(self):
+        """Identity delegates agent routing to the project-dispatch skill."""
         identity = build_ops_identity()
-        for agent in ["cloud-troubleshooter", "gitops-operator", "terraform-architect",
-                       "devops-developer", "speckit-planner", "gaia-system"]:
-            assert agent in identity
+        assert "project-dispatch" in identity, (
+            "Identity must reference project-dispatch skill for agent routing"
+        )
 
     def test_ops_identity_has_sendmessage(self):
         identity = build_ops_identity()

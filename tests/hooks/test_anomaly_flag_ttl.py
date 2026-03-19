@@ -33,9 +33,21 @@ _FLAG_RELATIVE = Path(
 
 @pytest.fixture(autouse=True)
 def isolated_cwd(tmp_path, monkeypatch):
-    """Run every test inside a fresh tmp_path so the flag path resolves there."""
+    """Run every test inside a fresh tmp_path so the flag path resolves there.
+
+    Sets CLAUDE_PLUGIN_DATA to tmp_path/.claude so get_plugin_data_dir()
+    returns a predictable path regardless of lru_cache state or parent
+    directory structure.
+    """
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(claude_dir))
     monkeypatch.chdir(tmp_path)
+    # Clear cached paths so get_plugin_data_dir re-reads CLAUDE_PLUGIN_DATA
+    from modules.core.paths import clear_path_cache
+    clear_path_cache()
     yield tmp_path
+    clear_path_cache()
 
 
 def _write_flag(tmp_path: Path, data: dict) -> Path:

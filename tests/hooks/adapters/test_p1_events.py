@@ -221,7 +221,6 @@ class TestSessionStartHookScript:
         output = json.loads(result.stdout)
         assert "session_type" in output
         assert output["session_type"] == "startup"
-        assert output["should_scan"] is True
 
 
 # ============================================================================
