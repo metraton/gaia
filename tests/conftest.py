@@ -5,8 +5,10 @@ Provides:
 - Custom markers: llm, e2e (auto-skipped in default test runs)
 - Session fixtures: package_root, agents_dir, skills_dir, config_dir, hooks_dir
 - Frontmatter parser (manual, no PyYAML dependency)
+- Default plugin mode: ops (existing tests assume ops-mode blocking behavior)
 """
 
+import os
 import pytest
 from pathlib import Path
 
@@ -19,6 +21,49 @@ def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line("markers", "llm: LLM evaluation tests (require ANTHROPIC_API_KEY)")
     config.addinivalue_line("markers", "e2e: E2E headless tests (require claude CLI)")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _default_ops_mode():
+    """Set GAIA_PLUGIN_MODE=ops for the test suite.
+
+    Existing tests were written assuming ops-mode behavior (blocking with nonce
+    for T3 commands). Security mode returns 'ask' instead. Individual test
+    modules (e.g. test_plugin_mode.py) override this via monkeypatch.
+    """
+    prev = os.environ.get("GAIA_PLUGIN_MODE")
+    os.environ["GAIA_PLUGIN_MODE"] = "ops"
+    yield
+    if prev is None:
+        os.environ.pop("GAIA_PLUGIN_MODE", None)
+    else:
+        os.environ["GAIA_PLUGIN_MODE"] = prev
+
+
+@pytest.fixture(autouse=True)
+def _clear_plugin_mode_cache():
+    """Clear plugin mode cache before each test.
+
+    The plugin_mode module uses lru_cache. Tests that manipulate
+    GAIA_PLUGIN_MODE (e.g. test_plugin_mode.py) can leave stale cached
+    values that affect subsequent tests. Clearing before each test
+    ensures the env var (set to 'ops' by _default_ops_mode) is re-read.
+    """
+    try:
+        import sys
+        hooks_dir = str(Path(__file__).resolve().parent.parent / "hooks")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        from modules.core.plugin_mode import clear_mode_cache
+        clear_mode_cache()
+    except (ImportError, Exception):
+        pass
+    yield
+    try:
+        from modules.core.plugin_mode import clear_mode_cache
+        clear_mode_cache()
+    except (ImportError, Exception):
+        pass
 
 
 def pytest_collection_modifyitems(config, items):

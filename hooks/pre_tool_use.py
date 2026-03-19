@@ -137,7 +137,22 @@ def _handle_bash(tool_name: str, parameters: dict) -> str | dict | None:
     result = validator.validate(command)
 
     if not result.allowed:
+        from modules.core.plugin_mode import is_ops_mode
         logger.warning(f"BLOCKED: {command[:100]} - {result.reason}")
+
+        # Security mode: delegate to native Claude Code approval
+        if not is_ops_mode():
+            reason_line = result.reason.split('\n')[0] if result.reason else f"T3 operation: {command[:80]}"
+            logger.info(f"SECURITY MODE: returning 'ask' for T3: {command[:80]}")
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": f"[{result.tier}] {reason_line}",
+                }
+            }
+
+        # Ops mode: block with nonce
         if result.block_response is not None:
             return result.block_response
         return _format_blocked_message(result)

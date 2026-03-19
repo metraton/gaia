@@ -474,8 +474,22 @@ class ClaudeCodeAdapter(HookAdapter):
         result = validator.validate(command)
 
         if not result.allowed:
+            from modules.core.plugin_mode import is_ops_mode
             logger.warning("BLOCKED: %s - %s", command[:100], result.reason)
-            # Structured block responses must be returned as JSON dict (exit 0)
+            # Security-only mode: delegate T3 approval to native Claude Code dialog
+            # instead of blocking with nonce (which requires orchestrator + agents)
+            if not is_ops_mode():
+                reason_line = result.reason.split('\n')[0] if result.reason else f"T3 operation: {command[:80]}"
+                logger.info("SECURITY MODE: returning 'ask' for T3: %s", command[:80])
+                output = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "ask",
+                        "permissionDecisionReason": f"[{result.tier}] {reason_line}",
+                    }
+                }
+                return HookResponse(output=output, exit_code=0)
+            # Ops mode: block with nonce for orchestrator approval flow
             if result.block_response is not None:
                 return HookResponse(output=result.block_response, exit_code=0)
             return HookResponse(
