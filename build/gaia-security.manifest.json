@@ -45,7 +45,12 @@
   "settings": {
     "permissions": {
       "allow": [
-        "Bash(*)"
+        "Bash(*)",
+        "Read",
+        "Glob",
+        "Grep",
+        "BashOutput",
+        "KillShell"
       ],
       "deny": [
         "Bash(aws ec2 delete-vpc:*)",
