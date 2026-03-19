@@ -34,11 +34,7 @@
     "hooks/adapters/"
   ],
   "agents": [],
-  "skills": [
-    "skills/approval/",
-    "skills/security-tiers/",
-    "skills/execution/"
-  ],
+  "skills": [],
   "config": [
     "config/universal-rules.json"
   ],

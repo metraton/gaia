@@ -1,14 +1,16 @@
-# @jaguilar87/gaia-ops
+# GAIA-Ops
+
+> **G**eneral **A**gentic **I**ntegration **A**rchitecture
 
 [![npm version](https://badge.fury.io/js/@jaguilar87%2Fgaia-ops.svg)](https://www.npmjs.com/package/@jaguilar87/gaia-ops)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/node/v/@jaguilar87/gaia-ops.svg)](https://nodejs.org)
 
-Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
+Multi-agent DevOps system that classifies every operation by risk, routes work to specialist agents, and blocks irreversible commands automatically.
 
 ## Overview
 
-**Gaia-Ops** provides a complete agent orchestration system for Claude Code, enabling intelligent automation of DevOps workflows through specialized AI agents.
+**GAIA-Ops** is a multi-agent orchestration system for DevOps automation. It provides security-first command classification, specialized AI agents, and plugin-based distribution. Currently integrates with Claude Code.
 
 ### Features
 

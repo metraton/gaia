@@ -42,6 +42,6 @@ The following are considered security vulnerabilities in gaia-ops:
 
 ## Out of Scope
 
-- Vulnerabilities in Claude Code itself (report to Anthropic)
-- Issues in upstream dependencies (report to the respective maintainer)
-- Denial of service through large inputs (this is a local development tool)
+- Vulnerabilities in Claude Code itself (report to Anthropic).
+- Issues in upstream dependencies (report to the respective maintainer).
+- Denial of service through large inputs (this is a local development tool).
