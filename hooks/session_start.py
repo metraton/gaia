@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-SessionStart hook for Claude Code Agent System.
-
-Fires on session start. Checks if project-context.json exists and is fresh
-(< configurable staleness threshold, default 24h). If stale or missing,
-runs a lightweight scan to auto-refresh the context (<3s target).
-
-Architecture:
-- Thin gate: parse_event -> check_freshness -> trigger_scan -> respond
-- Business logic in modules.context.context_freshness + modules.scanning.scan_trigger
-- Exit code is always 0 (informational only)
-"""
+"""SessionStart hook — checks project-context freshness and triggers auto-scan."""
 
 import dataclasses
 import sys
@@ -21,13 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from adapters.claude_code import ClaudeCodeAdapter
-from modules.core.stdin import has_stdin_data  # session_start uses inline logic
+from modules.core.stdin import has_stdin_data
 from modules.core.paths import get_logs_dir
-from modules.context.context_freshness import check_freshness
-from modules.scanning.scan_trigger import trigger_lightweight_scan
 
-# Configure logging
+# Configure logging — file only, no stderr
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
@@ -37,73 +23,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _run_self_test() -> int:
-    """Run self-test mode: verify freshness check and scan availability."""
-    print("SessionStart hook self-test")
-    result = check_freshness()
-    print(f"  Context fresh: {result.is_fresh} (reason: {result.reason})")
-    hooks_dir = Path(__file__).resolve().parent
-    cli_path = hooks_dir.parent / "bin" / "gaia-scan.py"
-    print(f"  CLI exists: {cli_path.is_file()}")
-    print("  Self-test: PASS")
-    return 0
-
-
-# ============================================================================
-# STDIN HANDLER (Claude Code integration)
-# ============================================================================
-
 if __name__ == "__main__":
     if "--test" in sys.argv:
-        sys.exit(_run_self_test())
+        from modules.context.context_freshness import check_freshness
+        result = check_freshness()
+        print(f"Context fresh: {result.is_fresh} (reason: {result.reason})")
+        sys.exit(0)
 
-    if has_stdin_data():
-        try:
-            adapter = ClaudeCodeAdapter()
-            event = adapter.parse_event(sys.stdin.read())
+    if not has_stdin_data():
+        sys.exit(0)
 
-            bootstrap = adapter.adapt_session_start(event.payload)
-            logger.info(
-                "SessionStart: type=%s, should_scan=%s, should_refresh=%s",
-                bootstrap.session_type, bootstrap.should_scan, bootstrap.should_refresh,
-            )
+    try:
+        # Read and parse stdin
+        stdin_data = sys.stdin.read()
+        raw = json.loads(stdin_data)
 
-            freshness = check_freshness()
-            project_scanned = False
+        # Import adapter only if we have valid input
+        from adapters.claude_code import ClaudeCodeAdapter
+        from modules.context.context_freshness import check_freshness
+        from modules.scanning.scan_trigger import trigger_lightweight_scan
 
-            if freshness.is_fresh:
-                logger.info("skipped: fresh")
-            elif bootstrap.should_refresh:
-                logger.info("triggered: %s -- running lightweight scan", freshness.reason)
-                scan_ok = trigger_lightweight_scan(Path.cwd())
-                if scan_ok:
-                    project_scanned = True
-                    logger.info("Auto-refresh completed successfully")
-                else:
-                    logger.warning(
-                        "Auto-refresh failed, suggest running /gaia:scan-project manually"
-                    )
-                    print(
-                        "[WARNING] Auto-refresh scan failed. "
-                        "Run /gaia:scan-project manually to update project context.",
-                        file=sys.stderr,
-                    )
+        adapter = ClaudeCodeAdapter()
+        bootstrap = adapter.adapt_session_start(raw)
+        logger.info(
+            "SessionStart: type=%s, should_scan=%s, should_refresh=%s",
+            bootstrap.session_type, bootstrap.should_scan, bootstrap.should_refresh,
+        )
 
-            # Build response with scan result (BootstrapResult is frozen)
-            if project_scanned:
-                bootstrap = dataclasses.replace(bootstrap, project_scanned=True)
+        freshness = check_freshness()
+        project_scanned = False
 
-            response = adapter.format_bootstrap_response(bootstrap)
-            print(json.dumps(response.output))
-            sys.exit(0)
+        if freshness.is_fresh:
+            logger.info("skipped: fresh")
+        elif bootstrap.should_refresh:
+            logger.info("triggered: %s -- running lightweight scan", freshness.reason)
+            scan_ok = trigger_lightweight_scan(Path.cwd())
+            if scan_ok:
+                project_scanned = True
+                logger.info("Auto-refresh completed successfully")
+            else:
+                logger.warning("Auto-refresh failed")
 
-        except ValueError as e:
-            logger.error("Adapter parse failed: %s", e)
-            sys.exit(1)
-        except Exception as e:
-            logger.error("Error processing SessionStart hook: %s", e)
-            sys.exit(1)
-    else:
-        print("Usage: echo '{...}' | python session_start.py  (stdin mode)")
-        print("       python session_start.py --test           (self-test mode)")
-        sys.exit(1)
+        if project_scanned:
+            bootstrap = dataclasses.replace(bootstrap, project_scanned=True)
+
+        response = adapter.format_bootstrap_response(bootstrap)
+        print(json.dumps(response.output))
+        sys.exit(0)
+
+    except Exception as e:
+        logger.error("SessionStart error (non-fatal): %s", e)
+        # Exit 0 — never block session start
+        print(json.dumps({}))
+        sys.exit(0)

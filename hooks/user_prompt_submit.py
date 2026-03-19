@@ -9,11 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
+from modules.core.stdin import has_stdin_data
 from modules.identity.identity_provider import build_identity
 
-# Configure logging
+# Configure logging — file only, no stderr
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
 logging.basicConfig(
     level=logging.INFO,
@@ -23,20 +23,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _handle_user_prompt_submit(event) -> None:
-    """Inject identity context on each user prompt."""
-    identity = build_identity()
-
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": identity,
-        }
-    }
-
-    print(json.dumps(response))
-    sys.exit(0)
-
-
 if __name__ == "__main__":
-    run_hook(_handle_user_prompt_submit, hook_name="user_prompt_submit")
+    if not has_stdin_data():
+        sys.exit(0)
+
+    try:
+        sys.stdin.read()
+        identity = build_identity()
+        logger.info("Identity injected: %s mode (%d chars)", "ops" if "Orchestrator" in identity else "security", len(identity))
+
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": identity,
+            }
+        }))
+        sys.exit(0)
+
+    except Exception as e:
+        logger.error("Error in user_prompt_submit: %s", e, exc_info=True)
+        # Exit 0 even on error — never block user prompts
+        sys.exit(0)
