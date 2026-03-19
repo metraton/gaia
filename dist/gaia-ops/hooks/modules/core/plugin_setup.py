@@ -86,31 +86,50 @@ def mark_initialized() -> None:
 
 
 def setup_project_permissions() -> bool:
-    """Create .claude/settings.json in the project if it doesn't exist.
+    """Ensure .claude/settings.json has gaia permissions merged in.
 
-    Uses cwd (the project root) instead of find_claude_dir() which may
-    resolve to a parent directory's .claude/.
+    Merges our allow/deny rules into existing settings without
+    overwriting user hooks or custom configuration.
 
-    Returns True if settings were created (restart needed).
+    Returns True if settings were modified (restart needed).
     """
     claude_dir = Path.cwd() / ".claude"
     settings_path = claude_dir / "settings.json"
 
+    mode = get_plugin_mode()
+    our_perms = OPS_PERMISSIONS if mode == "ops" else SECURITY_PERMISSIONS
+    our_allow = set(our_perms["permissions"]["allow"])
+    our_deny = set(our_perms["permissions"].get("deny", []))
+
+    # Load existing settings or start fresh
+    existing = {}
     if settings_path.exists():
         try:
             existing = json.loads(settings_path.read_text())
-            if existing.get("permissions", {}).get("allow"):
-                logger.info("Project settings already have permissions, skipping")
-                return False
         except (json.JSONDecodeError, OSError):
             pass
 
-    mode = get_plugin_mode()
-    permissions = OPS_PERMISSIONS if mode == "ops" else SECURITY_PERMISSIONS
+    # Merge permissions — add ours without removing user's
+    perms = existing.get("permissions", {})
+    current_allow = set(perms.get("allow", []))
+    current_deny = set(perms.get("deny", []))
+
+    merged_allow = sorted(current_allow | our_allow)
+    merged_deny = sorted(current_deny | our_deny)
+
+    if current_allow == set(merged_allow) and current_deny == set(merged_deny):
+        logger.info("Project permissions already include gaia rules, skipping")
+        return False
+
+    # Update only permissions, preserve everything else (hooks, env, etc.)
+    existing.setdefault("permissions", {})
+    existing["permissions"]["allow"] = merged_allow
+    existing["permissions"]["deny"] = merged_deny
+    existing["permissions"].setdefault("ask", [])
 
     claude_dir.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(permissions, indent=2) + "\n")
-    logger.info("Created project settings.json with %s permissions at %s", mode, settings_path)
+    settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+    logger.info("Merged gaia %s permissions into %s", mode, settings_path)
     return True
 
 
