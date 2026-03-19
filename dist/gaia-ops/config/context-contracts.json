@@ -1,0 +1,99 @@
+{
+  "version": "3.0",
+  "description": "Base context contracts — cloud-agnostic sections for all agents. Cloud-specific extensions live in cloud/{provider}.json. v3: removed backward-compat sections (project_details, application_architecture, development_standards); all agents read v2 scanner sections directly.",
+  "agents": {
+    "cloud-troubleshooter": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
+        "orchestration",
+        "cluster_details",
+        "infrastructure_topology",
+        "terraform_infrastructure",
+        "gitops_configuration",
+        "application_services",
+        "monitoring_observability",
+        "architecture_overview"
+      ],
+      "write": [
+        "cluster_details",
+        "infrastructure_topology",
+        "application_services",
+        "monitoring_observability",
+        "architecture_overview"
+      ]
+    },
+    "gitops-operator": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
+        "orchestration",
+        "gitops_configuration",
+        "cluster_details",
+        "operational_guidelines",
+        "application_services",
+        "architecture_overview"
+      ],
+      "write": [
+        "gitops_configuration",
+        "cluster_details",
+        "application_services"
+      ]
+    },
+    "terraform-architect": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
+        "orchestration",
+        "terraform_infrastructure",
+        "infrastructure_topology",
+        "operational_guidelines",
+        "cluster_details",
+        "application_services",
+        "architecture_overview"
+      ],
+      "write": [
+        "terraform_infrastructure",
+        "infrastructure_topology"
+      ]
+    },
+    "devops-developer": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
+        "application_services",
+        "operational_guidelines",
+        "architecture_overview"
+      ],
+      "write": [
+        "application_services",
+        "architecture_overview"
+      ]
+    },
+    "speckit-planner": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
+        "operational_guidelines",
+        "application_services",
+        "architecture_overview"
+      ],
+      "write": []
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "commit_message": {
+    "format": "conventional_commits",
+    "description": "Commit messages must follow Conventional Commits specification",
+
+    "type_allowed": [
+      "feat",
+      "fix",
+      "refactor",
+      "docs",
+      "test",
+      "chore",
+      "ci",
+      "perf",
+      "style",
+      "build"
+    ],
+
+    "scope_required": false,
+    "scope_examples": ["helmrelease", "terraform", "pg-non-prod", "infrastructure"],
+
+    "subject_max_length": 72,
+    "subject_rules": {
+      "capitalize_first_letter": false,
+      "no_period_at_end": true,
+      "imperative_mood": true,
+      "no_emoji": true
+    },
+
+    "body_max_line_length": 72,
+    "body_required": false,
+
+    "footer_forbidden": [
+      "Generated with Claude Code",
+      "Co-Authored-By: Claude",
+      "🤖 Generated with"
+    ],
+
+    "footer_allowed": [
+      "BREAKING CHANGE:",
+      "Refs:",
+      "Closes:",
+      "Fixes:",
+      "Implements:",
+      "See:"
+    ],
+
+    "examples_valid": [
+      "feat(helmrelease): add Phase 3.3 services",
+      "fix(pg-non-prod): correct API key environment variable mappings",
+      "refactor: simplify context provider logic",
+      "docs: update README with new workflow",
+      "chore(deps): update terraform to v1.6.0"
+    ],
+
+    "examples_invalid": [
+      "Added new feature",
+      "Fixed bugs",
+      "Updates",
+      "feat: add feature\n\n🤖 Generated with Claude Code",
+      "feat: add new feature 🚀",
+      "fix: 🐛 correct bug"
+    ]
+  },
+
+  "enforcement": {
+    "enabled": true,
+    "block_on_failure": true,
+    "log_violations": true,
+    "log_path": ".claude/logs/commit-violations.jsonl"
+  }
+}

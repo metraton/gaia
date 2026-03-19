@@ -1,0 +1,140 @@
+{
+  "version": "2.0",
+  "provider": "aws",
+  "description": "AWS-specific context extensions. Merged on top of context-contracts.json at runtime by context_provider.py.",
+  "agents": {
+    "cloud-troubleshooter": {
+      "read": [
+        "vpc_mapping",
+        "load_balancers",
+        "api_gateway",
+        "irsa_bindings",
+        "aws_accounts"
+      ],
+      "write": [
+        "vpc_mapping",
+        "load_balancers",
+        "irsa_bindings"
+      ]
+    },
+    "terraform-architect": {
+      "read": [
+        "vpc_mapping",
+        "load_balancers",
+        "api_gateway",
+        "irsa_bindings",
+        "aws_accounts"
+      ],
+      "write": [
+        "vpc_mapping",
+        "load_balancers",
+        "api_gateway",
+        "irsa_bindings"
+      ]
+    },
+    "gitops-operator": {
+      "read": [
+        "irsa_bindings"
+      ],
+      "write": []
+    },
+    "devops-developer": {
+      "read": [
+        "aws_accounts",
+        "load_balancers"
+      ],
+      "write": []
+    },
+    "speckit-planner": {
+      "read": [
+        "aws_accounts"
+      ],
+      "write": []
+    }
+  },
+  "section_schemas": {
+    "aws_accounts": {
+      "_description": "AWS account IDs by environment. AWS projects often use multiple accounts (prod, dev, shared services).",
+      "production": {
+        "account_id": "",
+        "account_alias": "",
+        "region": "us-east-1"
+      },
+      "development": {
+        "account_id": "",
+        "account_alias": "",
+        "region": "us-east-1"
+      },
+      "shared": {
+        "account_id": "",
+        "account_alias": "",
+        "purpose": "Shared services (ECR, shared EKS, tooling)"
+      }
+    },
+    "vpc_mapping": {
+      "_description": "AWS VPC topology per environment, including subnets and AZ mapping",
+      "vpcs": [
+        {
+          "vpc_id": "",
+          "name": "",
+          "environment": "production",
+          "region": "us-east-1",
+          "cidr": "10.0.0.0/16",
+          "subnets": {
+            "private": [],
+            "public": []
+          },
+          "availability_zones": [],
+          "clusters": [],
+          "status": "ACTIVE"
+        }
+      ]
+    },
+    "load_balancers": {
+      "_description": "AWS NLB and ALB resources by service and cluster",
+      "_example": {
+        "my-service-nlb-prod": {
+          "name": "my-service-nlb-prod",
+          "type": "network",
+          "scheme": "internal",
+          "dns": "xxxx.elb.us-east-1.amazonaws.com",
+          "service": "my-service",
+          "namespace": "my-namespace",
+          "cluster": "my-eks-cluster",
+          "purpose": ""
+        }
+      }
+    },
+    "api_gateway": {
+      "_description": "AWS API Gateway V2 (HTTP/WebSocket) configurations and VPC Links",
+      "vpc_links": {
+        "_example_key": {
+          "id": "",
+          "status": "ACTIVE",
+          "target_nlb": "",
+          "target_nlb_dns": "",
+          "backend_service": "",
+          "namespace": "",
+          "cluster": "",
+          "host": "",
+          "purpose": ""
+        }
+      },
+      "apis": []
+    },
+    "irsa_bindings": {
+      "_description": "IAM Roles for Service Accounts (OIDC-based). AWS equivalent of GCP Workload Identity.",
+      "_example": {
+        "my-service-sa": {
+          "kubernetes_sa": "my-service-sa",
+          "namespace": "my-namespace",
+          "iam_role_arn": "arn:aws:iam::123456789012:role/my-service-role",
+          "iam_policies": [
+            "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+          ],
+          "purpose": "Describe what this service account does"
+        }
+      }
+    }
+  }
+}

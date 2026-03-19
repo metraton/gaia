@@ -1,32 +1,21 @@
 {
-  "marketplace": {
-    "name": "gaia-ops-marketplace",
-    "description": "Security, governance, and multi-agent orchestration for AI coding",
-    "owner": {
-      "name": "jaguilar87",
-      "email": "jaguilar1897@gmail.com"
+  "name": "gaia-ops-marketplace",
+  "owner": {
+    "name": "jaguilar87",
+    "email": "jaguilar1897@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "gaia-security",
+      "description": "Security framework for Claude Code. Classifies commands by risk tier and requires approval for mutative operations via hooks. Note: modifies .claude/settings.json. Restart session after first install.",
+      "version": "4.4.0-beta.9",
+      "source": "./dist/gaia-security"
     },
-    "plugins": [
-      {
-        "name": "gaia-security",
-        "description": "Security hooks, approval system, audit logging, metrics, and anomaly detection for Claude Code",
-        "version": "4.4.0-beta.9",
-        "source": "./plugins/gaia-security",
-        "category": "security",
-        "tags": ["security", "hooks", "audit", "metrics", "approval"],
-        "dependencies": [],
-        "includes": ["hooks/pre_tool_use.py", "hooks/post_tool_use.py", "hooks/subagent_stop.py", "hooks/stop_hook.py", "hooks/modules/security/", "hooks/modules/tools/", "hooks/adapters/", "config/"]
-      },
-      {
-        "name": "gaia-ops",
-        "description": "Complete DevOps orchestration system: agents, scanning, context injection, episodic memory, speckit planning, and CLI tools \u2014 includes gaia-security",
-        "version": "4.4.0-beta.9",
-        "source": "./plugins/gaia-ops",
-        "category": "devops",
-        "tags": ["devops", "agents", "scanning", "orchestration", "speckit", "ops"],
-        "dependencies": [],
-        "includes": ["."]
-      }
-    ]
-  }
+    {
+      "name": "gaia-ops",
+      "description": "DevOps orchestrator for Claude Code. Security gates, specialized agents (cloud, terraform, gitops, devops), project context injection, and audit. Note: modifies .claude/settings.json. Restart session after first install.",
+      "version": "4.4.0-beta.9",
+      "source": "./dist/gaia-ops"
+    }
+  ]
 }

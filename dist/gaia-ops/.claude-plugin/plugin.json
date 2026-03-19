@@ -1,0 +1,14 @@
+{
+  "name": "gaia-ops",
+  "version": "4.4.0-beta.9",
+  "description": "DevOps orchestrator for Claude Code. Security gates, specialized agents (cloud, terraform, gitops, devops), project context injection, and audit. Note: modifies .claude/settings.json. Restart session after first install.",
+  "author": {
+    "name": "jaguilar87"
+  },
+  "repository": "https://github.com/metraton/gaia-ops",
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "devops"
+  ]
+}
