@@ -42,6 +42,7 @@ ALL_RESOLUTION = {
         "hooks/modules/scanning/",
         "hooks/modules/session/",
         "hooks/modules/memory/",
+        "hooks/modules/identity/",
         "hooks/adapters/",
     ],
     "skills": "skills/",

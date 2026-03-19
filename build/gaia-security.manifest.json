@@ -1,7 +1,7 @@
 {
   "plugin_name": "gaia-security",
   "version": "from:package.json",
-  "description": "Security-only plugin: Bash validation, T3 approval workflow, audit logging",
+  "description": "Security framework for Claude Code. Classifies commands by risk tier and requires approval for mutative operations via hooks. Note: modifies .claude/settings.json — all validations handled by hooks. Restart session after first install.",
   "hooks": {
     "entries": [
       "hooks/pre_tool_use.py",

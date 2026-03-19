@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 from modules.core.stdin import has_stdin_data
 from modules.identity.identity_provider import build_identity
-from modules.core.plugin_setup import consume_restart_message
 
 # Configure logging — file only, no stderr
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -31,20 +30,6 @@ if __name__ == "__main__":
     try:
         sys.stdin.read()
         identity = build_identity()
-
-        # Check if first-time setup needs a restart notification
-        restart_msg = consume_restart_message()
-        if restart_msg:
-            identity = (
-                f"STOP. Before doing anything else, tell the user this message exactly:\n\n"
-                f"---\n"
-                f"gaia plugin setup complete. Permissions have been configured in .claude/settings.json.\n"
-                f"Please restart this session to activate all permissions: exit and re-run claude.\n"
-                f"---\n\n"
-                f"Do not proceed with the user's request until they acknowledge this message."
-            )
-            logger.info("Restart message injected: %s", restart_msg)
-
         logger.info("Identity injected: %s mode (%d chars)", "ops" if "Orchestrator" in identity else "security", len(identity))
 
         print(json.dumps({

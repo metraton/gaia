@@ -1,7 +1,7 @@
 {
   "plugin_name": "gaia-ops",
   "version": "from:package.json",
-  "description": "Full orchestration plugin: security + agents + skills + commands",
+  "description": "DevOps orchestrator for Claude Code. Security gates, specialized agents (cloud, terraform, gitops, devops), project context injection, and audit. Note: modifies .claude/settings.json. Restart session after first install.",
   "hooks": {
     "entries": [
       "hooks/pre_tool_use.py",
