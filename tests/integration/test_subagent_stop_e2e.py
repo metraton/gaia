@@ -75,13 +75,26 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Investigation
-PENDING_STEPS: []
-NEXT_ACTION: Task complete
-AGENT_ID: cloud-troubleshooter
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "cloud-troubleshooter",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
+}
+```
 """
 
 INITIAL_CONTEXT = {
@@ -91,7 +104,8 @@ INITIAL_CONTEXT = {
         "project_name": "test-project",
     },
     "sections": {
-        "project_details": {"project_id": "test-project-id"},
+        "project_identity": {"name": "test-project-id", "type": "application"},
+        "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
         "cluster_details": {},
     },
 }
@@ -438,9 +452,9 @@ class TestStdinHandler:
             timeout=30,
         )
 
-        # Should still exit 0 (graceful handling)
-        assert result.returncode == 0, (
-            f"subagent_stop.py exited with code {result.returncode}.\n"
+        # Empty transcript means no json:contract block -- selective enforcement rejects (exit 2)
+        assert result.returncode == 2, (
+            f"subagent_stop.py should reject missing contract (exit 2), got {result.returncode}.\n"
             f"stderr: {result.stderr}"
         )
 
@@ -514,11 +528,13 @@ class TestStdinHandler:
             timeout=30,
         )
 
-        assert result.returncode == 0, (
-            f"Exit code: {result.returncode}\nstderr: {result.stderr}"
+        # Transcript has no json:contract block, so selective enforcement rejects (exit 2),
+        # but the context update still happens before the rejection check.
+        assert result.returncode == 2, (
+            f"Expected exit 2 (missing contract), got: {result.returncode}\nstderr: {result.stderr}"
         )
 
-        # Verify project-context.json was updated
+        # Verify project-context.json was updated (happens before contract rejection)
         updated = read_context(context_file)
         namespaces = updated["sections"]["cluster_details"].get("namespaces", {})
         assert "application" in namespaces
@@ -640,6 +656,6 @@ class TestBuildTaskInfoFromHookData:
     def test_exit_code_from_agent_output(self):
         mod = _import_subagent_stop()
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a789"}
-        output = "Checking...\nPLAN_STATUS: BLOCKED\nCannot reach cluster"
+        output = 'Checking...\n```json:contract\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a789"}}\n```\nCannot reach cluster'
         task_info = mod._build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1

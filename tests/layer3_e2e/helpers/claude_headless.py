@@ -73,9 +73,9 @@ def setup_test_project(tmp_dir: Path, package_root: Path) -> Path:
             "primary_region": "us-east4",
         },
         "sections": {
-            "project_details": {
-                "cluster_name": "test-cluster"
-            }
+            "project_identity": {"name": "test-project", "type": "application"},
+            "infrastructure": {"cloud_providers": [{"name": "gcp", "region": "us-east4"}]},
+            "cluster_details": {"cluster_name": "test-cluster"}
         }
     }, indent=2))
 

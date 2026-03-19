@@ -42,7 +42,8 @@ def sample_context(tmp_path):
             "last_updated": "2026-01-01T00:00:00Z",
         },
         "sections": {
-            "project_details": {"id": "test"},
+            "project_identity": {"name": "test", "type": "application"},
+            "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
             "application_services": {},
         },
     }
@@ -56,7 +57,7 @@ def populated_store(store):
     """Create a store with some pending updates."""
     d1 = DiscoveryResult(
         category="configuration_issue",
-        target_section="project_details",
+        target_section="infrastructure",
         proposed_change={"fix": "value1"},
         summary="Config issue 1",
         confidence=0.85,
@@ -174,8 +175,8 @@ class TestApproveApplyE2E:
 
     def test_approve_updates_context_file(self, populated_store, sample_context):
         updates = populated_store.list_pending()
-        # Find the config issue update (targets project_details)
-        config_update = next(u for u in updates if u.target_section == "project_details")
+        # Find the config issue update (targets infrastructure)
+        config_update = next(u for u in updates if u.target_section == "infrastructure")
 
         result = review_pending(
             "approve",
@@ -188,7 +189,7 @@ class TestApproveApplyE2E:
         # Verify context was modified
         with open(sample_context) as f:
             ctx = json.load(f)
-        assert "fix" in ctx["sections"]["project_details"]
+        assert "fix" in ctx["sections"]["infrastructure"]
 
     def test_reject_does_not_modify_context(self, populated_store, sample_context):
         # Read original context

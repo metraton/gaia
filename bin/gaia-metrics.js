@@ -57,6 +57,26 @@ function findProjectRoot() {
 
 const CWD = findProjectRoot();
 
+async function readJsonLines(path) {
+  if (!existsSync(path)) return [];
+
+  try {
+    const content = await fs.readFile(path, 'utf-8');
+    return content.split('\n')
+      .filter(line => line.trim())
+      .map(line => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // DATA READERS
 // ─────────────────────────────────────────────────────────────
@@ -124,6 +144,36 @@ async function readWorkflowMetrics() {
   } catch {
     return [];
   }
+}
+
+/**
+ * Read structured run telemetry snapshots from workflow memory.
+ * Fields: timestamp, session_id, task_id, agent, tier, plan_status,
+ *         context_snapshot, context_updated, context_sections_updated,
+ *         context_rejected_sections, default_skills_snapshot
+ */
+async function readRunSnapshots() {
+  const path = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'run-snapshots.jsonl');
+  return readJsonLines(path);
+}
+
+/**
+ * Read persisted runtime skill snapshots from workflow memory.
+ * Fields: timestamp, session_id, agent, task_description, model, tools,
+ *         skills, skills_count
+ */
+async function readAgentSkillSnapshots() {
+  const path = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'agent-skills.jsonl');
+  return readJsonLines(path);
+}
+
+/**
+ * Read anomaly records from workflow memory.
+ * Fields: timestamp, anomalies, metrics
+ */
+async function readAnomalyEntries() {
+  const path = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'anomalies.jsonl');
+  return readJsonLines(path);
 }
 
 /**
@@ -400,7 +450,7 @@ function calculateAgentInvocations(workflowMetrics) {
 
 /**
  * Agent outcome distribution from plan_status field.
- * Counts COMPLETE, BLOCKED, NEEDS_INPUT, PLANNING, and others.
+ * Counts COMPLETE, BLOCKED, NEEDS_INPUT, IN_PROGRESS, REVIEW, AWAITING_APPROVAL, and others.
  * Returns null if no entries have the plan_status field (older data).
  */
 function calculateAgentOutcomes(workflowMetrics) {
@@ -452,48 +502,157 @@ function calculateTokenUsage(workflowMetrics) {
 }
 
 /**
+ * Runtime skill snapshot summary from agent-skills.jsonl and run snapshots.
+ */
+function calculateRuntimeSkillSummary(skillSnapshots, runSnapshots) {
+  const explicitSnapshots = skillSnapshots.filter(entry => entry && entry.agent);
+  const runtimeDefaults = runSnapshots
+    .filter(entry => entry && entry.agent && entry.default_skills_snapshot)
+    .map(entry => ({
+      timestamp: entry.timestamp,
+      session_id: entry.session_id,
+      agent: entry.agent,
+      model: entry.default_skills_snapshot.model || '',
+      tools: entry.default_skills_snapshot.tools || [],
+      skills: entry.default_skills_snapshot.skills || [],
+      skills_count: entry.default_skills_snapshot.skills_count || 0,
+      source: 'run-default',
+    }));
+
+  const latestByAgent = new Map();
+  for (const snapshot of [...runtimeDefaults, ...explicitSnapshots]) {
+    const agent = snapshot.agent || 'unknown';
+    const current = latestByAgent.get(agent);
+    if (!current || String(snapshot.timestamp || '') >= String(current.timestamp || '')) {
+      latestByAgent.set(agent, {
+        agent,
+        timestamp: snapshot.timestamp || '',
+        model: snapshot.model || '',
+        tools: Array.isArray(snapshot.tools) ? snapshot.tools : [],
+        skills: Array.isArray(snapshot.skills) ? snapshot.skills : [],
+        skillsCount: typeof snapshot.skills_count === 'number'
+          ? snapshot.skills_count
+          : Array.isArray(snapshot.skills) ? snapshot.skills.length : 0,
+        source: snapshot.source || 'explicit',
+      });
+    }
+  }
+
+  const latestProfiles = [...latestByAgent.values()]
+    .sort((a, b) => a.agent.localeCompare(b.agent));
+  const topSkillsSummary = topCounts(latestProfiles.flatMap(profile => profile.skills), 6);
+
+  return {
+    explicitCount: explicitSnapshots.length,
+    runDefaultCount: runtimeDefaults.length,
+    agentCount: latestProfiles.length,
+    latestProfiles,
+    topSkills: topSkillsSummary,
+  };
+}
+
+/**
+ * Context snapshot summary from run-snapshots.jsonl.
+ */
+function calculateContextSnapshotSummary(runSnapshots) {
+  const withContext = runSnapshots.filter(entry => {
+    const snapshot = entry.context_snapshot || {};
+    return Object.keys(snapshot).length > 0;
+  });
+
+  if (withContext.length === 0) return null;
+
+  const primarySurfaces = [];
+  const contractSections = [];
+  const writableSections = [];
+  let multiSurfaceCount = 0;
+
+  for (const entry of withContext) {
+    const snapshot = entry.context_snapshot || {};
+    if (snapshot.surface_routing?.primary_surface) {
+      primarySurfaces.push(snapshot.surface_routing.primary_surface);
+    }
+    if (snapshot.surface_routing?.multi_surface) {
+      multiSurfaceCount++;
+    }
+    contractSections.push(...(snapshot.contract_sections || []));
+    writableSections.push(...(snapshot.context_update_scope?.writable_sections || []));
+  }
+
+  return {
+    total: withContext.length,
+    multiSurfaceCount,
+    primarySurfaces: topCounts(primarySurfaces, 6),
+    contractSections: topCounts(contractSections, 6),
+    writableSections: topCounts(writableSections, 6),
+  };
+}
+
+/**
+ * Context update summary from run-snapshots.jsonl.
+ */
+function calculateContextUpdateSummary(runSnapshots) {
+  if (runSnapshots.length === 0) return null;
+
+  const updatedRuns = runSnapshots.filter(entry => entry.context_updated);
+  const rejectedRuns = runSnapshots.filter(
+    entry => Array.isArray(entry.context_rejected_sections) && entry.context_rejected_sections.length > 0
+  );
+
+  return {
+    totalRuns: runSnapshots.length,
+    updatedRuns: updatedRuns.length,
+    rejectedRuns: rejectedRuns.length,
+    updatedSections: topCounts(
+      updatedRuns.flatMap(entry => entry.context_sections_updated || []),
+      6
+    ),
+    rejectedSections: topCounts(
+      runSnapshots.flatMap(entry => entry.context_rejected_sections || []),
+      6
+    ),
+  };
+}
+
+/**
  * Anomaly summary from workflow-episodic-memory/anomalies.jsonl.
  * Groups anomalies by type for the last 30 days.
- * Returns { total, byType: [{ type, count, percentage }] } or null if no data.
  */
-async function calculateAnomalySummary() {
-  try {
-    const anomalyPath = join(CWD, '.claude', 'project-context', 'workflow-episodic-memory', 'anomalies.jsonl');
-    if (!existsSync(anomalyPath)) return null;
+function calculateAnomalySummary(anomalyEntries) {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const entries = anomalyEntries.filter(
+    entry => entry && entry.timestamp && entry.timestamp >= cutoff
+  );
 
-    const content = await fs.readFile(anomalyPath, 'utf-8');
-    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  if (entries.length === 0) return null;
 
-    const entries = content.split('\n')
-      .filter(l => l.trim())
-      .map(l => { try { return JSON.parse(l); } catch { return null; } })
-      .filter(r => r !== null && r.timestamp && r.timestamp >= cutoff);
-
-    if (entries.length === 0) return null;
-
-    // Count anomalies by type (each entry can have multiple anomalies)
-    const typeCounts = {};
-    for (const entry of entries) {
-      const anomalies = entry.anomalies || [];
-      for (const anomaly of anomalies) {
-        const type = anomaly.type || 'unknown';
-        typeCounts[type] = (typeCounts[type] || 0) + 1;
-      }
+  const typeCounts = {};
+  const agentCounts = {};
+  for (const entry of entries) {
+    const anomalies = entry.anomalies || [];
+    const agent = entry.metrics?.agent || 'unknown';
+    for (const anomaly of anomalies) {
+      const type = anomaly.type || 'unknown';
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+      agentCounts[agent] = (agentCounts[agent] || 0) + 1;
     }
-
-    const total = Object.values(typeCounts).reduce((s, c) => s + c, 0);
-    const byType = Object.entries(typeCounts)
-      .map(([type, count]) => ({
-        type,
-        count,
-        percentage: total > 0 ? (count / total * 100) : 0,
-      }))
-      .sort((a, b) => b.count - a.count);
-
-    return { total, byType };
-  } catch {
-    return null;
   }
+
+  const total = Object.values(typeCounts).reduce((sum, count) => sum + count, 0);
+  const byType = Object.entries(typeCounts)
+    .map(([type, count]) => ({
+      type,
+      count,
+      percentage: total > 0 ? (count / total * 100) : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    total,
+    sessionCount: entries.length,
+    byType,
+    byAgent: sortedCounts(agentCounts).slice(0, 5),
+  };
 }
 
 /**
@@ -514,6 +673,65 @@ function correlateAuditLogsToSession(auditLogs, sessionEnd, sessionStart) {
   });
 }
 
+function getLatestRuntimeProfile(agentName, skillSnapshots, runSnapshots) {
+  const explicit = skillSnapshots
+    .filter(entry => entry.agent === agentName)
+    .map(entry => ({
+      timestamp: entry.timestamp || '',
+      model: entry.model || '',
+      tools: Array.isArray(entry.tools) ? entry.tools : [],
+      skills: Array.isArray(entry.skills) ? entry.skills : [],
+      skillsCount: typeof entry.skills_count === 'number'
+        ? entry.skills_count
+        : Array.isArray(entry.skills) ? entry.skills.length : 0,
+      source: 'explicit',
+    }));
+
+  const defaults = runSnapshots
+    .filter(entry => entry.agent === agentName && entry.default_skills_snapshot)
+    .map(entry => ({
+      timestamp: entry.timestamp || '',
+      model: entry.default_skills_snapshot.model || '',
+      tools: entry.default_skills_snapshot.tools || [],
+      skills: entry.default_skills_snapshot.skills || [],
+      skillsCount: typeof entry.default_skills_snapshot.skills_count === 'number'
+        ? entry.default_skills_snapshot.skills_count
+        : Array.isArray(entry.default_skills_snapshot.skills)
+          ? entry.default_skills_snapshot.skills.length
+          : 0,
+      source: 'run-default',
+    }));
+
+  const snapshots = [...defaults, ...explicit].sort(
+    (a, b) => String(b.timestamp).localeCompare(String(a.timestamp))
+  );
+
+  return {
+    latest: snapshots[0] || null,
+    explicitCount: explicit.length,
+    runDefaultCount: defaults.length,
+  };
+}
+
+function calculateAgentAnomalySummary(agentName, anomalyEntries) {
+  const entries = anomalyEntries.filter(entry => entry.metrics?.agent === agentName);
+  if (entries.length === 0) return null;
+
+  const typeCounts = {};
+  for (const entry of entries) {
+    for (const anomaly of (entry.anomalies || [])) {
+      const type = anomaly.type || 'unknown';
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+  }
+
+  return {
+    total: Object.values(typeCounts).reduce((sum, count) => sum + count, 0),
+    sessionCount: entries.length,
+    byType: sortedCounts(typeCounts).slice(0, 6),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // DISPLAY FUNCTIONS
 // ─────────────────────────────────────────────────────────────
@@ -528,10 +746,53 @@ function formatTokens(n) {
   return `${n}`;
 }
 
+function countValues(values) {
+  const counts = {};
+  for (const value of values) {
+    if (!value) continue;
+    counts[value] = (counts[value] || 0) + 1;
+  }
+  return counts;
+}
+
+function sortedCounts(counts) {
+  return Object.entries(counts)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+function topCounts(values, limit = 5) {
+  return sortedCounts(countValues(values)).slice(0, limit);
+}
+
+function formatCountSummary(entries, emptyLabel = 'none') {
+  if (!entries || entries.length === 0) return emptyLabel;
+  return entries.map(({ name, count }) => `${name}(${count})`).join(', ');
+}
+
+function formatSkills(skills, limit = 4) {
+  if (!Array.isArray(skills) || skills.length === 0) return 'none';
+  if (skills.length <= limit) return skills.join(', ');
+  return `${skills.slice(0, limit).join(', ')}, +${skills.length - limit} more`;
+}
+
 /**
  * Display the main dashboard metrics.
  */
-function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditTotal, agentOutcomes, tokenUsage, anomalySummary) {
+function displayMetrics(
+  tiers,
+  cmdTypes,
+  topCmds,
+  agentInvocations,
+  errorStats,
+  auditTotal,
+  agentOutcomes,
+  tokenUsage,
+  anomalySummary,
+  runtimeSkills,
+  contextSnapshots,
+  contextUpdates
+) {
   const SEP = chalk.gray('═'.repeat(52));
 
   console.log(chalk.cyan('\n📊 Gaia-Ops System Metrics'));
@@ -613,7 +874,7 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
   // ── Agent Outcomes ───────────────────────────────────
   if (agentOutcomes) {
     console.log(chalk.bold(`\n📋 Agent Outcomes  (${agentOutcomes.total} sessions with status)`));
-    const outcomeColor = { COMPLETE: chalk.green, BLOCKED: chalk.red, NEEDS_INPUT: chalk.yellow, PLANNING: chalk.cyan };
+    const outcomeColor = { COMPLETE: chalk.green, BLOCKED: chalk.red, NEEDS_INPUT: chalk.yellow, IN_PROGRESS: chalk.cyan, REVIEW: chalk.magenta, AWAITING_APPROVAL: chalk.yellow };
     for (const { status, count, percentage } of agentOutcomes.distribution) {
       const bar = makeBar(percentage, 10);
       const pct = percentage.toFixed(1).padStart(5);
@@ -632,14 +893,59 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
     }
   }
 
+  // ── Runtime Skill Snapshots ───────────────────────────
+  if (runtimeSkills && runtimeSkills.agentCount > 0) {
+    console.log(chalk.bold(
+      `\n🧠 Runtime Skill Snapshots  (${runtimeSkills.agentCount} agents, ${runtimeSkills.explicitCount} explicit, ${runtimeSkills.runDefaultCount} run defaults)`
+    ));
+    for (const profile of runtimeSkills.latestProfiles.slice(0, 6)) {
+      const model = profile.model || 'default';
+      console.log(
+        `  ${profile.agent.padEnd(24)} model ${model.padEnd(8)} ` +
+        `skills ${String(profile.skillsCount).padStart(2)}  tools ${String(profile.tools.length).padStart(2)}  ` +
+        `${formatSkills(profile.skills, 3)}`
+      );
+    }
+    if (runtimeSkills.latestProfiles.length > 6) {
+      console.log(chalk.gray(`  ... ${runtimeSkills.latestProfiles.length - 6} more agents with captured snapshots`));
+    }
+    console.log(`  Common skills: ${formatCountSummary(runtimeSkills.topSkills)}`);
+  }
+
+  // ── Context Snapshot Summary ──────────────────────────
+  if (contextSnapshots) {
+    console.log(chalk.bold(`\n🗺  Context Snapshot Summary  (${contextSnapshots.total} sessions)`));
+    console.log(`  Primary surfaces: ${formatCountSummary(contextSnapshots.primarySurfaces)}`);
+    console.log(`  Multi-surface:    ${contextSnapshots.multiSurfaceCount}/${contextSnapshots.total} sessions`);
+    console.log(`  Contract sections: ${formatCountSummary(contextSnapshots.contractSections)}`);
+    if (contextSnapshots.writableSections.length > 0) {
+      console.log(`  Writable scope:   ${formatCountSummary(contextSnapshots.writableSections)}`);
+    }
+  }
+
+  // ── Context Updates ───────────────────────────────────
+  if (contextUpdates) {
+    console.log(chalk.bold(`\n📝 Context Updates  (${contextUpdates.updatedRuns}/${contextUpdates.totalRuns} sessions updated)`));
+    console.log(`  Rejected writes:  ${contextUpdates.rejectedRuns} sessions`);
+    console.log(`  Updated sections: ${formatCountSummary(contextUpdates.updatedSections)}`);
+    if (contextUpdates.rejectedSections.length > 0) {
+      console.log(chalk.yellow(`  Rejected sections: ${formatCountSummary(contextUpdates.rejectedSections)}`));
+    }
+  }
+
   // ── Anomaly Summary (last 30 days) ─────────────────
   if (anomalySummary && anomalySummary.total > 0) {
-    console.log(chalk.bold(`\n⚠️  Anomaly Summary (last 30 days)  ${anomalySummary.total} anomalies`));
+    console.log(chalk.bold(
+      `\n⚠️  Anomaly Summary (last 30 days)  ${anomalySummary.total} anomalies across ${anomalySummary.sessionCount} sessions`
+    ));
     for (const { type, count, percentage } of anomalySummary.byType) {
       const bar = makeBar(percentage, 10);
       const pct = percentage.toFixed(1).padStart(5);
       const color = type.includes('contract') ? chalk.red : chalk.yellow;
       console.log(color(`  ${type.padEnd(28)} ${count.toString().padStart(3)}  ${bar.padEnd(10)}  ${pct}%`));
+    }
+    if (anomalySummary.byAgent.length > 0) {
+      console.log(`  Agents: ${formatCountSummary(anomalySummary.byAgent)}`);
     }
   }
 
@@ -671,13 +977,17 @@ function displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, 
   }
 
   console.log('\n' + SEP);
-  console.log(chalk.gray('💡 Source: .claude/logs/audit-*.jsonl  |  episodic-memory/index.json\n'));
+  console.log(
+    chalk.gray(
+      '💡 Source: .claude/logs/audit-*.jsonl  |  episodic-memory/index.json  |  workflow-episodic-memory/*.jsonl\n'
+    )
+  );
 }
 
 /**
  * Display the agent detail view (--agent <name>).
  */
-async function displayAgentDetail(agentName, workflowMetrics, auditLogs) {
+async function displayAgentDetail(agentName, workflowMetrics, auditLogs, runSnapshots, skillSnapshots, anomalyEntries) {
   const SEP = chalk.gray('═'.repeat(52));
 
   console.log(chalk.cyan(`\n🤖 Agent: ${agentName}`));
@@ -721,6 +1031,24 @@ async function displayAgentDetail(agentName, workflowMetrics, auditLogs) {
     }
   }
 
+  // ── Runtime Snapshot ─────────────────────────────────
+  console.log(chalk.bold('\n🧠 Runtime Snapshot'));
+  const runtimeProfile = getLatestRuntimeProfile(agentName, skillSnapshots, runSnapshots);
+  if (!runtimeProfile.latest) {
+    console.log(chalk.gray('  no runtime skill snapshot data'));
+  } else {
+    const latest = runtimeProfile.latest;
+    console.log(`  Latest model:    ${latest.model || 'default'}`);
+    console.log(
+      `  Snapshot source: ${latest.source === 'explicit'
+        ? 'agent-skills.jsonl'
+        : 'run-snapshots default profile'}`
+    );
+    console.log(`  Snapshots seen:  ${runtimeProfile.explicitCount} explicit, ${runtimeProfile.runDefaultCount} run defaults`);
+    console.log(`  Tools:           ${latest.tools.length > 0 ? latest.tools.join(', ') : 'none'}`);
+    console.log(`  Skills:          ${formatSkills(latest.skills, 6)}`);
+  }
+
   // ── Invocation History ───────────────────────────────
   const agentSessions = workflowMetrics
     .filter(r => r.agent === agentName)
@@ -752,6 +1080,42 @@ async function displayAgentDetail(agentName, workflowMetrics, auditLogs) {
       console.log(
         `  ${dt}  ${ok}  ${chars.padStart(7)} chars  task: ${taskShort}`
       );
+    }
+  }
+
+  // ── Context Snapshot Summary ─────────────────────────
+  const agentRunSnapshots = runSnapshots.filter(entry => entry.agent === agentName);
+  const agentContextSummary = calculateContextSnapshotSummary(agentRunSnapshots);
+  const agentContextUpdates = calculateContextUpdateSummary(agentRunSnapshots);
+  const agentAnomalies = calculateAgentAnomalySummary(agentName, anomalyEntries);
+
+  console.log(chalk.bold('\n🗺  Context Snapshot Summary'));
+  if (!agentContextSummary) {
+    console.log(chalk.gray('  no context snapshot data'));
+  } else {
+    console.log(`  Sessions with context: ${agentContextSummary.total}`);
+    console.log(`  Primary surfaces:      ${formatCountSummary(agentContextSummary.primarySurfaces)}`);
+    console.log(`  Multi-surface:         ${agentContextSummary.multiSurfaceCount}/${agentContextSummary.total}`);
+    console.log(`  Contract sections:     ${formatCountSummary(agentContextSummary.contractSections)}`);
+    if (agentContextSummary.writableSections.length > 0) {
+      console.log(`  Writable scope:        ${formatCountSummary(agentContextSummary.writableSections)}`);
+    }
+  }
+
+  console.log(chalk.bold('\n📝 Context Updates + Anomalies'));
+  if (!agentContextUpdates && !agentAnomalies) {
+    console.log(chalk.gray('  no context update or anomaly data'));
+  } else {
+    if (agentContextUpdates) {
+      console.log(`  Context updated:   ${agentContextUpdates.updatedRuns}/${agentContextUpdates.totalRuns} sessions`);
+      console.log(`  Updated sections:  ${formatCountSummary(agentContextUpdates.updatedSections)}`);
+      if (agentContextUpdates.rejectedSections.length > 0) {
+        console.log(chalk.yellow(`  Rejected sections: ${formatCountSummary(agentContextUpdates.rejectedSections)}`));
+      }
+    }
+    if (agentAnomalies) {
+      console.log(`  Anomalies:         ${agentAnomalies.total} across ${agentAnomalies.sessionCount} sessions`);
+      console.log(`  Types:             ${formatCountSummary(agentAnomalies.byType)}`);
     }
   }
 
@@ -840,16 +1204,25 @@ async function main() {
     if (!existsSync(claudeDir)) {
       spinner.fail('.claude/ directory not found');
       console.log(chalk.yellow('\n⚠️  Gaia-ops not installed in this directory'));
-      console.log(chalk.gray('   Run: npx gaia-init\n'));
+      console.log(chalk.gray('   Run: npx gaia-scan\n'));
       process.exit(1);
     }
 
-    const [auditLogs, workflowMetrics] = await Promise.all([
+    const [auditLogs, workflowMetrics, runSnapshots, skillSnapshots, anomalyEntries] = await Promise.all([
       readAuditLogs(),
       readWorkflowMetrics(),
+      readRunSnapshots(),
+      readAgentSkillSnapshots(),
+      readAnomalyEntries(),
     ]);
 
-    if (auditLogs.length === 0 && workflowMetrics.length === 0) {
+    if (
+      auditLogs.length === 0 &&
+      workflowMetrics.length === 0 &&
+      runSnapshots.length === 0 &&
+      skillSnapshots.length === 0 &&
+      anomalyEntries.length === 0
+    ) {
       spinner.info('No log data found');
       console.log(chalk.yellow('\n⚠️  No metrics data available yet'));
       console.log(chalk.gray('   Metrics will be generated as you use the system\n'));
@@ -857,12 +1230,12 @@ async function main() {
     }
 
     spinner.succeed(
-      `Loaded ${auditLogs.length} audit + ${workflowMetrics.length} workflow entries`
+      `Loaded ${auditLogs.length} audit + ${workflowMetrics.length} workflow + ${runSnapshots.length} telemetry entries`
     );
 
     if (agentName) {
       // Agent detail view
-      await displayAgentDetail(agentName, workflowMetrics, auditLogs);
+      await displayAgentDetail(agentName, workflowMetrics, auditLogs, runSnapshots, skillSnapshots, anomalyEntries);
     } else {
       // Full dashboard
       const tiers            = calculateTierUsage(auditLogs);
@@ -872,9 +1245,25 @@ async function main() {
       const errorStats       = calculateErrorRate(auditLogs);
       const agentOutcomes    = calculateAgentOutcomes(workflowMetrics);
       const tokenUsage       = calculateTokenUsage(workflowMetrics);
-      const anomalySummary   = await calculateAnomalySummary();
+      const anomalySummary   = calculateAnomalySummary(anomalyEntries);
+      const runtimeSkills    = calculateRuntimeSkillSummary(skillSnapshots, runSnapshots);
+      const contextSnapshots = calculateContextSnapshotSummary(runSnapshots);
+      const contextUpdates   = calculateContextUpdateSummary(runSnapshots);
 
-      displayMetrics(tiers, cmdTypes, topCmds, agentInvocations, errorStats, auditLogs.length, agentOutcomes, tokenUsage, anomalySummary);
+      displayMetrics(
+        tiers,
+        cmdTypes,
+        topCmds,
+        agentInvocations,
+        errorStats,
+        auditLogs.length,
+        agentOutcomes,
+        tokenUsage,
+        anomalySummary,
+        runtimeSkills,
+        contextSnapshots,
+        contextUpdates
+      );
     }
 
   } catch (error) {

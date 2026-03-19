@@ -271,21 +271,32 @@ class TestGitTagDetection:
         assert result.category == "MUTATIVE"
 
     def test_git_tag_list_flag(self):
-        """Scenario #22: `git tag -l` is listing -- check behavior.
+        """Scenario #22: `git tag -l` is listing -> READ_ONLY.
 
-        Note: the current verb detector does not have special-case logic for
-        git tag -l / --list, so it still classifies as MUTATIVE because "tag"
-        is scanned as the verb before flags are considered. This test documents
-        the current behavior; if listing-override is added later, update this.
+        The verb+flag override mechanism downgrades "tag" from MUTATIVE to
+        READ_ONLY when the -l or --list flag is present.
         """
         result = detect_mutative_command("git tag -l")
-        # Current behavior: tag verb is found first, flags don't override
-        assert result.is_mutative is True
+        assert result.is_mutative is False
         assert result.verb == "tag"
+        assert result.category == "READ_ONLY"
 
     def test_git_tag_list_long_flag(self):
         """Same as above but with --list flag."""
         result = detect_mutative_command("git tag --list")
+        assert result.is_mutative is False
+        assert result.verb == "tag"
+        assert result.category == "READ_ONLY"
+
+    def test_git_tag_list_with_pattern(self):
+        """git tag -l 'v*' is listing with a filter -- still READ_ONLY."""
+        result = detect_mutative_command('git tag -l "v*"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_git_tag_delete_still_mutative(self):
+        """git tag -d is deletion -- must remain MUTATIVE."""
+        result = detect_mutative_command("git tag -d v1.0.0")
         assert result.is_mutative is True
         assert result.verb == "tag"
 
@@ -319,6 +330,79 @@ class TestEdgeCases:
     def test_docker_build(self):
         result = detect_mutative_command("docker build -t image .")
         assert result.is_mutative is False
+
+
+class TestGitMergeBase:
+    """git merge-base is a read-only subcommand despite containing 'merge'."""
+
+    def test_merge_base_is_read_only(self):
+        result = detect_mutative_command("git merge-base main HEAD")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "merge-base"
+
+    def test_merge_base_is_ancestor(self):
+        result = detect_mutative_command("git merge-base --is-ancestor abc def")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_merge_base_fork_point(self):
+        result = detect_mutative_command("git merge-base --fork-point main")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_git_merge_still_mutative(self):
+        """Plain git merge must remain MUTATIVE."""
+        result = detect_mutative_command("git merge main")
+        assert result.is_mutative is True
+        assert result.verb == "merge"
+
+
+class TestInlineCodeDetection:
+    """python3 -c inline code: flag dangerous patterns, not generic keywords."""
+
+    def test_safe_json_operations(self):
+        result = detect_mutative_command('python3 -c "import json; print(json.dumps({}))"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_safe_pathlib_read(self):
+        result = detect_mutative_command('python3 -c "from pathlib import Path; p = Path.cwd()"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_safe_sys_version(self):
+        result = detect_mutative_command('python3 -c "import sys; print(sys.version)"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_dangerous_os_remove(self):
+        result = detect_mutative_command('python3 -c "import os; os.remove(f)"')
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert "os.remove" in result.verb
+
+    def test_dangerous_shutil_rmtree(self):
+        result = detect_mutative_command('python3 -c "import shutil; shutil.rmtree(d)"')
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_dangerous_file_write(self):
+        result = detect_mutative_command("python3 -c \"open('f', 'w').write('data')\"")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_subprocess_allowed(self):
+        """subprocess is intentionally not flagged -- the inner command gets its own check."""
+        result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"ls\"])"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_python_variant(self):
+        """python (not python3) with -c should also be checked."""
+        result = detect_mutative_command('python -c "import os; os.remove(f)"')
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
 
 
 class TestBuildT3BlockResponse:

@@ -154,24 +154,31 @@ class PrePublishValidator {
   bumpVersion() {
     this.log(`Step 3: Bumping version (${this.versionBump})...`, 'info');
 
-    const parts = this.currentVersion.split('.');
+    // Handle prerelease versions (e.g., 4.4.0-beta.7)
+    const prereleaseMatch = this.currentVersion.match(/^(.+)-(.+)\.(\d+)$/);
+    if (prereleaseMatch) {
+      const [, baseVersion, prereleaseTag, prereleaseNum] = prereleaseMatch;
+      this.newVersion = `${baseVersion}-${prereleaseTag}.${parseInt(prereleaseNum) + 1}`;
+    } else {
+      const parts = this.currentVersion.split('.');
 
-    switch (this.versionBump) {
-      case 'major':
-        parts[0] = String(parseInt(parts[0]) + 1);
-        parts[1] = '0';
-        parts[2] = '0';
-        break;
-      case 'minor':
-        parts[1] = String(parseInt(parts[1]) + 1);
-        parts[2] = '0';
-        break;
-      case 'patch':
-      default:
-        parts[2] = String(parseInt(parts[2]) + 1);
+      switch (this.versionBump) {
+        case 'major':
+          parts[0] = String(parseInt(parts[0]) + 1);
+          parts[1] = '0';
+          parts[2] = '0';
+          break;
+        case 'minor':
+          parts[1] = String(parseInt(parts[1]) + 1);
+          parts[2] = '0';
+          break;
+        case 'patch':
+        default:
+          parts[2] = String(parseInt(parts[2]) + 1);
+      }
+
+      this.newVersion = parts.join('.');
     }
-
-    this.newVersion = parts.join('.');
 
     if (this.dryRun) {
       this.log(`[DRY RUN] Would bump version to: ${this.newVersion}`, 'info');
@@ -228,7 +235,7 @@ class PrePublishValidator {
 
     const criticalFiles = [
       'package.json',
-      'bin/gaia-init.js',
+      'bin/gaia-scan',
       'tools/context/context_provider.py',
       'hooks/pre_tool_use.py',
       'templates/settings.template.json'
@@ -268,8 +275,53 @@ class PrePublishValidator {
     }
   }
 
+  validatePluginManifest() {
+    this.log('Step 6: Validating plugin manifest (.claude-plugin/plugin.json)...', 'info');
+
+    const pluginJsonPath = path.join(GAIA_OPS_ROOT, '.claude-plugin', 'plugin.json');
+
+    // 1. File existence
+    if (!fs.existsSync(pluginJsonPath)) {
+      this.log('✗ .claude-plugin/plugin.json does not exist', 'error');
+      throw new Error('Plugin manifest missing: .claude-plugin/plugin.json');
+    }
+    this.log('✓ .claude-plugin/plugin.json exists', 'success');
+
+    const pluginData = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf-8'));
+
+    // 2. Version sync with package.json
+    const packageJsonPath = path.join(GAIA_OPS_ROOT, 'package.json');
+    const packageData = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    const expectedVersion = this.newVersion || packageData.version;
+
+    if (pluginData.version !== expectedVersion) {
+      this.log(`✗ plugin.json version "${pluginData.version}" does not match package.json version "${expectedVersion}"`, 'error');
+      throw new Error(`Plugin manifest version mismatch: plugin.json="${pluginData.version}" vs package.json="${expectedVersion}"`);
+    }
+    this.log(`✓ plugin.json version matches package.json (${expectedVersion})`, 'success');
+
+    // 3. Engines field
+    const claudeCodeEngine = pluginData.engines && pluginData.engines['claude-code'];
+    if (!claudeCodeEngine || claudeCodeEngine !== '>=2.1.0') {
+      this.log(`✗ plugin.json engines["claude-code"] must be ">=2.1.0", got "${claudeCodeEngine || 'missing'}"`, 'error');
+      throw new Error(`Plugin manifest missing or invalid engines["claude-code"]: expected ">=2.1.0", got "${claudeCodeEngine || 'missing'}"`);
+    }
+    this.log('✓ plugin.json engines["claude-code"] is ">=2.1.0"', 'success');
+
+    // 4. Categories field
+    const requiredCategories = ['devops', 'security', 'orchestration'];
+    const categories = pluginData.categories || [];
+    const missingCategories = requiredCategories.filter(cat => !categories.includes(cat));
+
+    if (missingCategories.length > 0) {
+      this.log(`✗ plugin.json categories missing: ${missingCategories.join(', ')} (found: [${categories.join(', ')}])`, 'error');
+      throw new Error(`Plugin manifest categories incomplete: missing ${missingCategories.join(', ')}`);
+    }
+    this.log(`✓ plugin.json categories include all required: ${requiredCategories.join(', ')}`, 'success');
+  }
+
   runTests() {
-    this.log('Step 6: Running validation tests...', 'info');
+    this.log('Step 7: Running validation tests...', 'info');
 
     // In validate-only mode, validate source files directly
     const baseDir = this.validateOnly ? GAIA_OPS_ROOT : NODE_MODULES_INSTALL;
@@ -323,6 +375,60 @@ class PrePublishValidator {
       if (fs.existsSync(binDir)) {
         const scripts = fs.readdirSync(binDir);
         this.log(`  ✓ Found ${scripts.length} bin scripts`, 'success');
+      }
+
+      // Test 4: Version sync across all manifest files
+      this.log('Test 4: Validating version sync across manifests...', 'info');
+      const packageJsonPath = path.join(baseDir, 'package.json');
+      const packageJsonData = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+      const expectedVersion = this.newVersion || packageJsonData.version;
+      const versionMismatches = [];
+
+      // Check .claude-plugin/plugin.json
+      const pluginJsonPath = path.join(baseDir, '.claude-plugin', 'plugin.json');
+      if (fs.existsSync(pluginJsonPath)) {
+        const pluginData = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf-8'));
+        if (pluginData.version !== expectedVersion) {
+          versionMismatches.push(`plugin.json: ${pluginData.version}`);
+        } else {
+          this.log(`  ✓ .claude-plugin/plugin.json version matches`, 'success');
+        }
+      }
+
+      // Check .claude-plugin/marketplace.json plugin versions
+      const marketplacePath = path.join(baseDir, '.claude-plugin', 'marketplace.json');
+      if (fs.existsSync(marketplacePath)) {
+        const marketplaceData = JSON.parse(fs.readFileSync(marketplacePath, 'utf-8'));
+        for (const plugin of (marketplaceData.plugins || [])) {
+          if (plugin.version !== expectedVersion) {
+            versionMismatches.push(`marketplace/${plugin.name}: ${plugin.version}`);
+          }
+        }
+        if (!versionMismatches.some(m => m.startsWith('marketplace/'))) {
+          this.log(`  ✓ marketplace.json plugin versions match`, 'success');
+        }
+      }
+
+      // Check sub-plugin plugin.json files
+      const subPlugins = [
+        { name: 'gaia-security', path: path.join(baseDir, 'plugins', 'gaia-security', '.claude-plugin', 'plugin.json') },
+        { name: 'gaia-ops', path: path.join(baseDir, 'plugins', 'gaia-ops', '.claude-plugin', 'plugin.json') }
+      ];
+
+      for (const subPlugin of subPlugins) {
+        if (fs.existsSync(subPlugin.path)) {
+          const subData = JSON.parse(fs.readFileSync(subPlugin.path, 'utf-8'));
+          if (subData.version !== expectedVersion) {
+            versionMismatches.push(`${subPlugin.name}/plugin.json: ${subData.version}`);
+          } else {
+            this.log(`  ✓ ${subPlugin.name}/plugin.json version matches`, 'success');
+          }
+        }
+      }
+
+      if (versionMismatches.length > 0) {
+        this.log(`✗ Version mismatches found (expected ${expectedVersion}): ${versionMismatches.join(', ')}`, 'error');
+        throw new Error(`Version sync failed: ${versionMismatches.join(', ')}`);
       }
 
     } catch (error) {
@@ -380,6 +486,7 @@ class PrePublishValidator {
         this.validateNodeModules();
         this.validateFiles();
       }
+      this.validatePluginManifest();
       this.runTests();
 
       this.summary();

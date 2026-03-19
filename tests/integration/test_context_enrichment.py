@@ -122,7 +122,8 @@ class TestFreshInstallFirstEnrichment:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {}
             }
         }
@@ -179,7 +180,8 @@ class TestIncrementalEnrichment:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {
                     "namespaces": {
                         "application": ["adm", "dev", "test"],
@@ -241,7 +243,8 @@ class TestDriftDetection:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {
                     "helm_releases": [
                         {"name": "orders-service", "chart_version": "0.53.0", "namespace": "application"},
@@ -303,7 +306,8 @@ class TestPermissionRejection:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "application_services": {
                     "base_path": "./services",
                     "services": [
@@ -365,7 +369,8 @@ class TestBackwardCompatibility:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {"status": "RUNNING"}
             }
         }
@@ -414,7 +419,8 @@ class TestMalformedJson:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {"status": "RUNNING"}
             }
         }
@@ -461,7 +467,8 @@ class TestMultiSectionUpdate:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {
                     "namespaces": {"application": ["dev"]},
                     "status": "RUNNING"
@@ -564,7 +571,8 @@ class TestLLMRealisticOutput:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {}
             }
         }
@@ -588,9 +596,26 @@ class TestLLMRealisticOutput:
             "  }\n"
             "}\n"
             "```\n\n"
-            "<!-- AGENT_STATUS -->\n"
-            "PLAN_STATUS: COMPLETE\n"
-            "<!-- /AGENT_STATUS -->\n"
+            "```json:contract\n"
+            "{\n"
+            '  "agent_status": {\n'
+            '    "plan_status": "COMPLETE",\n'
+            '    "agent_id": "cloud-troubleshooter",\n'
+            '    "pending_steps": [],\n'
+            '    "next_action": "done"\n'
+            "  },\n"
+            '  "evidence_report": {\n'
+            '    "patterns_checked": [],\n'
+            '    "files_checked": [],\n'
+            '    "commands_run": [],\n'
+            '    "key_outputs": [],\n'
+            '    "verbatim_outputs": [],\n'
+            '    "cross_layer_impacts": [],\n'
+            '    "open_gaps": []\n'
+            "  },\n"
+            '  "consolidation_report": null\n'
+            "}\n"
+            "```\n"
         )
 
         result = process_agent_output(
@@ -620,7 +645,8 @@ class TestLLMRealisticOutput:
                 "cloud_provider": "gcp"
             },
             "sections": {
-                "project_details": {"project_id": "my-project"},
+                "project_identity": {"name": "my-project", "type": "application"},
+                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
                 "cluster_details": {}
             }
         }

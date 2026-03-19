@@ -1,11 +1,10 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "4.1.1",
+  "version": "4.4.0-beta.9",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
   "bin": {
-    "gaia-init": "bin/gaia-init.js",
     "gaia-doctor": "bin/gaia-doctor.js",
     "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
     "gaia-cleanup": "bin/gaia-cleanup.js",
@@ -14,7 +13,8 @@
     "gaia-review": "bin/gaia-review.js",
     "gaia-status": "bin/gaia-status.js",
     "gaia-history": "bin/gaia-history.js",
-    "gaia-update": "bin/gaia-update.js"
+    "gaia-update": "bin/gaia-update.js",
+    "gaia-scan": "bin/gaia-scan"
   },
   "keywords": [
     "claude-code",
@@ -40,18 +40,21 @@
     "email": "jaguilar1897@gmail.com"
   },
   "files": [
+    ".claude-plugin/",
     "bin/",
     "agents/",
     "tools/",
     "hooks/",
+    "hooks/adapters/",
+    "hooks/hooks.json",
     "commands/",
+    "plugins/",
     "templates/",
     "config/",
     "speckit/",
     "skills/",
     "README.md",
     "INSTALL.md",
-    "PRE_PUBLISH_WORKFLOW.md",
     "CHANGELOG.md",
     "ARCHITECTURE.md",
     "CONTRIBUTING.md",

@@ -46,7 +46,7 @@ def sample_discovery():
     """Create a sample DiscoveryResult."""
     return DiscoveryResult(
         category="configuration_issue",
-        target_section="project_details",
+        target_section="infrastructure",
         proposed_change={"wi_binding": {"project": "oci-pos-dev-471216"}},
         summary="WI binding references wrong project ID",
         confidence=0.85,
@@ -66,10 +66,8 @@ def sample_context(tmp_path):
             "project_name": "Test Project",
         },
         "sections": {
-            "project_details": {
-                "id": "test-project",
-                "region": "us-central1",
-            },
+            "project_identity": {"name": "test-project", "type": "application"},
+            "infrastructure": {"cloud_providers": [{"name": "gcp", "region": "us-central1"}]},
             "application_services": [],
             "cluster_details": {},
             "infrastructure_topology": {},
@@ -260,7 +258,7 @@ class TestStoreDedup:
     def test_dedup_tracks_different_agents(self, store):
         d1 = DiscoveryResult(
             category="configuration_issue",
-            target_section="project_details",
+            target_section="infrastructure",
             proposed_change={"key": "value"},
             summary="Same discovery",
             confidence=0.85,
@@ -268,7 +266,7 @@ class TestStoreDedup:
         )
         d2 = DiscoveryResult(
             category="configuration_issue",
-            target_section="project_details",
+            target_section="infrastructure",
             proposed_change={"key": "value"},
             summary="Same discovery",
             confidence=0.9,
@@ -439,7 +437,7 @@ class TestStoreApply:
         # Verify project-context.json was updated
         with open(sample_context) as f:
             ctx = json.load(f)
-        assert ctx["sections"]["project_details"]["wi_binding"] == {"project": "oci-pos-dev-471216"}
+        assert ctx["sections"]["infrastructure"]["wi_binding"] == {"project": "oci-pos-dev-471216"}
 
     def test_apply_creates_backup(self, store, sample_discovery, sample_context):
         update_id = store.create(sample_discovery)
@@ -525,7 +523,7 @@ class TestDedupScenario:
     def test_dedup_across_agents(self, store):
         d1 = DiscoveryResult(
             category="configuration_issue",
-            target_section="project_details",
+            target_section="infrastructure",
             proposed_change={"wi_binding": {"project": "oci-pos-dev-471216"}},
             summary="WI binding references wrong project ID",
             confidence=0.85,
@@ -535,7 +533,7 @@ class TestDedupScenario:
 
         d2 = DiscoveryResult(
             category="configuration_issue",
-            target_section="project_details",
+            target_section="infrastructure",
             proposed_change={"wi_binding": {"project": "oci-pos-dev-471216"}},
             summary="WI binding references wrong project ID",
             confidence=0.9,

@@ -53,8 +53,6 @@ coverage/
 # Spec-Kit specs (local design artifacts, not shipped)
 specs/
 
-# Distribution
-dist/
-build/
+# Distribution (dist/ is tracked — plugins are published from there)
 *.egg-info/
 .npm-cache/

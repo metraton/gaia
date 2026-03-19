@@ -85,9 +85,11 @@ def test_project(tmp_path):
             "primary_region": "us-east4",
         },
         "sections": {
-            "project_details": {
-                "cluster_name": "test-cluster"
-            },
+            "project_identity": {"name": "test-lifecycle", "type": "application"},
+            "stack": {},
+            "git": {"platform": "github"},
+            "environment": {"runtimes": []},
+            "infrastructure": {"cloud_providers": [{"name": "gcp", "region": "us-east4"}]},
             # These are empty - agents should fill them via CONTEXT_UPDATE
             "cluster_details": {},
             "infrastructure_topology": {},
@@ -170,7 +172,6 @@ class TestPhase1SkillsInjection:
             "cloud-troubleshooter must declare skills in frontmatter"
         assert "security-tiers" in skills
         assert "agent-protocol" in skills
-        assert "context-updater" in skills
 
     def test_terraform_architect_declares_terraform_patterns_skill(self, test_project):
         """terraform-architect frontmatter must include terraform-patterns."""
@@ -234,14 +235,62 @@ class TestPhase1SkillsInjection:
                 },
             )
 
-            assert isinstance(result, dict), "Task call should return updatedInput when context is injected"
-            updated = result["hookSpecificOutput"]["updatedInput"]["prompt"]
+            assert isinstance(result, dict), "Task call should return additionalContext when context is injected"
+            additional = result["hookSpecificOutput"]["additionalContext"]
 
-            assert "# Project Context (Auto-Injected)" in updated
-            assert "# User Task" in updated
-            assert "Diagnose pod health in namespace test" in updated
-            assert "AGENT_STATUS" not in updated, \
-                "Hook should not inline agent-protocol skill text into prompt"
+            assert "# Project Context" in additional
+            assert "updatedInput" not in result["hookSpecificOutput"], \
+                "Phase 2: should use additionalContext, not updatedInput"
+            assert "AGENT_STATUS" not in additional, \
+                "Hook should not inline agent-protocol skill text into context"
+        finally:
+            os.chdir(original_cwd)
+
+    def test_subagent_start_records_runtime_skill_history(self, test_project):
+        """SubagentStart should persist the agent's default skills snapshot."""
+        tmp_path, claude_dir = test_project
+
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            import importlib.util
+
+            start_hook_path = claude_dir / "hooks" / "subagent_start.py"
+            spec = importlib.util.spec_from_file_location("subagent_start_runtime", str(start_hook_path))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            stdin_payload = json.dumps({
+                "hook_event_name": "SubagentStart",
+                "session_id": "sess-subagent-start-001",
+                "agent_type": "cloud-troubleshooter",
+                "task_description": "Investigate rollout telemetry drift",
+            })
+
+            # _handle_subagent_start now accepts a pre-parsed HookEvent,
+            # so parse the payload via the adapter first.
+            from adapters.claude_code import ClaudeCodeAdapter
+            adapter = ClaudeCodeAdapter()
+            event = adapter.parse_event(stdin_payload)
+
+            with pytest.raises(SystemExit) as exc:
+                mod._handle_subagent_start(event)
+
+            assert exc.value.code == 0
+
+            skills_path = (
+                claude_dir
+                / "project-context"
+                / "workflow-episodic-memory"
+                / "agent-skills.jsonl"
+            )
+            assert skills_path.exists(), "SubagentStart should persist agent-skills.jsonl"
+
+            skill_entry = json.loads(skills_path.read_text().strip().splitlines()[-1])
+            assert skill_entry["agent"] == "cloud-troubleshooter"
+            assert skill_entry["session_id"] == "sess-subagent-start-001"
+            assert "agent-protocol" in skill_entry["skills"]
+            assert skill_entry["skills_count"] >= 1
         finally:
             os.chdir(original_cwd)
 
@@ -271,12 +320,26 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Complete
-PENDING_STEPS: None
-NEXT_ACTION: Report findings to orchestrator
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
+}
+```
 """
         result = parse_context_update(agent_output)
 
@@ -294,9 +357,26 @@ NEXT_ACTION: Report findings to orchestrator
 
 No new data found.
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
+}
+```
 """
         result = parse_context_update(agent_output)
         assert result is None
@@ -361,13 +441,26 @@ CONTEXT_UPDATE:
             "}\n"
             "```\n"
             "\n"
-            "<!-- AGENT_STATUS -->\n"
-            "PLAN_STATUS: COMPLETE\n"
-            "CURRENT_PHASE: Complete\n"
-            "PENDING_STEPS: None\n"
-            "NEXT_ACTION: None - task complete\n"
-            "AGENT_ID: cloud-troubleshooter\n"
-            "<!-- /AGENT_STATUS -->"
+            "```json:contract\n"
+            "{\n"
+            '  "agent_status": {\n'
+            '    "plan_status": "COMPLETE",\n'
+            '    "agent_id": "cloud-troubleshooter",\n'
+            '    "pending_steps": [],\n'
+            '    "next_action": "done"\n'
+            "  },\n"
+            '  "evidence_report": {\n'
+            '    "patterns_checked": [],\n'
+            '    "files_checked": [],\n'
+            '    "commands_run": [],\n'
+            '    "key_outputs": [],\n'
+            '    "verbatim_outputs": [],\n'
+            '    "cross_layer_impacts": [],\n'
+            '    "open_gaps": []\n'
+            "  },\n"
+            '  "consolidation_report": null\n'
+            "}\n"
+            "```"
         )
         result = parse_context_update(agent_output)
 
@@ -485,12 +578,26 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Complete
-PENDING_STEPS: None
-NEXT_ACTION: Report findings to orchestrator
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
+}
+```
 """
 
         # --- PROCESS via context_writer ---
@@ -688,13 +795,41 @@ class TestPhase5SubagentStopHook:
 
             # Set env var so metrics go to tmp dir
             os.environ["WORKFLOW_MEMORY_BASE_PATH"] = str(claude_dir)
+            os.environ["GAIA_WRITE_WORKFLOW_METRICS"] = "1"
 
             task_info = {
                 "task_id": "test-lifecycle-001",
+                "agent_id": "test-lifecycle-001",
                 "description": "Diagnose cluster health",
                 "agent": "cloud-troubleshooter",
                 "tier": "T0",
                 "tags": ["#diagnostic"],
+                "injected_context": {
+                    "project_knowledge": {
+                        "cluster_details": {},
+                    },
+                    "metadata": {
+                        "cloud_provider": "gcp",
+                        "contract_version": "3.0",
+                        "rules_count": 4,
+                        "surface_routing_version": "1.0",
+                        "active_surfaces_count": 1,
+                    },
+                    "surface_routing": {
+                        "primary_surface": "live_runtime",
+                        "active_surfaces": ["live_runtime"],
+                        "dispatch_mode": "single_surface",
+                        "recommended_agents": ["cloud-troubleshooter"],
+                    },
+                    "investigation_brief": {
+                        "agent_role": "primary",
+                        "primary_surface": "live_runtime",
+                    },
+                    "write_permissions": {
+                        "readable_sections": ["cluster_details"],
+                        "writable_sections": ["cluster_details"],
+                    },
+                },
             }
 
             agent_output = """
@@ -711,12 +846,26 @@ CONTEXT_UPDATE:
   }
 }
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-CURRENT_PHASE: Complete
-PENDING_STEPS: None
-NEXT_ACTION: Report to orchestrator
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
+}
+```
 """
 
             result = mod.subagent_stop_hook(task_info, agent_output)
@@ -737,9 +886,22 @@ NEXT_ACTION: Report to orchestrator
             assert cd["health_status"] == "HEALTHY"
             assert cd["node_count"] == 3
 
+            workflow_dir = claude_dir / "project-context" / "workflow-episodic-memory"
+            run_snapshots = (workflow_dir / "run-snapshots.jsonl").read_text().strip().splitlines()
+            metrics_entries = (workflow_dir / "metrics.jsonl").read_text().strip().splitlines()
+            latest_run = json.loads(run_snapshots[-1])
+            latest_metrics = json.loads(metrics_entries[-1])
+
+            assert latest_run["context_snapshot"]["surface_routing"]["primary_surface"] == "live_runtime"
+            assert latest_run["context_sections_updated"] == ["cluster_details"]
+            assert "agent-protocol" in latest_run["default_skills_snapshot"]["skills"]
+            assert latest_metrics["context_updated"] is True
+            assert latest_metrics["commands_executed_count"] == 0
+
         finally:
             os.chdir(original_cwd)
             os.environ.pop("WORKFLOW_MEMORY_BASE_PATH", None)
+            os.environ.pop("GAIA_WRITE_WORKFLOW_METRICS", None)
 
     def test_subagent_stop_without_context_update(self, test_project):
         """When agent output has no CONTEXT_UPDATE, context_updated should be False."""
@@ -770,9 +932,26 @@ NEXT_ACTION: Report to orchestrator
 ## Report
 Everything looks fine. No changes needed.
 
-<!-- AGENT_STATUS -->
-PLAN_STATUS: COMPLETE
-<!-- /AGENT_STATUS -->
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "test-agent",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [],
+    "files_checked": [],
+    "commands_run": [],
+    "key_outputs": [],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  },
+  "consolidation_report": null
+}
+```
 """
 
             result = mod.subagent_stop_hook(task_info, agent_output)

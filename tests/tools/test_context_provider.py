@@ -13,6 +13,8 @@ if TOOLS_DIR.is_symlink():
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(TOOLS_DIR / "context"))
 
+from context_provider import get_relevant_sections  # noqa: E402
+
 @pytest.fixture
 def temp_project_context(tmp_path: Path) -> Path:
     """Creates a temporary project-context.json file for isolated testing."""
@@ -22,14 +24,19 @@ def temp_project_context(tmp_path: Path) -> Path:
 
     mock_context = {
         "metadata": {
-            "version": "1.0",
+            "version": "3.0",
             "last_updated": "2025-01-01T00:00:00Z",
             "project_name": "Test Project",
             "cloud_provider": "GCP",
             "environment": "non-prod"
         },
         "sections": {
-            "project_details": {"id": "test-project", "region": "us-central1"},
+            "project_identity": {"name": "test-project", "type": "application"},
+            "stack": {"languages": [{"name": "typescript"}], "frameworks": [{"name": "nodejs"}], "build_tools": [{"name": "npm"}]},
+            "git": {"platform": "github", "remotes": [], "default_branch": "main"},
+            "environment": {"runtimes": [{"name": "node", "version": "20"}], "os": {"platform": "linux"}},
+            "infrastructure": {"cloud_providers": [{"name": "gcp", "project_id": "test-project", "region": "us-central1"}], "ci_cd": []},
+            "orchestration": {},
             "terraform_infrastructure": {"layout": {"base_path": "infra/test"}},
             "gitops_configuration": {"repository": {"path": "gitops/test"}},
             "cluster_details": {"name": "test-cluster"},
@@ -38,10 +45,9 @@ def temp_project_context(tmp_path: Path) -> Path:
                 {"name": "frontend-app", "port": 80},
                 {"name": "backend-api", "port": 5000}
             ],
-            "application_architecture": {"framework": "nodejs"},
-            "development_standards": {"linter": "eslint"},
             "operational_guidelines": {"commit_standards": "conventional"},
             "monitoring_observability": {"metrics": "prometheus"},
+            "architecture_overview": {},
             "security_policies": {"iam": "strict"}
         }
     }
@@ -73,32 +79,41 @@ def run_script(context_file: Path, agent: str, task: str) -> dict:
 # ============================================================================
 
 def test_terraform_architect_contract(temp_project_context: Path):
-    """Verify terraform-architect gets all contracted sections."""
+    """Verify terraform-architect gets surface-gated sections for a terraform task."""
     result = run_script(temp_project_context, "terraform-architect", "Create a new GCS bucket.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
-    # Base contract reads
-    assert "project_details" in contract
+    # v2 base sections present in terraform_iac surface contract_sections
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "terraform_infrastructure" in contract
     assert "infrastructure_topology" in contract
-    assert "operational_guidelines" in contract
     assert "cluster_details" in contract
     assert "application_services" in contract
+    assert "architecture_overview" in contract
 
+    # Surface-gated: operational_guidelines is NOT in terraform_iac contract_sections
+    assert "operational_guidelines" not in contract
     # Should NOT have sections outside its contract
-    assert "gitops_configuration" not in contract
     assert "monitoring_observability" not in contract
 
 def test_gitops_operator_contract(temp_project_context: Path):
-    """Verify gitops-operator gets all contracted sections."""
+    """Verify gitops-operator gets all contracted v2 sections."""
     result = run_script(temp_project_context, "gitops-operator", "Deploy the frontend-app.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "gitops_configuration" in contract
     assert "cluster_details" in contract
     assert "operational_guidelines" in contract
@@ -109,58 +124,78 @@ def test_gitops_operator_contract(temp_project_context: Path):
     assert "monitoring_observability" not in contract
 
 def test_troubleshooter_contract(temp_project_context: Path):
-    """Verify cloud-troubleshooter gets all contracted sections (broadest read)."""
-    result = run_script(temp_project_context, "cloud-troubleshooter", "Why is backend-api crashing?")
+    """Verify cloud-troubleshooter gets surface-gated sections for a runtime task.
 
-    assert "contract" in result
-    contract = result["contract"]
+    Task uses live_runtime keywords (pod, logs, kubectl) to ensure the surface
+    classifier routes to live_runtime, enabling surface-gated assertions.
+    """
+    result = run_script(
+        temp_project_context,
+        "cloud-troubleshooter",
+        "Check pod logs using kubectl for the backend-api runtime outage.",
+    )
 
-    # Should have all 7 base sections
-    assert "project_details" in contract
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
+
+    # live_runtime surface contract_sections
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "cluster_details" in contract
     assert "infrastructure_topology" in contract
-    assert "terraform_infrastructure" in contract
-    assert "gitops_configuration" in contract
     assert "application_services" in contract
     assert "monitoring_observability" in contract
+    assert "architecture_overview" in contract
+
+    # Surface-gated: terraform_infrastructure and gitops_configuration are NOT
+    # in live_runtime contract_sections
+    assert "terraform_infrastructure" not in contract
+    assert "gitops_configuration" not in contract
 
 def test_devops_developer_contract(temp_project_context: Path):
-    """Verify devops-developer gets all contracted sections."""
+    """Verify devops-developer gets all contracted v2 sections."""
     result = run_script(temp_project_context, "devops-developer", "Fix the login bug.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "application_services" in contract
-    assert "application_architecture" in contract
-    assert "development_standards" in contract
     assert "operational_guidelines" in contract
 
-    # Should NOT have infra sections
+    # Should NOT have infra-specific sections
     assert "terraform_infrastructure" not in contract
     assert "gitops_configuration" not in contract
     assert "cluster_details" not in contract
 
 def test_speckit_planner_contract(temp_project_context: Path):
-    """Verify speckit-planner gets all contracted sections."""
+    """Verify speckit-planner gets all contracted v2 sections."""
     result = run_script(temp_project_context, "speckit-planner", "Plan the auth feature.")
 
-    assert "contract" in result
-    contract = result["contract"]
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
 
-    assert "project_details" in contract
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
     assert "operational_guidelines" in contract
-    assert "application_architecture" in contract
-    assert "development_standards" in contract
     assert "application_services" in contract
 
-def test_gaia_is_meta_agent_without_contracts(temp_project_context: Path):
-    """Verify gaia (meta-agent) is not in context-contracts and context_provider rejects it."""
+def test_gaia_system_is_meta_agent_without_contracts(temp_project_context: Path):
+    """Verify gaia-system (meta-agent) is not in context-contracts and context_provider rejects it."""
     script_path = TOOLS_DIR / "context" / "context_provider.py"
     cmd = [
         sys.executable, str(script_path),
-        "gaia", "Update the agent definitions.",
+        "gaia-system", "Update the agent definitions.",
         "--context-file", str(temp_project_context),
     ]
     process = subprocess.run(
@@ -169,9 +204,9 @@ def test_gaia_is_meta_agent_without_contracts(temp_project_context: Path):
         text=True,
         cwd=temp_project_context.parent.parent,
     )
-    # gaia is a meta-agent — not in context-contracts.json, so context_provider exits non-zero
-    assert process.returncode != 0, "gaia is a meta-agent and should not have context contracts"
-    assert "invalid agent" in process.stderr.lower() or "gaia" in process.stderr.lower()
+    # gaia-system is a meta-agent — not in context-contracts.json, so context_provider exits non-zero
+    assert process.returncode != 0, "gaia-system is a meta-agent and should not have context contracts"
+    assert "invalid agent" in process.stderr.lower() or "gaia-system" in process.stderr.lower()
 
 
 # ============================================================================
@@ -182,8 +217,8 @@ def test_payload_structure(temp_project_context: Path):
     """Verify the output payload has the expected structure."""
     result = run_script(temp_project_context, "terraform-architect", "check status")
 
-    assert "contract" in result
-    assert "context_update_contract" in result
+    assert "project_knowledge" in result
+    assert "write_permissions" in result
     assert "rules" in result
     assert "metadata" in result
     assert "surface_routing" in result
@@ -204,16 +239,16 @@ def test_payload_structure(temp_project_context: Path):
     assert "surface_routing_confidence" in metadata
 
 
-def test_context_update_contract_matches_agent_write_scope(temp_project_context: Path):
-    """Injected context_update_contract should reflect the agent's SSOT write scope."""
+def test_write_permissions_matches_agent_write_scope(temp_project_context: Path):
+    """Injected write_permissions should reflect the agent's SSOT write scope."""
     result = run_script(temp_project_context, "terraform-architect", "Review terraform drift.")
 
-    context_update_contract = result["context_update_contract"]
-    writable_sections = set(context_update_contract["writable_sections"])
+    write_perms = result["write_permissions"]
+    writable_sections = set(write_perms["writable_sections"])
     assert {"terraform_infrastructure", "infrastructure_topology"} <= writable_sections
     assert {"gcp_services", "workload_identity", "static_ips"} <= writable_sections
-    assert "terraform_infrastructure" in context_update_contract["readable_sections"]
-    assert "application_services" in context_update_contract["readable_sections"]
+    assert "terraform_infrastructure" in write_perms["readable_sections"]
+    assert "application_services" in write_perms["readable_sections"]
 
 
 def test_surface_routing_single_surface_for_terraform_task(temp_project_context: Path):
@@ -274,3 +309,275 @@ def test_invalid_agent(temp_project_context: Path):
 
     assert process.returncode != 0
     assert "invalid" in process.stderr.lower() or "unknown" in process.stderr.lower()
+
+
+# ============================================================================
+# SURFACE-GATED CONTEXT INJECTION TESTS
+# ============================================================================
+
+@pytest.fixture
+def mock_sections() -> dict:
+    """Sections dict mimicking project-context.json sections."""
+    return {
+        "project_identity": {"name": "test"},
+        "stack": {"languages": ["python"]},
+        "git": {"platform": "github"},
+        "environment": {"os": "linux"},
+        "infrastructure": {"cloud_providers": []},
+        "orchestration": {},
+        "terraform_infrastructure": {"layout": {}},
+        "gitops_configuration": {"repo": "gitops"},
+        "cluster_details": {"name": "dev-cluster"},
+        "infrastructure_topology": {"vpc": "main"},
+        "application_services": [{"name": "api"}],
+        "operational_guidelines": {"commit": "conventional"},
+        "monitoring_observability": {"metrics": "prometheus"},
+        "architecture_overview": {},
+    }
+
+
+@pytest.fixture
+def mock_routing_config() -> dict:
+    """Minimal surface-routing config with contract_sections per surface."""
+    return {
+        "version": "1.0",
+        "surfaces": {
+            "app_ci_tooling": {
+                "primary_agent": "devops-developer",
+                "contract_sections": [
+                    "project_identity", "stack", "git", "environment",
+                    "infrastructure", "application_services",
+                    "operational_guidelines", "architecture_overview",
+                ],
+            },
+            "terraform_iac": {
+                "primary_agent": "terraform-architect",
+                "contract_sections": [
+                    "project_identity", "stack", "git", "environment",
+                    "infrastructure", "orchestration",
+                    "terraform_infrastructure", "infrastructure_topology",
+                    "cluster_details", "application_services",
+                    "architecture_overview",
+                ],
+            },
+            "live_runtime": {
+                "primary_agent": "cloud-troubleshooter",
+                "contract_sections": [
+                    "project_identity", "stack", "git", "environment",
+                    "infrastructure", "orchestration",
+                    "cluster_details", "monitoring_observability",
+                    "application_services", "infrastructure_topology",
+                    "architecture_overview",
+                ],
+            },
+            "empty_surface": {
+                "primary_agent": "some-agent",
+                "contract_sections": [],
+            },
+        },
+    }
+
+
+class TestGetRelevantSections:
+    """Unit tests for get_relevant_sections surface-gated filtering."""
+
+    def test_single_surface_filters_to_surface_sections(
+        self, mock_sections, mock_routing_config
+    ):
+        """Single active surface should restrict to that surface's contract_sections."""
+        contract_keys = [
+            "project_identity", "stack", "git", "environment",
+            "infrastructure", "application_services",
+            "operational_guidelines", "architecture_overview",
+        ]
+        routing = {
+            "active_surfaces": ["app_ci_tooling"],
+            "primary_surface": "app_ci_tooling",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        # All contract_keys for devops-developer are in app_ci_tooling contract_sections
+        assert set(result.keys()) == set(contract_keys)
+
+    def test_single_surface_omits_sections_not_in_surface(
+        self, mock_sections, mock_routing_config
+    ):
+        """Agent with broad read perms should have irrelevant sections omitted."""
+        # cloud-troubleshooter has very broad read, but if surface is app_ci_tooling
+        # only app_ci_tooling contract_sections should be returned
+        broad_keys = [
+            "project_identity", "stack", "git", "environment",
+            "infrastructure", "orchestration",
+            "terraform_infrastructure", "gitops_configuration",
+            "cluster_details", "infrastructure_topology",
+            "application_services", "monitoring_observability",
+            "architecture_overview",
+        ]
+        routing = {
+            "active_surfaces": ["app_ci_tooling"],
+            "primary_surface": "app_ci_tooling",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, broad_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        # app_ci_tooling does NOT include: orchestration, terraform_infrastructure,
+        # gitops_configuration, cluster_details, infrastructure_topology,
+        # monitoring_observability
+        assert "terraform_infrastructure" not in result
+        assert "gitops_configuration" not in result
+        assert "cluster_details" not in result
+        assert "monitoring_observability" not in result
+        assert "orchestration" not in result
+        # But these should be present
+        assert "project_identity" in result
+        assert "application_services" in result
+        assert "stack" in result
+
+    def test_multi_surface_unions_sections(
+        self, mock_sections, mock_routing_config
+    ):
+        """Multiple active surfaces should union their contract_sections."""
+        broad_keys = [
+            "project_identity", "stack", "git", "environment",
+            "infrastructure", "orchestration",
+            "terraform_infrastructure", "infrastructure_topology",
+            "cluster_details", "application_services",
+            "monitoring_observability", "architecture_overview",
+            "operational_guidelines",
+        ]
+        routing = {
+            "active_surfaces": ["app_ci_tooling", "terraform_iac"],
+            "primary_surface": "app_ci_tooling",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, broad_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        # Union of app_ci_tooling + terraform_iac should include:
+        # terraform_infrastructure (from terraform_iac)
+        # operational_guidelines (from app_ci_tooling)
+        # But NOT monitoring_observability (neither surface)
+        assert "terraform_infrastructure" in result
+        assert "operational_guidelines" in result
+        assert "monitoring_observability" not in result
+
+    def test_no_active_surfaces_returns_all_readable(
+        self, mock_sections, mock_routing_config
+    ):
+        """When no active surfaces, all readable sections should be returned."""
+        contract_keys = [
+            "project_identity", "stack", "git", "application_services",
+            "monitoring_observability",
+        ]
+        routing = {
+            "active_surfaces": [],
+            "primary_surface": "",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        assert set(result.keys()) == {"project_identity", "stack", "git",
+                                       "application_services", "monitoring_observability"}
+
+    def test_no_routing_returns_all_readable(
+        self, mock_sections, mock_routing_config
+    ):
+        """When surface_routing is None, all readable sections should be returned."""
+        contract_keys = ["project_identity", "stack", "monitoring_observability"]
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=None,
+            routing_config=mock_routing_config,
+        )
+
+        assert set(result.keys()) == {"project_identity", "stack", "monitoring_observability"}
+
+    def test_no_routing_config_returns_all_readable(
+        self, mock_sections,
+    ):
+        """When routing_config is None, all readable sections should be returned."""
+        contract_keys = ["project_identity", "stack", "monitoring_observability"]
+        routing = {"active_surfaces": ["app_ci_tooling"]}
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=routing,
+            routing_config=None,
+        )
+
+        assert set(result.keys()) == {"project_identity", "stack", "monitoring_observability"}
+
+    def test_empty_contract_sections_returns_all_readable(
+        self, mock_sections, mock_routing_config
+    ):
+        """Surface with empty contract_sections should fall back to all readable."""
+        contract_keys = ["project_identity", "stack", "monitoring_observability"]
+        routing = {
+            "active_surfaces": ["empty_surface"],
+            "primary_surface": "empty_surface",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        assert set(result.keys()) == {"project_identity", "stack", "monitoring_observability"}
+
+    def test_no_intersection_returns_all_readable(
+        self, mock_sections, mock_routing_config
+    ):
+        """If agent perms and surface sections don't intersect, fall back to all."""
+        # Agent can only read monitoring_observability, but the surface
+        # (app_ci_tooling) doesn't include it
+        contract_keys = ["monitoring_observability"]
+        routing = {
+            "active_surfaces": ["app_ci_tooling"],
+            "primary_surface": "app_ci_tooling",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        # Fallback: return all readable
+        assert set(result.keys()) == {"monitoring_observability"}
+
+    def test_unknown_surface_returns_all_readable(
+        self, mock_sections, mock_routing_config
+    ):
+        """Unknown surface name (not in config) should fall back gracefully."""
+        contract_keys = ["project_identity", "stack", "monitoring_observability"]
+        routing = {
+            "active_surfaces": ["nonexistent_surface"],
+            "primary_surface": "nonexistent_surface",
+        }
+
+        result = get_relevant_sections(
+            mock_sections, contract_keys,
+            surface_routing=routing,
+            routing_config=mock_routing_config,
+        )
+
+        # Unknown surface has no contract_sections -> relevant is empty -> fallback
+        assert set(result.keys()) == {"project_identity", "stack", "monitoring_observability"}

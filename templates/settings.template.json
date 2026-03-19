@@ -27,6 +27,15 @@
             "command": ".claude/hooks/pre_tool_use.py"
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre_tool_use.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -50,29 +59,77 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session_start.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/user_prompt_submit.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop_hook.py"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/task_completed.py"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/subagent_start.py"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post_compact.py"
+          }
+        ]
+      }
     ]
   },
   "permissions": {
     "allow": [
-      "BashOutput",
-      "ExitPlanMode",
-      "Glob",
-      "Grep",
-      "KillShell",
-      "Read",
-      "Skill",
-      "SlashCommand",
-      "Task",
+      "Bash(*)",
       "Agent",
-      "TodoWrite",
-      "WebFetch",
-      "WebSearch",
-      "mcp__ide__executeCode",
-      "mcp__ide__getDiagnostics",
-      "Edit(/tmp/*)",
-      "Write(/tmp/*)",
-      "NotebookEdit",
-      "Bash(*)"
+      "Task",
+      "Skill",
+      "SendMessage"
     ],
     "deny": [
       "Bash(aws ec2 delete-vpc:*)",
@@ -117,7 +174,49 @@
       "Bash(mkfs.ext4:*)",
       "Bash(mkfs.ext3:*)",
       "Bash(mkfs.fat:*)",
-      "Bash(mkfs.ntfs:*)"
+      "Bash(mkfs.ntfs:*)",
+      "Bash(aws backup delete:*::*)",
+      "Bash(aws cloudformation delete-stack:*)",
+      "Bash(aws dynamodb delete-item:*)",
+      "Bash(aws ec2 delete-key-pair:*)",
+      "Bash(aws ec2 delete-snapshot:*)",
+      "Bash(aws ec2 delete-volume:*)",
+      "Bash(aws ec2 terminate-instances:*)",
+      "Bash(aws iam delete-user:*)",
+      "Bash(aws iam delete-role:*)",
+      "Bash(aws iam delete-access-key:*)",
+      "Bash(aws iam delete-group:*)",
+      "Bash(aws iam delete-instance-profile:*)",
+      "Bash(aws iam delete-policy:*)",
+      "Bash(aws iam delete-role-policy:*)",
+      "Bash(aws iam delete-user-policy:*)",
+      "Bash(aws iam delete-group-policy:*)",
+      "Bash(aws iam detach-user-policy:*)",
+      "Bash(aws iam detach-role-policy:*)",
+      "Bash(aws iam detach-group-policy:*)",
+      "Bash(aws iam remove-user-from-group:*)",
+      "Bash(aws lambda delete-function:*)",
+      "Bash(aws rds delete-db-cluster-parameter-group:*)",
+      "Bash(aws rds delete-db-parameter-group:*)",
+      "Bash(aws s3api delete-objects:*)",
+      "Bash(aws sns delete-topic:*)",
+      "Bash(aws sqs delete-queue:*)",
+      "Bash(aws ec2 delete-security-group:*)",
+      "Bash(aws ec2 delete-network-interface:*)",
+      "Bash(gcloud compute firewall-rules delete:*)",
+      "Bash(gcloud compute instances delete:*)",
+      "Bash(gcloud compute networks delete:*)",
+      "Bash(gcloud compute disks delete:*)",
+      "Bash(gcloud compute images delete:*)",
+      "Bash(gcloud compute snapshots delete:*)",
+      "Bash(gcloud iam roles delete:*)",
+      "Bash(gcloud storage rm:*)",
+      "Bash(kubectl delete clusterrole:*)",
+      "Bash(kubectl delete clusterrolebinding:*)",
+      "Bash(flux delete:*)",
+      "Bash(aws eks delete-nodegroup:*)",
+      "Bash(aws eks delete-addon:*)",
+      "Bash(gcloud container node-pools delete:*)"
     ],
     "ask": []
   },

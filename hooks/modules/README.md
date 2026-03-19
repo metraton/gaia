@@ -12,14 +12,18 @@ A refactored, maintainable architecture for Claude Code hooks. Instead of monoli
 Claude Code invokes hook
         |
         v
+[session_start.py] --------> [modules/context/context_freshness] -> Staleness check
+        |                     [modules/scanning/scan_trigger]     -> Auto-refresh
+        v
 [pre_tool_use.py] ---------> [modules/security/*] -> Tier classification
         |                     [modules/tools/*]   -> Bash/Task validation
         v
     Tool executes
         |
         v
-[post_tool_use.py] --------> [modules/audit/*]   -> Logging & metrics
-                              [modules/agents/*]  -> Anomaly detection
+[post_tool_use.py] --------> [modules/audit/*]    -> Logging & metrics
+                              [modules/session/*]  -> Session context updates
+                              [modules/agents/*]   -> Anomaly detection
 ```
 
 ## Module Structure
@@ -42,7 +46,6 @@ modules/
 │   ├── approval_messages.py  # Approval denial message formatting
 │   ├── approval_scopes.py   # Approval scope definitions
 │   ├── command_semantics.py  # Command semantic analysis
-│   ├── interactive_handler.py # Auto-append non-interactive flags
 │   └── gitops_validator.py # kubectl/helm/flux validation
 │
 ├── tools/                # Tool-specific validators
@@ -55,14 +58,20 @@ modules/
 │
 ├── context/              # Context management
 │   ├── __init__.py
-│   └── context_writer.py # Write context updates
+│   ├── context_writer.py # Write context updates
+│   └── context_freshness.py     # Check staleness for SessionStart
+│
+├── scanning/             # Scan triggering
+│   ├── __init__.py
+│   └── scan_trigger.py   # Lightweight scan invocation for SessionStart
+│
+├── session/              # Session context management
+│   ├── __init__.py
+│   └── session_context_writer.py # Write critical events to session context
 │
 ├── validation/           # Commit validation
 │   ├── __init__.py
 │   └── commit_validator.py # Conventional Commits enforcement
-│
-├── workflow/             # Workflow support (reserved)
-│   └── __init__.py
 │
 ├── audit/                # Logging and metrics
 │   ├── __init__.py
@@ -111,7 +120,9 @@ python3 pre_tool_use.py --test
 
 # Post-hook (audit)
 python3 post_tool_use.py --test
-python3 post_tool_use.py --metrics
+
+# Metrics (use the JS CLI instead)
+npx gaia-metrics
 ```
 
 ### Importing Modules

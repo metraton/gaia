@@ -28,7 +28,7 @@ Result to user
 
 ### Spec-Kit Commands
 
-The Spec-Kit framework provides a structured workflow from idea -> implementation.
+The Spec-Kit framework provides a structured workflow for feature planning. Spec creation happens conversationally with the orchestrator. Task execution is handled by the orchestrator routing tasks to agents.
 
 #### `/speckit.init`
 Initializes Spec-Kit in the current project, creating/validating `project-context.json`.
@@ -44,30 +44,11 @@ Initializes Spec-Kit in the current project, creating/validating `project-contex
 
 ---
 
-#### `/speckit.specify [spec-root] [description]`
-Creates a feature specification with auto-filled project context.
-
-**When to use:**
-- Starting a new feature
-- Documenting requirements
-
-**Example:**
-```bash
-/speckit.specify spec-kit-auth Add OAuth2 authentication
-```
-
-**What it generates:**
-- `specs/00N-oauth2-auth/spec.md` with template
-- Pre-filled project context (cluster, paths, etc.)
-- User stories and functional requirements
-
----
-
 #### `/speckit.plan [spec-root] [spec-id]`
-Generates implementation plan with automatic integrated clarification.
+Generates implementation plan from a completed spec.
 
 **When to use:**
-- After creating the specification
+- After completing the spec conversationally with the orchestrator
 - Before generating tasks
 
 **Example:**
@@ -88,7 +69,7 @@ Generates enriched task list with inline metadata.
 
 **When to use:**
 - After completing the plan
-- Before implementing
+- Before the orchestrator begins task execution
 
 **Example:**
 ```bash
@@ -103,27 +84,6 @@ Generates enriched task list with inline metadata.
   - Confidence score
 - Automatic coverage validation
 - Gate if critical issues exist
-
----
-
-#### `/speckit.implement [spec-root] [spec-id]`
-Executes tasks using specialized agents.
-
-**When to use:**
-- After generating tasks
-- To implement automatically
-
-**Example:**
-```bash
-/speckit.implement spec-kit-auth 003-oauth2-auth
-```
-
-**What it does:**
-- Reads enriched tasks.md
-- Invokes appropriate agents per task
-- T2/T3 tasks -> automatic pre-execution analysis
-- Approval gates when needed
-- Generates code, tests, documentation
 
 ---
 
@@ -190,7 +150,7 @@ Commands validate arguments and give clear feedback if information is missing
 
 | Natural Language | Slash Command |
 |------------------|---------------|
-| "Create a spec for OAuth authentication" | `/speckit.specify auth-spec Add OAuth2` |
+| "Create a spec for OAuth authentication" | Talk to the orchestrator conversationally |
 
 **Advantages of slash commands:**
 - Faster
@@ -226,15 +186,14 @@ usage: Usage syntax
 ```
 commands/
 ├── speckit.init.md
-├── speckit.specify.md
 ├── speckit.plan.md
 ├── speckit.tasks.md
-├── speckit.implement.md
 ├── speckit.add-task.md
-└── speckit.analyze-task.md
+├── speckit.analyze-task.md
+└── scan-project.md
 ```
 
-**Total:** 7 speckit commands
+**Total:** 6 commands (5 speckit + scan-project)
 
 > **Note:** The Gaia meta-agent is invoked directly via the `gaia` agent (see [agents/gaia.md](../agents/gaia.md)), not as a slash command.
 
@@ -252,7 +211,7 @@ commands/
 
 ---
 
-**Version:** 4.0.0
-**Last updated:** 2026-03-03
-**Total commands:** 7 spec-kit
+**Version:** 4.2.0
+**Last updated:** 2026-03-11
+**Total commands:** 5 spec-kit
 **Maintained by:** Gaia (meta-agent)

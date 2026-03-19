@@ -1,0 +1,122 @@
+{
+  "plugin_name": "gaia-ops",
+  "version": "from:package.json",
+  "description": "DevOps orchestrator for Claude Code. Security gates, specialized agents (cloud, terraform, gitops, devops), project context injection, and audit. Note: modifies .claude/settings.json. Restart session after first install.",
+  "hooks": {
+    "entries": [
+      "hooks/pre_tool_use.py",
+      "hooks/post_tool_use.py",
+      "hooks/stop_hook.py",
+      "hooks/user_prompt_submit.py",
+      "hooks/subagent_start.py",
+      "hooks/subagent_stop.py",
+      "hooks/session_start.py",
+      "hooks/task_completed.py",
+      "hooks/post_compact.py"
+    ],
+    "matchers": {
+      "PreToolUse": [
+        {"matcher": "Bash"},
+        {"matcher": "Task"},
+        {"matcher": "Agent"}
+      ],
+      "PostToolUse": [{"matcher": "Bash"}],
+      "SubagentStop": [{"matcher": "*"}],
+      "SessionStart": [{"matcher": "startup"}],
+      "SendMessage": [{"matcher": "SendMessage"}],
+      "PostCompact": [{}],
+      "Stop": [{}],
+      "TaskCompleted": [{}],
+      "SubagentStart": [{"matcher": "*"}],
+      "UserPromptSubmit": [{}]
+    }
+  },
+  "modules": "all",
+  "agents": [
+    "agents/gaia-system.md",
+    "agents/devops-developer.md",
+    "agents/cloud-troubleshooter.md",
+    "agents/gitops-operator.md",
+    "agents/terraform-architect.md",
+    "agents/speckit-planner.md"
+  ],
+  "skills": "all",
+  "commands": [
+    "commands/gaia.md"
+  ],
+  "tools": "all",
+  "config": "all",
+  "speckit": "all",
+  "settings": {
+    "permissions": {
+      "allow": [
+        "BashOutput",
+        "ExitPlanMode",
+        "Glob",
+        "Grep",
+        "KillShell",
+        "Read",
+        "Skill",
+        "SlashCommand",
+        "Task",
+        "Agent",
+        "SendMessage",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "mcp__ide__executeCode",
+        "mcp__ide__getDiagnostics",
+        "Edit(/tmp/*)",
+        "Write(/tmp/*)",
+        "NotebookEdit",
+        "Bash(*)"
+      ],
+      "deny": [
+        "Bash(aws ec2 delete-vpc:*)",
+        "Bash(aws ec2 delete-subnet:*)",
+        "Bash(aws ec2 delete-internet-gateway:*)",
+        "Bash(aws ec2 delete-route-table:*)",
+        "Bash(aws ec2 delete-route:*)",
+        "Bash(aws rds delete-db-instance:*)",
+        "Bash(aws rds delete-db-cluster:*)",
+        "Bash(aws dynamodb delete-table:*)",
+        "Bash(aws s3 rb:*)",
+        "Bash(aws s3api delete-bucket:*)",
+        "Bash(aws elasticache delete-cache-cluster:*)",
+        "Bash(aws elasticache delete-replication-group:*)",
+        "Bash(aws eks delete-cluster:*)",
+        "Bash(gcloud projects delete:*)",
+        "Bash(gcloud container clusters delete:*)",
+        "Bash(gcloud sql instances delete:*)",
+        "Bash(gcloud sql databases delete:*)",
+        "Bash(gcloud services disable:*)",
+        "Bash(gsutil rb:*)",
+        "Bash(gsutil rm -r:*)",
+        "Bash(kubectl delete namespace:*)",
+        "Bash(kubectl delete node:*)",
+        "Bash(kubectl delete cluster:*)",
+        "Bash(kubectl delete pv:*)",
+        "Bash(kubectl delete persistentvolume:*)",
+        "Bash(kubectl delete pvc:*)",
+        "Bash(kubectl delete persistentvolumeclaim:*)",
+        "Bash(kubectl delete crd:*)",
+        "Bash(kubectl delete customresourcedefinition:*)",
+        "Bash(kubectl delete mutatingwebhookconfiguration:*)",
+        "Bash(kubectl delete validatingwebhookconfiguration:*)",
+        "Bash(kubectl drain:*)",
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+        "Bash(git push origin --force:*)",
+        "Bash(git push origin -f:*)",
+        "Bash(dd:*)",
+        "Bash(fdisk:*)",
+        "Bash(mkfs:*)",
+        "Bash(mkfs.ext4:*)",
+        "Bash(mkfs.ext3:*)",
+        "Bash(mkfs.fat:*)",
+        "Bash(mkfs.ntfs:*)"
+      ],
+      "ask": []
+    }
+  }
+}

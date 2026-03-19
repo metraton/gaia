@@ -28,7 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 
-const META_AGENTS = new Set(["gaia", "Explore", "Plan"]);
+const META_AGENTS = new Set(["gaia-system", "Explore", "Plan"]);
 const CONTEXT_INJECTED_AGENTS = new Set([
   "terraform-architect",
   "gitops-operator",
@@ -417,6 +417,17 @@ function validateAgentSkillWiring(ctx, data, findings, checks) {
     }
   }
 
+  // Scan root CLAUDE.md for skills/ references (orchestrator-consumed skills)
+  const projectClaudeMd = path.join(ctx.projectRoot, "CLAUDE.md");
+  if (exists(projectClaudeMd)) {
+    const claudeMdContent = readText(projectClaudeMd);
+    for (const skillName of data.skillNames) {
+      if (claudeMdContent.includes(`skills/${skillName}`)) {
+        referenced.add(skillName);
+      }
+    }
+  }
+
   const orphanSkills = [...data.skillNames].filter((s) => !referenced.has(s));
   if (orphanSkills.length > 0) {
     addFinding(findings, {
@@ -490,16 +501,6 @@ function validateInjectionWiring(ctx, findings, checks) {
       ok = false;
     }
 
-    if (!content.includes("skills:' field in the agent's frontmatter")) {
-      addFinding(findings, {
-        severity: "info",
-        code: "SKILLS_INJECTION_DOC_MISSING",
-        title: "No explicit inline note about native skills injection",
-        detail: "Could not find an explicit comment clarifying frontmatter-based skill injection.",
-        evidence: preToolUsePath,
-        remediation: "Keep an inline note to reduce ambiguity for future maintainers.",
-      });
-    }
   }
 
   if (ctx.inProject) {
@@ -512,7 +513,7 @@ function validateInjectionWiring(ctx, findings, checks) {
           title: "Missing runtime .claude directory",
           detail: `Missing .claude/${name}, runtime injection may fail.`,
           evidence: target,
-          remediation: "Run gaia-init to recreate runtime links/directories.",
+          remediation: "Run gaia-scan to recreate runtime links/directories.",
         });
         ok = false;
       }
@@ -563,7 +564,7 @@ function validateInjectionWiring(ctx, findings, checks) {
         title: "Invalid settings.json",
         detail: `Failed to parse settings.json: ${error.message}`,
         evidence: ctx.settingsPath,
-        remediation: "Fix JSON syntax or regenerate settings via gaia-init.",
+        remediation: "Fix JSON syntax or regenerate settings via gaia-scan.",
       });
       ok = false;
     }
@@ -576,7 +577,7 @@ function validateInjectionWiring(ctx, findings, checks) {
         ? "Project appears installed but .claude/settings.json is missing."
         : "Running in package mode; runtime settings validation skipped.",
       evidence: ctx.settingsPath,
-      remediation: "Generate settings with gaia-init in project context.",
+      remediation: "Generate settings with gaia-scan in project context.",
     });
     if (ctx.inProject) ok = false;
   }

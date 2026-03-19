@@ -1,0 +1,11 @@
+{
+  "name": "gaia-ops",
+  "version": "4.4.0-beta.9",
+  "description": "Security-first orchestrator with specialized agents, hooks, and governance for AI coding",
+  "author": {
+    "name": "jaguilar87"
+  },
+  "repository": "https://github.com/metraton/gaia-ops",
+  "license": "MIT",
+  "keywords": ["security", "devops", "orchestrator", "governance"]
+}

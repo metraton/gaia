@@ -1,0 +1,103 @@
+{
+  "plugin_name": "gaia-security",
+  "version": "from:package.json",
+  "description": "Security framework for Claude Code. Classifies commands by risk tier and requires approval for mutative operations via hooks. Note: modifies .claude/settings.json — all validations handled by hooks. Restart session after first install.",
+  "hooks": {
+    "entries": [
+      "hooks/pre_tool_use.py",
+      "hooks/post_tool_use.py",
+      "hooks/stop_hook.py",
+      "hooks/user_prompt_submit.py",
+      "hooks/session_start.py"
+    ],
+    "matchers": {
+      "PreToolUse": [{"matcher": "Bash"}],
+      "PostToolUse": [{"matcher": "Bash"}],
+      "Stop": [{}],
+      "UserPromptSubmit": [{}],
+      "SessionStart": [{"matcher": "startup"}]
+    }
+  },
+  "modules": [
+    "hooks/modules/__init__.py",
+    "hooks/modules/core/",
+    "hooks/modules/security/",
+    "hooks/modules/audit/",
+    "hooks/modules/tools/",
+    "hooks/modules/validation/",
+    "hooks/modules/identity/",
+    "hooks/modules/context/",
+    "hooks/modules/scanning/",
+    "hooks/modules/session/",
+    "hooks/modules/agents/",
+    "hooks/modules/memory/",
+    "hooks/adapters/"
+  ],
+  "agents": [],
+  "skills": [
+    "skills/approval/",
+    "skills/security-tiers/",
+    "skills/execution/"
+  ],
+  "config": [
+    "config/universal-rules.json"
+  ],
+  "settings": {
+    "permissions": {
+      "allow": [
+        "Bash(*)",
+        "Read",
+        "Glob",
+        "Grep",
+        "BashOutput",
+        "KillShell"
+      ],
+      "deny": [
+        "Bash(aws ec2 delete-vpc:*)",
+        "Bash(aws ec2 delete-subnet:*)",
+        "Bash(aws ec2 delete-internet-gateway:*)",
+        "Bash(aws ec2 delete-route-table:*)",
+        "Bash(aws ec2 delete-route:*)",
+        "Bash(aws rds delete-db-instance:*)",
+        "Bash(aws rds delete-db-cluster:*)",
+        "Bash(aws dynamodb delete-table:*)",
+        "Bash(aws s3 rb:*)",
+        "Bash(aws s3api delete-bucket:*)",
+        "Bash(aws elasticache delete-cache-cluster:*)",
+        "Bash(aws elasticache delete-replication-group:*)",
+        "Bash(aws eks delete-cluster:*)",
+        "Bash(gcloud projects delete:*)",
+        "Bash(gcloud container clusters delete:*)",
+        "Bash(gcloud sql instances delete:*)",
+        "Bash(gcloud sql databases delete:*)",
+        "Bash(gcloud services disable:*)",
+        "Bash(gsutil rb:*)",
+        "Bash(gsutil rm -r:*)",
+        "Bash(kubectl delete namespace:*)",
+        "Bash(kubectl delete node:*)",
+        "Bash(kubectl delete cluster:*)",
+        "Bash(kubectl delete pv:*)",
+        "Bash(kubectl delete persistentvolume:*)",
+        "Bash(kubectl delete pvc:*)",
+        "Bash(kubectl delete persistentvolumeclaim:*)",
+        "Bash(kubectl delete crd:*)",
+        "Bash(kubectl delete customresourcedefinition:*)",
+        "Bash(kubectl delete mutatingwebhookconfiguration:*)",
+        "Bash(kubectl delete validatingwebhookconfiguration:*)",
+        "Bash(kubectl drain:*)",
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+        "Bash(git push origin --force:*)",
+        "Bash(git push origin -f:*)",
+        "Bash(dd:*)",
+        "Bash(fdisk:*)",
+        "Bash(mkfs:*)",
+        "Bash(mkfs.ext4:*)",
+        "Bash(mkfs.ext3:*)",
+        "Bash(mkfs.fat:*)",
+        "Bash(mkfs.ntfs:*)"
+      ],
+      "ask": []
+    }
+  }
+}

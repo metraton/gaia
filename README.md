@@ -19,19 +19,37 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 - **Approval gates** for T3 operations
 - **Git commit validation** with Conventional Commits
 - **16 skills** - Injected procedural knowledge modules for agents
-- **1438 tests** at 100% passing
+- **1800+ tests** at 100% passing
 
 ## Installation
 
-### Quick Start
+### Via Claude Code Plugin (recommended)
+```bash
+# Add the marketplace
+/plugin marketplace add metraton/gaia-ops
+
+# Install the full system (includes security)
+/plugin install gaia-ops
+
+# Or install security only
+/plugin install gaia-security    # Security hooks only
+```
+
+### Via npm (advanced setup)
+```bash
+npm install @jaguilar87/gaia-ops
+npx gaia-scan
+```
+
+### Quick Start (npm)
 
 ```bash
 # Run directly with npx
-npx gaia-init
+npx gaia-scan
 
 # Or install globally
 npm install -g @jaguilar87/gaia-ops
-gaia-init
+gaia-scan
 ```
 
 This will:
@@ -86,12 +104,12 @@ node_modules/@jaguilar87/gaia-ops/
 ├── skills/              # Skill modules (16 skills)
 ├── tools/               # Orchestration tools
 ├── hooks/               # Claude Code hooks (modular architecture)
-├── commands/            # Slash commands (7 speckit commands)
+├── commands/            # Slash commands (6 commands: 5 speckit + scan-project)
 ├── config/              # Configuration (contracts, git standards, rules)
 ├── templates/           # Installation templates
 ├── speckit/             # Spec-Kit framework (scripts + templates)
 ├── bin/                 # CLI utilities (11 scripts)
-└── tests/               # Test suite (1438 tests)
+└── tests/               # Test suite (1800+ tests)
 ```
 
 ## API
@@ -111,7 +129,7 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **4.0.0**
+Current version: **4.2.0**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -147,7 +165,7 @@ git clone git@bitbucket.org:yourorg/your-project-context.git project-context
 
 - **Issues:** [GitHub Issues](https://github.com/metraton/gaia-ops/issues)
 - **Repository:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
-- **Author:** Jorge Aguilar <jaguilar1987@gmail.com>
+- **Author:** Jorge Aguilar <jaguilar1897@gmail.com>
 
 ## License
 

@@ -77,8 +77,9 @@ class TestAgentSkillReferences:
                 assert skill_path.exists(), \
                     f"Agent '{agent_name}' references skill '{skill_name}' but SKILL.md not found"
 
-    def test_no_orphan_skills(self, agent_skill_map, all_skill_dirs, all_agent_files, skills_dir):
-        """Skills not referenced by any agent or other skill should be flagged."""
+    def test_no_orphan_skills(self, agent_skill_map, all_skill_dirs, all_agent_files,
+                              skills_dir, claude_md_content):
+        """Skills not referenced by any agent, skill, or CLAUDE.md should be flagged."""
         all_referenced = set()
         for skills in agent_skill_map.values():
             all_referenced.update(skills)
@@ -106,9 +107,18 @@ class TestAgentSkillReferences:
                 if skill_dir.name in readme_content:
                     all_referenced.add(skill_dir.name)
 
+        # Check CLAUDE.md (orchestrator) for skill references
+        # Some skills are orchestrator-only and won't appear in agent frontmatter
+        # Match both "skills/name" paths and "name skill" / "name`" references
+        for skill_dir in all_skill_dirs:
+            if f"skills/{skill_dir.name}" in claude_md_content:
+                all_referenced.add(skill_dir.name)
+            elif f"{skill_dir.name} skill" in claude_md_content:
+                all_referenced.add(skill_dir.name)
+
         for skill_dir in all_skill_dirs:
             assert skill_dir.name in all_referenced, \
-                f"Skill '{skill_dir.name}' is not referenced by any agent or skill (orphan)"
+                f"Skill '{skill_dir.name}' is not referenced by any agent, skill, or CLAUDE.md (orphan)"
 
 
 class TestSkillContentLoading:

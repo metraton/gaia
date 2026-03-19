@@ -123,7 +123,9 @@ function colorStatus(status) {
   if (s === 'COMPLETE') return chalk.green(s.padEnd(8));
   if (s === 'BLOCKED') return chalk.red(s.padEnd(8));
   if (s === 'NEEDS_INPUT') return chalk.yellow(s.padEnd(8));
-  if (s === 'INVESTIGATING' || s === 'PLANNING') return chalk.cyan(s.padEnd(8));
+  if (s === 'IN_PROGRESS') return chalk.cyan(s.padEnd(8));
+  if (s === 'REVIEW') return chalk.magenta(s.padEnd(8));
+  if (s === 'AWAITING_APPROVAL') return chalk.yellow(s.padEnd(8));
   return chalk.gray(s.padEnd(8));
 }
 
@@ -144,7 +146,7 @@ async function main() {
   const claudeDir = join(CWD, '.claude');
   if (!existsSync(claudeDir)) {
     console.log(chalk.yellow('\n  gaia-ops not installed in this directory'));
-    console.log(chalk.gray('  Run: npx gaia-init\n'));
+    console.log(chalk.gray('  Run: npx gaia-scan\n'));
     process.exit(1);
   }
 

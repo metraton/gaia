@@ -7,11 +7,11 @@
  * Also available as: npx gaia-update
  *
  * Behavior:
- * - First-time install (.claude/ doesn't exist): skip silently (gaia-init handles it)
+ * - First-time install (.claude/ doesn't exist): skip silently (gaia-scan handles it)
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
  *   2. CLAUDE.md: overwrite safely (template is static)
- *   3. settings.json: MERGE new rules, preserve user additions
+ *   3. settings.json: REPLACE from template (template is source of truth)
  *   4. Symlinks: recreate if missing, fix broken ones
  *   5. Verify: hooks, python, project-context, config files
  *   6. Report: summary with any issues found
@@ -94,7 +94,7 @@ async function updateClaudeMd() {
 }
 
 async function updateSettingsJson() {
-  const spinner = ora('Merging settings.json...').start();
+  const spinner = ora('Updating settings.json...').start();
   try {
     const templatePath = join(__dirname, '../templates/settings.template.json');
     const settingsPath = join(CWD, '.claude', 'settings.json');
@@ -104,63 +104,14 @@ async function updateSettingsJson() {
       return false;
     }
 
-    const template = JSON.parse(await fs.readFile(templatePath, 'utf-8'));
-
-    if (!existsSync(settingsPath)) {
-      await fs.writeFile(settingsPath, JSON.stringify(template, null, 2), 'utf-8');
-      spinner.succeed('settings.json created from template');
-      return true;
-    }
-
-    let existing;
-    try {
-      existing = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
-    } catch {
-      await fs.writeFile(settingsPath, JSON.stringify(template, null, 2), 'utf-8');
-      spinner.succeed('settings.json replaced (was invalid)');
-      return true;
-    }
-
-    // Merge: hooks from template, permissions union
-    const merged = { ...template };
-    merged.hooks = template.hooks;
-
-    if (existing.permissions || template.permissions) {
-      merged.permissions = mergePermissions(
-        template.permissions || {},
-        existing.permissions || {}
-      );
-    }
-
-    await fs.writeFile(settingsPath, JSON.stringify(merged, null, 2), 'utf-8');
-    spinner.succeed('settings.json merged (custom rules preserved)');
+    // Always replace from template -- template is the source of truth
+    await fs.copyFile(templatePath, settingsPath);
+    spinner.succeed('settings.json updated from template');
     return true;
   } catch (error) {
     spinner.fail(`settings.json: ${error.message}`);
     return false;
   }
-}
-
-function mergePermissions(template, existing) {
-  const result = {};
-  const keys = new Set([...Object.keys(template), ...Object.keys(existing)]);
-
-  for (const key of keys) {
-    const tVal = template[key];
-    const eVal = existing[key];
-
-    if (Array.isArray(tVal) && Array.isArray(eVal)) {
-      const templateSet = new Set(tVal);
-      const userAdditions = eVal.filter(rule => !templateSet.has(rule));
-      result[key] = [...tVal, ...userAdditions];
-    } else if (tVal !== undefined) {
-      result[key] = tVal;
-    } else {
-      result[key] = eVal;
-    }
-  }
-
-  return result;
 }
 
 async function updateSymlinks() {
@@ -273,7 +224,7 @@ async function runVerification() {
     }
   } else {
     checks.push({ name: 'project-context.json', ok: false });
-    issues.push('project-context.json not found (run gaia-init)');
+    issues.push('project-context.json not found (run gaia-scan)');
   }
 
   // 4. Config files accessible
@@ -332,7 +283,7 @@ async function main() {
   const isUpdate = existsSync(claudeDir);
 
   if (!isUpdate) {
-    // First-time install — gaia-init handles everything
+    // First-time install — gaia-scan handles everything
     process.exit(0);
   }
 
@@ -360,7 +311,7 @@ async function main() {
     // Changes summary
     if (changes > 0) {
       console.log(chalk.green(`  ${changes} file(s) updated`));
-      if (settingsUpdated) console.log(chalk.gray('    settings.json: new rules merged, custom rules preserved'));
+      if (settingsUpdated) console.log(chalk.gray('    settings.json: replaced from template'));
       if (symlinksFix > 0) console.log(chalk.gray(`    ${symlinksFix} symlink(s) fixed`));
     }
 

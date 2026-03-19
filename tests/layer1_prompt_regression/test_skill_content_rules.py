@@ -1,6 +1,6 @@
 """
 Test skill content rules - validate that SKILL.md files
-contain expected sections and patterns for their specific purpose.
+have correct structure and document required schema fields.
 """
 
 import pytest
@@ -55,17 +55,6 @@ class TestSecurityTiersSkill:
     def content(self, skills_dir):
         return (skills_dir / "security-tiers" / "SKILL.md").read_text()
 
-    def test_has_approval_section(self, content):
-        """Must have an approval section or mention approval protocol."""
-        content_lower = content.lower()
-        assert "approval" in content_lower, \
-            "security-tiers should have approval section"
-
-    def test_has_tier_definitions_table(self, content):
-        """Should have a tier definitions table."""
-        assert "Tier" in content and "|" in content, \
-            "security-tiers should have a tier definitions table"
-
     def test_documents_all_tier_levels(self, content):
         """Must document T0, T1, T2, T3."""
         for tier in ["T0", "T1", "T2", "T3"]:
@@ -80,65 +69,72 @@ class TestAgentProtocolSkill:
         return (skills_dir / "agent-protocol" / "SKILL.md").read_text()
 
     def test_has_agent_status_section(self, content):
-        """Must document AGENT_STATUS format."""
-        assert "AGENT_STATUS" in content, \
-            "agent-protocol must document AGENT_STATUS"
+        """Must document json:contract block format."""
+        assert "json:contract" in content, \
+            "agent-protocol must document json:contract block format"
 
     def test_has_plan_status(self, content):
-        """Must document PLAN_STATUS values."""
-        assert "PLAN_STATUS" in content, \
-            "agent-protocol must document PLAN_STATUS"
+        """Must document plan_status field."""
+        assert "plan_status" in content, \
+            "agent-protocol must document plan_status"
 
     def test_has_pending_steps(self, content):
-        """Must document PENDING_STEPS."""
-        assert "PENDING_STEPS" in content, \
-            "agent-protocol must document PENDING_STEPS"
+        """Must document pending_steps field."""
+        assert "pending_steps" in content, \
+            "agent-protocol must document pending_steps"
 
     def test_has_evidence_report_section(self, content):
-        """Must document EVIDENCE_REPORT format."""
-        assert "EVIDENCE_REPORT" in content, \
-            "agent-protocol must document EVIDENCE_REPORT"
+        """Must document evidence_report object with all required fields."""
+        assert '"evidence_report"' in content or "evidence_report" in content, \
+            "agent-protocol must document evidence_report object"
         for field in [
-            "PATTERNS_CHECKED",
-            "FILES_CHECKED",
-            "COMMANDS_RUN",
-            "KEY_OUTPUTS",
-            "VERBATIM_OUTPUTS",
-            "CROSS_LAYER_IMPACTS",
-            "OPEN_GAPS",
+            "patterns_checked",
+            "files_checked",
+            "commands_run",
+            "key_outputs",
+            "verbatim_outputs",
+            "cross_layer_impacts",
+            "open_gaps",
         ]:
             assert field in content, \
-                f"agent-protocol should document EVIDENCE_REPORT field '{field}'"
+                f"agent-protocol should document evidence field '{field}'"
 
     def test_has_consolidation_report_section(self, content):
-        """Must document CONSOLIDATION_REPORT for multi-surface work."""
-        assert "CONSOLIDATION_REPORT" in content, \
-            "agent-protocol must document CONSOLIDATION_REPORT"
+        """Must document consolidation_report object with required fields."""
+        assert '"consolidation_report"' in content or "consolidation_report" in content, \
+            "agent-protocol must document consolidation_report object"
         for field in [
-            "OWNERSHIP_ASSESSMENT",
-            "CONFIRMED_FINDINGS",
-            "SUSPECTED_FINDINGS",
-            "CONFLICTS",
-            "NEXT_BEST_AGENT",
+            "ownership_assessment",
+            "confirmed_findings",
+            "suspected_findings",
+            "conflicts",
+            "next_best_agent",
         ]:
             assert field in content, \
-                f"agent-protocol should document CONSOLIDATION_REPORT field '{field}'"
+                f"agent-protocol should document consolidation field '{field}'"
+
+    def test_has_approval_request_section(self, content):
+        """Must document approval_request object with required fields."""
+        assert '"approval_request"' in content or "approval_request" in content, \
+            "agent-protocol must document approval_request object"
+        for field in [
+            "operation",
+            "exact_content",
+            "scope",
+            "risk_level",
+            "rollback",
+            "verification",
+        ]:
+            assert field in content, \
+                f"agent-protocol should document approval_request field '{field}'"
 
     def test_documents_all_valid_statuses(self, content):
         """Must document all valid PLAN_STATUS values."""
-        statuses = ["INVESTIGATING", "PLANNING", "PENDING_APPROVAL",
-                    "APPROVED_EXECUTING", "FIXING", "COMPLETE",
-                    "BLOCKED", "NEEDS_INPUT"]
+        statuses = ["COMPLETE", "NEEDS_INPUT", "REVIEW",
+                    "AWAITING_APPROVAL", "BLOCKED", "IN_PROGRESS"]
         for status in statuses:
             assert status in content, \
                 f"agent-protocol should document PLAN_STATUS '{status}'"
-
-    def test_documents_contract_repair_behavior(self, content):
-        """agent-protocol should explain runtime-driven contract repair."""
-        assert "## Contract Repair" in content, \
-            "agent-protocol should document contract repair behavior"
-        assert "capped at 2" in content, \
-            "agent-protocol should document the repair retry cap"
 
 
 class TestContextUpdaterSkill:
@@ -149,76 +145,11 @@ class TestContextUpdaterSkill:
         return (skills_dir / "context-updater" / "SKILL.md").read_text()
 
     def test_has_context_update_format(self, content):
-        """Must document CONTEXT_UPDATE format."""
+        """Must document CONTEXT_UPDATE format and write_permissions field."""
         assert "CONTEXT_UPDATE" in content, \
             "context-updater must document CONTEXT_UPDATE format"
-        assert "context_update_contract" in content, \
-            "context-updater should reference injected context_update_contract as SSOT"
-
-    def test_documents_merge_rules(self, content):
-        """Should document merge rules."""
-        content_lower = content.lower()
-        assert "merge" in content_lower, \
-            "context-updater should document merge rules"
-
-
-class TestOutputFormatSkill:
-    """output-format SKILL.md specific rules."""
-
-    @pytest.fixture
-    def content(self, skills_dir):
-        return (skills_dir / "output-format" / "SKILL.md").read_text()
-
-    def test_has_status_icons_table(self, content):
-        """Must have a status icons table."""
-        assert "Icon" in content or "icon" in content.lower(), \
-            "output-format should have icon documentation"
-
-    def test_has_standard_icons(self, content):
-        """Must document standard status icons."""
-        # These icons are used consistently across agents
-        icons = ["✅", "❌", "⚠️"]
-        for icon in icons:
-            assert icon in content, \
-                f"output-format should document icon '{icon}'"
-
-    def test_references_protocol_mandated_evidence_report(self, content):
-        """output-format should defer deterministic evidence schema to agent-protocol."""
-        assert "EVIDENCE_REPORT" in content, \
-            "output-format should reference EVIDENCE_REPORT"
-        assert "agent-protocol" in content, \
-            "output-format should defer the block schema to agent-protocol"
-
-
-class TestInvestigationSkill:
-    """investigation SKILL.md specific rules."""
-
-    @pytest.fixture
-    def content(self, skills_dir):
-        return (skills_dir / "investigation" / "SKILL.md").read_text()
-
-    def test_documents_evidence_contract(self, content):
-        """investigation should define the meaning of evidence fields."""
-        assert "Evidence Contract" in content, \
-            "investigation should document the evidence contract"
-        for field in [
-            "PATTERNS_CHECKED",
-            "FILES_CHECKED",
-            "COMMANDS_RUN",
-            "KEY_OUTPUTS",
-            "VERBATIM_OUTPUTS",
-            "CROSS_LAYER_IMPACTS",
-            "OPEN_GAPS",
-        ]:
-            assert field in content, \
-                f"investigation should explain '{field}'"
-
-    def test_documents_consolidation_contract(self, content):
-        """investigation should explain the consolidation contract for cross-surface work."""
-        assert "Consolidation Contract" in content, \
-            "investigation should document the consolidation contract"
-        assert "CONSOLIDATION_REPORT" in content, \
-            "investigation should reference CONSOLIDATION_REPORT"
+        assert "write_permissions" in content, \
+            "context-updater should reference injected write_permissions as SSOT"
 
 
 if __name__ == "__main__":

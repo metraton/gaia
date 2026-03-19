@@ -56,10 +56,10 @@ async function checkSymlinks() {
         valid++;
         results.push({ name, status: 'ok' });
       } catch {
-        results.push({ name, status: 'broken', fix: `rm .claude/${name} && gaia-init` });
+        results.push({ name, status: 'broken', fix: `rm .claude/${name} && gaia-scan` });
       }
     } else {
-      results.push({ name, status: 'missing', fix: 'Run gaia-init to recreate' });
+      results.push({ name, status: 'missing', fix: 'Run gaia-scan to recreate' });
     }
   }
 
@@ -67,7 +67,7 @@ async function checkSymlinks() {
     name: 'Symlinks',
     ok: valid === names.length,
     detail: `${valid}/${names.length} valid`,
-    fix: valid < names.length ? 'Run gaia-init to recreate symlinks' : null,
+    fix: valid < names.length ? 'Run gaia-scan to recreate symlinks' : null,
     sub: results
   };
 }
@@ -76,7 +76,7 @@ async function checkClaudeMd() {
   const path = join(CWD, 'CLAUDE.md');
 
   if (!existsSync(path)) {
-    return { name: 'CLAUDE.md', ok: false, detail: 'Missing', fix: 'Run gaia-init' };
+    return { name: 'CLAUDE.md', ok: false, detail: 'Missing', fix: 'Run gaia-scan' };
   }
 
   const content = await fs.readFile(path, 'utf-8');
@@ -95,7 +95,7 @@ async function checkClaudeMd() {
   }
 
   if (issues.length > 0) {
-    return { name: 'CLAUDE.md', ok: false, detail: issues.join('; '), fix: 'Run gaia-init to regenerate' };
+    return { name: 'CLAUDE.md', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan to regenerate' };
   }
 
   const lines = content.split('\n').length;
@@ -106,7 +106,7 @@ async function checkSettingsJson() {
   const path = join(CWD, '.claude', 'settings.json');
 
   if (!existsSync(path)) {
-    return { name: 'settings.json', ok: false, detail: 'Missing', fix: 'Run gaia-init' };
+    return { name: 'settings.json', ok: false, detail: 'Missing', fix: 'Run gaia-scan' };
   }
 
   try {
@@ -128,14 +128,14 @@ async function checkSettingsJson() {
     }
 
     if (issues.length > 0) {
-      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-init' };
+      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan' };
     }
 
     const hookCount = data.hooks ? Object.keys(data.hooks).length : 0;
     const permCount = data.permissions ? Object.values(data.permissions).flat().length : 0;
     return { name: 'settings.json', ok: true, detail: `${hookCount} hook types, ${permCount} rules` };
   } catch {
-    return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-init' };
+    return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-scan' };
   }
 }
 
@@ -143,7 +143,7 @@ async function checkProjectContext() {
   const path = join(CWD, '.claude', 'project-context', 'project-context.json');
 
   if (!existsSync(path)) {
-    return { name: 'project-context', ok: false, detail: 'Missing', fix: 'Run gaia-init or /speckit.init' };
+    return { name: 'project-context', ok: false, detail: 'Missing', fix: 'Run gaia-scan or /speckit.init' };
   }
 
   try {
@@ -151,12 +151,30 @@ async function checkProjectContext() {
     const issues = [];
 
     if (!data.metadata) issues.push('Missing metadata section');
-    if (!data.paths) issues.push('Missing paths section');
     if (!data.sections) issues.push('Missing sections');
 
+    // Detect schema version: v2.0 uses metadata.version, v1.0 does not
+    const isV2 = data.metadata?.version === '2.0' || data.metadata?.created_by === 'gaia-scan';
+
+    // Check paths: v2.0 uses sections.infrastructure.paths, v1.0 uses top-level paths
+    const hasPaths = isV2
+      ? !!data.sections?.infrastructure?.paths
+      : !!data.paths;
+    if (!hasPaths) issues.push('Missing paths section');
+
+    // Check cloud provider: v2.0 in sections.infrastructure.cloud_providers, v1.0 in metadata
     if (data.metadata) {
-      if (!data.metadata.cloud_provider) issues.push('No cloud provider set');
-      if (!data.metadata.primary_region) issues.push('No region set');
+      const cloudProvider = isV2
+        ? data.sections?.infrastructure?.cloud_providers?.[0]?.name
+        : data.metadata.cloud_provider;
+      if (!cloudProvider) issues.push('No cloud provider set');
+
+      // Check region: v2.0 in terraform_infrastructure, v1.0 in metadata
+      const region = isV2
+        ? data.sections?.terraform_infrastructure?.provider_credentials?.gcp?.region
+        : data.metadata.primary_region;
+      // Region is optional in v2.0 (not all providers use gcp credentials)
+      if (!isV2 && !region) issues.push('No region set');
     }
 
     if (data.sections) {
@@ -169,7 +187,9 @@ async function checkProjectContext() {
     }
 
     const sectionCount = Object.keys(data.sections).length;
-    const cloud = data.metadata.cloud_provider?.toUpperCase() || '?';
+    const cloud = isV2
+      ? (data.sections?.infrastructure?.cloud_providers?.[0]?.name?.toUpperCase() || '?')
+      : (data.metadata.cloud_provider?.toUpperCase() || '?');
     return { name: 'project-context', ok: true, detail: `${sectionCount} sections, ${cloud}` };
   } catch {
     return { name: 'project-context', ok: false, detail: 'Invalid JSON', fix: 'Regenerate with /speckit.init' };
@@ -225,7 +245,7 @@ async function checkHooks() {
   }
 
   if (issues.length > 0) {
-    return { name: 'Hooks', ok: false, detail: issues.join('; '), fix: 'Recreate symlinks: gaia-init' };
+    return { name: 'Hooks', ok: false, detail: issues.join('; '), fix: 'Recreate symlinks: gaia-scan' };
   }
 
   return { name: 'Hooks', ok: true, detail: `${valid}/${hooks.length} found` };
@@ -236,7 +256,7 @@ async function checkMemoryDirs() {
     {
       path: join(CWD, '.claude', 'project-context', 'speckit-project-specs'),
       label: 'speckit-project-specs',
-      fix: 'Run gaia-init or /speckit.init'
+      fix: 'Run gaia-scan or /speckit.init'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md'),
@@ -246,7 +266,7 @@ async function checkMemoryDirs() {
     {
       path: join(CWD, '.claude', 'project-context', 'workflow-episodic-memory'),
       label: 'workflow-episodic-memory',
-      fix: 'Run gaia-init to create workflow memory directory'
+      fix: 'Run gaia-scan to create workflow memory directory'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'episodic-memory'),
@@ -282,7 +302,8 @@ async function checkProjectDirs() {
 
   try {
     const data = JSON.parse(await fs.readFile(contextPath, 'utf-8'));
-    const paths = data.paths || {};
+    // v2.0 stores paths in sections.infrastructure.paths; v1.0 uses top-level paths
+    const paths = data.sections?.infrastructure?.paths || data.paths || {};
     const issues = [];
 
     for (const [key, dirPath] of Object.entries(paths)) {
@@ -352,7 +373,8 @@ async function autoFix() {
   if (existsSync(contextPath)) {
     try {
       const data = JSON.parse(await fs.readFile(contextPath, 'utf-8'));
-      for (const dirPath of Object.values(data.paths || {})) {
+      const paths = data.sections?.infrastructure?.paths || data.paths || {};
+      for (const dirPath of Object.values(paths)) {
         const abs = join(CWD, dirPath);
         if (!existsSync(abs)) {
           await fs.mkdir(abs, { recursive: true });

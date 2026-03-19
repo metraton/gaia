@@ -126,13 +126,13 @@ class TestPermissionRules:
                 assert len(read) > 0, \
                     f"{name}/{agent}: must have at least one read permission"
 
-    def test_all_agents_can_read_project_details(self, contracts):
-        """All agents should be able to read project_details."""
+    def test_all_agents_can_read_project_identity(self, contracts):
+        """All agents should be able to read project_identity (v2 section)."""
         for name, data in contracts.items():
             for agent, perms in data.get("agents", {}).items():
                 read = perms.get("read", [])
-                assert "project_details" in read, \
-                    f"{name}/{agent}: should have 'project_details' in read permissions"
+                assert "project_identity" in read, \
+                    f"{name}/{agent}: should have 'project_identity' in read permissions"
 
 
 if __name__ == "__main__":

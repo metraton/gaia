@@ -9,12 +9,12 @@ User input:
 $ARGUMENTS
 
 **IMPORTANT**: This command now requires TWO arguments:
-1. `<speckit-root>`: Path to spec-kit root directory (e.g., `spec-kit-tcm-plan`)
+1. `<speckit-root>`: Path to spec-kit root directory (e.g., `specs`)
 2. `<feature-name>`: Feature name (e.g., `004-project-guidance-deployment`)
 
 **Example usage**:
 ```
-/speckit.tasks spec-kit-tcm-plan 004-project-guidance-deployment
+/speckit.tasks specs 004-project-guidance-deployment
 ```
 
 1. Extract `<speckit-root>` and `<feature-name>` from $ARGUMENTS. If not provided, ERROR and show usage example.
@@ -169,13 +169,13 @@ $ARGUMENTS
       | A2 | HIGH | Ambiguity | spec.md:L89 | "Fast response time" lacks metric | Clarify: <200ms p95 latency? |
 
       **Next Actions**:
-      - If CRITICAL issues: Resolve before proceeding to /implement
+      - If CRITICAL issues: Resolve before proceeding to execution
       - If only MEDIUM/LOW: Proceed with caution, address during implementation
       ```
 
    e) **Automatic remediation** (if no CRITICAL issues):
       - For LOW/MEDIUM issues: Add notes to tasks.md Dependencies section
-      - For ambiguities: Flag for clarification during implementation
+      - For ambiguities: Flag for clarification during execution
       - For coverage gaps: Generate missing tasks inline
 
    f) **Gate decision**:
@@ -187,4 +187,4 @@ $ARGUMENTS
 
 Context for task generation: $ARGUMENTS
 
-The tasks.md should be immediately executable - each task must be specific enough that an LLM can complete it without additional context.
+The tasks.md should be immediately executable -- each task must be self-contained with enough inline context (context slice, file paths, exit criteria) that an agent can complete it without loading multiple planning files. The orchestrator will route each task to the appropriate agent for execution.

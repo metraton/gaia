@@ -69,9 +69,13 @@ def test_classify_falls_back_to_agent_surface_when_signals_are_weak():
 def test_build_investigation_brief_for_cross_surface_task():
     config = load_surface_routing_config()
     contract_context = {
+        "project_identity": {},
+        "stack": {},
+        "git": {},
+        "environment": {},
+        "infrastructure": {},
         "application_services": {},
-        "application_architecture": {},
-        "development_standards": {},
+        "operational_guidelines": {},
     }
 
     brief = build_investigation_brief(
@@ -88,9 +92,13 @@ def test_build_investigation_brief_for_cross_surface_task():
     assert "gitops_desired_state" in brief["adjacent_surfaces"]
     assert "live_runtime" in brief["adjacent_surfaces"]
     assert brief["contract_sections_to_anchor"] == [
-        "application_architecture",
         "application_services",
-        "development_standards",
+        "environment",
+        "git",
+        "infrastructure",
+        "operational_guidelines",
+        "project_identity",
+        "stack",
     ]
     assert "COMMANDS_RUN" in brief["evidence_required"]
     assert "OWNERSHIP_ASSESSMENT" in brief["consolidation_fields"]

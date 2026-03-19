@@ -17,7 +17,7 @@ Step 0 of the Spec-Kit workflow. Executed automatically by the `speckit-planner`
 2. Verifies `project-context.json` exists and has required fields (never creates it)
 3. Optionally creates feature directory structure with templates
 
-**If `project-context.json` is missing**: report the error and stop — the user must run `gaia-init` first.
+**If `project-context.json` is missing**: report the error and stop — the user must run `gaia-scan` first.
 
 ## Execution Steps
 
@@ -32,7 +32,7 @@ Step 0 of the Spec-Kit workflow. Executed automatically by the `speckit-planner`
      - `[CLOUD_PROVIDER]` → `metadata.cloud_provider` (uppercase)
      - `[PRIMARY_REGION]` → `metadata.primary_region`
      - `[PROJECT_ID]` → `metadata.project_id`
-     - `[CLUSTER_NAME]` → `sections.project_details.cluster_name`
+     - `[CLUSTER_NAME]` → `sections.cluster_details.cluster_name`
      - `[GITOPS_PATH]` → `paths.gitops`
      - `[TERRAFORM_PATH]` → `paths.terraform`
      - `[POSTGRES_INSTANCE]` → `sections.databases.postgres.instance` o `N/A`
@@ -56,12 +56,12 @@ Check if `.claude/project-context/project-context.json` exists:
 **If EXISTS**:
 - Read and validate structure
 - Check required fields:
-  - `metadata.project_id` or `sections.project_details.project_id`
-  - `metadata.primary_region` or `sections.project_details.region`
-  - `sections.project_details.cluster_name`
+  - `metadata.project_id` or `sections.infrastructure.cloud_providers[0].project_id`
+  - `metadata.primary_region` or `sections.infrastructure.cloud_providers[0].region`
+  - `sections.cluster_details.cluster_name`
   - `paths.gitops` or `sections.gitops_configuration.repository.path`
   - `paths.terraform` or `sections.terraform_infrastructure.layout.base_path`
-- If a required field is missing: warn but continue (gaia-init may have generated a partial context)
+- If a required field is missing: warn but continue (gaia-scan may have generated a partial context)
 - Report validation results
 
 ### 2. Feature Directory Bootstrap (Optional)
@@ -85,9 +85,9 @@ b) **Create feature directory structure**:
 c) **Initialize spec.md with project context**:
    - Copy spec-template.md to feature directory
    - **AUTO-FILL** placeholders using project-context.json:
-     - `[PROJECT_ID]` → `metadata.project_id` or `sections.project_details.project_id`
-     - `[REGION]` → `metadata.primary_region` or `sections.project_details.region`
-     - `[CLUSTER]` → `sections.project_details.cluster_name`
+     - `[PROJECT_ID]` → `metadata.project_id` or `sections.infrastructure.cloud_providers[0].project_id`
+     - `[REGION]` → `metadata.primary_region` or `sections.infrastructure.cloud_providers[0].region`
+     - `[CLUSTER]` → `sections.cluster_details.cluster_name`
      - `[GITOPS_PATH]` → `paths.gitops`
      - `[TERRAFORM_PATH]` → `paths.terraform`
 
@@ -133,14 +133,14 @@ Always output validation summary:
 **project-context.json missing**:
 ```
 ❌ BLOCKED: project-context.json not found.
-Run `npx gaia-init` to initialize the project, then retry.
+Run `npx gaia-scan` to initialize the project, then retry.
 ```
 
 **Missing paths in project-context**:
 ```
 ⚠️ WARNING: GitOps path not set in project-context.json
 This may cause issues with gitops-operator agent.
-Recommendation: Run `npx gaia-init` to regenerate project-context.json
+Recommendation: Run `npx gaia-scan` to regenerate project-context.json
 ```
 
 **Invalid JSON**:
@@ -148,7 +148,7 @@ Recommendation: Run `npx gaia-init` to regenerate project-context.json
 ❌ ERROR: project-context.json is malformed
 <JSON parse error>
 
-Fix the JSON syntax or delete the file and run `npx gaia-init` to regenerate.
+Fix the JSON syntax or delete the file and run `npx gaia-scan` to regenerate.
 ```
 
 ## Notes
@@ -161,7 +161,7 @@ Fix the JSON syntax or delete the file and run `npx gaia-init` to regenerate.
 
 ## See Also
 
-- `npx gaia-init` - Create and configure project-context.json (run once per project)
-- `/speckit.specify` - Create feature specification
+- `npx gaia-scan` - Create and configure project-context.json (run once per project)
 - `/speckit.plan` - Generate implementation plan
+- `/speckit.tasks` - Generate enriched task list
 - `<speckit-root>/governance.md` - Project governance principles
