@@ -87,9 +87,12 @@ def mark_initialized() -> None:
 def setup_project_permissions() -> bool:
     """Create .claude/settings.json in the project if it doesn't exist.
 
+    Uses cwd (the project root) instead of find_claude_dir() which may
+    resolve to a parent directory's .claude/.
+
     Returns True if settings were created (restart needed).
     """
-    claude_dir = find_claude_dir()
+    claude_dir = Path.cwd() / ".claude"
     settings_path = claude_dir / "settings.json"
 
     if settings_path.exists():
@@ -122,10 +125,30 @@ def run_first_time_setup() -> str | None:
 
     if restart_needed:
         mode = get_plugin_mode()
-        return (
+        msg = (
             f"gaia-{mode} first-time setup complete. "
-            f"Project permissions configured. "
+            f"Project permissions have been configured in .claude/settings.json. "
             f"Restart this session to activate all permissions."
         )
+        # Write restart flag for UserPromptSubmit to pick up
+        try:
+            flag_path = get_plugin_data_dir() / ".needs-restart"
+            flag_path.write_text(msg)
+        except Exception:
+            pass
+        return msg
 
+    return None
+
+
+def consume_restart_message() -> str | None:
+    """Read and delete the restart flag. Returns the message or None."""
+    try:
+        flag_path = get_plugin_data_dir() / ".needs-restart"
+        if flag_path.exists():
+            msg = flag_path.read_text()
+            flag_path.unlink()
+            return msg
+    except Exception:
+        pass
     return None
