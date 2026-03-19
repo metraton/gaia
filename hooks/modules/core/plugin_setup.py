@@ -147,14 +147,14 @@ def ensure_plugin_registry() -> None:
 
 
 def run_first_time_setup() -> str | None:
-    """Run first-time setup. Returns a log message if restart needed."""
-    # Always ensure registry exists (even on subsequent runs)
+    """Run setup. Returns a log message if restart needed."""
+    # Always ensure registry and permissions exist (even on subsequent runs)
     ensure_plugin_registry()
+    restart_needed = setup_project_permissions()
 
     if not is_first_run():
         return None
 
-    restart_needed = setup_project_permissions()
     mark_initialized()
 
     if restart_needed:
