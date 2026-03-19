@@ -28,6 +28,9 @@
     "hooks/modules/identity/",
     "hooks/modules/context/",
     "hooks/modules/scanning/",
+    "hooks/modules/session/",
+    "hooks/modules/agents/",
+    "hooks/modules/memory/",
     "hooks/adapters/"
   ],
   "agents": [],
