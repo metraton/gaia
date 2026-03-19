@@ -58,3 +58,6 @@ dist/
 build/
 *.egg-info/
 .npm-cache/
+
+# Build scripts (not yet ready for distribution)
+scripts/
