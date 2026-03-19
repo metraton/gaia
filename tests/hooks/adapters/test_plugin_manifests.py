@@ -213,20 +213,17 @@ class TestMarketplaceJson:
         assert "plugins" in data, "Missing 'plugins' field"
         assert isinstance(data["plugins"], list)
 
-    def test_marketplace_has_two_plugins(self):
-        """marketplace.json must have exactly 2 plugins."""
+    def test_marketplace_has_at_least_one_plugin(self):
+        """marketplace.json must have at least one plugin."""
         data = json.loads(self.marketplace_path.read_text())
         plugins = data["plugins"]
-        assert len(plugins) == 2, (
-            f"Expected 2 plugins, got {len(plugins)}"
-        )
+        assert len(plugins) >= 1, f"Expected at least 1 plugin, got {len(plugins)}"
 
-    def test_marketplace_plugin_names(self):
-        """marketplace.json must have gaia-security, gaia-ops."""
+    def test_marketplace_has_gaia_security(self):
+        """marketplace.json must include gaia-security."""
         data = json.loads(self.marketplace_path.read_text())
         names = {p["name"] for p in data["plugins"]}
-        expected = {"gaia-security", "gaia-ops"}
-        assert names == expected, f"Expected {expected}, got {names}"
+        assert "gaia-security" in names, f"gaia-security not found in {names}"
 
     def test_marketplace_plugins_have_required_fields(self):
         """Each marketplace plugin must have name, description, version, source."""

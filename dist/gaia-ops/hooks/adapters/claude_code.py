@@ -480,6 +480,20 @@ class ClaudeCodeAdapter(HookAdapter):
             # instead of blocking with nonce (which requires orchestrator + agents)
             if not is_ops_mode():
                 reason_line = result.reason.split('\n')[0] if result.reason else f"T3 operation: {command[:80]}"
+                # Permanently blocked commands (rm -rf, kubectl delete namespace, etc.)
+                # are denied even in security mode — user cannot override
+                is_permanently_blocked = "blocked by security policy" in (result.reason or "").lower()
+                if is_permanently_blocked:
+                    logger.info("SECURITY MODE: permanently denied: %s", command[:80])
+                    output = {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": f"[BLOCKED] {reason_line}",
+                        }
+                    }
+                    return HookResponse(output=output, exit_code=2)
+                # Mutative commands (git commit, terraform apply, etc.) → ask user
                 logger.info("SECURITY MODE: returning 'ask' for T3: %s", command[:80])
                 output = {
                     "hookSpecificOutput": {
