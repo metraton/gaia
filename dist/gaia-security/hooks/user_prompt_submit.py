@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from modules.core.paths import get_logs_dir
 from modules.core.stdin import has_stdin_data
+from modules.core.plugin_setup import ensure_plugin_registry
 from modules.identity.identity_provider import build_identity
 
 # Configure logging — file only, no stderr
@@ -29,6 +30,8 @@ if __name__ == "__main__":
 
     try:
         sys.stdin.read()
+        # Ensure plugin-registry.json exists (fallback if SessionStart didn't fire)
+        ensure_plugin_registry()
         identity = build_identity()
         logger.info("Identity injected: %s mode (%d chars)", "ops" if "Orchestrator" in identity else "security", len(identity))
 

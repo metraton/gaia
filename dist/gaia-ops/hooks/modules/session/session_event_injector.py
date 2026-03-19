@@ -117,7 +117,8 @@ def build_session_events(
         return None
 
     # Get session events
-    context_path = Path(".claude/session/active/context.json")
+    from ..core.paths import get_session_dir
+    context_path = get_session_dir() / "context.json"
     if not context_path.exists():
         logger.debug("No session context file found")
         return None

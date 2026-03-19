@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 # error message shows available agents and orchestrator self-corrects.
 
 
-# Available agents for Task invocation
-AVAILABLE_AGENTS = [
+# Available agents for Task invocation — both bare and plugin-namespaced forms
+_BASE_AGENTS = [
     "terraform-architect",
     "gitops-operator",
     "cloud-troubleshooter",
@@ -43,6 +43,8 @@ AVAILABLE_AGENTS = [
     "speckit-planner",
     "claude-code-guide",
 ]
+# Support both "cloud-troubleshooter" and "gaia-ops:cloud-troubleshooter"
+AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia-ops:{a}" for a in _BASE_AGENTS]
 
 # Meta-agents that don't require context_provider.
 # speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.

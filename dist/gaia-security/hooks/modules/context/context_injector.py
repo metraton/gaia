@@ -282,9 +282,8 @@ def build_project_context(
     try:
         # Find context_provider.py
         context_provider_paths = [
-            Path(".claude/tools/context/context_provider.py"),
-            Path("node_modules/@jaguilar87/gaia-ops/tools/context/context_provider.py"),
-            hooks_dir.parent / "tools" / "context" / "context_provider.py"
+            hooks_dir.parent / "tools" / "context" / "context_provider.py",  # plugin root (works in both modes)
+            Path(".claude/tools/context/context_provider.py"),                # npm symlink fallback
         ]
 
         context_provider = None
