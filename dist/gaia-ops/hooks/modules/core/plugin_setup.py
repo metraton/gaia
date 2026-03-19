@@ -114,8 +114,43 @@ def setup_project_permissions() -> bool:
     return True
 
 
+def ensure_plugin_registry() -> None:
+    """Create plugin-registry.json from CLAUDE_PLUGIN_ROOT if missing.
+
+    In plugin mode, CLAUDE_PLUGIN_ROOT looks like:
+      .../cache/marketplace/gaia-ops/4.4.0-rc.2
+    We extract the plugin name and version from the path.
+    """
+    import os
+    data_dir = get_plugin_data_dir()
+    registry_path = data_dir / "plugin-registry.json"
+    if registry_path.exists():
+        return
+
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if not plugin_root:
+        return
+
+    parts = Path(plugin_root).parts
+    if len(parts) < 2:
+        return
+
+    plugin_name = parts[-2]  # e.g. "gaia-ops" or "gaia-security"
+    plugin_version = parts[-1]  # e.g. "4.4.0-rc.2"
+
+    registry = {
+        "installed": [{"name": plugin_name, "version": plugin_version}],
+        "source": "plugin-mode",
+    }
+    registry_path.write_text(json.dumps(registry, indent=2) + "\n")
+    logger.info("Created plugin-registry.json: %s@%s", plugin_name, plugin_version)
+
+
 def run_first_time_setup() -> str | None:
     """Run first-time setup. Returns a log message if restart needed."""
+    # Always ensure registry exists (even on subsequent runs)
+    ensure_plugin_registry()
+
     if not is_first_run():
         return None
 
