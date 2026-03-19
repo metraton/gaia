@@ -31,8 +31,14 @@ if __name__ == "__main__":
     try:
         sys.stdin.read()
         # Ensure registry + permissions exist (fallback if SessionStart didn't fire)
-        run_first_time_setup()
+        setup_msg = run_first_time_setup()
         identity = build_identity()
+
+        # If setup wrote new permissions, tell user to reload
+        if setup_msg:
+            identity += f"\n\nIMPORTANT: {setup_msg}"
+            logger.info("Setup message appended: %s", setup_msg)
+
         logger.info("Identity injected: %s mode (%d chars)", "ops" if "Orchestrator" in identity else "security", len(identity))
 
         print(json.dumps({

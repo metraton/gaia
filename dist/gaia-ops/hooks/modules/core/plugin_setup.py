@@ -86,22 +86,23 @@ def mark_initialized() -> None:
 
 
 def setup_project_permissions() -> bool:
-    """Ensure .claude/settings.json has gaia permissions merged in.
+    """Merge gaia permissions into .claude/settings.local.json.
 
-    Merges our allow/deny rules into existing settings without
-    overwriting user hooks or custom configuration.
+    Uses settings.local.json (highest project-level precedence) so that
+    /reload-plugins picks up changes mid-session without restart.
+    Preserves enabledPlugins and any existing user configuration.
 
-    Returns True if settings were modified (restart needed).
+    Returns True if settings were modified (reload needed).
     """
     claude_dir = Path.cwd() / ".claude"
-    settings_path = claude_dir / "settings.json"
+    settings_path = claude_dir / "settings.local.json"
 
     mode = get_plugin_mode()
     our_perms = OPS_PERMISSIONS if mode == "ops" else SECURITY_PERMISSIONS
     our_allow = set(our_perms["permissions"]["allow"])
     our_deny = set(our_perms["permissions"].get("deny", []))
 
-    # Load existing settings or start fresh
+    # Load existing settings.local.json (has enabledPlugins from install)
     existing = {}
     if settings_path.exists():
         try:
@@ -121,7 +122,7 @@ def setup_project_permissions() -> bool:
         logger.info("Project permissions already include gaia rules, skipping")
         return False
 
-    # Update only permissions, preserve everything else (hooks, env, etc.)
+    # Update only permissions, preserve everything else (enabledPlugins, etc.)
     existing.setdefault("permissions", {})
     existing["permissions"]["allow"] = merged_allow
     existing["permissions"]["deny"] = merged_deny
@@ -166,18 +167,20 @@ def ensure_plugin_registry() -> None:
 
 
 def run_first_time_setup() -> str | None:
-    """Run setup. Returns a log message if restart needed."""
+    """Run setup. Returns a reload message if permissions were written."""
     # Always ensure registry and permissions exist (even on subsequent runs)
     ensure_plugin_registry()
-    restart_needed = setup_project_permissions()
+    reload_needed = setup_project_permissions()
 
     if not is_first_run():
+        if reload_needed:
+            return "Permissions updated. Run /reload-plugins to activate."
         return None
 
     mark_initialized()
 
-    if restart_needed:
+    if reload_needed:
         mode = get_plugin_mode()
-        return f"gaia-{mode} setup complete. Settings created. Restart needed."
+        return f"GAIA {mode} setup complete. Run /reload-plugins to activate permissions."
 
     return None
