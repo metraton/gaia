@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia-ops",
-  "version": "4.4.0-beta.9",
+  "version": "4.4.0-rc.1",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -71,6 +71,7 @@
     "test:all": "python3 -m pytest tests/ -v -m ''",
     "test:promptfoo": "npx promptfoo eval --config tests/promptfoo.yaml",
     "lint": "eslint .",
+    "build:plugins": "python3 scripts/build-plugin.py gaia-security && python3 scripts/build-plugin.py gaia-ops",
     "clean": "find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true",
     "pre-publish": "node bin/pre-publish-validate.js",
     "pre-publish:dry": "node bin/pre-publish-validate.js --dry-run",

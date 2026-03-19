@@ -1,7 +1,7 @@
 {
   "plugin_name": "gaia-security",
   "version": "from:package.json",
-  "description": "Security framework for Claude Code. Classifies commands by risk tier and requires approval for mutative operations via hooks. Note: modifies .claude/settings.json — all validations handled by hooks. Restart session after first install.",
+  "description": "Keeps you in the loop only when it matters. Gaia Security analyzes every command and classifies it into risk tiers: read-only queries run freely, simulations and validations pass through, and state-changing operations (create, delete, apply, push) pause for your explicit approval before executing. Irreversible commands like dropping databases or deleting cloud infrastructure are permanently blocked.",
   "hooks": {
     "entries": [
       "hooks/pre_tool_use.py",

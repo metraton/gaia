@@ -7,9 +7,13 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -24,6 +28,33 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build plugins
+        run: npm run build:plugins
+
+      - name: Verify build outputs
+        run: |
+          test -f dist/gaia-security/.claude-plugin/plugin.json
+          test -f dist/gaia-security/hooks/hooks.json
+          test -f dist/gaia-security/settings.json
+          test -f dist/gaia-ops/.claude-plugin/plugin.json
+          test -f dist/gaia-ops/hooks/hooks.json
+          test -f dist/gaia-ops/settings.json
+          echo "All plugin artifacts verified"
+
+      - name: Commit built plugins
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/
+          if git diff --cached --quiet; then
+            echo "No changes in dist/ — skipping commit"
+          else
+            git commit -m "build: generate plugin artifacts for ${{ github.event.release.tag_name }}"
+            git push origin HEAD:main
+            git tag -f ${{ github.event.release.tag_name }}
+            git push origin ${{ github.event.release.tag_name }} --force
+          fi
 
       - name: Run validation
         run: npm run pre-publish:validate
@@ -43,4 +74,4 @@ jobs:
 
       - name: Notify success
         if: success()
-        run: echo "✅ Package published successfully to npm"
+        run: echo "Package published successfully to npm"
