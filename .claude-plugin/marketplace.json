@@ -8,13 +8,13 @@
     {
       "name": "gaia-security",
       "description": "Keeps you in the loop only when it matters. Gaia Security analyzes every command and classifies it into risk tiers: read-only queries run freely, simulations and validations pass through, and state-changing operations (create, delete, apply, push) pause for your explicit approval before executing. Irreversible commands like dropping databases or deleting cloud infrastructure are permanently blocked.",
-      "version": "4.4.0-rc.1",
+      "version": "4.4.0-rc.2",
       "source": "./dist/gaia-security"
     },
     {
       "name": "gaia-ops",
       "description": "Full DevOps orchestration for Claude Code. Six specialized agents handle the complete development lifecycle — analysis, planning, execution, and deployment. Gaia-Ops scans your codebase to understand it and injects the right context into each sub-agent. Every command is classified by risk: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
-      "version": "4.4.0-rc.1",
+      "version": "4.4.0-rc.2",
       "source": "./dist/gaia-ops"
     }
   ]
