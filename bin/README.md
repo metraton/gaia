@@ -129,7 +129,6 @@ npm uninstall @jaguilar87/gaia-ops
 
 **What it preserves:**
 - `project-context.json`
-- `CLAUDE.md`
 - `.claude/` symlinks
 
 ## Environment Variables
@@ -147,4 +146,4 @@ npx gaia-scan --non-interactive
 
 ---
 
-**Version:** 4.2.0 | **Updated:** 2026-03-11 | **Scripts:** 11
+**Version:** 4.4.0-rc.5 | **Updated:** 2026-03-19 | **Scripts:** 11

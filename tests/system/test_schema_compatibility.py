@@ -1,8 +1,8 @@
 """
-Test schema compatibility between CLAUDE.template.md and system components.
+Test schema compatibility between orchestrator identity and system components.
 
-Ensures the orchestrator template contains the essential structural elements
-that the hook system and surface routing depend on.
+Ensures the identity system (ops_identity.py + on-demand skills) contains
+the essential structural elements that the hook system and surface routing depend on.
 """
 
 import json
@@ -11,17 +11,31 @@ from pathlib import Path
 
 
 class TestSchemaCompatibility:
-    """Verify CLAUDE.template.md contains required orchestrator sections."""
+    """Verify orchestrator identity system contains required elements."""
 
     @pytest.fixture
     def package_root(self):
         return Path(__file__).resolve().parents[2]
 
     @pytest.fixture
-    def template_content(self, package_root):
-        template_path = package_root / "templates" / "CLAUDE.template.md"
-        assert template_path.exists(), "CLAUDE.template.md not found"
-        return template_path.read_text()
+    def identity_content(self, package_root):
+        """Load ops_identity.py and extract the identity string."""
+        identity_path = package_root / "hooks" / "modules" / "identity" / "ops_identity.py"
+        assert identity_path.exists(), "ops_identity.py not found"
+        content = identity_path.read_text()
+        return content
+
+    @pytest.fixture
+    def dispatch_skill_content(self, package_root):
+        skill_path = package_root / "skills" / "project-dispatch" / "SKILL.md"
+        assert skill_path.exists(), "project-dispatch/SKILL.md not found"
+        return skill_path.read_text()
+
+    @pytest.fixture
+    def response_skill_content(self, package_root):
+        skill_path = package_root / "skills" / "agent-response" / "SKILL.md"
+        assert skill_path.exists(), "agent-response/SKILL.md not found"
+        return skill_path.read_text()
 
     @pytest.fixture
     def gaia_scan_content(self, package_root):
@@ -31,23 +45,14 @@ class TestSchemaCompatibility:
 
     @pytest.fixture
     def fixture_contexts(self, package_root):
-        """Load all test fixture project-context files."""
         fixtures_dir = package_root / "tests" / "fixtures"
         contexts = {}
         for f in fixtures_dir.glob("project-context.*.json"):
             contexts[f.stem] = json.loads(f.read_text())
         return contexts
 
-    def test_template_has_surface_routing_contract(self, template_content):
-        """Template must contain a routing section with surfaces and agents.
-
-        The simplified template uses ## Routing instead of ## Surface Routing.
-        Consolidation details, investigation briefs, and loop caps are now
-        handled by hooks and the agent-protocol skill, not the orchestrator template.
-        """
-        has_routing = ("## Routing" in template_content
-                       or "## Your agents" in template_content)
-        assert has_routing, "Template must have a routing/agents section"
+    def test_dispatch_skill_has_surface_routing(self, dispatch_skill_content):
+        """project-dispatch skill must contain surfaces and agents."""
         for surface in [
             "live_runtime",
             "gitops_desired_state",
@@ -56,8 +61,8 @@ class TestSchemaCompatibility:
             "planning_specs",
             "gaia_system",
         ]:
-            assert surface in template_content, (
-                f"Template routing must include {surface}"
+            assert surface in dispatch_skill_content, (
+                f"Dispatch skill must include {surface}"
             )
 
         for agent in [
@@ -68,14 +73,14 @@ class TestSchemaCompatibility:
             "speckit-planner",
             "gaia-system",
         ]:
-            assert agent in template_content, (
-                f"Template routing must include {agent}"
+            assert agent in dispatch_skill_content, (
+                f"Dispatch skill must include {agent}"
             )
 
-    def test_template_documents_plan_status(self, template_content, package_root):
-        """PLAN_STATUS values must be documented in the template or agent-protocol skill."""
+    def test_response_skill_documents_plan_status(self, response_skill_content, package_root):
+        """Plan status values must be documented in agent-response or agent-protocol skill."""
         agent_protocol_path = package_root / "skills" / "agent-protocol" / "SKILL.md"
-        combined = template_content
+        combined = response_skill_content
         if agent_protocol_path.exists():
             combined += "\n" + agent_protocol_path.read_text()
 
@@ -89,38 +94,27 @@ class TestSchemaCompatibility:
         ]
         for status in required_statuses:
             assert status in combined, (
-                f"PLAN_STATUS '{status}' not found in template or agent-protocol skill"
+                f"PLAN_STATUS '{status}' not found in agent-response or agent-protocol skill"
             )
 
-    def test_template_references_agent_status(self, template_content, package_root):
-        """Agent status and ID must be documented in the template or agent-protocol skill."""
-        agent_protocol_path = package_root / "skills" / "agent-protocol" / "SKILL.md"
-        combined = template_content
-        if agent_protocol_path.exists():
-            combined += "\n" + agent_protocol_path.read_text()
+    def test_identity_references_tools(self, identity_content):
+        """Identity must reference the orchestrator's tools."""
+        for tool in ["Agent", "SendMessage", "AskUserQuestion", "Skill"]:
+            assert tool in identity_content, (
+                f"Identity must reference {tool}"
+            )
 
-        has_status = "AGENT_STATUS" in combined or "plan_status" in combined
-        assert has_status, (
-            "Agent status must be documented in template or agent-protocol skill "
-            "(as AGENT_STATUS or plan_status)"
-        )
-        has_id = "AGENT_ID" in combined or "agent_id" in combined
-        assert has_id, (
-            "Agent ID must be documented in template or agent-protocol skill "
-            "(as AGENT_ID or agent_id)"
-        )
+    def test_identity_references_skills(self, identity_content):
+        """Identity must tell orchestrator to load on-demand skills."""
+        assert "project-dispatch" in identity_content
+        assert "agent-response" in identity_content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):
-        """Test fixture project-context files must have the sections gaia-init generates."""
         if not fixture_contexts:
             pytest.skip("No fixture project-context files found")
-
         for name, ctx in fixture_contexts.items():
             assert "metadata" in ctx, f"{name}: missing metadata"
             assert "sections" in ctx, f"{name}: missing sections"
 
     def test_gaia_scan_writes_project_context(self, gaia_scan_content):
-        """gaia-scan must write to project-context.json."""
-        assert "project-context" in gaia_scan_content, (
-            "gaia-scan must reference project-context"
-        )
+        assert "project-context" in gaia_scan_content

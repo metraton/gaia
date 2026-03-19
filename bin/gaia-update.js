@@ -10,11 +10,10 @@
  * - First-time install (.claude/ doesn't exist): skip silently (gaia-scan handles it)
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
- *   2. CLAUDE.md: overwrite safely (template is static)
- *   3. settings.json: REPLACE from template (template is source of truth)
- *   4. Symlinks: recreate if missing, fix broken ones
- *   5. Verify: hooks, python, project-context, config files
- *   6. Report: summary with any issues found
+ *   2. settings.json: REPLACE from template (template is source of truth)
+ *   3. Symlinks: recreate if missing, fix broken ones
+ *   4. Verify: hooks, python, project-context, config files
+ *   5. Report: summary with any issues found
  *
  * Usage:
  *   npm update @jaguilar87/gaia-ops   # Automatic via postinstall
@@ -71,27 +70,6 @@ async function readPackageVersion(path) {
 // ============================================================================
 // Update Steps
 // ============================================================================
-
-async function updateClaudeMd() {
-  const spinner = ora('Updating CLAUDE.md...').start();
-  try {
-    const templatePath = join(__dirname, '../templates/CLAUDE.template.md');
-    const claudeDir = join(CWD, '.claude');
-
-    if (!existsSync(templatePath) || !existsSync(claudeDir)) {
-      spinner.info('Skipped (template or .claude/ not found)');
-      return false;
-    }
-
-    const claudeMdPath = join(CWD, 'CLAUDE.md');
-    await fs.copyFile(templatePath, claudeMdPath);
-    spinner.succeed('CLAUDE.md updated');
-    return true;
-  } catch (error) {
-    spinner.fail(`CLAUDE.md: ${error.message}`);
-    return false;
-  }
-}
 
 async function updateSettingsJson() {
   const spinner = ora('Updating settings.json...').start();
@@ -295,16 +273,15 @@ async function main() {
 
   console.log(chalk.cyan(`\n  gaia-ops update ${versionLine}\n`));
 
-  // Step 1-3: Update files
-  const claudeUpdated = await updateClaudeMd();
+  // Step 1-2: Update files
   const settingsUpdated = await updateSettingsJson();
   const { updated: symlinksUpdated, fixed: symlinksFix } = await updateSymlinks();
 
-  // Step 4: Verify
+  // Step 3: Verify
   const { issues, passed, total } = await runVerification();
 
   // Summary
-  const changes = [claudeUpdated, settingsUpdated, symlinksUpdated].filter(Boolean).length;
+  const changes = [settingsUpdated, symlinksUpdated].filter(Boolean).length;
 
   console.log('');
   if (changes > 0 || issues.length > 0) {

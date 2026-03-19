@@ -7,7 +7,7 @@ functionality that gaia-scan needs when operating on a fresh project
 
 Functions:
 - create_claude_directory: mkdir .claude/ with symlinks and subdirs
-- copy_claude_md: copy CLAUDE.template.md to project root
+- copy_claude_md: deprecated no-op (identity now via submit hook)
 - copy_settings_json: copy settings.template.json (always replaces)
 - install_git_hooks: copy commit-msg hook to all git repos
 - generate_governance: interpolate governance.template.md
@@ -57,7 +57,7 @@ def _get_template_path(name: str) -> Path:
     """Get the path to a template file.
 
     Args:
-        name: Template filename (e.g., 'CLAUDE.template.md').
+        name: Template filename (e.g., 'settings.template.json').
 
     Returns:
         Absolute path to the template file.
@@ -226,31 +226,16 @@ def create_claude_directory(project_root: Path) -> List[str]:
 
 
 def copy_claude_md(project_root: Path) -> bool:
-    """Copy CLAUDE.template.md to project root as CLAUDE.md.
+    """Deprecated — CLAUDE.md is no longer generated from template.
 
-    Always overwrites -- CLAUDE.md is core orchestrator config and must
-    stay in sync with the installed package version.
+    Orchestrator identity is now injected by the UserPromptSubmit hook
+    via ops_identity.py + on-demand skills (project-dispatch, agent-response).
+    This avoids two sources of truth.
 
-    Args:
-        project_root: Project root directory.
-
-    Returns:
-        True if file was copied successfully.
+    Kept as no-op for backward compatibility with callers.
     """
-    template_path = _get_template_path("CLAUDE.template.md")
-    dest_path = project_root / "CLAUDE.md"
-
-    if not template_path.is_file():
-        logger.warning("CLAUDE.template.md not found at %s", template_path)
-        return False
-
-    try:
-        shutil.copy2(str(template_path), str(dest_path))
-        logger.info("CLAUDE.md synced from package")
-        return True
-    except OSError as exc:
-        logger.error("Failed to copy CLAUDE.md: %s", exc)
-        return False
+    logger.info("copy_claude_md skipped — identity now injected via submit hook")
+    return True
 
 
 def copy_settings_json(project_root: Path) -> bool:

@@ -391,19 +391,20 @@ class TestSkillsCrossReferences:
             "Approval skill must mention the nonce mechanism"
         )
 
-    def test_claude_template_references_nonce_approval(self):
-        """Nonce-based approval must be documented in the template or orchestrator-approval skill.
+    def test_identity_references_nonce_approval(self):
+        """Nonce-based approval must be documented in identity or orchestrator-approval skill.
 
-        The simplified CLAUDE.md delegates approval protocol details to the
+        The ops_identity.py delegates approval protocol details to the
         orchestrator-approval skill. The nonce contract must exist in the system.
         """
-        template_content = (TEMPLATES_DIR / "CLAUDE.template.md").read_text().lower()
+        identity_path = PACKAGE_ROOT / "hooks" / "modules" / "identity" / "ops_identity.py"
+        identity_content = identity_path.read_text().lower()
         approval_skill_path = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
-        combined = template_content
+        combined = identity_content
         if approval_skill_path.exists():
             combined += "\n" + approval_skill_path.read_text().lower()
         assert "nonce" in combined, (
-            "System must mention the nonce mechanism (template or orchestrator-approval skill)"
+            "System must mention the nonce mechanism (identity or orchestrator-approval skill)"
         )
         assert "approve" in combined, (
             "System must mention the approval workflow"

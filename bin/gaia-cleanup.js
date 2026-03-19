@@ -61,7 +61,7 @@ function findProjectRoot() {
 const CWD = findProjectRoot();
 
 /**
- * Remove CLAUDE.md if it exists
+ * Remove legacy CLAUDE.md if it exists (identity now injected by hook).
  */
 async function removeClaudeMd() {
   const spinner = ora('Removing CLAUDE.md...').start();

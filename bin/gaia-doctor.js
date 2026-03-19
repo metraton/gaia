@@ -73,33 +73,13 @@ async function checkSymlinks() {
 }
 
 async function checkClaudeMd() {
+  // CLAUDE.md is no longer generated -- identity is injected by UserPromptSubmit hook.
+  // If a project still has a CLAUDE.md from a previous version, that's fine but not required.
   const path = join(CWD, 'CLAUDE.md');
-
-  if (!existsSync(path)) {
-    return { name: 'CLAUDE.md', ok: false, detail: 'Missing', fix: 'Run gaia-scan' };
+  if (existsSync(path)) {
+    return { name: 'CLAUDE.md', ok: true, detail: 'Present (legacy -- identity now injected by hook)' };
   }
-
-  const content = await fs.readFile(path, 'utf-8');
-  const issues = [];
-
-  if (content.includes('{{')) {
-    issues.push('Contains raw {{placeholders}} - template was not processed');
-  }
-
-  if (content.length < 100) {
-    issues.push('File is suspiciously short');
-  }
-
-  if (!content.includes('Binary Delegation') && !content.includes('orchestrator')) {
-    issues.push('Missing core orchestrator instructions');
-  }
-
-  if (issues.length > 0) {
-    return { name: 'CLAUDE.md', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan to regenerate' };
-  }
-
-  const lines = content.split('\n').length;
-  return { name: 'CLAUDE.md', ok: true, detail: `Valid (${lines} lines)` };
+  return { name: 'CLAUDE.md', ok: true, detail: 'Not present (identity injected by UserPromptSubmit hook)' };
 }
 
 async function checkSettingsJson() {
@@ -354,19 +334,7 @@ async function autoFix() {
     }
   }
 
-  // Fix CLAUDE.md with raw placeholders
-  const claudeMdPath = join(CWD, 'CLAUDE.md');
-  if (existsSync(claudeMdPath)) {
-    const content = await fs.readFile(claudeMdPath, 'utf-8');
-    if (content.includes('{{')) {
-      const templatePath = join(CWD, '.claude', 'templates', 'CLAUDE.template.md');
-      if (existsSync(templatePath)) {
-        await fs.copyFile(templatePath, claudeMdPath);
-        console.log(chalk.green('    Fixed: CLAUDE.md regenerated from template'));
-        fixed++;
-      }
-    }
-  }
+  // CLAUDE.md no longer generated -- identity injected by UserPromptSubmit hook
 
   // Create missing project dirs
   const contextPath = join(CWD, '.claude', 'project-context', 'project-context.json');

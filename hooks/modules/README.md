@@ -79,6 +79,12 @@ modules/
 │   ├── metrics.py        # MetricsCollector + FUNCTIONAL generate_summary
 │   └── event_detector.py # CriticalEventDetector
 │
+├── identity/             # Orchestrator identity injection
+│   ├── __init__.py
+│   ├── identity_provider.py # Build identity based on installed plugins
+│   ├── ops_identity.py      # Ops mode: minimal identity + on-demand skills
+│   └── security_identity.py # Security-only mode identity
+│
 └── agents/               # Subagent support
     ├── __init__.py
     └── response_contract.py # Agent response contract validation
@@ -87,14 +93,22 @@ modules/
 ## Key Features
 
 ### Orchestrator Gate
-The orchestrator is restricted to two tools only:
-- `Agent` - Delegating to agents
-- `AskUserQuestion` - Getting user input
+The orchestrator is restricted to four tools:
+- `Agent` -- dispatch work to specialist agents
+- `SendMessage` -- resume a previously spawned agent
+- `AskUserQuestion` -- get clarification or approval from the user
+- `Skill` -- load on-demand procedures
 
 This enforces the principle: "Orchestrator delegates, agents execute."
 
+### SendMessage Validation (PreToolUse matcher)
+SendMessage is validated as a PreToolUse event (not a separate hook event):
+- Agent ID format check (must match `/^a[0-9a-f]{5,}$/`)
+- Non-empty message required
+- Nonce approval detection (APPROVE:{nonce} activates pending grants)
+
 ### Context Enforcement
-Task invocations for project agents must include "# Project Context" in the prompt, ensuring the orchestrator properly provisions context via `context_provider.py`.
+Task invocations for project agents inject project-context via `context_provider.py`.
 
 ### State Sharing
 Pre-hook saves state to `.claude/.hooks_state.json`, which post-hook reads to get:

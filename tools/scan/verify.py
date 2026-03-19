@@ -8,7 +8,7 @@ and after rescan+sync (Mode 2).
 Functions:
 - run_verification: run all checks, return summary
 - check_symlinks: verify symlinks exist and are valid
-- check_claude_md: verify CLAUDE.md exists and has no raw placeholders
+- check_claude_md: legacy check (CLAUDE.md no longer generated)
 - check_settings_json: verify valid JSON
 - check_project_context: verify exists and has sections
 - check_python: verify python3 available
@@ -74,40 +74,22 @@ def check_symlinks(project_root: Path) -> CheckResult:
 
 
 def check_claude_md(project_root: Path) -> CheckResult:
-    """Verify that CLAUDE.md exists and contains no raw placeholders.
+    """Check for CLAUDE.md presence. No longer required -- identity injected by hook.
 
-    Args:
-        project_root: Project root directory.
-
-    Returns:
-        CheckResult.
+    Kept for backward compatibility with callers that expect this check.
     """
     path = project_root / "CLAUDE.md"
-    if not path.is_file():
+    if path.is_file():
         return CheckResult(
             name="CLAUDE.md",
-            ok=False,
-            detail="Missing",
-            fix="Run gaia-scan",
+            ok=True,
+            detail="Present (legacy -- identity now injected by hook)",
         )
-
-    try:
-        content = path.read_text()
-        if "{{" in content:
-            return CheckResult(
-                name="CLAUDE.md",
-                ok=False,
-                detail="Contains raw placeholders",
-                fix="Run gaia-scan to regenerate",
-            )
-        return CheckResult(name="CLAUDE.md", ok=True, detail="Valid")
-    except OSError:
-        return CheckResult(
-            name="CLAUDE.md",
-            ok=False,
-            detail="Cannot read",
-            fix="Check file permissions",
-        )
+    return CheckResult(
+        name="CLAUDE.md",
+        ok=True,
+        detail="Not present (identity injected by UserPromptSubmit hook)",
+    )
 
 
 def check_settings_json(project_root: Path) -> CheckResult:

@@ -15,7 +15,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 ```
 1. User sends prompt
    ↓
-2. Orchestrator (CLAUDE.md) — routes to the correct agent
+2. Orchestrator (identity injected by submit hook) — routes to the correct agent
    ↓
 3. Pre-Tool Hook (pre_tool_use.py)
    ├─ Inject project-context.json (relevant sections per agent)
@@ -44,7 +44,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 
 ## Multi-Agent Consolidation
 
-The orchestrator owns the consolidation loop. See `CLAUDE.md` for the authoritative contract (consolidation contract + consolidation loop rules). Agents return `json:contract` blocks with `consolidation` objects; the orchestrator merges, decides whether to dispatch another round, and stops when gaps are no longer actionable.
+The orchestrator owns the consolidation loop. Agents return `json:contract` blocks with `consolidation` objects; the orchestrator merges, decides whether to dispatch another round, and stops when gaps are no longer actionable.
 
 ## Workflow Design Philosophy
 

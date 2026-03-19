@@ -82,7 +82,6 @@ Creates symlinks to gaia-ops:
   .claude/templates → node_modules/.../templates
          ↓
 Generates config files:
-  - CLAUDE.md (orchestrator)
   - project-context.json
   - settings.json
          ↓
@@ -118,8 +117,8 @@ Example: Installation in project with GitOps and Terraform
 5. Creates structure:
    ✅ .claude/ created
    ✅ 8 symlinks created
-   ✅ CLAUDE.md generated (196 lines)
    ✅ project-context.json created
+   ✅ settings.json created
    ↓
 6. Result:
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -195,7 +194,6 @@ your-project/
 │   ├── project-context/        ← Your project context (SSOT)
 │   ├── logs/                   ← Audit logs
 │   └── settings.json           ← Security configuration
-├── CLAUDE.md                   ← Main orchestrator
 └── node_modules/
     └── @jaguilar87/gaia-ops/   ← npm package
 ```
@@ -211,10 +209,10 @@ Once installed, you have access to **complete documentation** in each directory:
 ```
 .claude/
 ├── agents/               6 agents (terraform-architect, gitops-operator, etc.)
-├── skills/README.md      16 skill modules
+├── skills/README.md      20 skill modules
 ├── commands/README.md    6 slash commands (5 speckit + scan-project)
 ├── config/README.md      Contracts, git standards, universal rules
-├── hooks/README.md       9 hook scripts (3 primary + 6 event handlers)
+├── hooks/README.md       8 hook scripts (4 primary + 4 event handlers)
 ├── tools/                Context, memory, validation, review
 ├── speckit/README.md     Spec-Kit framework
 ├── templates/README.md   Installation templates
@@ -239,11 +237,11 @@ ls -la .claude/
 ### 2. Review Generated Configuration
 
 ```bash
-# View generated CLAUDE.md
-cat CLAUDE.md
-
 # View project-context.json
 cat .claude/project-context/project-context.json
+
+# View settings.json
+cat .claude/settings.json
 ```
 
 ### 3. Start Claude Code
@@ -273,27 +271,22 @@ When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templ
 
 | File | Behavior | Recommended Action |
 |------|----------|-------------------|
-| `CLAUDE.md` | ⚠️ **Overwritten** | Backup if you customize |
-| `.claude/settings.json` | ✅ **Merged** (hooks/permissions deep-merged, custom rules preserved) | Safe |
+| `.claude/settings.json` | ⚠️ **Replaced** from template (source of truth) | Safe |
 | `.claude/project-context/project-context.json` | ✅ **Preserved** | Safe |
 | `.claude/logs/` | ✅ **Preserved** | Safe |
 | Other `.claude/` files | ✅ **Auto-updated via symlinks** | Safe |
 
+Orchestrator identity is injected dynamically by the UserPromptSubmit hook -- no `CLAUDE.md` is generated.
+
 ### Update Process
 
 ```bash
-# 1. Backup (optional, if you customized CLAUDE.md)
-cp CLAUDE.md CLAUDE.md.backup
-
-# 2. Update package
+# 1. Update package
 npm install @jaguilar87/gaia-ops@latest
 
-# 3. Postinstall hook automatically:
-#    - Overwrites CLAUDE.md (static orchestrator config)
-#    - Merges settings.json (hooks/permissions deep-merged, custom rules preserved)
-
-# 4. If you made a CLAUDE.md backup, compare and merge changes
-diff CLAUDE.md CLAUDE.md.backup
+# 2. Postinstall hook automatically:
+#    - Replaces settings.json from template
+#    - Fixes broken symlinks
 ```
 
 ---
@@ -398,10 +391,7 @@ npx gaia-uninstall --force --remove-all
 # 1. Remove .claude/ directory
 rm -rf .claude/
 
-# 2. Remove generated files
-rm CLAUDE.md
-
-# 3. Uninstall npm package
+# 2. Uninstall npm package
 npm uninstall @jaguilar87/gaia-ops
 ```
 
@@ -436,15 +426,12 @@ A: Yes. Install in each project and each will have its own `project-context.json
 **Q: Do symlinks work on Windows?**  
 A: Yes, but you need to enable developer mode or run as administrator.
 
-**Q: Can I customize CLAUDE.md without it being overwritten?**  
-A: Not directly. Better: contribute changes to the template in the repository.
-
-**Q: How do I update only documentation without changing code?**  
+**Q: How do I update only documentation without changing code?**
 A: `npm update @jaguilar87/gaia-ops` - symlinks point to the new version automatically.
 
 ---
 
-**Version:** 4.2.0
-**Last updated:** 2026-03-11
+**Version:** 4.4.0-rc.5
+**Last updated:** 2026-03-19
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
 

@@ -15,11 +15,11 @@ Multi-agent orchestration system for Claude Code - DevOps automation toolkit.
 - **Multi-cloud support** - GCP, AWS
 - **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, devops-developer, speckit-planner, gaia (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
-- **Episodic Memory** - Persistent memory system for operational patterns
-- **Approval gates** for T3 operations
+- **Dynamic identity** - Orchestrator identity injected by UserPromptSubmit hook; skills loaded on-demand
+- **Approval gates** for T3 operations via nonce-based workflow
 - **Git commit validation** with Conventional Commits
-- **16 skills** - Injected procedural knowledge modules for agents
-- **1800+ tests** at 100% passing
+- **20 skills** - Injected procedural knowledge modules for agents
+- **Plugin + npm** - Distributable as Claude Code native plugin or npm package
 
 ## Installation
 
@@ -56,7 +56,9 @@ This will:
 1. Auto-detect your project structure (GitOps, Terraform, AppServices)
 2. Install Claude Code if not present
 3. Create `.claude/` directory with symlinks to this package
-4. Generate `CLAUDE.md` and `project-context.json`
+4. Generate `project-context.json` and `settings.json`
+
+No `CLAUDE.md` is generated -- orchestrator identity is injected dynamically by the UserPromptSubmit hook.
 
 ### Manual Installation
 
@@ -86,7 +88,7 @@ Once installed, the agent system is ready:
 claude
 ```
 
-Claude Code will automatically load `CLAUDE.md` and have access to all agents via `.claude/`.
+The orchestrator identity is injected dynamically by the UserPromptSubmit hook. Skills are loaded on-demand.
 
 Skills and injection diagnosis:
 
@@ -101,15 +103,15 @@ npx gaia-skills-diagnose --run-tests
 ```
 node_modules/@jaguilar87/gaia-ops/
 ├── agents/              # Agent definitions (6 agents)
-├── skills/              # Skill modules (16 skills)
+├── skills/              # Skill modules (20 skills)
 ├── tools/               # Orchestration tools
 ├── hooks/               # Claude Code hooks (modular architecture)
-├── commands/            # Slash commands (6 commands: 5 speckit + scan-project)
+├── commands/            # Slash commands (5 speckit + scan-project)
 ├── config/              # Configuration (contracts, git standards, rules)
-├── templates/           # Installation templates
-├── speckit/             # Spec-Kit framework (scripts + templates)
+├── templates/           # Installation templates (settings, governance)
+├── speckit/             # Spec-Kit framework (templates)
 ├── bin/                 # CLI utilities (11 scripts)
-└── tests/               # Test suite (1800+ tests)
+└── tests/               # Test suite
 ```
 
 ## API
@@ -129,7 +131,7 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **4.2.0**
+Current version: **4.4.0-rc.5**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 

@@ -124,37 +124,29 @@ def hooks_dir(package_root):
 
 @pytest.fixture(scope="session")
 def claude_md_content(package_root):
-    """
-    Content of the orchestrator CLAUDE.md.
+    """Content of the orchestrator identity.
 
-    Resolution order:
-    1. package_root/CLAUDE.md (installed project layout)
-    2. package_root/templates/CLAUDE.template.md (package repository layout)
-
-    The template fallback is normalized with a small compatibility appendix
-    so path-oriented assertions remain meaningful.
+    CLAUDE.md is no longer generated from a template. Identity is now
+    injected by UserPromptSubmit hook via ops_identity.py. This fixture
+    returns the identity string for tests that need to verify orchestrator
+    content, falling back to CLAUDE.md if it exists (legacy projects).
     """
     primary = package_root / "CLAUDE.md"
     if primary.exists():
         return primary.read_text()
 
-    template = package_root / "templates" / "CLAUDE.template.md"
-    if template.exists():
-        content = template.read_text()
-        missing_path_markers = []
-        for marker in ["project-context.json", "agents/", "skills/"]:
-            if marker not in content:
-                missing_path_markers.append(f"- {marker}")
-
-        if missing_path_markers:
-            content += (
-                "\n\n## Test Compatibility Paths\n"
-                + "\n".join(missing_path_markers)
-                + "\n"
-            )
+    identity_path = package_root / "hooks" / "modules" / "identity" / "ops_identity.py"
+    if identity_path.exists():
+        content = identity_path.read_text()
+        dispatch_path = package_root / "skills" / "project-dispatch" / "SKILL.md"
+        response_path = package_root / "skills" / "agent-response" / "SKILL.md"
+        if dispatch_path.exists():
+            content += "\n" + dispatch_path.read_text()
+        if response_path.exists():
+            content += "\n" + response_path.read_text()
         return content
 
-    pytest.skip("Neither CLAUDE.md nor templates/CLAUDE.template.md was found")
+    pytest.skip("Neither CLAUDE.md nor ops_identity.py was found")
 
 
 @pytest.fixture(scope="session")

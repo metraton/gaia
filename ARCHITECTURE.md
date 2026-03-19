@@ -15,7 +15,7 @@ The package is published as `@jaguilar87/gaia-ops` on npm and installed into a p
 | **Hook** | Python scripts that intercept tool calls before and after execution |
 | **Tool** | Python modules in `tools/` providing context assembly, memory, and validation |
 | **Config** | JSON files in `config/` defining contracts, rules, surface routing, and security |
-| **Orchestrator** | The root `CLAUDE.md` that routes user requests to the correct agent |
+| **Orchestrator** | Identity injected by UserPromptSubmit hook; routes requests to the correct agent via on-demand skills |
 
 ## Runtime Flow
 
@@ -23,17 +23,21 @@ The package is published as `@jaguilar87/gaia-ops` on npm and installed into a p
 User request
     |
     v
-Orchestrator (CLAUDE.md)
+user_prompt_submit.py  (UserPromptSubmit hook)
+    |  Inject orchestrator identity via ops_identity.py
+    |  Skills loaded on-demand: project-dispatch, agent-response
+    v
+Orchestrator dispatches to agent
     |  Routes by surface classification
     v
 pre_tool_use.py  (PreToolUse hook)
-    |  1. Inject project-context into agent prompt
-    |  2. Inject session events
+    |  1. Inject project-context into agent prompt (Task/Agent)
+    |  2. Inject session events (Task/Agent)
     |  3. Validate Bash commands (security gate)
-    |  4. Validate Task/Agent invocations
+    |  4. Validate SendMessage (agent resumption)
     v
 Agent executes
-    |  Uses tools, follows skills, emits AGENT_STATUS
+    |  Uses tools, follows skills, emits json:contract
     v
 subagent_stop.py  (SubagentStop hook)
     |  1. Read transcript, extract task description
@@ -43,10 +47,10 @@ subagent_stop.py  (SubagentStop hook)
     |  5. Store episodic memory
     |  6. Process CONTEXT_UPDATE blocks
     v
-Orchestrator processes AGENT_STATUS
+Orchestrator processes json:contract (via agent-response skill)
     |  COMPLETE -> summarize to user
-    |  AWAITING_APPROVAL -> get approval -> resume
-    |  NEEDS_INPUT -> ask user -> resume
+    |  AWAITING_APPROVAL -> get approval -> resume via SendMessage
+    |  NEEDS_INPUT -> ask user -> resume via SendMessage
     |  BLOCKED -> report blocker
 ```
 
@@ -74,10 +78,17 @@ Order is short-circuit -- first match wins:
 
 ```
 1. Response contract guard  --> if pending repair exists, block new tasks until resolved
-2. Context injection        --> context_provider.py assembles payload, injected into prompt
-3. Session events injection --> recent git commits, pushes, file mods added to prompt
-4. Resume validation        --> validate agent ID format, detect approval nonces
-5. TaskValidator            --> validate agent name, check available agents
+2. Context injection        --> context_provider.py assembles payload, injected via additionalContext
+3. Session events injection --> recent git commits, pushes, file mods added via additionalContext
+4. TaskValidator            --> validate agent name, check available agents
+```
+
+### SendMessage Validation (PreToolUse matcher)
+
+```
+1. Agent ID format check    --> must match /^a[0-9a-f]{5,}$/
+2. Message presence check   --> non-empty message required
+3. Nonce approval check     --> detect APPROVE:{nonce}, activate pending grants
 ```
 
 ## Agent Completion Pipeline: subagent_stop.py
@@ -252,7 +263,7 @@ The adapter layer connects Claude Code's hook protocol to gaia-ops business logi
 | **File (npm channel)** | `templates/settings.template.json` -- paths use `.claude/hooks/` prefix |
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
 | **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
-| **Events configured** | PreToolUse, PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart (UserPromptSubmit is a static echo in settings.json only) |
+| **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage), PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart, UserPromptSubmit (identity injection) |
 
 ### HookAdapter ABC Contract
 
@@ -299,7 +310,9 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 
 | File | Purpose |
 |------|---------|
-| `CLAUDE.md` | Orchestrator identity, routing table, tool restrictions |
+| `hooks/modules/identity/ops_identity.py` | Orchestrator identity (injected by UserPromptSubmit) |
+| `skills/project-dispatch/SKILL.md` | Agent routing table and dispatch rules (on-demand) |
+| `skills/agent-response/SKILL.md` | Contract status handling protocol (on-demand) |
 | `hooks/pre_tool_use.py` | PreToolUse hook entry point |
 | `hooks/subagent_stop.py` | SubagentStop hook entry point |
 | `hooks/modules/tools/bash_validator.py` | Bash command security gate |

@@ -1,14 +1,20 @@
 # Changelog: CLAUDE.md
 
-All notable changes to the CLAUDE.md orchestrator instructions are documented in this file.
+All notable changes to the gaia-ops orchestration system are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.4.0-rc.5] - 2026-03-19
 
-### Added
-- Plugin distribution: `.claude-plugin/plugin.json` manifest for Claude Code native plugin system
+### Identity Redesign
+
+Orchestrator identity is now minimal (~900 chars) and delegates to on-demand skills. CLAUDE.template.md deleted -- the UserPromptSubmit hook is the single source of truth for orchestrator identity.
+
+#### Added
+- **`skills/project-dispatch/SKILL.md`** (Reference type) -- agent routing table and dispatch rules, loaded on-demand via Skill tool
+- **`skills/agent-response/SKILL.md`** (Protocol type) -- contract status handling, loaded on-demand via Skill tool
+- Plugin distribution: `.claude-plugin/plugin.json` manifest with engines + categories for Claude Code native plugin system
 - Self-hosted marketplace: `.claude-plugin/marketplace.json` with 2 sub-plugin tiers (gaia-security, gaia-ops)
 - Adapter layer: `hooks/adapters/` with normalized types, abstract base, and Claude Code adapter
 - `hooks/hooks.json` for plugin-channel hook configuration
@@ -16,9 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for adapter -> business logic -> response flow
 - Plugin manifest validation tests
 
-### Changed
+#### Changed
+- **`hooks/modules/identity/ops_identity.py`** -- reduced to ~900 chars; tells orchestrator to load skills on-demand instead of embedding all instructions inline
+- **SendMessage validation** -- moved from invalid hook event to PreToolUse matcher (agent ID format + nonce approval check)
+- **`hooks/modules/scanning/scan_trigger.py`** -- imports `tools.scan` directly (no `bin/` dependency), works in both npm and plugin mode
+- **Agent namespace support** -- accepts both `cloud-troubleshooter` and `gaia-ops:cloud-troubleshooter` forms
+- **`hooks/user_prompt_submit.py`** -- calls `ensure_plugin_registry()` as fallback if SessionStart didn't fire
+- **`hooks/modules/context/context_injector.py`** -- path fixes for plugin mode
+- **`hooks/modules/session/session_event_injector.py`** -- path fixes for plugin mode
 - Hook entry points (pre_tool_use.py, post_tool_use.py, subagent_stop.py) now use adapter layer for stdin/stdout
 - hook_response.py delegates to ClaudeCodeAdapter internally
+- npm dist-tag now derived from version suffix (rc -> next, beta -> beta, etc.)
+
+#### Removed
+- **`templates/CLAUDE.template.md`** -- identity now injected dynamically; no generated CLAUDE.md
+- **`copy_claude_md()`** in `tools/scan/setup.py` -- deprecated to no-op (callers still reference it for backward compat)
 
 ## [4.0.0] - 2026-03-03
 

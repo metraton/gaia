@@ -104,13 +104,12 @@ class TestFileValidity:
         data = json.loads(pc_file.read_text())
         assert "metadata" in data, "project-context.json must have 'metadata'"
 
-    def test_claude_md_exists(self, test_project):
-        """CLAUDE.md must exist in project root."""
+    def test_claude_md_not_required(self, test_project):
+        """CLAUDE.md is no longer generated -- identity injected by hook."""
         project_dir, _ = test_project
-        claude_md = project_dir / "CLAUDE.md"
-        assert claude_md.exists(), "CLAUDE.md not found in project root"
-        content = claude_md.read_text()
-        assert len(content) > 100, "CLAUDE.md too short"
+        # CLAUDE.md should NOT be generated (identity injected by UserPromptSubmit hook).
+        # If it exists from a previous version, that's acceptable but not required.
+        pass
 
 
 if __name__ == "__main__":

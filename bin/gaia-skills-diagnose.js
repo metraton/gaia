@@ -690,19 +690,8 @@ function detectLegacyGapPatterns(ctx, findings, checks) {
   const conftestPath = path.join(testsDir, "conftest.py");
   if (exists(conftestPath)) {
     const content = readText(conftestPath);
-    const expectsRootClaudeMd = content.includes('(package_root / "CLAUDE.md").read_text()');
-    const hasRootClaudeMd = exists(ctx.rootClaudeMd);
-
-    if (expectsRootClaudeMd && !hasRootClaudeMd) {
-      addFinding(findings, {
-        severity: "high",
-        code: "TEST_EXPECTS_MISSING_CLAUDE_MD",
-        title: "Tests require package-root CLAUDE.md that does not exist",
-        detail: "tests/conftest.py fixture reads package_root/CLAUDE.md, causing routing-table tests to error.",
-        evidence: `${path.relative(PACKAGE_ROOT, conftestPath)} + missing ${path.relative(PACKAGE_ROOT, ctx.rootClaudeMd)}`,
-        remediation: "Either include CLAUDE.md in package root or make fixture robust to installed-project layout.",
-      });
-    }
+    // CLAUDE.md is no longer generated -- identity injected by UserPromptSubmit hook.
+    // conftest.py fixture now falls back to ops_identity.py + dispatch/response skills.
   }
 
   checks.push({
@@ -767,16 +756,7 @@ function runTestProbe(ctx, findings, checks) {
       });
     }
 
-    if (combined.includes("No such file or directory") && combined.includes("CLAUDE.md")) {
-      addFinding(findings, {
-        severity: "high",
-        code: "PYTEST_FAILS_ON_MISSING_CLAUDE_MD",
-        title: "Routing-table tests fail because package-root CLAUDE.md is missing",
-        detail: "tests/conftest.py fixture assumes package_root/CLAUDE.md exists.",
-        evidence: "FileNotFoundError: .../gaia-ops/CLAUDE.md",
-        remediation: "Provide CLAUDE.md or adjust fixture to locate generated CLAUDE.md in project context.",
-      });
-    }
+    // CLAUDE.md is no longer required -- conftest.py falls back to ops_identity.py
   }
 
   checks.push({

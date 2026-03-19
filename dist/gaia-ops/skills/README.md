@@ -6,10 +6,11 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 
 ```
 .claude/skills/
-├── agent-protocol/        # json:contract format, search protocol, repair flow
+├── agent-protocol/        # json:contract format, state machine, repair flow
+├── agent-response/        # Orchestrator: interpret agent json:contract responses
+├── project-dispatch/      # Orchestrator: agent table and dispatch rules
 ├── security-tiers/        # T0-T3 classification
 │   └── reference.md
-├── output-format/         # Deprecated — retained for reference only
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── command-execution/     # Defensive execution, safe shell patterns
 │   └── reference.md
@@ -26,6 +27,8 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 ├── developer-patterns/    # Developer workflow patterns
 ├── fast-queries/          # Quick diagnostic scripts
 ├── speckit-workflow/      # Speckit phase management
+├── specification/         # Feature specification workflow
+├── orchestrator-approval/ # T3 nonce approval relay for orchestrator
 ├── approval/              # T3 plan presentation and approval workflow
 │   └── examples.md
 ├── execution/             # Post-approval execution protocol
@@ -61,6 +64,11 @@ skills:
 | gaia | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
 | speckit-planner | agent-protocol, security-tiers, speckit-workflow | - |
 
+Orchestrator skills (loaded on-demand via Skill tool, not assigned to agents):
+- **project-dispatch** -- agent table and dispatch rules
+- **agent-response** -- contract status interpretation and presentation
+- **orchestrator-approval** -- T3 nonce approval relay
+
 ## Skill Types
 
 | Type | Injection | Examples |
@@ -69,6 +77,7 @@ skills:
 | **Common** | Most agents via `skills:` | command-execution, context-updater |
 | **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns |
 | **Workflow** | On-demand (agent reads file) | approval, execution, git-conventions |
+| **Orchestrator** | On-demand via Skill tool | project-dispatch, agent-response, orchestrator-approval |
 
 Workflow skills are loaded on-demand -- agents read them from disk when needed rather than receiving them at startup. Supporting files (`examples.md`, `reference.md`) are also read on-demand.
 
@@ -99,4 +108,4 @@ Instructions and patterns the agent follows.
 
 ---
 
-**Updated:** 2026-03-08 | **Total skills:** 16
+**Updated:** 2026-03-19 | **Total skills:** 20
