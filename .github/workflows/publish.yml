@@ -62,13 +62,22 @@ jobs:
       - name: Clean build artifacts
         run: npm run clean
 
-      - name: Publish to npm
+      - name: Determine npm tag
+        id: npm-tag
         run: |
-          if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
-            npm publish --access public --tag beta
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *"-rc."* ]]; then
+            echo "tag=rc" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *"-beta."* ]]; then
+            echo "tag=beta" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *"-alpha."* ]]; then
+            echo "tag=alpha" >> "$GITHUB_OUTPUT"
           else
-            npm publish --access public
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Publish to npm
+        run: npm publish --access public --tag ${{ steps.npm-tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
