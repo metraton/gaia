@@ -863,8 +863,8 @@ class TestScenario8FullApprovalCycle:
             f"SessionStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
 
-        # 2. Invoke gaia agent
-        result = sim.invoke_agent("gaia", "push changes to main branch")
+        # 2. Invoke gaia-system agent
+        result = sim.invoke_agent("gaia-system", "push changes to main branch")
         assert result["exit_code"] == 0, (
             f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )

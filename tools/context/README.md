@@ -58,7 +58,7 @@ Builds the deterministic investigation brief injected into project context.
 
 ```python
 from tools.context.surface_router import build_investigation_brief
-brief = build_investigation_brief("Review hook/skill drift", "gaia", contract_context={})
+brief = build_investigation_brief("Review hook/skill drift", "gaia-system", contract_context={})
 ```
 
 ## Core Classes

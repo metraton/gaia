@@ -153,8 +153,8 @@ class TestRoutingSimulator:
         assert len(result.contracts["read"]) > 0
 
     def test_agent_type_override(self, simulator):
-        result = simulator.simulate("some generic task", agent_type="gaia")
-        assert result.primary_agent == "gaia"
+        result = simulator.simulate("some generic task", agent_type="gaia-system")
+        assert result.primary_agent == "gaia-system"
 
     def test_multi_surface_detection(self, simulator):
         # A prompt that touches multiple surfaces
@@ -236,7 +236,7 @@ class TestSkillsMapper:
         assert "devops-developer" in names
         assert "gitops-operator" in names
         assert "terraform-architect" in names
-        assert "gaia" in names
+        assert "gaia-system" in names
         assert "speckit-planner" in names
 
     def test_agent_profiles_have_skills(self, mapper):

@@ -190,12 +190,12 @@ def test_speckit_planner_contract(temp_project_context: Path):
     assert "operational_guidelines" in contract
     assert "application_services" in contract
 
-def test_gaia_is_meta_agent_without_contracts(temp_project_context: Path):
-    """Verify gaia (meta-agent) is not in context-contracts and context_provider rejects it."""
+def test_gaia_system_is_meta_agent_without_contracts(temp_project_context: Path):
+    """Verify gaia-system (meta-agent) is not in context-contracts and context_provider rejects it."""
     script_path = TOOLS_DIR / "context" / "context_provider.py"
     cmd = [
         sys.executable, str(script_path),
-        "gaia", "Update the agent definitions.",
+        "gaia-system", "Update the agent definitions.",
         "--context-file", str(temp_project_context),
     ]
     process = subprocess.run(
@@ -204,9 +204,9 @@ def test_gaia_is_meta_agent_without_contracts(temp_project_context: Path):
         text=True,
         cwd=temp_project_context.parent.parent,
     )
-    # gaia is a meta-agent — not in context-contracts.json, so context_provider exits non-zero
-    assert process.returncode != 0, "gaia is a meta-agent and should not have context contracts"
-    assert "invalid agent" in process.stderr.lower() or "gaia" in process.stderr.lower()
+    # gaia-system is a meta-agent — not in context-contracts.json, so context_provider exits non-zero
+    assert process.returncode != 0, "gaia-system is a meta-agent and should not have context contracts"
+    assert "invalid agent" in process.stderr.lower() or "gaia-system" in process.stderr.lower()
 
 
 # ============================================================================

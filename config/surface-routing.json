@@ -156,7 +156,7 @@
       }
     },
     "gaia_system": {
-      "primary_agent": "gaia",
+      "primary_agent": "gaia-system",
       "adjacent_surfaces": ["app_ci_tooling"],
       "contract_sections": ["project_identity", "stack", "git", "environment", "infrastructure", "orchestration", "operational_guidelines", "architecture_overview"],
       "required_checks": [

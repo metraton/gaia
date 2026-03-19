@@ -66,7 +66,7 @@ class TestSchemaCompatibility:
             "cloud-troubleshooter",
             "devops-developer",
             "speckit-planner",
-            "gaia",
+            "gaia-system",
         ]:
             assert agent in template_content, (
                 f"Template routing must include {agent}"

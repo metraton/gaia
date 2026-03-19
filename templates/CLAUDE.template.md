@@ -26,8 +26,8 @@ the agent cannot derive. Hooks inject context automatically.
 | gitops-operator | gitops_desired_state | Desired state in Git: manifests, Helm, Flux | cloud-troubleshooter, terraform-architect, devops-developer |
 | terraform-architect | terraform_iac | Cloud resources: Terraform, Terragrunt, IAM | gitops-operator, devops-developer, cloud-troubleshooter |
 | devops-developer | app_ci_tooling | App code, CI/CD, Docker, build tooling | terraform-architect, gitops-operator |
-| speckit-planner | planning_specs | Specs, plans, task breakdowns | devops-developer, gaia |
-| gaia | gaia_system | System internals: hooks, skills, CLAUDE.md | devops-developer |
+| speckit-planner | planning_specs | Specs, plans, task breakdowns | devops-developer, gaia-system |
+| gaia-system | gaia_system | System internals: hooks, skills, CLAUDE.md | devops-developer |
 
 When a request touches multiple surfaces, check the Adjacent column
 and dispatch agents in parallel if independent.

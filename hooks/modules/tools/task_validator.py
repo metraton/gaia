@@ -37,7 +37,7 @@ AVAILABLE_AGENTS = [
     "gitops-operator",
     "cloud-troubleshooter",
     "devops-developer",
-    "gaia",
+    "gaia-system",
     "Explore",
     "Plan",
     "speckit-planner",
@@ -46,7 +46,7 @@ AVAILABLE_AGENTS = [
 
 # Meta-agents that don't require context_provider.
 # speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
-META_AGENTS = ["gaia", "Explore", "Plan", "claude-code-guide"]
+META_AGENTS = ["gaia-system", "Explore", "Plan", "claude-code-guide"]
 
 # T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
 # to verify that these commands are classified as T3 by the verb detector.
