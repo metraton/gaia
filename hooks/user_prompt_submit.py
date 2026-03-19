@@ -35,9 +35,13 @@ if __name__ == "__main__":
         # Check if first-time setup needs a restart notification
         restart_msg = consume_restart_message()
         if restart_msg:
-            identity += (
-                f"\n\nIMPORTANT: {restart_msg} "
-                f"Tell the user to restart the session by exiting and re-running claude."
+            identity = (
+                f"STOP. Before doing anything else, tell the user this message exactly:\n\n"
+                f"---\n"
+                f"gaia plugin setup complete. Permissions have been configured in .claude/settings.json.\n"
+                f"Please restart this session to activate all permissions: exit and re-run claude.\n"
+                f"---\n\n"
+                f"Do not proceed with the user's request until they acknowledge this message."
             )
             logger.info("Restart message injected: %s", restart_msg)
 
