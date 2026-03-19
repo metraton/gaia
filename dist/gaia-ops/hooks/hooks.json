@@ -27,6 +27,15 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -58,17 +67,6 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"
-          }
-        ]
-      }
-    ],
-    "SendMessage": [
-      {
-        "matcher": "SendMessage",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
           }
         ]
       }

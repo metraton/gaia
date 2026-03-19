@@ -195,7 +195,6 @@ def _get_entry_point(event_name: str, entries: list[str]) -> str:
         "SessionStart": "hooks/session_start.py",
         "TaskCompleted": "hooks/task_completed.py",
         "PostCompact": "hooks/post_compact.py",
-        "SendMessage": "hooks/pre_tool_use.py",
     }
     entry = event_to_file.get(event_name)
     if entry and entry in entries:
@@ -229,6 +228,8 @@ def generate_plugin_json(manifest: dict) -> dict:
         "repository": "https://github.com/metraton/gaia-ops",
         "license": "MIT",
         "keywords": ["security", "devops"],
+        "engines": {"claude-code": ">=2.1.0"},
+        "categories": ["devops", "security", "orchestration"],
     }
 
 

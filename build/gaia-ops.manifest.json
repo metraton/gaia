@@ -18,12 +18,12 @@
       "PreToolUse": [
         {"matcher": "Bash"},
         {"matcher": "Task"},
-        {"matcher": "Agent"}
+        {"matcher": "Agent"},
+        {"matcher": "SendMessage"}
       ],
       "PostToolUse": [{"matcher": "Bash"}],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup"}],
-      "SendMessage": [{"matcher": "SendMessage"}],
       "PostCompact": [{}],
       "Stop": [{}],
       "TaskCompleted": [{}],
