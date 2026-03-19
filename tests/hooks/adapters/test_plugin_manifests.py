@@ -167,19 +167,14 @@ class TestHooksJson:
     def test_hooks_json_matches_settings_template_events(self):
         """hooks.json must cover the same events as settings.template.json.
 
-        UserPromptSubmit is excluded: it is a static echo in settings.json
-        (not a Python hook in the plugin), because plugin hook output is
-        discarded by Claude Code for this event.
+        All events in settings.template.json should have a corresponding
+        entry in hooks.json (plugin version).
         """
         settings_path = PROJECT_ROOT / "templates" / "settings.template.json"
         settings_data = json.loads(settings_path.read_text())
         hooks_data = json.loads(self.hooks_path.read_text())
 
-        # UserPromptSubmit is a static echo in settings.json only --
-        # no corresponding Python hook in hooks.json
-        static_echo_events = {"UserPromptSubmit"}
-
-        settings_events = set(settings_data["hooks"].keys()) - static_echo_events
+        settings_events = set(settings_data["hooks"].keys())
         hooks_events = set(hooks_data["hooks"].keys())
         assert hooks_events == settings_events, (
             f"Event mismatch: hooks.json has {hooks_events}, "

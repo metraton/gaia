@@ -10,9 +10,9 @@ Validates:
 5. hooks.json has SessionStart entry
 6. format_bootstrap_response and format_context_response integration
 
-Note: UserPromptSubmit was simplified to a static echo in settings.json.
-The Python hook (user_prompt_submit.py) and adapter method (adapt_user_prompt)
-were removed. Plugin hook output is discarded by Claude Code anyway.
+Note: UserPromptSubmit was migrated from static echo to a real Python hook
+in Phase C (dynamic identity injection). The hook injects mode-specific
+identity context via additionalContext.
 """
 
 import sys
@@ -250,12 +250,12 @@ class TestHooksJsonP1Entries:
         assert session_start[0]["matcher"] == "startup"
         assert "session_start.py" in session_start[0]["hooks"][0]["command"]
 
-    def test_user_prompt_submit_removed_from_hooks_json(self, hooks_config):
-        """UserPromptSubmit must NOT be in hooks.json (moved to static echo in settings.json)."""
+    def test_user_prompt_submit_in_hooks_json(self, hooks_config):
+        """UserPromptSubmit must be in hooks.json (Phase C: dynamic identity injection)."""
         hooks = hooks_config.get("hooks", {})
-        assert "UserPromptSubmit" not in hooks, (
-            "UserPromptSubmit should be removed from hooks.json -- "
-            "it is now a static echo in settings.template.json"
+        assert "UserPromptSubmit" in hooks, (
+            "UserPromptSubmit should be in hooks.json -- "
+            "Phase C migrated it from static echo to dynamic identity script"
         )
 
     def test_p0_events_still_present(self, hooks_config):

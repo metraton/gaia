@@ -32,7 +32,7 @@ from adapters.types import HookEventType
 class TestHookEventTypeEnum:
     """Verify HookEventType enum has all expected members."""
 
-    # The 19 event types from the Claude Code hook protocol
+    # The 20 event types from the Claude Code hook protocol
     EXPECTED_EVENTS = {
         # P0 - Currently implemented
         "PRE_TOOL_USE": "PreToolUse",
@@ -48,6 +48,7 @@ class TestHookEventTypeEnum:
         "SUBAGENT_START": "SubagentStart",
         # P3
         "PRE_COMPACT": "PreCompact",
+        "POST_COMPACT": "PostCompact",
         "CONFIG_CHANGE": "ConfigChange",
         "SESSION_END": "SessionEnd",
         "INSTRUCTIONS_LOADED": "InstructionsLoaded",
@@ -62,7 +63,7 @@ class TestHookEventTypeEnum:
     }
 
     def test_enum_has_all_expected_members(self):
-        """All 19 expected event types exist in the enum."""
+        """All 20 expected event types exist in the enum."""
         for attr_name, event_value in self.EXPECTED_EVENTS.items():
             assert hasattr(HookEventType, attr_name), (
                 f"HookEventType missing member: {attr_name}"
@@ -73,10 +74,10 @@ class TestHookEventTypeEnum:
             )
 
     def test_enum_count(self):
-        """Enum has exactly 19 members."""
+        """Enum has exactly 20 members."""
         member_count = len(HookEventType)
-        assert member_count == 19, (
-            f"Expected 19 HookEventType members, got {member_count}. "
+        assert member_count == 20, (
+            f"Expected 20 HookEventType members, got {member_count}. "
             f"Members: {[e.name for e in HookEventType]}"
         )
 
