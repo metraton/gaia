@@ -432,6 +432,28 @@ class ClaudeCodeAdapter(HookAdapter):
         logger.info("Hook invoked: tool=%s, params=%s", tool_name, json.dumps(tool_input)[:200])
 
         try:
+            # ── Delegate mode gate ─────────────────────────────────
+            # Must run before any other logic.  When enabled, the
+            # orchestrator (main session) is restricted to dispatch-only
+            # tools.  Subagents are unaffected.
+            from modules.orchestrator.delegate_mode import check_delegate_mode
+
+            dm_result = check_delegate_mode(tool_name, hook_data)
+            if dm_result.blocked:
+                logger.warning(
+                    "DELEGATE_MODE denied %s for orchestrator", tool_name,
+                )
+                return HookResponse(
+                    output={
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": dm_result.reason,
+                        }
+                    },
+                    exit_code=0,
+                )
+
             # Periodic cleanup of expired approval grants
             cleanup_expired_grants()
 
