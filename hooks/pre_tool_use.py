@@ -11,6 +11,7 @@ Architecture:
 - All business logic lives in ClaudeCodeAdapter.adapt_pre_tool_use()
 - This file is stdin/stdout glue only
 """
+from __future__ import annotations
 
 import sys
 import json

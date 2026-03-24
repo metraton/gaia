@@ -20,6 +20,7 @@ Usage in a hook entrypoint::
     if __name__ == "__main__":
         run_hook(_handle, hook_name="stop_hook")
 """
+from __future__ import annotations
 
 import json
 import logging

@@ -3,6 +3,7 @@
 Builds a lightweight context summary from session data sources.
 Each source is independent and fail-safe.
 """
+from __future__ import annotations
 
 import json
 import logging

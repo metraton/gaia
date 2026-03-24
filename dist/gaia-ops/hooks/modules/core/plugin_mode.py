@@ -10,6 +10,7 @@ Detection order:
 3. GAIA_PLUGIN_MODE env var fallback
 4. Default: "security" (most restrictive)
 """
+from __future__ import annotations
 
 import json
 import logging

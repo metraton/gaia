@@ -13,6 +13,7 @@ Tiers:
 - T3: State-modifying operations (mutative_verbs.py detection,
   nonce-based approval via approval_grants.py)
 """
+from __future__ import annotations
 
 import re
 import logging

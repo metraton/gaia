@@ -5,6 +5,7 @@ Subsystem 4 of the pre_tool_use Task/Agent path.
 Filters events by agent domain and injects them into agent prompts.
 Includes the hardcoded agent-to-event mapping.
 """
+from __future__ import annotations
 
 import json
 import logging

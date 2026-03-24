@@ -1,4 +1,5 @@
 """Canonical approval/resume text used by hooks, skills, and tests."""
+from __future__ import annotations
 
 from .approval_constants import NONCE_APPROVAL_PREFIX
 

@@ -3,6 +3,7 @@
 Detects first run via marker file in CLAUDE_PLUGIN_DATA.
 On first run, merges gaia permissions into .claude/settings.local.json.
 """
+from __future__ import annotations
 
 import json
 import logging
