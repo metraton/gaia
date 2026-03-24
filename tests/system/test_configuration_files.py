@@ -33,9 +33,8 @@ class TestSettingsTemplate:
         with open(settings_path, 'r') as f:
             data = json.load(f)
 
-        # Check for core sections
+        # Check for core sections (permissions live in settings.local.json, not the template)
         assert 'hooks' in data, "settings.template.json missing hooks section"
-        assert 'permissions' in data, "settings.template.json missing permissions section"
 
 
 class TestGitStandards:

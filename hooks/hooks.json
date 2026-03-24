@@ -16,6 +16,10 @@
       {
         "matcher": "SendMessage",
         "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"}]
+      },
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit",
+        "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"}]
       }
     ],
     "PostToolUse": [

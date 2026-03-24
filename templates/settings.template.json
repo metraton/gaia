@@ -36,6 +36,15 @@
             "command": ".claude/hooks/pre_tool_use.py"
           }
         ]
+      },
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre_tool_use.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -122,6 +131,10 @@
         ]
       }
     ]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "ORCHESTRATOR_DELEGATE_MODE": "false"
   },
   "environment": {
     "mode": "development"
