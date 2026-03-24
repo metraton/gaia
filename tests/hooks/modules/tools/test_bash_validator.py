@@ -51,29 +51,24 @@ class TestBashValidator:
         "git push origin main",
     ])
     def test_t3_commands_blocked_by_dangerous_verb_detector(self, validator, command):
-        """Test T3 commands are blocked with a structured block_response."""
+        """Test T3 commands are blocked with a structured block_response (ask)."""
         result = validator.validate(command)
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
-        assert "dangerous" in result.reason.lower()
-        # Block response uses hookSpecificOutput format for corrective messaging
+        assert "dangerous" in result.reason.lower() or "t3" in result.reason.lower()
+        # Block response uses hookSpecificOutput format with "ask" for native dialog
         assert result.block_response is not None
         assert "hookSpecificOutput" in result.block_response
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "approval workflow" in result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-    def test_pending_approval_persistence_failure_returns_structured_error(self, validator, monkeypatch):
-        """If the nonce record cannot be persisted, the agent must see a retryable error."""
-        monkeypatch.setattr(
-            "modules.tools.bash_validator.write_pending_approval",
-            lambda **kwargs: None,
-        )
+    def test_mutative_command_returns_ask_without_nonce(self, validator):
+        """T3 mutative commands return 'ask' for native dialog (no nonce generated)."""
         result = validator.validate("terraform apply")
         assert result.allowed is False
         assert result.block_response is not None
         reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "Approval workflow unavailable" in reason
         assert "NONCE:" not in reason
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
     # Commands blocked by dangerous verb detector (before reaching GitOps validator)
     @pytest.mark.parametrize("command", [
@@ -133,33 +128,19 @@ class TestCompoundCommandValidation:
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED
 
-    def test_t3_in_compound_propagates_block_response(self, validator, tmp_path, monkeypatch):
-        """Blocked T3 component should surface its nonce approval response."""
-        import modules.security.approval_grants as ag
-        ag._grants_dir_created = False
-        monkeypatch.setattr(
-            "modules.security.approval_grants.get_plugin_data_dir",
-            lambda: tmp_path / ".claude",
-        )
+    def test_t3_in_compound_propagates_block_response(self, validator):
+        """Blocked T3 component should surface its ask response."""
         result = validator.validate("ls -la && terraform apply")
         assert result.allowed is False
         assert result.block_response is not None
-        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "NONCE:" in reason
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-    def test_multiple_t3_components_return_first_block_response(self, validator, tmp_path, monkeypatch):
+    def test_multiple_t3_components_return_first_block_response(self, validator):
         """Compound commands should preserve the first blocked component response."""
-        import modules.security.approval_grants as ag
-        ag._grants_dir_created = False
-        monkeypatch.setattr(
-            "modules.security.approval_grants.get_plugin_data_dir",
-            lambda: tmp_path / ".claude",
-        )
         result = validator.validate("git commit -m 'feat: test' && git push origin main")
         assert result.allowed is False
         assert result.block_response is not None
-        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "NONCE:" in reason
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
     def test_blocks_deny_in_compound(self, validator):
         """Test blocks compound with denied command."""

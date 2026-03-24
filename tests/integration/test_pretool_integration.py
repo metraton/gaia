@@ -148,15 +148,8 @@ class TestSafeCommandFlow:
 class TestMutativeCommandFlow:
     """Integration: mutative command -> adapter parse -> validate -> deny response."""
 
-    def test_git_commit_mutative_flow(self, tmp_path, monkeypatch):
-        """Mutative: git commit -> denied with nonce."""
-        import modules.security.approval_grants as ag
-        ag._grants_dir_created = False
-        monkeypatch.setattr(
-            "modules.security.approval_grants.get_plugin_data_dir",
-            lambda: tmp_path / ".claude",
-        )
-
+    def test_git_commit_mutative_flow(self):
+        """Mutative: git commit -> ask (native dialog, no nonce)."""
         event, bash_result, response = _run_pretool_bash_flow(
             'git commit -m "feat(auth): add login"'
         )
@@ -164,8 +157,7 @@ class TestMutativeCommandFlow:
         assert bash_result.allowed is False
         assert bash_result.tier == SecurityTier.T3_BLOCKED
         assert bash_result.block_response is not None
-        reason = bash_result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "NONCE:" in reason
+        assert bash_result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
     def test_terraform_apply_mutative_flow(self, tmp_path, monkeypatch):
         """Mutative: terraform apply -> denied."""

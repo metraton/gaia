@@ -71,6 +71,13 @@ SAMPLE_AUDIT_JSONL = textwrap.dedent("""\
 """)
 
 
+@pytest.fixture(autouse=True)
+def isolate_env(monkeypatch):
+    """Isolate from host orchestrator env to prevent delegate mode blocking."""
+    monkeypatch.setenv("ORCHESTRATOR_DELEGATE_MODE", "false")
+    monkeypatch.setenv("GAIA_PLUGIN_MODE", "ops")
+
+
 @pytest.fixture
 def logs_dir(tmp_path: Path) -> Path:
     """Create a temp directory with sample log files."""

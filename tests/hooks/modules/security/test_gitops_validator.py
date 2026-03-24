@@ -26,7 +26,6 @@ from modules.security.gitops_validator import (
     is_safe_gitops_command,
     is_forbidden_gitops_command,
     validate_gitops_workflow,
-    to_dict,
     SAFE_KUBECTL_COMMANDS,
     SAFE_FLUX_COMMANDS,
     SAFE_HELM_COMMANDS,
@@ -277,29 +276,6 @@ class TestGitOpsValidationResult:
         """Test default severity is 'info'."""
         result = GitOpsValidationResult(allowed=True, reason="test")
         assert result.severity == "info"
-
-
-class TestToDict:
-    """Test to_dict conversion function."""
-
-    def test_converts_result_to_dict(self):
-        """Test result is converted to dictionary."""
-        result = validate_gitops_workflow("kubectl get pods")
-        d = to_dict(result)
-        assert isinstance(d, dict)
-        assert "allowed" in d
-        assert "reason" in d
-        assert "severity" in d
-        assert "suggestions" in d
-
-    def test_dict_values_match_result(self):
-        """Test dictionary values match the original result."""
-        result = validate_gitops_workflow("kubectl delete pod my-pod")
-        d = to_dict(result)
-        assert d["allowed"] == result.allowed
-        assert d["reason"] == result.reason
-        assert d["severity"] == result.severity
-        assert d["suggestions"] == result.suggestions
 
 
 class TestConfigLists:

@@ -14,7 +14,6 @@ Public API:
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -105,15 +104,6 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
 # Module-level cache for load_contracts
 # ---------------------------------------------------------------------------
 _contracts_cache: Dict[str, dict] = {}
-
-
-# ---------------------------------------------------------------------------
-# Known markers that terminate CONTEXT_UPDATE extraction
-# ---------------------------------------------------------------------------
-_KNOWN_MARKERS = re.compile(
-    r"^(?:AGENT_STATUS|CONTEXT_UPDATE|<!-- AGENT_STATUS):",
-    re.MULTILINE,
-)
 
 
 # ============================================================================
@@ -536,7 +526,3 @@ def process_context_updates(
     except Exception as e:
         logger.debug("Context update processing failed (non-fatal): %s", e)
         return None
-
-
-# Module-level alias for shorter import name
-update = process_context_updates

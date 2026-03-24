@@ -48,11 +48,10 @@ logger = logging.getLogger(__name__)
 from modules.tools.bash_validator import BashValidator
 from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
 from modules.security.prompt_validator import classify_resume_prompt
-from modules.context.context_injector import inject_project_context, build_project_context
-from modules.session.session_event_injector import inject_session_events, build_session_events
+from modules.context.context_injector import build_project_context
+from modules.session.session_event_injector import build_session_events
 from modules.core.state import create_pre_hook_state, save_hook_state
 from modules.security.approval_constants import (
-    NONCE_APPROVAL_PREFIX,
     NONCE_APPROVAL_PATTERN,
 )
 from modules.security.approval_messages import (
@@ -73,16 +72,6 @@ _HOOKS_DIR = Path(__file__).parent
 def _classify_resume_prompt(prompt: str) -> str:
     """Classify a resume prompt. Delegates to modules.security.prompt_validator."""
     return classify_resume_prompt(prompt)
-
-
-def _inject_project_context(parameters: dict) -> dict:
-    """Inject project context. Delegates to modules.context.context_injector."""
-    return inject_project_context(parameters, PROJECT_AGENTS, _HOOKS_DIR)
-
-
-def _inject_session_events(parameters: dict) -> dict:
-    """Inject session events. Delegates to modules.session.session_event_injector."""
-    return inject_session_events(parameters, PROJECT_AGENTS)
 
 
 def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
@@ -175,7 +164,7 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     """
     Handle Task/Agent tool validation for new task dispatches.
 
-    Uses additionalContext (Phase 2) instead of prompt mutation.
+    Uses additionalContext instead of prompt mutation.
     Validation runs against the original prompt, eliminating T3 false positives.
     """
     context_text, _telemetry = build_project_context(parameters, PROJECT_AGENTS, _HOOKS_DIR)
@@ -403,10 +392,15 @@ if __name__ == "__main__":
 
             if isinstance(response.output, dict) and response.output:
                 hook_output = response.output.get("hookSpecificOutput", {})
-                if hook_output.get("permissionDecision") in ("block", "deny"):
+                decision = hook_output.get("permissionDecision")
+                if decision in ("block", "deny"):
                     reason = hook_output.get("permissionDecisionReason", "Command blocked by hook policy")
                     summary = reason.split('\n')[0]
                     print(f"BLOCKED: {summary}", file=sys.stderr)
+                elif decision == "ask":
+                    reason = hook_output.get("permissionDecisionReason", "")
+                    summary = reason.split('\n')[0]
+                    print(f"T3: {summary}", file=sys.stderr)
                 print(json.dumps(response.output))
                 sys.exit(response.exit_code)
             elif isinstance(response.output, str) and response.output:

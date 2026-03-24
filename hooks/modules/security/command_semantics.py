@@ -38,10 +38,6 @@ class CommandSemantics:
         """Return the canonical analysis form of the command."""
         return " ".join(self.semantic_tokens)
 
-    def has_flag(self, flag: str) -> bool:
-        """Check whether a normalized flag is present."""
-        return flag.lower() in self.flag_tokens
-
 
 def tokenize_command(command: str) -> Tuple[str, ...]:
     """Tokenize a shell command safely, preserving quoted substrings."""

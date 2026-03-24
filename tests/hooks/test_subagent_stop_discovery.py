@@ -200,7 +200,7 @@ class TestExtractCommandsFromEvidence:
 class TestSubagentStopHookPostRemoval:
     """Test that subagent_stop_hook works after extract_and_store_discoveries removal."""
 
-    @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
+    @patch("subagent_stop.write_episode", return_value="ep-hook-001")
     def test_hook_no_longer_returns_discoveries(self, mock_episodic, structural_task_info):
         output = "All checks passed. No json:contract block."
         result = subagent_stop_hook(structural_task_info, output)
@@ -208,7 +208,7 @@ class TestSubagentStopHookPostRemoval:
         assert "discoveries" not in result
         assert result["response_contract"]["valid"] is False
 
-    @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
+    @patch("subagent_stop.write_episode", return_value="ep-hook-001")
     def test_invalid_contract_with_agent_id_creates_pending_repair(self, mock_episodic, structural_task_info):
         task_info = dict(structural_task_info)
         task_info["agent_id"] = "a12345"
@@ -225,7 +225,7 @@ class TestSubagentStopHookPostRemoval:
         assert result["success"] is True
         assert result["response_contract"]["valid"] is False
 
-    @patch("subagent_stop.capture_episodic_memory", return_value="ep-hook-001")
+    @patch("subagent_stop.write_episode", return_value="ep-hook-001")
     def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path, monkeypatch):
         transcript_path = tmp_path / "agent.jsonl"
         injected_payload = {

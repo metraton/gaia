@@ -403,10 +403,15 @@ if __name__ == "__main__":
 
             if isinstance(response.output, dict) and response.output:
                 hook_output = response.output.get("hookSpecificOutput", {})
-                if hook_output.get("permissionDecision") in ("block", "deny"):
+                decision = hook_output.get("permissionDecision")
+                if decision in ("block", "deny"):
                     reason = hook_output.get("permissionDecisionReason", "Command blocked by hook policy")
                     summary = reason.split('\n')[0]
                     print(f"BLOCKED: {summary}", file=sys.stderr)
+                elif decision == "ask":
+                    reason = hook_output.get("permissionDecisionReason", "")
+                    summary = reason.split('\n')[0]
+                    print(f"T3: {summary}", file=sys.stderr)
                 print(json.dumps(response.output))
                 sys.exit(response.exit_code)
             elif isinstance(response.output, str) and response.output:

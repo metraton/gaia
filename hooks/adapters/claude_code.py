@@ -422,9 +422,6 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.tools.bash_validator import BashValidator
         from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
         from modules.security.prompt_validator import classify_resume_prompt
-        from modules.context.context_injector import inject_project_context
-        from modules.session.session_event_injector import inject_session_events
-
         hook_data = event.payload
         tool_name = hook_data.get("tool_name") or ""
         tool_input = hook_data.get("tool_input", {})
@@ -567,7 +564,7 @@ class ClaudeCodeAdapter(HookAdapter):
     ) -> HookResponse:
         """Handle Task/Agent tool validation within the adapter.
 
-        Uses additionalContext (Phase 2) instead of prompt mutation.
+        Uses additionalContext instead of prompt mutation.
         Validation runs against the original prompt, eliminating T3 false positives.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
@@ -1167,10 +1164,6 @@ class ClaudeCodeAdapter(HookAdapter):
             QualityResult with quality assessment.
             Default: quality_sufficient=True (passthrough until business logic wired).
         """
-        # Extract stop reason and response content for future quality checks
-        _stop_reason = raw.get("stop_reason", "")
-        _last_message = raw.get("last_assistant_message", "")
-
         return QualityResult(
             quality_sufficient=True,
             score=1.0,
@@ -1192,10 +1185,6 @@ class ClaudeCodeAdapter(HookAdapter):
             VerificationResult with criteria assessment.
             Default: criteria_met=True (passthrough until business logic wired).
         """
-        # Extract task details for future verification logic
-        _task_id = raw.get("task_id", "")
-        _task_output = raw.get("task_output", "")
-
         return VerificationResult(
             criteria_met=True,
             verified_items=[],
@@ -1209,9 +1198,6 @@ class ClaudeCodeAdapter(HookAdapter):
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Parse SubagentStart event. Context injection is handled by PreToolUse."""
-        _agent_type = raw.get("agent_type", "")
-        _task_description = raw.get("task_description", "")
-
         return ContextResult(
             context_injected=False,
             additional_context=None,

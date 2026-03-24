@@ -156,28 +156,3 @@ def build_session_events(
         return None
 
 
-def inject_session_events(
-    parameters: dict,
-    project_agents: list,
-) -> dict:
-    """
-    Legacy wrapper: inject session events by mutating parameters["prompt"].
-
-    Retained for backward compatibility (tests import this function).
-    New code should use build_session_events() with additionalContext instead.
-
-    Args:
-        parameters: Task tool parameters (will be mutated).
-        project_agents: List of valid project agent names.
-
-    Returns:
-        Modified parameters with events injected into prompt.
-    """
-    events_string = build_session_events(parameters, project_agents)
-    if events_string is None:
-        return parameters
-
-    prompt = parameters.get("prompt", "")
-    enriched_prompt = f"{prompt}\n\n{events_string}\n"
-    parameters["prompt"] = enriched_prompt
-    return parameters

@@ -173,9 +173,10 @@ _DANGEROUS_INLINE_PATTERNS: Tuple[Tuple[_re.Pattern, str], ...] = (
     (_re.compile(r"shutil\.rmtree\b"), "shutil.rmtree"),
     (_re.compile(r"shutil\.move\b"), "shutil.move"),
     (_re.compile(r"shutil\.copy\b"), "shutil.copy"),
-    # NOTE: subprocess intentionally omitted -- commonly used for read-only
-    # inspection (e.g., subprocess.run(["echo","hello"])). The actual command
-    # inside the subprocess will be evaluated by the hook when it runs.
+    # subprocess — commands spawned inside python -c bypass the hook entirely
+    # (they run in-process, not as a new Bash tool invocation). Flag as mutative
+    # so the user sees what will execute.
+    (_re.compile(r"subprocess\.(run|call|check_call|check_output|Popen)\b"), "subprocess execution"),
     (_re.compile(r"open\s*\([^)]*['\"][wWaA]['\"]"), "file write via open()"),
     (_re.compile(r"\.write\s*\("), "file write"),
     (_re.compile(r"pathlib\.Path\([^)]*\)\.(unlink|rmdir|rename|write_)"), "pathlib mutation"),

@@ -239,14 +239,11 @@ class TaskValidator:
                 agent_name=agent_name,
             )
 
-        # Check context provisioning (for project agents)
-        has_context = self._check_context_provisioning(prompt, agent_name)
-
-        if not has_context and agent_name not in META_AGENTS:
-            logger.warning(
-                f"Task invocation for {agent_name} without apparent context provisioning. "
-                f"Orchestrator should call context_provider.py first (Phase 2)."
-            )
+        # Phase 2: context is injected via additionalContext by the adapter,
+        # not by mutating the prompt.  The validator cannot check additionalContext
+        # (it only sees parameters), so we skip the prompt-based check for project
+        # agents. Meta-agents never receive context by design.
+        has_context = agent_name not in META_AGENTS
 
         # Check for T3 operations (use original user task to avoid false positives from context)
         is_t3 = self._is_t3_operation(user_task_for_t3_check, description)

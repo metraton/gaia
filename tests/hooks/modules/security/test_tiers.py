@@ -5,7 +5,6 @@ Tests for Security Tier Classification.
 Validates:
 1. SecurityTier enum
 2. classify_command_tier() function
-3. tier_from_string() function
 """
 
 import sys
@@ -19,7 +18,6 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.tiers import (
     SecurityTier,
     classify_command_tier,
-    tier_from_string,
     T1_PATTERNS,
     T2_PATTERNS,
 )
@@ -169,37 +167,6 @@ class TestClassifyCommandTier:
         """Another unknown combination -- must be T0, not T3."""
         tier = classify_command_tier("mycustomtool dostuff --verbose")
         assert tier == SecurityTier.T0_READ_ONLY
-
-
-class TestTierFromString:
-    """Test tier_from_string() function."""
-
-    @pytest.mark.parametrize("tier_str,expected", [
-        ("T0", SecurityTier.T0_READ_ONLY),
-        ("T1", SecurityTier.T1_VALIDATION),
-        ("T2", SecurityTier.T2_DRY_RUN),
-        ("T3", SecurityTier.T3_BLOCKED),
-    ])
-    def test_converts_valid_strings(self, tier_str, expected):
-        """Test conversion of valid tier strings."""
-        result = tier_from_string(tier_str)
-        assert result == expected
-
-    def test_case_insensitive(self):
-        """Test conversion is case insensitive."""
-        assert tier_from_string("t0") == SecurityTier.T0_READ_ONLY
-        assert tier_from_string("T0") == SecurityTier.T0_READ_ONLY
-        assert tier_from_string("t3") == SecurityTier.T3_BLOCKED
-
-    def test_invalid_string_defaults_to_t3(self):
-        """Test invalid strings default to T3 (safest)."""
-        result = tier_from_string("invalid")
-        assert result == SecurityTier.T3_BLOCKED
-
-    def test_empty_string_defaults_to_t3(self):
-        """Test empty string defaults to T3."""
-        result = tier_from_string("")
-        assert result == SecurityTier.T3_BLOCKED
 
 
 class TestTierPatterns:

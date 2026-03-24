@@ -137,19 +137,6 @@ def get_session_dir() -> Path:
     return session_dir
 
 
-def get_hooks_config_dir() -> Path:
-    """
-    Get the hooks config directory.
-
-    Returns:
-        Path to hooks/config/
-    """
-    # Config lives alongside the hooks modules
-    hooks_dir = Path(__file__).parent.parent.parent
-    config_dir = hooks_dir / "config"
-    return config_dir
-
-
 def clear_path_cache():
     """Clear all cached path results (useful for testing)."""
     find_claude_dir.cache_clear()

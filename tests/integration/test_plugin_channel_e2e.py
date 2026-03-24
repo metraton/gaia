@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOKS_DIR = REPO_ROOT / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-from adapters.channel import detect_distribution_channel, get_plugin_root
+from adapters.claude_code import ClaudeCodeAdapter
 from adapters.types import DistributionChannel
 from modules.core.paths import clear_path_cache
 from modules.core.state import get_hook_state, STATE_FILE_NAME
@@ -129,24 +129,28 @@ def plugin_env_with_context(plugin_env):
 class TestPluginChannelDetection:
     """Verify that CLAUDE_PLUGIN_ROOT triggers PLUGIN channel detection."""
 
-    def test_detect_distribution_channel_returns_plugin(self, plugin_env):
-        """With CLAUDE_PLUGIN_ROOT set, detect_distribution_channel() returns PLUGIN."""
-        result = detect_distribution_channel()
+    def test_detect_channel_returns_plugin(self, plugin_env):
+        """With CLAUDE_PLUGIN_ROOT set, adapter.detect_channel() returns PLUGIN."""
+        adapter = ClaudeCodeAdapter()
+        result = adapter.detect_channel()
         assert result == DistributionChannel.PLUGIN, (
             f"Expected PLUGIN channel, got {result}"
         )
 
     def test_get_plugin_root_returns_correct_path(self, plugin_env):
-        """get_plugin_root() must return the CLAUDE_PLUGIN_ROOT env var value."""
-        result = get_plugin_root()
-        assert result == str(plugin_env["repo_root"]), (
+        """_get_plugin_root() must return the CLAUDE_PLUGIN_ROOT env var as a Path."""
+        adapter = ClaudeCodeAdapter()
+        result = adapter._get_plugin_root()
+        assert result is not None, "Expected non-None plugin root"
+        assert str(result) == str(plugin_env["repo_root"]), (
             f"Expected {plugin_env['repo_root']}, got {result}"
         )
 
     def test_npm_channel_when_env_unset(self, monkeypatch):
         """Without CLAUDE_PLUGIN_ROOT, channel defaults to NPM."""
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-        result = detect_distribution_channel()
+        adapter = ClaudeCodeAdapter()
+        result = adapter.detect_channel()
         assert result == DistributionChannel.NPM
 
 

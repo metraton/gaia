@@ -6,7 +6,7 @@ PRIORITY: HIGH - Critical for context enforcement.
 
 Validates:
 1. Agent existence verification
-2. Context provisioning enforcement (# Project Context)
+2. Context provisioning (project agents vs meta-agents)
 3. T3 operation approval requirement
 """
 
@@ -86,60 +86,37 @@ class TestAgentExistence:
 
 
 class TestContextProvisioning:
-    """Test context provisioning enforcement."""
+    """Test context provisioning by agent type.
+
+    Context is delivered via additionalContext (not prompt mutation).
+    The validator determines has_context by agent type: project agents
+    always have context, meta-agents never do.
+    """
 
     @pytest.fixture
     def validator(self):
         return TaskValidator()
 
-    def test_detects_project_context_header(self, validator):
-        """Test detection of '# Project Context' in prompt."""
-        params = {
-            "subagent_type": "terraform-architect",
-            "prompt": "# Project Context\nProject: test\n\nDeploy changes",
-        }
-        result = validator.validate(params)
-        assert result.has_context is True
+    def test_project_agents_always_have_context(self, validator):
+        """Project agents always report has_context=True regardless of prompt."""
+        for agent in ["terraform-architect", "gitops-operator", "devops-developer", "cloud-troubleshooter"]:
+            params = {
+                "subagent_type": agent,
+                "prompt": "Any prompt without context markers",
+            }
+            result = validator.validate(params)
+            assert result.has_context is True, f"{agent} should always have context"
 
-    def test_detects_contract_keyword(self, validator):
-        """Test detection of 'contract' in prompt."""
-        params = {
-            "subagent_type": "terraform-architect",
-            "prompt": "Contract includes project details and terraform config",
-        }
-        result = validator.validate(params)
-        assert result.has_context is True
-
-    def test_detects_context_provider_reference(self, validator):
-        """Test detection of context_provider.py reference."""
-        params = {
-            "subagent_type": "terraform-architect",
-            "prompt": "Context from context_provider.py output",
-        }
-        result = validator.validate(params)
-        assert result.has_context is True
-
-    def test_warns_missing_context_for_project_agents(self, validator, caplog):
-        """Test warning when project agent lacks context."""
-        params = {
-            "subagent_type": "terraform-architect",
-            "prompt": "Deploy changes to production",
-        }
-        result = validator.validate(params)
-        # Should log a warning about missing context
-        assert result.has_context is False
-
-    def test_meta_agents_dont_require_context(self, validator):
-        """Test that meta-agents don't require context_provider."""
+    def test_meta_agents_never_have_context(self, validator):
+        """Meta-agents never receive context by design."""
         for agent in META_AGENTS:
             params = {
                 "subagent_type": agent,
                 "prompt": "Analyze the system",
             }
             result = validator.validate(params)
-            # Should not block due to missing context
-            if not result.allowed:
-                assert "context" not in result.reason.lower()
+            if result.allowed:
+                assert result.has_context is False, f"Meta-agent {agent} should not have context"
 
 
 class TestT3ApprovalRequirement:

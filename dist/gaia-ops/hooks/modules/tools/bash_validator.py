@@ -140,23 +140,41 @@ class BashValidator:
                 # Not blocked but still indirect — route through approval
                 logger.info("Indirect execution detected: %s", command[:80])
                 result = detect_mutative_command(command)
-                if not result.is_mutative:
-                    # Force it through the nonce workflow as mutative
-                    hook_block = build_hook_permission_response(
-                        "ask",
-                        (
-                            "Indirect execution detected. The command uses a shell "
-                            "wrapper (bash -c, eval, python -c, etc.) that can bypass "
-                            "security checks. Please confirm you want to run this."
-                        ),
+                if result.is_mutative:
+                    return None  # Already mutative, will be caught by mutative_verbs
+
+                # For interpreters with inline code analysis (python3 -c),
+                # mutative_verbs.py has dedicated pattern scanning that
+                # distinguishes safe code (json.dumps, sys.version) from
+                # dangerous code (os.system, subprocess.run). If it classified
+                # the inline code as safe, trust that analysis and allow it
+                # through without forcing an "ask" dialog.
+                from ..security.mutative_verbs import _INLINE_CODE_CLIS
+                base_cmd = command.strip().split()[0].rsplit("/", 1)[-1].lower()
+                if base_cmd in _INLINE_CODE_CLIS:
+                    logger.info(
+                        "Inline code classified as safe by pattern scanner: %s",
+                        command[:80],
                     )
-                    return BashValidationResult(
-                        allowed=False,
-                        tier=SecurityTier.T2_DRY_RUN,
-                        reason="Indirect execution wrapper detected — requires confirmation",
-                        block_response=hook_block,
-                    )
-                return None  # Already mutative, will be caught by mutative_verbs
+                    return None  # Safe inline code, proceed to normal validation
+
+                # Shell wrappers (bash -c, eval, etc.) hide the real command
+                # in a string — no dedicated scanner exists. Force "ask" so
+                # the user can inspect what will actually run.
+                hook_block = build_hook_permission_response(
+                    "ask",
+                    (
+                        "Indirect execution detected. The command uses a shell "
+                        "wrapper (bash -c, eval, etc.) that can bypass "
+                        "security checks. Please confirm you want to run this."
+                    ),
+                )
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T2_DRY_RUN,
+                    reason="Indirect execution wrapper detected — requires confirmation",
+                    block_response=hook_block,
+                )
         return None
 
     def _extract_inner_command(self, command: str) -> Optional[str]:
@@ -304,6 +322,7 @@ class BashValidator:
         """Validate a single command (no operators).
 
         Simplified pipeline:
+        0. Indirect execution detection (for compound command components)
         1. Mutative verb detection -> block with nonce or allow with grant
         2. GitOps policy validation (for kubectl/helm/flux)
         3. Everything else -> SAFE by elimination
@@ -312,6 +331,14 @@ class BashValidator:
         already checks the full command AND each compound component against
         the deny list before dispatching to this method.
         """
+
+        # Indirect execution check for compound command components.
+        # When validate() splits "cd /tmp && python3 -c '...'" into parts,
+        # the python3 -c component needs the same indirect execution gate
+        # that the full command gets in validate().
+        indirect_result = self._detect_indirect_execution(command)
+        if indirect_result is not None:
+            return indirect_result
 
         # Mutative verb detection
         result = detect_mutative_command(command)

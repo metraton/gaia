@@ -6,7 +6,6 @@ Renamed from metrics_recorder.py for clarity.
 Provides:
     - get_workflow_memory_dir(): Resolve workflow memory directory
     - record(): Build metrics dict, write to JSONL
-    - capture_workflow_metrics(): Backward-compatible alias for record()
 """
 
 import json
@@ -295,7 +294,3 @@ def record(
     )
 
     return metrics
-
-
-# Backward-compatible alias
-capture_workflow_metrics = record

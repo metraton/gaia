@@ -1,14 +1,14 @@
 """
-Audit module - Logging, metrics, and event detection.
+Audit module - Logging, metrics aggregation, and event detection.
 
 Provides:
-- logger: AuditLogger for tool executions
-- metrics: MetricsCollector with functional generate_summary
+- logger: AuditLogger for tool executions (write path)
+- metrics: generate_summary reads audit logs and aggregates (read path)
 - event_detector: CriticalEventDetector
 """
 
 from .logger import AuditLogger, log_execution
-from .metrics import MetricsCollector, record_metric, generate_summary
+from .metrics import generate_summary
 from .event_detector import (
     CriticalEventDetector,
     detect_critical_event,
@@ -20,8 +20,6 @@ __all__ = [
     "AuditLogger",
     "log_execution",
     # Metrics
-    "MetricsCollector",
-    "record_metric",
     "generate_summary",
     # Event detector
     "CriticalEventDetector",

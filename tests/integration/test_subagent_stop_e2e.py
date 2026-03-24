@@ -295,7 +295,7 @@ class TestProcessContextUpdatesE2E:
 class TestSubagentStopHookE2E:
     """Test the full subagent_stop_hook() processing chain with context updates."""
 
-    @patch("subagent_stop.capture_episodic_memory", return_value=None)
+    @patch("subagent_stop.write_episode", return_value=None)
     def test_full_hook_with_context_update(self, mock_episodic, project_env):
         """Full hook flow: metrics + anomalies + context update."""
         mod = _import_subagent_stop()
@@ -321,7 +321,7 @@ class TestSubagentStopHookE2E:
         audit = read_audit(context_file)
         assert len(audit) > 0
 
-    @patch("subagent_stop.capture_episodic_memory", return_value=None)
+    @patch("subagent_stop.write_episode", return_value=None)
     def test_full_hook_without_context_update(self, mock_episodic, project_env):
         """Hook processes metrics even when no CONTEXT_UPDATE is present."""
         mod = _import_subagent_stop()

@@ -64,8 +64,17 @@ def run_hook(script_name, stdin_payload, env_extras=None):
     assert script_path.exists(), f"Hook script not found: {script_path}"
 
     env = os.environ.copy()
-    # Ensure we do not inherit a CLAUDE_PLUGIN_ROOT from the test runner
+    # Isolate hook subprocess from the host environment so tests are
+    # deterministic regardless of where they run:
+    # - CLAUDE_PLUGIN_ROOT: would activate plugin-dir mode detection
+    # - ORCHESTRATOR_DELEGATE_MODE: would block Bash before security
+    #   checks run (the disk fallback reads settings.json, so we must
+    #   explicitly set "false" rather than just popping the var)
+    # - GAIA_PLUGIN_MODE: force "ops" so the adapter uses nonce-deny
+    #   flow (the tests assert permissionDecision: deny for T3 commands)
     env.pop("CLAUDE_PLUGIN_ROOT", None)
+    env["ORCHESTRATOR_DELEGATE_MODE"] = "false"
+    env["GAIA_PLUGIN_MODE"] = "ops"
     if env_extras:
         env.update(env_extras)
 
@@ -124,33 +133,38 @@ class TestPreToolUseSafe:
 
 
 # ============================================================================
-# PreToolUse E2E -- Mutative commands (nonce-denied, exit 0 with deny)
+# PreToolUse E2E -- Mutative commands (T3 ask, exit 0)
 # ============================================================================
 
 
 class TestPreToolUseMutative:
-    """Mutative (T3) commands should exit 0 with permissionDecision: deny."""
+    """Mutative (T3) commands should exit 0 with permissionDecision: ask.
+
+    The hook uses Claude Code's native 'ask' dialog for T3 commands so the
+    user sees the confirmation prompt.  This replaced the older nonce-deny
+    flow.  Permanently blocked commands (rm -rf, etc.) still get 'deny'.
+    """
 
     HOOK = "pre_tool_use.py"
 
-    def test_git_commit_denied(self):
-        """git commit is mutative, should produce deny response."""
+    def test_git_commit_ask(self):
+        """git commit is mutative, should trigger native ask dialog."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_MUTATIVE)
-        assert code == 0, f"Expected exit 0 (corrective deny), got {code}. stderr: {stderr}"
-        assert response is not None, "Expected JSON response for mutative deny"
+        assert code == 0, f"Expected exit 0 (ask), got {code}. stderr: {stderr}"
+        assert response is not None, "Expected JSON response for mutative ask"
         hook_output = response.get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "deny", (
-            f"Expected deny, got: {hook_output.get('permissionDecision')}"
+        assert hook_output.get("permissionDecision") == "ask", (
+            f"Expected ask, got: {hook_output.get('permissionDecision')}"
         )
 
-    def test_kubectl_apply_denied(self):
-        """kubectl apply is mutative, should produce deny response."""
+    def test_kubectl_apply_ask(self):
+        """kubectl apply is mutative, should trigger native ask dialog."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_MUTATIVE_KUBECTL_APPLY)
-        assert code == 0, f"Expected exit 0 (corrective deny), got {code}. stderr: {stderr}"
-        assert response is not None, "Expected JSON response for mutative deny"
+        assert code == 0, f"Expected exit 0 (ask), got {code}. stderr: {stderr}"
+        assert response is not None, "Expected JSON response for mutative ask"
         hook_output = response.get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "deny", (
-            f"Expected deny, got: {hook_output.get('permissionDecision')}"
+        assert hook_output.get("permissionDecision") == "ask", (
+            f"Expected ask, got: {hook_output.get('permissionDecision')}"
         )
 
 

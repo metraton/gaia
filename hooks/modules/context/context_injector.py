@@ -1,8 +1,7 @@
 """Core context injection subsystem for project agents.
 
 Handles:
-- build_project_context: builds context string without mutating parameters (Phase 2)
-- inject_project_context: legacy wrapper that mutates parameters (backward compat)
+- build_project_context: builds context string for additionalContext injection
 - check_pending_updates_threshold: warns when pending updates accumulate
 - check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
 - consume_anomaly_flag: reads and deletes anomaly signal flags
@@ -419,31 +418,3 @@ def build_project_context(
         return None, {}
 
 
-def inject_project_context(
-    parameters: dict,
-    project_agents: list,
-    hooks_dir: Path = None,
-) -> dict:
-    """
-    Legacy wrapper: inject project context by mutating parameters["prompt"].
-
-    Retained for backward compatibility (tests import this function).
-    New code should use build_project_context() with additionalContext instead.
-
-    Args:
-        parameters: Original Task tool parameters (will be mutated).
-        project_agents: List of valid project agent names.
-        hooks_dir: Path to the hooks directory.
-
-    Returns:
-        Modified parameters with context injected into prompt.
-    """
-    context_string, _telemetry = build_project_context(parameters, project_agents, hooks_dir)
-    if context_string is None:
-        return parameters
-
-    prompt = parameters.get("prompt", "")
-    enriched_prompt = f"# Task\n\n{prompt}\n{context_string}"
-    parameters["prompt"] = enriched_prompt
-
-    return parameters

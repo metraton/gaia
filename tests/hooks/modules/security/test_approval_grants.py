@@ -564,21 +564,34 @@ class TestCleanup:
 
 
 class TestNonceEndToEnd:
-    """The full nonce flow should still work end-to-end."""
+    """The full nonce flow should still work end-to-end.
+
+    The bash_validator now returns 'ask' (native dialog) for T3 commands
+    without generating nonces. The nonce flow is driven by pre_tool_use.py.
+    These tests exercise the approval_grants module directly.
+    """
 
     def test_full_flow_block_activate_ask_then_allow(self, clean_grants_dir):
+        """Manually write a pending approval, activate, and verify grant matching."""
         from modules.tools.bash_validator import BashValidator
 
+        command = 'git commit -m "feat(auth): add login endpoint"'
         validator = BashValidator()
-        result = validator.validate('git commit -m "feat(auth): add login endpoint"')
+
+        # bash_validator returns "ask" for T3 commands (no nonce)
+        result = validator.validate(command)
         assert result.allowed is False
         assert result.block_response is not None
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        block_msg = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        nonce_match = re.search(r"NONCE:([a-f0-9]{32})", block_msg)
-        assert nonce_match is not None
-        nonce = nonce_match.group(1)
-
+        # Simulate the nonce flow that pre_tool_use.py would drive
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command=command,
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
         pending_file = clean_grants_dir / f"pending-{nonce}.json"
         assert pending_file.exists()
 
@@ -587,30 +600,31 @@ class TestNonceEndToEnd:
         assert not pending_file.exists()
 
         # First retry after activation returns "ask" (double-barrier)
-        result2 = validator.validate('git commit -m "feat(auth): add login endpoint"')
+        result2 = validator.validate(command)
         assert result2.allowed is False
         assert result2.block_response is not None
         assert result2.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
         assert "Confirm execution" in result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
 
-        # Simulate post_tool_use confirming the grant after native dialog accepts.
-        # The bash_validator no longer confirms inline; post_tool_use does it.
-        confirm_grant('git commit -m "feat(auth): add login endpoint"')
+        # Simulate post_tool_use confirming the grant
+        confirm_grant(command)
 
         # After grant is confirmed, subsequent retries are auto-allowed
-        result3 = validator.validate('git commit -m "feat(auth): add login endpoint"')
+        result3 = validator.validate(command)
         assert result3.allowed is True
 
-    def test_blocked_t3_is_queryable_via_latest_pending_helper(self, clean_grants_dir):
+    def test_blocked_t3_returns_ask_without_nonce(self, clean_grants_dir):
+        """BashValidator returns 'ask' for T3 commands without creating pending approvals."""
         from modules.tools.bash_validator import BashValidator
 
         result = BashValidator().validate('git commit -m "feat(auth): add login endpoint"')
         assert result.allowed is False
+        assert result.block_response is not None
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
+        # No pending approval is created by bash_validator directly
         latest = get_latest_pending_approval()
-        assert latest is not None
-        assert latest["command"] == 'git commit -m "feat(auth): add login endpoint"'
-        assert latest["danger_verb"] == "commit"
+        assert latest is None
 
 
 class TestBashValidatorIntegration:
@@ -681,25 +695,26 @@ class TestBashValidatorIntegration:
         assert check_approval_grant("terraform apply prod/vpc") is None
         assert not legacy_file.exists()
 
-    def test_block_response_contains_nonce(self, clean_grants_dir):
+    def test_block_response_returns_ask(self, clean_grants_dir):
+        """BashValidator returns 'ask' for T3 commands (no nonce in response)."""
         from modules.tools.bash_validator import BashValidator
 
         result = BashValidator().validate('git commit -m "feat: test"')
         assert result.allowed is False
         assert result.block_response is not None
-
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        # No NONCE in the reason (nonce flow is driven by pre_tool_use.py)
         block_msg = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "NONCE:" in block_msg
-        assert re.search(r"NONCE:([a-f0-9]{32})", block_msg) is not None
+        assert "NONCE:" not in block_msg
 
-    def test_block_creates_pending_file(self, clean_grants_dir):
+    def test_block_does_not_create_pending_file(self, clean_grants_dir):
+        """BashValidator no longer creates pending approval files directly."""
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate('git commit -m "feat: test"')
-        block_msg = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        nonce = re.search(r"NONCE:([a-f0-9]{32})", block_msg).group(1)
-        pending_file = clean_grants_dir / f"pending-{nonce}.json"
-        assert pending_file.exists()
+        BashValidator().validate('git commit -m "feat: test"')
+        # No pending files should be created by bash_validator
+        pending_files = list(clean_grants_dir.glob("pending-*.json"))
+        assert len(pending_files) == 0
 
     def test_deny_list_not_bypassed(self, clean_grants_dir):
         from modules.tools.bash_validator import BashValidator

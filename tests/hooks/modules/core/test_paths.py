@@ -25,7 +25,6 @@ from modules.core.paths import (
     get_metrics_dir,
     get_memory_dir,
     get_session_dir,
-    get_hooks_config_dir,
     clear_path_cache,
 )
 
@@ -274,17 +273,6 @@ class TestGetSessionDir:
         result = get_session_dir()
         assert result.exists()
         assert result.is_dir()
-
-
-class TestGetHooksConfigDir:
-    """Test get_hooks_config_dir() function."""
-
-    def test_returns_hooks_config_path(self):
-        """Test returns path to hooks/config."""
-        result = get_hooks_config_dir()
-        assert result.name == "config"
-        # Should be relative to hooks directory
-        assert "hooks" in str(result.parent)
 
 
 class TestClearPathCache:

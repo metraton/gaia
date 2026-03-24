@@ -27,8 +27,6 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.blocked_commands import (
     is_blocked_command,
     get_blocked_patterns,
-    get_blocked_patterns_by_category,
-    get_suggestion_for_blocked,
     BlockedCommandResult,
     BLOCKED_PATTERNS,
     BLOCKED_COMMAND_SUGGESTIONS,
@@ -359,69 +357,6 @@ class TestGetBlockedPatterns:
         assert "namespace" in patterns_str
 
 
-class TestGetBlockedPatternsByCategory:
-    """Test get_blocked_patterns_by_category() function."""
-
-    @pytest.mark.parametrize("category", [
-        "aws_critical",
-        "gcp_critical",
-        "kubernetes_critical",
-        "git_destructive",
-        "disk_operations",
-        "terraform_destroy",
-        "docker_critical",
-        "flux_critical",
-        "repo_delete",
-        "npm_critical",
-        "sql_critical",
-        "rm_critical",
-    ])
-    def test_returns_patterns_for_valid_category(self, category):
-        """Returns patterns for valid categories."""
-        patterns = get_blocked_patterns_by_category(category)
-        assert isinstance(patterns, list)
-        assert len(patterns) > 0
-
-    def test_returns_empty_for_invalid_category(self):
-        """Returns empty list for invalid category."""
-        patterns = get_blocked_patterns_by_category("nonexistent_category")
-        assert patterns == []
-
-    def test_removed_categories_no_longer_exist(self):
-        """Verify removed categories are gone."""
-        assert "aws_delete" not in BLOCKED_PATTERNS
-        assert "gcp_delete" not in BLOCKED_PATTERNS
-        assert "flux_delete" not in BLOCKED_PATTERNS
-        assert "git_force" not in BLOCKED_PATTERNS  # renamed to git_destructive
-
-
-class TestGetSuggestionForBlocked:
-    """Test get_suggestion_for_blocked() function."""
-
-    def test_returns_suggestion_for_known_commands(self):
-        """Returns suggestions for known blocked commands."""
-        suggestion = get_suggestion_for_blocked("aws eks delete-cluster")
-        assert suggestion is not None
-        assert "BLOCKED" in suggestion or "Terraform" in suggestion
-
-    def test_returns_none_for_unknown_commands(self):
-        """Returns None for unknown commands."""
-        suggestion = get_suggestion_for_blocked("unknown_command")
-        assert suggestion is None
-
-    def test_returns_suggestion_for_vpc_delete(self):
-        """Returns suggestion for VPC delete."""
-        suggestion = get_suggestion_for_blocked("aws ec2 delete-vpc --vpc-id vpc-123")
-        assert suggestion is not None
-        assert "BLOCKED" in suggestion
-
-    def test_returns_suggestion_for_namespace_delete(self):
-        """Returns suggestion for namespace delete."""
-        suggestion = get_suggestion_for_blocked("kubectl delete namespace production")
-        assert suggestion is not None
-        assert "BLOCKED" in suggestion
-
-
 class TestBlockedPatternsCategories:
     """Test that all expected categories exist in BLOCKED_PATTERNS."""
 
@@ -444,9 +379,9 @@ class TestBlockedPatternsCategories:
         assert category in BLOCKED_PATTERNS
         assert len(BLOCKED_PATTERNS[category]) > 0
 
-    def test_exactly_twelve_categories(self):
-        """Test there are exactly 12 categories."""
-        assert len(BLOCKED_PATTERNS) == 12
+    def test_exactly_thirteen_categories(self):
+        """Test there are exactly 13 categories (including azure_critical)."""
+        assert len(BLOCKED_PATTERNS) == 13
 
 
 class TestTerraformDestroyBlocked:

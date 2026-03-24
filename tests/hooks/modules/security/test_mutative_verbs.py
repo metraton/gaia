@@ -392,11 +392,13 @@ class TestInlineCodeDetection:
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
 
-    def test_subprocess_allowed(self):
-        """subprocess is intentionally not flagged -- the inner command gets its own check."""
+    def test_subprocess_is_mutative(self):
+        """subprocess in python -c is flagged -- the inner command runs in-process,
+        bypassing the hook entirely (no separate Bash tool invocation)."""
         result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"ls\"])"')
-        assert result.is_mutative is False
-        assert result.category == "READ_ONLY"
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert "subprocess" in result.verb
 
     def test_python_variant(self):
         """python (not python3) with -c should also be checked."""
