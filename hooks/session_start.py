@@ -31,8 +31,10 @@ if __name__ == "__main__":
     try:
         sys.stdin.read()
 
-        # First-time setup: create project permissions if needed
-        setup_message = run_first_time_setup()
+        # First-time setup: create project permissions if needed.
+        # mark_done=False so UserPromptSubmit can detect first-run
+        # and show the welcome message before marking initialized.
+        setup_message = run_first_time_setup(mark_done=False)
         if setup_message:
             logger.info("First-time setup: %s", setup_message)
 

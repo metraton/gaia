@@ -25,38 +25,27 @@ logger = logging.getLogger(__name__)
 
 
 def _build_welcome(mode: str) -> str:
-    """Build first-run welcome message for the user."""
-    plugin_name = f"GAIA {'Ops' if mode == 'ops' else 'Security'}"
-    repo_url = "https://github.com/metraton/gaia-ops"
-    tiers_info = (
-        "Security tiers: T0 (read-only, auto-allowed) → T1 (validation) → "
-        "T2 (simulation) → T3 (state change, requires approval) → "
-        "T3-blocked (irreversible, permanently blocked)."
-    )
-    learn_more = (
-        f"To learn more about security tiers, ask: 'explain the security tiers'. "
-        f"Docs and source: {repo_url}"
-    )
+    """Build first-run welcome message for the user.
 
-    if mode == "ops":
-        return (
-            f"FIRST-TIME SETUP: {plugin_name} is now active. "
-            "Your permissions have been configured to allow GAIA to manage "
-            "security classification and agent dispatch. "
-            "To activate these permissions, close this session and reopen Claude Code. "
-            "After that, GAIA will handle command classification automatically. "
-            f"{tiers_info} "
-            f"{learn_more} "
-            "You must tell the user this message exactly."
-        )
+    This message is injected as additionalContext so Claude receives it,
+    not the user directly.  The framing explains WHY the user needs to
+    know — Claude should naturally relay it because it is actionable
+    and the user cannot use the plugin fully without restarting.
+    """
+    plugin_name = f"GAIA {'Ops' if mode == 'ops' else 'Security'}"
+
     return (
-        f"FIRST-TIME SETUP: {plugin_name} is now active. "
-        "Your permissions have been configured to delegate security decisions to GAIA. "
-        "To activate these permissions, close this session and reopen Claude Code. "
-        "After that, GAIA Security will classify every command by risk automatically. "
-        f"{tiers_info} "
-        f"{learn_more} "
-        "You must tell the user this message exactly."
+        f"{plugin_name} was just installed for the first time in this project. "
+        f"The plugin detected the installation and configured security permissions, "
+        f"but these permissions only take effect after restarting Claude Code. "
+        f"Until the user closes this session and reopens Claude Code, "
+        f"{plugin_name} cannot protect their commands — destructive operations "
+        f"will not be blocked and mutative operations will not require approval. "
+        f"The user needs to know this because they just installed {plugin_name} "
+        f"expecting it to work, but it will not be active until they restart. "
+        f"Tell the user that {plugin_name} is installed, that they need to close "
+        f"and reopen Claude Code to activate it, and that until they do, "
+        f"security protections are not active."
     )
 
 
@@ -66,19 +55,24 @@ if __name__ == "__main__":
 
     try:
         sys.stdin.read()
-        from modules.core.plugin_setup import is_first_run
+
+        # Check first-run BEFORE setup (SessionStart does setup with
+        # mark_done=False so the marker doesn't exist yet on first run).
+        from modules.core.plugin_setup import is_first_run, mark_initialized
         first_run = is_first_run()
 
-        # Ensure registry + permissions exist
-        setup_msg = run_first_time_setup()
+        # Ensure registry + permissions exist (idempotent, no mark).
+        setup_msg = run_first_time_setup(mark_done=False)
         identity = build_identity()
         mode = "ops" if "Orchestrator" in identity else "security"
 
-        # First-time welcome: tell user what happened and what to do
-        if first_run and setup_msg:
+        # First-time welcome: the marker does not exist yet because
+        # neither SessionStart nor this call marked it.
+        if first_run:
             welcome = _build_welcome(mode)
-            identity += f"\n\n{welcome}"
-            logger.info("First-run welcome appended for %s mode", mode)
+            identity = f"{welcome}\n\n{identity}"
+            mark_initialized()  # Mark AFTER building the welcome
+            logger.info("First-run welcome prepended for %s mode", mode)
 
         logger.info("Identity injected: %s mode (%d chars)", mode, len(identity))
 

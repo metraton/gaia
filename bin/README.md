@@ -27,7 +27,7 @@ Configure symlinks  Remove files
 | Script | Description |
 |--------|-------------|
 | `gaia-scan` | Project scanner and installer (Python) |
-| `gaia-update.js` | Configuration updater (postinstall hook) |
+| `gaia-update.js` | Configuration updater (postinstall hook) — updates hooks template, merges permissions into settings.local.json, ensures plugin-registry |
 
 ### Diagnostics and Monitoring
 
@@ -146,4 +146,4 @@ npx gaia-scan --non-interactive
 
 ---
 
-**Version:** 4.4.0-rc.5 | **Updated:** 2026-03-19 | **Scripts:** 11
+**Version:** 4.5.0 | **Updated:** 2026-03-24 | **Scripts:** 11

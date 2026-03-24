@@ -53,6 +53,7 @@
     "config/",
     "speckit/",
     "skills/",
+    "git-hooks/",
     "README.md",
     "INSTALL.md",
     "CHANGELOG.md",
@@ -81,7 +82,7 @@
     "postinstall": "node bin/gaia-update.js",
     "preuninstall": "node bin/gaia-cleanup.js"
   },
-  "_postinstall_note": "postinstall: CLAUDE.md overwritten (static), settings.json merged (custom rules preserved)",
+  "_postinstall_note": "postinstall: settings.json replaced (hooks only), permissions merged into settings.local.json (union, user config preserved)",
   "dependencies": {
     "chalk": "^5.3.0",
     "ora": "^7.0.1",

@@ -5,7 +5,8 @@ Primary security gate for all Bash tool invocations. With Bash(*) in the
 settings.json allow list, ALL commands reach this hook -- it is the sole
 enforcement layer for dangerous command detection.
 
-Simplified three-category pipeline:
+Pipeline (ordered by priority):
+0. Indirect execution detection -- bash -c, eval, python -c etc. (T2 approval)
 1. blocked_commands FIRST -- permanently denied patterns (exit 2)
 2. Claude footer stripping -- transparent cleanup via updatedInput
 3. Commit message validation -- conventional commits format
@@ -63,10 +64,40 @@ class BashValidationResult:
             self.suggestions = []
 
 
-# Patterns for Claude Code attribution footers (forbidden)
+# Patterns for AI tool attribution footers (auto-stripped from commits).
+# Covers Claude Code, GitHub Copilot, Aider, Windsurf, and any future
+# tool using the Co-authored-by git trailer convention.
 FORBIDDEN_FOOTER_PATTERNS = [
     r"Generated with\s+Claude Code",
-    r"Co-Authored-By:\s+Claude",
+    r"Generated with\s+\[?Claude Code\]?",
+    r"Co-Authored-By:\s+Claude\b",
+    r"Co-authored-by:\s+GitHub Copilot\b",
+    r"Co-authored-by:\s+aider\b",
+    r"Co-authored-by:\s+Windsurf\b",
+    r"Co-authored-by:\s+Cursor\b",
+    r"Co-authored-by:\s+Codex\b",
+    r"Co-authored-by:\s+Gemini\b",
+]
+
+# ---------------------------------------------------------------------------
+# Indirect execution wrappers — commands that execute arbitrary strings.
+# These bypass regex-based command blocking because the real command is
+# hidden inside a string argument.  Classified as T2 (requires approval)
+# so the user sees what will actually run.
+# ---------------------------------------------------------------------------
+INDIRECT_EXEC_PATTERNS = [
+    re.compile(r"^bash\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^sh\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^zsh\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^dash\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^\s*eval\s+", re.IGNORECASE),
+    re.compile(r"^python3?\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^node\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^perl\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^ruby\s+-e\s+", re.IGNORECASE),
+    # Process substitution and heredoc piped to shell
+    re.compile(r"^bash\s+<\(", re.IGNORECASE),
+    re.compile(r"^sh\s+<\(", re.IGNORECASE),
 ]
 
 class BashValidator:
@@ -75,6 +106,73 @@ class BashValidator:
     def __init__(self):
         """Initialize validator."""
         self.shell_parser = get_shell_parser()
+
+    def _detect_indirect_execution(self, command: str) -> Optional[BashValidationResult]:
+        """Detect indirect execution wrappers that can bypass regex blocking.
+
+        Commands like 'bash -c "az group delete"' hide the real command inside
+        a string.  We classify these as T2 (mutative) so they require user
+        approval via the nonce workflow, giving the human a chance to inspect
+        what will actually run.
+
+        Returns BashValidationResult if indirect execution detected, else None.
+        """
+        for pattern in INDIRECT_EXEC_PATTERNS:
+            if pattern.search(command):
+                # Also check if the inner payload contains a blocked command.
+                # Extract the string argument after the wrapper.
+                inner = self._extract_inner_command(command)
+                if inner:
+                    blocked = is_blocked_command(inner)
+                    if blocked.is_blocked:
+                        return BashValidationResult(
+                            allowed=False,
+                            tier=SecurityTier.T3_BLOCKED,
+                            reason=(
+                                f"Indirect execution of blocked command detected: "
+                                f"{blocked.category} (via wrapper)"
+                            ),
+                            suggestions=[
+                                blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
+                            ],
+                        )
+
+                # Not blocked but still indirect — route through approval
+                logger.info("Indirect execution detected: %s", command[:80])
+                result = detect_mutative_command(command)
+                if not result.is_mutative:
+                    # Force it through the nonce workflow as mutative
+                    hook_block = build_hook_permission_response(
+                        "ask",
+                        (
+                            "Indirect execution detected. The command uses a shell "
+                            "wrapper (bash -c, eval, python -c, etc.) that can bypass "
+                            "security checks. Please confirm you want to run this."
+                        ),
+                    )
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T2_DRY_RUN,
+                        reason="Indirect execution wrapper detected — requires confirmation",
+                        block_response=hook_block,
+                    )
+                return None  # Already mutative, will be caught by mutative_verbs
+        return None
+
+    def _extract_inner_command(self, command: str) -> Optional[str]:
+        """Extract the inner command from an indirect execution wrapper.
+
+        E.g., 'bash -c "az group delete --name foo"' → 'az group delete --name foo'
+        """
+        # Match: shell -c "..." or shell -c '...'
+        match = re.search(r"""-[ce]\s+(['"])(.*?)\1""", command, re.DOTALL)
+        if match:
+            return match.group(2).strip()
+        # Match: shell -c ... (unquoted, take rest of line)
+        match = re.search(r"-[ce]\s+(\S+.*)", command)
+        if match:
+            return match.group(1).strip()
+        return None
 
     def _has_operators(self, command: str) -> bool:
         """Quick check if command has operators (before parsing)."""
@@ -102,6 +200,17 @@ class BashValidator:
             )
 
         command = command.strip()
+
+        # ================================================================
+        # PRIORITY 0: Indirect execution detection.
+        # Commands like "bash -c '...'" or "eval '...'" can hide blocked
+        # commands inside string arguments, bypassing regex patterns.
+        # Detected wrappers are routed to approval or blocked if the inner
+        # payload matches a blocked command.
+        # ================================================================
+        indirect_result = self._detect_indirect_execution(command)
+        if indirect_result is not None:
+            return indirect_result
 
         # ================================================================
         # PRIORITY 1: Blocked commands check on FULL command (exit 2).
@@ -246,43 +355,22 @@ class BashValidator:
                     reason=f"Command allowed via approval grant (tier T3)",
                 )
             else:
-                # If a matching grant was found but expired, prepend a clear
-                # expiry message so the agent knows the previous approval lapsed.
-                expired_prefix = ""
-                if last_check_found_expired():
-                    expired_prefix = (
-                        "[EXPIRED] Approval grant has expired (TTL exceeded). "
-                        "Retry the command to generate a fresh nonce and "
-                        "restart the approval workflow.\n\n"
-                    )
-
-                # Generate a cryptographic nonce and write a pending approval.
-                nonce = generate_nonce()
-                pending_file = write_pending_approval(
-                    nonce=nonce,
-                    command=command,
-                    danger_verb=result.verb,
-                    danger_category=result.category,
+                # No active grant — route through native 'ask' dialog.
+                # The user sees the native permission prompt and approves
+                # directly.  No nonce is generated because pre_tool_use
+                # converts all T3 responses to 'ask' anyway.
+                reason = (
+                    f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
+                    f"Command: {command}\n"
+                    f"Verb: '{result.verb}' ({result.category})\n"
+                    f"Reason: {result.reason}"
                 )
-                if pending_file is None:
-                    hook_block = build_hook_permission_response(
-                        "deny",
-                        build_pending_approval_unavailable_message(),
-                    )
-                    return BashValidationResult(
-                        allowed=False,
-                        tier=SecurityTier.T3_BLOCKED,
-                        reason="Failed to persist pending approval for T3 command",
-                        block_response=hook_block,
-                    )
-
-                t3_block = build_t3_block_response(command, result, nonce=nonce)
-                hook_block = build_hook_permission_response("deny", expired_prefix + t3_block["message"])
+                hook_ask = build_hook_permission_response("ask", reason)
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Dangerous {result.category.lower()} command: {result.reason}",
-                    block_response=hook_block,
+                    block_response=hook_ask,
                 )
 
         # Check GitOps policy for kubectl/helm/flux commands
@@ -359,9 +447,9 @@ class BashValidator:
         Returns:
             Command with footer lines removed
         """
-        # Remove full lines that contain forbidden patterns
+        # Remove full lines that contain AI attribution patterns
         footer_line_patterns = [
-            r'\n\s*Co-Authored-By:\s+Claude[^\n]*',
+            r'\n\s*Co-[Aa]uthored-[Bb]y:\s+(?:Claude|GitHub Copilot|aider|Windsurf|Cursor|Codex|Gemini)[^\n]*',
             r'\n\s*Generated with\s+\[?Claude Code\]?[^\n]*',
             r'\n\s*🤖\s*Generated with[^\n]*',
         ]

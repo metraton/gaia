@@ -173,11 +173,12 @@ All security rules (blocked patterns, mutative verbs, tiers) are hardcoded in th
 
 ### Validation Order (Defense-in-Depth)
 bash_validator checks commands in this order (short-circuit on first match):
+0. **Indirect execution detection** — `bash -c`, `eval`, `python -c` etc. → ask or block
 1. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
 2. **Claude footer stripping** — transparent via updatedInput
 3. **Commit message validation** — conventional commits enforcement
 4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny
-5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, nonce-based deny
+5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, native `ask` dialog
 6. **GitOps validation** (gitops_validator.py) — kubectl/helm/flux policy enforcement
 7. **Everything else** — SAFE by elimination (auto-approved)
 

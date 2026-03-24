@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Managed settings template for enterprise/organization deployment.",
+    "Deploy to: /etc/claude-code/managed-settings.json (Linux/WSL)",
+    "           /Library/Application Support/ClaudeCode/managed-settings.json (macOS)",
+    "           Or via Claude.ai Admin > Claude Code > Managed Settings",
+    "",
+    "These rules have the HIGHEST precedence and CANNOT be overridden by",
+    "user, project, or local settings. They are the ultimate security gate."
+  ],
+  "permissions": {
+    "deny": [
+      "Bash(aws * delete-*:*)",
+      "Bash(aws * terminate-*:*)",
+      "Bash(az * delete:*)",
+      "Bash(gcloud * delete:*)",
+      "Bash(gsutil rb:*)",
+      "Bash(gsutil rm:*)",
+      "Bash(gcloud storage rm:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(kubectl drain:*)",
+      "Bash(terraform destroy:*)",
+      "Bash(terragrunt destroy:*)",
+      "Bash(terragrunt run-all destroy:*)",
+      "Bash(helm uninstall:*)",
+      "Bash(helm delete:*)",
+      "Bash(flux uninstall:*)",
+      "Bash(docker system prune:*)",
+      "Bash(docker volume prune:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(gh repo delete:*)",
+      "Bash(glab project delete:*)",
+      "Bash(dd:*)",
+      "Bash(fdisk:*)",
+      "Bash(mkfs:*)",
+      "Bash(mkfs.*:*)"
+    ]
+  },
+  "disableBypassPermissionsMode": "disable",
+  "allowManagedHooksOnly": false
+}

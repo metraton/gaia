@@ -49,7 +49,8 @@ Command executes
 | **T0** | Read-only (get, list) | No | pre_tool_use |
 | **T1** | Local validation (validate, lint) | No | pre_tool_use |
 | **T2** | Simulation (plan, diff) | No | pre_tool_use |
-| **T3** | Execution (apply, delete) | **Yes** | pre_tool_use |
+| **T3** | Execution (apply, delete) | **Yes** (native `ask` dialog) | pre_tool_use |
+| **T3-blocked** | Irreversible (delete-vpc, drop db) | **Permanently blocked** | pre_tool_use (exit 2) |
 
 ## File Structure
 
@@ -70,6 +71,6 @@ hooks/
 
 ---
 
-**Version:** 4.4.0-rc.5
-**Last updated:** 2026-03-19
-**Total hooks:** 8 hook scripts (4 primary + 4 event handlers)
+**Version:** 4.5.0
+**Last updated:** 2026-03-24
+**Total hooks:** 9 hook scripts (4 primary + 4 event handlers + post_compact)

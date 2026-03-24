@@ -7,13 +7,19 @@
  * Also available as: npx gaia-update
  *
  * Behavior:
- * - First-time install (.claude/ doesn't exist): skip silently (gaia-scan handles it)
+ * - First-time install (.claude/ doesn't exist):
+ *   1. Check Python 3 is available
+ *   2. Run gaia-scan --npm-postinstall to create .claude/, symlinks, settings, project-context
+ *   3. Create plugin-registry.json
+ *   4. Merge permissions into settings.local.json
+ *   5. Fall through to verification
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
- *   2. settings.json: REPLACE from template (template is source of truth)
- *   3. Symlinks: recreate if missing, fix broken ones
- *   4. Verify: hooks, python, project-context, config files
- *   5. Report: summary with any issues found
+ *   2. settings.json: REPLACE from template (hooks only — no permissions)
+ *   3. Merge permissions into settings.local.json (union, preserves user config)
+ *   4. Symlinks: recreate if missing, fix broken ones
+ *   5. Verify: hooks, python, project-context, config files
+ *   6. Report: summary with any issues found
  *
  * Usage:
  *   npm update @jaguilar87/gaia-ops   # Automatic via postinstall
@@ -82,12 +88,120 @@ async function updateSettingsJson() {
       return false;
     }
 
-    // Always replace from template -- template is the source of truth
+    // Always replace from template -- template is the source of truth (hooks only)
     await fs.copyFile(templatePath, settingsPath);
-    spinner.succeed('settings.json updated from template');
+    spinner.succeed('settings.json updated from template (hooks)');
     return true;
   } catch (error) {
     spinner.fail(`settings.json: ${error.message}`);
+    return false;
+  }
+}
+
+async function updateLocalPermissions() {
+  const spinner = ora('Merging permissions into settings.local.json...').start();
+  try {
+    const claudeDir = join(CWD, '.claude');
+    const localPath = join(claudeDir, 'settings.local.json');
+
+    if (!existsSync(claudeDir)) {
+      spinner.info('Skipped (.claude/ not found)');
+      return false;
+    }
+
+    // Load permissions from plugin_setup.py — the single source of truth.
+    // We use ast.literal_eval to extract the constants without importing
+    // the module (which has relative imports that fail standalone).
+    let gaiaPerms;
+    try {
+      const setupPath = join(__dirname, '..', 'hooks', 'modules', 'core', 'plugin_setup.py');
+      const { stdout } = await execAsync(
+        `python3 -c "
+import ast, json, re
+
+source = open('${setupPath.replace(/'/g, "\\'")}').read()
+
+# Extract _DENY_RULES list
+deny_match = re.search(r'^_DENY_RULES\\s*=\\s*\\[', source, re.MULTILINE)
+if deny_match:
+    bracket_start = deny_match.start() + source[deny_match.start():].index('[')
+    depth, i = 0, bracket_start
+    for i, ch in enumerate(source[bracket_start:], bracket_start):
+        if ch == '[': depth += 1
+        elif ch == ']': depth -= 1
+        if depth == 0: break
+    deny_rules = ast.literal_eval(source[bracket_start:i+1])
+else:
+    deny_rules = []
+
+# Extract OPS_PERMISSIONS allow list
+ops_match = re.search(r'^OPS_PERMISSIONS\\s*=', source, re.MULTILINE)
+if ops_match:
+    bracket_start = source.index('{', ops_match.start())
+    depth, i = 0, bracket_start
+    for i, ch in enumerate(source[bracket_start:], bracket_start):
+        if ch == '{': depth += 1
+        elif ch == '}': depth -= 1
+        if depth == 0: break
+    # Replace _DENY_RULES reference with actual list for eval
+    ops_str = source[bracket_start:i+1].replace('_DENY_RULES', json.dumps(deny_rules))
+    ops_perms = ast.literal_eval(ops_str)
+else:
+    ops_perms = {'permissions': {'allow': [], 'deny': deny_rules, 'ask': []}}
+
+print(json.dumps(ops_perms))
+"`,
+        { timeout: 10000 }
+      );
+      gaiaPerms = JSON.parse(stdout.trim());
+    } catch (pyError) {
+      spinner.warn(`Could not load permissions from Python — ${pyError.message || 'unknown error'}`);
+      return false;
+    }
+
+    const ourAllow = new Set(gaiaPerms.permissions.allow || []);
+    const ourDeny = new Set(gaiaPerms.permissions.deny || []);
+
+    // Load existing settings.local.json — preserve everything (enabledPlugins, MCP servers, etc.)
+    let existing = {};
+    if (existsSync(localPath)) {
+      try {
+        existing = JSON.parse(await fs.readFile(localPath, 'utf-8'));
+      } catch {
+        existing = {};
+      }
+    }
+
+    const perms = existing.permissions || {};
+    const currentAllow = new Set(perms.allow || []);
+    const currentDeny = new Set(perms.deny || []);
+
+    // Union merge — add ours without removing user's
+    const mergedAllow = [...new Set([...currentAllow, ...ourAllow])].sort();
+    const mergedDeny = [...new Set([...currentDeny, ...ourDeny])].sort();
+
+    // Check if anything changed
+    const allowChanged = mergedAllow.length !== currentAllow.size
+      || mergedAllow.some(r => !currentAllow.has(r));
+    const denyChanged = mergedDeny.length !== currentDeny.size
+      || mergedDeny.some(r => !currentDeny.has(r));
+
+    if (!allowChanged && !denyChanged) {
+      spinner.succeed('settings.local.json permissions already up to date');
+      return false;
+    }
+
+    // Update only permissions, preserve everything else
+    existing.permissions = existing.permissions || {};
+    existing.permissions.allow = mergedAllow;
+    existing.permissions.deny = mergedDeny;
+    existing.permissions.ask = existing.permissions.ask || [];
+
+    await fs.writeFile(localPath, JSON.stringify(existing, null, 2) + '\n');
+    spinner.succeed('settings.local.json permissions merged');
+    return true;
+  } catch (error) {
+    spinner.fail(`settings.local.json: ${error.message}`);
     return false;
   }
 }
@@ -206,7 +320,7 @@ async function runVerification() {
   }
 
   // 4. Config files accessible
-  const configFiles = ['classification-rules.json', 'git_standards.json', 'universal-rules.json'];
+  const configFiles = ['git_standards.json', 'universal-rules.json', 'surface-routing.json'];
   for (const cfg of configFiles) {
     const path = join(CWD, '.claude', 'config', cfg);
     if (existsSync(path)) {
@@ -218,7 +332,7 @@ async function runVerification() {
   }
 
   // 5. Agent definitions accessible
-  const agentFiles = ['terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'devops-developer.md', 'gaia.md'];
+  const agentFiles = ['terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'devops-developer.md', 'gaia-system.md', 'speckit-planner.md'];
   let agentsOk = 0;
   for (const agent of agentFiles) {
     if (existsSync(join(CWD, '.claude', 'agents', agent))) agentsOk++;
@@ -256,48 +370,102 @@ async function runVerification() {
 // Main
 // ============================================================================
 
+async function runFreshInstall() {
+  const packageDir = join(__dirname, '..');
+  const scanScript = join(packageDir, 'bin', 'gaia-scan.py');
+  const { current } = await detectVersions();
+
+  console.log(chalk.cyan(`\n  gaia-ops ${chalk.green(current)} — fresh install\n`));
+
+  // 1. Check Python 3 is available
+  const spinner = ora('Checking Python 3...').start();
+  try {
+    await execAsync('python3 --version', { timeout: 5000 });
+    spinner.succeed('Python 3 found');
+  } catch {
+    spinner.warn('Python 3 not found — skipping project setup');
+    console.log(chalk.gray('  Install Python 3.9+ and run: npx gaia-scan\n'));
+    return;
+  }
+
+  // 2. Run gaia-scan --npm-postinstall
+  const scanSpinner = ora('Running gaia-scan...').start();
+  try {
+    const { stdout, stderr } = await execAsync(
+      `python3 "${scanScript}" --npm-postinstall --root "${CWD}"`,
+      { timeout: 60000 }
+    );
+    scanSpinner.succeed('Project scanned and configured');
+    if (VERBOSE && stdout) console.log(chalk.gray(stdout));
+    if (VERBOSE && stderr) console.log(chalk.yellow(stderr));
+  } catch (error) {
+    scanSpinner.warn('gaia-scan encountered issues (non-fatal)');
+    if (VERBOSE && error.stderr) console.log(chalk.gray(error.stderr));
+  }
+
+  // 3. Create plugin-registry.json (in .claude/, same path Python hooks expect)
+  try {
+    const claudeDirPath = join(CWD, '.claude');
+    if (!existsSync(claudeDirPath)) {
+      await fs.mkdir(claudeDirPath, { recursive: true });
+    }
+    const registryPath = join(claudeDirPath, 'plugin-registry.json');
+    const registry = {
+      installed: [{ name: 'gaia-ops', version: current || 'unknown' }],
+      source: 'npm-postinstall',
+    };
+    await fs.writeFile(registryPath, JSON.stringify(registry, null, 2) + '\n');
+  } catch {
+    // Non-fatal — plugin-registry is a convenience, not critical
+  }
+
+  // 4. Merge permissions into settings.local.json (same approach as plugin mode)
+  await updateLocalPermissions();
+}
+
 async function main() {
   const claudeDir = join(CWD, '.claude');
   const isUpdate = existsSync(claudeDir);
 
   if (!isUpdate) {
-    // First-time install — gaia-scan handles everything
-    process.exit(0);
+    // First-time install — run gaia-scan to bootstrap everything
+    await runFreshInstall();
+  } else {
+    // Version info
+    const { previous, current } = await detectVersions();
+    const versionLine = previous && previous !== current
+      ? `${chalk.gray(previous)} → ${chalk.green(current)}`
+      : chalk.green(current);
+
+    console.log(chalk.cyan(`\n  gaia-ops update ${versionLine}\n`));
+
+    // Step 1-3: Update files
+    await updateSettingsJson();
+    await updateLocalPermissions();
+    await updateSymlinks();
   }
 
-  // Version info
-  const { previous, current } = await detectVersions();
-  const versionLine = previous && previous !== current
-    ? `${chalk.gray(previous)} → ${chalk.green(current)}`
-    : chalk.green(current);
+  // Ensure plugin-registry.json exists in .claude/ (both fresh and update)
+  try {
+    const registryPath = join(CWD, '.claude', 'plugin-registry.json');
+    if (!existsSync(registryPath)) {
+      const { current } = await detectVersions();
+      const registry = {
+        installed: [{ name: 'gaia-ops', version: current || 'unknown' }],
+        source: 'npm-postinstall',
+      };
+      await fs.writeFile(registryPath, JSON.stringify(registry, null, 2) + '\n');
+    }
+  } catch { /* non-fatal */ }
 
-  console.log(chalk.cyan(`\n  gaia-ops update ${versionLine}\n`));
-
-  // Step 1-2: Update files
-  const settingsUpdated = await updateSettingsJson();
-  const { updated: symlinksUpdated, fixed: symlinksFix } = await updateSymlinks();
-
-  // Step 3: Verify
+  // Verify (runs for both fresh install and update)
   const { issues, passed, total } = await runVerification();
 
-  // Summary
-  const changes = [settingsUpdated, symlinksUpdated].filter(Boolean).length;
-
   console.log('');
-  if (changes > 0 || issues.length > 0) {
-    // Changes summary
-    if (changes > 0) {
-      console.log(chalk.green(`  ${changes} file(s) updated`));
-      if (settingsUpdated) console.log(chalk.gray('    settings.json: replaced from template'));
-      if (symlinksFix > 0) console.log(chalk.gray(`    ${symlinksFix} symlink(s) fixed`));
-    }
-
-    // Issues
-    if (issues.length > 0) {
-      console.log(chalk.yellow(`\n  ${issues.length} issue(s) found:`));
-      for (const issue of issues) {
-        console.log(chalk.yellow(`    - ${issue}`));
-      }
+  if (issues.length > 0) {
+    console.log(chalk.yellow(`  ${issues.length} issue(s) found:`));
+    for (const issue of issues) {
+      console.log(chalk.yellow(`    - ${issue}`));
     }
   } else {
     console.log(chalk.green('  Everything up to date'));

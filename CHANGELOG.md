@@ -5,6 +5,40 @@ All notable changes to the gaia-ops orchestration system are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-03-24
+
+### Settings Architecture Redesign + Multi-Cloud Security
+
+Unified approach for permissions across NPM and plugin installation modes. Permissions now live in `settings.local.json` (union merge, preserves user config). `settings.json` contains only hooks.
+
+#### Added
+- **Azure deny rules** — 39 rules covering resource groups, networking, AKS, Key Vault, CosmosDB, Service Bus, and more
+- **Generic wildcard deny rules** — 20 rules that catch all present and future cloud services (`aws * delete-*`, `az * delete`, `gcloud * delete`, etc.)
+- **Indirect execution detection** — Catches `bash -c`, `eval`, `python3 -c`, `node -e`, `ruby -e`, `perl -e` wrappers that bypass regex patterns
+- **Managed settings template** — `templates/managed-settings.template.json` for enterprise deployment via Claude.ai Admin Console
+- **`updateLocalPermissions()`** in `gaia-update.js` — NPM postinstall now merges permissions into `settings.local.json` (same approach as plugin SessionStart)
+- **Plugin mode detection via `plugin.json`** — `plugin_setup.py` and `plugin_mode.py` now read `.claude-plugin/plugin.json` for reliable name/version/mode detection with `--plugin-dir`
+- **First-run welcome message** — `user_prompt_submit.py` detects first run and injects a welcome explaining that restart is needed to activate permissions
+
+#### Changed
+- **`settings.template.json`** — Removed permissions block; template now contains only hooks + environment
+- **`_DENY_RULES` centralized in Python** — Single source of truth in `plugin_setup.py`, shared by both OPS and SECURITY modes
+- **T3 approval flow** — All T3 mutative operations now use native `ask` dialog (both ops and security mode). Nonce workflow removed from direct conversation; kept for subagent use via skills.
+- **`approval_messages.py`** — Simplified T3 block message to minimal data (tier + nonce). Workflow instructions live in skills, not hook messages.
+- **`pre_tool_use.py`** — Simplified: passes through `block_response` from `bash_validator` directly, no more mode-specific branching
+- **`bash_validator.py`** — T3 mutative returns `ask` response directly (no nonce generation, no pending files)
+- **`session_start.py`** — Uses `mark_done=False` so `user_prompt_submit.py` can detect first-run and show welcome before marking initialized
+- **`gaia-update.js` registry path** — Fixed to write `plugin-registry.json` in `.claude/` (same path Python hooks expect)
+- **`gaia-doctor.js`** — Now checks permissions in `settings.local.json` (not just `settings.json`). Updated agent and config file lists.
+- **`gaia-update.js` health check** — Updated config files (`surface-routing.json`) and agent list (`gaia-system.md`, `speckit-planner.md`)
+
+#### Fixed
+- **Registry path mismatch** — `gaia-update.js` wrote to `.claude/project-context/`, Python read from `.claude/`. Now both use `.claude/`.
+- **Orphaned nonce files** — `bash_validator` no longer writes pending approval files for `ask` responses
+- **Plugin mode detection** — `--plugin-dir` now correctly detects `gaia-ops` vs `gaia-security` via `plugin.json` instead of path parsing
+- **First-run welcome race condition** — `SessionStart` no longer marks initialized; `UserPromptSubmit` marks after showing welcome
+- **`_build_welcome()` framing** — Rewritten to explain WHY the user needs to restart (permissions not active yet), making Claude naturally relay the message
+
 ## [4.4.0-rc.5] - 2026-03-19
 
 ### Identity Redesign

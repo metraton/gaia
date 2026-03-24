@@ -102,17 +102,30 @@ async function checkSettingsJson() {
       if (!hookTypes.includes('PostToolUse')) issues.push('Missing PostToolUse hook');
     }
 
-    // Check permissions exist
-    if (!data.permissions) {
-      issues.push('No permissions configured');
+    // Check permissions — now live in settings.local.json (not settings.json)
+    const localPath = join(CWD, '.claude', 'settings.local.json');
+    let permCount = 0;
+    if (existsSync(localPath)) {
+      try {
+        const localData = JSON.parse(await fs.readFile(localPath, 'utf-8'));
+        if (localData.permissions) {
+          permCount = Object.values(localData.permissions).flat().length;
+        }
+      } catch { /* ignore parse errors */ }
+    }
+    // Also count permissions in settings.json (legacy installs)
+    if (data.permissions) {
+      permCount += Object.values(data.permissions).flat().length;
+    }
+    if (permCount === 0) {
+      issues.push('No permissions configured (check settings.local.json)');
     }
 
     if (issues.length > 0) {
-      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan' };
+      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan or npx gaia-update' };
     }
 
     const hookCount = data.hooks ? Object.keys(data.hooks).length : 0;
-    const permCount = data.permissions ? Object.values(data.permissions).flat().length : 0;
     return { name: 'settings.json', ok: true, detail: `${hookCount} hook types, ${permCount} rules` };
   } catch {
     return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-scan' };

@@ -238,8 +238,11 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
 
     # Step 4: INSTALL (automatic, no prompts)
     skip_claude = getattr(args, "skip_claude_install", False)
+    npm_postinstall = getattr(args, "npm_postinstall", False)
     ensure_claude_code(skip_install=skip_claude)
-    ensure_gaia_ops_package(project_root)
+    if not npm_postinstall:
+        # Skip when called from npm postinstall to avoid re-entrance
+        ensure_gaia_ops_package(project_root)
     create_claude_directory(project_root)
     copy_claude_md(project_root)
     copy_settings_json(project_root)
@@ -496,6 +499,13 @@ def main(argv: list = None) -> int:
         dest="skip_claude_install",
         help="Skip Claude Code CLI installation",
     )
+    parser.add_argument(
+        "--npm-postinstall",
+        action="store_true",
+        default=False,
+        dest="npm_postinstall",
+        help="Called from npm postinstall: skip Claude Code install and npm package install to avoid re-entrance",
+    )
 
     args = parser.parse_args(argv)
 
@@ -544,10 +554,18 @@ def main(argv: list = None) -> int:
                 print(json.dumps(result), file=sys.stdout)
                 return 0
 
+        # --npm-postinstall implies --skip-claude-install and skips ensure_gaia_ops_package
+        if args.npm_postinstall:
+            args.skip_claude_install = True
+
         # Mode selection
         # --json or --scan-only: scan-only mode
         if args.json or args.scan_only:
             return _mode_scan_only(project_root, scan_config, args)
+
+        # --npm-postinstall: fresh install mode with re-entrance protection
+        if args.npm_postinstall:
+            return _mode_fresh(project_root, scan_config, args)
 
         # Detect mode based on .claude/ existence
         claude_dir = project_root / ".claude"

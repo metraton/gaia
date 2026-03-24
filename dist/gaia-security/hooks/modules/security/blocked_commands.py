@@ -10,6 +10,7 @@ All other state-modifying commands are detected by the universal verb detector
 Categories:
 - AWS networking/data infrastructure delete operations
 - AWS KMS/Route53/Organizations operations
+- Azure resource group/networking/data/AKS/Key Vault delete operations
 - GCP project/cluster/database delete operations
 - Kubernetes critical delete operations (cluster, namespace, pv, node, CRD, webhooks)
 - Kubernetes bulk delete operations (--all flag)
@@ -127,6 +128,43 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"aws\s+route53\s+delete-hosted-zone\b", re.IGNORECASE),
     ],
 
+    # Azure - Resource group, networking, data infrastructure (irreversible)
+    "azure_critical": [
+        re.compile(r"az\s+group\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+vnet\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+vnet\s+subnet\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+nsg\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+public-ip\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+application-gateway\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+lb\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+dns\s+zone\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+network\s+private-dns\s+zone\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+vm\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+vmss\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+disk\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+snapshot\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+image\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+sql\s+server\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+sql\s+db\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+cosmosdb\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+redis\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+storage\s+account\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+storage\s+container\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+storage\s+blob\s+delete-batch\b", re.IGNORECASE),
+        re.compile(r"az\s+aks\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+aks\s+nodepool\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+acr\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+keyvault\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+keyvault\s+key\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+keyvault\s+secret\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+functionapp\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+webapp\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+ad\s+app\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+ad\s+sp\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+servicebus\s+namespace\s+delete\b", re.IGNORECASE),
+        re.compile(r"az\s+eventhubs\s+namespace\s+delete\b", re.IGNORECASE),
+    ],
+
     # GCP - Project, cluster, and database operations (irreversible)
     "gcp_critical": [
         re.compile(r"gcloud\s+projects\s+delete\b", re.IGNORECASE),
@@ -240,6 +278,29 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "aws organizations delete-organization": "[BLOCKED] Organization deletion is irreversible",
     "aws route53 delete-hosted-zone": "[BLOCKED] DNS zone deletion causes widespread outage",
 
+    # Azure suggestions
+    "az group delete": "[BLOCKED] Resource group deletion destroys all contained resources - use Terraform/Terragrunt",
+    "az network vnet delete": "[BLOCKED] VNet deletion is irreversible - use Terraform/Terragrunt",
+    "az network vnet subnet delete": "[BLOCKED] Subnet deletion is irreversible - use Terraform/Terragrunt",
+    "az network nsg delete": "[BLOCKED] NSG deletion removes all security rules - use Terraform/Terragrunt",
+    "az vm delete": "[BLOCKED] VM deletion is irreversible - use Terraform/Terragrunt",
+    "az vmss delete": "[BLOCKED] Scale set deletion is irreversible - use Terraform/Terragrunt",
+    "az disk delete": "[BLOCKED] Disk deletion loses all data - use Terraform/Terragrunt",
+    "az sql server delete": "[BLOCKED] SQL Server deletion destroys all databases - use Terraform/Terragrunt",
+    "az sql db delete": "[BLOCKED] Database deletion loses all data - use Terraform/Terragrunt",
+    "az cosmosdb delete": "[BLOCKED] CosmosDB deletion is irreversible - use Terraform/Terragrunt",
+    "az redis delete": "[BLOCKED] Redis deletion loses all cached data - use Terraform/Terragrunt",
+    "az storage account delete": "[BLOCKED] Storage account deletion destroys all data - use Terraform/Terragrunt",
+    "az aks delete": "[BLOCKED] AKS cluster deletion is irreversible - use Terraform/Terragrunt",
+    "az acr delete": "[BLOCKED] Container registry deletion destroys all images - use Terraform/Terragrunt",
+    "az keyvault delete": "[BLOCKED] Key Vault deletion can render encrypted data unrecoverable",
+    "az functionapp delete": "[BLOCKED] Function App deletion is irreversible - use Terraform/Terragrunt",
+    "az webapp delete": "[BLOCKED] Web App deletion is irreversible - use Terraform/Terragrunt",
+    "az ad app delete": "[BLOCKED] App registration deletion breaks all dependent services",
+    "az ad sp delete": "[BLOCKED] Service principal deletion breaks authentication for dependent services",
+    "az servicebus namespace delete": "[BLOCKED] Service Bus namespace deletion is irreversible - use Terraform/Terragrunt",
+    "az eventhubs namespace delete": "[BLOCKED] Event Hubs namespace deletion is irreversible - use Terraform/Terragrunt",
+
     # GCP suggestions
     "gcloud projects delete": "[BLOCKED] Project deletion is irreversible - must be done via Cloud Console",
     "gcloud container clusters delete": "[BLOCKED] Use Terraform/Terragrunt for GKE management",
@@ -334,6 +395,41 @@ SEMANTIC_BLOCKED_RULES = (
     SemanticBlockedRule("aws_critical", ("aws", "kms", "schedule-key-deletion"), "aws kms schedule-key-deletion"),
     SemanticBlockedRule("aws_critical", ("aws", "organizations", "delete-organization"), "aws organizations delete-organization"),
     SemanticBlockedRule("aws_critical", ("aws", "route53", "delete-hosted-zone"), "aws route53 delete-hosted-zone"),
+
+    # Azure
+    SemanticBlockedRule("azure_critical", ("az", "group", "delete"), "az group delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "vnet", "delete"), "az network vnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "vnet", "subnet", "delete"), "az network vnet subnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "nsg", "delete"), "az network nsg delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "public-ip", "delete"), "az network vnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "application-gateway", "delete"), "az network vnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "lb", "delete"), "az network vnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "dns", "zone", "delete"), "az network vnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "network", "private-dns", "zone", "delete"), "az network vnet delete"),
+    SemanticBlockedRule("azure_critical", ("az", "vm", "delete"), "az vm delete"),
+    SemanticBlockedRule("azure_critical", ("az", "vmss", "delete"), "az vmss delete"),
+    SemanticBlockedRule("azure_critical", ("az", "disk", "delete"), "az disk delete"),
+    SemanticBlockedRule("azure_critical", ("az", "snapshot", "delete"), "az disk delete"),
+    SemanticBlockedRule("azure_critical", ("az", "image", "delete"), "az disk delete"),
+    SemanticBlockedRule("azure_critical", ("az", "sql", "server", "delete"), "az sql server delete"),
+    SemanticBlockedRule("azure_critical", ("az", "sql", "db", "delete"), "az sql db delete"),
+    SemanticBlockedRule("azure_critical", ("az", "cosmosdb", "delete"), "az cosmosdb delete"),
+    SemanticBlockedRule("azure_critical", ("az", "redis", "delete"), "az redis delete"),
+    SemanticBlockedRule("azure_critical", ("az", "storage", "account", "delete"), "az storage account delete"),
+    SemanticBlockedRule("azure_critical", ("az", "storage", "container", "delete"), "az storage account delete"),
+    SemanticBlockedRule("azure_critical", ("az", "storage", "blob", "delete-batch"), "az storage account delete"),
+    SemanticBlockedRule("azure_critical", ("az", "aks", "delete"), "az aks delete"),
+    SemanticBlockedRule("azure_critical", ("az", "aks", "nodepool", "delete"), "az aks delete"),
+    SemanticBlockedRule("azure_critical", ("az", "acr", "delete"), "az acr delete"),
+    SemanticBlockedRule("azure_critical", ("az", "keyvault", "delete"), "az keyvault delete"),
+    SemanticBlockedRule("azure_critical", ("az", "keyvault", "key", "delete"), "az keyvault delete"),
+    SemanticBlockedRule("azure_critical", ("az", "keyvault", "secret", "delete"), "az keyvault delete"),
+    SemanticBlockedRule("azure_critical", ("az", "functionapp", "delete"), "az functionapp delete"),
+    SemanticBlockedRule("azure_critical", ("az", "webapp", "delete"), "az webapp delete"),
+    SemanticBlockedRule("azure_critical", ("az", "ad", "app", "delete"), "az ad app delete"),
+    SemanticBlockedRule("azure_critical", ("az", "ad", "sp", "delete"), "az ad sp delete"),
+    SemanticBlockedRule("azure_critical", ("az", "servicebus", "namespace", "delete"), "az servicebus namespace delete"),
+    SemanticBlockedRule("azure_critical", ("az", "eventhubs", "namespace", "delete"), "az eventhubs namespace delete"),
 
     # GCP
     SemanticBlockedRule("gcp_critical", ("gcloud", "projects", "delete"), "gcloud projects delete"),

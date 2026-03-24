@@ -14,14 +14,17 @@ Multi-agent DevOps system that classifies every operation by risk, routes work t
 
 ### Features
 
-- **Multi-cloud support** - GCP, AWS
-- **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, devops-developer, speckit-planner, gaia (meta-agent)
+- **Multi-cloud support** - GCP, AWS, Azure
+- **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, devops-developer, speckit-planner, gaia-system (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
 - **Dynamic identity** - Orchestrator identity injected by UserPromptSubmit hook; skills loaded on-demand
-- **Approval gates** for T3 operations via nonce-based workflow
+- **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (inalterable via symlink)
+- **Indirect execution detection** - Catches `bash -c`, `eval`, `python -c` wrappers that bypass regex patterns
+- **Approval gates** for T3 operations via native `ask` dialog
 - **Git commit validation** with Conventional Commits
-- **20 skills** - Injected procedural knowledge modules for agents
+- **21 skills** - Injected procedural knowledge modules for agents
 - **Plugin + npm** - Distributable as Claude Code native plugin or npm package
+- **Enterprise ready** - Managed settings template for organization-wide deployment
 
 ## Installation
 
@@ -56,11 +59,23 @@ gaia-scan
 
 This will:
 1. Auto-detect your project structure (GitOps, Terraform, AppServices)
-2. Install Claude Code if not present
-3. Create `.claude/` directory with symlinks to this package
-4. Generate `project-context.json` and `settings.json`
+2. Create `.claude/` directory with symlinks to this package
+3. Generate `project-context.json`
+4. Create `settings.json` with hooks only (no permissions in settings.json)
+5. Merge deny rules + allow permissions into `settings.local.json` (preserves existing user config)
 
 No `CLAUDE.md` is generated -- orchestrator identity is injected dynamically by the UserPromptSubmit hook.
+
+### Settings Architecture
+
+Gaia-Ops separates hooks from permissions:
+
+| File | Content | Strategy |
+|------|---------|----------|
+| `settings.json` | Hooks only (9 hook types) | Overwritten from template on each update |
+| `settings.local.json` | Permissions (allow + deny rules) | Union merge — never removes user config |
+
+This ensures your personal customizations (MCP servers, extra permissions) survive updates.
 
 ### Manual Installation
 
@@ -100,17 +115,34 @@ npx gaia-skills-diagnose
 npx gaia-skills-diagnose --run-tests
 ```
 
+## Security
+
+Gaia-Ops enforces a 6-layer security pipeline:
+
+| Layer | Mechanism | Bypassable? |
+|-------|-----------|-------------|
+| Indirect execution detection | `bash -c`, `eval`, `python -c` wrappers | No (hook-level) |
+| Blocked commands (regex) | 85+ regex patterns | No (symlink to npm package) |
+| Blocked commands (semantic) | 70+ ordered-token rules | No (symlink to npm package) |
+| Cloud pipe validator | Credential piping detection | No (hook-level) |
+| Mutative verb detection | `ask` dialog for state-changing ops | User approves via native dialog |
+| Settings deny rules | 147 deny rules in `settings.local.json` | Self-healing (restored each session) |
+
+### Enterprise Deployment
+
+For organization-wide enforcement, deploy `templates/managed-settings.template.json` as a managed settings policy via Claude.ai Admin Console. Managed settings have the highest precedence and cannot be overridden.
+
 ## Project Structure
 
 ```
 node_modules/@jaguilar87/gaia-ops/
 ├── agents/              # Agent definitions (6 agents)
-├── skills/              # Skill modules (20 skills)
+├── skills/              # Skill modules (21 skills)
 ├── tools/               # Orchestration tools
 ├── hooks/               # Claude Code hooks (modular architecture)
 ├── commands/            # Slash commands (5 speckit + scan-project)
 ├── config/              # Configuration (contracts, git standards, rules)
-├── templates/           # Installation templates (settings, governance)
+├── templates/           # Installation templates (settings, governance, managed-settings)
 ├── speckit/             # Spec-Kit framework (templates)
 ├── bin/                 # CLI utilities (11 scripts)
 └── tests/               # Test suite
@@ -133,7 +165,7 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **4.4.0-rc.5**
+Current version: **4.5.0**
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -169,7 +201,7 @@ git clone git@bitbucket.org:yourorg/your-project-context.git project-context
 
 - **Issues:** [GitHub Issues](https://github.com/metraton/gaia-ops/issues)
 - **Repository:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
-- **Author:** Jorge Aguilar <jorge.aguilar87@gmail.com>
+- **Author:** Jorge Aguilar <jorge.aguilar88@gmail.com>
 
 ## License
 

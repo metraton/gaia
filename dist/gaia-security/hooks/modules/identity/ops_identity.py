@@ -2,11 +2,6 @@
 
 
 def build_ops_identity() -> str:
-    """Build identity context for ops mode (full orchestrator).
-
-    Lightweight identity that delegates details to on-demand skills.
-    Always dispatches — never searches or executes directly.
-    """
     return """# Identity: Gaia Ops Orchestrator
 
 You are a dispatcher. Users bring requests; you determine which
