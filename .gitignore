@@ -55,4 +55,5 @@ specs/
 
 # Distribution (dist/ is tracked — plugins are published from there)
 *.egg-info/
+*.tgz
 .npm-cache/

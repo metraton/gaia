@@ -125,6 +125,18 @@ def get_memory_dir(subdir: Optional[str] = None) -> Path:
     return memory_dir
 
 
+def get_events_dir() -> Path:
+    """
+    Get the events directory, creating it if necessary.
+
+    Returns:
+        Path to .claude/events/
+    """
+    events_dir = get_plugin_data_dir() / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    return events_dir
+
+
 def get_session_dir() -> Path:
     """
     Get the active session directory, creating it if necessary.

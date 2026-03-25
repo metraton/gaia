@@ -636,6 +636,17 @@ class ClaudeCodeAdapter(HookAdapter):
                 agent_type, effective_session_id,
             )
 
+        # Write AGENT_DISPATCH event (non-blocking)
+        try:
+            from modules.events.event_writer import EventWriter, AGENT_DISPATCH
+            prompt = parameters.get("prompt", "")
+            EventWriter().write_event(
+                AGENT_DISPATCH, "hook", result.agent_name or "unknown",
+                f"dispatched for: {prompt[:100]}",
+            )
+        except Exception:
+            pass  # Events are non-critical
+
         return HookResponse(output={}, exit_code=0)
 
     def _adapt_send_message(
@@ -814,6 +825,20 @@ class ClaudeCodeAdapter(HookAdapter):
                 writer = SessionContextWriter()
                 for evt in events:
                     writer.update_context(evt.to_dict())
+
+            # Write COMMAND_EXECUTED event for T2+ Bash commands only (non-blocking)
+            if tool_name == "Bash" and tier in ("T2", "T3"):
+                try:
+                    from modules.events.event_writer import EventWriter, COMMAND_EXECUTED
+                    cmd = parameters.get("command", "")
+                    EventWriter().write_event(
+                        COMMAND_EXECUTED, "hook", "",
+                        f"{'ok' if success else 'error'}: {cmd[:120]}",
+                        severity="info" if success else "warning",
+                        meta={"tier": tier},
+                    )
+                except Exception:
+                    pass  # Events are non-critical
 
             clear_hook_state()
             logger.debug("Post-hook completed for %s", tool_name)
@@ -1034,6 +1059,24 @@ class ClaudeCodeAdapter(HookAdapter):
                 commands_executed=commands_executed,
             )
 
+            # Write AGENT_COMPLETE event (non-blocking)
+            try:
+                from modules.events.event_writer import EventWriter, AGENT_COMPLETE
+                _plan = ""
+                if parsed_contract and isinstance(parsed_contract.get("agent_status"), dict):
+                    _plan = str(parsed_contract["agent_status"].get("plan_status", ""))
+                _key_outputs = []
+                if parsed_contract and isinstance(parsed_contract.get("evidence_report"), dict):
+                    _key_outputs = parsed_contract["evidence_report"].get("key_outputs", [])
+                _summary = "; ".join(str(o) for o in _key_outputs[:2]) if _key_outputs else ""
+                EventWriter().write_event(
+                    AGENT_COMPLETE, "hook", agent_type,
+                    _plan or "completed",
+                    meta={"episode_id": episode_id, "summary": _summary[:200]},
+                )
+            except Exception:
+                pass  # Events are non-critical
+
             contract_attempts = 0
             if not response_contract.valid:
                 try:
@@ -1193,6 +1236,17 @@ class ClaudeCodeAdapter(HookAdapter):
             QualityResult with quality assessment.
             Default: quality_sufficient=True (passthrough until business logic wired).
         """
+        # Write SESSION_END event (non-blocking)
+        try:
+            from modules.events.event_writer import EventWriter, SESSION_END
+            stop_reason = raw.get("stop_reason", "unknown")
+            EventWriter().write_event(
+                SESSION_END, "hook", "",
+                f"session ended: {stop_reason}",
+            )
+        except Exception:
+            pass  # Events are non-critical
+
         return QualityResult(
             quality_sufficient=True,
             score=1.0,

@@ -387,6 +387,23 @@ def build_project_context(
         if critical_summary:
             context_string += critical_summary
 
+        # Inject recent operational events (non-blocking)
+        try:
+            from ..events.event_writer import read_events
+            recent = read_events(hours=24, limit=20)
+            if recent:
+                lines = ["\n# Recent Events (last 24h)"]
+                for evt in recent:
+                    ts_short = evt.get("ts", "")[:16]
+                    etype = evt.get("type", "")
+                    agent_name = evt.get("agent", "")
+                    result_str = evt.get("result", "")
+                    label = f"{agent_name}: " if agent_name else ""
+                    lines.append(f"- [{ts_short}] {etype}: {label}{result_str}")
+                context_string += "\n".join(lines) + "\n"
+        except Exception as exc:
+            logger.debug("Event context injection failed (non-fatal): %s", exc)
+
         # Build telemetry snapshot
         telemetry = build_context_telemetry_snapshot(context_payload)
 
