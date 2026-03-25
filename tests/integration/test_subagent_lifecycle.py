@@ -211,10 +211,10 @@ class TestPhase1SkillsInjection:
                 assert len(content) > 100, \
                     f"Skill '{skill}' content too short for agent '{agent}'"
 
-    def test_pre_tool_use_injects_context_but_not_inline_skill_text(self, test_project):
+    def test_pre_tool_use_caches_context_for_subagent_start(self, test_project):
         """
-        pre_tool_use should inject project context only.
-        Skill text is not concatenated by hook; Claude loads skills natively.
+        pre_tool_use should cache project context for SubagentStart (not return
+        additionalContext directly, which would go to the orchestrator).
         """
         tmp_path, claude_dir = test_project
 
@@ -235,14 +235,27 @@ class TestPhase1SkillsInjection:
                 },
             )
 
-            assert isinstance(result, dict), "Task call should return additionalContext when context is injected"
-            additional = result["hookSpecificOutput"]["additionalContext"]
+            # PreToolUse should NOT return additionalContext (that goes to orchestrator)
+            assert result is None, \
+                "PreToolUse:Agent should return None (context cached for SubagentStart)"
 
-            assert "# Project Context" in additional
-            assert "updatedInput" not in result["hookSpecificOutput"], \
-                "Phase 2: should use additionalContext, not updatedInput"
-            assert "AGENT_STATUS" not in additional, \
+            # Verify context was cached
+            from pathlib import Path
+            cache_dir = Path("/tmp/gaia-context-cache")
+            cache_files = list(cache_dir.glob("*.json"))
+            assert len(cache_files) > 0, \
+                "Context should be cached for SubagentStart to consume"
+
+            import json
+            cached = json.loads(cache_files[-1].read_text())
+            assert "# Project Context" in cached["context"], \
+                "Cached context should contain project context"
+            assert "AGENT_STATUS" not in cached["context"], \
                 "Hook should not inline agent-protocol skill text into context"
+
+            # Clean up cache files
+            for f in cache_files:
+                f.unlink(missing_ok=True)
         finally:
             os.chdir(original_cwd)
 

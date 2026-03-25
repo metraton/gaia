@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""SubagentStart hook — logs agent dispatch and records skill snapshots.
-Context injection is handled exclusively by PreToolUse (Agent matcher)."""
+"""SubagentStart hook — logs agent dispatch, records skill snapshots,
+and forwards cached project context into the subagent.
+
+PreToolUse:Agent builds and caches the context; this hook reads the
+cache and returns it as additionalContext so it reaches the subagent
+(not the orchestrator)."""
 
 import sys
 import json

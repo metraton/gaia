@@ -268,16 +268,6 @@ def build_project_context(
         logger.warning(f"No prompt provided for {subagent_type}, skipping context injection")
         return None, {}
 
-    # Deduplication guard: if context was already injected (e.g., by a
-    # previous hook or retry), do not inject again.  The "# Project Context"
-    # header is the canonical marker written by this function.
-    if "# Project Context" in prompt:
-        logger.warning(
-            "Duplicate context injection prevented for %s — prompt already "
-            "contains '# Project Context' header", subagent_type,
-        )
-        return None, {}
-
     try:
         # Find context_provider.py
         context_provider_paths = [

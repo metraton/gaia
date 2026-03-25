@@ -522,10 +522,10 @@ class TestFormatCompletionResponse:
 
 
 class TestFormatContextResponse:
-    """Test format_context_response for UserPromptSubmit."""
+    """Test format_context_response for SubagentStart."""
 
     def test_with_context(self, adapter):
-        """Context injection produces additionalContext field."""
+        """Context injection produces hookSpecificOutput with additionalContext."""
         result = ContextResult(
             context_injected=True,
             additional_context="# Project Context\nRegion: us-east4\nCluster: dev",
@@ -534,22 +534,27 @@ class TestFormatContextResponse:
         resp = adapter.format_context_response(result)
 
         assert resp.exit_code == 0
-        assert "additionalContext" in resp.output
-        assert "Project Context" in resp.output["additionalContext"]
+        hook_out = resp.output["hookSpecificOutput"]
+        assert hook_out["hookEventName"] == "SubagentStart"
+        assert "additionalContext" in hook_out
+        assert "Project Context" in hook_out["additionalContext"]
         assert resp.output["sections_provided"] == ["project_identity", "environment"]
 
     def test_no_context(self, adapter):
-        """No context injection produces empty output."""
+        """No context injection produces hookSpecificOutput without additionalContext."""
         result = ContextResult()
         resp = adapter.format_context_response(result)
         assert resp.exit_code == 0
-        assert "additionalContext" not in resp.output
+        hook_out = resp.output["hookSpecificOutput"]
+        assert hook_out["hookEventName"] == "SubagentStart"
+        assert "additionalContext" not in hook_out
 
     def test_injected_but_no_content(self, adapter):
         """context_injected=True but no additional_context omits the field."""
         result = ContextResult(context_injected=True, additional_context=None)
         resp = adapter.format_context_response(result)
-        assert "additionalContext" not in resp.output
+        hook_out = resp.output["hookSpecificOutput"]
+        assert "additionalContext" not in hook_out
 
 
 # ============================================================================

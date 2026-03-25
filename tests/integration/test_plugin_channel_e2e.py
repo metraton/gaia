@@ -297,10 +297,10 @@ class TestPluginPreToolUseBashBlocked:
 # ============================================================================
 
 class TestPluginPreToolUseAgentContextInjection:
-    """Agent tool invocations must receive context injection under PLUGIN channel."""
+    """Agent tool invocations cache context for SubagentStart under PLUGIN channel."""
 
-    def test_agent_context_injection_occurs(self, plugin_env_with_context):
-        """PreToolUse for a project agent returns additionalContext with '# Project Context'."""
+    def test_agent_context_cached_for_subagent_start(self, plugin_env_with_context):
+        """PreToolUse for a project agent caches context (not returned as additionalContext)."""
         import importlib.util
 
         env = plugin_env_with_context
@@ -354,22 +354,29 @@ class TestPluginPreToolUseAgentContextInjection:
                 },
             )
 
-        # Result should be a dict with additionalContext containing context
-        assert isinstance(result, dict), (
-            f"Expected dict with additionalContext, got: {type(result).__name__}: {result}"
+        # PreToolUse should NOT return additionalContext (goes to orchestrator)
+        assert result is None, (
+            f"PreToolUse:Agent should return None (context cached for SubagentStart), got: {result}"
         )
 
-        additional_context = result["hookSpecificOutput"]["additionalContext"]
-        assert "# Project Context" in additional_context, (
-            "additionalContext must contain '# Project Context' section"
+        # Verify context was cached to disk for SubagentStart
+        cache_dir = Path("/tmp/gaia-context-cache")
+        cache_files = list(cache_dir.glob("*.json"))
+        assert len(cache_files) > 0, (
+            "Context should be cached for SubagentStart to consume"
         )
-        assert "cluster_details" in additional_context, (
-            "additionalContext must contain injected project knowledge"
+
+        cached = json.loads(cache_files[-1].read_text())
+        assert "# Project Context" in cached["context"], (
+            "Cached context must contain '# Project Context' section"
         )
-        # Prompt should NOT be mutated -- additionalContext is separate
-        assert "updatedInput" not in result["hookSpecificOutput"], (
-            "Phase 2: should use additionalContext, not updatedInput"
+        assert "cluster_details" in cached["context"], (
+            "Cached context must contain injected project knowledge"
         )
+
+        # Clean up cache files
+        for f in cache_files:
+            f.unlink(missing_ok=True)
 
 
 # ============================================================================
@@ -377,10 +384,10 @@ class TestPluginPreToolUseAgentContextInjection:
 # ============================================================================
 
 class TestPluginNoDoubleContextInjection:
-    """'# Project Context' must appear exactly once in additionalContext."""
+    """'# Project Context' must appear exactly once in cached context."""
 
-    def test_project_context_appears_once(self, plugin_env_with_context):
-        """Verify that '# Project Context' appears exactly once in additionalContext."""
+    def test_project_context_cached_once(self, plugin_env_with_context):
+        """Verify that cached context contains '# Project Context' exactly once."""
         import importlib.util
 
         env = plugin_env_with_context
@@ -420,21 +427,33 @@ class TestPluginNoDoubleContextInjection:
                 },
             )
 
-        assert isinstance(result, dict), f"Expected dict, got: {result}"
-        additional_context = result["hookSpecificOutput"]["additionalContext"]
+        # PreToolUse should return None (context cached for SubagentStart)
+        assert result is None, f"Expected None, got: {result}"
 
-        count = additional_context.count("# Project Context")
+        # Verify cached context has exactly one '# Project Context'
+        cache_dir = Path("/tmp/gaia-context-cache")
+        cache_files = list(cache_dir.glob("*.json"))
+        assert len(cache_files) > 0, "Context should be cached"
+
+        cached = json.loads(cache_files[-1].read_text())
+        count = cached["context"].count("# Project Context")
         assert count == 1, (
-            f"'# Project Context' should appear exactly once in additionalContext, "
+            f"'# Project Context' should appear exactly once in cached context, "
             f"found {count} occurrences"
         )
 
-    def test_no_double_injection_on_already_enriched_prompt(self, plugin_env_with_context):
-        """If prompt already contains '# Project Context', dedup guard prevents injection.
+        # Clean up
+        for f in cache_files:
+            f.unlink(missing_ok=True)
 
-        With additionalContext, the prompt is not mutated. The dedup guard checks
-        the original prompt: if it already has '# Project Context', no context is
-        injected (result is None).
+    def test_context_built_even_when_prompt_has_project_context(self, plugin_env_with_context):
+        """Context is always built fully, even if the prompt already contains '# Project Context'.
+
+        With cache-and-forward, the cached context is the ONLY way context
+        reaches the subagent.  The prompt may contain '# Project Context'
+        because the orchestrator's own system context bleeds into the
+        Agent tool's prompt field.  We must still build and cache the full
+        context regardless.
         """
         import importlib.util
 
@@ -446,7 +465,7 @@ class TestPluginNoDoubleContextInjection:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
-        # Prompt that already has context injected
+        # Prompt that already has context from the orchestrator's bleed-through
         pre_enriched_prompt = (
             "# Task\n\nInvestigate cluster health\n\n"
             "# Project Context\n\n{\"cluster_details\": {}}\n"
@@ -479,11 +498,23 @@ class TestPluginNoDoubleContextInjection:
                 },
             )
 
-        # Dedup guard triggers: prompt already has '# Project Context', so
-        # build_project_context returns None, no additionalContext is returned.
-        assert result is None, (
-            f"Expected None (dedup guard should prevent injection), got: {result}"
+        # No dedup guard: context is built and cached even though prompt
+        # already contained '# Project Context'.
+        assert result is None, f"Expected None (context cached), got: {result}"
+
+        # Verify full context was cached (not truncated)
+        cache_dir = Path("/tmp/gaia-context-cache")
+        cache_files = list(cache_dir.glob("*.json"))
+        assert len(cache_files) > 0, "Context should be cached even with pre-enriched prompt"
+
+        cached = json.loads(cache_files[-1].read_text())
+        assert "cluster_details" in cached["context"], (
+            "Cached context should contain full project knowledge"
         )
+
+        # Clean up
+        for f in cache_files:
+            f.unlink(missing_ok=True)
 
 
 # ============================================================================

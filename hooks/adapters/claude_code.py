@@ -18,7 +18,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import HookAdapter
 from .types import (
@@ -177,16 +177,23 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def format_context_response(self, result: ContextResult) -> HookResponse:
-        """Format a ContextResult for context injection hooks.
+        """Format a ContextResult for SubagentStart context injection.
 
-        Returns additionalContext field that Claude Code appends to the prompt.
-        Note: UserPromptSubmit was simplified to a static echo in settings.json.
-        This method is retained for SubagentStart and future context injection hooks.
+        Claude Code expects SubagentStart hooks to return::
+
+            {"hookSpecificOutput": {"hookEventName": "SubagentStart",
+                                    "additionalContext": "..."}}
+
+        The additionalContext string is appended to the subagent's system prompt.
         """
-        output: Dict[str, Any] = {}
+        hook_specific: Dict[str, Any] = {
+            "hookEventName": "SubagentStart",
+        }
 
         if result.context_injected and result.additional_context:
-            output["additionalContext"] = result.additional_context
+            hook_specific["additionalContext"] = result.additional_context
+
+        output: Dict[str, Any] = {"hookSpecificOutput": hook_specific}
 
         if result.sections_provided:
             output["sections_provided"] = result.sections_provided
@@ -466,6 +473,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
                 return self._adapt_task(
                     tool_name, tool_input, project_agents, hooks_dir,
+                    session_id=event.session_id,
                 )
             elif tool_name.lower() == "sendmessage":
                 return self._adapt_send_message(tool_name, tool_input)
@@ -561,11 +569,13 @@ class ClaudeCodeAdapter(HookAdapter):
         parameters: dict,
         project_agents: list,
         hooks_dir: Path,
+        session_id: str = "",
     ) -> HookResponse:
         """Handle Task/Agent tool validation within the adapter.
 
-        Uses additionalContext instead of prompt mutation.
-        Validation runs against the original prompt, eliminating T3 false positives.
+        Builds project context and caches it for SubagentStart to forward.
+        PreToolUse no longer returns additionalContext directly -- that would
+        inject it into the orchestrator instead of the subagent.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
         from modules.tools.task_validator import TaskValidator
@@ -594,18 +604,37 @@ class ClaudeCodeAdapter(HookAdapter):
 
         logger.info("ALLOWED Task: %s", result.agent_name)
 
+        # Cache context for SubagentStart to pick up and forward to the subagent.
+        # PreToolUse:Agent additionalContext goes to the orchestrator (wrong target).
         additional = "\n".join(filter(None, [context_text, events_text]))
+
+        # Fallback: if build_project_context returned None because the
+        # orchestrator already embedded context in the prompt (dedup guard),
+        # extract the embedded context so SubagentStart can still inject it
+        # via additionalContext.
+        if not additional:
+            prompt = parameters.get("prompt", "")
+            marker = "# Project Context"
+            if marker in prompt:
+                # Extract everything from the marker onwards as context.
+                # The orchestrator copied its own injected context into the
+                # Agent tool prompt; we forward it to SubagentStart instead.
+                idx = prompt.index(marker)
+                additional = prompt[idx:]
+                logger.info(
+                    "Extracted embedded context from prompt for caching "
+                    "(len=%d, agent=%s)",
+                    len(additional), result.agent_name,
+                )
+
         if additional:
-            logger.info("Returning additionalContext for %s (context injected)", result.agent_name)
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": f"Context injected for {result.agent_name}",
-                    "additionalContext": additional,
-                }
-            }
-            return HookResponse(output=output, exit_code=0)
+            effective_session_id = session_id or "unknown"
+            agent_type = result.agent_name or "unknown"
+            self._cache_context_for_subagent(effective_session_id, agent_type, additional)
+            logger.info(
+                "Cached context for SubagentStart: agent=%s, session=%s",
+                agent_type, effective_session_id,
+            )
 
         return HookResponse(output={}, exit_code=0)
 
@@ -1193,11 +1222,133 @@ class ClaudeCodeAdapter(HookAdapter):
         )
 
     # ------------------------------------------------------------------ #
+    # Context cache: PreToolUse -> SubagentStart bridge
+    # ------------------------------------------------------------------ #
+
+    CONTEXT_CACHE_DIR = Path("/tmp/gaia-context-cache")
+    CONTEXT_CACHE_TTL_SECONDS = 60  # Cache entries older than this are stale
+
+    def _cache_context_for_subagent(
+        self, session_id: str, agent_type: str, context: str,
+    ) -> Path:
+        """Write built context to a cache file for SubagentStart consumption.
+
+        Returns the path to the cache file.
+        """
+        self.CONTEXT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = int(time.time() * 1000)
+        cache_file = self.CONTEXT_CACHE_DIR / f"{session_id}-{timestamp}.json"
+        payload = {
+            "context": context,
+            "agent_type": agent_type,
+            "session_id": session_id,
+            "created_at": time.time(),
+        }
+        cache_file.write_text(json.dumps(payload))
+        logger.debug("Context cache written: %s", cache_file)
+        return cache_file
+
+    def _read_cached_context(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read and consume the most recent cached context for a session.
+
+        Finds the newest cache file matching the session_id, reads it,
+        deletes it (one-shot consumption), and cleans up stale entries.
+
+        Returns None if no cache is found.
+        """
+        if not self.CONTEXT_CACHE_DIR.exists():
+            return None
+
+        # Find all cache files for this session, sorted newest-first
+        candidates: List[Path] = sorted(
+            self.CONTEXT_CACHE_DIR.glob(f"{session_id}-*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        if not candidates:
+            # Fallback: try to find the most recent cache file regardless of
+            # session_id, since the orchestrator session_id and the subagent
+            # session_id may differ.
+            all_files = sorted(
+                self.CONTEXT_CACHE_DIR.glob("*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            candidates = all_files
+
+        now = time.time()
+        result = None
+
+        for cache_file in candidates:
+            try:
+                data = json.loads(cache_file.read_text())
+                age = now - data.get("created_at", 0)
+
+                if age > self.CONTEXT_CACHE_TTL_SECONDS:
+                    # Stale entry -- clean up
+                    cache_file.unlink(missing_ok=True)
+                    logger.debug("Cleaned stale context cache: %s (age=%.1fs)", cache_file.name, age)
+                    continue
+
+                # Found a valid entry -- consume it
+                result = data
+                cache_file.unlink(missing_ok=True)
+                logger.debug("Consumed context cache: %s (age=%.1fs)", cache_file.name, age)
+                break
+
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed to read context cache %s: %s", cache_file, exc)
+                cache_file.unlink(missing_ok=True)
+                continue
+
+        # Clean up any remaining stale files (background hygiene)
+        self._cleanup_stale_cache(now)
+
+        return result
+
+    def _cleanup_stale_cache(self, now: float) -> None:
+        """Remove cache files older than TTL."""
+        if not self.CONTEXT_CACHE_DIR.exists():
+            return
+        for f in self.CONTEXT_CACHE_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                if now - data.get("created_at", 0) > self.CONTEXT_CACHE_TTL_SECONDS:
+                    f.unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                f.unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------ #
     # P2: adapt_subagent_start
     # ------------------------------------------------------------------ #
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
-        """Parse SubagentStart event. Context injection is handled by PreToolUse."""
+        """Parse SubagentStart event and forward cached context to the subagent.
+
+        PreToolUse:Agent caches the built project context. This method reads
+        the cache and returns it as additionalContext so Claude Code injects
+        it into the subagent (not the orchestrator).
+        """
+        session_id = raw.get("session_id", "")
+
+        cached = self._read_cached_context(session_id)
+        if cached:
+            logger.info(
+                "SubagentStart: forwarding cached context for agent=%s (session=%s)",
+                cached.get("agent_type", "unknown"),
+                session_id,
+            )
+            return ContextResult(
+                context_injected=True,
+                additional_context=cached["context"],
+                sections_provided=[],
+            )
+
+        logger.info(
+            "SubagentStart: no cached context found for session=%s (passthrough)",
+            session_id,
+        )
         return ContextResult(
             context_injected=False,
             additional_context=None,
