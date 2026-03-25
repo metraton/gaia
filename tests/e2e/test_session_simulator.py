@@ -10,6 +10,8 @@ Run: python3 -m pytest tests/e2e/test_session_simulator.py -v
 
 import json
 import os
+import secrets
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,8 +39,21 @@ class SessionSimulator:
             project_root: Temporary directory to use as the simulated project root.
         """
         self.project_root = project_root
-        self.session_id = "e2e-session-sim-001"
+        self.session_id = "e2e-sim-" + secrets.token_hex(6)
         self._events: List[Dict[str, Any]] = []
+
+        # Clean any stale context cache files from previous test runs
+        cache_dir = Path("/tmp/gaia-context-cache")
+        if cache_dir.exists():
+            for f in cache_dir.glob("*.json"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+        # Isolate from host /tmp state (stale gaia-context-payloads, etc.)
+        self._tmpdir = project_root / "tmp"
+        self._tmpdir.mkdir(exist_ok=True)
 
         # Create minimal .claude/ structure
         claude_dir = project_root / ".claude"
@@ -87,6 +102,14 @@ class SessionSimulator:
         config_dir = claude_dir / "config"
         config_dir.mkdir(exist_ok=True)
 
+        # Copy real config files so context_provider.py can resolve them
+        # from the temp project's .claude/config/ directory.
+        real_config = WORKTREE / "config"
+        for cfg_name in ("context-contracts.json", "surface-routing.json", "universal-rules.json"):
+            src = real_config / cfg_name
+            if src.exists():
+                shutil.copy2(str(src), str(config_dir / cfg_name))
+
         # Memory directory
         (claude_dir / "memory").mkdir(exist_ok=True)
 
@@ -127,6 +150,8 @@ class SessionSimulator:
         # Isolate from host orchestrator env to prevent delegate mode blocking
         env["ORCHESTRATOR_DELEGATE_MODE"] = "false"
         env["GAIA_PLUGIN_MODE"] = "ops"
+        # Isolate from host /tmp state (stale gaia-context-payloads, etc.)
+        env["TMPDIR"] = str(self._tmpdir)
         if env_extras:
             env.update(env_extras)
 
@@ -307,6 +332,49 @@ class SessionSimulator:
         )
         return result
 
+    def start_agent(
+        self,
+        agent_type: str,
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Invoke subagent_start.py with SubagentStart event.
+
+        Simulates Claude Code dispatching a subagent. SubagentStart reads
+        the context cache written by invoke_agent() and returns it as
+        additionalContext for injection into the subagent.
+
+        Args:
+            agent_type: Agent type (e.g. "devops-developer", "Explore").
+            agent_id: Optional agent ID. Generated if not provided.
+            session_id: Optional session ID. Uses simulator's session_id if not provided.
+
+        Returns:
+            Dict with exit_code, stdout_json, stdout_raw, stderr.
+        """
+        if agent_id is None:
+            agent_id = "a" + secrets.token_hex(4)
+        if session_id is None:
+            session_id = self.session_id
+
+        payload = {
+            "hook_event_name": "SubagentStart",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "cwd": str(self.project_root),
+        }
+        result = self._run_hook("subagent_start.py", payload)
+        self._events.append(
+            {
+                "type": "start_agent",
+                "agent_type": agent_type,
+                "agent_id": agent_id,
+                "result": result,
+            }
+        )
+        return result
+
     def end_session(self) -> Dict[str, Any]:
         """Invoke stop_hook.py with Stop event. Returns quality assessment."""
         payload = {
@@ -346,14 +414,29 @@ def _build_valid_agent_output(
     plan_status: str = "COMPLETE",
     agent_id: str = "a1f2c3",
     summary: str = "Task completed successfully.",
+    include_consolidation: bool = True,
 ) -> str:
     """Build a realistic agent output string with json:contract block.
 
     The json:contract block must contain agent_status and evidence_report
     as nested objects -- that is the format contract_validator.parse_contract()
     and response_contract.validate_response_contract() expect.
+
+    consolidation_report is included by default because the runtime may detect
+    consolidation_required=True from cached context payloads. Including a valid
+    consolidation_report makes the contract pass regardless of environment state.
     """
     bt = chr(96)  # backtick
+    consolidation = None
+    if include_consolidation:
+        consolidation = {
+            "ownership_assessment": "owned_here",
+            "confirmed_findings": ["OOMKilled on pod app-1"],
+            "suspected_findings": ["memory limit too low"],
+            "conflicts": ["none"],
+            "open_gaps": ["root cause of memory spike unknown"],
+            "next_best_agent": ["devops-developer"],
+        }
     contract_block = json.dumps(
         {
             "agent_status": {
@@ -371,7 +454,7 @@ def _build_valid_agent_output(
                 "cross_layer_impacts": ["none"],
                 "open_gaps": ["none"],
             },
-            "consolidation_report": None,
+            "consolidation_report": consolidation,
             "approval_request": None,
         },
         indent=2,
@@ -927,4 +1010,125 @@ class TestScenario8FullApprovalCycle:
         assert result["exit_code"] == 2, (
             f"Activation with invalid nonce should fail. "
             f"exit={result['exit_code']}, stdout={result['stdout_raw']}"
+        )
+
+
+# ============================================================================
+# Scenario 9: Context injection round-trip
+# ============================================================================
+
+
+class TestScenario9ContextInjection:
+    """Context injection: invoke_agent caches context, start_agent reads it."""
+
+    def test_context_injection_round_trip(self, tmp_path):
+        """invoke_agent() caches context; start_agent() returns it as additionalContext."""
+        sim = SessionSimulator(tmp_path)
+
+        # 1. Start session
+        result = sim.start_session()
+        assert result["exit_code"] == 0, (
+            f"SessionStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 2. invoke_agent for a project agent -- this caches context
+        result = sim.invoke_agent("devops-developer", "refactoriza el modulo X")
+        assert result["exit_code"] == 0, (
+            f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 2a. Verify the cache file was written
+        cache_dir = Path("/tmp/gaia-context-cache")
+        cache_files = list(cache_dir.glob(f"{sim.session_id}-*.json"))
+        assert len(cache_files) > 0, (
+            f"Expected context cache files for session {sim.session_id} in {cache_dir}. "
+            f"Found: {list(cache_dir.glob('*.json'))}"
+        )
+
+        # 3. start_agent for the same project agent -- reads the cache
+        result = sim.start_agent("devops-developer")
+        assert result["exit_code"] == 0, (
+            f"SubagentStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
+        )
+
+        # 3a. Verify additionalContext is present in hookSpecificOutput
+        start_json = result["stdout_json"]
+        assert start_json is not None, (
+            f"SubagentStart returned no JSON. stdout: {result['stdout_raw']}"
+        )
+        hook_output = start_json.get("hookSpecificOutput", {})
+        additional_context = hook_output.get("additionalContext", "")
+        assert additional_context, (
+            f"Expected additionalContext in hookSpecificOutput. Got: {hook_output}"
+        )
+
+        # 3b. Verify expected sections in the injected context
+        assert "# Project Context" in additional_context, (
+            "Expected '# Project Context' header in additionalContext"
+        )
+        assert "# Brief" in additional_context, (
+            "Expected '# Brief' header in additionalContext"
+        )
+        assert "# Permissions" in additional_context, (
+            "Expected '# Permissions' header in additionalContext"
+        )
+        assert "## Rules" in additional_context, (
+            "Expected '## Rules' header in additionalContext"
+        )
+        assert "project_identity" in additional_context, (
+            "Expected 'project_identity' data in additionalContext"
+        )
+
+    def test_cache_consumed_after_start_agent(self, tmp_path):
+        """Cache file should be deleted after SubagentStart reads it."""
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        # invoke_agent caches context
+        sim.invoke_agent("devops-developer", "refactoriza")
+
+        # Verify cache exists before start_agent
+        cache_dir = Path("/tmp/gaia-context-cache")
+        cache_files_before = list(cache_dir.glob(f"{sim.session_id}-*.json"))
+        assert len(cache_files_before) > 0, "Cache should exist before start_agent"
+
+        # start_agent consumes the cache
+        result = sim.start_agent("devops-developer")
+        assert result["exit_code"] == 0
+
+        # Verify cache was consumed (deleted)
+        cache_files_after = list(cache_dir.glob(f"{sim.session_id}-*.json"))
+        assert len(cache_files_after) == 0, (
+            f"Cache should be consumed after start_agent. "
+            f"Remaining files: {cache_files_after}"
+        )
+
+    def test_meta_agent_no_context_injection(self, tmp_path):
+        """Meta-agents (e.g. Explore) should NOT receive context injection.
+
+        invoke_agent for a meta-agent does not cache context, so start_agent
+        returns no additionalContext.
+        """
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        # invoke_agent for a meta-agent -- should not cache context
+        result = sim.invoke_agent("Explore", "explore the codebase")
+        assert result["exit_code"] == 0
+
+        # start_agent for the meta-agent -- no cached context
+        result = sim.start_agent("Explore")
+        assert result["exit_code"] == 0
+
+        start_json = result["stdout_json"]
+        assert start_json is not None, (
+            f"SubagentStart returned no JSON. stdout: {result['stdout_raw']}"
+        )
+
+        # Verify no additionalContext was injected
+        hook_output = start_json.get("hookSpecificOutput", {})
+        additional_context = hook_output.get("additionalContext")
+        assert not additional_context, (
+            f"Meta-agent should NOT receive context injection. "
+            f"Got additionalContext: {additional_context[:200] if additional_context else 'None'}"
         )
