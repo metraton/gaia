@@ -36,20 +36,23 @@ class TestOpsIdentity:
         identity = build_ops_identity()
         assert "Orchestrator" in identity
 
-    def test_ops_identity_delegates_to_project_dispatch(self):
-        """Identity delegates agent routing to the project-dispatch skill."""
+    def test_ops_identity_has_deterministic_routing(self):
+        """Identity references deterministic surface routing."""
         identity = build_ops_identity()
-        assert "project-dispatch" in identity, (
-            "Identity must reference project-dispatch skill for agent routing"
+        assert "Surface Routing Recommendation" in identity, (
+            "Identity must reference Surface Routing Recommendation for deterministic routing"
         )
 
     def test_ops_identity_has_sendmessage(self):
         identity = build_ops_identity()
         assert "SendMessage" in identity
 
-    def test_ops_identity_has_dispatch_rules(self):
+    def test_ops_identity_has_routing_modes(self):
+        """Identity documents the dispatch modes for routing."""
         identity = build_ops_identity()
-        assert "Dispatch" in identity
+        assert "single_surface" in identity
+        assert "parallel" in identity
+        assert "sequential" in identity
 
 
 class TestIdentityProvider:

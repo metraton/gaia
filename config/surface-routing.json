@@ -179,7 +179,15 @@
           "response contract",
           "pre_tool_use",
           "subagent_stop",
-          "gaia"
+          "gaia",
+          "scanner",
+          "contract",
+          "project-context",
+          "project-context.json",
+          "dispatch",
+          "routing",
+          "identity",
+          "meta-agent"
         ],
         "commands": [],
         "artifacts": ["hooks/", "skills/", "agents/", "templates/", "claude.md", "project-context.json"]

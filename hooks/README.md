@@ -9,7 +9,8 @@ User sends prompt
         |
 [user_prompt_submit.py] <- **injects orchestrator identity**
         |  Builds identity via ops_identity.py
-        |  Skills loaded on-demand: project-dispatch, agent-response
+        |  Inject surface routing recommendation (deterministic)
+        |  Skills loaded on-demand: agent-response
         v
 Agent attempts to execute command
         |

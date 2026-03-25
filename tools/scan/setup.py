@@ -229,7 +229,7 @@ def copy_claude_md(project_root: Path) -> bool:
     """Deprecated — CLAUDE.md is no longer generated from template.
 
     Orchestrator identity is now injected by the UserPromptSubmit hook
-    via ops_identity.py + on-demand skills (project-dispatch, agent-response).
+    via ops_identity.py + deterministic surface routing + on-demand skills (agent-response).
     This avoids two sources of truth.
 
     Kept as no-op for backward compatibility with callers.

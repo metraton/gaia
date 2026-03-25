@@ -1,7 +1,7 @@
 """
 Test schema compatibility between orchestrator identity and system components.
 
-Ensures the identity system (ops_identity.py + on-demand skills) contains
+Ensures the identity system (ops_identity.py + surface routing) contains
 the essential structural elements that the hook system and surface routing depend on.
 """
 
@@ -26,10 +26,11 @@ class TestSchemaCompatibility:
         return content
 
     @pytest.fixture
-    def dispatch_skill_content(self, package_root):
-        skill_path = package_root / "skills" / "project-dispatch" / "SKILL.md"
-        assert skill_path.exists(), "project-dispatch/SKILL.md not found"
-        return skill_path.read_text()
+    def surface_routing_config(self, package_root):
+        """Load surface-routing.json which contains the agent/surface table."""
+        config_path = package_root / "config" / "surface-routing.json"
+        assert config_path.exists(), "surface-routing.json not found"
+        return json.loads(config_path.read_text())
 
     @pytest.fixture
     def response_skill_content(self, package_root):
@@ -51,8 +52,9 @@ class TestSchemaCompatibility:
             contexts[f.stem] = json.loads(f.read_text())
         return contexts
 
-    def test_dispatch_skill_has_surface_routing(self, dispatch_skill_content):
-        """project-dispatch skill must contain surfaces and agents."""
+    def test_surface_routing_has_all_surfaces(self, surface_routing_config):
+        """surface-routing.json must contain all expected surfaces."""
+        surfaces = surface_routing_config.get("surfaces", {})
         for surface in [
             "live_runtime",
             "gitops_desired_state",
@@ -61,10 +63,14 @@ class TestSchemaCompatibility:
             "planning_specs",
             "gaia_system",
         ]:
-            assert surface in dispatch_skill_content, (
-                f"Dispatch skill must include {surface}"
+            assert surface in surfaces, (
+                f"Surface routing config must include {surface}"
             )
 
+    def test_surface_routing_has_all_agents(self, surface_routing_config):
+        """surface-routing.json must map all expected agents."""
+        surfaces = surface_routing_config.get("surfaces", {})
+        agents_found = {cfg.get("primary_agent") for cfg in surfaces.values()}
         for agent in [
             "terraform-architect",
             "gitops-operator",
@@ -73,8 +79,8 @@ class TestSchemaCompatibility:
             "speckit-planner",
             "gaia-system",
         ]:
-            assert agent in dispatch_skill_content, (
-                f"Dispatch skill must include {agent}"
+            assert agent in agents_found, (
+                f"Surface routing config must include agent {agent}"
             )
 
     def test_response_skill_documents_plan_status(self, response_skill_content, package_root):
@@ -104,9 +110,9 @@ class TestSchemaCompatibility:
                 f"Identity must reference {tool}"
             )
 
-    def test_identity_references_skills(self, identity_content):
-        """Identity must tell orchestrator to load on-demand skills."""
-        assert "project-dispatch" in identity_content
+    def test_identity_references_routing(self, identity_content):
+        """Identity must tell orchestrator about deterministic surface routing."""
+        assert "Surface Routing Recommendation" in identity_content
         assert "agent-response" in identity_content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):

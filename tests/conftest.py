@@ -138,10 +138,7 @@ def claude_md_content(package_root):
     identity_path = package_root / "hooks" / "modules" / "identity" / "ops_identity.py"
     if identity_path.exists():
         content = identity_path.read_text()
-        dispatch_path = package_root / "skills" / "project-dispatch" / "SKILL.md"
         response_path = package_root / "skills" / "agent-response" / "SKILL.md"
-        if dispatch_path.exists():
-            content += "\n" + dispatch_path.read_text()
         if response_path.exists():
             content += "\n" + response_path.read_text()
         return content

@@ -25,7 +25,8 @@ User request
     v
 user_prompt_submit.py  (UserPromptSubmit hook)
     |  Inject orchestrator identity via ops_identity.py
-    |  Skills loaded on-demand: project-dispatch, agent-response
+    |  Inject surface routing recommendation (deterministic)
+    |  Skills loaded on-demand: agent-response
     v
 Orchestrator dispatches to agent
     |  Routes by surface classification
@@ -311,7 +312,7 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | File | Purpose |
 |------|---------|
 | `hooks/modules/identity/ops_identity.py` | Orchestrator identity (injected by UserPromptSubmit) |
-| `skills/project-dispatch/SKILL.md` | Agent routing table and dispatch rules (on-demand) |
+| `config/surface-routing.json` | Surface routing config (agent table, signals, dispatch) |
 | `skills/agent-response/SKILL.md` | Contract status handling protocol (on-demand) |
 | `hooks/pre_tool_use.py` | PreToolUse hook entry point |
 | `hooks/subagent_stop.py` | SubagentStop hook entry point |

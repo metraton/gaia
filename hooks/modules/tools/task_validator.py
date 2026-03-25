@@ -220,7 +220,7 @@ class TaskValidator:
             error_msg += f"Available agents:\n"
             for agent in sorted(self.available_agents):
                 error_msg += f"  - {agent}\n"
-            error_msg += "\nRefer to agent descriptions in the project-dispatch skill.\n"
+            error_msg += "\nRefer to the Surface Routing Recommendation for agent selection.\n"
             error_msg += f"\nCorrect usage: Task(subagent_type=\"<agent-name>\", ...)"
 
             return TaskValidationResult(

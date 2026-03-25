@@ -24,6 +24,79 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _extract_user_prompt(raw_input: str) -> str:
+    """Extract user prompt text from stdin event.
+
+    The UserPromptSubmit event is JSON with the user's message.
+    Try known field names; return empty string if extraction fails.
+    """
+    try:
+        event = json.loads(raw_input)
+        # Try known field names from Claude Code hook events
+        for field in ("user_message", "prompt", "message", "content"):
+            if field in event and isinstance(event[field], str):
+                return event[field]
+        # Check nested hookEventInput
+        hook_input = event.get("hookEventInput", {})
+        if isinstance(hook_input, dict):
+            for field in ("user_message", "prompt", "message", "content"):
+                if field in hook_input and isinstance(hook_input[field], str):
+                    return hook_input[field]
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    return ""
+
+
+def _build_routing_recommendation(prompt_text: str) -> str:
+    """Run surface classification and format as a routing recommendation block.
+
+    Returns empty string if classification fails or produces no active surfaces.
+    This is advisory — never raises exceptions.
+    """
+    try:
+        # Import surface_router from tools/context
+        tools_dir = Path(__file__).resolve().parent.parent / "tools" / "context"
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+
+        from surface_router import classify_surfaces
+
+        routing = classify_surfaces(prompt_text)
+
+        active_surfaces = routing.get("active_surfaces", [])
+        if not active_surfaces:
+            logger.info("Surface routing: no active surfaces for prompt")
+            return ""
+
+        agents = routing.get("recommended_agents", [])
+        dispatch_mode = routing.get("dispatch_mode", "single_surface")
+        confidence = routing.get("confidence", 0.0)
+        matched_signals = routing.get("matched_signals", {})
+
+        # Flatten matched signals into a single list for display
+        all_signals = []
+        for surface_signals in matched_signals.values():
+            all_signals.extend(surface_signals)
+
+        lines = [
+            "\n\n## Surface Routing Recommendation",
+            f"- Recommended agents: {agents}",
+            f"- Dispatch mode: {dispatch_mode}",
+            f"- Confidence: {confidence}",
+            f"- Matched signals: {json.dumps(all_signals)}",
+        ]
+
+        logger.info(
+            "Surface routing: agents=%s mode=%s confidence=%.2f signals=%s",
+            agents, dispatch_mode, confidence, all_signals,
+        )
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.warning("Surface routing failed (advisory, skipping): %s", e)
+        return ""
+
+
 def _build_welcome(mode: str) -> str:
     """Build first-run welcome message for the user.
 
@@ -54,7 +127,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        sys.stdin.read()
+        raw_input = sys.stdin.read()
 
         # Check first-run BEFORE setup (SessionStart does setup with
         # mark_done=False so the marker doesn't exist yet on first run).
@@ -73,6 +146,16 @@ if __name__ == "__main__":
             identity = f"{welcome}\n\n{identity}"
             mark_initialized()  # Mark AFTER building the welcome
             logger.info("First-run welcome prepended for %s mode", mode)
+
+        # Append deterministic surface routing recommendation (ops mode only)
+        if mode == "ops":
+            prompt_text = _extract_user_prompt(raw_input)
+            if prompt_text:
+                routing_block = _build_routing_recommendation(prompt_text)
+                if routing_block:
+                    identity = identity + routing_block
+            else:
+                logger.info("Could not extract user prompt from stdin, skipping routing")
 
         logger.info("Identity injected: %s mode (%d chars)", mode, len(identity))
 
