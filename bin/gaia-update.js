@@ -15,8 +15,8 @@
  *   5. Fall through to verification
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
- *   2. settings.json: REPLACE from template (hooks only — no permissions)
- *   3. Merge permissions into settings.local.json (union, preserves user config)
+ *   2. settings.json: create only if missing (non-invasive, never overwrites)
+ *   3. Merge permissions + env vars into settings.local.json (union, preserves user config)
  *   4. Symlinks: recreate if missing, fix broken ones
  *   5. Verify: hooks, python, project-context, config files
  *   6. Report: summary with any issues found
@@ -78,19 +78,25 @@ async function readPackageVersion(path) {
 // ============================================================================
 
 async function updateSettingsJson() {
-  const spinner = ora('Updating settings.json...').start();
+  const spinner = ora('Checking settings.json...').start();
   try {
-    const templatePath = join(__dirname, '../templates/settings.template.json');
     const settingsPath = join(CWD, '.claude', 'settings.json');
 
-    if (!existsSync(templatePath) || !existsSync(join(CWD, '.claude'))) {
-      spinner.info('Skipped');
+    if (!existsSync(join(CWD, '.claude'))) {
+      spinner.info('Skipped (.claude/ not found)');
       return false;
     }
 
-    // Always replace from template -- template is the source of truth (hooks only)
-    await fs.copyFile(templatePath, settingsPath);
-    spinner.succeed('settings.json updated from template (hooks)');
+    // Non-invasive: only create if missing. Never overwrite.
+    // Hooks come from hooks.json (auto-discovered via symlink).
+    // Env vars and permissions live in settings.local.json.
+    if (existsSync(settingsPath)) {
+      spinner.succeed('settings.json already exists (not overwriting)');
+      return false;
+    }
+
+    await fs.writeFile(settingsPath, '{}\n');
+    spinner.succeed('settings.json created (minimal — hooks from hooks.json)');
     return true;
   } catch (error) {
     spinner.fail(`settings.json: ${error.message}`);
@@ -197,8 +203,14 @@ print(json.dumps(ops_perms))
     existing.permissions.deny = mergedDeny;
     existing.permissions.ask = existing.permissions.ask || [];
 
+    // Add env vars (smart merge: add if not present, don't overwrite)
+    existing.env = existing.env || {};
+    if (!('CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in existing.env)) {
+      existing.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+    }
+
     await fs.writeFile(localPath, JSON.stringify(existing, null, 2) + '\n');
-    spinner.succeed('settings.local.json permissions merged');
+    spinner.succeed('settings.local.json permissions and env merged');
     return true;
   } catch (error) {
     spinner.fail(`settings.local.json: ${error.message}`);
@@ -340,18 +352,21 @@ async function runVerification() {
   checks.push({ name: 'agent definitions', ok: agentsOk === agentFiles.length, detail: `${agentsOk}/${agentFiles.length}` });
   if (agentsOk < agentFiles.length) issues.push(`${agentFiles.length - agentsOk} agent definition(s) missing`);
 
-  // 6. settings.json has hooks configured
-  const settingsPath = join(CWD, '.claude', 'settings.json');
-  if (existsSync(settingsPath)) {
+  // 6. hooks.json exists (hooks are auto-discovered from hooks directory)
+  const hooksJsonPath = join(CWD, '.claude', 'hooks', 'hooks.json');
+  if (existsSync(hooksJsonPath)) {
     try {
-      const settings = JSON.parse(await fs.readFile(settingsPath, 'utf-8'));
-      const hasHooks = settings.hooks && Object.keys(settings.hooks).length > 0;
-      checks.push({ name: 'hooks config', ok: hasHooks });
-      if (!hasHooks) issues.push('settings.json has no hooks configured');
+      const hooksData = JSON.parse(await fs.readFile(hooksJsonPath, 'utf-8'));
+      const hasHooks = hooksData.hooks && Object.keys(hooksData.hooks).length > 0;
+      checks.push({ name: 'hooks.json', ok: hasHooks });
+      if (!hasHooks) issues.push('hooks.json has no hooks configured');
     } catch {
-      checks.push({ name: 'hooks config', ok: false });
-      issues.push('settings.json is invalid');
+      checks.push({ name: 'hooks.json', ok: false });
+      issues.push('hooks.json is invalid');
     }
+  } else {
+    checks.push({ name: 'hooks.json', ok: false });
+    issues.push('hooks.json not found (hooks symlink may be broken)');
   }
 
   const passed = checks.filter(c => c.ok).length;

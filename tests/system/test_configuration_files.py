@@ -8,33 +8,13 @@ import json
 from pathlib import Path
 
 
-class TestSettingsTemplate:
-    """Test templates/settings.template.json structure and validity"""
+class TestSettingsTemplateRemoved:
+    """Verify settings.template.json has been removed (hooks in hooks.json, env in settings.local.json)."""
 
-    @pytest.fixture
-    def settings_path(self):
-        """Get settings template path (gaia-ops is a package, not installed project)"""
-        return Path(__file__).resolve().parents[2] / "templates" / "settings.template.json"
-
-    def test_settings_file_exists(self, settings_path):
-        """settings.template.json must exist in templates/"""
-        assert settings_path.exists(), f"settings.template.json not found at {settings_path}"
-
-    def test_settings_is_valid_json(self, settings_path):
-        """settings.template.json must be valid JSON"""
-        try:
-            with open(settings_path, 'r') as f:
-                json.load(f)
-        except json.JSONDecodeError as e:
-            pytest.fail(f"settings.template.json is not valid JSON: {e}")
-
-    def test_settings_has_required_sections(self, settings_path):
-        """settings.template.json should have required configuration sections"""
-        with open(settings_path, 'r') as f:
-            data = json.load(f)
-
-        # Check for core sections (permissions live in settings.local.json, not the template)
-        assert 'hooks' in data, "settings.template.json missing hooks section"
+    def test_settings_template_does_not_exist(self):
+        """settings.template.json should not exist -- it was removed."""
+        path = Path(__file__).resolve().parents[2] / "templates" / "settings.template.json"
+        assert not path.exists(), f"settings.template.json should have been deleted: {path}"
 
 
 class TestGitStandards:

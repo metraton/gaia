@@ -161,7 +161,7 @@ def contracts_file(tmp_path):
     """Create a temporary contracts JSON file."""
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
-    contracts_path = config_dir / "context-contracts.gcp.json"
+    contracts_path = config_dir / "context-contracts.json"
     contracts_path.write_text(json.dumps(MOCK_CONTRACTS))
     return contracts_path
 
@@ -526,7 +526,7 @@ class TestLoadContracts:
     """Test contract file loading with caching and legacy fallback."""
 
     def test_load_gcp_contracts(self, contracts_file):
-        """Loads context-contracts.gcp.json from config directory."""
+        """Loads context-contracts.json from config directory."""
         config_dir = contracts_file.parent
         result = load_contracts("gcp", config_dir)
 

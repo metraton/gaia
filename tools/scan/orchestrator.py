@@ -37,6 +37,7 @@ from tools.scan.merge import (
 )
 from tools.scan.registry import ScannerRegistry
 from tools.scan.scanners.base import BaseScanner, ScanResult
+from tools.scan.workspace import WorkspaceInfo, detect_workspace_type
 
 logger = logging.getLogger(__name__)
 
@@ -267,11 +268,23 @@ class ScanOrchestrator:
         existing_sections = existing_full.get("sections", {})
         existing_metadata = existing_full.get("metadata", {})
 
+        # Step 1.5: Detect workspace type BEFORE running scanners
+        workspace_info = detect_workspace_type(root)
+        if workspace_info.is_multi_repo:
+            logger.info(
+                "Multi-repo workspace: %d repos detected",
+                len(workspace_info.repo_dirs),
+            )
+
         # Step 2: Run all scanners
         scanners = self.registry.get_all()
         if self.config.scanners:
             requested = set(self.config.scanners)
             scanners = [s for s in scanners if s.SCANNER_NAME in requested]
+
+        # Pass workspace info to each scanner instance
+        for scanner in scanners:
+            scanner.workspace_info = workspace_info
 
         scanner_results: Dict[str, ScanResult] = {}
         all_warnings: List[str] = []

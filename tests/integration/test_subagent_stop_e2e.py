@@ -160,7 +160,7 @@ def project_env(tmp_path, monkeypatch):
             project-context/
               project-context.json   (initial data, empty cluster_details)
             config/
-              context-contracts.gcp.json  (copied from real config dir)
+              context-contracts.json  (copied from real config dir)
     """
     # Isolate file I/O
     clear_path_cache()
@@ -180,9 +180,9 @@ def project_env(tmp_path, monkeypatch):
     write_context(context_file, INITIAL_CONTEXT)
 
     # Copy real GCP contracts file
-    real_contracts = CONFIG_DIR / "context-contracts.gcp.json"
+    real_contracts = CONFIG_DIR / "context-contracts.json"
     if real_contracts.exists():
-        shutil.copy(real_contracts, config_dir / "context-contracts.gcp.json")
+        shutil.copy(real_contracts, config_dir / "context-contracts.json")
 
     # Create pending-updates directory
     pending_dir = context_dir / "pending-updates"
@@ -249,7 +249,7 @@ class TestProcessContextUpdatesE2E:
         config_dir = project_env["config_dir"]
 
         # Confirm contracts file exists in .claude/config/
-        assert (config_dir / "context-contracts.gcp.json").exists(), (
+        assert (config_dir / "context-contracts.json").exists(), (
             "Contracts file should be in .claude/config/"
         )
 

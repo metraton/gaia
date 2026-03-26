@@ -77,6 +77,9 @@ _CICD_MARKERS: List[Dict[str, Any]] = [
     {"platform": "gitlab-ci", "type": "file", "path": ".gitlab-ci.yml"},
     {"platform": "jenkins", "type": "file", "path": "Jenkinsfile"},
     {"platform": "circleci", "type": "dir", "path": ".circleci"},
+    {"platform": "bitbucket-pipelines", "type": "file", "path": "bitbucket-pipelines.yml"},
+    {"platform": "cloud-build", "type": "file", "path": "cloudbuild.yaml"},
+    {"platform": "cloud-build", "type": "file", "path": "cloudbuild.json"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -114,6 +117,10 @@ class InfrastructureScanner(BaseScanner):
     def scan(self, root: Path) -> ScanResult:
         """Scan for infrastructure indicators.
 
+        In multi-repo mode, scans each repo subdirectory and tags IaC
+        entries with their containing repo name. In single-repo mode,
+        behaves as before.
+
         Args:
             root: Absolute path to the project root directory.
 
@@ -131,6 +138,12 @@ class InfrastructureScanner(BaseScanner):
             ci_cd = self._detect_cicd(root, warnings)
             paths = self._detect_paths(root, warnings)
             app_services = self._detect_application_services(root, warnings)
+
+            # Multi-repo mode: also scan each repo subdirectory and tag results
+            if self.workspace_info and self.workspace_info.is_multi_repo:
+                self._enrich_multi_repo(
+                    root, iac, containers, ci_cd, warnings
+                )
 
             # Only produce section when at least one indicator is found
             has_indicators = (
@@ -173,6 +186,58 @@ class InfrastructureScanner(BaseScanner):
             logger.warning("Infrastructure scanner failed: %s", exc)
             duration_ms = (time.monotonic() - start) * 1000
             return self.make_result(sections={}, warnings=[str(exc)], duration_ms=duration_ms)
+
+    def _enrich_multi_repo(
+        self,
+        root: Path,
+        iac: List[Dict[str, Any]],
+        containers: List[Dict[str, Any]],
+        ci_cd: List[Dict[str, Any]],
+        warnings: List[str],
+    ) -> None:
+        """Tag IaC, container, and CI/CD entries with their containing repo.
+
+        For each entry whose base_path or config_path starts with a known
+        repo directory, adds a 'repo' field with the repo name. This helps
+        agents understand which repo owns each infrastructure component.
+
+        Args:
+            root: Workspace root path.
+            iac: IaC entries list (mutated in place).
+            containers: Container entries list (mutated in place).
+            ci_cd: CI/CD entries list (mutated in place).
+            warnings: Warning accumulator.
+        """
+        repo_names = {
+            str(rd.relative_to(root)): rd.name
+            for rd in self.workspace_info.repo_dirs
+        }
+
+        def _tag_repo(entry: Dict[str, Any], path_key: str) -> None:
+            """Add 'repo' field if path matches a known repo directory."""
+            path_val = entry.get(path_key, "")
+            if not path_val:
+                return
+            for repo_path, repo_name in repo_names.items():
+                if path_val == repo_path or path_val.startswith(repo_path + "/"):
+                    entry["repo"] = repo_name
+                    return
+
+        for entry in iac:
+            _tag_repo(entry, "base_path")
+
+        for entry in containers:
+            # Containers use 'files' list; tag based on first file's directory
+            files = entry.get("files", [])
+            if files:
+                first_file = files[0]
+                for repo_path, repo_name in repo_names.items():
+                    if first_file.startswith(repo_path + "/") or first_file.startswith(repo_path):
+                        entry["repo"] = repo_name
+                        break
+
+        for entry in ci_cd:
+            _tag_repo(entry, "config_path")
 
     # ------------------------------------------------------------------
     # Cloud provider detection

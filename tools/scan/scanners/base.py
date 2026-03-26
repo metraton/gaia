@@ -53,7 +53,15 @@ class BaseScanner(ABC):
     Performance:
     - SHOULD complete in under 3 seconds for typical projects
     - MUST respect 2-second timeout for --version calls
+
+    Optional workspace_info attribute:
+    - Set by the orchestrator before scan() when workspace type has been
+      pre-detected. Scanners can check self.workspace_info for multi-repo
+      awareness. Defaults to None (single-repo assumed).
     """
+
+    def __init__(self) -> None:
+        self.workspace_info = None  # Set by orchestrator if available
 
     @property
     @abstractmethod

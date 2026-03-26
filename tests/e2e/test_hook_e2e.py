@@ -67,16 +67,19 @@ def run_hook(script_name, stdin_payload, env_extras=None):
     # Isolate hook subprocess from the host environment so tests are
     # deterministic regardless of where they run:
     # - CLAUDE_PLUGIN_ROOT: would activate plugin-dir mode detection
-    # - ORCHESTRATOR_DELEGATE_MODE: would block Bash before security
-    #   checks run (the disk fallback reads settings.json, so we must
-    #   explicitly set "false" rather than just popping the var)
     # - GAIA_PLUGIN_MODE: force "ops" so the adapter uses nonce-deny
     #   flow (the tests assert permissionDecision: deny for T3 commands)
+    # - agent_id injected into payload: delegate mode is always active,
+    #   so we simulate a subagent to test the security layer directly.
     env.pop("CLAUDE_PLUGIN_ROOT", None)
-    env["ORCHESTRATOR_DELEGATE_MODE"] = "false"
     env["GAIA_PLUGIN_MODE"] = "ops"
     if env_extras:
         env.update(env_extras)
+
+    # Inject agent_id into payload so delegate mode treats this as a
+    # subagent (allows all tools, letting the security layer be tested).
+    if "agent_id" not in stdin_payload:
+        stdin_payload = {**stdin_payload, "agent_id": "test-e2e-agent"}
 
     result = subprocess.run(
         [sys.executable, str(script_path)],

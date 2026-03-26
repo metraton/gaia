@@ -257,12 +257,12 @@ The adapter layer connects Claude Code's hook protocol to gaia-ops business logi
 | **Adapter methods called** | `ClaudeCodeAdapter.format_validation_response()` |
 | **Business logic modules** | None (pure formatting bridge) |
 
-### CP-5: `templates/settings.template.json` / `hooks/hooks.json` -- Hook Configuration
+### CP-5: `hooks/hooks.json` -- Hook Configuration
 
 | Attribute | Value |
 |-----------|-------|
-| **File (npm channel)** | `templates/settings.template.json` -- paths use `.claude/hooks/` prefix |
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
+| **File (npm channel)** | `hooks/hooks.json` (symlinked into `.claude/hooks/`) |
 | **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
 | **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage), PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart, UserPromptSubmit (identity injection) |
 
@@ -293,7 +293,7 @@ To add support for a new Claude Code hook event (e.g., a future `PreCompact` eve
 2. **Add adapter method** to `ClaudeCodeAdapter` in `hooks/adapters/claude_code.py` -- implement `adapt_<event_name>(raw: dict) -> <ResultType>` and the corresponding `format_<result>_response()` if a new result type is needed.
 3. **Add extract/format methods** for the event type -- the extract method pulls typed data from the raw payload, the format method builds the CLI response JSON.
 4. **Create hook script entry point** -- a new `hooks/<event_name>.py` file that reads stdin, calls `adapter.parse_event()`, delegates to business logic, and writes the response to stdout.
-5. **Add entry to `hooks/hooks.json`** (plugin channel) and `templates/settings.template.json` (npm channel) mapping the event name to the new script.
+5. **Add entry to `hooks/hooks.json`** mapping the event name to the new script.
 
 **Zero changes to business logic modules required.** The adapter is the only layer that touches CLI-specific JSON.
 

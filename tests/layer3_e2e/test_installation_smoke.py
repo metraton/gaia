@@ -87,14 +87,22 @@ class TestFileValidity:
                 pytest.fail(f"{py_file.name} is not valid Python: {e}")
 
     def test_settings_json_valid(self, test_project):
-        """settings.json must be valid JSON with hooks configured."""
+        """settings.json must be valid JSON (minimal — hooks come from hooks.json)."""
         _, claude_dir = test_project
         settings_file = claude_dir / "settings.json"
         assert settings_file.exists(), "settings.json not found"
         data = json.loads(settings_file.read_text())
-        assert "hooks" in data, "settings.json must have 'hooks' key"
+        assert isinstance(data, dict), "settings.json must be a valid JSON object"
+
+    def test_hooks_json_valid(self, test_project):
+        """hooks.json must exist and have PreToolUse configured."""
+        _, claude_dir = test_project
+        hooks_json = claude_dir / "hooks" / "hooks.json"
+        assert hooks_json.exists(), "hooks.json not found in hooks directory"
+        data = json.loads(hooks_json.read_text())
+        assert "hooks" in data, "hooks.json must have 'hooks' key"
         assert "PreToolUse" in data["hooks"], \
-            "settings.json must configure PreToolUse hook"
+            "hooks.json must configure PreToolUse hook"
 
     def test_project_context_valid(self, test_project):
         """project-context.json must be valid JSON with metadata."""

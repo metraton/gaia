@@ -8,7 +8,7 @@ functionality that gaia-scan needs when operating on a fresh project
 Functions:
 - create_claude_directory: mkdir .claude/ with symlinks and subdirs
 - copy_claude_md: deprecated no-op (identity now via submit hook)
-- copy_settings_json: copy settings.template.json (always replaces)
+- copy_settings_json: create minimal settings.json only if missing (non-invasive)
 - install_git_hooks: copy commit-msg hook to all git repos
 - generate_governance: interpolate governance.template.md
 - ensure_gaia_ops_package: npm install @jaguilar87/gaia-ops
@@ -57,7 +57,7 @@ def _get_template_path(name: str) -> Path:
     """Get the path to a template file.
 
     Args:
-        name: Template filename (e.g., 'settings.template.json').
+        name: Template filename (e.g., 'governance.template.md').
 
     Returns:
         Absolute path to the template file.
@@ -239,27 +239,28 @@ def copy_claude_md(project_root: Path) -> bool:
 
 
 def copy_settings_json(project_root: Path) -> bool:
-    """Copy settings.template.json to .claude/settings.json.
+    """Create a minimal .claude/settings.json only if it does not exist.
 
-    Always overwrites -- settings.json is a system template that changes
-    with each version. The template is the source of truth.
+    Non-invasive: never overwrites an existing settings.json.  Hooks are
+    provided by hooks.json (auto-discovered via the .claude/hooks symlink).
+    Env vars and permissions live in settings.local.json.
 
     Args:
         project_root: Project root directory.
 
     Returns:
-        True if file was written successfully.
+        True if file exists (created or already present).
     """
-    template_path = _get_template_path("settings.template.json")
     dest_path = project_root / ".claude" / "settings.json"
 
-    if not template_path.is_file():
-        logger.warning("settings.template.json not found at %s", template_path)
-        return False
+    if dest_path.is_file():
+        logger.info("settings.json already exists — not overwriting")
+        return True
 
     try:
-        shutil.copy2(str(template_path), str(dest_path))
-        logger.info("settings.json updated from template")
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_text("{}\n")
+        logger.info("settings.json created (minimal — hooks from hooks.json, env from settings.local.json)")
         return True
     except OSError as exc:
         logger.error("Failed to write settings.json: %s", exc)

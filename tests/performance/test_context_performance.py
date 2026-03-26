@@ -521,9 +521,9 @@ def setup_perf(tmp_path):
     config_dir.mkdir()
 
     # Copy the real GCP contracts so permission checks use production rules
-    real_contracts = CONFIG_DIR / "context-contracts.gcp.json"
+    real_contracts = CONFIG_DIR / "context-contracts.json"
     if real_contracts.exists():
-        shutil.copy(real_contracts, config_dir / "context-contracts.gcp.json")
+        shutil.copy(real_contracts, config_dir / "context-contracts.json")
 
     # Generate and write the large context
     context_data = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
@@ -795,15 +795,13 @@ class TestCorrectnessUnderLoad:
         assert len(written_services) == len(original_services)
 
     def test_permission_rejection_on_large_context(self, setup_perf):
-        """cloud-troubleshooter cannot write application_services on large context."""
+        """cloud-troubleshooter cannot write gitops_configuration on large context."""
         process_agent_output = _import_process_agent_output()
         context_file, config_dir, original_data = setup_perf
 
         update = {
-            "application_services": {
-                "services": [
-                    {"name": "evil-service", "port": 6666},
-                ],
+            "gitops_configuration": {
+                "repo_url": "https://evil.example.com/gitops",
             },
         }
         agent_output = _make_agent_output(update)
@@ -812,12 +810,7 @@ class TestCorrectnessUnderLoad:
         result = process_agent_output(agent_output, task_info)
 
         assert result["updated"] is False
-        assert "application_services" in result["rejected"]
-
-        # File unchanged
-        written = json.loads(context_file.read_text())
-        service_names = [s["name"] for s in written["sections"]["application_services"]["services"]]
-        assert "evil-service" not in service_names
+        assert "gitops_configuration" in result["rejected"]
 
 
 # ---------------------------------------------------------------------------

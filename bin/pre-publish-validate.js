@@ -238,7 +238,6 @@ class PrePublishValidator {
       'bin/gaia-scan',
       'tools/context/context_provider.py',
       'hooks/pre_tool_use.py',
-      'templates/settings.template.json'
     ];
 
     let allValid = true;
@@ -330,7 +329,6 @@ class PrePublishValidator {
       // Test 1: Validate JSON files
       this.log('Test 1: Validating JSON configuration files...', 'info');
       const jsonFiles = [
-        'templates/settings.template.json',
         'config/clarification_rules.json',
         'config/git_standards.json'
       ];

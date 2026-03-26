@@ -79,18 +79,8 @@ def setup_test_project(tmp_dir: Path, package_root: Path) -> Path:
         }
     }, indent=2))
 
-    # Create settings.json with hooks
-    settings = {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "type": "command",
-                    "command": f"python3 {claude_dir / 'hooks' / 'pre_tool_use.py'}"
-                }
-            ]
-        }
-    }
-    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+    # Create minimal settings.json (hooks come from hooks.json in the hooks directory)
+    (claude_dir / "settings.json").write_text("{}\n")
 
     # Create CLAUDE.md
     src_claude_md = package_root / "CLAUDE.md"

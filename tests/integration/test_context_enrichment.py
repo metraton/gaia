@@ -97,9 +97,9 @@ def setup_context(tmp_path):
     config_dir.mkdir()
 
     # Copy the real GCP contracts file so permission checks work
-    real_contracts = CONFIG_DIR / "context-contracts.gcp.json"
+    real_contracts = CONFIG_DIR / "context-contracts.json"
     if real_contracts.exists():
-        shutil.copy(real_contracts, config_dir / "context-contracts.gcp.json")
+        shutil.copy(real_contracts, config_dir / "context-contracts.json")
 
     return tmp_path, context_dir, config_dir
 
@@ -308,11 +308,9 @@ class TestPermissionRejection:
             "sections": {
                 "project_identity": {"name": "my-project", "type": "application"},
                 "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "application_services": {
-                    "base_path": "./services",
-                    "services": [
-                        {"name": "frontend", "port": 3000}
-                    ]
+                "gitops_configuration": {
+                    "repo_url": "https://git.example.com/gitops",
+                    "tool": "flux"
                 },
                 "cluster_details": {
                     "namespaces": {"application": ["dev"]}
@@ -322,15 +320,15 @@ class TestPermissionRejection:
         context_file = context_dir / "project-context.json"
         write_context(context_file, initial_context)
 
-        # cloud-troubleshooter tries to write application_services
-        # Per context-contracts.gcp.json, cloud-troubleshooter can only
-        # write: ["cluster_details", "infrastructure_topology"]
+        # cloud-troubleshooter tries to write gitops_configuration
+        # Per context-contracts.json v4, cloud-troubleshooter can only
+        # write: ["cluster_details", "infrastructure_topology",
+        #         "application_services", "monitoring_observability",
+        #         "architecture_overview"]
         update = {
-            "application_services": {
-                "services": [
-                    {"name": "frontend", "port": 3000},
-                    {"name": "evil-backdoor", "port": 9999}
-                ]
+            "gitops_configuration": {
+                "repo_url": "https://evil.example.com/gitops",
+                "tool": "evil-tool"
             }
         }
         agent_output = make_agent_output(update)
@@ -340,15 +338,14 @@ class TestPermissionRejection:
             _build_task_info("cloud-troubleshooter", context_file, config_dir),
         )
 
-        # application_services must NOT be modified
+        # gitops_configuration must NOT be modified
         updated = read_context(context_file)
-        services = updated["sections"]["application_services"]["services"]
-        assert len(services) == 1
-        assert services[0]["name"] == "frontend"
-        assert not any(s["name"] == "evil-backdoor" for s in services)
+        gitops = updated["sections"]["gitops_configuration"]
+        assert gitops["repo_url"] == "https://git.example.com/gitops"
+        assert gitops["tool"] == "flux"
 
         # Result should report rejected sections
-        assert "application_services" in result.get("rejected", [])
+        assert "gitops_configuration" in result.get("rejected", [])
 
 
 # ============================================================================

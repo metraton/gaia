@@ -500,7 +500,7 @@ class TestPhase3PermissionValidation:
 
         _, claude_dir = test_project
         contracts = json.loads(
-            (claude_dir / "config" / "context-contracts.gcp.json").read_text()
+            (claude_dir / "config" / "context-contracts.json").read_text()
         )
 
         update = {"cluster_details": {"node_count": 3}}
@@ -509,20 +509,20 @@ class TestPhase3PermissionValidation:
         assert "cluster_details" in allowed
         assert len(rejected) == 0
 
-    def test_cloud_troubleshooter_cannot_write_application_services(self, test_project):
-        """cloud-troubleshooter should NOT be able to write to application_services."""
+    def test_cloud_troubleshooter_cannot_write_gitops_configuration(self, test_project):
+        """cloud-troubleshooter should NOT be able to write to gitops_configuration."""
         from context_writer import validate_permissions
 
         _, claude_dir = test_project
         contracts = json.loads(
-            (claude_dir / "config" / "context-contracts.gcp.json").read_text()
+            (claude_dir / "config" / "context-contracts.json").read_text()
         )
 
-        update = {"application_services": {"api_url": "http://example.com"}}
+        update = {"gitops_configuration": {"repo_url": "http://example.com"}}
         allowed, rejected = validate_permissions(update, "cloud-troubleshooter", contracts)
 
-        assert "application_services" not in allowed
-        assert "application_services" in rejected
+        assert "gitops_configuration" not in allowed
+        assert "gitops_configuration" in rejected
 
     def test_terraform_architect_can_write_infrastructure(self, test_project):
         """terraform-architect should be able to write terraform_infrastructure."""
@@ -530,7 +530,7 @@ class TestPhase3PermissionValidation:
 
         _, claude_dir = test_project
         contracts = json.loads(
-            (claude_dir / "config" / "context-contracts.gcp.json").read_text()
+            (claude_dir / "config" / "context-contracts.json").read_text()
         )
 
         update = {

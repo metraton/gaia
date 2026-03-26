@@ -315,9 +315,14 @@ def setup_project_permissions() -> bool:
     existing["permissions"]["deny"] = merged_deny
     existing["permissions"].setdefault("ask", [])
 
+    # Add env vars (smart merge: add if not present, don't overwrite)
+    env = existing.setdefault("env", {})
+    if "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in env:
+        env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
+
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
-    logger.info("Merged gaia %s permissions into %s", mode, settings_path)
+    logger.info("Merged gaia %s permissions and env into %s", mode, settings_path)
     return True
 
 

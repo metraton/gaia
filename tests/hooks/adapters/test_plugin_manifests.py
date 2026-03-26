@@ -168,21 +168,23 @@ class TestHooksJson:
                         f"does not use ${{CLAUDE_PLUGIN_ROOT}}: {command}"
                     )
 
-    def test_hooks_json_matches_settings_template_events(self):
-        """hooks.json must cover the same events as settings.template.json.
+    def test_hooks_json_has_all_required_events(self):
+        """hooks.json must have all 9 required hook event types.
 
-        All events in settings.template.json should have a corresponding
-        entry in hooks.json (plugin version).
+        hooks.json is the single source of truth for GAIA hooks
+        (auto-discovered via the .claude/hooks symlink).
         """
-        settings_path = PROJECT_ROOT / "templates" / "settings.template.json"
-        settings_data = json.loads(settings_path.read_text())
         hooks_data = json.loads(self.hooks_path.read_text())
-
-        settings_events = set(settings_data["hooks"].keys())
         hooks_events = set(hooks_data["hooks"].keys())
-        assert hooks_events == settings_events, (
+
+        required_events = {
+            "PreToolUse", "PostToolUse", "SubagentStop",
+            "SessionStart", "UserPromptSubmit", "Stop",
+            "TaskCompleted", "SubagentStart", "PostCompact",
+        }
+        assert hooks_events == required_events, (
             f"Event mismatch: hooks.json has {hooks_events}, "
-            f"settings.template.json has {settings_events}"
+            f"expected {required_events}"
         )
 
 

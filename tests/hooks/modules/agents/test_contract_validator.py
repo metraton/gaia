@@ -210,7 +210,9 @@ class TestEvidenceRequiredFields:
             "consolidation_report": None,
         }
         output = f"Some analysis.\n\n```json:contract\n{json.dumps(contract)}\n```"
-        result = validate(output, {})
+        # Non-empty injected_context prevents fallback to filesystem cache
+        task_info = {"injected_context": {"investigation_brief": {}}}
+        result = validate(output, task_info)
         assert not result.is_valid
         assert "VERBATIM_OUTPUTS" in result.missing
         assert "CROSS_LAYER_IMPACTS" in result.missing
@@ -237,6 +239,8 @@ class TestEvidenceRequiredFields:
             "consolidation_report": None,
         }
         output = f"Some analysis.\n\n```json:contract\n{json.dumps(contract)}\n```"
-        result = validate(output, {})
+        # Non-empty injected_context prevents fallback to filesystem cache
+        task_info = {"injected_context": {"investigation_brief": {}}}
+        result = validate(output, task_info)
         assert result.is_valid
         assert result.missing == []

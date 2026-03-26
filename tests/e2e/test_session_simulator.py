@@ -147,13 +147,16 @@ class SessionSimulator:
 
         env = os.environ.copy()
         env.pop("CLAUDE_PLUGIN_ROOT", None)
-        # Isolate from host orchestrator env to prevent delegate mode blocking
-        env["ORCHESTRATOR_DELEGATE_MODE"] = "false"
         env["GAIA_PLUGIN_MODE"] = "ops"
         # Isolate from host /tmp state (stale gaia-context-payloads, etc.)
         env["TMPDIR"] = str(self._tmpdir)
         if env_extras:
             env.update(env_extras)
+
+        # Inject agent_id so delegate mode treats this as a subagent
+        # (allows all tools, letting the security layer be tested directly).
+        if "agent_id" not in stdin_payload:
+            stdin_payload = {**stdin_payload, "agent_id": "test-sim-agent"}
 
         result = subprocess.run(
             [sys.executable, str(script_path)],

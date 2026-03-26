@@ -1,6 +1,32 @@
 {
-  "version": "3.0",
-  "description": "Base context contracts — cloud-agnostic sections for all agents. Cloud-specific extensions live in cloud/{provider}.json. v3: removed backward-compat sections (project_details, application_architecture, development_standards); all agents read v2 scanner sections directly.",
+  "version": "4.0",
+  "description": "Context contracts v4: universal core sections + agent-specific ops sections + workspace_repos. Core sections are granted to every agent. Cloud-specific extensions live in cloud/{provider}.json.",
+  "core_sections": [
+    "project_identity",
+    "stack",
+    "git",
+    "environment",
+    "application_services",
+    "architecture_overview",
+    "operational_guidelines"
+  ],
+  "section_schemas": {
+    "workspace_repos": {
+      "description": "Array of repositories in a multi-repo workspace",
+      "schema": {
+        "repos": [
+          {
+            "name": "string",
+            "path": "string (relative to workspace root)",
+            "remote_url": "string",
+            "platform": "string (github/gitlab/bitbucket)",
+            "role": "string (gitops/iac/platform/agent/library)",
+            "primary_language": "string"
+          }
+        ]
+      }
+    }
+  },
   "agents": {
     "cloud-troubleshooter": {
       "read": [
@@ -8,15 +34,17 @@
         "stack",
         "git",
         "environment",
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines",
         "infrastructure",
         "orchestration",
         "cluster_details",
         "infrastructure_topology",
         "terraform_infrastructure",
         "gitops_configuration",
-        "application_services",
         "monitoring_observability",
-        "architecture_overview"
+        "workspace_repos"
       ],
       "write": [
         "cluster_details",
@@ -32,13 +60,14 @@
         "stack",
         "git",
         "environment",
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines",
         "infrastructure",
         "orchestration",
         "gitops_configuration",
         "cluster_details",
-        "operational_guidelines",
-        "application_services",
-        "architecture_overview"
+        "workspace_repos"
       ],
       "write": [
         "gitops_configuration",
@@ -52,14 +81,15 @@
         "stack",
         "git",
         "environment",
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines",
         "infrastructure",
         "orchestration",
         "terraform_infrastructure",
         "infrastructure_topology",
-        "operational_guidelines",
         "cluster_details",
-        "application_services",
-        "architecture_overview"
+        "workspace_repos"
       ],
       "write": [
         "terraform_infrastructure",
@@ -72,10 +102,11 @@
         "stack",
         "git",
         "environment",
-        "infrastructure",
         "application_services",
+        "architecture_overview",
         "operational_guidelines",
-        "architecture_overview"
+        "infrastructure",
+        "workspace_repos"
       ],
       "write": [
         "application_services",
@@ -88,10 +119,11 @@
         "stack",
         "git",
         "environment",
-        "infrastructure",
-        "operational_guidelines",
         "application_services",
-        "architecture_overview"
+        "architecture_overview",
+        "operational_guidelines",
+        "infrastructure",
+        "workspace_repos"
       ],
       "write": []
     }

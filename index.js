@@ -56,7 +56,7 @@ export function getCommandPath(commandName) {
 
 /**
  * Get absolute path to a template
- * @param {string} templateName - Name of the template (e.g., 'settings.template.json')
+ * @param {string} templateName - Name of the template (e.g., 'governance.template.md')
  * @returns {string} Absolute path to template file
  */
 export function getTemplatePath(templateName) {

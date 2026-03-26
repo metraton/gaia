@@ -151,6 +151,14 @@ class StackScanner(BaseScanner):
             build_tools = self._detect_build_tools(root, warnings)
             project_identity = self._detect_project_identity(root, languages, warnings)
 
+            # Multi-repo workspace override: if orchestrator detected multi-repo,
+            # set project type and add workspace_repos listing
+            if self.workspace_info and self.workspace_info.is_multi_repo:
+                project_identity["type"] = "multi-repo-workspace"
+                project_identity["workspace_repos"] = self._build_workspace_repos(
+                    root, self.workspace_info.repo_dirs, warnings
+                )
+
             sections: Dict[str, Any] = {
                 "project_identity": project_identity,
                 "stack": {
@@ -820,6 +828,108 @@ class StackScanner(BaseScanner):
             pass
 
         return result
+
+    # ------------------------------------------------------------------
+    # Multi-repo workspace helpers
+    # ------------------------------------------------------------------
+
+    def _build_workspace_repos(
+        self,
+        root: Path,
+        repo_dirs: List[Path],
+        warnings: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Build workspace_repos list for multi-repo workspaces.
+
+        For each subdirectory with .git, extracts name, relative path,
+        and primary language from the most prominent manifest file.
+
+        Args:
+            root: Workspace root path.
+            repo_dirs: List of subdirectory Paths that contain .git.
+            warnings: Warning accumulator.
+
+        Returns:
+            List of repo descriptor dicts.
+        """
+        repos: List[Dict[str, Any]] = []
+
+        for repo_dir in repo_dirs:
+            repo_entry: Dict[str, Any] = {
+                "name": repo_dir.name,
+                "path": str(repo_dir.relative_to(root)),
+            }
+
+            # Detect primary language from manifest files
+            primary_language = self._detect_primary_language(repo_dir)
+            if primary_language:
+                repo_entry["primary_language"] = primary_language
+
+            # Detect role from directory naming conventions
+            repo_entry["role"] = self._infer_repo_role(repo_dir, primary_language)
+
+            repos.append(repo_entry)
+
+        return repos
+
+    @staticmethod
+    def _detect_primary_language(repo_dir: Path) -> Optional[str]:
+        """Detect the primary language of a repo from its manifest files."""
+        manifest_checks = [
+            ("package.json", "javascript"),
+            ("pyproject.toml", "python"),
+            ("setup.py", "python"),
+            ("requirements.txt", "python"),
+            ("go.mod", "go"),
+            ("Cargo.toml", "rust"),
+            ("pom.xml", "java"),
+            ("build.gradle", "java"),
+            ("composer.json", "php"),
+            ("Gemfile", "ruby"),
+        ]
+
+        for filename, language in manifest_checks:
+            if (repo_dir / filename).is_file():
+                # Check for TypeScript indicator
+                if language == "javascript":
+                    for f in repo_dir.iterdir():
+                        if f.is_file() and f.name.startswith("tsconfig") and f.name.endswith(".json"):
+                            return "typescript"
+                return language
+
+        return None
+
+    @staticmethod
+    def _infer_repo_role(repo_dir: Path, primary_language: Optional[str]) -> str:
+        """Infer the role of a repo from its name and contents.
+
+        Returns one of: gitops, iac, platform, agent, library, application.
+        """
+        name_lower = repo_dir.name.lower()
+
+        # GitOps indicators
+        if any(kw in name_lower for kw in ("gitops", "flux", "argocd", "deploy")):
+            return "gitops"
+
+        # IaC indicators
+        if any(kw in name_lower for kw in ("iac", "infra", "terraform")):
+            return "iac"
+        # Also check for .tf files at root
+        try:
+            if any(f.suffix == ".tf" for f in repo_dir.iterdir() if f.is_file()):
+                return "iac"
+        except OSError:
+            pass
+
+        # Platform indicators
+        if any(kw in name_lower for kw in ("platform", "core", "shared", "common")):
+            return "platform"
+
+        # Agent indicators
+        if any(kw in name_lower for kw in ("agent", "bot", "assistant")):
+            return "agent"
+
+        return "application"
 
     # ------------------------------------------------------------------
     # File search helpers

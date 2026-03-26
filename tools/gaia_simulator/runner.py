@@ -352,6 +352,39 @@ class HookRunner:
 
         return base_dir
 
+    # Tools that the orchestrator is allowed to use directly.
+    # Payloads for these tools should NOT get agent_id injected, because
+    # they are orchestrator-level operations (dispatch, communication).
+    _ORCHESTRATOR_TOOLS = frozenset({
+        "agent", "task", "sendmessage", "skill",
+        "taskcreate", "taskupdate", "tasklist", "taskget",
+        "toolsearch", "websearch", "webfetch", "askuserquestion",
+        "stop",  # stop_hook payloads are not subject to delegate mode
+    })
+
+    def _prepare_payload(self, event: ReplayEvent) -> str:
+        """Serialize the event payload for the hook subprocess.
+
+        Injects ``agent_id`` into tool-call payloads that lack one, so
+        delegate mode recognises them as subagent context instead of
+        blocking them as orchestrator calls. Agent/SendMessage/Task
+        payloads are left untouched since the orchestrator context is
+        correct for those.
+
+        Args:
+            event: The ReplayEvent being replayed.
+
+        Returns:
+            JSON string to feed to the hook subprocess via stdin.
+        """
+        payload = event.stdin_payload
+        tool_name = (payload.get("tool_name") or event.tool_name or "").lower()
+
+        if not payload.get("agent_id") and tool_name not in self._ORCHESTRATOR_TOOLS:
+            payload = {**payload, "agent_id": "replay-simulator"}
+
+        return json.dumps(payload)
+
     def _resolve_hook_script(self, hook_name: str) -> Path:
         """Resolve hook name to script path.
 
@@ -403,7 +436,7 @@ class HookRunner:
         try:
             result = subprocess.run(
                 [sys.executable, str(script_path)],
-                input=json.dumps(event.stdin_payload),
+                input=self._prepare_payload(event),
                 capture_output=True,
                 text=True,
                 env=env,

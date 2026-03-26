@@ -6,12 +6,12 @@ They catch the class of bugs where "each module works in isolation but the syste
 is inconsistent" — the #1 source of silent failures in gaia-ops.
 
 What these tests cover:
-1. settings.json ↔ blocked_commands.py consistency
+1. plugin_setup.py permissions ↔ blocked_commands.py consistency
 2. Security tier classification matches skill definitions
 3. bash_validator enforces defense-in-depth order (deny before allow)
 4. task_validator agents/indicators match CLAUDE.md and skills
 5. Skills cross-references point to files that exist
-6. settings.json template stays in sync with settings.json
+6. plugin_setup.py permissions are present in live settings.local.json
 """
 
 import json
@@ -58,20 +58,23 @@ from modules.security.gitops_validator import (
 )
 
 
-def _load_settings_template() -> dict:
-    """Load settings.template.json."""
-    path = TEMPLATES_DIR / "settings.template.json"
-    if not path.exists():
-        pytest.skip("settings.template.json not found")
-    return json.loads(path.read_text())
+def _load_permissions_from_plugin_setup() -> dict:
+    """Load permissions from plugin_setup.py (the single source of truth).
+
+    Returns a dict with 'permissions' key containing allow/deny/ask lists.
+    """
+    from modules.core.plugin_setup import OPS_PERMISSIONS
+    return OPS_PERMISSIONS
 
 
-def _load_settings_live() -> dict:
-    """Load the live .claude/settings.json if available."""
-    # Try common locations
+def _load_settings_live_local() -> dict:
+    """Load the live .claude/settings.local.json if available.
+
+    Permissions and env vars now live in settings.local.json (not settings.json).
+    """
     for candidate in [
-        GAIA_OPS_ROOT.parent / ".claude" / "settings.json",
-        Path.cwd() / ".claude" / "settings.json",
+        GAIA_OPS_ROOT.parent / ".claude" / "settings.local.json",
+        Path.cwd() / ".claude" / "settings.local.json",
     ]:
         if candidate.exists():
             return json.loads(candidate.read_text())
@@ -83,11 +86,15 @@ def _load_settings_live() -> dict:
 # ===========================================================================
 
 class TestSettingsCodeConsistency:
-    """Verify settings.json permissions align with code classifications."""
+    """Verify plugin_setup.py permissions align with code classifications.
+
+    Permissions are defined in plugin_setup.py (single source of truth)
+    and merged into settings.local.json at install/update time.
+    """
 
     @pytest.fixture(scope="class")
     def settings(self):
-        return _load_settings_template()
+        return _load_permissions_from_plugin_setup()
 
     @pytest.fixture(scope="class")
     def allow_list(self, settings):
@@ -422,43 +429,42 @@ class TestSkillsCrossReferences:
 # 6. Template sync
 # ===========================================================================
 
-class TestTemplateSync:
-    """Verify settings.template.json stays in sync with live settings."""
+class TestPermissionsSync:
+    """Verify plugin_setup.py permissions are a subset of live settings.local.json.
 
-    def test_template_and_live_deny_lists_match(self):
-        """The deny list must be identical between template and live settings."""
-        template = _load_settings_template()
-        live = _load_settings_live()
+    plugin_setup.py is the source of truth for GAIA permissions.
+    settings.local.json is where they are merged at install/update time.
+    The live file may have additional user-added entries (smart merge).
+    """
+
+    def test_plugin_deny_rules_in_live_local(self):
+        """All deny rules from plugin_setup.py must be present in live settings.local.json."""
+        source = _load_permissions_from_plugin_setup()
+        live = _load_settings_live_local()
         if live is None:
-            pytest.skip("Live .claude/settings.json not found")
+            pytest.skip("Live .claude/settings.local.json not found")
 
-        template_deny = set(template.get("permissions", {}).get("deny", []))
+        source_deny = set(source.get("permissions", {}).get("deny", []))
         live_deny = set(live.get("permissions", {}).get("deny", []))
 
-        missing_in_live = template_deny - live_deny
-        missing_in_template = live_deny - template_deny
-
-        assert not missing_in_live and not missing_in_template, (
-            f"Deny lists out of sync!\n"
-            f"In template but not live: {missing_in_live}\n"
-            f"In live but not template: {missing_in_template}"
+        missing_in_live = source_deny - live_deny
+        assert not missing_in_live, (
+            f"Deny rules from plugin_setup.py missing in settings.local.json:\n"
+            f"{missing_in_live}"
         )
 
-    def test_template_and_live_ask_lists_match(self):
-        """The ask list must be identical between template and live settings."""
-        template = _load_settings_template()
-        live = _load_settings_live()
+    def test_plugin_allow_rules_in_live_local(self):
+        """All allow rules from plugin_setup.py must be present in live settings.local.json."""
+        source = _load_permissions_from_plugin_setup()
+        live = _load_settings_live_local()
         if live is None:
-            pytest.skip("Live .claude/settings.json not found")
+            pytest.skip("Live .claude/settings.local.json not found")
 
-        template_ask = set(template.get("permissions", {}).get("ask", []))
-        live_ask = set(live.get("permissions", {}).get("ask", []))
+        source_allow = set(source.get("permissions", {}).get("allow", []))
+        live_allow = set(live.get("permissions", {}).get("allow", []))
 
-        missing_in_live = template_ask - live_ask
-        missing_in_template = live_ask - template_ask
-
-        assert not missing_in_live and not missing_in_template, (
-            f"Ask lists out of sync!\n"
-            f"In template but not live: {missing_in_live}\n"
-            f"In live but not template: {missing_in_template}"
+        missing_in_live = source_allow - live_allow
+        assert not missing_in_live, (
+            f"Allow rules from plugin_setup.py missing in settings.local.json:\n"
+            f"{missing_in_live}"
         )

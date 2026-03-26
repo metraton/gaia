@@ -73,8 +73,7 @@ SAMPLE_AUDIT_JSONL = textwrap.dedent("""\
 
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
-    """Isolate from host orchestrator env to prevent delegate mode blocking."""
-    monkeypatch.setenv("ORCHESTRATOR_DELEGATE_MODE", "false")
+    """Isolate from host environment for deterministic tests."""
     monkeypatch.setenv("GAIA_PLUGIN_MODE", "ops")
 
 
