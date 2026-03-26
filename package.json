@@ -53,6 +53,7 @@
     "config/",
     "speckit/",
     "skills/",
+    "dist/",
     "git-hooks/",
     "README.md",
     "INSTALL.md",
@@ -78,7 +79,7 @@
     "pre-publish:dry": "node bin/pre-publish-validate.js --dry-run",
     "pre-publish:validate": "node bin/pre-publish-validate.js --validate-only",
     "prepack": "npm run clean",
-    "prepublishOnly": "npm run clean",
+    "prepublishOnly": "npm run build:plugins && node bin/pre-publish-validate.js",
     "postinstall": "node bin/gaia-update.js",
     "preuninstall": "node bin/gaia-cleanup.js"
   },
