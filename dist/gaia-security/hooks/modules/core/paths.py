@@ -125,6 +125,18 @@ def get_memory_dir(subdir: Optional[str] = None) -> Path:
     return memory_dir
 
 
+def get_events_dir() -> Path:
+    """
+    Get the events directory, creating it if necessary.
+
+    Returns:
+        Path to .claude/events/
+    """
+    events_dir = get_plugin_data_dir() / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    return events_dir
+
+
 def get_session_dir() -> Path:
     """
     Get the active session directory, creating it if necessary.
@@ -135,19 +147,6 @@ def get_session_dir() -> Path:
     session_dir = get_plugin_data_dir() / "session" / "active"
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir
-
-
-def get_hooks_config_dir() -> Path:
-    """
-    Get the hooks config directory.
-
-    Returns:
-        Path to hooks/config/
-    """
-    # Config lives alongside the hooks modules
-    hooks_dir = Path(__file__).parent.parent.parent
-    config_dir = hooks_dir / "config"
-    return config_dir
 
 
 def clear_path_cache():

@@ -14,8 +14,6 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from datetime import datetime
 
-from ..core.paths import get_session_dir
-
 logger = logging.getLogger(__name__)
 
 

@@ -1,8 +1,7 @@
 """Core context injection subsystem for project agents.
 
 Handles:
-- build_project_context: builds context string without mutating parameters (Phase 2)
-- inject_project_context: legacy wrapper that mutates parameters (backward compat)
+- build_project_context: builds context string for additionalContext injection
 - check_pending_updates_threshold: warns when pending updates accumulate
 - check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
 - consume_anomaly_flag: reads and deletes anomaly signal flags
@@ -269,16 +268,6 @@ def build_project_context(
         logger.warning(f"No prompt provided for {subagent_type}, skipping context injection")
         return None, {}
 
-    # Deduplication guard: if context was already injected (e.g., by a
-    # previous hook or retry), do not inject again.  The "# Project Context"
-    # header is the canonical marker written by this function.
-    if "# Project Context" in prompt:
-        logger.warning(
-            "Duplicate context injection prevented for %s — prompt already "
-            "contains '# Project Context' header", subagent_type,
-        )
-        return None, {}
-
     try:
         # Find context_provider.py
         context_provider_paths = [
@@ -398,6 +387,23 @@ def build_project_context(
         if critical_summary:
             context_string += critical_summary
 
+        # Inject recent operational events (non-blocking)
+        try:
+            from ..events.event_writer import read_events
+            recent = read_events(hours=24, limit=20)
+            if recent:
+                lines = ["\n# Recent Events (last 24h)"]
+                for evt in recent:
+                    ts_short = evt.get("ts", "")[:16]
+                    etype = evt.get("type", "")
+                    agent_name = evt.get("agent", "")
+                    result_str = evt.get("result", "")
+                    label = f"{agent_name}: " if agent_name else ""
+                    lines.append(f"- [{ts_short}] {etype}: {label}{result_str}")
+                context_string += "\n".join(lines) + "\n"
+        except Exception as exc:
+            logger.debug("Event context injection failed (non-fatal): %s", exc)
+
         # Build telemetry snapshot
         telemetry = build_context_telemetry_snapshot(context_payload)
 
@@ -419,31 +425,3 @@ def build_project_context(
         return None, {}
 
 
-def inject_project_context(
-    parameters: dict,
-    project_agents: list,
-    hooks_dir: Path = None,
-) -> dict:
-    """
-    Legacy wrapper: inject project context by mutating parameters["prompt"].
-
-    Retained for backward compatibility (tests import this function).
-    New code should use build_project_context() with additionalContext instead.
-
-    Args:
-        parameters: Original Task tool parameters (will be mutated).
-        project_agents: List of valid project agent names.
-        hooks_dir: Path to the hooks directory.
-
-    Returns:
-        Modified parameters with context injected into prompt.
-    """
-    context_string, _telemetry = build_project_context(parameters, project_agents, hooks_dir)
-    if context_string is None:
-        return parameters
-
-    prompt = parameters.get("prompt", "")
-    enriched_prompt = f"# Task\n\n{prompt}\n{context_string}"
-    parameters["prompt"] = enriched_prompt
-
-    return parameters

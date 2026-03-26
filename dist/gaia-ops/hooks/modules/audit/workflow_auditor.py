@@ -5,7 +5,6 @@ Renamed from anomaly_detector.py and expanded with additional anomaly types.
 
 Provides:
     - audit(): Full anomaly detection suite -> list of anomaly dicts
-    - detect_anomalies(): Backward-compatible alias for audit()
     - signal_gaia_analysis(): Create flag file for Gaia analysis
 """
 
@@ -528,9 +527,6 @@ def audit(
 
     return anomalies
 
-
-# Backward-compatible alias
-detect_anomalies = audit
 
 
 def signal_gaia_analysis(

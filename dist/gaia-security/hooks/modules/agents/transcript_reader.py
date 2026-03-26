@@ -117,8 +117,8 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
     The first ``role: "user"`` entry is the task prompt sent by the orchestrator --
     which is the most meaningful description of what the agent was asked to do.
 
-    Since Phase 2, context is delivered via additionalContext (not prompt mutation),
-    so the first user message IS the original prompt without any wrapping.
+    Context is delivered via additionalContext (not prompt mutation), so the
+    first user message IS the original prompt without any wrapping.
 
     Returns empty string on any error so the hook never crashes.
     """
@@ -134,9 +134,8 @@ def extract_injected_context_payload_from_transcript(
 ) -> Dict[str, Any]:
     """Extract the auto-injected context payload from disk cache.
 
-    Since Phase 2, context is delivered via additionalContext and the payload
-    is persisted to disk by context_injector. The legacy HTML comment parsing
-    fallback has been removed as prompts no longer contain embedded payloads.
+    Context is delivered via additionalContext and the payload is persisted to
+    disk by context_injector. Prompts do not contain embedded payloads.
     """
     import os
 

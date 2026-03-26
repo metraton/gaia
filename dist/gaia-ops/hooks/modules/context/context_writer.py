@@ -14,7 +14,6 @@ Public API:
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -105,15 +104,6 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
 # Module-level cache for load_contracts
 # ---------------------------------------------------------------------------
 _contracts_cache: Dict[str, dict] = {}
-
-
-# ---------------------------------------------------------------------------
-# Known markers that terminate CONTEXT_UPDATE extraction
-# ---------------------------------------------------------------------------
-_KNOWN_MARKERS = re.compile(
-    r"^(?:AGENT_STATUS|CONTEXT_UPDATE|<!-- AGENT_STATUS):",
-    re.MULTILINE,
-)
 
 
 # ============================================================================
@@ -334,7 +324,6 @@ def _merge_base_and_cloud(provider: str, config_dir: Path) -> dict:
     """
     base_file = config_dir / "context-contracts.json"
     cloud_file = config_dir / "cloud" / f"{provider}.json"
-    legacy_file = config_dir / f"context-contracts.{provider}.json"
 
     # Step 1: Load base contracts
     base_contracts = None
@@ -344,16 +333,7 @@ def _merge_base_and_cloud(provider: str, config_dir: Path) -> dict:
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load base contracts from %s: %s", base_file, exc)
 
-    # Step 2: Fallback to legacy per-provider file
-    if base_contracts is None:
-        if legacy_file.exists():
-            try:
-                base_contracts = json.loads(legacy_file.read_text())
-                logger.info("Using legacy contracts from %s", legacy_file)
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed to load legacy contracts from %s: %s", legacy_file, exc)
-
-    # Step 3: Final fallback to hardcoded LEGACY_AGENT_CONTRACTS
+    # Step 2: Final fallback to hardcoded LEGACY_AGENT_CONTRACTS
     if base_contracts is None:
         logger.warning("No contract files found in %s, using hardcoded legacy contracts", config_dir)
         return {
@@ -536,7 +516,3 @@ def process_context_updates(
     except Exception as e:
         logger.debug("Context update processing failed (non-fatal): %s", e)
         return None
-
-
-# Module-level alias for shorter import name
-update = process_context_updates

@@ -18,18 +18,9 @@ from ..security.mutative_verbs import (
     MutativeResult,
     CLI_FAMILY_LOOKUP,
     COMMAND_ALIASES,
-    CATEGORY_MUTATIVE,
 )
 
 logger = logging.getLogger(__name__)
-
-# ============================================================================
-# ROUTER INTEGRATION - REMOVED
-# ============================================================================
-# Router suggestion removed for simplicity. Orchestrator should choose correct
-# agent based on improved descriptions in CLAUDE.md. If wrong agent selected,
-# error message shows available agents and orchestrator self-corrects.
-
 
 # Available agents for Task invocation — both bare and plugin-namespaced forms
 _BASE_AGENTS = [
@@ -217,8 +208,8 @@ class TaskValidator:
         prompt = parameters.get("prompt", "")
         description = parameters.get("description", "")
 
-        # Phase 2: additionalContext means prompt is never mutated, so T3 detection
-        # runs directly against the original user prompt -- no workaround needed.
+        # additionalContext means prompt is never mutated, so T3 detection
+        # runs directly against the original user prompt.
         user_task_for_t3_check = prompt
 
         logger.info(f"Task tool validation for agent: {agent_name}")
@@ -229,7 +220,7 @@ class TaskValidator:
             error_msg += f"Available agents:\n"
             for agent in sorted(self.available_agents):
                 error_msg += f"  - {agent}\n"
-            error_msg += "\nRefer to agent descriptions in the project-dispatch skill.\n"
+            error_msg += "\nRefer to the Surface Routing Recommendation for agent selection.\n"
             error_msg += f"\nCorrect usage: Task(subagent_type=\"<agent-name>\", ...)"
 
             return TaskValidationResult(
@@ -239,14 +230,11 @@ class TaskValidator:
                 agent_name=agent_name,
             )
 
-        # Check context provisioning (for project agents)
-        has_context = self._check_context_provisioning(prompt, agent_name)
-
-        if not has_context and agent_name not in META_AGENTS:
-            logger.warning(
-                f"Task invocation for {agent_name} without apparent context provisioning. "
-                f"Orchestrator should call context_provider.py first (Phase 2)."
-            )
+        # Context is injected via additionalContext by the adapter, not by
+        # mutating the prompt.  The validator cannot check additionalContext
+        # (it only sees parameters), so we determine context status by agent type.
+        # Meta-agents never receive context by design.
+        has_context = agent_name not in META_AGENTS
 
         # Check for T3 operations (use original user task to avoid false positives from context)
         is_t3 = self._is_t3_operation(user_task_for_t3_check, description)
@@ -271,14 +259,6 @@ class TaskValidator:
             agent_name=agent_name,
             has_context=has_context,
             is_t3_operation=is_t3,
-        )
-
-    def _check_context_provisioning(self, prompt: str, agent_name: str) -> bool:
-        """Check if context was properly provisioned."""
-        return (
-            "# Project Context" in prompt or
-            "contract" in prompt.lower() or
-            "context_provider.py" in prompt.lower()
         )
 
     def _is_t3_operation(self, prompt: str, description: str) -> bool:

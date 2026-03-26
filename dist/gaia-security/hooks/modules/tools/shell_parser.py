@@ -15,7 +15,6 @@ Features:
 Dependencies: Python stdlib only (shlex, re)
 """
 
-import re
 from typing import List, Optional
 from dataclasses import dataclass
 

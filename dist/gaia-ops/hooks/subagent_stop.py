@@ -32,8 +32,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Adapter layer
 from adapters.claude_code import ClaudeCodeAdapter
-from modules.core.stdin import has_stdin_data
-from adapters.utils import warn_if_dual_channel
 from modules.core.hook_entry import run_hook
 
 # Configure structured logging with file handler
@@ -62,7 +60,6 @@ logger = logging.getLogger(__name__)
 from modules.agents.contract_validator import (
     extract_commands_from_evidence,
     extract_exit_code_from_output,
-    extract_plan_status_from_output,
     parse_contract,
     requires_consolidation_report,
     validate as validate_contract,
@@ -75,7 +72,7 @@ from modules.agents.response_contract import (
 from modules.agents.task_info_builder import build_task_info_from_hook_data
 from modules.agents.transcript_reader import read_transcript
 from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
-from modules.audit.workflow_recorder import record as record_workflow, get_workflow_memory_dir
+from modules.audit.workflow_recorder import record as record_workflow
 from modules.context.context_writer import process_context_updates
 from modules.memory.episode_writer import write as write_episode
 from modules.security.approval_cleanup import cleanup as cleanup_approval
@@ -83,17 +80,8 @@ from modules.session.session_manager import get_or_create_session_id
 
 _extract_commands_from_evidence = extract_commands_from_evidence
 _extract_exit_code_from_output = extract_exit_code_from_output
-_extract_plan_status_from_output = extract_plan_status_from_output
-_requires_consolidation_report = requires_consolidation_report
 _read_transcript = read_transcript
-_consume_approval_file = cleanup_approval
 _process_context_updates = process_context_updates
-
-# Backward-compatible aliases for old function names used in tests
-capture_episodic_memory = write_episode
-detect_anomalies = audit_workflow
-capture_workflow_metrics = record_workflow
-consume_approval_file = cleanup_approval
 
 
 def _build_task_info_from_hook_data(

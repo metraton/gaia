@@ -6,7 +6,6 @@ session_state.py directly into this module.
 
 Provides:
     - write(): Store workflow as episodic memory
-    - capture_episodic_memory(): Backward-compatible alias for write()
     - get_session_events(): Read context.json, categorize events
 """
 
@@ -226,7 +225,3 @@ def write(
     except Exception as e:
         logger.debug(f"Failed to capture episodic memory: {e}")
         return None
-
-
-# Backward-compatible alias
-capture_episodic_memory = write

@@ -194,22 +194,3 @@ def classify_command_tier(
 
     # Use cached classification
     return _classify_command_tier_cached(command, has_blocked)
-
-
-def tier_from_string(tier_str: str) -> SecurityTier:
-    """
-    Convert string to SecurityTier.
-
-    Args:
-        tier_str: Tier string like "T0", "T1", "T2", "T3"
-
-    Returns:
-        SecurityTier enum value
-    """
-    tier_map = {
-        "T0": SecurityTier.T0_READ_ONLY,
-        "T1": SecurityTier.T1_VALIDATION,
-        "T2": SecurityTier.T2_DRY_RUN,
-        "T3": SecurityTier.T3_BLOCKED,
-    }
-    return tier_map.get(tier_str.upper(), SecurityTier.T3_BLOCKED)

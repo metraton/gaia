@@ -596,12 +596,3 @@ def validate_bash_command(command: str) -> BashValidationResult:
     """
     validator = BashValidator()
     return validator.validate(command)
-
-
-def create_permission_allow_response(reason: str) -> str:
-    """
-    Create JSON response to auto-approve a command.
-
-    This response tells Claude Code to skip the permission check.
-    """
-    return json.dumps(build_hook_permission_response("allow", reason))

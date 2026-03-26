@@ -688,8 +688,3 @@ def validate_approval_request(
         ),
         "missing_fields": missing_fields,
     }
-
-
-# Aliases for shorter import names
-extract_plan_status = extract_plan_status_from_output
-extract_exit_code = extract_exit_code_from_output

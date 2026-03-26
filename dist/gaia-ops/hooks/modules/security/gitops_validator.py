@@ -9,7 +9,7 @@ Ensures commands follow GitOps principles:
 
 import re
 import logging
-from typing import Dict, Any, List, Optional
+from typing import List, Optional
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -177,13 +177,3 @@ def validate_gitops_workflow(
         severity="warning",
         suggestions=["Verify command follows GitOps principles"],
     )
-
-
-def to_dict(result: GitOpsValidationResult) -> Dict[str, Any]:
-    """Convert GitOpsValidationResult to dictionary for backward compatibility."""
-    return {
-        "allowed": result.allowed,
-        "reason": result.reason,
-        "severity": result.severity,
-        "suggestions": result.suggestions,
-    }

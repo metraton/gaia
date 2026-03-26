@@ -93,20 +93,17 @@ def build_context_update_reminder(
     for config_dir in config_dirs:
         if not config_dir.is_dir():
             continue
-        # Try new base+cloud system first
+        # Load base contracts
         base_file = config_dir / "context-contracts.json"
         cloud_file = config_dir / "cloud" / f"{cloud_provider}.json"
-        legacy_file = config_dir / f"context-contracts.{cloud_provider}.json"
 
         merged_agents = {}
-        for contract_file in [base_file, legacy_file]:
-            if contract_file.exists():
-                try:
-                    data = json.loads(contract_file.read_text())
-                    merged_agents = data.get("agents", {})
-                    break
-                except Exception:
-                    continue
+        if base_file.exists():
+            try:
+                data = json.loads(base_file.read_text())
+                merged_agents = data.get("agents", {})
+            except Exception:
+                pass
 
         # Merge cloud overrides
         if merged_agents and cloud_file.exists():

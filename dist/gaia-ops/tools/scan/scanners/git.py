@@ -370,6 +370,10 @@ class GitScanner(BaseScanner):
     def scan(self, root: Path) -> ScanResult:
         """Scan the project for git configuration.
 
+        In multi-repo mode (workspace_info.is_multi_repo), scans ALL
+        subdirectories with .git and produces a 'repos' array. In
+        single-repo mode, behaves as before.
+
         Args:
             root: Absolute path to the project root directory.
 
@@ -379,6 +383,17 @@ class GitScanner(BaseScanner):
         start_ms = time.monotonic() * 1000
         warnings: List[str] = []
 
+        # Multi-repo mode: scan all repo subdirectories
+        if self.workspace_info and self.workspace_info.is_multi_repo:
+            section = self._scan_multi_repo(root, warnings)
+            elapsed = (time.monotonic() * 1000) - start_ms
+            return self.make_result(
+                sections={"git": section},
+                warnings=warnings,
+                duration_ms=elapsed,
+            )
+
+        # Single-repo mode (original behavior)
         git_dir = root / ".git"
         git_root = root
 
@@ -445,6 +460,69 @@ class GitScanner(BaseScanner):
             warnings=warnings,
             duration_ms=elapsed,
         )
+
+    def _scan_multi_repo(
+        self, root: Path, warnings: List[str]
+    ) -> Dict[str, Any]:
+        """Scan all repos in a multi-repo workspace.
+
+        Produces a section with 'repos' array where each entry has:
+        name, path, remote_url, platform, default_branch.
+
+        Also determines the primary platform from the first repo's origin.
+
+        Args:
+            root: Workspace root path.
+            warnings: Warning accumulator.
+
+        Returns:
+            Git section dict with 'repos' array and aggregate fields.
+        """
+        repos: List[Dict[str, Any]] = []
+        primary_platform: Optional[str] = None
+
+        for repo_dir in self.workspace_info.repo_dirs:
+            git_dir = repo_dir / ".git"
+            if not git_dir.is_dir():
+                continue
+
+            git_config = _parse_git_config(git_dir)
+            remotes = git_config["remotes"]
+            platform = _determine_primary_platform(remotes)
+            default_branch = _detect_default_branch(git_dir)
+
+            # Get origin remote URL
+            origin_url = None
+            for remote in remotes:
+                if remote.get("name") == "origin":
+                    origin_url = remote.get("url")
+                    break
+            if origin_url is None and remotes:
+                origin_url = remotes[0].get("url")
+
+            repo_entry: Dict[str, Any] = {
+                "name": repo_dir.name,
+                "path": str(repo_dir.relative_to(root)),
+                "remote_url": origin_url,
+                "platform": platform,
+                "default_branch": default_branch,
+            }
+            repos.append(repo_entry)
+
+            if primary_platform is None and platform:
+                primary_platform = platform
+
+        return {
+            "platform": primary_platform,
+            "workspace_type": "multi-repo",
+            "repos": repos,
+            "branch_strategy": {
+                "detected": False,
+                "pattern": None,
+                "indicators": ["multi-repo workspace — per-repo strategies vary"],
+            },
+            "monorepo": {"workspace_config": None},
+        }
 
     @staticmethod
     def _find_git_in_subdirs(

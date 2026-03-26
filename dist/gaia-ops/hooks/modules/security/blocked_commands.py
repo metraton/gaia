@@ -528,18 +528,6 @@ def get_blocked_patterns() -> List[re.Pattern]:
     return patterns
 
 
-def get_blocked_patterns_by_category(category: str) -> List[re.Pattern]:
-    """
-    Get blocked patterns for a specific category.
-
-    Args:
-        category: Category name (aws_critical, kubernetes_critical, etc.)
-
-    Returns:
-        List of compiled regex patterns for that category
-    """
-    return BLOCKED_PATTERNS.get(category, [])
-
 
 def is_blocked_command(command: str) -> BlockedCommandResult:
     """
@@ -585,26 +573,6 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
 
     return BlockedCommandResult(is_blocked=False)
 
-
-def get_suggestion_for_blocked(command: str) -> Optional[str]:
-    """
-    Get a safe alternative suggestion for a blocked command.
-
-    Args:
-        command: The blocked command
-
-    Returns:
-        Suggestion string or None
-    """
-    semantic_rule = _match_semantic_block_rule(command)
-    if semantic_rule is not None:
-        return BLOCKED_COMMAND_SUGGESTIONS.get(semantic_rule.suggestion_key)
-
-    command_lower = command.lower()
-    for cmd_prefix, suggestion in BLOCKED_COMMAND_SUGGESTIONS.items():
-        if cmd_prefix in command_lower:
-            return suggestion
-    return None
 
 
 def _match_semantic_block_rule(command: str) -> Optional[SemanticBlockedRule]:

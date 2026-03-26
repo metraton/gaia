@@ -46,7 +46,6 @@ from ..core.paths import find_claude_dir, get_plugin_data_dir
 from ..core.state import get_session_id
 from .approval_scopes import (
     ApprovalSignature,
-    SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
     SUPPORTED_SCOPE_TYPES,
     build_approval_signature,
