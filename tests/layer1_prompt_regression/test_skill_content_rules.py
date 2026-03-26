@@ -129,9 +129,12 @@ class TestAgentProtocolSkill:
                 f"agent-protocol should document approval_request field '{field}'"
 
     def test_documents_all_valid_statuses(self, content):
-        """Must document all valid PLAN_STATUS values."""
+        """Must document all active PLAN_STATUS values.
+
+        The skill documents the 5 active statuses.
+        """
         statuses = ["COMPLETE", "NEEDS_INPUT", "REVIEW",
-                    "AWAITING_APPROVAL", "BLOCKED", "IN_PROGRESS"]
+                    "BLOCKED", "IN_PROGRESS"]
         for status in statuses:
             assert status in content, \
                 f"agent-protocol should document PLAN_STATUS '{status}'"

@@ -12,12 +12,12 @@ metadata:
 
 ```
 Agent returns json:contract
-  ├─ COMPLETE         → Summarize key_outputs (3-5 bullets)
-  ├─ NEEDS_INPUT      → AskUserQuestion, then SendMessage answer back
-  ├─ REVIEW           → AskUserQuestion (execute/modify/cancel), then SendMessage decision
-  ├─ AWAITING_APPROVAL → Load Skill("orchestrator-approval")
-  ├─ BLOCKED          → Present open_gaps via AskUserQuestion
-  └─ IN_PROGRESS      → SendMessage to resume agent
+  |- COMPLETE         -> Summarize key_outputs (3-5 bullets)
+  |- NEEDS_INPUT      -> AskUserQuestion, then SendMessage answer back
+  |- REVIEW           -> Load Skill("orchestrator-approval") if approval_id present,
+  |                      otherwise AskUserQuestion (execute/modify/cancel)
+  |- BLOCKED          -> Present open_gaps via AskUserQuestion
+  +- IN_PROGRESS      -> SendMessage to resume agent
 ```
 
 ## Mandatory Actions per Status
@@ -25,9 +25,8 @@ Agent returns json:contract
 | Status | Action | Tool |
 |---|---|---|
 | `COMPLETE` | Summarize `key_outputs` in 3-5 bullets. Mention `cross_layer_impacts` and `open_gaps` if non-empty. Say "ask for details" if `verbatim_outputs` exists. | Direct response |
-| `NEEDS_INPUT` | Present the agent's question with options | `AskUserQuestion` → `SendMessage` |
-| `REVIEW` | Present plan with options: execute / modify / cancel | `AskUserQuestion` → `SendMessage` |
-| `AWAITING_APPROVAL` | Do not handle directly | `Skill("orchestrator-approval")` |
+| `NEEDS_INPUT` | Present the agent's question with options | `AskUserQuestion` -> `SendMessage` |
+| `REVIEW` | If `approval_request.approval_id` is present: load `Skill("orchestrator-approval")`. Otherwise: present plan with options execute / modify / cancel. | `AskUserQuestion` -> `SendMessage` |
 | `BLOCKED` | Present alternatives from `open_gaps` | `AskUserQuestion` |
 | `IN_PROGRESS` | Agent was interrupted, let it continue | `SendMessage` |
 
@@ -35,10 +34,10 @@ Agent returns json:contract
 
 | Field | When to surface |
 |---|---|
-| `key_outputs` | Always — base your summary on these |
-| `verbatim_outputs` | Only when user asks for details — relay in code blocks |
+| `key_outputs` | Always -- base your summary on these |
+| `verbatim_outputs` | Only when user asks for details -- relay in code blocks |
 | `cross_layer_impacts` | Always mention if non-empty |
-| `open_gaps` | Always mention — never imply certainty |
+| `open_gaps` | Always mention -- never imply certainty |
 | `consolidation_report` | Check for `conflicts` and `next_best_agent` |
 | `next_best_agent` | Ask user if they want to dispatch |
 

@@ -43,10 +43,10 @@ These 6 fields MUST appear in the `approval_request` object of your `json:contra
 | `rollback` | `"terraform -chdir=/infra/dev apply -target=module.vpc -var='cidr=10.0.0.0/16'"` |
 | `verification` | `"terraform -chdir=/infra/dev output vpc_id -- expect vpc-xxx"` |
 
-For `AWAITING_APPROVAL`, also include:
+When a hook blocked the command, also include:
 | Field | Example value |
 |-------|---------------|
-| `nonce` | `"a1b2c3d4e5f6..."` (hex from hook block response) |
+| `approval_id` | `"a1b2c3d4e5f6..."` (hex from hook deny response) |
 
 ### Files Affected
 

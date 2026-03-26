@@ -51,16 +51,7 @@ from modules.security.prompt_validator import classify_resume_prompt
 from modules.context.context_injector import build_project_context
 from modules.session.session_event_injector import build_session_events
 from modules.core.state import create_pre_hook_state, save_hook_state
-from modules.security.approval_constants import (
-    NONCE_APPROVAL_PATTERN,
-)
-from modules.security.approval_messages import (
-    build_activation_failed_message,
-    build_deprecated_approval_message,
-    build_invalid_nonce_message,
-)
 from modules.security.approval_grants import (
-    activate_pending_approval,
     cleanup_expired_grants,
 )
 
@@ -223,8 +214,9 @@ def _handle_send_message(tool_name: str, parameters: dict) -> str | None:
     """
     Handle SendMessage tool validation for agent resumption.
 
-    Validates agent ID format and message content, then runs nonce
-    approval checks. Does NOT inject project context (it's a resume).
+    Validates agent ID format and message content. Does NOT inject
+    project context (it's a resume). Nonce relay is no longer processed
+    here -- approval grants are activated by the UserPromptSubmit hook.
 
     Returns:
         None: allowed (no modification)
@@ -259,69 +251,18 @@ def _handle_send_message(tool_name: str, parameters: dict) -> str | None:
 
     logger.info(f"SENDMESSAGE: Resuming agent {agent_id}")
 
-    approval_error, has_approval = _handle_resume_approval(agent_id, message)
-    if approval_error:
-        return approval_error
-
     state = create_pre_hook_state(
         tool_name=tool_name,
         command=f"SendMessage:{agent_id}",
         tier="T0",
         allowed=True,
         is_t3=False,
-        has_approval=has_approval,
+        has_approval=False,
     )
     save_hook_state(state)
 
     logger.info(f"ALLOWED SendMessage: agent {agent_id} - message length: {len(message)}")
     return None
-
-
-def _handle_resume_approval(resume_id: str, prompt: str) -> tuple[str | None, bool]:
-    """Process nonce approval indicators for Task resume."""
-    classification = _classify_resume_prompt(prompt)
-
-    if classification == "nonce":
-        nonce = NONCE_APPROVAL_PATTERN.search(prompt).group(1)
-        activation = activate_pending_approval(nonce)
-        status_text = getattr(activation.status, "value", str(activation.status))
-        if activation.success:
-            grant_path = activation.grant_path
-            grant_name = grant_path.name if grant_path else "<unknown>"
-            logger.info(
-                "Nonce approval activated for resume %s: nonce=%s, file=%s",
-                resume_id,
-                nonce,
-                grant_name,
-            )
-            return None, True
-
-        logger.warning(
-            "Denied resume %s: nonce approval activation failed for nonce=%s "
-            "(status=%s, reason=%s)",
-            resume_id,
-            nonce,
-            status_text,
-            activation.reason,
-        )
-        return build_activation_failed_message(nonce, status_text, activation.reason), False
-
-    if classification == "malformed_nonce":
-        logger.warning(
-            "Denied resume %s: malformed nonce approval token in prompt='%s'",
-            resume_id,
-            prompt[:120],
-        )
-        return build_invalid_nonce_message(), False
-
-    if classification == "deprecated":
-        logger.warning(
-            "Denied resume %s: deprecated legacy approval phrase detected",
-            resume_id,
-        )
-        return build_deprecated_approval_message(), False
-
-    return None, False
 
 
 def _format_blocked_message(result) -> str:

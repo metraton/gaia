@@ -43,6 +43,8 @@ ALL_RESOLUTION = {
         "hooks/modules/session/",
         "hooks/modules/memory/",
         "hooks/modules/identity/",
+        "hooks/modules/orchestrator/",
+        "hooks/modules/events/",
         "hooks/adapters/",
     ],
     "skills": "skills/",

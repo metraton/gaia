@@ -117,7 +117,7 @@ tests:
       prompt: "List all kubernetes namespaces and their status"
     assert:
       - type: regex
-        value: "PLAN_STATUS:\\s*(COMPLETE|NEEDS_INPUT|REVIEW|AWAITING_APPROVAL|BLOCKED|IN_PROGRESS)"
+        value: "PLAN_STATUS:\\s*(COMPLETE|NEEDS_INPUT|REVIEW|BLOCKED|IN_PROGRESS)"
     options:
       provider: haiku
       prompt: cloud-troubleshooter

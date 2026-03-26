@@ -720,6 +720,83 @@ def cleanup_expired_grants() -> int:
     return cleaned
 
 
+def get_pending_approvals_for_session(
+    session_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return all non-expired pending approvals for a session.
+
+    Args:
+        session_id: Session ID to filter by (defaults to current session).
+
+    Returns:
+        List of pending approval dicts, newest first.
+    """
+    if session_id is None:
+        session_id = _get_session_id()
+
+    results: List[Dict[str, Any]] = []
+    try:
+        grants_dir = _get_grants_dir()
+        for pending_file in grants_dir.glob("pending-*.json"):
+            if pending_file.name.startswith("pending-index-"):
+                continue
+            data = _read_json_file(pending_file)
+            if not data or data.get("session_id") != session_id:
+                continue
+            timestamp = data.get("timestamp", 0)
+            ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
+            if _is_ttl_expired(float(timestamp), int(ttl)):
+                continue
+            results.append(data)
+    except Exception as e:
+        logger.error("Error listing pending approvals for session %s: %s", session_id, e)
+
+    results.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
+    return results
+
+
+def activate_grants_for_session(
+    session_id: Optional[str] = None,
+    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+) -> List[ApprovalActivationResult]:
+    """Activate ALL pending approvals for a session.
+
+    Called by the UserPromptSubmit hook when the user sends an affirmative
+    response. Converts every non-expired pending approval for the session
+    into an active grant.
+
+    Args:
+        session_id: Session to activate for (defaults to current session).
+        ttl_minutes: TTL for the resulting active grants.
+
+    Returns:
+        List of activation results (one per pending approval).
+    """
+    if session_id is None:
+        session_id = _get_session_id()
+
+    pending_list = get_pending_approvals_for_session(session_id)
+    results: List[ApprovalActivationResult] = []
+
+    for pending_data in pending_list:
+        nonce = pending_data.get("nonce", "")
+        if not nonce:
+            continue
+        result = activate_pending_approval(
+            nonce=nonce,
+            session_id=session_id,
+            ttl_minutes=ttl_minutes,
+        )
+        results.append(result)
+        logger.info(
+            "Session-wide activation: nonce=%s status=%s",
+            nonce,
+            getattr(result.status, "value", str(result.status)),
+        )
+
+    return results
+
+
 def _cleanup_grant(grant_file: Path) -> None:
     """Remove a single grant or pending file."""
     try:

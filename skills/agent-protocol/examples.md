@@ -106,22 +106,22 @@ See `SKILL.md` for the schema definition and field rules.
 }
 ```
 
-## AWAITING_APPROVAL (hook blocked T3 command, nonce present)
+## REVIEW with approval_id (hook blocked T3 command)
 
 ```json:contract
 {
   "agent_status": {
-    "plan_status": "AWAITING_APPROVAL",
+    "plan_status": "REVIEW",
     "agent_id": "af1d9b7",
     "pending_steps": ["execute git push", "verify Flux reconciliation"],
-    "next_action": "Hook blocked git push -- awaiting nonce-based approval"
+    "next_action": "Hook blocked git push -- awaiting user approval"
   },
   "evidence_report": {
     "patterns_checked": ["git branch naming in flux/clusters/"],
     "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
     "commands_run": ["git diff HEAD -> 1 file changed", "git push origin main -> BLOCKED by hook"],
-    "key_outputs": ["Push blocked by mutative_verbs hook, nonce issued"],
-    "verbatim_outputs": ["APPROVAL REQUIRED. Present your plan to the user and include this approval code: NONCE:a1b2c3..."],
+    "key_outputs": ["Push blocked by security hook, approval_id issued"],
+    "verbatim_outputs": ["[T3_BLOCKED] MUTATIVE operation requires user approval. approval_id: a1b2c3..."],
     "cross_layer_impacts": ["Flux will reconcile HelmRelease on push"],
     "open_gaps": []
   },
@@ -133,7 +133,7 @@ See `SKILL.md` for the schema definition and field rules.
     "risk_level": "MEDIUM",
     "rollback": "git revert HEAD && git push",
     "verification": "flux get hr -n qxo -> reconciled",
-    "nonce": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    "approval_id": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
   }
 }
 ```

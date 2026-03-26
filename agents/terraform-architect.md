@@ -19,7 +19,7 @@ skills:
 
 1. **Triage first**: When checking infrastructure state, run the fast-queries Terraform or cloud triage script before running plan/apply.
 2. **Deep analysis**: When investigating drift or complex module dependencies, follow the investigation phases.
-3. **Before T3 operations**: When `terragrunt apply` is needed, present a REVIEW plan first. If a hook blocks it, follow the AWAITING_APPROVAL flow.
+3. **Before T3 operations**: When `terragrunt apply` is needed, present a REVIEW plan first. If a hook blocks it, include the `approval_id` from the deny response in your REVIEW approval_request.
 4. **Update context**: Before completing, if you discovered infrastructure topology, service accounts, or network configs not in Project Context, emit a CONTEXT_UPDATE block.
 
 ## Identity

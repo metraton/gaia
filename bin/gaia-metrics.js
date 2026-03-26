@@ -450,7 +450,7 @@ function calculateAgentInvocations(workflowMetrics) {
 
 /**
  * Agent outcome distribution from plan_status field.
- * Counts COMPLETE, BLOCKED, NEEDS_INPUT, IN_PROGRESS, REVIEW, AWAITING_APPROVAL, and others.
+ * Counts COMPLETE, BLOCKED, NEEDS_INPUT, IN_PROGRESS, REVIEW, and others.
  * Returns null if no entries have the plan_status field (older data).
  */
 function calculateAgentOutcomes(workflowMetrics) {
@@ -874,7 +874,7 @@ function displayMetrics(
   // ── Agent Outcomes ───────────────────────────────────
   if (agentOutcomes) {
     console.log(chalk.bold(`\n📋 Agent Outcomes  (${agentOutcomes.total} sessions with status)`));
-    const outcomeColor = { COMPLETE: chalk.green, BLOCKED: chalk.red, NEEDS_INPUT: chalk.yellow, IN_PROGRESS: chalk.cyan, REVIEW: chalk.magenta, AWAITING_APPROVAL: chalk.yellow };
+    const outcomeColor = { COMPLETE: chalk.green, BLOCKED: chalk.red, NEEDS_INPUT: chalk.yellow, IN_PROGRESS: chalk.cyan, REVIEW: chalk.magenta };
     for (const { status, count, percentage } of agentOutcomes.distribution) {
       const bar = makeBar(percentage, 10);
       const pct = percentage.toFixed(1).padStart(5);

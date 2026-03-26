@@ -97,6 +97,74 @@ def _build_routing_recommendation(prompt_text: str) -> str:
         return ""
 
 
+def _is_approval_response(text: str) -> bool:
+    """Check if user text is an affirmative approval response.
+
+    Matches common affirmative phrases in English and Spanish that indicate
+    the user is approving a pending T3 operation.
+
+    Args:
+        text: The user's prompt text (already extracted from the event).
+
+    Returns:
+        True if the text matches an affirmative approval pattern.
+    """
+    if not text:
+        return False
+    # Normalize: strip, lowercase, remove leading/trailing punctuation
+    normalized = text.strip().lower().rstrip(".!,;:")
+    # Exact match on short affirmative tokens
+    affirmative_exact = {
+        "yes", "y", "ok", "okay", "sure", "confirm", "approve",
+        "do it", "go ahead", "proceed", "go", "execute",
+        # Spanish
+        "si", "sí", "dale", "ejecuta", "apruebo", "adelante",
+        "hazlo", "confirmo",
+    }
+    if normalized in affirmative_exact:
+        return True
+    # Prefix match for slightly longer affirmative phrases
+    affirmative_prefixes = (
+        "yes,", "yes ", "ok,", "ok ", "sure,", "sure ",
+        "approve", "go ahead", "proceed", "do it", "execute",
+        "sí,", "sí ", "si,", "si ", "dale", "ejecuta", "apruebo",
+    )
+    if any(normalized.startswith(p) for p in affirmative_prefixes):
+        return True
+    return False
+
+
+def _activate_pending_approvals(session_id: str) -> None:
+    """Find and activate all pending approvals for the current session.
+
+    Called when the user sends an affirmative response. This is the
+    infrastructure-enforced approval gate: the UserPromptSubmit hook is
+    triggered by the user pressing Enter, so only a real user action
+    can activate grants.
+
+    Args:
+        session_id: The session to activate approvals for.
+    """
+    try:
+        from modules.security.approval_grants import (
+            activate_grants_for_session,
+            get_pending_approvals_for_session,
+        )
+
+        pending = get_pending_approvals_for_session(session_id)
+        if not pending:
+            return
+
+        results = activate_grants_for_session(session_id)
+        activated = sum(1 for r in results if r.success)
+        logger.info(
+            "UserPromptSubmit activated %d/%d pending approvals for session %s",
+            activated, len(results), session_id,
+        )
+    except Exception as e:
+        logger.error("Error activating pending approvals: %s", e, exc_info=True)
+
+
 def _build_welcome(mode: str) -> str:
     """Build first-run welcome message for the user.
 
@@ -150,6 +218,19 @@ if __name__ == "__main__":
         # Append deterministic surface routing recommendation (ops mode only)
         if mode == "ops":
             prompt_text = _extract_user_prompt(raw_input)
+
+            # Check if user is responding to an approval request.
+            # Must run BEFORE routing so grants are activated before the
+            # next pre_tool_use hook fires.
+            if prompt_text and _is_approval_response(prompt_text):
+                try:
+                    event_data = json.loads(raw_input)
+                    submit_session_id = event_data.get("session_id", "")
+                    if submit_session_id:
+                        _activate_pending_approvals(submit_session_id)
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Best-effort; identity injection still proceeds
+
             if prompt_text:
                 routing_block = _build_routing_recommendation(prompt_text)
                 if routing_block:

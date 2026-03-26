@@ -605,29 +605,33 @@ class TestScenario2SecurityGate:
 
 
 class TestScenario3MutativeCommand:
-    """Mutative command (terraform apply) should be asked via native dialog."""
+    """Mutative command (terraform apply) from subagent should be denied with approval_id."""
 
-    def test_mutative_command_ask_via_native_dialog(self, tmp_path):
+    def test_mutative_command_deny_from_subagent(self, tmp_path):
         sim = SessionSimulator(tmp_path)
 
         # Start session
         result = sim.start_session()
         assert result["exit_code"] == 0
 
-        # Try a mutative command (T3)
+        # Try a mutative command (T3) -- subagent context (agent_id injected)
         result = sim.execute_bash("terraform apply")
-        # Mutative commands exit 0 with a corrective ask response
+        # Subagent mutative commands exit 0 with a deny response + approval_id
         assert result["exit_code"] == 0, (
-            f"Expected exit 0 (ask), got {result['exit_code']}. "
+            f"Expected exit 0 (deny), got {result['exit_code']}. "
             f"stderr: {result['stderr']}"
         )
         assert result["stdout_json"] is not None, (
-            f"Expected JSON response for mutative ask. stdout: {result['stdout_raw']}"
+            f"Expected JSON response for mutative deny. stdout: {result['stdout_raw']}"
         )
         hook_output = result["stdout_json"].get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "ask", (
-            f"Expected ask, got: {hook_output.get('permissionDecision')}. "
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}. "
             f"Full response: {result['stdout_json']}"
+        )
+        reason = hook_output.get("permissionDecisionReason", "")
+        assert "approval_id:" in reason, (
+            f"Expected approval_id in deny reason, got: {reason}"
         )
 
 
@@ -925,13 +929,19 @@ class TestSessionSimulatorEdgeCases:
 
 
 class TestScenario8FullApprovalCycle:
-    """T3 approval lifecycle: ask via native dialog, no nonce in validator path."""
+    """T3 approval lifecycle: subagent gets deny with approval_id.
+
+    The session simulator injects agent_id, making all Bash commands
+    appear as subagent invocations. Subagents get 'deny' with an
+    approval_id so the orchestrator can present approval to the user.
+    The UserPromptSubmit hook then activates the grant.
+    """
 
     def test_full_approval_cycle(self, tmp_path):
-        """T3 command returns 'ask' for native dialog approval.
+        """T3 command from subagent returns 'deny' with approval_id.
 
-        The bash_validator now returns permissionDecision='ask' for all T3
-        commands. The nonce-based flow is no longer driven by the validator.
+        The bash_validator returns permissionDecision='deny' for subagent
+        T3 commands, including an approval_id for the orchestrator to present.
         """
         sim = SessionSimulator(tmp_path)
 
@@ -947,24 +957,29 @@ class TestScenario8FullApprovalCycle:
             f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
 
-        # 3. Agent tries a T3 command -- should return "ask" for native dialog
+        # 3. Agent tries a T3 command -- should return "deny" with approval_id
         t3_command = "git push origin main"
         result = sim.execute_bash(t3_command)
         assert result["exit_code"] == 0, (
-            f"Expected exit 0 (ask), got {result['exit_code']}. "
+            f"Expected exit 0 (deny), got {result['exit_code']}. "
             f"stderr: {result['stderr']}"
         )
         assert result["stdout_json"] is not None, (
-            f"Expected JSON response for T3 ask. stdout: {result['stdout_raw']}"
+            f"Expected JSON response for T3 deny. stdout: {result['stdout_raw']}"
         )
         hook_output = result["stdout_json"].get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "ask", (
-            f"Expected ask, got: {hook_output.get('permissionDecision')}. "
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}. "
             f"Full response: {result['stdout_json']}"
+        )
+        # Verify approval_id is present in the deny reason
+        reason = hook_output.get("permissionDecisionReason", "")
+        assert "approval_id:" in reason, (
+            f"Expected approval_id in deny reason, got: {reason}"
         )
 
     def test_approval_cycle_with_terraform_apply(self, tmp_path):
-        """terraform apply returns 'ask' for native dialog approval."""
+        """terraform apply from subagent returns 'deny' with approval_id."""
         sim = SessionSimulator(tmp_path)
         sim.start_session()
 
@@ -972,48 +987,69 @@ class TestScenario8FullApprovalCycle:
         result = sim.invoke_agent("terraform-architect", "apply the plan")
         assert result["exit_code"] == 0
 
-        # Try terraform apply -- returns "ask"
+        # Try terraform apply -- returns "deny" (subagent context)
         t3_command = "terraform apply"
         result = sim.execute_bash(t3_command)
         assert result["exit_code"] == 0
         hook_output = result["stdout_json"].get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "ask", (
-            f"Expected ask, got: {hook_output.get('permissionDecision')}. "
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}. "
             f"Full response: {result['stdout_json']}"
+        )
+        reason = hook_output.get("permissionDecisionReason", "")
+        assert "approval_id:" in reason, (
+            f"Expected approval_id in deny reason, got: {reason}"
         )
 
     def test_nonce_cannot_be_reused(self, tmp_path):
-        """A nonce can only be activated once. Second activation should fail.
+        """A nonce (approval_id) can only be activated once.
 
-        This test manually creates a nonce (since bash_validator no longer
-        generates them) and verifies the activation-once invariant.
+        This test uses the approval_grants module directly to verify the
+        one-time activation invariant. The resume_agent path no longer
+        processes APPROVE: tokens -- activation happens in UserPromptSubmit.
         """
         import sys
-        sim = SessionSimulator(tmp_path)
-        sim.start_session()
-
-        # Manually create a pending approval by importing the module
-        # and writing directly (since the subprocess hook doesn't generate nonces)
-        nonce_script = (
-            "import json, sys, os; "
-            "sys.path.insert(0, os.environ.get('HOOKS_DIR', '')); "
-            "from modules.security.approval_grants import generate_nonce, write_pending_approval; "
-            f"os.environ['CLAUDE_SESSION_ID'] = 'e2e-session-sim-001'; "
-            "nonce = generate_nonce(); "
-            "write_pending_approval(nonce=nonce, command='git push origin main', "
-            "danger_verb='push', danger_category='MUTATIVE'); "
-            "print(nonce)"
+        sys.path.insert(0, str(HOOKS_DIR))
+        from modules.security.approval_grants import (
+            generate_nonce, write_pending_approval,
+            activate_pending_approval, ACTIVATION_ACTIVATED, ACTIVATION_NOT_FOUND,
         )
-        # Use a simpler approach: verify the resume endpoint rejects invalid nonces
-        import secrets
-        fake_nonce = secrets.token_hex(16)
+        from modules.core.paths import clear_path_cache
 
-        # First activation with a non-existent nonce should fail
-        result = sim.resume_agent("a1f2c3d4e5", f"APPROVE:{fake_nonce}")
-        assert result["exit_code"] == 2, (
-            f"Activation with invalid nonce should fail. "
-            f"exit={result['exit_code']}, stdout={result['stdout_raw']}"
-        )
+        # Set up isolated environment
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        import os
+        os.environ["CLAUDE_SESSION_ID"] = "e2e-nonce-reuse-test"
+        import modules.security.approval_grants as ag
+        import modules.core.paths as cp
+        cp.clear_path_cache()
+        ag._grants_dir_created = False
+        original_get_plugin = ag.get_plugin_data_dir
+        ag.get_plugin_data_dir = lambda: claude_dir
+
+        try:
+            nonce = generate_nonce()
+            write_pending_approval(
+                nonce=nonce,
+                command="git push origin main",
+                danger_verb="push",
+                danger_category="MUTATIVE",
+                session_id="e2e-nonce-reuse-test",
+            )
+
+            # First activation should succeed
+            result1 = activate_pending_approval(nonce, session_id="e2e-nonce-reuse-test")
+            assert result1.success, f"First activation should succeed: {result1.reason}"
+            assert result1.status == ACTIVATION_ACTIVATED
+
+            # Second activation should fail (pending file deleted)
+            result2 = activate_pending_approval(nonce, session_id="e2e-nonce-reuse-test")
+            assert not result2.success, "Second activation should fail"
+            assert result2.status == ACTIVATION_NOT_FOUND
+        finally:
+            ag.get_plugin_data_dir = original_get_plugin
+            cp.clear_path_cache()
 
 
 # ============================================================================

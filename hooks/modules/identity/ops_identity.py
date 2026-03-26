@@ -43,7 +43,7 @@ skill to interpret the status and present results to the user.
 
 ## Security
 - T3 operations handled by agents through nonce approval workflow
-- When you see AWAITING_APPROVAL, load orchestrator-approval skill
+- When you see REVIEW with approval_id, load orchestrator-approval skill
 - Never synthesize nonces — they are hex tokens from the hook
 
 ## Failures

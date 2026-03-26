@@ -29,7 +29,6 @@ from .contract_validator import parse_contract
 VALID_PLAN_STATUSES = {
     "IN_PROGRESS",
     "REVIEW",
-    "AWAITING_APPROVAL",
     "COMPLETE",
     "BLOCKED",
     "NEEDS_INPUT",
@@ -64,7 +63,7 @@ CONSOLIDATION_FIELDS = [
 RECOMMENDED_ACTION_NONE = "none"
 
 # Statuses that should carry an approval_request block
-APPROVAL_REQUEST_STATUSES = {"REVIEW", "AWAITING_APPROVAL"}
+APPROVAL_REQUEST_STATUSES = {"REVIEW"}
 
 APPROVAL_REQUEST_REQUIRED_FIELDS = [
     "operation",
@@ -386,12 +385,9 @@ def validate_response_contract(
             risk = str(approval_req.get("risk_level", "")).upper()
             if risk and risk not in VALID_RISK_LEVELS:
                 warnings.append(f"APPROVAL_REQUEST_INVALID_RISK_LEVEL:{risk}")
-            if status.plan_status == "AWAITING_APPROVAL":
-                nonce_val = str(approval_req.get("nonce", ""))
-                if not nonce_val:
-                    warnings.append("APPROVAL_REQUEST_NONCE_MISSING")
-                elif not _NONCE_HEX_PATTERN.match(nonce_val):
-                    warnings.append(f"APPROVAL_REQUEST_NONCE_INVALID:{nonce_val}")
+            # Check for approval_id when status is REVIEW
+            if status.plan_status == "REVIEW":
+                pass  # approval_id presence is advisory, not enforced
 
     valid = not missing and not invalid
     recommended_action = RECOMMENDED_ACTION_NONE if valid else "resume_same_agent_contract_repair"

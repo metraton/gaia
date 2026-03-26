@@ -10,7 +10,7 @@ metadata:
 
 ## Overview
 
-The plan is a contract. The user approves the exact contract —
+The plan is a contract. The user approves the exact contract --
 not a vague intent. Structure your plan in the `approval_request`
 field of your `json:contract` so the orchestrator can present it
 directly to the user.
@@ -31,9 +31,9 @@ with these 6 fields:
 }
 ```
 
-For `AWAITING_APPROVAL` (hook-blocked), also include:
+When a hook blocked your command with an `approval_id`, also include:
 ```json
-"nonce": "hex from hook block response"
+"approval_id": "hex from hook deny response"
 ```
 
 ### Risk Levels
@@ -47,24 +47,28 @@ For `AWAITING_APPROVAL` (hook-blocked), also include:
 
 ## Which Status to Emit
 
-- `REVIEW` — presenting a plan before executing (no hook block)
-- `AWAITING_APPROVAL` — hook blocked your command with `NONCE:<hex>`
+- `REVIEW` -- presenting a plan before executing (no hook block)
+- `REVIEW` with `approval_id` -- hook blocked your command with an approval_id
 
-## Nonce Flow
+Both use `REVIEW` as the plan_status. The presence or absence of
+`approval_id` in `approval_request` tells the orchestrator which
+handling path to take.
 
-When a hook blocks your command, it returns a nonce:
+## Hook Block Flow
+
+When a hook blocks your command, it returns a deny with an approval_id:
 ```
-APPROVAL REQUIRED. ... NONCE:<hex>
+[T3_BLOCKED] ... approval_id: <hex>
 ```
 
-Include this nonce in your `approval_request`. It is machine-readable —
+Include this approval_id in your `approval_request`. It is machine-readable --
 the orchestrator extracts it silently.
 
-If you lose the nonce, re-attempt the command for a fresh one.
+If you lose the approval_id, re-attempt the command for a fresh one.
 
 ## Anti-Patterns
 
 - Presenting approval without all 6 fields in `approval_request`
 - Putting approval fields in text only without the JSON object
 - Treating prior approvals as valid for new operations
-- Fabricating or paraphrasing the nonce token
+- Fabricating or paraphrasing the approval_id token

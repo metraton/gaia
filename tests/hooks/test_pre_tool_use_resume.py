@@ -52,75 +52,48 @@ def saved_states(monkeypatch):
 
 
 class TestHandleSendMessageApproval:
-    """Approval handling for SendMessage resume should be fail-closed and coherent."""
+    """SendMessage approval handling after nonce relay removal.
 
-    def test_valid_nonce_allows_resume_and_marks_approval(self, monkeypatch, saved_states):
+    Nonce relay was moved from _handle_send_message to the UserPromptSubmit hook.
+    SendMessage now only validates agent_id format and message content.
+    APPROVE: tokens in messages pass through without special handling.
+    """
+
+    def test_message_with_nonce_passes_through(self, saved_states):
+        """APPROVE:<nonce> in a SendMessage is no longer intercepted."""
         nonce = "deadbeef" * 4
-        monkeypatch.setattr(
-            pre_tool_use,
-            "activate_pending_approval",
-            lambda value: ApprovalActivationResult(
-                success=True,
-                status=ACTIVATION_ACTIVATED,
-                reason="Pending approval activated.",
-                grant_path=Path("/tmp/grant-test.json"),
-            ),
-        )
-
         result = pre_tool_use._handle_send_message(
             "SendMessage",
             {"to": "a12345", "message": f"APPROVE:{nonce}"},
         )
 
+        # No longer blocked or intercepted -- passes through as normal resume
         assert result is None
         assert len(saved_states) == 1
-        assert saved_states[0].metadata["has_approval"] is True
 
-    def test_failed_nonce_activation_denies_resume_and_skips_state(self, monkeypatch, saved_states):
-        nonce = "deadbeef" * 4
-        monkeypatch.setattr(
-            pre_tool_use,
-            "activate_pending_approval",
-            lambda value: ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_EXPIRED,
-                reason="Approval nonce expired before activation.",
-            ),
-        )
-
-        result = pre_tool_use._handle_send_message(
-            "SendMessage",
-            {"to": "a12345", "message": f"APPROVE:{nonce}"},
-        )
-
-        assert isinstance(result, str)
-        assert "Approval activation failed" in result
-        assert "Status: expired" in result
-        assert "expired" in result.lower()
-        assert saved_states == []
-
-    def test_malformed_nonce_token_denies_resume_and_skips_state(self, saved_states):
+    def test_message_with_malformed_nonce_passes_through(self, saved_states):
+        """Malformed APPROVE: tokens are no longer intercepted in SendMessage."""
         result = pre_tool_use._handle_send_message(
             "SendMessage",
             {"to": "a12345", "message": "APPROVE:commit\n\nRetry the git commit."},
         )
 
-        assert isinstance(result, str)
-        assert "Invalid approval token" in result
-        assert "APPROVE:commit is invalid" in result
-        assert saved_states == []
+        # No longer blocked -- passes through
+        assert result is None
+        assert len(saved_states) == 1
 
-    def test_deprecated_approval_phrase_denies_resume_and_skips_state(self, saved_states):
+    def test_message_with_deprecated_phrase_passes_through(self, saved_states):
+        """Deprecated approval phrases are no longer intercepted in SendMessage."""
         result = pre_tool_use._handle_send_message(
             "SendMessage",
             {"to": "a12345", "message": "User approved: terraform apply prod/vpc"},
         )
 
-        assert isinstance(result, str)
-        assert "Deprecated approval format" in result
-        assert saved_states == []
+        # No longer blocked -- passes through
+        assert result is None
+        assert len(saved_states) == 1
 
-    def test_documentary_nonce_text_is_not_treated_as_malformed_approval(self, saved_states):
+    def test_documentary_nonce_text_passes_through(self, saved_states):
         result = pre_tool_use._handle_send_message(
             "SendMessage",
             {"to": "a12345", "message": "Use APPROVE:<nonce> in the docs and continue."},

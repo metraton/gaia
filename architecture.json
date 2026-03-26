@@ -623,7 +623,7 @@
     },
     "modules/security/approval_messages.py": {
       "functions": ["build_activation_failed_message", "build_invalid_nonce_message", "build_deprecated_approval_message", "build_pending_approval_unavailable_message", "build_t3_approval_instructions"],
-      "constants": ["CANONICAL_APPROVAL_TOKEN", "CANONICAL_APPROVAL_TOKEN_FORMAT", "LATEST_BLOCKED_COMMAND_PHRASE", "PENDING_APPROVAL_STATUS"],
+      "constants": ["CANONICAL_APPROVAL_TOKEN", "CANONICAL_APPROVAL_TOKEN_FORMAT", "LATEST_BLOCKED_COMMAND_PHRASE"],
       "description": "Canonical approval/resume text builders for hooks, skills, and tests",
       "calls": ["modules/security/approval_constants.py:NONCE_APPROVAL_PREFIX"],
       "called_by": ["modules/tools/bash_validator.py", "modules/security/mutative_verbs.py", "adapters/claude_code.py:_adapt_resume_approval"]

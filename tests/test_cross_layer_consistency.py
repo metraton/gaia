@@ -290,9 +290,10 @@ class TestDefenseInDepth:
         """
         source = (HOOKS_MODULES_DIR / "tools" / "bash_validator.py").read_text()
 
-        # Extract the validate() method body (the public entry point)
+        # Extract the validate() method body (the public entry point).
+        # The signature may span multiple lines (e.g. def validate(\n  self, ...)).
         method_match = re.search(
-            r'def validate\(self.*?\n(.*?)(?=\n    def |\nclass |\Z)',
+            r'def validate\(\s*self.*?\).*?:\n(.*?)(?=\n    def |\nclass |\Z)',
             source, re.DOTALL
         )
         assert method_match, "Could not find validate method"
@@ -391,11 +392,11 @@ class TestSkillsCrossReferences:
             f"('{CANONICAL_APPROVAL_TOKEN}')"
         )
 
-    def test_approval_skill_references_nonce_concept(self):
-        """Approval skill must reference the nonce-based approval mechanism."""
+    def test_approval_skill_references_approval_id_concept(self):
+        """Approval skill must reference the approval_id mechanism."""
         content = (SKILLS_DIR / "approval" / "SKILL.md").read_text().lower()
-        assert "nonce" in content, (
-            "Approval skill must mention the nonce mechanism"
+        assert "approval_id" in content, (
+            "Approval skill must mention the approval_id mechanism"
         )
 
     def test_identity_references_nonce_approval(self):

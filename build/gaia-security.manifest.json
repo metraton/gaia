@@ -31,6 +31,8 @@
     "hooks/modules/session/",
     "hooks/modules/agents/",
     "hooks/modules/memory/",
+    "hooks/modules/orchestrator/",
+    "hooks/modules/events/",
     "hooks/adapters/"
   ],
   "agents": [],

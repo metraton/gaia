@@ -118,7 +118,7 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
         plan_status = str(agent_status.get("plan_status", "")).upper()
 
     statuses_requiring_evidence = {
-        "IN_PROGRESS", "REVIEW", "AWAITING_APPROVAL",
+        "IN_PROGRESS", "REVIEW",
         "COMPLETE", "BLOCKED", "NEEDS_INPUT",
     }
 
@@ -568,48 +568,12 @@ def validate_verbatim_outputs_consistency(
 # False pending-approval detection
 # ============================================================================
 
-_NONCE_PATTERN = re.compile(r"NONCE:[a-f0-9]{32}")
-
-
-def validate_awaiting_approval_has_nonce(
-    transcript_text: str,
-    plan_status: str,
-) -> Optional[Dict[str, Any]]:
-    """Detect when an agent returns AWAITING_APPROVAL without a real hook nonce.
-
-    If plan_status is AWAITING_APPROVAL, a hook should have blocked a T3 command
-    and emitted a ``NONCE:<32-hex>`` token.  If no such token appears in the
-    agent's transcript/output, the agent likely over-escalated.
-
-    Args:
-        transcript_text: The full agent transcript or output text.
-        plan_status: The agent's reported plan_status string.
-
-    Returns:
-        An anomaly dict (severity: info) when the check triggers, None otherwise.
-    """
-    if plan_status.upper() != "AWAITING_APPROVAL":
-        return None
-
-    if _NONCE_PATTERN.search(transcript_text):
-        return None
-
-    return {
-        "type": "awaiting_approval_missing_nonce",
-        "severity": "info",
-        "detail": (
-            "Agent returned AWAITING_APPROVAL without a hook nonce. "
-            "This is normal for plan-first workflows; it becomes a concern "
-            "only if the agent never proceeds to execution."
-        ),
-    }
-
 
 # ============================================================================
 # Approval request validation
 # ============================================================================
 
-_APPROVAL_STATUSES = {"REVIEW", "AWAITING_APPROVAL"}
+_APPROVAL_STATUSES = {"REVIEW"}
 
 _APPROVAL_REQUIRED_FIELDS = [
     "operation", "exact_content", "scope", "risk_level", "rollback", "verification",
@@ -624,7 +588,7 @@ def validate_approval_request(
     contract: dict,
     plan_status: str,
 ) -> Optional[Dict[str, Any]]:
-    """Validate the approval_request block when plan_status is REVIEW or AWAITING_APPROVAL.
+    """Validate the approval_request block when plan_status is REVIEW.
 
     Advisory only -- returns an anomaly dict if validation fails, None if OK
     or if the check does not apply.
@@ -659,14 +623,7 @@ def validate_approval_request(
     risk = str(approval_req.get("risk_level", "")).upper()
     invalid_risk = risk and risk not in _VALID_RISK_LEVELS
 
-    # For AWAITING_APPROVAL, also check nonce
     nonce_issue = None
-    if plan_status.upper() == "AWAITING_APPROVAL":
-        nonce_val = str(approval_req.get("nonce", ""))
-        if not nonce_val:
-            nonce_issue = "nonce field missing"
-        elif not _NONCE_HEX_RE.match(nonce_val):
-            nonce_issue = f"nonce format invalid: {nonce_val}"
 
     issues: List[str] = []
     if missing_fields:

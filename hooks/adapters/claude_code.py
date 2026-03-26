@@ -414,21 +414,11 @@ class ClaudeCodeAdapter(HookAdapter):
         context injection, approval handling, and response formatting.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
-        from modules.security.approval_constants import (
-            NONCE_APPROVAL_PATTERN,
-        )
-        from modules.security.approval_messages import (
-            build_activation_failed_message,
-            build_deprecated_approval_message,
-            build_invalid_nonce_message,
-        )
         from modules.security.approval_grants import (
-            activate_pending_approval,
             cleanup_expired_grants,
         )
         from modules.tools.bash_validator import BashValidator
         from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
-        from modules.security.prompt_validator import classify_resume_prompt
         hook_data = event.payload
         tool_name = hook_data.get("tool_name") or ""
         tool_input = hook_data.get("tool_input", {})
@@ -467,7 +457,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 return HookResponse(output="Error: Invalid parameters", exit_code=2)
 
             if tool_name.lower() == "bash":
-                return self._adapt_bash(tool_name, tool_input)
+                return self._adapt_bash(tool_name, tool_input, hook_data=hook_data)
             elif tool_name.lower() in ("task", "agent"):
                 hooks_dir = Path(__file__).parent.parent
                 project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
@@ -488,8 +478,20 @@ class ClaudeCodeAdapter(HookAdapter):
                 exit_code=2,
             )
 
-    def _adapt_bash(self, tool_name: str, parameters: dict) -> HookResponse:
-        """Handle Bash tool validation within the adapter."""
+    def _adapt_bash(
+        self,
+        tool_name: str,
+        parameters: dict,
+        hook_data: dict | None = None,
+    ) -> HookResponse:
+        """Handle Bash tool validation within the adapter.
+
+        Args:
+            tool_name: The tool name ("Bash").
+            parameters: The tool_input dict (contains "command").
+            hook_data: Full hook event payload -- used to detect subagent
+                context via the ``agent_id`` field.
+        """
         from modules.core.state import create_pre_hook_state, save_hook_state
         from modules.tools.bash_validator import BashValidator
 
@@ -497,8 +499,15 @@ class ClaudeCodeAdapter(HookAdapter):
         if not command:
             return HookResponse(output="Error: Bash tool requires a command", exit_code=2)
 
+        # Detect subagent context: if agent_id is present in the hook event,
+        # the command is running inside a subagent (not the orchestrator).
+        is_subagent = bool(hook_data and hook_data.get("agent_id"))
+        session_id = (hook_data or {}).get("session_id", "")
+
         validator = BashValidator()
-        result = validator.validate(command)
+        result = validator.validate(
+            command, is_subagent=is_subagent, session_id=session_id,
+        )
 
         if not result.allowed:
             from modules.core.plugin_mode import is_ops_mode
@@ -654,8 +663,9 @@ class ClaudeCodeAdapter(HookAdapter):
     ) -> HookResponse:
         """Handle SendMessage tool validation for agent resumption.
 
-        Validates agent ID format and message content, then runs nonce
-        approval checks. Does NOT inject project context (it's a resume).
+        Validates agent ID format and message content. Does NOT inject
+        project context (it's a resume). Nonce relay is no longer processed
+        here -- approval grants are activated by the UserPromptSubmit hook.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
 
@@ -689,73 +699,18 @@ class ClaudeCodeAdapter(HookAdapter):
 
         logger.info("SENDMESSAGE: Resuming agent %s", agent_id)
 
-        approval_error, has_approval = self._adapt_resume_approval(agent_id, message)
-        if approval_error:
-            return HookResponse(output=approval_error, exit_code=2)
-
         state = create_pre_hook_state(
             tool_name=tool_name,
             command=f"SendMessage:{agent_id}",
             tier="T0",
             allowed=True,
             is_t3=False,
-            has_approval=has_approval,
+            has_approval=False,
         )
         save_hook_state(state)
 
         logger.info("ALLOWED SendMessage: agent %s - message length: %d", agent_id, len(message))
         return HookResponse(output={}, exit_code=0)
-
-    def _adapt_resume_approval(
-        self, resume_id: str, prompt: str,
-    ) -> tuple[str | None, bool]:
-        """Process nonce approval indicators for Task resume."""
-        from modules.security.approval_constants import NONCE_APPROVAL_PATTERN
-        from modules.security.approval_messages import (
-            build_activation_failed_message,
-            build_deprecated_approval_message,
-            build_invalid_nonce_message,
-        )
-        from modules.security.approval_grants import activate_pending_approval
-        from modules.security.prompt_validator import classify_resume_prompt
-
-        classification = classify_resume_prompt(prompt)
-
-        if classification == "nonce":
-            nonce = NONCE_APPROVAL_PATTERN.search(prompt).group(1)
-            activation = activate_pending_approval(nonce)
-            status_text = getattr(activation.status, "value", str(activation.status))
-            if activation.success:
-                grant_path = activation.grant_path
-                grant_name = grant_path.name if grant_path else "<unknown>"
-                logger.info(
-                    "Nonce approval activated for resume %s: nonce=%s, file=%s",
-                    resume_id, nonce, grant_name,
-                )
-                return None, True
-
-            logger.warning(
-                "Denied resume %s: nonce approval activation failed for nonce=%s "
-                "(status=%s, reason=%s)",
-                resume_id, nonce, status_text, activation.reason,
-            )
-            return build_activation_failed_message(nonce, status_text, activation.reason), False
-
-        if classification == "malformed_nonce":
-            logger.warning(
-                "Denied resume %s: malformed nonce approval token in prompt='%s'",
-                resume_id, prompt[:120],
-            )
-            return build_invalid_nonce_message(), False
-
-        if classification == "deprecated":
-            logger.warning(
-                "Denied resume %s: deprecated legacy approval phrase detected",
-                resume_id,
-            )
-            return build_deprecated_approval_message(), False
-
-        return None, False
 
     @staticmethod
     def _format_blocked_message(result) -> str:
@@ -865,7 +820,6 @@ class ClaudeCodeAdapter(HookAdapter):
             requires_consolidation_report,
             validate as validate_contract,
             validate_approval_request,
-            validate_awaiting_approval_has_nonce,
             validate_verbatim_outputs_consistency,
         )
         from modules.agents.response_contract import (
@@ -1098,19 +1052,11 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
 
             # ----------------------------------------------------------
-            # False pending-approval detection
-            # Advisory only -- adds to anomalies but never blocks.
+            # Extract plan_status for downstream checks
             # ----------------------------------------------------------
             _plan_status = ""
             if parsed_contract and isinstance(parsed_contract.get("agent_status"), dict):
                 _plan_status = str(parsed_contract["agent_status"].get("plan_status", ""))
-            false_pa_check = validate_awaiting_approval_has_nonce(agent_output, _plan_status)
-            if false_pa_check:
-                anomalies.append(false_pa_check)
-                logger.info(
-                    "AWAITING_APPROVAL without nonce for %s: %s",
-                    agent_type, false_pa_check.get("detail", ""),
-                )
 
             # ----------------------------------------------------------
             # Approval request validation

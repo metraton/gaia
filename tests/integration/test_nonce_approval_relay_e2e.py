@@ -56,30 +56,33 @@ def _permission_reason(result: dict) -> str:
 
 
 class TestNonceApprovalRelayE2E:
-    """T3 commands now use 'ask' for native dialog approval.
+    """T3 approval cycle tests using the new flow.
 
-    The bash_validator returns permissionDecision='ask' for mutative commands,
-    which triggers Claude Code's native permission dialog. The nonce relay
-    flow is no longer the primary approval path.
+    The bash_validator now returns 'ask' for orchestrator T3 commands and
+    'deny' for subagent T3 commands. The nonce relay via SendMessage was
+    removed -- grants are activated by the UserPromptSubmit hook.
+
+    These tests exercise the direct grant management APIs to verify the
+    full deny -> activate -> retry cycle.
     """
 
-    def test_same_command_can_retry_after_nonce_resume(self, isolated_nonce_env):
-        """T3 command returns 'ask'; manual nonce flow still works for grants."""
+    def test_same_command_can_retry_after_grant_activation(self, isolated_nonce_env):
+        """T3 command gets 'ask' from orchestrator; grant flow works after direct activation."""
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
         core_state = isolated_nonce_env["core_state"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
         command = 'git commit -m "feat(auth): add relay coverage"'
 
-        # T3 command returns "ask" (not "deny")
+        # T3 command returns "ask" (orchestrator context, no agent_id)
         block = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
         assert isinstance(block, dict)
         assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        # No pending approval is created by the hook (nonce flow removed from validator)
+        # No pending approval is created by the hook in orchestrator mode
         assert approval_grants.get_latest_pending_approval() is None
 
-        # Manually create a pending approval to test the grant matching flow
+        # Manually create a pending approval and activate it (simulates subagent flow)
         nonce = approval_grants.generate_nonce()
         approval_grants.write_pending_approval(
             nonce=nonce,
@@ -87,19 +90,9 @@ class TestNonceApprovalRelayE2E:
             danger_verb="commit",
             danger_category="MUTATIVE",
         )
-
-        # Activate the pending approval
-        resume = pre_tool_use.pre_tool_use_hook(
-            "SendMessage",
-            {"to": "a12345", "message": f"APPROVE:{nonce}\n\nRetry the approved commit."},
-        )
-        assert resume is None
+        activation = approval_grants.activate_pending_approval(nonce)
+        assert activation.success, f"Activation should succeed: {activation.reason}"
         assert approval_grants.get_latest_pending_approval() is None
-
-        resume_state = core_state.get_hook_state()
-        assert resume_state is not None
-        assert resume_state.command == "SendMessage:a12345"
-        assert resume_state.metadata["has_approval"] is True
 
         # First retry returns "ask" (double-barrier: native dialog confirmation)
         ask_result = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
@@ -131,7 +124,7 @@ class TestNonceApprovalRelayE2E:
         assert isinstance(block, dict)
         assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        # Manually create and activate a grant for commit
+        # Create and activate a grant for commit directly
         nonce = approval_grants.generate_nonce()
         approval_grants.write_pending_approval(
             nonce=nonce,
@@ -139,11 +132,8 @@ class TestNonceApprovalRelayE2E:
             danger_verb="commit",
             danger_category="MUTATIVE",
         )
-        resume = pre_tool_use.pre_tool_use_hook(
-            "SendMessage",
-            {"to": "a12345", "message": f"APPROVE:{nonce}"},
-        )
-        assert resume is None
+        activation = approval_grants.activate_pending_approval(nonce)
+        assert activation.success
 
         # Different command should still be blocked with "ask"
         push_block = pre_tool_use.pre_tool_use_hook("Bash", {"command": push_cmd})
@@ -162,7 +152,7 @@ class TestNonceApprovalRelayE2E:
         assert isinstance(block, dict)
         assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        # Manually create and activate a grant for the T3 component
+        # Create and activate a grant for the T3 component directly
         nonce = approval_grants.generate_nonce()
         approval_grants.write_pending_approval(
             nonce=nonce,
@@ -170,11 +160,8 @@ class TestNonceApprovalRelayE2E:
             danger_verb="apply",
             danger_category="MUTATIVE",
         )
-        resume = pre_tool_use.pre_tool_use_hook(
-            "SendMessage",
-            {"to": "a12345", "message": f"APPROVE:{nonce}\n\nRetry the exact compound command."},
-        )
-        assert resume is None
+        activation = approval_grants.activate_pending_approval(nonce)
+        assert activation.success
 
         # First retry returns "ask" (double-barrier: native dialog confirmation)
         ask_result = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})

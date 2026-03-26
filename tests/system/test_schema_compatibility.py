@@ -90,10 +90,10 @@ class TestSchemaCompatibility:
         if agent_protocol_path.exists():
             combined += "\n" + agent_protocol_path.read_text()
 
+        # The skill documents the 5 active statuses.
         required_statuses = [
             "IN_PROGRESS",
             "REVIEW",
-            "AWAITING_APPROVAL",
             "COMPLETE",
             "BLOCKED",
             "NEEDS_INPUT",

@@ -141,33 +141,43 @@ class TestPreToolUseSafe:
 
 
 class TestPreToolUseMutative:
-    """Mutative (T3) commands should exit 0 with permissionDecision: ask.
+    """Mutative (T3) commands from subagents should exit 0 with permissionDecision: deny.
 
-    The hook uses Claude Code's native 'ask' dialog for T3 commands so the
-    user sees the confirmation prompt.  This replaced the older nonce-deny
-    flow.  Permanently blocked commands (rm -rf, etc.) still get 'deny'.
+    The e2e test harness injects agent_id into every payload, making the hook
+    treat the command as a subagent invocation. Subagents get 'deny' with an
+    approval_id so the orchestrator can present the approval to the user.
+    Permanently blocked commands (rm -rf, etc.) still get exit 2.
     """
 
     HOOK = "pre_tool_use.py"
 
-    def test_git_commit_ask(self):
-        """git commit is mutative, should trigger native ask dialog."""
+    def test_git_commit_deny_subagent(self):
+        """git commit from subagent is mutative, should get deny with approval_id."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_MUTATIVE)
-        assert code == 0, f"Expected exit 0 (ask), got {code}. stderr: {stderr}"
-        assert response is not None, "Expected JSON response for mutative ask"
+        assert code == 0, f"Expected exit 0 (deny), got {code}. stderr: {stderr}"
+        assert response is not None, "Expected JSON response for mutative deny"
         hook_output = response.get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "ask", (
-            f"Expected ask, got: {hook_output.get('permissionDecision')}"
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}"
+        )
+        # Subagent deny should include approval_id
+        reason = hook_output.get("permissionDecisionReason", "")
+        assert "approval_id:" in reason, (
+            f"Expected approval_id in deny reason, got: {reason}"
         )
 
-    def test_kubectl_apply_ask(self):
-        """kubectl apply is mutative, should trigger native ask dialog."""
+    def test_kubectl_apply_deny_subagent(self):
+        """kubectl apply from subagent is mutative, should get deny with approval_id."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_MUTATIVE_KUBECTL_APPLY)
-        assert code == 0, f"Expected exit 0 (ask), got {code}. stderr: {stderr}"
-        assert response is not None, "Expected JSON response for mutative ask"
+        assert code == 0, f"Expected exit 0 (deny), got {code}. stderr: {stderr}"
+        assert response is not None, "Expected JSON response for mutative deny"
         hook_output = response.get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "ask", (
-            f"Expected ask, got: {hook_output.get('permissionDecision')}"
+        assert hook_output.get("permissionDecision") == "deny", (
+            f"Expected deny, got: {hook_output.get('permissionDecision')}"
+        )
+        reason = hook_output.get("permissionDecisionReason", "")
+        assert "approval_id:" in reason, (
+            f"Expected approval_id in deny reason, got: {reason}"
         )
 
 

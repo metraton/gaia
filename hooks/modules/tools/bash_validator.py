@@ -200,12 +200,19 @@ class BashValidator:
             return False
         return True
 
-    def validate(self, command: str) -> BashValidationResult:
+    def validate(
+        self,
+        command: str,
+        is_subagent: bool = False,
+        session_id: str = "",
+    ) -> BashValidationResult:
         """
         Validate a Bash command.
 
         Args:
             command: Command string to validate
+            is_subagent: True when running in subagent context
+            session_id: Session ID for approval scoping
 
         Returns:
             BashValidationResult with validation details
@@ -294,11 +301,17 @@ class BashValidator:
 
         # Dispatch to single or compound validation using already-parsed components
         if not has_operators:
-            result = self._validate_single_command(command)
+            result = self._validate_single_command(
+                command, is_subagent=is_subagent, session_id=session_id,
+            )
         elif parsed_components is not None and len(parsed_components) > 1:
-            result = self._validate_compound_command(parsed_components)
+            result = self._validate_compound_command(
+                parsed_components, is_subagent=is_subagent, session_id=session_id,
+            )
         else:
-            result = self._validate_single_command(command)
+            result = self._validate_single_command(
+                command, is_subagent=is_subagent, session_id=session_id,
+            )
 
         # Attach cleaned command for hook to emit via updatedInput.
         # Set regardless of result.allowed so the ask path can include it too.
@@ -318,7 +331,12 @@ class BashValidator:
 
         return result
 
-    def _validate_single_command(self, command: str) -> BashValidationResult:
+    def _validate_single_command(
+        self,
+        command: str,
+        is_subagent: bool = False,
+        session_id: str = "",
+    ) -> BashValidationResult:
         """Validate a single command (no operators).
 
         Simplified pipeline:
@@ -326,6 +344,12 @@ class BashValidator:
         1. Mutative verb detection -> block with nonce or allow with grant
         2. GitOps policy validation (for kubectl/helm/flux)
         3. Everything else -> SAFE by elimination
+
+        Args:
+            command: The command to validate.
+            is_subagent: True when running in subagent context (generates
+                approval_id + deny). False for orchestrator (returns ask).
+            session_id: Session ID for pending approval scoping.
 
         Note: is_blocked_command() is NOT called here because validate()
         already checks the full command AND each compound component against
@@ -382,23 +406,63 @@ class BashValidator:
                     reason=f"Command allowed via approval grant (tier T3)",
                 )
             else:
-                # No active grant — route through native 'ask' dialog.
-                # The user sees the native permission prompt and approves
-                # directly.  No nonce is generated because pre_tool_use
-                # converts all T3 responses to 'ask' anyway.
-                reason = (
-                    f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
-                    f"Command: {command}\n"
-                    f"Verb: '{result.verb}' ({result.category})\n"
-                    f"Reason: {result.reason}"
-                )
-                hook_ask = build_hook_permission_response("ask", reason)
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=f"Dangerous {result.category.lower()} command: {result.reason}",
-                    block_response=hook_ask,
-                )
+                if is_subagent:
+                    # Subagent context: generate approval_id, write pending
+                    # approval, and DENY. The UserPromptSubmit hook will
+                    # activate the grant when the user confirms.
+                    approval_id = generate_nonce()
+                    pending_path = write_pending_approval(
+                        nonce=approval_id,
+                        command=command,
+                        danger_verb=result.verb,
+                        danger_category=result.category,
+                        session_id=session_id or None,
+                    )
+                    if pending_path is None:
+                        # Persistence failure — fall back to ask
+                        logger.warning(
+                            "Failed to persist pending approval for subagent; "
+                            "falling back to ask: %s",
+                            command[:80],
+                        )
+                        reason = build_pending_approval_unavailable_message()
+                        hook_ask = build_hook_permission_response("ask", reason)
+                        return BashValidationResult(
+                            allowed=False,
+                            tier=SecurityTier.T3_BLOCKED,
+                            reason="Pending approval persistence failed",
+                            block_response=hook_ask,
+                        )
+                    reason = (
+                        f"[T3_BLOCKED] {result.category} operation requires user approval.\n"
+                        f"Command: {command}\n"
+                        f"Verb: '{result.verb}' ({result.category})\n"
+                        f"approval_id: {approval_id}"
+                    )
+                    hook_deny = build_hook_permission_response("deny", reason)
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason=f"T3 {result.category.lower()} command: {result.reason}",
+                        block_response=hook_deny,
+                    )
+                else:
+                    # Orchestrator context: route through native 'ask' dialog.
+                    # The user sees the native permission prompt and approves
+                    # directly. No approval_id is generated.
+                    reason = (
+                        f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
+                        f"Command: {command}\n"
+                        f"Verb: '{result.verb}' ({result.category})\n"
+                        f"Reason: {result.reason}"
+                    )
+                    hook_ask = build_hook_permission_response("ask", reason)
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason=f"Dangerous {result.category.lower()} command: {result.reason}",
+                        block_response=hook_ask,
+                    )
 
         # Check GitOps policy for kubectl/helm/flux commands
         if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
@@ -418,13 +482,20 @@ class BashValidator:
             reason="Safe by elimination (not blocked, not mutative)",
         )
 
-    def _validate_compound_command(self, components: List[str]) -> BashValidationResult:
+    def _validate_compound_command(
+        self,
+        components: List[str],
+        is_subagent: bool = False,
+        session_id: str = "",
+    ) -> BashValidationResult:
         """Validate a compound command (multiple components)."""
         logger.info(f"Compound command detected with {len(components)} components")
 
         component_results: List[BashValidationResult] = []
         for i, component in enumerate(components, 1):
-            result = self._validate_single_command(component)
+            result = self._validate_single_command(
+                component, is_subagent=is_subagent, session_id=session_id,
+            )
 
             if not result.allowed:
                 return BashValidationResult(
@@ -584,15 +655,21 @@ class BashValidator:
 
         return None
 
-def validate_bash_command(command: str) -> BashValidationResult:
+def validate_bash_command(
+    command: str,
+    is_subagent: bool = False,
+    session_id: str = "",
+) -> BashValidationResult:
     """
     Validate a Bash command (convenience function).
 
     Args:
         command: Command to validate
+        is_subagent: True when running in subagent context
+        session_id: Session ID for approval scoping
 
     Returns:
         BashValidationResult
     """
     validator = BashValidator()
-    return validator.validate(command)
+    return validator.validate(command, is_subagent=is_subagent, session_id=session_id)
