@@ -46,7 +46,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist/
+          git add -f dist/
           if git diff --cached --quiet; then
             echo "No changes in dist/ — skipping commit"
           else
