@@ -67,7 +67,7 @@ class TestNonceApprovalRelayE2E:
     """
 
     def test_same_command_can_retry_after_grant_activation(self, isolated_nonce_env):
-        """T3 command gets 'ask' from orchestrator; grant flow works after direct activation."""
+        """T3 command gets 'ask' from orchestrator; grant passthrough works after activation."""
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
         core_state = isolated_nonce_env["core_state"]
         approval_grants = isolated_nonce_env["approval_grants"]
@@ -94,16 +94,7 @@ class TestNonceApprovalRelayE2E:
         assert activation.success, f"Activation should succeed: {activation.reason}"
         assert approval_grants.get_latest_pending_approval() is None
 
-        # First retry returns "ask" (double-barrier: native dialog confirmation)
-        ask_result = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
-        assert isinstance(ask_result, dict)
-        assert ask_result["hookSpecificOutput"]["permissionDecision"] == "ask"
-        assert "Confirm execution" in ask_result["hookSpecificOutput"]["permissionDecisionReason"]
-
-        # Simulate post_tool_use confirming the grant
-        approval_grants.confirm_grant(command)
-
-        # After grant is confirmed, subsequent retries are auto-allowed
+        # After grant activation, retry is auto-allowed (passthrough)
         retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
         assert retry is None
 
@@ -141,7 +132,7 @@ class TestNonceApprovalRelayE2E:
         assert push_block["hookSpecificOutput"]["permissionDecision"] == "ask"
 
     def test_compound_command_reuses_component_nonce_on_retry(self, isolated_nonce_env):
-        """Compound with T3 component returns 'ask'; grant flow works after activation."""
+        """Compound with T3 component returns 'ask'; grant passthrough works after activation."""
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
@@ -163,14 +154,6 @@ class TestNonceApprovalRelayE2E:
         activation = approval_grants.activate_pending_approval(nonce)
         assert activation.success
 
-        # First retry returns "ask" (double-barrier: native dialog confirmation)
-        ask_result = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
-        assert isinstance(ask_result, dict)
-        assert ask_result["hookSpecificOutput"]["permissionDecision"] == "ask"
-
-        # Simulate post_tool_use confirming the grant
-        approval_grants.confirm_grant("terraform apply")
-
-        # After grant is confirmed, subsequent retries are auto-allowed
+        # After grant activation, retry is auto-allowed (passthrough)
         retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
         assert retry is None

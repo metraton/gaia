@@ -45,7 +45,7 @@ def _build_posttool_stdin(
         "session_id": session_id,
         "tool_name": tool_name,
         "tool_input": tool_input,
-        "tool_result": tool_result,
+        "tool_response": tool_result,
     })
 
 
@@ -202,15 +202,15 @@ class TestToolResultFields:
         assert tool_result.output == ""
         assert tool_result.exit_code == 0
 
-    def test_missing_tool_result_defaults(self):
-        """Missing tool_result fields default gracefully."""
+    def test_missing_tool_response_defaults(self):
+        """Missing tool_response fields default gracefully."""
         adapter = ClaudeCodeAdapter()
         stdin_json = json.dumps({
             "hook_event_name": "PostToolUse",
             "session_id": "test-defaults",
             "tool_name": "Bash",
             "tool_input": {"command": "echo hello"},
-            "tool_result": {},
+            "tool_response": {},
         })
 
         event = adapter.parse_event(stdin_json)

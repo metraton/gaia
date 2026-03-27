@@ -1171,3 +1171,115 @@ class TestScenario9ContextInjection:
             f"Meta-agent should NOT receive context injection. "
             f"Got additionalContext: {additional_context[:200] if additional_context else 'None'}"
         )
+
+
+# ============================================================================
+# Scenario 10: rm concatenation patterns -- all blocked as T3
+# ============================================================================
+
+
+def _assert_t3_denied(result: Dict[str, Any], command: str) -> None:
+    """Assert that a command was denied as T3 in subagent context.
+
+    In subagent context, mutative commands exit 0 with a JSON deny response
+    containing an approval_id. Commands blocked by blocked_commands exit 2.
+    Either outcome is acceptable for T3 enforcement.
+    """
+    if result["exit_code"] == 2:
+        # Permanently blocked by blocked_commands (e.g. rm -rf /)
+        combined = result["stdout_raw"].lower() + result["stderr"].lower()
+        assert "blocked" in combined, (
+            f"Exit 2 but no 'blocked' in output for '{command}'. "
+            f"stdout: {result['stdout_raw']}, stderr: {result['stderr']}"
+        )
+        return
+
+    # Mutative verb deny path: exit 0 with deny JSON
+    assert result["exit_code"] == 0, (
+        f"Expected exit 0 (deny) or 2 (blocked) for '{command}', "
+        f"got {result['exit_code']}. stderr: {result['stderr']}"
+    )
+    assert result["stdout_json"] is not None, (
+        f"Expected JSON deny response for '{command}'. "
+        f"stdout: {result['stdout_raw']}"
+    )
+    hook_output = result["stdout_json"].get("hookSpecificOutput", {})
+    decision = hook_output.get("permissionDecision")
+    assert decision == "deny", (
+        f"Expected permissionDecision='deny' for '{command}', "
+        f"got '{decision}'. Full: {result['stdout_json']}"
+    )
+    reason = hook_output.get("permissionDecisionReason", "")
+    assert "approval_id:" in reason, (
+        f"Expected approval_id in deny reason for '{command}'. "
+        f"Got: {reason}"
+    )
+
+
+class TestScenario10RmConcatenation:
+    """Test that all rm concatenation patterns are blocked as T3."""
+
+    def test_simple_rm(self, simulator):
+        """rm -rf /tmp/test should be T3 denied."""
+        result = simulator.execute_bash("rm -rf /tmp/test")
+        _assert_t3_denied(result, "rm -rf /tmp/test")
+
+    def test_cd_and_rm(self, simulator):
+        """cd /tmp && rm -rf test should be T3 denied."""
+        result = simulator.execute_bash("cd /tmp && rm -rf test")
+        _assert_t3_denied(result, "cd /tmp && rm -rf test")
+
+    def test_chained_rm(self, simulator):
+        """rm -f file1 && rm -f file2 should be T3 denied."""
+        result = simulator.execute_bash("rm -f file1 && rm -f file2")
+        _assert_t3_denied(result, "rm -f file1 && rm -f file2")
+
+    def test_chained_rm_rf(self, simulator):
+        """rm -rf dir1 && rm -rf dir2 should be T3 denied."""
+        result = simulator.execute_bash("rm -rf dir1 && rm -rf dir2")
+        _assert_t3_denied(result, "rm -rf dir1 && rm -rf dir2")
+
+    def test_cd_and_rm_multiple_targets(self, simulator):
+        """cd /tmp && rm -rf a b c should be T3 denied."""
+        result = simulator.execute_bash("cd /tmp && rm -rf a b c")
+        _assert_t3_denied(result, "cd /tmp && rm -rf a b c")
+
+    def test_semicolon_rm(self, simulator):
+        """cd /tmp; rm -rf test should be T3 denied."""
+        result = simulator.execute_bash("cd /tmp; rm -rf test")
+        _assert_t3_denied(result, "cd /tmp; rm -rf test")
+
+    def test_pipe_xargs_rm(self, simulator):
+        """find . | xargs rm -rf should be T3 denied."""
+        result = simulator.execute_bash("find . | xargs rm -rf")
+        _assert_t3_denied(result, "find . | xargs rm -rf")
+
+    def test_subshell_rm(self, simulator):
+        """(rm -rf /tmp/test) should be T3 denied."""
+        result = simulator.execute_bash("(rm -rf /tmp/test)")
+        _assert_t3_denied(result, "(rm -rf /tmp/test)")
+
+    def test_python_os_remove(self, simulator):
+        """python3 -c "import os; os.remove('file')" should be T3 denied."""
+        result = simulator.execute_bash('python3 -c "import os; os.remove(\'file\')"')
+        _assert_t3_denied(result, "python3 -c os.remove")
+
+    def test_python_shutil_rmtree(self, simulator):
+        """python3 -c "import shutil; shutil.rmtree('dir')" should be T3 denied."""
+        result = simulator.execute_bash('python3 -c "import shutil; shutil.rmtree(\'dir\')"')
+        _assert_t3_denied(result, "python3 -c shutil.rmtree")
+
+    def test_triple_chain(self, simulator):
+        """echo start && rm -rf test && echo done should be T3 denied."""
+        result = simulator.execute_bash("echo start && rm -rf test && echo done")
+        _assert_t3_denied(result, "echo start && rm -rf test && echo done")
+
+    def test_rm_f_without_recursive(self, simulator):
+        """rm -f file.txt should be T3 denied."""
+        result = simulator.execute_bash("rm -f file.txt")
+        _assert_t3_denied(result, "rm -f file.txt")
+
+    def test_plain_rm(self, simulator):
+        """rm file.txt should be T3 denied."""
+        result = simulator.execute_bash("rm file.txt")
+        _assert_t3_denied(result, "rm file.txt")

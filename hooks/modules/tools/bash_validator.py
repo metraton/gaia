@@ -379,41 +379,31 @@ class BashValidator:
             # Check for an active approval grant before blocking.
             grant = check_approval_grant(command, session_id=session_id)
             if grant is not None:
-                if not grant.confirmed:
-                    # First execution after nonce activation: return "ask"
-                    # to trigger Claude Code's native permission dialog
-                    # (double-barrier security).
-                    #
-                    # DO NOT call confirm_grant() here. The native dialog
-                    # has not been answered yet. If the user declines, the
-                    # grant must stay unconfirmed. Confirmation happens on
-                    # the NEXT hook invocation: if we see the same command
-                    # with an unconfirmed grant again, the native dialog
-                    # must have succeeded (the command executed and the
-                    # agent is retrying or a new matching command arrived).
+                if grant.confirmed:
+                    # Already confirmed and consumed -- should not reach
+                    # here (single-use). But if it does, allow through.
                     logger.info(
-                        "T3 command requires native confirmation: %s (scope='%s')",
+                        "T3 command allowed via confirmed grant: %s (scope='%s')",
                         command[:80], grant.approved_scope,
                     )
-                    hook_ask = build_hook_permission_response(
-                        "ask",
-                        "T3 operation approved. Confirm execution.",
+                    return BashValidationResult(
+                        allowed=True,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason="Grant confirmed",
+                    )
+                else:
+                    # Grant exists, not yet confirmed -- GAIA approved,
+                    # let it through. PostToolUse will confirm and consume
+                    # the grant after successful execution.
+                    logger.info(
+                        "T3 command passthrough via active grant: %s (scope='%s')",
+                        command[:80], grant.approved_scope,
                     )
                     return BashValidationResult(
-                        allowed=False,
+                        allowed=True,
                         tier=SecurityTier.T3_BLOCKED,
-                        reason="T3 approved by user, confirming execution via native dialog",
-                        block_response=hook_ask,
+                        reason="Grant active, pending confirmation",
                     )
-                logger.info(
-                    "T3 command allowed via approval grant: %s (scope='%s')",
-                    command[:80], grant.approved_scope,
-                )
-                return BashValidationResult(
-                    allowed=True,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=f"Command allowed via approval grant (tier T3)",
-                )
             else:
                 if is_subagent:
                     # Subagent context: check for an existing pending

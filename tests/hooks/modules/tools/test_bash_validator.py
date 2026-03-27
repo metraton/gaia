@@ -257,11 +257,12 @@ class TestConvenienceFunction:
 
 
 class TestMutativeWithActiveGrant:
-    """Scenario #3: Mutative command WITH active grant -> allow (if confirmed).
+    """Scenario #3: Mutative command WITH active grant -> allow (passthrough).
 
-    When a valid, confirmed approval grant exists for a mutative command,
-    the validator should allow it through. An unconfirmed grant triggers
-    the native dialog ("ask") first.
+    When a valid approval grant exists for a mutative command, the validator
+    allows it through. Confirmed grants are already consumed (single-use).
+    Unconfirmed grants pass through immediately (GAIA approved); PostToolUse
+    confirms and consumes the grant after execution.
     """
 
     def test_mutative_command_allowed_with_confirmed_grant(self, validator, tmp_path, monkeypatch):
@@ -283,16 +284,16 @@ class TestMutativeWithActiveGrant:
         # Monkeypatch check_approval_grant to return our fake grant
         monkeypatch.setattr(
             "modules.tools.bash_validator.check_approval_grant",
-            lambda cmd: fake_grant,
+            lambda cmd, **kwargs: fake_grant,
         )
 
         result = validator.validate("terraform apply")
         assert result.allowed is True
         assert result.tier == SecurityTier.T3_BLOCKED  # tier stays T3 even when granted
-        assert "approval grant" in result.reason.lower()
+        assert "grant confirmed" in result.reason.lower()
 
-    def test_mutative_command_asks_with_unconfirmed_grant(self, validator, tmp_path, monkeypatch):
-        """A mutative command with an unconfirmed grant should return 'ask'."""
+    def test_mutative_command_passthrough_with_unconfirmed_grant(self, validator, tmp_path, monkeypatch):
+        """A mutative command with an unconfirmed grant should pass through (GAIA approved)."""
         import time
         from modules.security.approval_grants import ApprovalGrant
 
@@ -307,22 +308,16 @@ class TestMutativeWithActiveGrant:
             confirmed=False,
         )
 
-        # Monkeypatch check_approval_grant and confirm_grant
+        # Monkeypatch check_approval_grant
         monkeypatch.setattr(
             "modules.tools.bash_validator.check_approval_grant",
-            lambda cmd: fake_grant,
-        )
-        monkeypatch.setattr(
-            "modules.tools.bash_validator.confirm_grant",
-            lambda cmd: True,
+            lambda cmd, **kwargs: fake_grant,
         )
 
         result = validator.validate("terraform apply")
-        assert result.allowed is False
+        assert result.allowed is True
         assert result.tier == SecurityTier.T3_BLOCKED
-        assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
-        assert "Confirm execution" in result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "grant active" in result.reason.lower()
 
 
 class TestNonMutativeManagedCLI:

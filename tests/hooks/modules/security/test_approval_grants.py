@@ -571,14 +571,15 @@ class TestNonceEndToEnd:
     These tests exercise the approval_grants module directly.
     """
 
-    def test_full_flow_block_activate_ask_then_allow(self, clean_grants_dir):
-        """Manually write a pending approval, activate, and verify grant matching."""
+    def test_full_flow_block_activate_passthrough(self, clean_grants_dir):
+        """Manually write a pending approval, activate, and verify grant passthrough."""
         from modules.tools.bash_validator import BashValidator
 
         command = 'git commit -m "feat(auth): add login endpoint"'
+        session_id = "test-nonce-flow"
         validator = BashValidator()
 
-        # bash_validator returns "ask" for T3 commands (no nonce)
+        # bash_validator returns "ask" for T3 commands (no nonce, orchestrator context)
         result = validator.validate(command)
         assert result.allowed is False
         assert result.block_response is not None
@@ -591,27 +592,19 @@ class TestNonceEndToEnd:
             command=command,
             danger_verb="commit",
             danger_category="MUTATIVE",
+            session_id=session_id,
         )
         pending_file = clean_grants_dir / f"pending-{nonce}.json"
         assert pending_file.exists()
 
-        activation = activate_pending_approval(nonce)
+        activation = activate_pending_approval(nonce, session_id=session_id)
         assert activation.success is True
         assert not pending_file.exists()
 
-        # First retry after activation returns "ask" (double-barrier)
-        result2 = validator.validate(command)
-        assert result2.allowed is False
-        assert result2.block_response is not None
-        assert result2.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
-        assert "Confirm execution" in result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-
-        # Simulate post_tool_use confirming the grant
-        confirm_grant(command)
-
-        # After grant is confirmed, subsequent retries are auto-allowed
-        result3 = validator.validate(command)
-        assert result3.allowed is True
+        # After activation, grant passthrough: GAIA approved, no second dialog
+        result2 = validator.validate(command, session_id=session_id)
+        assert result2.allowed is True
+        assert "grant active" in result2.reason.lower()
 
     def test_blocked_t3_returns_ask_without_nonce(self, clean_grants_dir):
         """BashValidator returns 'ask' for T3 commands without creating pending approvals."""
@@ -633,15 +626,17 @@ class TestBashValidatorIntegration:
     def test_git_commit_allowed_with_matching_active_grant(self, clean_grants_dir):
         from modules.tools.bash_validator import BashValidator
 
-        _write_active_grant(clean_grants_dir, 'git commit -m "feat(auth): add login endpoint"')
-        result = BashValidator().validate('git commit -m "feat(auth): add login endpoint"')
+        session_id = "test-session-123"
+        _write_active_grant(clean_grants_dir, 'git commit -m "feat(auth): add login endpoint"', session_id=session_id)
+        result = BashValidator().validate('git commit -m "feat(auth): add login endpoint"', session_id=session_id)
         assert result.allowed is True
 
     def test_git_push_allowed_with_matching_active_grant(self, clean_grants_dir):
         from modules.tools.bash_validator import BashValidator
 
-        _write_active_grant(clean_grants_dir, "git push origin feature/branch")
-        result = BashValidator().validate("git push origin feature/branch")
+        session_id = "test-session-123"
+        _write_active_grant(clean_grants_dir, "git push origin feature/branch", session_id=session_id)
+        result = BashValidator().validate("git push origin feature/branch", session_id=session_id)
         assert result.allowed is True
 
     def test_nonce_grant_does_not_cross_cli_same_verb(self, clean_grants_dir):

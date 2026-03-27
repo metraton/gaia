@@ -55,7 +55,7 @@ from .approval_scopes import (
 logger = logging.getLogger(__name__)
 
 # Default grant TTL in minutes
-DEFAULT_GRANT_TTL_MINUTES = 30
+DEFAULT_GRANT_TTL_MINUTES = 5
 
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
 _last_cleanup_time: float = 0.0
@@ -540,7 +540,7 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
     global _last_check_found_expired
     _last_check_found_expired = False
 
-    if session_id is None:
+    if not session_id:
         session_id = _get_session_id()
 
     try:
@@ -588,6 +588,59 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
     return None
 
 
+def consume_grant(command: str, session_id: str = None) -> bool:
+    """Mark the first matching valid grant as used and persist to disk.
+
+    Called by bash_validator immediately after check_approval_grant() returns
+    a match, so that the grant can only be used once (single-use).
+
+    Args:
+        command: The shell command whose grant should be consumed.
+        session_id: Session ID for grant scoping (defaults to env var).
+
+    Returns:
+        True if a grant was found and consumed, False otherwise.
+    """
+    if not session_id:
+        session_id = _get_session_id()
+
+    try:
+        grants_dir = _get_grants_dir()
+        if not grants_dir.exists():
+            return False
+
+        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
+            try:
+                data = json.loads(grant_file.read_text())
+                grant = ApprovalGrant(**data)
+
+                if not grant.is_valid():
+                    if grant.is_expired():
+                        _cleanup_grant(grant_file)
+                    continue
+
+                signature = grant.get_signature()
+                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
+                    continue
+
+                if grant.matches_command(command):
+                    data["used"] = True
+                    grant_file.write_text(json.dumps(data, indent=2))
+                    logger.info(
+                        "Grant consumed (single-use): command='%s', grant=%s",
+                        command[:80], grant_file.name,
+                    )
+                    return True
+
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    except Exception as e:
+        logger.error("Error consuming grant: %s", e)
+
+    return False
+
+
 def confirm_grant(command: str, session_id: str = None) -> bool:
     """Mark the first unconfirmed grant matching command as confirmed.
 
@@ -602,7 +655,7 @@ def confirm_grant(command: str, session_id: str = None) -> bool:
     Returns:
         True if a grant was found and confirmed, False otherwise.
     """
-    if session_id is None:
+    if not session_id:
         session_id = _get_session_id()
 
     try:

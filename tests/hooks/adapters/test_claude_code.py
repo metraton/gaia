@@ -100,7 +100,7 @@ def post_tool_use_payload():
         "tool_input": {
             "command": "kubectl get pods -n default",
         },
-        "tool_result": {
+        "tool_response": {
             "output": "NAME           READY   STATUS    RESTARTS   AGE\nweb-abc-123    1/1     Running   0          2d",
             "exit_code": 0,
             "duration_ms": 450,
@@ -161,7 +161,7 @@ class TestParseEvent:
 
         assert event.event_type == HookEventType.POST_TOOL_USE
         assert event.session_id == "sess-abc123"
-        assert event.payload["tool_result"]["exit_code"] == 0
+        assert event.payload["tool_response"]["exit_code"] == 0
 
     def test_parse_subagent_stop(self, adapter, subagent_stop_payload):
         """Parse a SubagentStop event with transcript path."""
@@ -309,7 +309,7 @@ class TestParsePostToolUse:
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "kubectl get pods -n nonexistent"},
-            "tool_result": {
+            "tool_response": {
                 "output": "Error from server (NotFound): namespaces \"nonexistent\" not found",
                 "exit_code": 1,
                 "duration_ms": 200,
@@ -320,8 +320,8 @@ class TestParsePostToolUse:
         assert result.exit_code == 1
         assert "NotFound" in result.output
 
-    def test_missing_tool_result(self, adapter):
-        """Missing tool_result defaults gracefully."""
+    def test_missing_tool_response(self, adapter):
+        """Missing tool_response defaults gracefully."""
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "ls"},
@@ -631,7 +631,7 @@ class TestEdgeCases:
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "ls"},
-            "tool_result": {"output": "file.txt", "exit_code": "not_a_number"},
+            "tool_response": {"output": "file.txt", "exit_code": "not_a_number"},
             "session_id": "s1",
         }
         result = adapter.parse_post_tool_use(payload)

@@ -733,7 +733,7 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.audit.logger import log_execution
         from modules.audit.event_detector import detect_critical_event
         from modules.session.session_context_writer import SessionContextWriter
-        from modules.security.approval_grants import check_approval_grant, confirm_grant
+        from modules.security.approval_grants import check_approval_grant, confirm_grant, consume_grant
 
         hook_data = event.payload
         tool_result_data = self.parse_post_tool_use(hook_data)
@@ -779,8 +779,9 @@ class ClaudeCodeAdapter(HookAdapter):
                     grant = check_approval_grant(command, session_id=session_id)
                     if grant is not None and not grant.confirmed:
                         confirm_grant(command, session_id=session_id)
+                        consume_grant(command, session_id=session_id)  # Single-use: mark as consumed
                         logger.info(
-                            "T3 grant confirmed post-execution: %s", command[:80],
+                            "T3 grant confirmed and consumed post-execution: %s", command[:80],
                         )
 
             events = detect_critical_event(tool_name, parameters, output, success)
@@ -816,25 +817,54 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
-        """Activate pending grants unconditionally when AskUserQuestion completes.
+        """Conditionally activate pending grants based on user's answer.
 
-        PostToolUse only fires if the user responded to AskUserQuestion. If the
-        user rejected, the orchestrator won't resume the subagent, so any
-        activated grant expires unused. There is no need to extract or inspect
-        the user's answer -- the answer text is not reliably present in the
-        PostToolUse payload anyway.
+        Inspects the answers dict from tool_response (or tool_input as fallback)
+        to determine if the user approved. Only activates grants when at least
+        one answer value contains "approve" (case-insensitive).
 
         Never blocks (no exceptions raised to caller).
         """
+        import json as _json
         from modules.security.approval_grants import (
             activate_grants_for_session,
             get_pending_approvals_for_session,
         )
 
+        session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
+
+        # Debug logging
+        tool_response = hook_data.get("tool_response", {})
+        logger.info("AskUserQuestion PostToolUse keys: %s", list(hook_data.keys()))
+        logger.info("AskUserQuestion tool_response: %s", _json.dumps(tool_response, default=str)[:500])
+
+        # Extract answers from tool_response first, then tool_input as fallback
+        answers = {}
+        if isinstance(tool_response, dict):
+            answers = tool_response.get("answers", {})
+        if not answers and isinstance(hook_data.get("tool_input", {}), dict):
+            answers = hook_data.get("tool_input", {}).get("answers", {})
+
+        if not answers:
+            logger.info("AskUserQuestion: no answers found in payload, skipping grant activation")
+            return
+
+        # Check if any answer contains "approve"
+        user_approved = any("approve" in str(v).lower() for v in answers.values())
+
+        if not user_approved:
+            logger.info(
+                "AskUserQuestion: user did not approve (answers: %s), skipping grant activation",
+                {k: v for k, v in answers.items()},
+            )
+            return
+
+        # User approved -- activate grants
+        logger.info("AskUserQuestion: user approved, activating grants for session %s", session_id[:12])
+
         try:
-            session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
             if not session_id:
-                logger.info("AskUserQuestion: no session_id available, skipping grant check")
+                logger.info("AskUserQuestion: no session_id available, skipping grant activation")
                 return
 
             # Check for pending approvals before activating
@@ -843,10 +873,6 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.info("AskUserQuestion: no pending grants for session %s", session_id)
                 return
 
-            logger.info(
-                "AskUserQuestion completed (PostToolUse fired), activating %d pending grant(s) for session %s",
-                len(pending), session_id,
-            )
             results = activate_grants_for_session(session_id)
             activated = sum(1 for r in results if r.success)
             logger.info(

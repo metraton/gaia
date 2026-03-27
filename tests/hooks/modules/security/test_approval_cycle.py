@@ -28,11 +28,13 @@ from modules.security.approval_grants import (
     ACTIVATION_ACTIVATED,
     ACTIVATION_EXPIRED,
     ACTIVATION_NOT_FOUND,
+    DEFAULT_GRANT_TTL_MINUTES,
     ApprovalGrant,
     activate_grants_for_session,
     activate_pending_approval,
     check_approval_grant,
     confirm_grant,
+    consume_grant,
     generate_nonce,
     get_pending_approvals_for_session,
     write_pending_approval,
@@ -154,10 +156,15 @@ class TestElicitationResultActivatesGrant:
 
 
 class TestFullApprovalCycle:
-    """Test 4: Full cycle -- deny, approve, retry succeeds."""
+    """Test 4: Full cycle -- deny, approve, retry succeeds (passthrough)."""
 
     def test_deny_activate_retry_succeeds(self):
-        """Complete cycle: subagent denied, approval activated, retry allowed."""
+        """Complete cycle: subagent denied, approval activated, retry passthrough.
+
+        With grant passthrough, once a grant is activated (even unconfirmed),
+        the validator returns allowed=True immediately. PostToolUse will
+        confirm and consume the grant after execution.
+        """
         command = "terraform apply"
         session_id = "test-cycle-session"
 
@@ -181,26 +188,12 @@ class TestFullApprovalCycle:
         assert len(results) >= 1
         assert results[0].success, f"Activation failed: {results[0].reason}"
 
-        # Step 3: Retry the same command -- should get "ask" (unconfirmed grant)
+        # Step 3: Retry the same command -- passthrough (grant exists)
         result2 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
-        assert not result2.allowed, "Unconfirmed grant should return ask"
-        hook_output2 = result2.block_response["hookSpecificOutput"]
-        assert hook_output2["permissionDecision"] == "ask", (
-            f"Expected ask for unconfirmed grant, got: {hook_output2['permissionDecision']}"
-        )
-        assert "Confirm execution" in hook_output2["permissionDecisionReason"]
-
-        # Step 4: Confirm the grant (simulates post_tool_use after native dialog)
-        confirmed = confirm_grant(command)
-        assert confirmed, "Grant confirmation should succeed"
-
-        # Step 5: Retry again -- should be fully allowed
-        result3 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
-        )
-        assert result3.allowed, "Confirmed grant should allow the command"
+        assert result2.allowed, "Active grant should passthrough (allowed=True)"
+        assert "Grant active" in result2.reason or "Grant confirmed" in result2.reason
 
 
 class TestNegativeResponseDoesNotActivate:
@@ -414,3 +407,273 @@ class TestSubagentRetryReusesPendingNonce:
         assert "REVIEW" in reason, (
             f"T3_BLOCKED message should mention REVIEW status, got: {reason}"
         )
+
+
+class TestConsumeGrant:
+    """Test 9: consume_grant() marks grant as used (single-use)."""
+
+    def test_consume_grant_marks_used(self):
+        """consume_grant() sets used=True and persists to disk."""
+        nonce = generate_nonce()
+        command = "terraform apply"
+        session_id = "test-cycle-session"
+
+        # Create a pending approval and activate it
+        write_pending_approval(
+            nonce=nonce,
+            command=command,
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+        result = activate_pending_approval(nonce=nonce, session_id=session_id)
+        assert result.success, f"Activation should succeed: {result.reason}"
+
+        # Verify grant exists before consume
+        grant = check_approval_grant(command, session_id=session_id)
+        assert grant is not None, "Grant should exist before consume"
+
+        # Consume the grant
+        consumed = consume_grant(command, session_id=session_id)
+        assert consumed, "consume_grant() should return True"
+
+        # After consume, check_approval_grant should return None (used=True)
+        grant_after = check_approval_grant(command, session_id=session_id)
+        assert grant_after is None, (
+            "check_approval_grant() should return None after grant is consumed"
+        )
+
+    def test_consume_grant_second_call_returns_false(self):
+        """Second call to consume_grant() returns False (already consumed)."""
+        nonce = generate_nonce()
+        command = "git push origin main"
+        session_id = "test-cycle-session"
+
+        write_pending_approval(
+            nonce=nonce,
+            command=command,
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+        activate_pending_approval(nonce=nonce, session_id=session_id)
+
+        # First consume succeeds
+        assert consume_grant(command, session_id=session_id) is True
+
+        # Second consume fails (grant already used)
+        assert consume_grant(command, session_id=session_id) is False
+
+    def test_consume_nonexistent_grant_returns_false(self):
+        """consume_grant() returns False when no matching grant exists."""
+        consumed = consume_grant("terraform destroy", session_id="test-cycle-session")
+        assert consumed is False
+
+
+class TestDefaultTTL:
+    """Test 10: DEFAULT_GRANT_TTL_MINUTES is 5."""
+
+    def test_default_ttl_is_five_minutes(self):
+        """DEFAULT_GRANT_TTL_MINUTES should be 5."""
+        assert DEFAULT_GRANT_TTL_MINUTES == 5, (
+            f"Expected TTL=5, got {DEFAULT_GRANT_TTL_MINUTES}"
+        )
+
+
+class TestConditionalActivation:
+    """Test 11: Conditional activation based on answers in AskUserQuestion."""
+
+    @pytest.fixture(autouse=True)
+    def setup_adapter(self):
+        """Import the adapter for testing."""
+        ADAPTERS_DIR = HOOKS_DIR / "adapters"
+        sys.path.insert(0, str(ADAPTERS_DIR))
+        from adapters.claude_code import ClaudeCodeAdapter
+        self.adapter = ClaudeCodeAdapter()
+
+    def _make_hook_data(self, answers=None, session_id="test-cycle-session"):
+        """Build a minimal AskUserQuestion PostToolUse hook_data."""
+        data = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "AskUserQuestion",
+            "session_id": session_id,
+            "tool_input": {},
+            "tool_response": {},
+        }
+        if answers is not None:
+            data["tool_response"] = {"answers": answers}
+        return data
+
+    def test_approve_answer_activates_grants(self):
+        """Answers containing 'Approve' should activate pending grants."""
+        session_id = "test-cycle-session"
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        hook_data = self._make_hook_data(
+            answers={"Proceed with terraform apply?": "Approve (Recommended)"},
+            session_id=session_id,
+        )
+        self.adapter._handle_ask_user_question_result(hook_data)
+
+        # Grant should now be active
+        grant = check_approval_grant("terraform apply", session_id=session_id)
+        assert grant is not None, "Grant should be active after user approved"
+
+    def test_reject_answer_does_not_activate_grants(self):
+        """Answers containing 'Reject' should NOT activate pending grants."""
+        session_id = "test-cycle-session"
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        hook_data = self._make_hook_data(
+            answers={"Proceed with terraform apply?": "Reject"},
+            session_id=session_id,
+        )
+        self.adapter._handle_ask_user_question_result(hook_data)
+
+        # Grant should NOT be active
+        grant = check_approval_grant("terraform apply", session_id=session_id)
+        assert grant is None, "Grant should NOT be active after user rejected"
+
+    def test_modify_answer_does_not_activate_grants(self):
+        """Answers containing 'Modify' should NOT activate pending grants."""
+        session_id = "test-cycle-session"
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        hook_data = self._make_hook_data(
+            answers={"Allow git push?": "Modify"},
+            session_id=session_id,
+        )
+        self.adapter._handle_ask_user_question_result(hook_data)
+
+        grant = check_approval_grant("git push origin main", session_id=session_id)
+        assert grant is None, "Grant should NOT be active after user chose Modify"
+
+    def test_no_answers_does_not_activate_grants(self):
+        """Missing answers field should NOT activate pending grants."""
+        session_id = "test-cycle-session"
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        # No answers in payload
+        hook_data = self._make_hook_data(answers=None, session_id=session_id)
+        self.adapter._handle_ask_user_question_result(hook_data)
+
+        grant = check_approval_grant("terraform apply", session_id=session_id)
+        assert grant is None, "Grant should NOT be active when no answers present"
+
+    def test_approve_recommended_matches(self):
+        """'Approve (Recommended)' contains 'approve' and should match."""
+        session_id = "test-cycle-session"
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        hook_data = self._make_hook_data(
+            answers={"q1": "Approve (Recommended)"},
+            session_id=session_id,
+        )
+        self.adapter._handle_ask_user_question_result(hook_data)
+
+        grant = check_approval_grant("terraform apply", session_id=session_id)
+        assert grant is not None, "'Approve (Recommended)' should activate grant"
+
+    def test_answers_from_tool_input_fallback(self):
+        """Answers in tool_input (fallback) should also be checked."""
+        session_id = "test-cycle-session"
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        # Answers in tool_input instead of tool_response
+        hook_data = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "AskUserQuestion",
+            "session_id": session_id,
+            "tool_input": {"answers": {"q1": "Approve"}},
+            "tool_response": {},
+        }
+        self.adapter._handle_ask_user_question_result(hook_data)
+
+        grant = check_approval_grant("terraform apply", session_id=session_id)
+        assert grant is not None, "Answers from tool_input fallback should work"
+
+
+class TestConsumeGrantInPostToolUse:
+    """Test 12: consume_grant called after confirm_grant in post_tool_use."""
+
+    def test_full_cycle_grant_consumed_after_execution(self):
+        """After deny -> activate -> passthrough -> consume, grant is single-use.
+
+        With grant passthrough, retry after activation returns allowed=True
+        immediately. PostToolUse then confirms and consumes the grant.
+        """
+        command = "terraform apply"
+        session_id = "test-cycle-session"
+
+        # Step 1: Subagent command denied
+        result1 = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert not result1.allowed
+
+        # Step 2: Activate grants
+        results = activate_grants_for_session(session_id)
+        assert len(results) >= 1
+        assert results[0].success
+
+        # Step 3: Retry - passthrough (active grant)
+        result2 = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert result2.allowed, "Active grant should passthrough"
+
+        # Step 4: Confirm the grant (as post_tool_use would after execution)
+        confirmed = confirm_grant(command, session_id=session_id)
+        assert confirmed
+
+        # Step 5: Consume the grant (as post_tool_use would)
+        consumed = consume_grant(command, session_id=session_id)
+        assert consumed, "Grant should be consumable after confirm"
+
+        # Step 6: Same command again should be blocked (grant consumed)
+        result3 = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert not result3.allowed, "Command should be blocked after grant consumed"
