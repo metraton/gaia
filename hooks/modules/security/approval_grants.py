@@ -55,7 +55,7 @@ from .approval_scopes import (
 logger = logging.getLogger(__name__)
 
 # Default grant TTL in minutes
-DEFAULT_GRANT_TTL_MINUTES = 10
+DEFAULT_GRANT_TTL_MINUTES = 30
 
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
 _last_cleanup_time: float = 0.0
@@ -523,7 +523,7 @@ def activate_pending_approval(
             reason="Unexpected error while activating approval.",
         )
 
-def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
+def check_approval_grant(command: str, session_id: str = None) -> Optional[ApprovalGrant]:
     """Check if there is an active approval grant for a command.
 
     Called by the bash_validator before blocking a dangerous command.
@@ -532,6 +532,7 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
 
     Args:
         command: The shell command to check.
+        session_id: Session ID for grant scoping (defaults to env var).
 
     Returns:
         The matching ApprovalGrant if found and valid, None otherwise.
@@ -539,7 +540,8 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
     global _last_check_found_expired
     _last_check_found_expired = False
 
-    session_id = _get_session_id()
+    if session_id is None:
+        session_id = _get_session_id()
 
     try:
         grants_dir = _get_grants_dir()
@@ -586,7 +588,7 @@ def check_approval_grant(command: str) -> Optional[ApprovalGrant]:
     return None
 
 
-def confirm_grant(command: str) -> bool:
+def confirm_grant(command: str, session_id: str = None) -> bool:
     """Mark the first unconfirmed grant matching command as confirmed.
 
     Called after the native permission dialog accepts the first T3 execution.
@@ -595,11 +597,13 @@ def confirm_grant(command: str) -> bool:
 
     Args:
         command: The shell command whose grant should be confirmed.
+        session_id: Session ID for grant scoping (defaults to env var).
 
     Returns:
         True if a grant was found and confirmed, False otherwise.
     """
-    session_id = _get_session_id()
+    if session_id is None:
+        session_id = _get_session_id()
 
     try:
         grants_dir = _get_grants_dir()
@@ -755,15 +759,65 @@ def get_pending_approvals_for_session(
     return results
 
 
+def find_pending_for_command(
+    session_id: str,
+    command: str,
+) -> Optional[str]:
+    """Find an existing pending approval nonce for this command and session.
+
+    When a subagent retries a blocked T3 command, a pending approval may
+    already exist from the first attempt.  Reusing the existing nonce
+    prevents the infinite-loop of generating a new approval_id on every
+    retry while the user is still reviewing the first one.
+
+    Args:
+        session_id: Session to search.
+        command: The command to match against pending approvals.
+
+    Returns:
+        The nonce (approval_id) if a matching pending approval exists, else None.
+    """
+    pending_list = get_pending_approvals_for_session(session_id)
+    if not pending_list:
+        return None
+
+    # Build a signature for the incoming command to compare semantically
+    target_sig = build_approval_signature(
+        command,
+        scope_type=SCOPE_SEMANTIC_SIGNATURE,
+    )
+    if target_sig is None:
+        return None
+
+    for pending_data in pending_list:
+        pending_sig_data = pending_data.get("scope_signature")
+        if not pending_sig_data:
+            continue
+        try:
+            pending_sig = ApprovalSignature.from_dict(pending_sig_data)
+            if matches_approval_signature(pending_sig, command):
+                nonce = pending_data.get("nonce")
+                if nonce:
+                    logger.info(
+                        "Reusing existing pending approval nonce=%s for command: %s",
+                        nonce, command[:80],
+                    )
+                    return nonce
+        except Exception:
+            continue
+
+    return None
+
+
 def activate_grants_for_session(
     session_id: Optional[str] = None,
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
 ) -> List[ApprovalActivationResult]:
     """Activate ALL pending approvals for a session.
 
-    Called by the UserPromptSubmit hook when the user sends an affirmative
-    response. Converts every non-expired pending approval for the session
-    into an active grant.
+    Called by the ElicitationResult hook when the user approves via
+    AskUserQuestion. Converts every non-expired pending approval for the
+    session into an active grant.
 
     Args:
         session_id: Session to activate for (defaults to current session).

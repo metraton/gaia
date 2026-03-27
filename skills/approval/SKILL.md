@@ -56,18 +56,29 @@ handling path to take.
 
 ## Hook Block Flow
 
-When a hook blocks your command, it returns a deny with an approval_id:
+When a hook blocks your command with `[T3_BLOCKED]` and an `approval_id`:
+
+1. **STOP** -- do NOT retry the command. Retrying generates a new nonce
+   each time, creating an infinite loop.
+2. **Report REVIEW** -- set `plan_status` to `REVIEW` in your `json:contract`.
+3. **Include the approval_id** -- copy the hex identifier from the hook deny
+   response into `approval_request.approval_id`.
+4. **Wait** -- the orchestrator presents your plan to the user. When the user
+   approves, the orchestrator resumes you with the grant activated.
+5. **Then retry** -- only after the orchestrator resumes you, retry the command.
+
+The hook deny message looks like:
 ```
-[T3_BLOCKED] ... approval_id: <hex>
+[T3_BLOCKED] This command requires user approval.
+Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.
+approval_id: <hex>
 ```
 
-Include this approval_id in your `approval_request`. It is machine-readable --
-the orchestrator extracts it silently.
-
-If you lose the approval_id, re-attempt the command for a fresh one.
+If you lose the approval_id, re-attempt the command once for a fresh one.
 
 ## Anti-Patterns
 
+- **Retrying after T3_BLOCKED** -- generates a new nonce, causes infinite loop
 - Presenting approval without all 6 fields in `approval_request`
 - Putting approval fields in text only without the JSON object
 - Treating prior approvals as valid for new operations

@@ -111,8 +111,8 @@ class TestSchemaCompatibility:
             )
 
     def test_identity_references_routing(self, identity_content):
-        """Identity must tell orchestrator about deterministic surface routing."""
-        assert "Surface Routing Recommendation" in identity_content
+        """Identity must tell orchestrator about routing and agent-response."""
+        assert "routing recommendation" in identity_content
         assert "agent-response" in identity_content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):

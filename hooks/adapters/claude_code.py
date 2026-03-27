@@ -49,7 +49,7 @@ class ClaudeCodeAdapter(HookAdapter):
         - session_id: str
         - tool_name: str        (PreToolUse / PostToolUse)
         - tool_input: dict      (PreToolUse / PostToolUse)
-        - tool_result: dict     (PostToolUse only)
+        - tool_response: dict    (PostToolUse only)
         - agent_type: str       (SubagentStop only)
         - agent_id: str         (SubagentStop only)
         - agent_transcript_path: str  (SubagentStop only)
@@ -331,12 +331,12 @@ class ClaudeCodeAdapter(HookAdapter):
         """
         tool_name = raw.get("tool_name", "")
         tool_input = raw.get("tool_input", {})
-        tool_result = raw.get("tool_result", {})
+        tool_response = raw.get("tool_response", {})
         session_id = raw.get("session_id", "")
 
         command = tool_input.get("command", "")
-        output = tool_result.get("output", "")
-        exit_code = tool_result.get("exit_code", 0)
+        output = tool_response.get("output", "")
+        exit_code = tool_response.get("exit_code", 0)
 
         return ToolResult(
             tool_name=tool_name,
@@ -727,7 +727,7 @@ class ClaudeCodeAdapter(HookAdapter):
 
         Orchestrates: state retrieval, duration computation, audit logging,
         T3 grant confirmation, critical event detection, session context
-        writing, and state cleanup.
+        writing, state cleanup, and AskUserQuestion grant activation.
         """
         from modules.core.state import get_hook_state, clear_hook_state
         from modules.audit.logger import log_execution
@@ -739,12 +739,19 @@ class ClaudeCodeAdapter(HookAdapter):
         tool_result_data = self.parse_post_tool_use(hook_data)
         logger.info("Post-hook event: %s", hook_data.get("hook_event_name"))
 
-        raw_tool_result = hook_data.get("tool_result", {})
+        raw_tool_response = hook_data.get("tool_response", {})
         tool_name = tool_result_data.tool_name
         parameters = hook_data.get("tool_input", {})
         output = tool_result_data.output
-        duration = raw_tool_result.get("duration_ms", 0) / 1000.0
+        duration = raw_tool_response.get("duration_ms", 0) / 1000.0
         success = tool_result_data.exit_code == 0
+
+        # ------------------------------------------------------------- #
+        # AskUserQuestion: check if user approved a pending T3 grant
+        # ------------------------------------------------------------- #
+        if tool_name == "AskUserQuestion":
+            self._handle_ask_user_question_result(hook_data)
+            return HookResponse(output={}, exit_code=0)
 
         try:
             pre_state = get_hook_state()
@@ -767,10 +774,11 @@ class ClaudeCodeAdapter(HookAdapter):
             # Confirm unconfirmed T3 grants after successful Bash execution
             if tool_name == "Bash" and success:
                 command = parameters.get("command", "")
+                session_id = hook_data.get("session_id", "")
                 if command:
-                    grant = check_approval_grant(command)
+                    grant = check_approval_grant(command, session_id=session_id)
                     if grant is not None and not grant.confirmed:
-                        confirm_grant(command)
+                        confirm_grant(command, session_id=session_id)
                         logger.info(
                             "T3 grant confirmed post-execution: %s", command[:80],
                         )
@@ -802,6 +810,52 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.error("Error in adapt_post_tool_use: %s", e, exc_info=True)
 
         return HookResponse(output={}, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # _handle_ask_user_question_result: grant activation from user answer
+    # ------------------------------------------------------------------ #
+
+    def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
+        """Activate pending grants unconditionally when AskUserQuestion completes.
+
+        PostToolUse only fires if the user responded to AskUserQuestion. If the
+        user rejected, the orchestrator won't resume the subagent, so any
+        activated grant expires unused. There is no need to extract or inspect
+        the user's answer -- the answer text is not reliably present in the
+        PostToolUse payload anyway.
+
+        Never blocks (no exceptions raised to caller).
+        """
+        from modules.security.approval_grants import (
+            activate_grants_for_session,
+            get_pending_approvals_for_session,
+        )
+
+        try:
+            session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
+            if not session_id:
+                logger.info("AskUserQuestion: no session_id available, skipping grant check")
+                return
+
+            # Check for pending approvals before activating
+            pending = get_pending_approvals_for_session(session_id)
+            if not pending:
+                logger.info("AskUserQuestion: no pending grants for session %s", session_id)
+                return
+
+            logger.info(
+                "AskUserQuestion completed (PostToolUse fired), activating %d pending grant(s) for session %s",
+                len(pending), session_id,
+            )
+            results = activate_grants_for_session(session_id)
+            activated = sum(1 for r in results if r.success)
+            logger.info(
+                "AskUserQuestion activated %d/%d pending grants for session %s",
+                activated, len(results), session_id,
+            )
+
+        except Exception as e:
+            logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)
 
     # ------------------------------------------------------------------ #
     # adapt_subagent_stop: full subagent-stop lifecycle

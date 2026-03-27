@@ -2,10 +2,10 @@
 Blocked command patterns - PERMANENTLY BLOCKED operations (exit 2, never approvable).
 
 This is the single source of truth for DESTRUCTIVE commands. Commands matched here
-are blocked with exit 2 and no nonce is generated -- they cannot be approved.
+are blocked with exit 2 and cannot be approved.
 
 All other state-modifying commands are detected by the universal verb detector
-(mutative_verbs.py) as MUTATIVE and routed through the nonce approval workflow.
+(mutative_verbs.py) as MUTATIVE and routed through the user approval workflow.
 
 Categories:
 - AWS networking/data infrastructure delete operations

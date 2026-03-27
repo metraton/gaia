@@ -347,16 +347,16 @@ class TestTaskValidatorConsistency:
             f"T3 operations from security-tiers skill missing in T3_KEYWORDS: {missing}"
         )
 
-    def test_canonical_approval_token_in_execution_skill(self):
-        """The canonical approval token must appear in the execution skill."""
+    def test_approval_mechanism_in_execution_skill(self):
+        """The execution skill must reference the approval mechanism."""
         execution_skill = SKILLS_DIR / "execution" / "SKILL.md"
         if not execution_skill.exists():
             pytest.skip("execution/SKILL.md not found")
 
         content = execution_skill.read_text().lower()
-        assert CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            f"Execution skill must contain the canonical approval token "
-            f"('{CANONICAL_APPROVAL_TOKEN}')"
+        assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
+            "Execution skill must reference the approval mechanism "
+            "(ElicitationResult, AskUserQuestion, or canonical token)"
         )
 
 
@@ -384,12 +384,12 @@ class TestSkillsCrossReferences:
                 f"Available: {sorted(all_skills)}"
             )
 
-    def test_execution_skill_references_approval_token(self):
-        """Execution skill must define the canonical approval token."""
-        content = (SKILLS_DIR / "execution" / "SKILL.md").read_text()
-        assert CANONICAL_APPROVAL_TOKEN in content, (
-            "Execution skill must contain the canonical nonce approval token "
-            f"('{CANONICAL_APPROVAL_TOKEN}')"
+    def test_execution_skill_references_approval_mechanism(self):
+        """Execution skill must reference the approval mechanism."""
+        content = (SKILLS_DIR / "execution" / "SKILL.md").read_text().lower()
+        assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
+            "Execution skill must reference the approval mechanism "
+            "(ElicitationResult, AskUserQuestion, or canonical token)"
         )
 
     def test_approval_skill_references_approval_id_concept(self):
@@ -399,11 +399,11 @@ class TestSkillsCrossReferences:
             "Approval skill must mention the approval_id mechanism"
         )
 
-    def test_identity_references_nonce_approval(self):
-        """Nonce-based approval must be documented in identity or orchestrator-approval skill.
+    def test_identity_references_approval_workflow(self):
+        """Approval workflow must be documented in identity or orchestrator-approval skill.
 
         The ops_identity.py delegates approval protocol details to the
-        orchestrator-approval skill. The nonce contract must exist in the system.
+        orchestrator-approval skill. The approval contract must exist in the system.
         """
         identity_path = GAIA_OPS_ROOT / "hooks" / "modules" / "identity" / "ops_identity.py"
         identity_content = identity_path.read_text().lower()
@@ -411,8 +411,8 @@ class TestSkillsCrossReferences:
         combined = identity_content
         if approval_skill_path.exists():
             combined += "\n" + approval_skill_path.read_text().lower()
-        assert "nonce" in combined, (
-            "System must mention the nonce mechanism (identity or orchestrator-approval skill)"
+        assert "elicitationresult" in combined or "askuserquestion" in combined or "nonce" in combined, (
+            "System must mention the approval mechanism (ElicitationResult, AskUserQuestion, or nonce)"
         )
         assert "approve" in combined or "approval" in combined, (
             "System must mention the approval workflow"

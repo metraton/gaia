@@ -66,8 +66,10 @@ For examples, read `examples.md` in this skill directory.
 Required when `plan_status` is `REVIEW`. Otherwise `null`.
 
 Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`.
-When a hook blocked a T3 command, also include `approval_id` (the hex identifier
-from the hook's deny response).
+When a hook blocked a T3 command with `[T3_BLOCKED]` and an `approval_id`:
+- Do NOT retry the command -- retrying generates new nonces in a loop
+- Set `plan_status` to `REVIEW` and include `approval_id` in `approval_request`
+- The orchestrator will resume you after user approval; only then retry
 
 ## State Machine
 

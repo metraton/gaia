@@ -27,7 +27,7 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 ├── fast-queries/          # Quick diagnostic scripts
 ├── speckit-workflow/      # Speckit phase management
 ├── specification/         # Feature specification workflow
-├── orchestrator-approval/ # T3 nonce approval relay for orchestrator
+├── orchestrator-approval/ # T3 approval presentation for orchestrator
 ├── approval/              # T3 plan presentation and approval workflow
 │   └── examples.md
 ├── execution/             # Post-approval execution protocol
@@ -65,7 +65,7 @@ skills:
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned to agents):
 - **agent-response** -- contract status interpretation and presentation
-- **orchestrator-approval** -- T3 nonce approval relay
+- **orchestrator-approval** -- T3 approval presentation and grant activation
 
 ## Skill Types
 

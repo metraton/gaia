@@ -17,7 +17,7 @@ Agent attempts to execute command
 [pre_tool_use.py] <- intercepts BEFORE
         |  Validates Bash commands (security gate)
         |  Validates Task/Agent (context injection)
-        |  Validates SendMessage (agent resumption, nonce approval)
+        |  Validates SendMessage (agent resumption)
         v
     ALLOWED / BLOCKED
         |

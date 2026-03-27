@@ -205,6 +205,7 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
         generate_governance,
         generate_project_context,
         install_git_hooks,
+        merge_hooks_to_settings_local,
     )
     from tools.scan.ui import (
         RailUI,
@@ -246,6 +247,7 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
     create_claude_directory(project_root)
     copy_claude_md(project_root)
     copy_settings_json(project_root)
+    merge_hooks_to_settings_local(project_root)
     install_git_hooks(project_root)
     generate_project_context(project_root, config, scan_context=output.context)
     generate_governance(project_root, config)
@@ -287,6 +289,7 @@ def _mode_existing(project_root: Path, scan_config: ScanConfig, args) -> int:
         copy_settings_json,
         create_claude_directory,
         install_git_hooks,
+        merge_hooks_to_settings_local,
     )
     from tools.scan.ui import (
         RailUI,
@@ -317,6 +320,7 @@ def _mode_existing(project_root: Path, scan_config: ScanConfig, args) -> int:
     # Step 4: SYNC
     copy_claude_md(project_root)
     copy_settings_json(project_root)
+    merge_hooks_to_settings_local(project_root)
     create_claude_directory(project_root)
     install_git_hooks(project_root)
 

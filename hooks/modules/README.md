@@ -105,7 +105,7 @@ This enforces the principle: "Orchestrator delegates, agents execute."
 SendMessage is validated as a PreToolUse event (not a separate hook event):
 - Agent ID format check (must match `/^a[0-9a-f]{5,}$/`)
 - Non-empty message required
-- Nonce approval detection (APPROVE:{nonce} activates pending grants)
+- Grant activation is handled by ElicitationResult hook (user approval via AskUserQuestion)
 
 ### Context Enforcement
 Task invocations for project agents inject project-context via `context_provider.py`.

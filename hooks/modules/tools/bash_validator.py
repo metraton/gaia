@@ -31,6 +31,7 @@ from ..security.mutative_verbs import (
 from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
+    find_pending_for_command,
     generate_nonce,
     last_check_found_expired,
     write_pending_approval,
@@ -227,6 +228,21 @@ class BashValidator:
         command = command.strip()
 
         # ================================================================
+        # EARLY NORMALIZATION: Strip AI attribution footers before any
+        # other processing.  This ensures the same normalized command
+        # string is used for blocked-command checks, compound parsing,
+        # mutative verb detection, pending approval writes, AND pending
+        # approval lookups.  Without this, write_pending_approval() and
+        # find_pending_for_command() could see different strings on the
+        # first attempt vs. retry, causing nonce mismatch loops.
+        # ================================================================
+        command_was_modified = False
+        if self._detect_claude_footers(command):
+            command = self._strip_claude_footers(command)
+            command_was_modified = True
+            logger.info("Auto-stripped Claude Code footer from commit command")
+
+        # ================================================================
         # PRIORITY 0: Indirect execution detection.
         # Commands like "bash -c '...'" or "eval '...'" can hide blocked
         # commands inside string arguments, bypassing regex patterns.
@@ -254,6 +270,7 @@ class BashValidator:
             )
 
         # Parse compound commands once (reused for blocked-command check and validation dispatch).
+        # Runs AFTER footer stripping so components also use the normalized command.
         has_operators = self._has_operators(command)
         parsed_components = None
         if has_operators:
@@ -269,14 +286,6 @@ class BashValidator:
                         reason=f"Command blocked by security policy: {comp_blocked.category}",
                         suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
                     )
-
-        # Auto-strip forbidden footers from git commits (instead of blocking).
-        # Uses updatedInput to transparently clean the command before execution.
-        command_was_modified = False
-        if self._detect_claude_footers(command):
-            command = self._strip_claude_footers(command)
-            command_was_modified = True
-            logger.info("Auto-stripped Claude Code footer from commit command")
 
         # Validate git commit messages (on the potentially cleaned command)
         if "git commit" in command and "-m" in command:
@@ -368,7 +377,7 @@ class BashValidator:
         result = detect_mutative_command(command)
         if result.is_mutative:
             # Check for an active approval grant before blocking.
-            grant = check_approval_grant(command)
+            grant = check_approval_grant(command, session_id=session_id)
             if grant is not None:
                 if not grant.confirmed:
                     # First execution after nonce activation: return "ask"
@@ -407,9 +416,36 @@ class BashValidator:
                 )
             else:
                 if is_subagent:
-                    # Subagent context: generate approval_id, write pending
-                    # approval, and DENY. The UserPromptSubmit hook will
-                    # activate the grant when the user confirms.
+                    # Subagent context: check for an existing pending
+                    # approval first (retry scenario). If found, reuse
+                    # the same nonce to prevent infinite approval_id
+                    # generation loops while the user reviews.
+                    existing_nonce = find_pending_for_command(
+                        session_id or "", command,
+                    )
+                    if existing_nonce:
+                        approval_id = existing_nonce
+                        logger.info(
+                            "Reusing pending approval_id=%s for retry: %s",
+                            approval_id, command[:80],
+                        )
+                        reason = (
+                            f"[T3_BLOCKED] This command requires user approval.\n"
+                            f"Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.\n"
+                            f"Command: {command}\n"
+                            f"Verb: '{result.verb}' ({result.category})\n"
+                            f"approval_id: {approval_id}"
+                        )
+                        hook_deny = build_hook_permission_response("deny", reason)
+                        return BashValidationResult(
+                            allowed=False,
+                            tier=SecurityTier.T3_BLOCKED,
+                            reason=f"T3 {result.category.lower()} command: {result.reason}",
+                            block_response=hook_deny,
+                        )
+                    # No existing pending -- generate a new nonce.
+                    # The ElicitationResult hook will activate the
+                    # grant when the user approves via AskUserQuestion.
                     approval_id = generate_nonce()
                     pending_path = write_pending_approval(
                         nonce=approval_id,
@@ -434,7 +470,8 @@ class BashValidator:
                             block_response=hook_ask,
                         )
                     reason = (
-                        f"[T3_BLOCKED] {result.category} operation requires user approval.\n"
+                        f"[T3_BLOCKED] This command requires user approval.\n"
+                        f"Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.\n"
                         f"Command: {command}\n"
                         f"Verb: '{result.verb}' ({result.category})\n"
                         f"approval_id: {approval_id}"
@@ -538,6 +575,8 @@ class BashValidator:
 
         Removes full lines matching forbidden footer patterns.
         Works on raw command string regardless of quoting/HEREDOC format.
+        Preserves trailing quote/paren characters that close the commit
+        message (e.g., the closing " in -m "...footer").
 
         Args:
             command: Raw command string
@@ -545,11 +584,15 @@ class BashValidator:
         Returns:
             Command with footer lines removed
         """
-        # Remove full lines that contain AI attribution patterns
+        # Remove full lines that contain AI attribution patterns.
+        # Each pattern matches the newline + footer content, then uses a
+        # lookahead to stop before any trailing quote/paren/bracket
+        # sequence that closes the command structure.  The captured group
+        # is replaced with empty string, leaving the closing chars intact.
         footer_line_patterns = [
-            r'\n\s*Co-[Aa]uthored-[Bb]y:\s+(?:Claude|GitHub Copilot|aider|Windsurf|Cursor|Codex|Gemini)[^\n]*',
-            r'\n\s*Generated with\s+\[?Claude Code\]?[^\n]*',
-            r'\n\s*🤖\s*Generated with[^\n]*',
+            r'\n\s*Co-[Aa]uthored-[Bb]y:\s+(?:Claude|GitHub Copilot|aider|Windsurf|Cursor|Codex|Gemini)[^\n]*?(?=["\')\]]*(?:\n|$))',
+            r'\n\s*Generated with\s+\[?Claude Code\]?[^\n]*?(?=["\')\]]*(?:\n|$))',
+            r'\n\s*🤖\s*Generated with[^\n]*?(?=["\')\]]*(?:\n|$))',
         ]
         for pattern in footer_line_patterns:
             command = re.sub(pattern, '', command, flags=re.IGNORECASE)

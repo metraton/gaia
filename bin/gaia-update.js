@@ -12,12 +12,14 @@
  *   2. Run gaia-scan --npm-postinstall to create .claude/, symlinks, settings, project-context
  *   3. Create plugin-registry.json
  *   4. Merge permissions into settings.local.json
- *   5. Fall through to verification
+ *   5. Merge hooks into settings.local.json
+ *   6. Fall through to verification
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
  *   2. settings.json: create only if missing (non-invasive, never overwrites)
  *   3. Merge permissions + env vars into settings.local.json (union, preserves user config)
- *   4. Symlinks: recreate if missing, fix broken ones
+ *   4. Merge hooks from hooks.json into settings.local.json (npm mode requires this)
+ *   5. Symlinks: recreate if missing, fix broken ones
  *   5. Verify: hooks, python, project-context, config files
  *   6. Report: summary with any issues found
  *
@@ -214,6 +216,109 @@ print(json.dumps(ops_perms))
     return true;
   } catch (error) {
     spinner.fail(`settings.local.json: ${error.message}`);
+    return false;
+  }
+}
+
+async function updateLocalHooks() {
+  const spinner = ora('Merging hooks into settings.local.json...').start();
+  try {
+    const claudeDir = join(CWD, '.claude');
+    const localPath = join(claudeDir, 'settings.local.json');
+
+    if (!existsSync(claudeDir)) {
+      spinner.info('Skipped (.claude/ not found)');
+      return false;
+    }
+
+    // Read hooks.json from the installed package
+    const hooksJsonPath = join(__dirname, '..', 'hooks', 'hooks.json');
+    if (!existsSync(hooksJsonPath)) {
+      spinner.warn('hooks.json not found in package');
+      return false;
+    }
+
+    let hooksData;
+    try {
+      hooksData = JSON.parse(await fs.readFile(hooksJsonPath, 'utf-8'));
+    } catch {
+      spinner.warn('hooks.json is invalid JSON');
+      return false;
+    }
+
+    // Unwrap outer "hooks" key if present
+    const sourceHooks = hooksData.hooks || hooksData;
+
+    // Convert ${CLAUDE_PLUGIN_ROOT}/hooks/<script> to .claude/hooks/<script> for npm mode
+    const convertCommand = (cmd) => {
+      return cmd.replace(/\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\//g, '.claude/hooks/');
+    };
+
+    const convertedHooks = {};
+    for (const [event, entries] of Object.entries(sourceHooks)) {
+      convertedHooks[event] = entries.map(entry => {
+        const converted = { ...entry };
+        if (converted.hooks) {
+          converted.hooks = converted.hooks.map(h => ({
+            ...h,
+            command: h.command ? convertCommand(h.command) : h.command,
+          }));
+        }
+        return converted;
+      });
+    }
+
+    // Load existing settings.local.json
+    let existing = {};
+    if (existsSync(localPath)) {
+      try {
+        existing = JSON.parse(await fs.readFile(localPath, 'utf-8'));
+      } catch {
+        existing = {};
+      }
+    }
+
+    // Smart merge: for each hook event, deduplicate by command string
+    const existingHooks = existing.hooks || {};
+    let changed = false;
+
+    for (const [event, newEntries] of Object.entries(convertedHooks)) {
+      if (!existingHooks[event]) {
+        existingHooks[event] = newEntries;
+        changed = true;
+        continue;
+      }
+
+      // Collect existing command strings for deduplication
+      const existingCommands = new Set();
+      for (const entry of existingHooks[event]) {
+        for (const h of (entry.hooks || [])) {
+          if (h.command) existingCommands.add(h.command);
+        }
+      }
+
+      // Add new entries whose commands are not already present
+      for (const newEntry of newEntries) {
+        const newCommands = (newEntry.hooks || []).map(h => h.command).filter(Boolean);
+        const allPresent = newCommands.length > 0 && newCommands.every(c => existingCommands.has(c));
+        if (!allPresent) {
+          existingHooks[event].push(newEntry);
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) {
+      spinner.succeed('settings.local.json hooks already up to date');
+      return false;
+    }
+
+    existing.hooks = existingHooks;
+    await fs.writeFile(localPath, JSON.stringify(existing, null, 2) + '\n');
+    spinner.succeed('settings.local.json hooks merged');
+    return true;
+  } catch (error) {
+    spinner.fail(`hooks merge: ${error.message}`);
     return false;
   }
 }
@@ -436,6 +541,9 @@ async function runFreshInstall() {
 
   // 4. Merge permissions into settings.local.json (same approach as plugin mode)
   await updateLocalPermissions();
+
+  // 5. Merge hooks into settings.local.json (npm mode — Claude Code reads hooks from settings, not hooks.json)
+  await updateLocalHooks();
 }
 
 async function main() {
@@ -454,9 +562,10 @@ async function main() {
 
     console.log(chalk.cyan(`\n  gaia-ops update ${versionLine}\n`));
 
-    // Step 1-3: Update files
+    // Step 1-4: Update files
     await updateSettingsJson();
     await updateLocalPermissions();
+    await updateLocalHooks();
     await updateSymlinks();
   }
 

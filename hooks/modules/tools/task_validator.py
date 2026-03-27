@@ -4,7 +4,7 @@ Task tool validator.
 Validates Task tool invocations:
 - Agent existence verification
 - Context provisioning enforcement
-- T3 operation detection for Bash-time nonce approval
+- T3 operation detection for user approval workflow
 """
 
 import logging

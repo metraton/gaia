@@ -1,4 +1,8 @@
-"""Canonical nonce approval token and deprecated approval phrases for T3 operation resumes."""
+"""Approval token patterns and deprecated approval phrases for T3 operation resumes.
+
+The APPROVE: prefix is a legacy path (SendMessage-based nonce relay). The primary
+approval flow now uses ElicitationResult (AskUserQuestion -> user clicks Approve).
+"""
 
 import re
 

@@ -6,11 +6,12 @@ status and approval_id mechanism:
 
 1. Subagent mutative command gets denied with approval_id
 2. Orchestrator mutative command gets "ask" (no approval_id)
-3. UserPromptSubmit activates grant for pending approval
+3. ElicitationResult activates grant for pending approval
 4. Full cycle: deny -> approve -> retry succeeds
 5. Negative response does NOT activate grant
 6. Expired pending is not activated
-7. Approval response pattern matching (_is_approval_response)
+7. Approval response pattern matching (elicitation_result._is_approval)
+8. Subagent retry reuses existing pending nonce
 """
 
 import sys
@@ -123,8 +124,8 @@ class TestOrchestratorMutativeAsk:
         )
 
 
-class TestUserPromptSubmitActivatesGrant:
-    """Test 3: UserPromptSubmit activates grant for pending approval."""
+class TestElicitationResultActivatesGrant:
+    """Test 3: ElicitationResult activates grant for pending approval."""
 
     def test_activate_grants_for_session(self):
         """Writing a pending approval then activating it creates a usable grant."""
@@ -141,7 +142,7 @@ class TestUserPromptSubmitActivatesGrant:
         )
         assert path is not None, "Failed to write pending approval"
 
-        # 2. Activate grants for the session (simulates UserPromptSubmit)
+        # 2. Activate grants for the session (simulates ElicitationResult)
         results = activate_grants_for_session("test-cycle-session")
         assert len(results) >= 1, "Expected at least one activation result"
         assert results[0].success, f"Activation should succeed: {results[0].reason}"
@@ -175,7 +176,7 @@ class TestFullApprovalCycle:
         assert match, f"Could not extract approval_id from: {reason}"
         approval_id = match.group(1)
 
-        # Step 2: Activate grants for the session (simulates UserPromptSubmit)
+        # Step 2: Activate grants for the session (simulates ElicitationResult)
         results = activate_grants_for_session(session_id)
         assert len(results) >= 1
         assert results[0].success, f"Activation failed: {results[0].reason}"
@@ -205,20 +206,19 @@ class TestFullApprovalCycle:
 class TestNegativeResponseDoesNotActivate:
     """Test 5: Negative response does NOT activate grant."""
 
-    def test_is_approval_response_rejects_negative(self):
-        """_is_approval_response returns False for negative inputs."""
-        # Import from the UserPromptSubmit hook
-        sys.path.insert(0, str(HOOKS_DIR))
-        from user_prompt_submit import _is_approval_response
+    def test_is_approval_rejects_negative(self):
+        """_is_approval returns False for negative inputs."""
+        from elicitation_result import _is_approval
 
-        assert not _is_approval_response("no"), "'no' should not be affirmative"
-        assert not _is_approval_response("nope"), "'nope' should not be affirmative"
-        assert not _is_approval_response("cancel"), "'cancel' should not be affirmative"
-        assert not _is_approval_response(""), "empty should not be affirmative"
+        assert not _is_approval("no"), "'no' should not be affirmative"
+        assert not _is_approval("nope"), "'nope' should not be affirmative"
+        assert not _is_approval("cancel"), "'cancel' should not be affirmative"
+        assert not _is_approval("Reject"), "'Reject' should not be affirmative"
+        assert not _is_approval("Modify"), "'Modify' should not be affirmative"
 
     def test_negative_response_leaves_pending_intact(self):
         """A negative response should not activate pending approvals."""
-        from user_prompt_submit import _is_approval_response
+        from elicitation_result import _is_approval
 
         nonce = generate_nonce()
         write_pending_approval(
@@ -230,7 +230,7 @@ class TestNegativeResponseDoesNotActivate:
         )
 
         # Simulate a negative response -- should NOT activate
-        assert not _is_approval_response("no")
+        assert not _is_approval("Reject")
 
         # Pending should still be there
         pending = get_pending_approvals_for_session("test-cycle-session")
@@ -280,50 +280,137 @@ class TestExpiredPendingNotActivated:
 
 
 class TestApprovalResponsePatterns:
-    """Test 7: Approval response pattern matching."""
+    """Test 7: Approval response pattern matching (ElicitationResult)."""
 
     @pytest.fixture(autouse=True)
     def import_checker(self):
-        """Import the _is_approval_response function from UserPromptSubmit."""
+        """Import the _is_approval function from elicitation_result."""
         sys.path.insert(0, str(HOOKS_DIR))
-        from user_prompt_submit import _is_approval_response
-        self._is_approval_response = _is_approval_response
+        from elicitation_result import _is_approval
+        self._is_approval = _is_approval
 
     @pytest.mark.parametrize("text", [
-        "yes", "y", "ok", "approve", "sure", "confirm",
-        "do it", "go ahead", "proceed", "go", "execute",
-    ], ids=lambda t: f"en:{t}")
-    def test_english_affirmative(self, text):
-        """English affirmative responses should match."""
-        assert self._is_approval_response(text), f"'{text}' should be affirmative"
+        "Approve", "approve", "Approved", "yes", "Yes",
+        "accept", "Accept", "confirm", "Confirm", "allow", "Allow",
+    ], ids=lambda t: f"approve:{t}")
+    def test_approval_responses(self, text):
+        """Approval responses (structured AskUserQuestion options) should match."""
+        assert self._is_approval(text), f"'{text}' should be detected as approval"
 
     @pytest.mark.parametrize("text", [
-        "si", "dale", "apruebo", "adelante",
-        "hazlo", "confirmo", "ejecuta",
-    ], ids=lambda t: f"es:{t}")
-    def test_spanish_affirmative(self, text):
-        """Spanish affirmative responses should match."""
-        assert self._is_approval_response(text), f"'{text}' should be affirmative"
-
-    def test_si_with_accent(self):
-        """'si' with accent mark should match."""
-        assert self._is_approval_response("si"), "'si' should be affirmative"
-
-    @pytest.mark.parametrize("text", [
-        "no", "nope", "cancel",
-        "", "maybe", "let me think",
+        "Reject", "reject", "Modify", "modify", "no", "nope",
+        "cancel", "", "maybe", "let me think",
     ], ids=lambda t: f"neg:{t}" if t else "neg:empty")
-    def test_negative_or_ambiguous(self, text):
-        """Negative or ambiguous responses should NOT match."""
-        assert not self._is_approval_response(text), f"'{text}' should not be affirmative"
+    def test_non_approval_responses(self, text):
+        """Non-approval responses should NOT match."""
+        if text == "":
+            # Empty string edge case
+            assert not self._is_approval(text), "empty should not be approval"
+        else:
+            assert not self._is_approval(text), f"'{text}' should not be approval"
 
-    def test_affirmative_with_trailing_punctuation(self):
-        """Trailing punctuation should be stripped before matching."""
-        assert self._is_approval_response("yes!"), "'yes!' should be affirmative"
-        assert self._is_approval_response("ok."), "'ok.' should be affirmative"
-        assert self._is_approval_response("sure,"), "'sure,' should be affirmative"
+    def test_approve_in_longer_text(self):
+        """Approve keyword embedded in longer text should match."""
+        assert self._is_approval("Approve -- Allow the operation to proceed")
+        assert self._is_approval("I approve this change")
 
-    def test_affirmative_with_continuation(self):
-        """Affirmative prefix with continuation should match."""
-        assert self._is_approval_response("yes, go ahead"), "'yes, go ahead' should be affirmative"
-        assert self._is_approval_response("ok proceed"), "'ok proceed' should be affirmative"
+    def test_case_insensitive(self):
+        """Matching should be case-insensitive."""
+        assert self._is_approval("APPROVE")
+        assert self._is_approval("YES")
+        assert self._is_approval("Confirm")
+
+
+class TestSubagentRetryReusesPendingNonce:
+    """Test 8: Subagent retry reuses existing pending nonce."""
+
+    def test_retry_reuses_existing_pending_approval(self):
+        """When a pending approval exists, retry returns the same approval_id."""
+        command = "git push origin main"
+        session_id = "test-cycle-session"
+
+        # First attempt: generates a new nonce
+        result1 = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert not result1.allowed
+        reason1 = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        import re
+        match1 = re.search(r"approval_id:\s*(\w+)", reason1)
+        assert match1, f"Could not extract approval_id from first attempt: {reason1}"
+        nonce1 = match1.group(1)
+
+        # Second attempt (retry): should reuse the same nonce
+        result2 = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert not result2.allowed
+        reason2 = result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        match2 = re.search(r"approval_id:\s*(\w+)", reason2)
+        assert match2, f"Could not extract approval_id from retry: {reason2}"
+        nonce2 = match2.group(1)
+
+        assert nonce1 == nonce2, (
+            f"Retry should reuse the same nonce: first={nonce1}, retry={nonce2}"
+        )
+
+    def test_footer_stripping_does_not_break_pending_reuse(self):
+        """Commit with footer stripped on first attempt matches on retry.
+
+        Regression test: footer stripping must happen before
+        write_pending_approval so the stored command matches the stripped
+        command on retry (when the footer may or may not be present).
+        """
+        command_with_footer = (
+            'git commit -m "feat(api): add endpoint\n\n'
+            'Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"'
+        )
+        command_without_footer = 'git commit -m "feat(api): add endpoint"'
+        session_id = "test-cycle-session"
+
+        # First attempt: command includes a Co-Authored-By footer
+        result1 = validate_bash_command(
+            command_with_footer, is_subagent=True, session_id=session_id,
+        )
+        assert not result1.allowed
+        reason1 = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        import re
+        match1 = re.search(r"approval_id:\s*(\w+)", reason1)
+        assert match1, f"Could not extract approval_id from first attempt: {reason1}"
+        nonce1 = match1.group(1)
+
+        # Footer should be stripped from the deny message
+        assert "Co-Authored-By" not in reason1, (
+            "Footer should be stripped before building the deny message"
+        )
+
+        # Second attempt: same command without footer (agent stopped adding it)
+        result2 = validate_bash_command(
+            command_without_footer, is_subagent=True, session_id=session_id,
+        )
+        assert not result2.allowed
+        reason2 = result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        match2 = re.search(r"approval_id:\s*(\w+)", reason2)
+        assert match2, f"Could not extract approval_id from retry: {reason2}"
+        nonce2 = match2.group(1)
+
+        assert nonce1 == nonce2, (
+            f"Footer-stripped pending should match clean retry: "
+            f"first={nonce1}, retry={nonce2}"
+        )
+
+    def test_t3_blocked_message_instructs_no_retry(self):
+        """The T3_BLOCKED deny message must tell the subagent not to retry."""
+        result = validate_bash_command(
+            "terraform apply",
+            is_subagent=True,
+            session_id="test-cycle-session",
+        )
+        assert not result.allowed
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "Do NOT retry" in reason, (
+            f"T3_BLOCKED message should instruct not to retry, got: {reason}"
+        )
+        assert "REVIEW" in reason, (
+            f"T3_BLOCKED message should mention REVIEW status, got: {reason}"
+        )

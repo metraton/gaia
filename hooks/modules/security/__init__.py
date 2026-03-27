@@ -4,9 +4,9 @@ Security module - Security tiers, blocked patterns, mutative verb detection.
 Provides:
 - tiers: SecurityTier enum and classification
 - blocked_commands: Permanently blocked pattern matching
-- mutative_verbs: Mutative verb detection (nonce-based approval)
+- mutative_verbs: Mutative verb detection (user approval workflow)
 - gitops_validator: kubectl/helm/flux validation
-- approval_constants: Canonical nonce approval token
+- approval_constants: Approval token patterns (legacy APPROVE: and ElicitationResult)
 - approval_grants: Time-limited T3 command passthrough after user approval
 """
 

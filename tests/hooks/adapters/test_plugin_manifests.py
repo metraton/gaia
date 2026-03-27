@@ -169,7 +169,7 @@ class TestHooksJson:
                     )
 
     def test_hooks_json_has_all_required_events(self):
-        """hooks.json must have all 9 required hook event types.
+        """hooks.json must have all 10 required hook event types.
 
         hooks.json is the single source of truth for GAIA hooks
         (auto-discovered via the .claude/hooks symlink).
@@ -181,6 +181,7 @@ class TestHooksJson:
             "PreToolUse", "PostToolUse", "SubagentStop",
             "SessionStart", "UserPromptSubmit", "Stop",
             "TaskCompleted", "SubagentStart", "PostCompact",
+            "ElicitationResult",
         }
         assert hooks_events == required_events, (
             f"Event mismatch: hooks.json has {hooks_events}, "

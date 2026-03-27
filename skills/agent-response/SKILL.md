@@ -50,6 +50,4 @@ If agents conflict, present both sides and ask user to decide.
 
 | Situation | Action |
 |---|---|
-| Hook blocks a command | Relay message verbatim. Do not try alternatives. |
-| Agent contradicts another | Show both findings, flag conflict, ask user. |
 | Malformed contract | Resume agent with repair instructions (max 2 retries). |

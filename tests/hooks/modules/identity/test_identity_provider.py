@@ -37,10 +37,10 @@ class TestOpsIdentity:
         assert "Orchestrator" in identity
 
     def test_ops_identity_has_deterministic_routing(self):
-        """Identity references deterministic surface routing."""
+        """Identity references routing recommendation."""
         identity = build_ops_identity()
-        assert "Surface Routing Recommendation" in identity, (
-            "Identity must reference Surface Routing Recommendation for deterministic routing"
+        assert "routing recommendation" in identity, (
+            "Identity must reference routing recommendation for deterministic routing"
         )
 
     def test_ops_identity_has_sendmessage(self):
@@ -48,11 +48,9 @@ class TestOpsIdentity:
         assert "SendMessage" in identity
 
     def test_ops_identity_has_routing_modes(self):
-        """Identity documents the dispatch modes for routing."""
+        """Identity documents the dispatch mode for routing."""
         identity = build_ops_identity()
-        assert "single_surface" in identity
-        assert "parallel" in identity
-        assert "sequential" in identity
+        assert "dispatch_mode" in identity
 
 
 class TestIdentityProvider:

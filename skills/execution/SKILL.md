@@ -24,7 +24,7 @@ system in a broken state.
 
 Before executing ANY approved operation:
 
-- [ ] Prompt contains canonical token: `APPROVE:<nonce>`
+- [ ] User approved via AskUserQuestion and ElicitationResult hook activated the grant
 - [ ] Capture current state — know what you can roll back to
 - [ ] Plan still valid — re-run dry-run if time has passed
 - [ ] Commands will not prompt for interactive input
