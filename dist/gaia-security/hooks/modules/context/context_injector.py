@@ -1,0 +1,427 @@
+"""Core context injection subsystem for project agents.
+
+Handles:
+- build_project_context: builds context string for additionalContext injection
+- check_pending_updates_threshold: warns when pending updates accumulate
+- check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
+- consume_anomaly_flag: reads and deletes anomaly signal flags
+"""
+
+import json
+import logging
+import os
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+from ..core.paths import get_plugin_data_dir
+from ..session.session_manager import get_or_create_session_id
+from .anchor_tracker import extract_anchors, save_anchors
+from .contracts_loader import build_context_update_reminder
+
+logger = logging.getLogger(__name__)
+
+
+def _prune_empty_values(data: dict) -> dict:
+    """Drop keys with empty telemetry values while preserving False/0."""
+    pruned = {}
+    for key, value in data.items():
+        if value in (None, "", [], {}):
+            continue
+        pruned[key] = value
+    return pruned
+
+
+def build_context_telemetry_snapshot(context_payload: dict) -> dict:
+    """Build a compact telemetry snapshot from injected context payload data."""
+    if not isinstance(context_payload, dict) or not context_payload:
+        return {}
+
+    project_knowledge = context_payload.get("project_knowledge") or {}
+    metadata = context_payload.get("metadata") or {}
+    surface_routing = context_payload.get("surface_routing") or {}
+    investigation_brief = context_payload.get("investigation_brief") or {}
+    write_permissions = context_payload.get("write_permissions") or {}
+
+    contract_sections = sorted(project_knowledge.keys())
+    readable_sections = sorted(write_permissions.get("readable_sections") or [])
+    writable_sections = sorted(write_permissions.get("writable_sections") or [])
+
+    return _prune_empty_values({
+        "contract_sections": contract_sections,
+        "contract_sections_count": len(contract_sections),
+        "metadata": _prune_empty_values({
+            "cloud_provider": metadata.get("cloud_provider"),
+            "contract_version": metadata.get("contract_version"),
+            "rules_count": metadata.get("rules_count"),
+            "historical_episodes_count": metadata.get("historical_episodes_count"),
+            "surface_routing_version": metadata.get("surface_routing_version"),
+            "active_surfaces_count": metadata.get("active_surfaces_count"),
+            "surface_routing_confidence": metadata.get("surface_routing_confidence"),
+        }),
+        "surface_routing": _prune_empty_values({
+            "primary_surface": surface_routing.get("primary_surface"),
+            "active_surfaces": sorted(surface_routing.get("active_surfaces") or []),
+            "dispatch_mode": surface_routing.get("dispatch_mode"),
+            "multi_surface": surface_routing.get("multi_surface"),
+            "recommended_agents": sorted(surface_routing.get("recommended_agents") or []),
+        }),
+        "investigation_brief": _prune_empty_values({
+            "agent_role": investigation_brief.get("agent_role"),
+            "primary_surface": investigation_brief.get("primary_surface"),
+            "adjacent_surfaces": sorted(investigation_brief.get("adjacent_surfaces") or []),
+            "cross_check_required": investigation_brief.get("cross_check_required"),
+            "consolidation_required": investigation_brief.get("consolidation_required"),
+            "required_checks_count": len(investigation_brief.get("required_checks") or []),
+            "evidence_required": sorted(investigation_brief.get("evidence_required") or []),
+        }),
+        "context_update_scope": _prune_empty_values({
+            "readable_sections": readable_sections,
+            "readable_sections_count": len(readable_sections),
+            "writable_sections": writable_sections,
+            "writable_sections_count": len(writable_sections),
+        }),
+    })
+
+
+def check_pending_updates_threshold() -> str:
+    """
+    Check if pending updates count exceeds threshold and return warning text.
+
+    Returns warning string to inject into prompt, or empty string if below threshold.
+    Must NEVER block or slow down context injection (target: <50ms).
+    """
+    try:
+        threshold = int(os.environ.get("PENDING_UPDATE_THRESHOLD", "10"))
+
+        # Fast path: try to read index directly (no module import)
+        index_path = Path(".claude/project-context/pending-updates/pending-index.json")
+        if not index_path.exists():
+            return ""
+
+        with open(index_path, 'r') as f:
+            index_data = json.load(f)
+
+        pending_count = index_data.get("pending_count", 0)
+        if pending_count < threshold:
+            return ""
+
+        logger.info(f"Pending updates threshold reached: {pending_count} >= {threshold}")
+        return (
+            f"\n# Pending Context Updates Warning\n"
+            f"There are {pending_count} pending context update suggestions awaiting review. "
+            f"Run `gaia-review` or `python3 tools/review/review_engine.py list` to review them.\n\n"
+        )
+
+    except Exception as e:
+        logger.debug(f"Pending updates check failed (non-fatal): {e}")
+        return ""
+
+
+def check_recent_critical_anomalies() -> str:
+    """Check anomalies.jsonl for recent critical anomalies and return a summary.
+
+    Scans the last 20 lines of the anomaly log for critical-severity entries
+    from the past hour.  Returns a short warning string suitable for context
+    injection, or empty string if nothing noteworthy is found.
+
+    This is intentionally lightweight: reads only the tail of the file and
+    returns at most a one-line count + type summary.
+    """
+    anomaly_log = (
+        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "anomalies.jsonl"
+    )
+    if not anomaly_log.exists():
+        return ""
+
+    try:
+        # Read only the tail (last 20 lines) for speed
+        lines = anomaly_log.read_text().splitlines()[-20:]
+        one_hour_ago = datetime.now().timestamp() - 3600
+        critical_types: list[str] = []
+
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = entry.get("timestamp", "")
+            if ts:
+                try:
+                    entry_time = datetime.fromisoformat(ts).timestamp()
+                except (ValueError, TypeError):
+                    continue
+                if entry_time < one_hour_ago:
+                    continue
+            for anomaly in entry.get("anomalies", []):
+                if anomaly.get("severity") == "critical":
+                    critical_types.append(anomaly.get("type", "unknown"))
+
+        if not critical_types:
+            return ""
+
+        # Deduplicate and summarize
+        unique_types = sorted(set(critical_types))
+        return (
+            f"\n# Recent Critical Anomalies\n"
+            f"{len(critical_types)} critical anomaly(ies) in the last hour "
+            f"(types: {', '.join(unique_types)}). "
+            f"Consider investigating with /gaia.\n"
+        )
+    except Exception as e:
+        logger.debug(f"Critical anomaly check failed (non-fatal): {e}")
+        return ""
+
+
+def consume_anomaly_flag(enriched_prompt: str) -> str:
+    """Read and delete the needs_analysis.flag if it exists, appending a warning.
+
+    The flag is created by subagent_stop.py when workflow anomalies are
+    detected.  Reading it once and deleting ensures the warning is shown
+    exactly once.  Must not slow down context injection -- returns
+    immediately if the file does not exist.
+
+    TTL enforcement: flags older than 1 hour (by created_at or file mtime)
+    are auto-expired and deleted without injecting a warning.
+    """
+    flag_path = get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "signals" / "needs_analysis.flag"
+    if not flag_path.exists():
+        return enriched_prompt
+    try:
+        signal_data = json.loads(flag_path.read_text())
+
+        # TTL check: auto-expire flags older than ttl_hours (default 1 hour)
+        ttl_hours = signal_data.get("ttl_hours", 1)
+        ttl_seconds = ttl_hours * 3600
+        created_at = signal_data.get("created_at") or signal_data.get("timestamp")
+        if created_at:
+            created_dt = datetime.fromisoformat(created_at)
+            age_seconds = (datetime.now() - created_dt).total_seconds()
+            if age_seconds > ttl_seconds:
+                flag_path.unlink()
+                logger.info(
+                    "Auto-expired anomaly flag (age: %.0fs, ttl: %ds)",
+                    age_seconds, ttl_seconds,
+                )
+                return enriched_prompt
+        else:
+            # Fallback: check file modification time
+            mtime = flag_path.stat().st_mtime
+            age_seconds = datetime.now().timestamp() - mtime
+            if age_seconds > ttl_seconds:
+                flag_path.unlink()
+                logger.info(
+                    "Auto-expired anomaly flag by mtime (age: %.0fs, ttl: %ds)",
+                    age_seconds, ttl_seconds,
+                )
+                return enriched_prompt
+
+        anomalies = signal_data.get("anomalies", [])
+        summary = "; ".join(a.get("message", "") for a in anomalies if a.get("message"))
+        if summary:
+            enriched_prompt += (
+                f"\n# Anomaly Alert\n"
+                f"Recent anomalies detected: {summary}. "
+                f"Consider investigating with /gaia.\n"
+            )
+        flag_path.unlink()
+        logger.info("Consumed anomaly flag and injected warning")
+    except Exception as e:
+        logger.debug(f"Failed to consume anomaly flag (non-fatal): {e}")
+    return enriched_prompt
+
+
+def build_project_context(
+    parameters: dict,
+    project_agents: list,
+    hooks_dir: Path = None,
+) -> tuple:
+    """
+    Build project context string for a project agent without mutating parameters.
+
+    Returns the context string suitable for additionalContext injection, plus a
+    telemetry snapshot. Does NOT modify parameters in any way.
+
+    Args:
+        parameters: Task tool parameters (read-only).
+        project_agents: List of valid project agent names.
+        hooks_dir: Path to the hooks directory (for fallback paths).
+            Defaults to Path(__file__).parent.parent.parent if None.
+
+    Returns:
+        (context_string, telemetry_snapshot) or (None, {}) if no context to inject.
+    """
+    if hooks_dir is None:
+        hooks_dir = Path(__file__).parent.parent.parent
+
+    subagent_type = parameters.get("subagent_type", "")
+
+    # Only inject for project agents (not for generic agents like Explore, general-purpose, etc.)
+    if subagent_type not in project_agents:
+        logger.debug(f"Skipping context injection for non-project agent: {subagent_type}")
+        return None, {}
+
+    prompt = parameters.get("prompt", "")
+    if not prompt:
+        logger.warning(f"No prompt provided for {subagent_type}, skipping context injection")
+        return None, {}
+
+    try:
+        # Find context_provider.py
+        context_provider_paths = [
+            hooks_dir.parent / "tools" / "context" / "context_provider.py",  # plugin root (works in both modes)
+            Path(".claude/tools/context/context_provider.py"),                # npm symlink fallback
+        ]
+
+        context_provider = None
+        for path in context_provider_paths:
+            if path.exists():
+                context_provider = path
+                break
+
+        if not context_provider:
+            logger.warning("context_provider.py not found, skipping context injection")
+            return None, {}
+
+        # Execute context_provider.py to get filtered context
+        logger.info(f"Building context for {subagent_type}...")
+        result = subprocess.run(
+            ["python3", str(context_provider), subagent_type, prompt],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=os.getcwd()
+        )
+
+        if result.returncode != 0:
+            logger.error(f"context_provider.py failed: {result.stderr}")
+            return None, {}
+
+        # Parse context JSON
+        try:
+            context_payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse context JSON: {e}")
+            return None, {}
+
+        # Extract and save context anchors for hit tracking
+        try:
+            anchors = extract_anchors(context_payload)
+            if anchors:
+                session_id = get_or_create_session_id()
+                save_anchors(session_id, subagent_type, anchors)
+                logger.debug(
+                    "Saved %d context anchors for %s", len(anchors), subagent_type,
+                )
+        except Exception as exc:
+            logger.debug("Anchor extraction failed (non-fatal): %s", exc)
+
+        # Check pending update count (non-blocking, fast path)
+        pending_warning = check_pending_updates_threshold()
+
+        # Build context update reminder for empty writable sections
+        update_reminder = build_context_update_reminder(
+            subagent_type, project_agents, hooks_dir
+        )
+
+        # Build context sections from payload
+        project_knowledge = context_payload.get("project_knowledge", {})
+        write_perms = context_payload.get("write_permissions", {})
+        investigation_brief = context_payload.get("investigation_brief", {})
+        rules = context_payload.get("rules", {})
+        surface_routing_data = context_payload.get("surface_routing", {})
+        metadata = context_payload.get("metadata", {})
+        historical = context_payload.get("historical_context", {})
+
+        # Optional sections
+        rules_section = f"\n## Rules\n\n{json.dumps(rules, indent=2)}\n" if rules.get("universal") or rules.get("agent_specific") else ""
+        routing_section = f"\n## Surface Routing\n\n{json.dumps(surface_routing_data, indent=2)}\n" if surface_routing_data else ""
+        metadata_section = f"\n## Metadata\n\n{json.dumps(metadata, indent=2)}\n" if metadata else ""
+        historical_section = f"\n## Historical Context\n\n{json.dumps(historical, indent=2)}\n" if historical else ""
+
+        # Save context_payload to disk for downstream hooks (SubagentStop)
+        try:
+            payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
+            payload_dir.mkdir(parents=True, exist_ok=True)
+            agent_id = parameters.get("_agent_id", "") or subagent_type
+            payload_path = payload_dir / f"{agent_id}.json"
+            payload_path.write_text(json.dumps(context_payload, separators=(',', ':')))
+            logger.debug(f"Context payload saved to {payload_path}")
+        except Exception as exc:
+            logger.debug(f"Failed to save context payload to disk (non-fatal): {exc}")
+
+        # Build brief as full JSON (all fields, not just 3)
+        brief_json = json.dumps(investigation_brief, indent=2) if investigation_brief else "{}"
+
+        # Build write permissions as JSON
+        write_perms_json = json.dumps({
+            "writable": write_perms.get("writable_sections", []),
+            "readable": write_perms.get("readable_sections", []),
+            "context_update_required": [s for s in write_perms.get("writable_sections", [])
+                                         if not project_knowledge.get(s)]
+        }, indent=2)
+
+        context_string = f"""{rules_section}
+# Project Context
+
+{json.dumps(project_knowledge, indent=2)}
+
+# Routing
+{routing_section}
+# Brief
+
+{brief_json}
+
+# Permissions
+
+{write_perms_json}
+{pending_warning}{update_reminder}{metadata_section}{historical_section}"""
+
+        # Append anomaly signal flag (consume once)
+        context_string = consume_anomaly_flag(context_string)
+
+        # Surface recent critical anomalies from the JSONL log
+        critical_summary = check_recent_critical_anomalies()
+        if critical_summary:
+            context_string += critical_summary
+
+        # Inject recent operational events (non-blocking)
+        try:
+            from ..events.event_writer import read_events
+            recent = read_events(hours=24, limit=20)
+            if recent:
+                lines = ["\n# Recent Events (last 24h)"]
+                for evt in recent:
+                    ts_short = evt.get("ts", "")[:16]
+                    etype = evt.get("type", "")
+                    agent_name = evt.get("agent", "")
+                    result_str = evt.get("result", "")
+                    label = f"{agent_name}: " if agent_name else ""
+                    lines.append(f"- [{ts_short}] {etype}: {label}{result_str}")
+                context_string += "\n".join(lines) + "\n"
+        except Exception as exc:
+            logger.debug("Event context injection failed (non-fatal): %s", exc)
+
+        # Build telemetry snapshot
+        telemetry = build_context_telemetry_snapshot(context_payload)
+
+        sections_count = len(context_payload.get("project_knowledge", {}))
+        rules_count = context_payload.get("metadata", {}).get("rules_count", 0)
+
+        logger.info(
+            f"Context built for {subagent_type} "
+            f"(sections={sections_count}, rules={rules_count})"
+        )
+
+        return context_string, telemetry
+
+    except subprocess.TimeoutExpired:
+        logger.error("context_provider.py timed out (15s)")
+        return None, {}
+    except Exception as e:
+        logger.error(f"Error building context: {e}", exc_info=True)
+        return None, {}
+
+

@@ -1,0 +1,10 @@
+{
+  "rules": {
+    "universal": [
+      {
+        "rule": "Your prompt includes a Project Context section with confirmed project knowledge. Extract relevant data from it BEFORE executing commands."
+      }
+    ],
+    "agent_specific": {}
+  }
+}
