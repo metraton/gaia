@@ -46,10 +46,10 @@ function detectGaiaOpsRoot(startPath) {
 // Buscar node_modules de múltiples maneras
 function findNodeModulesPath(gaiaOpsRoot) {
   const candidates = [
-    path.resolve(gaiaOpsRoot, '..', 'node_modules'),           // ../node_modules
-    path.resolve(gaiaOpsRoot, 'node_modules'),                 // ./node_modules
+    path.resolve(gaiaOpsRoot, 'node_modules'),                 // ./node_modules (CI: npm ci in repo root)
+    path.resolve(gaiaOpsRoot, '..', 'node_modules'),           // ../node_modules (monorepo consumer)
     path.resolve(process.cwd(), 'node_modules'),               // cwd/node_modules
-    path.join(gaiaOpsRoot, '..', '..', 'node_modules'),        // ../../node_modules
+    path.join(gaiaOpsRoot, '..', '..', 'node_modules'),        // ../../node_modules (deep nesting)
   ];
 
   for (const candidate of candidates) {
@@ -59,8 +59,16 @@ function findNodeModulesPath(gaiaOpsRoot) {
     }
   }
 
-  // Si no encuentra, retorna la ruta esperada (será creada por npm install)
-  return path.resolve(gaiaOpsRoot, '..', 'node_modules');
+  // In CI, node_modules exists inside the repo root (npm ci) but won't contain
+  // the package itself as a nested dependency. Prefer gaiaOpsRoot/node_modules
+  // over going up a level (which breaks in CI checkout structures).
+  const localNodeModules = path.resolve(gaiaOpsRoot, 'node_modules');
+  if (fs.existsSync(localNodeModules)) {
+    return localNodeModules;
+  }
+
+  // Fallback: use __dirname-relative path (repo root) instead of process.cwd()
+  return path.resolve(gaiaOpsRoot, 'node_modules');
 }
 
 const GAIA_OPS_ROOT = detectGaiaOpsRoot(path.resolve(__dirname, '..'));
@@ -219,14 +227,21 @@ class PrePublishValidator {
   }
 
   reinstallNodeModules() {
-    this.log('Reinstalling node_modules in monorepo...', 'info');
+    this.log('Reinstalling node_modules...', 'info');
 
     if (this.dryRun) {
       this.log('[DRY RUN] Would run: npm install', 'info');
       return;
     }
 
-    this.execute('npm install', MONOREPO_ROOT);
+    // In CI, MONOREPO_ROOT may resolve incorrectly (one level above checkout).
+    // Use GAIA_OPS_ROOT if it contains a package.json (i.e., we ARE the root).
+    const installDir = fs.existsSync(path.join(GAIA_OPS_ROOT, 'package-lock.json'))
+      ? GAIA_OPS_ROOT
+      : MONOREPO_ROOT;
+
+    this.log(`Install directory: ${installDir}`, 'info');
+    this.execute('npm install', installDir);
     this.log('✓ npm install completed', 'success');
   }
 
