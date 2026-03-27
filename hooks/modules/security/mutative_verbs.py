@@ -24,6 +24,15 @@ from typing import Dict, FrozenSet, List, Tuple
 from .approval_messages import build_t3_approval_instructions
 from .command_semantics import analyze_command
 
+try:
+    from .blocked_commands import is_blocked_command as _is_blocked_command
+except ImportError:
+    _is_blocked_command = None
+    logging.getLogger(__name__).warning(
+        "blocked_commands.is_blocked_command not importable; "
+        "inline code Layer 1 (shell extraction) disabled"
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -157,35 +166,108 @@ VERB_FLAG_READ_ONLY_OVERRIDES: Dict[Tuple[str, str], FrozenSet[str]] = {
 
 
 # ============================================================================
-# Inline Code Dangerous Patterns (python3 -c, python -c)
+# Inline Code Detection — Language-Agnostic 3-Layer Approach
 # ============================================================================
-# When the base command is a runtime interpreter with inline code (-c flag),
-# scan the code string for dangerous patterns instead of verb-matching tokens.
+# When the base command is a runtime interpreter with an inline code flag
+# (e.g., python3 -c, node -e, ruby -e, perl -e), scan the code string
+# using three layers instead of verb-matching tokens:
+#   Layer 1: Extract string literals → check against blocked_commands
+#   Layer 2: Universal dangerous API keyword patterns
+#   Layer 3: Heuristic safety classification (length, paths, encoding)
 import re as _re
 
-_DANGEROUS_INLINE_PATTERNS: Tuple[Tuple[_re.Pattern, str], ...] = (
-    (_re.compile(r"os\.remove\b"), "os.remove"),
-    (_re.compile(r"os\.unlink\b"), "os.unlink"),
-    (_re.compile(r"os\.rmdir\b"), "os.rmdir"),
-    (_re.compile(r"os\.rename\b"), "os.rename"),
-    (_re.compile(r"os\.makedirs?\b"), "os.makedirs"),
-    (_re.compile(r"os\.system\b"), "os.system"),
-    (_re.compile(r"shutil\.rmtree\b"), "shutil.rmtree"),
-    (_re.compile(r"shutil\.move\b"), "shutil.move"),
-    (_re.compile(r"shutil\.copy\b"), "shutil.copy"),
-    # subprocess — commands spawned inside python -c bypass the hook entirely
-    # (they run in-process, not as a new Bash tool invocation). Flag as mutative
-    # so the user sees what will execute.
-    (_re.compile(r"subprocess\.(run|call|check_call|check_output|Popen)\b"), "subprocess execution"),
-    (_re.compile(r"open\s*\([^)]*['\"][wWaA]['\"]"), "file write via open()"),
-    (_re.compile(r"\.write\s*\("), "file write"),
-    (_re.compile(r"pathlib\.Path\([^)]*\)\.(unlink|rmdir|rename|write_)"), "pathlib mutation"),
+# ---------------------------------------------------------------------------
+# CLI → inline-code flag mapping (Step 1a)
+# ---------------------------------------------------------------------------
+_INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
+    "python": frozenset({"-c"}),
+    "python3": frozenset({"-c"}),
+    "python3.10": frozenset({"-c"}),
+    "python3.11": frozenset({"-c"}),
+    "python3.12": frozenset({"-c"}),
+    "python3.13": frozenset({"-c"}),
+    "node": frozenset({"-e", "--eval"}),
+    "ruby": frozenset({"-e"}),
+    "perl": frozenset({"-e", "-E"}),
+    "php": frozenset({"-r"}),
+    "lua": frozenset({"-e"}),
+    "rscript": frozenset({"-e"}),
+}
+_INLINE_CODE_CLIS: FrozenSet[str] = frozenset(_INLINE_CODE_MAP.keys())
+
+# ---------------------------------------------------------------------------
+# Layer 1: Shell command extraction from string literals
+# ---------------------------------------------------------------------------
+_STRING_LITERAL_RE = _re.compile(r"""(?:['"])((?:[^'"\\\n]|\\.){3,})(?:['"])""")
+
+
+def _extract_embedded_shell_commands(code: str) -> List[str]:
+    """Extract string literals from inline code that may contain shell commands."""
+    return [m.group(1) for m in _STRING_LITERAL_RE.finditer(code)]
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: Universal dangerous API keyword patterns (category-based)
+# ---------------------------------------------------------------------------
+_UNIVERSAL_DANGEROUS_PATTERNS: Tuple[Tuple[_re.Pattern, str, str], ...] = (
+    # Category: Process Execution
+    (_re.compile(r"\b(child_process|subprocess)\b"), "process-module", "PROCESS_EXECUTION"),
+    (_re.compile(r"\b(execSync|execFile|execFileSync)\s*\("), "exec-sync", "PROCESS_EXECUTION"),
+    (_re.compile(r"\bos\.(system|popen|exec[lv]?[pe]?)\s*\("), "os-exec", "PROCESS_EXECUTION"),
+    (_re.compile(r"\b(system|exec)\s*\("), "system-call", "PROCESS_EXECUTION"),
+    (_re.compile(r"\bspawn(Sync)?\s*\("), "spawn-call", "PROCESS_EXECUTION"),
+    (_re.compile(r"\bPopen\s*\("), "popen-call", "PROCESS_EXECUTION"),
+    (_re.compile(r"`[^`]{3,}`"), "backtick-exec", "PROCESS_EXECUTION"),
+
+    # Category: File Deletion
+    (_re.compile(r"\b(os\.remove|os\.unlink|os\.rmdir)\s*\("), "os-delete", "FILE_DELETION"),
+    (_re.compile(r"\b(shutil\.rmtree|shutil\.move)\s*\("), "shutil-delete", "FILE_DELETION"),
+    (_re.compile(r"\bfs\.(unlink|rmdir|rm)(Sync)?\s*\("), "fs-delete", "FILE_DELETION"),
+    # Also match .unlinkSync( / .rmSync( / .rmdirSync( as method calls (e.g., require('fs').unlinkSync())
+    (_re.compile(r"\.(unlink|rmdir|rm)(Sync)?\s*\("), "fs-delete", "FILE_DELETION"),
+    (_re.compile(r"\bFile\.(delete|unlink)\s*\("), "file-delete", "FILE_DELETION"),
+    (_re.compile(r"\bunlink\s*\("), "unlink-call", "FILE_DELETION"),
+    (_re.compile(r"\brmtree\s*\("), "rmtree-call", "FILE_DELETION"),
+    (_re.compile(r"\bFileUtils\.rm"), "fileutils-rm", "FILE_DELETION"),
+    (_re.compile(r"pathlib\.Path\([^)]*\)\.(unlink|rmdir)"), "pathlib-delete", "FILE_DELETION"),
+
+    # Category: File Write
+    (_re.compile(r"open\s*\([^)]*['\"][wWaA]"), "file-write-open", "FILE_WRITE"),
+    (_re.compile(r"\bfs\.writeFile(Sync)?\s*\("), "fs-write", "FILE_WRITE"),
+    # Also match .writeFileSync( / .appendFileSync( as method calls
+    (_re.compile(r"\.writeFile(Sync)?\s*\("), "fs-write", "FILE_WRITE"),
+    (_re.compile(r"\bfs\.appendFile(Sync)?\s*\("), "fs-append", "FILE_WRITE"),
+    (_re.compile(r"\.appendFile(Sync)?\s*\("), "fs-append", "FILE_WRITE"),
+    (_re.compile(r"\bFile\.(write|open)\b.*['\"][wWaA]"), "file-write-ruby", "FILE_WRITE"),
+    (_re.compile(r"\.write\s*\("), "file-write", "FILE_WRITE"),
+    (_re.compile(r"pathlib\.Path\([^)]*\)\.(rename|write_)"), "pathlib-write", "FILE_WRITE"),
+
+    # Category: File System Mutation (os.rename, os.makedirs, shutil.copy)
+    (_re.compile(r"\bos\.rename\s*\("), "os-rename", "FILE_MUTATION"),
+    (_re.compile(r"\bos\.makedirs?\s*\("), "os-makedirs", "FILE_MUTATION"),
+    (_re.compile(r"\bshutil\.copy\s*\("), "shutil-copy", "FILE_MUTATION"),
+
+    # Category: Network
+    (_re.compile(r"\bhttps?://\S+"), "url-literal", "NETWORK"),
+    (_re.compile(r"\b(fetch|axios|requests\.get|urllib)\s*\("), "http-call", "NETWORK"),
+    (_re.compile(r"\bNet::HTTP\b"), "net-http", "NETWORK"),
+
+    # Category: Permission Modification
+    (_re.compile(r"\bos\.chmod\s*\("), "os-chmod", "PERMISSION_MOD"),
+    (_re.compile(r"\bfs\.chmod(Sync)?\s*\("), "fs-chmod", "PERMISSION_MOD"),
 )
 
-# CLIs that accept -c for inline code execution
-_INLINE_CODE_CLIS: FrozenSet[str] = frozenset({
-    "python", "python3", "python3.10", "python3.11", "python3.12", "python3.13",
-})
+# ---------------------------------------------------------------------------
+# Layer 3: Heuristic safety classification
+# ---------------------------------------------------------------------------
+_SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
+    (_re.compile(r"(/etc/|/home/|~/\.ssh|/var/|/usr/|/root/)"), "sensitive-path"),
+    (_re.compile(r"\b(base64|b64encode|b64decode|atob|btoa)\b"), "encoding"),
+    (_re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "ip-address"),
+)
+
+MAX_SAFE_INLINE_LENGTH = 150
+MAX_NORMAL_INLINE_LENGTH = 500
 
 
 # ============================================================================
@@ -459,11 +541,12 @@ def detect_mutative_command(command: str) -> MutativeResult:
             reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
 
-    # --- Step 3b: Inline code safety check (python3 -c "...") ---
-    # For runtime interpreters with -c, scan the code string for dangerous
-    # patterns instead of verb-matching tokens (which would false-positive on
-    # generic keywords like "import", "create", etc.).
-    if base_cmd in _INLINE_CODE_CLIS and "-c" in semantics.flag_tokens:
+    # --- Step 3b: Inline code safety check (python3 -c, node -e, etc.) ---
+    # For runtime interpreters with inline code flags, scan the code string
+    # using the 3-layer approach instead of verb-matching tokens (which would
+    # false-positive on generic keywords like "import", "create", etc.).
+    cli_flags = _INLINE_CODE_MAP.get(base_cmd, frozenset())
+    if base_cmd in _INLINE_CODE_CLIS and cli_flags & set(semantics.flag_tokens):
         return _check_inline_code(command, base_cmd, family)
 
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
@@ -613,21 +696,41 @@ def detect_mutative_command(command: str) -> MutativeResult:
 # ============================================================================
 
 def _check_inline_code(command: str, base_cmd: str, family: str) -> MutativeResult:
-    """Check inline code (python3 -c "...") for dangerous patterns.
+    """Check inline code for dangerous patterns using a 3-layer approach.
 
-    Instead of verb-matching tokens (which false-positive on generic keywords
-    like "import", "create"), scan the raw code string for known dangerous
-    function calls.
+    Layer 1: Extract string literals from inline code and check them against
+             blocked_commands (catches embedded shell commands like 'rm -rf /').
+    Layer 2: Scan for universal dangerous API keywords (language-agnostic).
+    Layer 3: Heuristic safety classification (length, sensitive paths, encoding).
 
     Args:
         command: Full raw command string.
-        base_cmd: The interpreter (e.g., "python3").
+        base_cmd: The interpreter (e.g., "python3", "node", "ruby").
         family: CLI family hint.
 
     Returns:
-        MutativeResult -- MUTATIVE if dangerous patterns found, else safe.
+        MutativeResult -- MUTATIVE if any layer triggers, else safe.
     """
-    for pattern, label in _DANGEROUS_INLINE_PATTERNS:
+    # ---- Layer 1: Extract string literals → check against blocked_commands ----
+    if _is_blocked_command is not None:
+        embedded_strings = _extract_embedded_shell_commands(command)
+        for literal in embedded_strings:
+            blocked = _is_blocked_command(literal)
+            if blocked.is_blocked:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="embedded-blocked-cmd",
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Inline code contains blocked shell command in "
+                        f"string literal: {blocked.category}"
+                    ),
+                )
+
+    # ---- Layer 2: Universal dangerous API keyword patterns ----
+    for pattern, label, category in _UNIVERSAL_DANGEROUS_PATTERNS:
         if pattern.search(command):
             return MutativeResult(
                 is_mutative=True,
@@ -635,17 +738,54 @@ def _check_inline_code(command: str, base_cmd: str, family: str) -> MutativeResu
                 verb=label,
                 cli_family=family,
                 confidence="medium",
-                reason=f"Inline code contains dangerous pattern: {label}",
+                reason=f"Inline code contains dangerous pattern: {label} ({category})",
             )
 
-    # No dangerous patterns found -- safe inline code
+    # ---- Layer 3: Heuristic safety classification ----
+    # 3a: Check for suspicious indicators (sensitive paths, encoding, IPs)
+    for pattern, label in _SUSPICIOUS_HEURISTICS:
+        if pattern.search(command):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=f"heuristic-{label}",
+                cli_family=family,
+                confidence="low",
+                reason=f"Inline code flagged by heuristic: {label}",
+            )
+
+    # 3b: Unusually long inline code is suspicious
+    # Extract the code portion after the inline flag for length check.
+    # Use a rough extraction: everything after the first inline flag.
+    code_portion = command
+    cli_flag_tokens = _INLINE_CODE_MAP.get(base_cmd, frozenset())
+    for flag in cli_flag_tokens:
+        idx = command.find(f" {flag} ")
+        if idx != -1:
+            code_portion = command[idx + len(flag) + 2:]
+            break
+
+    if len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="heuristic-long-code",
+            cli_family=family,
+            confidence="low",
+            reason=(
+                f"Inline code is unusually long ({len(code_portion)} chars > "
+                f"{MAX_NORMAL_INLINE_LENGTH} limit)"
+            ),
+        )
+
+    # ---- No layers triggered -- safe inline code ----
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
         verb="inline-code",
         cli_family=family,
         confidence="medium",
-        reason=f"Inline code ({base_cmd} -c) with no dangerous patterns",
+        reason=f"Inline code ({base_cmd}) with no dangerous patterns",
     )
 
 

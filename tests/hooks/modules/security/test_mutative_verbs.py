@@ -380,17 +380,19 @@ class TestInlineCodeDetection:
         result = detect_mutative_command('python3 -c "import os; os.remove(f)"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert "os.remove" in result.verb
+        assert result.verb == "os-delete"
 
     def test_dangerous_shutil_rmtree(self):
         result = detect_mutative_command('python3 -c "import shutil; shutil.rmtree(d)"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
+        assert result.verb == "shutil-delete"
 
     def test_dangerous_file_write(self):
         result = detect_mutative_command("python3 -c \"open('f', 'w').write('data')\"")
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
+        assert result.verb == "file-write-open"
 
     def test_subprocess_is_mutative(self):
         """subprocess in python -c is flagged -- the inner command runs in-process,
@@ -398,13 +400,220 @@ class TestInlineCodeDetection:
         result = detect_mutative_command('python3 -c "import subprocess; subprocess.run([\"ls\"])"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert "subprocess" in result.verb
+        assert result.verb == "process-module"
 
     def test_python_variant(self):
         """python (not python3) with -c should also be checked."""
         result = detect_mutative_command('python -c "import os; os.remove(f)"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
+
+
+class TestUniversalInlineCodeDetection:
+    """Language-agnostic 3-layer inline code detection for node, ruby, perl, etc."""
+
+    # ---- Layer 1: Shell command extraction from string literals ----
+
+    def test_node_exec_with_shell_command(self):
+        """node -e with execSync running a shell command -> mutative via Layer 2."""
+        result = detect_mutative_command(
+            """node -e "require('child_process').execSync('rm -rf /tmp/x')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_ruby_system_with_shell_command(self):
+        """ruby -e with system() call -> mutative via Layer 2."""
+        result = detect_mutative_command(
+            """ruby -e "system('terraform destroy')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_perl_exec_with_shell_command(self):
+        """perl -e with exec() call -> mutative via Layer 2."""
+        result = detect_mutative_command(
+            """perl -e "exec('kubectl delete ns prod')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    # ---- Layer 2: Universal dangerous API keywords ----
+
+    def test_node_fs_unlink(self):
+        """node -e with fs.unlinkSync -> mutative (FILE_DELETION)."""
+        result = detect_mutative_command(
+            """node -e "require('fs').unlinkSync('/tmp/x')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "fs-delete"
+
+    def test_ruby_file_delete(self):
+        """ruby -e with File.delete -> mutative (FILE_DELETION)."""
+        result = detect_mutative_command(
+            """ruby -e "File.delete('/tmp/x')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "file-delete"
+
+    def test_perl_unlink(self):
+        """perl -e with unlink() -> mutative (FILE_DELETION)."""
+        result = detect_mutative_command(
+            """perl -e "unlink('/tmp/x')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "unlink-call"
+
+    def test_node_child_process(self):
+        """node -e requiring child_process -> mutative (PROCESS_EXECUTION module)."""
+        result = detect_mutative_command(
+            """node -e "require('child_process')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "process-module"
+
+    def test_node_fs_write(self):
+        """node -e with fs.writeFileSync -> mutative (FILE_WRITE)."""
+        result = detect_mutative_command(
+            """node -e "require('fs').writeFileSync('/tmp/x', 'data')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "fs-write"
+
+    def test_node_eval_flag(self):
+        """node --eval (long form) should also trigger inline code detection."""
+        result = detect_mutative_command(
+            """node --eval "require('child_process').execSync('ls')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_perl_capital_e_flag(self):
+        """perl -E (capital) should also trigger inline code detection."""
+        result = detect_mutative_command(
+            """perl -E "unlink('/tmp/x')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_php_inline_code(self):
+        """php -r with system() -> mutative."""
+        result = detect_mutative_command(
+            """php -r "system('rm /tmp/x');" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_ruby_fileutils_rm(self):
+        """ruby -e with FileUtils.rm -> mutative (FILE_DELETION)."""
+        result = detect_mutative_command(
+            """ruby -e "FileUtils.rm_rf('/tmp/x')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "fileutils-rm"
+
+    # ---- Safe inline code (all languages) ----
+
+    def test_node_console_log_safe(self):
+        """node -e with console.log -> NOT mutative."""
+        result = detect_mutative_command(
+            """node -e "console.log('hello')" """
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_ruby_puts_safe(self):
+        """ruby -e with puts -> NOT mutative."""
+        result = detect_mutative_command(
+            """ruby -e "puts 'hello'" """
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_perl_print_safe(self):
+        """perl -e with print -> NOT mutative."""
+        result = detect_mutative_command(
+            """perl -e "print 'hello'" """
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_node_version_check_safe(self):
+        """node -e reading package.json version -> NOT mutative."""
+        result = detect_mutative_command(
+            """node -e "console.log(JSON.parse('{}').version)" """
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_python_print_safe(self):
+        """python3 -c with print -> NOT mutative (regression check)."""
+        result = detect_mutative_command(
+            """python3 -c "print('hello')" """
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_lua_safe_print(self):
+        """lua -e with print -> NOT mutative."""
+        result = detect_mutative_command(
+            """lua -e "print('hello')" """
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    # ---- Layer 3: Heuristics ----
+
+    def test_suspicious_sensitive_path(self):
+        """Inline code accessing /etc/passwd -> suspicious via heuristic."""
+        result = detect_mutative_command(
+            """node -e "readFile('/etc/passwd')" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert "heuristic" in result.verb
+        assert "sensitive-path" in result.verb
+
+    def test_suspicious_base64(self):
+        """Inline code with atob (base64 decoding) -> suspicious via heuristic."""
+        result = detect_mutative_command(
+            """node -e "eval(atob('dGVzdA=='))" """
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert "heuristic" in result.verb
+        assert "encoding" in result.verb
+
+    def test_long_inline_code_suspicious(self):
+        """Very long inline code (>500 chars) -> suspicious via heuristic."""
+        long_code = "x" * 510
+        result = detect_mutative_command(
+            f'node -e "{long_code}"'
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert "heuristic-long-code" in result.verb
+
+    def test_short_safe_code_not_suspicious(self):
+        """Short safe inline code should NOT trigger length heuristic."""
+        result = detect_mutative_command(
+            """node -e "console.log(1+1)" """
+        )
+        assert result.is_mutative is False
+
+    def test_ip_address_heuristic(self):
+        """Inline code with an IP address -> suspicious via heuristic."""
+        result = detect_mutative_command(
+            """node -e "connect('192.168.1.1')" """
+        )
+        assert result.is_mutative is True
+        assert "ip-address" in result.verb
 
 
 class TestBuildT3BlockResponse:
