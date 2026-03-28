@@ -518,11 +518,21 @@ class PrePublishValidator {
 // Parse command line arguments and run
 async function main() {
   const args = process.argv.slice(2);
+  const isCI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+
   const options = {
     dryRun: args.includes('--dry-run'),
-    validateOnly: args.includes('--validate-only'),
+    validateOnly: args.includes('--validate-only') || isCI,
     versionBump: 'patch'
   };
+
+  if (isCI && !args.includes('--validate-only')) {
+    console.log(chalk.blue(
+      '[CI] Auto-enabling --validate-only: ' +
+      'self-install validation is not possible during npm publish ' +
+      '(package is not yet on the registry).'
+    ));
+  }
 
   if (args.includes('major')) options.versionBump = 'major';
   if (args.includes('minor')) options.versionBump = 'minor';
