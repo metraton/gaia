@@ -291,6 +291,7 @@ COMMAND_ALIASES: Dict[str, str] = {
     "chmod": CATEGORY_MUTATIVE,
     "chown": CATEGORY_MUTATIVE,
     "chgrp": CATEGORY_MUTATIVE,
+    "nohup": CATEGORY_MUTATIVE,
 }
 
 
