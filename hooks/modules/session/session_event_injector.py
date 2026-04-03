@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 AGENT_EVENT_FILTERS = {
     "terraform-architect": ["git_commit", "infrastructure_change"],
     "gitops-operator": ["git_commit", "git_push", "infrastructure_change"],
-    "devops-developer": ["git_commit", "file_modifications"],
+    "developer": ["git_commit", "file_modifications"],
     "cloud-troubleshooter": "*",  # All events (needs full history for diagnosis)
     "gaia-system": "*"  # All events (workflow analysis)
 }

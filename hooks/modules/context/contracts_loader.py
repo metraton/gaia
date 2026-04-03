@@ -46,7 +46,7 @@ def build_context_update_reminder(
     then checks project-context.json to see which are empty.
 
     Args:
-        subagent_type: The agent type string (e.g. devops-developer).
+        subagent_type: The agent type string (e.g. developer).
         project_agents: List of valid project agent names.
         hooks_dir: Path to the hooks directory (for fallback config lookup).
             Defaults to Path(__file__).parent.parent.parent if None.

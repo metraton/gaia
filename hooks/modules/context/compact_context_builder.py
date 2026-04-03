@@ -67,7 +67,7 @@ def _build_identity_block() -> str:
         "SendMessage(to: agentId), get user approval via AskUserQuestion. "
         "Never execute infrastructure commands directly.\n"
         "Agents: cloud-troubleshooter, gitops-operator, terraform-architect, "
-        "devops-developer, speckit-planner, gaia-system"
+        "developer, speckit-planner, gaia-system"
     )
 
 

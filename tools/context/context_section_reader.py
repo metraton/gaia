@@ -102,7 +102,7 @@ class ContextSectionReader:
             'cluster_details',
             'application_services',
         ],
-        'devops-developer': [
+        'developer': [
             'project_identity',
             'stack',
             'git',

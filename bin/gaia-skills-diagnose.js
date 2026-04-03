@@ -33,7 +33,7 @@ const CONTEXT_INJECTED_AGENTS = new Set([
   "terraform-architect",
   "gitops-operator",
   "cloud-troubleshooter",
-  "devops-developer",
+  "developer",
 ]);
 const REQUIRED_PROJECT_SKILLS = ["agent-protocol", "context-updater"];
 
