@@ -114,6 +114,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Deletion / removal (approvable via nonce -- blocked_commands.py catches
     # the truly destructive patterns like "delete namespace", "delete-vpc", etc.)
     "delete", "destroy", "remove", "drop", "purge", "wipe", "clean",
+    "trash", "shred", "srm",
     "truncate", "kill", "terminate", "uninstall", "unpublish",
     "drain", "evict", "cordon", "deregister", "detach",
     "disconnect", "unbind", "reset", "force-delete", "force-remove", "erase",
