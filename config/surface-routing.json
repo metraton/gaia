@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "reconnaissance_agent": "devops-developer",
+  "reconnaissance_agent": "developer",
   "surfaces": {
     "live_runtime": {
       "primary_agent": "cloud-troubleshooter",
@@ -89,7 +89,7 @@
       }
     },
     "app_ci_tooling": {
-      "primary_agent": "devops-developer",
+      "primary_agent": "developer",
       "adjacent_surfaces": ["terraform_iac", "gitops_desired_state"],
       "contract_sections": ["project_identity", "stack", "git", "environment", "infrastructure", "application_services", "operational_guidelines", "architecture_overview"],
       "required_checks": [
