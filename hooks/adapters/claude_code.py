@@ -375,6 +375,26 @@ class ClaudeCodeAdapter(HookAdapter):
         )
 
     # ------------------------------------------------------------------ #
+    # _get_gaia_agent_names: discover Gaia-managed agents from agents/ dir
+    # ------------------------------------------------------------------ #
+
+    def _get_gaia_agent_names(self) -> set:
+        """Get names of Gaia-managed agents from the agents/ directory.
+
+        Returns a set of agent names (filenames without .md extension).
+        Native Claude Code agents (Explore, Plan, claude-code-guide) will
+        not appear in this set, enabling bypass of contract validation.
+        """
+        agents_dir = Path(__file__).resolve().parent.parent.parent / "agents"
+        if not agents_dir.is_dir():
+            return set()
+        return {
+            f.stem
+            for f in agents_dir.iterdir()
+            if f.suffix == ".md" and f.is_file()
+        }
+
+    # ------------------------------------------------------------------ #
     # format_ask_response: for interactive permission requests
     # ------------------------------------------------------------------ #
 
@@ -953,6 +973,24 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.info("Agent output: %d chars from last_assistant_message", len(agent_output))
 
         task_info = build_task_info_from_hook_data(hook_data, agent_output)
+
+        # ----------------------------------------------------------
+        # Native agent bypass: agents not defined in agents/ dir
+        # (e.g. claude-code-guide, Explore, Plan) do not emit
+        # json:contract. Skip contract validation to avoid an
+        # infinite retry loop (exit_code=2 -> retry -> no contract).
+        # ----------------------------------------------------------
+        _native_agent_type = task_info.get("agent", "unknown")
+        _gaia_agents = self._get_gaia_agent_names()
+        if _native_agent_type not in _gaia_agents:
+            logger.info(
+                "Native agent '%s' — skipping contract validation (gaia agents: %s)",
+                _native_agent_type, _gaia_agents,
+            )
+            return HookResponse(
+                output={"success": True, "native_agent": True, "agent": _native_agent_type},
+                exit_code=0,
+            )
 
         # Run the main processing chain
         try:
