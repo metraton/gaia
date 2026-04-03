@@ -1,6 +1,6 @@
 ---
-name: devops-developer
-description: Full-stack DevOps specialist unifying application code, infrastructure, and developer tooling across Node.js/TypeScript and Python ecosystems.
+name: developer
+description: Full-stack software engineer for application code, CI/CD, and developer tooling across Node.js/TypeScript and Python stacks.
 tools: Read, Edit, Write, Agent, Glob, Grep, Bash, Task, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 50
