@@ -148,16 +148,15 @@ class TestSafeCommandFlow:
 class TestMutativeCommandFlow:
     """Integration: mutative command -> adapter parse -> validate -> deny response."""
 
-    def test_git_commit_mutative_flow(self):
-        """Mutative: git commit -> ask (native dialog, no nonce)."""
+    def test_git_commit_allowed_flow(self):
+        """v5: git commit is NOT mutative (removed from MUTATIVE_VERBS intentionally)."""
         event, bash_result, response = _run_pretool_bash_flow(
             'git commit -m "feat(auth): add login"'
         )
 
-        assert bash_result.allowed is False
-        assert bash_result.tier == SecurityTier.T3_BLOCKED
-        assert bash_result.block_response is not None
-        assert bash_result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert bash_result.allowed is True
+        assert bash_result.tier == SecurityTier.T0_READ_ONLY
+        assert bash_result.block_response is None
 
     def test_terraform_apply_mutative_flow(self, tmp_path, monkeypatch):
         """Mutative: terraform apply -> denied."""

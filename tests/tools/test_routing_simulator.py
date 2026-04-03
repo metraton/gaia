@@ -240,11 +240,17 @@ class TestSkillsMapper:
         assert "speckit-planner" in names
 
     def test_agent_profiles_have_skills(self, mapper):
+        """Specialist agents have skills via frontmatter; orchestrator uses on-demand Skill tool."""
         profiles = mapper.get_agent_profiles()
         for profile in profiles:
             assert isinstance(profile.skills, list)
-            # Every agent should have at least agent-protocol
-            assert "agent-protocol" in profile.skills
+            if profile.agent_name == "gaia-orchestrator":
+                # v5: orchestrator has skills: [] -- loads skills on-demand via Skill tool
+                assert profile.skills == [], \
+                    "Orchestrator should have empty skills list (uses on-demand Skill tool)"
+            else:
+                # Specialist agents should have at least agent-protocol
+                assert "agent-protocol" in profile.skills
 
     def test_agent_profiles_have_surfaces(self, mapper):
         profiles = mapper.get_agent_profiles()

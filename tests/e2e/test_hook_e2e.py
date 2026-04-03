@@ -151,19 +151,15 @@ class TestPreToolUseMutative:
 
     HOOK = "pre_tool_use.py"
 
-    def test_git_commit_deny_subagent(self):
-        """git commit from subagent is mutative, should get deny with approval_id."""
+    def test_git_commit_allowed_subagent(self):
+        """git commit is no longer mutative (removed from MUTATIVE_VERBS in v5).
+        It passes through as safe-by-elimination."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_MUTATIVE)
-        assert code == 0, f"Expected exit 0 (deny), got {code}. stderr: {stderr}"
-        assert response is not None, "Expected JSON response for mutative deny"
-        hook_output = response.get("hookSpecificOutput", {})
-        assert hook_output.get("permissionDecision") == "deny", (
-            f"Expected deny, got: {hook_output.get('permissionDecision')}"
-        )
-        # Subagent deny should include approval_id
-        reason = hook_output.get("permissionDecisionReason", "")
-        assert "approval_id:" in reason, (
-            f"Expected approval_id in deny reason, got: {reason}"
+        # commit is not mutative, so it's allowed (no JSON response)
+        assert code == 0, f"Expected exit 0 (allow), got {code}. stderr: {stderr}"
+        # No block response means allowed
+        assert response is None, (
+            f"Expected no response (allowed), got: {response}"
         )
 
     def test_kubectl_apply_deny_subagent(self):

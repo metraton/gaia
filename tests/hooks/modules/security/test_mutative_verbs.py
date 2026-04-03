@@ -87,7 +87,7 @@ class TestCommandAliases:
 
     def test_all_aliases_in_constant(self):
         """Verify all expected command aliases are registered."""
-        expected_aliases = {"rm", "rmdir", "mv", "cp", "ln", "dd", "mkfs", "fdisk", "chmod", "chown", "chgrp"}
+        expected_aliases = {"rm", "rmdir", "mv", "cp", "ln", "dd", "mkfs", "fdisk", "chmod", "chown", "chgrp", "nohup"}
         assert expected_aliases == set(COMMAND_ALIASES.keys())
 
 
@@ -112,9 +112,10 @@ class TestMutativeVerbScanning:
         assert result.is_mutative is True
         assert result.verb == "push"
 
-    def test_git_commit(self):
+    def test_git_commit_not_mutative(self):
+        """git commit was removed from MUTATIVE_VERBS in v5."""
         result = detect_mutative_command('git commit -m "msg"')
-        assert result.is_mutative is True
+        assert result.is_mutative is False
         assert result.verb == "commit"
 
     def test_helm_install(self):

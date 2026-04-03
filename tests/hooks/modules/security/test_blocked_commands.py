@@ -379,9 +379,9 @@ class TestBlockedPatternsCategories:
         assert category in BLOCKED_PATTERNS
         assert len(BLOCKED_PATTERNS[category]) > 0
 
-    def test_exactly_thirteen_categories(self):
-        """Test there are exactly 13 categories (including azure_critical)."""
-        assert len(BLOCKED_PATTERNS) == 13
+    def test_exactly_fourteen_categories(self):
+        """Test there are exactly 14 categories (including email_critical added in v5)."""
+        assert len(BLOCKED_PATTERNS) == 14
 
 
 class TestTerraformDestroyBlocked:

@@ -31,26 +31,37 @@ class TestSecurityIdentity:
 
 
 class TestOpsIdentity:
+    """ops_identity.py is now a stub (returns empty string).
+    Full identity lives in agents/gaia-orchestrator.md.
+    These tests verify the agent definition file contains the required elements.
+    """
 
-    def test_ops_identity_has_orchestrator(self):
-        identity = build_ops_identity()
-        assert "Orchestrator" in identity
+    @pytest.fixture(autouse=True)
+    def _load_agent_def(self):
+        agent_def = Path(__file__).resolve().parents[4] / "agents" / "gaia-orchestrator.md"
+        assert agent_def.exists(), "agents/gaia-orchestrator.md not found"
+        self.agent_content = agent_def.read_text()
 
-    def test_ops_identity_has_deterministic_routing(self):
-        """Identity references routing recommendation."""
+    def test_ops_identity_stub_returns_empty(self):
+        """build_ops_identity() is now a stub returning empty string."""
         identity = build_ops_identity()
-        assert "routing recommendation" in identity, (
-            "Identity must reference routing recommendation for deterministic routing"
+        assert identity == ""
+
+    def test_agent_def_has_orchestrator(self):
+        assert "Orchestrator" in self.agent_content
+
+    def test_agent_def_has_deterministic_routing(self):
+        """Agent definition references routing recommendation."""
+        assert "routing recommendation" in self.agent_content, (
+            "Agent def must reference routing recommendation for deterministic routing"
         )
 
-    def test_ops_identity_has_sendmessage(self):
-        identity = build_ops_identity()
-        assert "SendMessage" in identity
+    def test_agent_def_has_sendmessage(self):
+        assert "SendMessage" in self.agent_content
 
-    def test_ops_identity_has_routing_modes(self):
-        """Identity documents the dispatch mode for routing."""
-        identity = build_ops_identity()
-        assert "dispatch_mode" in identity
+    def test_agent_def_has_routing(self):
+        """Agent definition documents routing."""
+        assert "Routing" in self.agent_content
 
 
 class TestIdentityProvider:
@@ -62,9 +73,10 @@ class TestIdentityProvider:
         assert "Orchestrator" not in identity
 
     def test_ops_mode(self):
+        """ops mode now returns empty string (identity moved to agent definition)."""
         with patch(_PATCH_MODE, return_value="ops"):
             identity = build_identity()
-        assert "Orchestrator" in identity
+        assert identity == ""
 
     def test_modes_are_different(self):
         with patch(_PATCH_MODE, return_value="security"):

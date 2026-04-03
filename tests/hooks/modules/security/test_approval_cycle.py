@@ -348,17 +348,20 @@ class TestSubagentRetryReusesPendingNonce:
         )
 
     def test_footer_stripping_does_not_break_pending_reuse(self):
-        """Commit with footer stripped on first attempt matches on retry.
+        """Push with footer stripped on first attempt matches on retry.
 
         Regression test: footer stripping must happen before
         write_pending_approval so the stored command matches the stripped
         command on retry (when the footer may or may not be present).
+
+        Note: git commit was removed from MUTATIVE_VERBS in v5.
+        This test now uses git push which is still mutative.
         """
         command_with_footer = (
-            'git commit -m "feat(api): add endpoint\n\n'
-            'Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"'
+            'git push origin feat/api\n\n'
+            'Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>'
         )
-        command_without_footer = 'git commit -m "feat(api): add endpoint"'
+        command_without_footer = 'git push origin feat/api'
         session_id = "test-cycle-session"
 
         # First attempt: command includes a Co-Authored-By footer

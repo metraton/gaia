@@ -126,7 +126,11 @@ class TestT3ApprovalRequirement:
     def validator(self):
         return TaskValidator()
 
-    @pytest.mark.parametrize("keyword", T3_KEYWORDS)
+    # git commit was removed from MUTATIVE_VERBS in v5, so the verb scanner
+    # no longer flags it as T3. Filter it out of the parametrized keywords.
+    _DETECTED_T3_KEYWORDS = [k for k in T3_KEYWORDS if k != "git commit"]
+
+    @pytest.mark.parametrize("keyword", _DETECTED_T3_KEYWORDS)
     def test_detects_t3_keywords(self, validator, keyword):
         """Test detection of T3 keywords in prompt."""
         params = {
@@ -135,6 +139,15 @@ class TestT3ApprovalRequirement:
         }
         result = validator.validate(params)
         assert result.is_t3_operation is True
+
+    def test_git_commit_not_detected_as_t3(self, validator):
+        """git commit is in T3_KEYWORDS but no longer in MUTATIVE_VERBS (v5)."""
+        params = {
+            "subagent_type": "developer",
+            "prompt": "Execute git commit operation",
+        }
+        result = validator.validate(params)
+        assert result.is_t3_operation is False
 
     def test_marks_t3_without_blocking_task(self, validator):
         """New Task invocations can describe T3 work; Bash remains the execution gate."""

@@ -19,10 +19,15 @@ class TestSchemaCompatibility:
 
     @pytest.fixture
     def identity_content(self, package_root):
-        """Load ops_identity.py and extract the identity string."""
-        identity_path = package_root / "hooks" / "modules" / "identity" / "ops_identity.py"
-        assert identity_path.exists(), "ops_identity.py not found"
-        content = identity_path.read_text()
+        """Load orchestrator identity from agents/gaia-orchestrator.md.
+
+        In v5, identity moved from ops_identity.py (now returns empty string)
+        to agents/gaia-orchestrator.md. Tests verify the orchestrator definition
+        contains the required tool references and routing instructions.
+        """
+        orchestrator_path = package_root / "agents" / "gaia-orchestrator.md"
+        assert orchestrator_path.exists(), "agents/gaia-orchestrator.md not found"
+        content = orchestrator_path.read_text()
         return content
 
     @pytest.fixture

@@ -139,13 +139,21 @@ class TestFrontmatterTools:
                     assert tool, f"{agent_file.name}: empty tool name in tools list"
 
     def test_all_agents_have_read_tool(self, all_agent_files):
-        """All agents should have Read in their tools."""
+        """Specialist agents should have Read in their tools.
+
+        The orchestrator intentionally does NOT have Read (v5 architecture:
+        orchestrator delegates all file access to specialist agents).
+        """
         for agent_file in all_agent_files:
             fm = parse_frontmatter(agent_file.read_text())
             tools = fm.get("tools", "")
             tool_list = [t.strip() for t in tools.split(",")]
-            assert "Read" in tool_list, \
-                f"{agent_file.name} should have Read in tools"
+            if fm.get("name") == "gaia-orchestrator":
+                assert "Read" not in tool_list, \
+                    f"gaia-orchestrator.md must NOT have Read (v5: orchestrator delegates)"
+            else:
+                assert "Read" in tool_list, \
+                    f"{agent_file.name} should have Read in tools"
 
 
 if __name__ == "__main__":
