@@ -115,14 +115,8 @@ def check_delegate_mode(
     return DelegateModeResult(
         blocked=True,
         reason=(
-            f"[DELEGATE MODE] Tool '{tool_name}' is not available to the orchestrator.\n\n"
-            f"As the orchestrator, you must delegate work to specialist agents.\n"
-            f"Use the Agent tool to dispatch to the appropriate agent, or use\n"
-            f"SendMessage to resume an existing agent.\n\n"
-            f"Allowed orchestrator tools: Agent, SendMessage, Skill, TaskCreate, "
-            f"TaskUpdate, TaskList, TaskGet, ToolSearch, WebSearch, WebFetch, "
-            f"AskUserQuestion.\n\n"
-            f"Do NOT attempt to use {tool_name} directly. Identify the right\n"
-            f"specialist agent and delegate the work."
+            f"DELEGATION REQUIRED: '{tool_name}' is not available.\n"
+            f"Dispatch a specialist agent for this task.\n"
+            f"The routing recommendation in your last message indicates which agent to use."
         ),
     )

@@ -17,7 +17,7 @@ Multi-agent DevOps system that classifies every operation by risk, routes work t
 - **Multi-cloud support** - GCP, AWS, Azure
 - **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, developer, speckit-planner, gaia-system (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
-- **Dynamic identity** - Orchestrator identity injected by UserPromptSubmit hook; skills loaded on-demand
+- **Dynamic identity** - Orchestrator identity defined in `agents/gaia-orchestrator.md`, activated via `settings.json` agent config; skills loaded on-demand
 - **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (inalterable via symlink)
 - **Indirect execution detection** - Catches `bash -c`, `eval`, `python -c` wrappers that bypass regex patterns
 - **Approval gates** for T3 operations via native `ask` dialog
@@ -64,7 +64,7 @@ This will:
 4. Create `settings.json` with hooks only (no permissions in settings.json)
 5. Merge deny rules + allow permissions into `settings.local.json` (preserves existing user config)
 
-No `CLAUDE.md` is generated -- orchestrator identity is injected dynamically by the UserPromptSubmit hook.
+No `CLAUDE.md` is generated -- orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated via `settings.json: { "agent": "gaia-orchestrator" }`.
 
 ### Settings Architecture
 
@@ -105,7 +105,7 @@ Once installed, the agent system is ready:
 claude
 ```
 
-The orchestrator identity is injected dynamically by the UserPromptSubmit hook. Skills are loaded on-demand.
+The orchestrator identity is defined in `agents/gaia-orchestrator.md` and activated via `settings.json` agent config. Skills are loaded on-demand.
 
 Skills and injection diagnosis:
 

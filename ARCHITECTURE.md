@@ -15,7 +15,7 @@ The package is published as `@jaguilar87/gaia-ops` on npm and installed into a p
 | **Hook** | Python scripts that intercept tool calls before and after execution |
 | **Tool** | Python modules in `tools/` providing context assembly, memory, and validation |
 | **Config** | JSON files in `config/` defining contracts, rules, surface routing, and security |
-| **Orchestrator** | Identity injected by UserPromptSubmit hook; routes requests to the correct agent via on-demand skills |
+| **Orchestrator** | Agent definition in `agents/gaia-orchestrator.md`, activated via `settings.json: { "agent": "gaia-orchestrator" }`; routes requests to the correct agent via on-demand skills |
 
 ## Runtime Flow
 
@@ -23,9 +23,9 @@ The package is published as `@jaguilar87/gaia-ops` on npm and installed into a p
 User request
     |
     v
-user_prompt_submit.py  (UserPromptSubmit hook)
-    |  Inject orchestrator identity via ops_identity.py
-    |  Inject surface routing recommendation (deterministic)
+Orchestrator (agents/gaia-orchestrator.md, activated via settings.json agent config)
+    |  Identity defined in agent definition file
+    |  Surface routing recommendation injected by UserPromptSubmit hook (deterministic)
     |  Skills loaded on-demand: agent-response
     v
 Orchestrator dispatches to agent
@@ -264,7 +264,7 @@ The adapter layer connects Claude Code's hook protocol to gaia-ops business logi
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
 | **File (npm channel)** | `hooks/hooks.json` (symlinked into `.claude/hooks/`) |
 | **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
-| **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage), PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart, UserPromptSubmit (identity injection) |
+| **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage), PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart, UserPromptSubmit (routing injection) |
 
 ### HookAdapter ABC Contract
 
@@ -311,7 +311,7 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 
 | File | Purpose |
 |------|---------|
-| `hooks/modules/identity/ops_identity.py` | Orchestrator identity (injected by UserPromptSubmit) |
+| `agents/gaia-orchestrator.md` | Orchestrator identity and routing (activated via settings.json agent config) |
 | `config/surface-routing.json` | Surface routing config (agent table, signals, dispatch) |
 | `skills/agent-response/SKILL.md` | Contract status handling protocol (on-demand) |
 | `hooks/pre_tool_use.py` | PreToolUse hook entry point |

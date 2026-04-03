@@ -17,7 +17,7 @@
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
  *   2. settings.json: create only if missing (non-invasive, never overwrites)
- *   3. Merge permissions + env vars into settings.local.json (union, preserves user config)
+ *   3. Merge permissions, env vars, and agent key into settings.local.json (union, preserves user config)
  *   4. Merge hooks from hooks.json into settings.local.json (npm mode requires this)
  *   5. Symlinks: recreate if missing, fix broken ones
  *   5. Verify: hooks, python, project-context, config files
@@ -188,31 +188,43 @@ print(json.dumps(ops_perms))
     const mergedAllow = [...new Set([...currentAllow, ...ourAllow])].sort();
     const mergedDeny = [...new Set([...currentDeny, ...ourDeny])].sort();
 
-    // Check if anything changed
+    // Track what changed
+    let changed = false;
+
+    // Check if permissions changed
     const allowChanged = mergedAllow.length !== currentAllow.size
       || mergedAllow.some(r => !currentAllow.has(r));
     const denyChanged = mergedDeny.length !== currentDeny.size
       || mergedDeny.some(r => !currentDeny.has(r));
 
-    if (!allowChanged && !denyChanged) {
-      spinner.succeed('settings.local.json permissions already up to date');
-      return false;
+    if (allowChanged || denyChanged) {
+      existing.permissions = existing.permissions || {};
+      existing.permissions.allow = mergedAllow;
+      existing.permissions.deny = mergedDeny;
+      existing.permissions.ask = existing.permissions.ask || [];
+      changed = true;
     }
-
-    // Update only permissions, preserve everything else
-    existing.permissions = existing.permissions || {};
-    existing.permissions.allow = mergedAllow;
-    existing.permissions.deny = mergedDeny;
-    existing.permissions.ask = existing.permissions.ask || [];
 
     // Add env vars (smart merge: add if not present, don't overwrite)
     existing.env = existing.env || {};
     if (!('CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in existing.env)) {
       existing.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      changed = true;
+    }
+
+    // Set the orchestrator agent identity
+    if (existing.agent !== 'gaia-orchestrator') {
+      existing.agent = 'gaia-orchestrator';
+      changed = true;
+    }
+
+    if (!changed) {
+      spinner.succeed('settings.local.json permissions already up to date');
+      return false;
     }
 
     await fs.writeFile(localPath, JSON.stringify(existing, null, 2) + '\n');
-    spinner.succeed('settings.local.json permissions and env merged');
+    spinner.succeed('settings.local.json permissions, env, and agent merged');
     return true;
   } catch (error) {
     spinner.fail(`settings.local.json: ${error.message}`);
