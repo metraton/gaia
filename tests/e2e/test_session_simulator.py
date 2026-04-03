@@ -348,7 +348,7 @@ class SessionSimulator:
         additionalContext for injection into the subagent.
 
         Args:
-            agent_type: Agent type (e.g. "devops-developer", "Explore").
+            agent_type: Agent type (e.g. "developer", "Explore").
             agent_id: Optional agent ID. Generated if not provided.
             session_id: Optional session ID. Uses simulator's session_id if not provided.
 
@@ -438,7 +438,7 @@ def _build_valid_agent_output(
             "suspected_findings": ["memory limit too low"],
             "conflicts": ["none"],
             "open_gaps": ["root cause of memory spike unknown"],
-            "next_best_agent": ["devops-developer"],
+            "next_best_agent": ["developer"],
         }
     contract_block = json.dumps(
         {
@@ -651,13 +651,13 @@ class TestScenario4IncompleteContract:
         assert result["exit_code"] == 0
 
         # Invoke agent
-        result = sim.invoke_agent("devops-developer", "refactoriza el modulo X")
+        result = sim.invoke_agent("developer", "refactoriza el modulo X")
         assert result["exit_code"] == 0
 
         # Agent responds WITHOUT a contract block
         # Missing contract triggers exit_code=2 (selective enforcement)
         agent_output = "Listo, refactorice todo."
-        result = sim.agent_responds("devops-developer", "a9b8c7", agent_output)
+        result = sim.agent_responds("developer", "a9b8c7", agent_output)
         assert result["exit_code"] == 2, (
             f"Missing contract should trigger rejection (exit=2): exit={result['exit_code']}, "
             f"stderr: {result['stderr']}"
@@ -696,7 +696,7 @@ class TestScenario5InvalidPlanStatus:
         assert result["exit_code"] == 0
 
         # Invoke agent
-        result = sim.invoke_agent("devops-developer", "refactoriza el modulo X")
+        result = sim.invoke_agent("developer", "refactoriza el modulo X")
         assert result["exit_code"] == 0
 
         # Agent responds with a json:contract block but INVALID plan_status
@@ -705,7 +705,7 @@ class TestScenario5InvalidPlanStatus:
             agent_id="a5e6f7",
             summary="Refactoring done.",
         )
-        result = sim.agent_responds("devops-developer", "a5e6f7", agent_output)
+        result = sim.agent_responds("developer", "a5e6f7", agent_output)
         assert result["exit_code"] == 2, (
             f"Invalid plan_status should trigger rejection (exit=2): exit={result['exit_code']}, "
             f"stderr: {result['stderr']}"
@@ -1071,7 +1071,7 @@ class TestScenario9ContextInjection:
         )
 
         # 2. invoke_agent for a project agent -- this caches context
-        result = sim.invoke_agent("devops-developer", "refactoriza el modulo X")
+        result = sim.invoke_agent("developer", "refactoriza el modulo X")
         assert result["exit_code"] == 0, (
             f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
@@ -1085,7 +1085,7 @@ class TestScenario9ContextInjection:
         )
 
         # 3. start_agent for the same project agent -- reads the cache
-        result = sim.start_agent("devops-developer")
+        result = sim.start_agent("developer")
         assert result["exit_code"] == 0, (
             f"SubagentStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
@@ -1124,7 +1124,7 @@ class TestScenario9ContextInjection:
         sim.start_session()
 
         # invoke_agent caches context
-        sim.invoke_agent("devops-developer", "refactoriza")
+        sim.invoke_agent("developer", "refactoriza")
 
         # Verify cache exists before start_agent
         cache_dir = Path("/tmp/gaia-context-cache")
@@ -1132,7 +1132,7 @@ class TestScenario9ContextInjection:
         assert len(cache_files_before) > 0, "Cache should exist before start_agent"
 
         # start_agent consumes the cache
-        result = sim.start_agent("devops-developer")
+        result = sim.start_agent("developer")
         assert result["exit_code"] == 0
 
         # Verify cache was consumed (deleted)

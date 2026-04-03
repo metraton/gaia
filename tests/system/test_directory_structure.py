@@ -72,7 +72,7 @@ class TestAgentsDirectory:
             "gitops-operator.md",
             "cloud-troubleshooter.md",
             "terraform-architect.md",
-            "devops-developer.md"
+            "developer.md"
         ]
 
         for agent in required_agents:

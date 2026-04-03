@@ -111,9 +111,9 @@ class TestProjectAgents:
         assert cloud_agent.exists(), "cloud-troubleshooter.md not found"
 
     def test_devops_developer_exists(self, agents_dir):
-        """devops-developer.md must exist"""
-        devops_agent = agents_dir / "devops-developer.md"
-        assert devops_agent.exists(), "devops-developer.md not found"
+        """developer.md must exist"""
+        devops_agent = agents_dir / "developer.md"
+        assert devops_agent.exists(), "developer.md not found"
 
 
 class TestAgentSecurity:

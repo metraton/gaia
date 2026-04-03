@@ -213,7 +213,7 @@ class TestSubagentStartFlow:
     def test_subagent_start_returns_context_result(self):
         """SubagentStart produces a ContextResult."""
         _, result, response = _run_subagent_start_flow({
-            "agent_type": "devops-developer",
+            "agent_type": "developer",
             "task_description": "Run npm audit",
         })
 

@@ -112,7 +112,7 @@ class TestSkillsField:
     def test_project_agents_have_skills(self, agents_dir):
         """Project agents (non-meta) should have at least one skill."""
         project_agents = ["terraform-architect", "gitops-operator",
-                          "cloud-troubleshooter", "devops-developer"]
+                          "cloud-troubleshooter", "developer"]
         for agent_name in project_agents:
             agent_file = agents_dir / f"{agent_name}.md"
             if not agent_file.exists():

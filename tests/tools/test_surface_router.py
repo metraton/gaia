@@ -41,7 +41,7 @@ def test_classify_multi_surface_task():
 
     routing = classify_surfaces(
         "Investigate why the CI pipeline changed the image tag, the deployment rollout failed, and kubectl logs show runtime errors.",
-        current_agent="devops-developer",
+        current_agent="developer",
         routing_config=config,
     )
 
@@ -80,7 +80,7 @@ def test_build_investigation_brief_for_cross_surface_task():
 
     brief = build_investigation_brief(
         "Investigate why the CI pipeline changed the image tag, the deployment rollout failed, and kubectl logs show runtime errors.",
-        "devops-developer",
+        "developer",
         contract_context,
         routing_config=config,
     )

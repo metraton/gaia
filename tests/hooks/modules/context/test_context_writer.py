@@ -96,7 +96,7 @@ MOCK_CONTRACTS = {
             ],
             "write": ["terraform_infrastructure", "infrastructure_topology"],
         },
-        "devops-developer": {
+        "developer": {
             "read": [
                 "project_identity", "stack", "git", "environment", "infrastructure",
                 "application_services",
@@ -123,7 +123,7 @@ LEGACY_CONTRACTS = {
         "gitops_configuration", "application_services", "monitoring_observability",
         "cluster_details",
     ],
-    "devops-developer": [
+    "developer": [
         "project_identity", "stack", "git", "environment", "infrastructure",
         "application_services",
         "operational_guidelines",
@@ -620,13 +620,13 @@ class TestProcessAgentOutput:
             '"monitoring_observability": {"alerts": true}}'
         )
         task_info = {
-            "agent_type": "devops-developer",
+            "agent_type": "developer",
             "context_path": str(mock_context_file),
             "config_dir": str(mock_context_file.parent.parent.parent),
         }
 
         result = process_agent_output(agent_output, task_info)
 
-        # devops-developer can write application_services but NOT monitoring_observability
+        # developer can write application_services but NOT monitoring_observability
         # monitoring_observability should be rejected
         assert "monitoring_observability" in result.get("rejected", [])

@@ -223,7 +223,7 @@ class TestPreToolUseAgent:
         assert code == 0, f"Expected exit 0 for valid agent, got {code}. stderr: {stderr}"
 
     def test_devops_agent_allowed(self):
-        """devops-developer agent should be allowed (exit 0)."""
+        """developer agent should be allowed (exit 0)."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_AGENT_DEVOPS)
         assert code == 0, f"Expected exit 0 for devops agent, got {code}. stderr: {stderr}"
 
@@ -432,7 +432,7 @@ class TestSubagentStartE2E:
         )
 
     def test_subagent_start_devops_runs(self):
-        """SubagentStart for devops-developer exits 0."""
+        """SubagentStart for developer exits 0."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 

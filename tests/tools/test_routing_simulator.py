@@ -129,7 +129,7 @@ class TestRoutingSimulator:
 
     def test_dockerfile_routes_to_devops_developer(self, simulator):
         result = simulator.simulate("fix the Dockerfile")
-        assert result.primary_agent == "devops-developer"
+        assert result.primary_agent == "developer"
         assert "app_ci_tooling" in result.surfaces_active
 
     def test_flux_routes_to_gitops_operator(self, simulator):
@@ -190,7 +190,7 @@ class TestRoutingSimulator:
         events = [
             {"prompt": "kubectl get pods", "agent": "cloud-troubleshooter"},
             {"prompt": "terraform plan", "agent": "terraform-architect"},
-            {"prompt": "fix Dockerfile", "agent": "devops-developer"},
+            {"prompt": "fix Dockerfile", "agent": "developer"},
         ]
         comparison = simulator.compare_routing(events)
         assert comparison["total"] == 3
@@ -233,7 +233,7 @@ class TestSkillsMapper:
         assert len(profiles) > 0
         names = [p.agent_name for p in profiles]
         assert "cloud-troubleshooter" in names
-        assert "devops-developer" in names
+        assert "developer" in names
         assert "gitops-operator" in names
         assert "terraform-architect" in names
         assert "gaia-system" in names

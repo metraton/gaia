@@ -249,7 +249,7 @@ class TestGitopsOperatorStrictMode:
         """Test non-gitops agents are less strict on unknown apply commands."""
         result = validate_gitops_workflow(
             "some-tool apply -f config.yaml",
-            agent_type="devops-developer"
+            agent_type="developer"
         )
         # Should be allowed (not a known forbidden command)
         assert result.allowed is True

@@ -156,8 +156,8 @@ def test_troubleshooter_contract(temp_project_context: Path):
     assert "gitops_configuration" not in contract
 
 def test_devops_developer_contract(temp_project_context: Path):
-    """Verify devops-developer gets all contracted v2 sections."""
-    result = run_script(temp_project_context, "devops-developer", "Fix the login bug.")
+    """Verify developer gets all contracted v2 sections."""
+    result = run_script(temp_project_context, "developer", "Fix the login bug.")
 
     assert "project_knowledge" in result
     contract = result["project_knowledge"]
@@ -277,7 +277,7 @@ def test_surface_routing_detects_multi_surface_task(temp_project_context: Path):
     """Context payload should detect multiple active surfaces when signals cross layers."""
     result = run_script(
         temp_project_context,
-        "devops-developer",
+        "developer",
         "Investigate why the CI pipeline changed the image tag, the deployment rollout failed, and kubectl logs now show runtime errors.",
     )
 
@@ -343,7 +343,7 @@ def mock_routing_config() -> dict:
         "version": "1.0",
         "surfaces": {
             "app_ci_tooling": {
-                "primary_agent": "devops-developer",
+                "primary_agent": "developer",
                 "contract_sections": [
                     "project_identity", "stack", "git", "environment",
                     "infrastructure", "application_services",
@@ -401,7 +401,7 @@ class TestGetRelevantSections:
             routing_config=mock_routing_config,
         )
 
-        # All contract_keys for devops-developer are in app_ci_tooling contract_sections
+        # All contract_keys for developer are in app_ci_tooling contract_sections
         assert set(result.keys()) == set(contract_keys)
 
     def test_single_surface_omits_sections_not_in_surface(

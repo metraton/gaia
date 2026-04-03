@@ -166,7 +166,7 @@ def test_record_persists_additive_run_telemetry(tmp_path):
 
 def test_record_agent_skill_snapshot_appends_runtime_defaults(tmp_path):
     snapshot = record_agent_skill_snapshot(
-        "devops-developer",
+        "developer",
         session_context={
             "timestamp": "2026-03-11T12:15:00",
             "session_id": "sess-skills-001",
@@ -174,7 +174,7 @@ def test_record_agent_skill_snapshot_appends_runtime_defaults(tmp_path):
         task_description="Run targeted telemetry tests",
     )
 
-    assert snapshot["agent"] == "devops-developer"
+    assert snapshot["agent"] == "developer"
     assert "developer-patterns" in snapshot["skills"]
     assert snapshot["skills_count"] >= 1
 

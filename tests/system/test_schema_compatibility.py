@@ -75,7 +75,7 @@ class TestSchemaCompatibility:
             "terraform-architect",
             "gitops-operator",
             "cloud-troubleshooter",
-            "devops-developer",
+            "developer",
             "speckit-planner",
             "gaia-system",
         ]:
