@@ -305,7 +305,7 @@ def write_pending_approval(
     Args:
         nonce: Cryptographic nonce from generate_nonce().
         command: The command that was blocked.
-        danger_verb: The dangerous verb detected (e.g., "commit", "apply").
+        danger_verb: The dangerous verb detected (e.g., "push", "apply").
         danger_category: The danger category (e.g., "MUTATIVE", "DESTRUCTIVE").
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
         ttl_minutes: How long the pending approval is valid before expiry.

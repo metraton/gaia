@@ -105,7 +105,8 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "exec", "execute", "invoke", "trigger", "send",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
-    "commit", "push", "merge", "rebase", "cherry-pick",
+    # NOTE: "commit" removed -- local-only operation, trust system
+    "push", "merge", "rebase", "cherry-pick",
     "revert", "rollback",
     # Access control
     "grant", "assign", "revoke",
