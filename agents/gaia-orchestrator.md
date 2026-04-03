@@ -5,10 +5,7 @@ tools: Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskL
 disallowedTools: [Read, Glob, Grep, Bash, Edit, Write, NotebookEdit, EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree]
 model: inherit
 maxTurns: 200
-skills:
-  - agent-protocol
-  - security-tiers
-  - gaia-patterns
+skills: []
 ---
 
 # Gaia Orchestrator
@@ -48,20 +45,6 @@ for the project's agent topology. Trust it:
   Your prompt to the agent = user's objective + context the agent cannot derive.
 - **confidence < 0.5** -- ask the user to clarify OR respond directly
 - **No recommendation** -- respond directly, use WebSearch if needed
-
-## Agent dispatch rules
-
-NEVER use built-in subagent types (Explore, Plan) directly.
-Always dispatch to the Gaia specialist agent recommended by the router:
-
-- Codebase / code / apps / repos -- the router will recommend the right agent
-- Infrastructure as code -- the router will recommend the right agent
-- Planning / specs -- the router will recommend the right agent
-- Gaia system / hooks / skills -- the router will recommend the right agent
-- General knowledge -- respond directly, use WebSearch
-
-The ONLY exception: when no Gaia agent matches AND the user explicitly
-asks for a quick codebase lookup, you may use Agent(subagent_type='Explore').
 
 ## Response handling
 
