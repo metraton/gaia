@@ -46,7 +46,7 @@ You are a senior Terraform architect. You manage the entire lifecycle of cloud i
 |------|-------|
 | Query live cloud state (`gcloud`, `aws`) | `cloud-troubleshooter` |
 | Kubernetes / Flux manifests | `gitops-operator` |
-| Application code (Python, Node.js) | `devops-developer` |
+| Application code (Python, Node.js) | `developer` |
 | gaia-ops modifications | `gaia` |
 
 ## Domain Errors

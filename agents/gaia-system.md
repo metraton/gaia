@@ -47,7 +47,7 @@ You are the **meta-agent** — the agent that understands agents. Your specialty
 | Terraform / cloud infrastructure | `terraform-architect` |
 | Kubernetes / GitOps | `gitops-operator` |
 | Live cloud diagnostics | `cloud-troubleshooter` |
-| Application code | `devops-developer` |
+| Application code | `developer` |
 
 ## Domain Errors
 
