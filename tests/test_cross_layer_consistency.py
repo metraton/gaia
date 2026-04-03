@@ -44,6 +44,7 @@ from modules.security.tiers import (
 from modules.tools.task_validator import (
     AVAILABLE_AGENTS,
     META_AGENTS,
+    NATIVE_AGENTS,
     T3_KEYWORDS,
 )
 from modules.security.approval_constants import NONCE_APPROVAL_PATTERN, NONCE_APPROVAL_PREFIX
@@ -330,6 +331,25 @@ class TestTaskValidatorConsistency:
         """All META_AGENTS must exist in AVAILABLE_AGENTS."""
         missing = set(META_AGENTS) - set(AVAILABLE_AGENTS)
         assert not missing, f"META_AGENTS not in AVAILABLE_AGENTS: {missing}"
+
+    def test_native_agents_are_subset_of_meta(self):
+        """All NATIVE_AGENTS must exist in META_AGENTS (they don't receive context)."""
+        missing = set(NATIVE_AGENTS) - set(META_AGENTS)
+        assert not missing, f"NATIVE_AGENTS not in META_AGENTS: {missing}"
+
+    def test_native_agents_not_in_surface_routing(self):
+        """Native agents are utility types, not domain specialists. They must NOT
+        appear as primary_agent in any surface routing entry."""
+        routing_file = CONFIG_DIR / "surface-routing.json"
+        routing = json.loads(routing_file.read_text())
+        surface_agents = {
+            cfg.get("primary_agent")
+            for cfg in routing.get("surfaces", {}).values()
+        }
+        overlap = set(NATIVE_AGENTS) & surface_agents
+        assert not overlap, (
+            f"Native agents must NOT be surface primary_agents: {overlap}"
+        )
 
     def test_t3_keywords_match_security_tiers_skill(self):
         """T3 keywords must match operations classified as T3 in security-tiers skill."""

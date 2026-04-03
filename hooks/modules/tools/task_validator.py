@@ -33,13 +33,20 @@ _BASE_AGENTS = [
     "Plan",
     "speckit-planner",
     "claude-code-guide",
+    "general-purpose",
 ]
 # Support both "cloud-troubleshooter" and "gaia-ops:cloud-troubleshooter"
 AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia-ops:{a}" for a in _BASE_AGENTS]
 
-# Meta-agents that don't require context_provider.
-# speckit-planner is a project agent that DOES receive context, so it is NOT a meta-agent.
-META_AGENTS = ["gaia-system", "Explore", "Plan", "claude-code-guide"]
+# Native Claude Code agent types — utility subagents built into the harness,
+# not gaia domain specialists. They don't require context_provider and don't
+# appear in surface routing. They are valid dispatch targets that the
+# orchestrator can legitimately use.
+# speckit-planner is a project agent that DOES receive context, so it is NOT listed here.
+NATIVE_AGENTS = ["Explore", "Plan", "general-purpose", "claude-code-guide"]
+
+# Meta-agents that don't require context_provider (superset: gaia-system + native agents).
+META_AGENTS = ["gaia-system"] + NATIVE_AGENTS
 
 # T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
 # to verify that these commands are classified as T3 by the verb detector.
@@ -167,6 +174,7 @@ __all__ = [
     "validate_task_invocation",
     "AVAILABLE_AGENTS",
     "META_AGENTS",
+    "NATIVE_AGENTS",
     "T3_KEYWORDS",
 ]
 

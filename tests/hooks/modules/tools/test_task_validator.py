@@ -24,6 +24,7 @@ from modules.tools.task_validator import (
     TaskValidationResult,
     AVAILABLE_AGENTS,
     META_AGENTS,
+    NATIVE_AGENTS,
     T3_KEYWORDS,
 )
 from modules.security.tiers import SecurityTier
@@ -83,6 +84,34 @@ class TestAgentExistence:
         """Test that all meta-agents are in the registry."""
         for agent in META_AGENTS:
             assert agent in AVAILABLE_AGENTS, f"Meta-agent {agent} should be registered"
+
+    def test_native_agents_registered(self):
+        """Test that all native Claude Code agents are in the registry."""
+        for agent in NATIVE_AGENTS:
+            assert agent in AVAILABLE_AGENTS, f"Native agent {agent} should be registered"
+
+    def test_native_agents_are_meta_agents(self):
+        """Native agents must be a subset of META_AGENTS (no context injection)."""
+        for agent in NATIVE_AGENTS:
+            assert agent in META_AGENTS, f"Native agent {agent} should be in META_AGENTS"
+
+    def test_native_agents_include_claude_code_builtins(self):
+        """Native agents must include known Claude Code built-in subagent types."""
+        expected = {"Explore", "Plan", "general-purpose", "claude-code-guide"}
+        actual = set(NATIVE_AGENTS)
+        missing = expected - actual
+        assert not missing, f"Missing native agent types: {missing}"
+
+    def test_general_purpose_is_allowed(self):
+        """general-purpose is a native Claude Code subagent and should not be blocked."""
+        validator = TaskValidator()
+        params = {
+            "subagent_type": "general-purpose",
+            "prompt": "Do something",
+        }
+        result = validator.validate(params)
+        assert result.allowed is True
+        assert "Unknown agent" not in result.reason
 
 
 class TestContextProvisioning:
