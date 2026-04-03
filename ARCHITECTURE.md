@@ -120,7 +120,7 @@ Classifies user tasks into surfaces using signal matching against `config/surfac
 | `live_runtime` | cloud-troubleshooter | pods, services, logs, kubectl, gcloud |
 | `gitops_desired_state` | gitops-operator | manifests, Flux, Helm, Kustomize |
 | `terraform_iac` | terraform-architect | Terraform, Terragrunt, IAM, modules |
-| `app_ci_tooling` | devops-developer | CI/CD, Docker, package tooling |
+| `app_ci_tooling` | developer | CI/CD, Docker, package tooling |
 | `planning_specs` | speckit-planner | specs, plans, task breakdowns |
 | `gaia_system` | gaia | hooks, skills, agents/, CLAUDE.md |
 

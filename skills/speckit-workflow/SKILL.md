@@ -124,7 +124,7 @@ Completed spec.md (from orchestrator)
      <!-- Tags: #tag1 #tag2 -->
    ```
    - **Agent:** terraform keywords -> `terraform-architect`, kubectl/helm -> `gitops-operator`,
-     code/test/build -> `devops-developer`, logs/monitoring -> `cloud-troubleshooter`.
+     code/test/build -> `developer`, logs/monitoring -> `cloud-troubleshooter`.
    - **Tier:** T0 (read), T1 (validate), T2 (simulate), T3 (mutate).
    - **Tags:** tech (#terraform, #kubernetes), domain (#database, #security), type (#setup, #test).
    - **T2/T3 tasks** get: `<!-- HIGH RISK: Analyze before execution -->`.
@@ -150,7 +150,7 @@ Completed spec.md (from orchestrator)
 
 Every task gets automatic metadata:
 - **Agent:** detect from keywords (terraform -> `terraform-architect`, kubectl -> `gitops-operator`,
-  code/test -> `devops-developer`, monitoring/logs -> `cloud-troubleshooter`).
+  code/test -> `developer`, monitoring/logs -> `cloud-troubleshooter`).
 - **Security Tier:** classify using `security-tiers` skill.
 - **Tags:** technology (#terraform, #kubernetes), domain (#database, #security), type (#setup, #test).
 - **Exit criteria:** a command or observable outcome confirming completion.

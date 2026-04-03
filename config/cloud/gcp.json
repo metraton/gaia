@@ -34,7 +34,7 @@
       ],
       "write": []
     },
-    "devops-developer": {
+    "developer": {
       "read": [
         "gcp_services"
       ],

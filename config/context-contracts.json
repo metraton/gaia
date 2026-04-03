@@ -96,7 +96,7 @@
         "infrastructure_topology"
       ]
     },
-    "devops-developer": {
+    "developer": {
       "read": [
         "project_identity",
         "stack",

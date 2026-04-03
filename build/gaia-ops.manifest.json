@@ -34,7 +34,7 @@
   "modules": "all",
   "agents": [
     "agents/gaia-system.md",
-    "agents/devops-developer.md",
+    "agents/developer.md",
     "agents/cloud-troubleshooter.md",
     "agents/gitops-operator.md",
     "agents/terraform-architect.md",

@@ -59,7 +59,7 @@ skills:
 | cloud-troubleshooter | agent-protocol, security-tiers | fast-queries |
 | terraform-architect | agent-protocol, security-tiers, terraform-patterns | fast-queries |
 | gitops-operator | agent-protocol, security-tiers, gitops-patterns | fast-queries |
-| devops-developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
+| developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
 | gaia | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
 | speckit-planner | agent-protocol, security-tiers, speckit-workflow | - |
 

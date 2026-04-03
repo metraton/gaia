@@ -92,7 +92,7 @@ trace. Event Context is high-level operational events. Different granularity.
 ```jsonl
 {"ts":"2026-03-25T14:30:00Z","type":"agent.complete","source":"hook:subagent_stop","agent":"terraform-architect","result":"COMPLETE","summary":"Applied 12 resources to staging","meta":{"plan_status":"COMPLETE","tier":"T3","episode_id":"ep_abc123"}}
 {"ts":"2026-03-25T14:35:00Z","type":"trigger.scheduled","source":"cron:drift-check","agent":"","result":"fired","summary":"Drift check cron triggered","meta":{"schedule":"0 9 * * *","trigger_id":"tr_001"}}
-{"ts":"2026-03-25T14:36:00Z","type":"git.commit","source":"hook:post_tool_use","agent":"devops-developer","result":"ok","summary":"fix: resolve login redirect loop","meta":{"hash":"a1b2c3d","branch":"fix/login"}}
+{"ts":"2026-03-25T14:36:00Z","type":"git.commit","source":"hook:post_tool_use","agent":"developer","result":"ok","summary":"fix: resolve login redirect loop","meta":{"hash":"a1b2c3d","branch":"fix/login"}}
 ```
 
 ### 3.2 Field Definitions
@@ -325,7 +325,7 @@ def build_event_context(agent_type: str, max_events: int = 15) -> str | None:
 AGENT_EVENT_FILTERS = {
     "terraform-architect": ["agent.complete", "git.*", "infra.*", "context.*", "trigger.*"],
     "gitops-operator":     ["agent.complete", "git.*", "infra.*", "trigger.*"],
-    "devops-developer":    ["agent.complete", "git.*", "context.*"],
+    "developer":    ["agent.complete", "git.*", "context.*"],
     "cloud-troubleshooter": "*",
     "gaia-system":          "*",
 }
