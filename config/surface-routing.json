@@ -24,9 +24,16 @@
           "service unavailable",
           "latency",
           "outage",
-          "runtime"
+          "runtime",
+          "remote",
+          "transfer",
+          "copy to",
+          "copy from",
+          "WSL",
+          "Windows",
+          "Metra Tower"
         ],
-        "commands": ["kubectl", "gcloud", "aws", "eksctl", "gsutil"],
+        "commands": ["kubectl", "gcloud", "aws", "eksctl", "gsutil", "ssh", "scp", "rsync", "sftp", "tailscale"],
         "artifacts": ["pod", "service", "ingress", "node pool", "cluster"]
       }
     },
