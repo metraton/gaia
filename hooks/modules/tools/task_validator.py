@@ -27,7 +27,7 @@ _BASE_AGENTS = [
     "terraform-architect",
     "gitops-operator",
     "cloud-troubleshooter",
-    "devops-developer",
+    "developer",
     "gaia-system",
     "Explore",
     "Plan",
