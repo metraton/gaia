@@ -126,6 +126,25 @@
         "workspace_repos"
       ],
       "write": []
+    },
+    "gaia-operator": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines",
+        "workspace_repos",
+        "infrastructure",
+        "infrastructure_topology"
+      ],
+      "write": [
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines"
+      ]
     }
   }
 }

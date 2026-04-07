@@ -28,6 +28,7 @@ _BASE_AGENTS = [
     "gitops-operator",
     "cloud-troubleshooter",
     "developer",
+    "gaia-operator",
     "gaia-system",
     "Explore",
     "Plan",

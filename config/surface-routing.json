@@ -199,6 +199,35 @@
         "commands": [],
         "artifacts": ["hooks/", "skills/", "agents/", "templates/", "claude.md", "project-context.json"]
       }
+    },
+    "workspace": {
+      "primary_agent": "gaia-operator",
+      "adjacent_surfaces": ["live_runtime", "app_ci_tooling", "gaia_system"],
+      "contract_sections": ["project_identity", "stack", "git", "environment", "application_services", "architecture_overview", "operational_guidelines", "workspace_repos"],
+      "required_checks": [
+        "Verify task doesn't belong to a specialist domain before proceeding",
+        "Check memory index before creating duplicate entries"
+      ],
+      "signals": {
+        "keywords": [
+          "memory",
+          "remember",
+          "schedule",
+          "loop",
+          "cron",
+          "email",
+          "gmail",
+          "inbox",
+          "file transfer",
+          "organize",
+          "automate",
+          "workspace",
+          "personal",
+          "general task"
+        ],
+        "commands": ["cron", "rsync", "scp", "sftp"],
+        "artifacts": ["memory/", "MEMORY.md", ".claude/", "crontab"]
+      }
     }
   }
 }
