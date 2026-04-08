@@ -50,10 +50,10 @@ class TestOpsIdentity:
     def test_agent_def_has_orchestrator(self):
         assert "Orchestrator" in self.agent_content
 
-    def test_agent_def_has_deterministic_routing(self):
-        """Agent definition references routing recommendation."""
-        assert "routing recommendation" in self.agent_content, (
-            "Agent def must reference routing recommendation for deterministic routing"
+    def test_agent_def_has_intent_based_routing(self):
+        """Agent definition references routing suggestion."""
+        assert "routing suggestion" in self.agent_content, (
+            "Agent def must reference routing suggestion for intent-based routing"
         )
 
     def test_agent_def_has_sendmessage(self):
