@@ -33,6 +33,8 @@
   },
   "modules": "all",
   "agents": [
+    "agents/gaia-orchestrator.md",
+    "agents/gaia-operator.md",
     "agents/gaia-system.md",
     "agents/developer.md",
     "agents/cloud-troubleshooter.md",

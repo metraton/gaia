@@ -123,6 +123,7 @@ Classifies user tasks into surfaces using signal matching against `config/surfac
 | `app_ci_tooling` | developer | CI/CD, Docker, package tooling |
 | `planning_specs` | speckit-planner | specs, plans, task breakdowns |
 | `gaia_system` | gaia | hooks, skills, agents/, CLAUDE.md |
+| `workspace` | gaia-operator | memory, email, schedules, file transfers |
 
 **Classification algorithm:**
 1. Normalize task text

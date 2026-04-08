@@ -461,7 +461,7 @@ async function runVerification() {
   }
 
   // 5. Agent definitions accessible
-  const agentFiles = ['terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'developer.md', 'gaia-system.md', 'speckit-planner.md'];
+  const agentFiles = ['gaia-orchestrator.md', 'gaia-operator.md', 'terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'developer.md', 'gaia-system.md', 'speckit-planner.md'];
   let agentsOk = 0;
   for (const agent of agentFiles) {
     if (existsSync(join(CWD, '.claude', 'agents', agent))) agentsOk++;

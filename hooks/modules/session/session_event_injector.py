@@ -19,7 +19,9 @@ AGENT_EVENT_FILTERS = {
     "gitops-operator": ["git_commit", "git_push", "infrastructure_change"],
     "developer": ["git_commit", "file_modifications"],
     "cloud-troubleshooter": "*",  # All events (needs full history for diagnosis)
-    "gaia-system": "*"  # All events (workflow analysis)
+    "gaia-system": "*",  # All events (workflow analysis)
+    "gaia-operator": ["git_commit", "file_modifications", "infrastructure_change"],
+    "speckit-planner": ["git_commit", "file_modifications"],
 }
 
 

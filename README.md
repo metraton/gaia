@@ -15,7 +15,7 @@ Multi-agent DevOps system that classifies every operation by risk, routes work t
 ### Features
 
 - **Multi-cloud support** - GCP, AWS, Azure
-- **6 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, developer, speckit-planner, gaia-system (meta-agent)
+- **8 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, developer, speckit-planner, gaia-operator, gaia-orchestrator, gaia-system (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
 - **Dynamic identity** - Orchestrator identity defined in `agents/gaia-orchestrator.md`, activated via `settings.json` agent config; skills loaded on-demand
 - **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (inalterable via symlink)
@@ -136,7 +136,7 @@ For organization-wide enforcement, deploy `templates/managed-settings.template.j
 
 ```
 node_modules/@jaguilar87/gaia-ops/
-├── agents/              # Agent definitions (6 agents)
+├── agents/              # Agent definitions (8 agents)
 ├── skills/              # Skill modules (21 skills)
 ├── tools/               # Orchestration tools
 ├── hooks/               # Claude Code hooks (modular architecture)

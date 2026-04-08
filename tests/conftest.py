@@ -126,24 +126,15 @@ def hooks_dir(package_root):
 def claude_md_content(package_root):
     """Content of the orchestrator identity.
 
-    CLAUDE.md is no longer generated from a template. Identity is now
-    injected by UserPromptSubmit hook via ops_identity.py. This fixture
-    returns the identity string for tests that need to verify orchestrator
-    content, falling back to CLAUDE.md if it exists (legacy projects).
+    Orchestrator identity lives in agents/gaia-orchestrator.md, activated
+    via settings.local.json agent field. This fixture returns the content
+    of that file for tests that need to verify orchestrator content.
     """
-    primary = package_root / "CLAUDE.md"
-    if primary.exists():
-        return primary.read_text()
-
-    identity_path = package_root / "hooks" / "modules" / "identity" / "ops_identity.py"
+    identity_path = package_root / "agents" / "gaia-orchestrator.md"
     if identity_path.exists():
-        content = identity_path.read_text()
-        response_path = package_root / "skills" / "agent-response" / "SKILL.md"
-        if response_path.exists():
-            content += "\n" + response_path.read_text()
-        return content
+        return identity_path.read_text()
 
-    pytest.skip("Neither CLAUDE.md nor ops_identity.py was found")
+    pytest.skip("agents/gaia-orchestrator.md not found")
 
 
 @pytest.fixture(scope="session")

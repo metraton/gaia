@@ -67,12 +67,14 @@ class TestAgentsDirectory:
         return agents.resolve() if agents.is_symlink() else agents
 
     def test_all_project_agents_exist(self, agents_dir):
-        """All 4 project agents must exist (cloud-troubleshooter unified GCP/AWS)"""
+        """All 6 project agents must exist (cloud-troubleshooter unified GCP/AWS)"""
         required_agents = [
             "gitops-operator.md",
             "cloud-troubleshooter.md",
             "terraform-architect.md",
-            "developer.md"
+            "developer.md",
+            "gaia-operator.md",
+            "gaia-orchestrator.md"
         ]
 
         for agent in required_agents:

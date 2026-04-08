@@ -111,6 +111,18 @@ class ContextSectionReader:
             'application_services',
             'operational_guidelines',
         ],
+        'gaia-operator': [
+            'project_identity',
+            'stack',
+            'git',
+            'environment',
+            'infrastructure',
+            'infrastructure_topology',
+            'application_services',
+            'architecture_overview',
+            'operational_guidelines',
+            'workspace_repos',
+        ],
     }
 
     def __init__(self, context_file: Optional[str] = None):

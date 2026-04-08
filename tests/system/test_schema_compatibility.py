@@ -1,7 +1,7 @@
 """
 Test schema compatibility between orchestrator identity and system components.
 
-Ensures the identity system (ops_identity.py + surface routing) contains
+Ensures the identity system (agents/gaia-orchestrator.md + surface routing) contains
 the essential structural elements that the hook system and surface routing depend on.
 """
 
@@ -21,9 +21,9 @@ class TestSchemaCompatibility:
     def identity_content(self, package_root):
         """Load orchestrator identity from agents/gaia-orchestrator.md.
 
-        In v5, identity moved from ops_identity.py (now returns empty string)
-        to agents/gaia-orchestrator.md. Tests verify the orchestrator definition
-        contains the required tool references and routing instructions.
+        In v5, identity lives in agents/gaia-orchestrator.md. Tests verify the
+        orchestrator definition contains the required tool references and routing
+        instructions.
         """
         orchestrator_path = package_root / "agents" / "gaia-orchestrator.md"
         assert orchestrator_path.exists(), "agents/gaia-orchestrator.md not found"

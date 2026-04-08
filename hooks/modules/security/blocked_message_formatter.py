@@ -30,6 +30,7 @@ CATEGORY_AGENT_MAP = {
     "disk_operations": "developer",
     "rm_critical": "developer",
     "repo_delete": "developer",
+    "email_critical": "gaia-operator",
 }
 
 

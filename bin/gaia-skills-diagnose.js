@@ -30,6 +30,7 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..");
 
 const META_AGENTS = new Set(["gaia-system", "Explore", "Plan"]);
 const CONTEXT_INJECTED_AGENTS = new Set([
+  "gaia-operator",
   "terraform-architect",
   "gitops-operator",
   "cloud-troubleshooter",
@@ -690,8 +691,8 @@ function detectLegacyGapPatterns(ctx, findings, checks) {
   const conftestPath = path.join(testsDir, "conftest.py");
   if (exists(conftestPath)) {
     const content = readText(conftestPath);
-    // CLAUDE.md is no longer generated -- identity injected by UserPromptSubmit hook.
-    // conftest.py fixture now falls back to ops_identity.py + dispatch/response skills.
+    // CLAUDE.md is no longer generated -- identity lives in agents/gaia-orchestrator.md.
+    // conftest.py fixture reads agents/gaia-orchestrator.md directly.
   }
 
   checks.push({
@@ -756,7 +757,7 @@ function runTestProbe(ctx, findings, checks) {
       });
     }
 
-    // CLAUDE.md is no longer required -- conftest.py falls back to ops_identity.py
+    // CLAUDE.md is no longer required -- conftest.py reads agents/gaia-orchestrator.md
   }
 
   checks.push({

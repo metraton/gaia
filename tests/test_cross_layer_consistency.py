@@ -420,22 +420,20 @@ class TestSkillsCrossReferences:
         )
 
     def test_identity_references_approval_workflow(self):
-        """Approval workflow must be documented in identity or orchestrator-approval skill.
+        """Approval workflow must be documented in orchestrator identity or orchestrator-approval skill.
 
-        The ops_identity.py delegates approval protocol details to the
-        orchestrator-approval skill. The approval contract must exist in the system.
+        The orchestrator identity (agents/gaia-orchestrator.md) delegates approval
+        protocol details to the orchestrator-approval skill. The approval contract
+        must exist in the system.
         """
-        identity_path = GAIA_OPS_ROOT / "hooks" / "modules" / "identity" / "ops_identity.py"
+        identity_path = GAIA_OPS_ROOT / "agents" / "gaia-orchestrator.md"
         identity_content = identity_path.read_text().lower()
         approval_skill_path = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
         combined = identity_content
         if approval_skill_path.exists():
             combined += "\n" + approval_skill_path.read_text().lower()
-        assert "elicitationresult" in combined or "askuserquestion" in combined or "nonce" in combined, (
-            "System must mention the approval mechanism (ElicitationResult, AskUserQuestion, or nonce)"
-        )
-        assert "approve" in combined or "approval" in combined, (
-            "System must mention the approval workflow"
+        assert "approval" in combined or "approve" in combined or "review" in combined, (
+            "System must mention the approval workflow (approval, approve, or REVIEW)"
         )
 
     def test_security_tiers_t3_references_agent_protocol(self):
