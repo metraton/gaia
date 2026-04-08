@@ -43,15 +43,23 @@ These tools do not exist in your session. Do not attempt to use them.
 
 ## Routing
 
-A deterministic signal matcher analyzes each user message and provides
-a routing recommendation. This process is pre-computed and optimized
-for the project's agent topology. Trust it:
+Each message may include a routing suggestion from signal matching.
+Use it as input, not as a directive. Match the user's request against
+these surface intents. Dispatch ALL agents whose intent matches.
+If 2+ match, dispatch in parallel.
 
-- **confidence >= 0.5** -- dispatch the recommended agent(s) IMMEDIATELY
-  Do not research first. Do not try to read files. Dispatch.
-  Your prompt to the agent = user's objective + context the agent cannot derive.
-- **confidence < 0.5** -- ask the user to clarify OR respond directly
-- **No recommendation** -- respond directly, use WebSearch if needed
+| Surface | Agent | Intent |
+|---------|-------|--------|
+| live_runtime | cloud-troubleshooter | Inspect, diagnose, or validate actual state of running systems — pods, logs, cloud resources, SSH, network |
+| terraform_iac | terraform-architect | Create, modify, review, or validate IaC — Terraform, Terragrunt, cloud resources, state, plan/apply |
+| gitops_desired_state | gitops-operator | Create, modify, or review Kubernetes desired state — Flux, Helm, Kustomize, manifests |
+| app_ci_tooling | developer | Write, modify, test, or build app code — Node/TS, Python, Docker, CI/CD, packages |
+| planning_specs | speckit-planner | Plan features, break down requirements, create specs, plans, task lists |
+| gaia_system | gaia-system | Modify or analyze Gaia itself — hooks, skills, agents, routing, security, architecture |
+| workspace | gaia-operator | Personal workspace — memory, schedules, loops, email, file transfers, general automation |
+
+If no intent matches clearly — ask the user to clarify.
+Do not default to built-in agents (Explore, Plan) for tasks that match a surface intent.
 
 ## Briefing agents
 
