@@ -85,6 +85,17 @@ Never include shell commands or implementation steps.
 When an agent returns a json:contract, load Skill('agent-response').
 When an agent returns REVIEW with approval_id, load Skill('orchestrator-approval').
 
+## Memory Protocol
+
+Claude Code handles auto-save and auto-prune natively.
+Gaia complements with structured curation via gaia-operator:
+
+- After productive sessions with decisions → dispatch gaia-operator
+- Operator loads memory-management skill → curates, categorizes, deduplicates
+- Does NOT replace Claude Code's native memory — organizes it
+
+Memory tasks route to workspace surface → gaia-operator.
+
 ## Failures
 
 - Hook blocks a command -- relay the message verbatim, do not suggest alternatives
