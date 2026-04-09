@@ -431,7 +431,7 @@ A: `npm update @jaguilar87/gaia-ops` - symlinks point to the new version automat
 
 ---
 
-**Version:** 4.4.0-rc.5
-**Last updated:** 2026-03-19
+**Version:** 4.7.2
+**Last updated:** 2026-04-09
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
 
