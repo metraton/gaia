@@ -263,7 +263,6 @@ _UNIVERSAL_DANGEROUS_PATTERNS: Tuple[Tuple[_re.Pattern, str, str], ...] = (
 # Layer 3: Heuristic safety classification
 # ---------------------------------------------------------------------------
 _SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
-    (_re.compile(r"(/etc/|/home/|~/\.ssh|/var/|/usr/|/root/)"), "sensitive-path"),
     (_re.compile(r"\b(base64|b64encode|b64decode|atob|btoa)\b"), "encoding"),
     (_re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"), "ip-address"),
 )

@@ -571,15 +571,13 @@ class TestUniversalInlineCodeDetection:
 
     # ---- Layer 3: Heuristics ----
 
-    def test_suspicious_sensitive_path(self):
-        """Inline code accessing /etc/passwd -> suspicious via heuristic."""
+    def test_sensitive_path_not_flagged(self):
+        """Inline code reading /etc/passwd -> NOT mutative (no dangerous API)."""
         result = detect_mutative_command(
             """node -e "readFile('/etc/passwd')" """
         )
-        assert result.is_mutative is True
-        assert result.category == "MUTATIVE"
-        assert "heuristic" in result.verb
-        assert "sensitive-path" in result.verb
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
 
     def test_suspicious_base64(self):
         """Inline code with atob (base64 decoding) -> suspicious via heuristic."""
