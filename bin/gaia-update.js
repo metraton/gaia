@@ -32,7 +32,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join, relative } from 'path';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import chalk from 'chalk';
@@ -261,9 +261,17 @@ async function updateLocalHooks() {
     // Unwrap outer "hooks" key if present
     const sourceHooks = hooksData.hooks || hooksData;
 
-    // Convert ${CLAUDE_PLUGIN_ROOT}/hooks/<script> to .claude/hooks/<script> for npm mode
+    // Resolve absolute path to hooks directory so hooks work regardless of
+    // CWD at execution time (Stop/PostCompact hooks may run from unknown CWD)
+    const hooksSymlink = join(claudeDir, 'hooks');
+    let hooksAbs;
+    try {
+      hooksAbs = realpathSync(hooksSymlink);
+    } catch {
+      hooksAbs = hooksSymlink; // Fallback if symlink not yet created
+    }
     const convertCommand = (cmd) => {
-      return cmd.replace(/\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\//g, '.claude/hooks/');
+      return cmd.replace(/\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\//g, `${hooksAbs}/`);
     };
 
     const convertedHooks = {};
@@ -290,10 +298,22 @@ async function updateLocalHooks() {
       }
     }
 
-    // Smart merge: for each hook event, deduplicate by command string
+    // Migrate existing relative .claude/hooks/ paths to absolute
     const existingHooks = existing.hooks || {};
     let changed = false;
 
+    for (const [event, entries] of Object.entries(existingHooks)) {
+      for (const entry of entries) {
+        for (const h of (entry.hooks || [])) {
+          if (h.command && h.command.startsWith('.claude/hooks/')) {
+            h.command = h.command.replace('.claude/hooks/', `${hooksAbs}/`);
+            changed = true;
+          }
+        }
+      }
+    }
+
+    // Smart merge: for each hook event, deduplicate by command string
     for (const [event, newEntries] of Object.entries(convertedHooks)) {
       if (!existingHooks[event]) {
         existingHooks[event] = newEntries;
