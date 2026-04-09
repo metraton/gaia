@@ -381,9 +381,6 @@
         "stack",
         "git",
         "environment",
-        "application_services",
-        "architecture_overview",
-        "operational_guidelines",
         "workspace_repos"
       ],
       "required_checks": [
@@ -405,18 +402,20 @@
           "automate",
           "workspace",
           "personal",
-          "general task"
+          "general task",
+          "save this",
+          "remember this",
+          "note this",
+          "search for",
+          "look up",
+          "find online"
         ],
         "commands": [
-          "cron",
-          "rsync",
-          "scp",
-          "sftp"
+          "cron"
         ],
         "artifacts": [
           "memory/",
           "MEMORY.md",
-          ".claude/",
           "crontab"
         ]
       }

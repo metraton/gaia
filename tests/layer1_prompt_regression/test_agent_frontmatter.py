@@ -59,12 +59,24 @@ class TestRequiredFields:
             assert fm.get("name") == agent_file.stem, \
                 f"{agent_file.name}: name '{fm.get('name')}' != filename '{agent_file.stem}'"
 
+    # Agents that intentionally override the default model for cost efficiency.
+    # Key: agent stem name, Value: allowed model value.
+    ALLOWED_MODEL_OVERRIDES = {
+        "gaia-operator": "sonnet",  # simple workspace tasks, sonnet is cost-efficient
+    }
+
     def test_model_is_inherit(self, all_agent_files):
-        """All agents must use model: inherit."""
+        """All agents must use model: inherit unless explicitly listed in ALLOWED_MODEL_OVERRIDES."""
         for agent_file in all_agent_files:
             fm = parse_frontmatter(agent_file.read_text())
-            assert fm.get("model") == "inherit", \
-                f"{agent_file.name}: model must be 'inherit', got '{fm.get('model')}'"
+            model = fm.get("model")
+            allowed = self.ALLOWED_MODEL_OVERRIDES.get(agent_file.stem)
+            if allowed:
+                assert model == allowed, \
+                    f"{agent_file.name}: model must be '{allowed}', got '{model}'"
+            else:
+                assert model == "inherit", \
+                    f"{agent_file.name}: model must be 'inherit', got '{model}'"
 
     def test_description_not_empty(self, all_agent_files):
         """Description must be non-empty."""

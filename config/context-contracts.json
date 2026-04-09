@@ -133,17 +133,10 @@
         "stack",
         "git",
         "environment",
-        "application_services",
-        "architecture_overview",
-        "operational_guidelines",
-        "workspace_repos",
-        "infrastructure",
-        "infrastructure_topology"
+        "workspace_repos"
       ],
       "write": [
-        "application_services",
-        "architecture_overview",
-        "operational_guidelines"
+        "workspace_repos"
       ]
     }
   }
