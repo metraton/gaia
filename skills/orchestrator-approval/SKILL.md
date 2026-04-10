@@ -52,6 +52,23 @@ Each hook-blocked REVIEW requires its own presentation with all mandatory fields
 3. On "Approve": resume the subagent via SendMessage with natural language describing the approved direction.
 4. On scope change: present the new scope with all mandatory fields and ask again.
 
+## Batch Approval
+
+When a subagent's `approval_request` contains `batch_scope: "verb_family"`, the agent is requesting a multi-use grant that covers many commands with the same base CLI and verb but different arguments. This is typical for bulk operations like email triage (modifying hundreds of emails) or batch label creation.
+
+**Detection:** Check for `batch_scope` in the `approval_request` object.
+
+**Presentation:** Include the same 5 mandatory fields, but frame the scope as a batch:
+- OPERATION should describe the batch (e.g., "Modify 500 Gmail messages")
+- EXACT_CONTENT should show the command pattern (e.g., "`gws gmail users messages modify`")
+- SCOPE should state the TTL (e.g., "All modify operations for the next 10 minutes")
+
+**Options:** Use **Approve batch / Approve single / Reject** (three options).
+- "Approve batch" creates a verb-family grant (multi-use, 10-minute TTL) that covers all future commands matching the same base_cmd + verb. The PostToolUse hook detects "batch" in the answer.
+- "Approve single" creates a normal single-use grant for only the first blocked command.
+
+**Resume:** After batch approval, resume the subagent via SendMessage with: "Batch approved. Proceed with all [verb] operations."
+
 ## Anti-Patterns
 
 - **Summary-only approval** -- presenting "Deploy to dev?" without the exact command, files, or rollback.
@@ -60,3 +77,4 @@ Each hook-blocked REVIEW requires its own presentation with all mandatory fields
 - **Details on demand** -- offering to show the plan instead of showing it upfront.
 - **"It's just a small change"** -- size does not change the contract. Show exact content regardless.
 - **"The subagent already showed it"** -- show it again in the approval prompt.
+- **Batch without showing TTL** -- batch grants expire. Always state the time window.

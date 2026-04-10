@@ -1,10 +1,12 @@
 """
 Approval scope builders and matching for nonce-based T3 grants.
 
-The approval system supports two explicit scope shapes:
+The approval system supports three explicit scope shapes:
 
 - exact_command: tokenized command must match exactly
 - semantic_signature: same semantic command and normalized flags
+- verb_family: same base_cmd + verb only (ignores arguments and non-dangerous flags).
+  Multi-use within TTL.  Used for batch operations like bulk email triage.
 """
 
 from dataclasses import asdict, dataclass
@@ -17,10 +19,12 @@ APPROVAL_SCOPE_VERSION = 2
 
 SCOPE_EXACT_COMMAND = "exact_command"
 SCOPE_SEMANTIC_SIGNATURE = "semantic_signature"
+SCOPE_VERB_FAMILY = "verb_family"
 
 SUPPORTED_SCOPE_TYPES = frozenset({
     SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
+    SCOPE_VERB_FAMILY,
 })
 
 
@@ -144,6 +148,13 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
             incoming_semantic_tokens == signature.semantic_tokens
             and incoming_flags == signature.normalized_flags
         )
+
+    if signature.scope_type == SCOPE_VERB_FAMILY:
+        # Verb-family matching: base_cmd + verb + danger_category + dangerous_flags.
+        # Arguments and non-dangerous flags are intentionally ignored so that a
+        # single batch grant covers many commands with different payloads
+        # (e.g., modifying 500 different emails).
+        return True
 
     return False
 

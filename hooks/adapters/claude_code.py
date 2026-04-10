@@ -799,10 +799,15 @@ class ClaudeCodeAdapter(HookAdapter):
                     grant = check_approval_grant(command, session_id=session_id)
                     if grant is not None and not grant.confirmed:
                         confirm_grant(command, session_id=session_id)
-                        consume_grant(command, session_id=session_id)  # Single-use: mark as consumed
-                        logger.info(
-                            "T3 grant confirmed and consumed post-execution: %s", command[:80],
-                        )
+                        if grant.multi_use:
+                            logger.info(
+                                "T3 multi-use grant confirmed (not consumed): %s", command[:80],
+                            )
+                        else:
+                            consume_grant(command, session_id=session_id)  # Single-use: mark as consumed
+                            logger.info(
+                                "T3 grant confirmed and consumed post-execution: %s", command[:80],
+                            )
 
             events = detect_critical_event(tool_name, parameters, output, success)
             if events:
@@ -843,11 +848,17 @@ class ClaudeCodeAdapter(HookAdapter):
         to determine if the user approved. Only activates grants when at least
         one answer value contains "approve" (case-insensitive).
 
+        When the answer also contains "batch", a SCOPE_VERB_FAMILY multi-use
+        grant is created alongside the normal semantic grants.  This allows
+        batch operations (e.g., modifying hundreds of emails) to proceed
+        without per-command approval.
+
         Never blocks (no exceptions raised to caller).
         """
         import json as _json
         from modules.security.approval_grants import (
             activate_grants_for_session,
+            create_verb_family_grant,
             get_pending_approvals_for_session,
         )
 
@@ -879,6 +890,9 @@ class ClaudeCodeAdapter(HookAdapter):
             )
             return
 
+        # Detect batch intent: answer contains "batch" alongside "approve"
+        is_batch = any("batch" in str(v).lower() for v in answers.values())
+
         # User approved -- activate grants
         logger.info("AskUserQuestion: user approved, activating grants for session %s", session_id[:12])
 
@@ -899,6 +913,37 @@ class ClaudeCodeAdapter(HookAdapter):
                 "AskUserQuestion activated %d/%d pending grants for session %s",
                 activated, len(results), session_id,
             )
+
+            # Batch approval: create a verb-family grant for each pending
+            # approval's base_cmd + verb, so future commands with different
+            # arguments are covered without per-command approval.
+            if is_batch and pending:
+                from modules.security.approval_grants import DEFAULT_BATCH_TTL_MINUTES
+                from modules.security.approval_scopes import ApprovalSignature
+
+                for pending_data in pending:
+                    sig_data = pending_data.get("scope_signature")
+                    if not sig_data:
+                        continue
+                    try:
+                        sig = ApprovalSignature.from_dict(sig_data)
+                        if sig.base_cmd and sig.verb:
+                            batch_path = create_verb_family_grant(
+                                session_id=session_id,
+                                base_cmd=sig.base_cmd,
+                                verb=sig.verb,
+                                danger_category=sig.danger_category,
+                                ttl_minutes=DEFAULT_BATCH_TTL_MINUTES,
+                            )
+                            if batch_path:
+                                logger.info(
+                                    "Batch verb-family grant created: %s %s -> %s",
+                                    sig.base_cmd, sig.verb, batch_path.name,
+                                )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to create batch grant from pending: %s", e,
+                        )
 
         except Exception as e:
             logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)
