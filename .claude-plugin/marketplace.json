@@ -8,7 +8,7 @@
     {
       "name": "gaia-security",
       "description": "Keeps you in the loop only when it matters. Gaia Security analyzes every command and classifies it into risk tiers: read-only queries run freely, simulations and validations pass through, and state-changing operations (create, delete, apply, push) pause for your explicit approval before executing. Irreversible commands like dropping databases or deleting cloud infrastructure are permanently blocked.",
-      "version": "5.0.0-beta.4",
+      "version": "5.0.0-beta.5",
       "source": "./dist/gaia-security"
     }
   ]

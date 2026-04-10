@@ -55,7 +55,9 @@ class TestDefaultMode:
         clear_path_cache()
         clear_mode_cache()
         monkeypatch.delenv("GAIA_PLUGIN_MODE", raising=False)
-        with patch(_PATCH_TARGET, return_value=tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        with patch(_PATCH_TARGET, return_value=tmp_path), \
+             patch("modules.core.plugin_mode._detect_mode_from_npm_package", return_value=None):
             yield
         clear_mode_cache()
 
@@ -74,7 +76,9 @@ class TestEnvVarFallback:
         clear_path_cache()
         clear_mode_cache()
         monkeypatch.delenv("GAIA_PLUGIN_MODE", raising=False)
-        with patch(_PATCH_TARGET, return_value=tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        with patch(_PATCH_TARGET, return_value=tmp_path), \
+             patch("modules.core.plugin_mode._detect_mode_from_npm_package", return_value=None):
             yield
         clear_mode_cache()
 
@@ -113,7 +117,9 @@ class TestRegistryDetection:
         clear_mode_cache()
         self.tmp_path = tmp_path
         monkeypatch.delenv("GAIA_PLUGIN_MODE", raising=False)
-        with patch(_PATCH_TARGET, return_value=tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        with patch(_PATCH_TARGET, return_value=tmp_path), \
+             patch("modules.core.plugin_mode._detect_mode_from_npm_package", return_value=None):
             yield
         clear_mode_cache()
 
@@ -154,7 +160,9 @@ class TestHasPlugin:
         clear_path_cache()
         clear_mode_cache()
         self.tmp_path = tmp_path
-        with patch(_PATCH_TARGET, return_value=tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        with patch(_PATCH_TARGET, return_value=tmp_path), \
+             patch("modules.core.plugin_mode._detect_mode_from_npm_package", return_value=None):
             yield
         clear_mode_cache()
 
@@ -183,7 +191,9 @@ class TestConvenienceFunctions:
         clear_path_cache()
         clear_mode_cache()
         monkeypatch.delenv("GAIA_PLUGIN_MODE", raising=False)
-        with patch(_PATCH_TARGET, return_value=tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        with patch(_PATCH_TARGET, return_value=tmp_path), \
+             patch("modules.core.plugin_mode._detect_mode_from_npm_package", return_value=None):
             yield
         clear_mode_cache()
 
@@ -210,7 +220,9 @@ class TestCacheClearing:
         clear_mode_cache()
         self.tmp_path = tmp_path
         monkeypatch.delenv("GAIA_PLUGIN_MODE", raising=False)
-        with patch(_PATCH_TARGET, return_value=tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        with patch(_PATCH_TARGET, return_value=tmp_path), \
+             patch("modules.core.plugin_mode._detect_mode_from_npm_package", return_value=None):
             yield
         clear_mode_cache()
 
