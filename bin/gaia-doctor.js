@@ -341,12 +341,18 @@ async function autoFix() {
     if (existsSync(packagePath)) {
       const relPath = relative(claudeDir, packagePath);
       const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills'];
+      // Use junctions on Windows (no admin required), regular symlinks elsewhere
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir';
 
       for (const name of names) {
         const link = join(claudeDir, name);
         if (!existsSync(link)) {
           try {
-            await fs.symlink(join(relPath, name), link);
+            // Junctions on Windows require absolute targets; symlinks on Unix use relative
+            const target = process.platform === 'win32'
+              ? join(packagePath, name)
+              : join(relPath, name);
+            await fs.symlink(target, link, linkType);
             console.log(chalk.green(`    Fixed: .claude/${name} symlink`));
             fixed++;
           } catch {

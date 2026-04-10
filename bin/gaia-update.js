@@ -44,6 +44,9 @@ const __dirname = dirname(__filename);
 const CWD = process.env.INIT_CWD || process.cwd();
 const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v');
 
+// Use junctions on Windows (no admin required), regular symlinks elsewhere
+const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
+
 // ============================================================================
 // Version Detection
 // ============================================================================
@@ -376,11 +379,14 @@ async function updateSymlinks() {
 
     for (const name of symlinks) {
       const link = join(claudeDir, name);
-      const target = join(relativePath, name);
+      // Junctions on Windows require absolute targets; symlinks on Unix use relative
+      const target = process.platform === 'win32'
+        ? join(packagePath, name)
+        : join(relativePath, name);
 
       if (!existsSync(link)) {
         try {
-          await fs.symlink(target, link);
+          await fs.symlink(target, link, LINK_TYPE);
           fixed++;
         } catch { /* skip */ }
       } else {
@@ -391,7 +397,7 @@ async function updateSymlinks() {
           // Broken symlink — remove and recreate
           try {
             await fs.unlink(link);
-            await fs.symlink(target, link);
+            await fs.symlink(target, link, LINK_TYPE);
             fixed++;
           } catch { /* skip */ }
         }
@@ -402,7 +408,12 @@ async function updateSymlinks() {
     const changelogLink = join(claudeDir, 'CHANGELOG.md');
     if (!existsSync(changelogLink)) {
       try {
-        await fs.symlink(join(relativePath, 'CHANGELOG.md'), changelogLink);
+        if (process.platform === 'win32') {
+          // Junctions only work for directories; copy the file on Windows
+          await fs.copyFile(join(packagePath, 'CHANGELOG.md'), changelogLink);
+        } else {
+          await fs.symlink(join(relativePath, 'CHANGELOG.md'), changelogLink);
+        }
         fixed++;
       } catch { /* skip */ }
     }

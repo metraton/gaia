@@ -1,14 +1,38 @@
-#!/usr/bin/env bash
-# Shell wrapper for gaia-scan CLI.
-# Invokes the Python scanner with all forwarded arguments.
-# Used as the npm bin entry point for `npx gaia-scan` / `npx gaia scan`.
+#!/usr/bin/env node
 
-set -euo pipefail
+/**
+ * Cross-platform wrapper for gaia-scan CLI.
+ * Invokes the Python scanner with all forwarded arguments.
+ * Used as the npm bin entry point for `npx gaia-scan`.
+ *
+ * Replaces the previous bash wrapper so that it works on Windows
+ * (where /usr/bin/env bash does not exist).
+ */
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
-PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-# Ensure PYTHONPATH includes the plugin root so `tools.scan` resolves
-export PYTHONPATH="${PLUGIN_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const pluginRoot = join(__dirname, '..');
+const scanScript = join(__dirname, 'gaia-scan.py');
 
-exec python3 "${SCRIPT_DIR}/gaia-scan.py" "$@"
+// Forward all CLI arguments after the script name
+const args = process.argv.slice(2);
+
+// Set PYTHONPATH so `tools.scan` resolves inside the package
+const sep = process.platform === 'win32' ? ';' : ':';
+const pythonPath = process.env.PYTHONPATH
+  ? `${pluginRoot}${sep}${process.env.PYTHONPATH}`
+  : pluginRoot;
+
+try {
+  execFileSync('python3', [scanScript, ...args], {
+    stdio: 'inherit',
+    env: { ...process.env, PYTHONPATH: pythonPath },
+  });
+} catch (error) {
+  // execFileSync throws on non-zero exit; propagate the exit code
+  process.exit(error.status || 1);
+}

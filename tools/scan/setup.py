@@ -19,6 +19,7 @@ Functions:
 import json
 import logging
 import os
+import platform
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -26,6 +27,23 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Windows detection: junctions don't require admin privileges
+_IS_WINDOWS = platform.system() == "Windows"
+
+
+def _create_dir_link(target: str, link: str) -> None:
+    """Create a directory link: junction on Windows, symlink on Unix.
+
+    Windows junctions don't require admin/developer-mode privileges,
+    unlike directory symlinks.  The target must be an absolute path
+    on Windows (junctions don't support relative targets).
+    """
+    if _IS_WINDOWS:
+        import _winapi  # stdlib on Windows, unavailable elsewhere
+        _winapi.CreateJunction(target, link)
+    else:
+        os.symlink(target, link)
 
 
 def _find_package_root() -> Path:
@@ -191,23 +209,31 @@ def create_claude_directory(project_root: Path) -> List[str]:
 
     for name in symlink_names:
         link_path = claude_dir / name
-        target = os.path.join(rel_path, name)
+        # Junctions on Windows require absolute targets; symlinks on Unix use relative
+        if _IS_WINDOWS:
+            target = str(package_path / name)
+        else:
+            target = os.path.join(rel_path, name)
 
         if link_path.exists() or link_path.is_symlink():
             link_path.unlink()
 
         try:
-            os.symlink(target, str(link_path))
+            _create_dir_link(target, str(link_path))
             created.append(name)
         except OSError as exc:
             logger.warning("Failed to create symlink %s: %s", name, exc)
 
-    # CHANGELOG.md symlink
+    # CHANGELOG.md symlink (file, not directory — junctions only work for dirs)
     changelog_link = claude_dir / "CHANGELOG.md"
     if changelog_link.exists() or changelog_link.is_symlink():
         changelog_link.unlink()
     try:
-        os.symlink(os.path.join(rel_path, "CHANGELOG.md"), str(changelog_link))
+        if _IS_WINDOWS:
+            # File symlinks need admin on Windows; copy instead
+            shutil.copy2(str(package_path / "CHANGELOG.md"), str(changelog_link))
+        else:
+            os.symlink(os.path.join(rel_path, "CHANGELOG.md"), str(changelog_link))
         created.append("CHANGELOG.md")
     except OSError as exc:
         logger.warning("Failed to create CHANGELOG.md symlink: %s", exc)
