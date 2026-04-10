@@ -45,29 +45,46 @@ Compare the blocked command's scope to what the user originally approved. If the
 **3. Fresh presentation every time.**
 Each hook-blocked REVIEW requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
-## Approval Procedure
+## AskUserQuestion Template
 
-1. Extract the 5 mandatory fields from `approval_request` in the subagent's `json:contract` block.
-2. Present to the user via AskUserQuestion with all mandatory fields populated. Use exactly these options: **Approve / Modify / Reject**. Never include the approval_id in user-facing text.
-3. On "Approve": resume the subagent via SendMessage with natural language describing the approved direction.
-4. On scope change: present the new scope with all mandatory fields and ask again.
+Map the 5 mandatory fields into AskUserQuestion parameters.
+
+**question** (multi-line string with all fields visible before the user chooses):
+```
+APPROVAL REQUIRED
+
+OPERATION: {approval_request.operation}
+CONTENT: {approval_request.exact_content}
+SCOPE: {approval_request.scope}
+RISK: {approval_request.risk_level}
+ROLLBACK: {approval_request.rollback}
+```
+
+**options** (depends on batch_scope):
+- Default: `["Approve", "Modify", "Reject"]`
+- When `batch_scope` present: `["Approve batch", "Approve single", "Modify", "Reject"]`
+
+**Steps:**
+1. Extract the 5 fields from `approval_request` in the agent's `json:contract`.
+2. Call AskUserQuestion with the template above. Never include approval_id in user-facing text.
+3. On "Approve": resume via SendMessage with natural language describing the approved direction.
+4. On "Modify": ask what to change, relay to agent via SendMessage.
+5. On scope change: present the new scope with all fields and ask again.
 
 ## Batch Approval
 
-When a subagent's `approval_request` contains `batch_scope: "verb_family"`, the agent is requesting a multi-use grant that covers many commands with the same base CLI and verb but different arguments. This is typical for bulk operations like email triage (modifying hundreds of emails) or batch label creation.
+When `approval_request` contains `batch_scope: "verb_family"`, the agent requests a multi-use grant covering many commands with the same base CLI and verb but different arguments.
 
-**Detection:** Check for `batch_scope` in the `approval_request` object.
+**Presentation:** Use the same template above, but frame the scope as a batch:
+- OPERATION describes the batch (e.g., "Modify 500 Gmail messages")
+- CONTENT shows the command pattern (e.g., "`gws gmail users messages modify`")
+- SCOPE states the TTL (e.g., "All modify operations for the next 10 minutes")
 
-**Presentation:** Include the same 5 mandatory fields, but frame the scope as a batch:
-- OPERATION should describe the batch (e.g., "Modify 500 Gmail messages")
-- EXACT_CONTENT should show the command pattern (e.g., "`gws gmail users messages modify`")
-- SCOPE should state the TTL (e.g., "All modify operations for the next 10 minutes")
-
-**Options:** Use **Approve batch / Approve single / Reject** (three options).
-- "Approve batch" creates a verb-family grant (multi-use, 10-minute TTL) that covers all future commands matching the same base_cmd + verb. The PostToolUse hook detects "batch" in the answer.
+**Options:** `["Approve batch", "Approve single", "Modify", "Reject"]`
+- "Approve batch" creates a verb-family grant (multi-use, 10-minute TTL). The PostToolUse hook detects "batch" in the answer.
 - "Approve single" creates a normal single-use grant for only the first blocked command.
 
-**Resume:** After batch approval, resume the subagent via SendMessage with: "Batch approved. Proceed with all [verb] operations."
+**Resume:** After batch approval, resume via SendMessage with: "Batch approved. Proceed with all [verb] operations."
 
 ## Anti-Patterns
 

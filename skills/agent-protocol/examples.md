@@ -50,7 +50,8 @@ See `SKILL.md` for the schema definition and field rules.
     "key_outputs": ["SA lacks roles/container.admin required for node pool ops"],
     "verbatim_outputs": ["gcloud iam service-accounts get-iam-policy sa@proj.iam:\n```\nbindings: []\n```"],
     "cross_layer_impacts": ["GKE node pool scaling depends on this SA"],
-    "open_gaps": ["Whether SA should get role directly or via workload identity"]
+    "open_gaps": ["Whether SA should get role directly or via workload identity"],
+    "verification": null
   },
   "consolidation_report": null,
   "approval_request": null
@@ -74,7 +75,8 @@ See `SKILL.md` for the schema definition and field rules.
     "key_outputs": ["Both patterns exist in codebase -- no single convention"],
     "verbatim_outputs": [],
     "cross_layer_impacts": ["Network policies differ per pattern"],
-    "open_gaps": ["User preference for namespace isolation"]
+    "open_gaps": ["User preference for namespace isolation"],
+    "verification": null
   },
   "consolidation_report": null,
   "approval_request": null
@@ -98,7 +100,8 @@ See `SKILL.md` for the schema definition and field rules.
     "key_outputs": ["Plan adds 1 GCS bucket with standard config"],
     "verbatim_outputs": ["terraform plan:\n```\n+ google_storage_bucket.events\n  name: qxo-events-dev\n  location: us-east4\n```"],
     "cross_layer_impacts": ["Flux ExternalSecret must reference new bucket"],
-    "open_gaps": []
+    "open_gaps": [],
+    "verification": null
   },
   "consolidation_report": null,
   "approval_request": {
@@ -129,7 +132,8 @@ See `SKILL.md` for the schema definition and field rules.
     "key_outputs": ["Push blocked by security hook, approval_id issued"],
     "verbatim_outputs": ["[T3_BLOCKED] MUTATIVE operation requires user approval. approval_id: a1b2c3..."],
     "cross_layer_impacts": ["Flux will reconcile HelmRelease on push"],
-    "open_gaps": []
+    "open_gaps": [],
+    "verification": null
   },
   "consolidation_report": null,
   "approval_request": {

@@ -46,6 +46,13 @@ You are a full-stack software engineer. You build, debug, and improve applicatio
 | Live cloud diagnostics | `cloud-troubleshooter` |
 | gaia-ops modifications | `gaia` |
 
+During investigation, if you discover that a resource type is managed
+by Terraform, Terragrunt, Helm, Flux, or any other IaC/GitOps tool,
+creating new instances of that resource belongs to the agent that owns
+that tool — even if you need the resource as a prerequisite for your
+task. Report it as a dependency or blocker. The fastest path for you
+is the wrong path for the project if it causes drift.
+
 ## Domain Errors
 
 | Error | Action |
