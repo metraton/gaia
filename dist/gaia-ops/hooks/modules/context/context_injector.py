@@ -10,7 +10,9 @@ Handles:
 import json
 import logging
 import os
+import shutil
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +22,20 @@ from .anchor_tracker import extract_anchors, save_anchors
 from .contracts_loader import build_context_update_reminder
 
 logger = logging.getLogger(__name__)
+
+
+def _find_python() -> str:
+    """Return the Python 3 command name for this platform.
+
+    Tries ``python3`` first (Linux/macOS), then ``python`` (Windows).
+    Falls back to ``sys.executable`` (the current interpreter) as a
+    last resort -- this always works since hooks are already running
+    under Python.
+    """
+    for cmd in ("python3", "python"):
+        if shutil.which(cmd):
+            return cmd
+    return sys.executable
 
 
 def _prune_empty_values(data: dict) -> dict:
@@ -288,7 +304,7 @@ def build_project_context(
         # Execute context_provider.py to get filtered context
         logger.info(f"Building context for {subagent_type}...")
         result = subprocess.run(
-            ["python3", str(context_provider), subagent_type, prompt],
+            [_find_python(), str(context_provider), subagent_type, prompt],
             capture_output=True,
             text=True,
             timeout=15,

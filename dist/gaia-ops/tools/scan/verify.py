@@ -159,23 +159,27 @@ def check_project_context(project_root: Path) -> CheckResult:
 
 
 def check_python() -> CheckResult:
-    """Verify that python3 is available.
+    """Verify that python3 (or python on Windows) is available.
+
+    Tries ``python3`` first, then ``python`` for Windows compatibility.
 
     Returns:
         CheckResult with Python version.
     """
-    try:
-        result = subprocess.run(
-            ["python3", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            version = result.stdout.strip()
-            return CheckResult(name="Python", ok=True, detail=version)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+    for cmd in ("python3", "python"):
+        try:
+            result = subprocess.run(
+                [cmd, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                if version.startswith("Python 3."):
+                    return CheckResult(name="Python", ok=True, detail=version)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
 
     return CheckResult(
         name="Python",

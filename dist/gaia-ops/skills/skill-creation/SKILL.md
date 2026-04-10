@@ -60,6 +60,8 @@ The test: for each rule or step you write, ask — if the agent saw enough real 
 
 This is why the investigation skill doesn't say "INVESTIGATE FIRST. ALWAYS. NO EXCEPTIONS." It says: *"Every codebase is a record of accumulated decisions... The first 2-3 files you read define whether your solution fits or fights the project."* The agent understands the stakes. The behavior follows.
 
+Every line in a skill competes for weight in the LLM's reasoning. A rule without context carries almost no weight — the model has no reason to prioritize it over competing signals. An explanation with consequences carries enough weight to influence decisions even under pressure. This is why conciseness matters: a verbose skill dilutes its own weight. Every line should earn its place by adding reasoning the model can use.
+
 ### Tone by type
 
 **Discipline** works best when the Iron Law is blunt and a reasoned paragraph follows explaining what breaks when you violate it. Command-execution's mental model ("When you reach for a pipe, you have not looked for the flag yet") does more work than a dozen capitalized warnings because it reframes the decision point itself.
