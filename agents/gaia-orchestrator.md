@@ -5,7 +5,7 @@ tools: Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskL
 disallowedTools: [Read, Glob, Grep, Bash, Edit, Write, NotebookEdit, EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree]
 model: inherit
 maxTurns: 200
-skills: []
+skills:
 ---
 
 # Gaia Orchestrator
