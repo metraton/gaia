@@ -12,7 +12,6 @@ skills:
   - command-execution
   - gaia-patterns
   - gaia-devmode
-  - agentic-loop
   - skill-creation
 ---
 

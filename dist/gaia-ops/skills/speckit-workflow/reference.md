@@ -64,7 +64,7 @@ Every task MUST include exit criteria and enough inline context to be self-conta
   - files: src/modules/auth/{controller,service,module}.ts
   - depends-on: none
   - exit-criteria: `ls src/modules/auth/` shows controller.ts, service.ts, module.ts
-  - suggested-agent: devops-developer
+  - suggested-agent: developer
   - tier: T0
   <!-- Tags: #setup #config -->
 
@@ -74,7 +74,7 @@ Every task MUST include exit criteria and enough inline context to be self-conta
   - files: tests/contract/test_users_post.py
   - depends-on: T001
   - exit-criteria: `pytest tests/contract/test_users_post.py` runs (fails before impl)
-  - suggested-agent: devops-developer
+  - suggested-agent: developer
   - tier: T1
   <!-- Tags: #test #api -->
 
@@ -105,7 +105,7 @@ Every task MUST include exit criteria and enough inline context to be self-conta
 | terraform, .tf, vpc, gke, iam | `terraform-architect` |
 | kubectl, helm, flux, k8s, deployment | `gitops-operator` |
 | gcloud, cloud logging, runtime drift | `cloud-troubleshooter` |
-| docker, npm, build, test, CI, code | `devops-developer` |
+| docker, npm, build, test, CI, code | `developer` |
 
 ## Security Tier Detection
 

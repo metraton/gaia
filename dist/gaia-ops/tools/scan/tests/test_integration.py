@@ -214,7 +214,7 @@ def existing_agent_context(tmp_path: Path) -> Dict[str, Any]:
                 "node_count": 5,
             },
             "operational_guidelines": {
-                "_source": "agent:devops-developer",
+                "_source": "agent:developer",
                 "deployment_strategy": "blue-green",
                 "rollback_procedure": "manual",
             },

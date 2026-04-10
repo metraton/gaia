@@ -278,14 +278,14 @@ If the task spans multiple surfaces, dispatch the primary agent for each active 
 | `terraform_iac` | **terraform-architect** | Terraform/Terragrunt, IAM, buckets, shared modules |
 | `gitops_desired_state` | **gitops-operator** | Kubernetes manifests, Flux, Helm, desired state in Git |
 | `live_runtime` | **cloud-troubleshooter** | Live cluster/cloud diagnostics, pods, logs, runtime drift |
-| `app_ci_tooling` | **devops-developer** | Application code, CI/CD, Docker, build/test tooling |
+| `app_ci_tooling` | **developer** | Application code, CI/CD, Docker, build/test tooling |
 
 ### Routing Decision Factors
 
 - Detect dominant edit surface from paths, tools, and artifacts named in the task.
 - If the task crosses desired state, live state, and infra/app boundaries, treat it as multi-surface.
 - Ask each agent for evidence: patterns checked, files/paths checked, exact commands run, key outputs, and cross-layer impacts.
-- Use `devops-developer` for narrow reconnaissance when the dominant surface is unclear, not as a silent default owner.
+- Use `developer` for narrow reconnaissance when the dominant surface is unclear, not as a silent default owner.
 
 ### Unclear or Multi-Surface Tasks
 

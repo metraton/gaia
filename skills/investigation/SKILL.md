@@ -8,8 +8,10 @@ metadata:
 
 # Investigation
 
-Investigation is about understanding a problem well enough to propose
-a correct solution. For the `json:contract` response format, see `agent-protocol`.
+Every codebase is a record of accumulated decisions. Investigation
+is not a prerequisite you rush through — it is the most important part.
+The first 2-3 files you read define whether your solution fits or
+fights the project.
 
 ## Phase 1: Start From Injected Context
 
@@ -72,6 +74,17 @@ is **assumed** (inferred). Never propose on assumptions.
 
 ## Anti-Patterns
 
-- Searching before checking if context already has the path
-- Planning before resolving critical unknowns
-- Treating your training preference as codebase convention
+- **Searching before reading context.** Your injected context already
+  has paths and names. Searching for what you have wastes tool calls
+  and produces noise that obscures real unknowns.
+- **Planning before resolving unknowns.** A plan built on assumptions
+  collapses when reality disagrees. Find contradictions early.
+- **Treating training knowledge as codebase convention.** The codebase
+  says "we do Y" -- consistency within the project matters more than
+  abstract best practice from your training.
+- **Skipping investigation because the prompt is specific.** The
+  orchestrator doesn't see the codebase. You do. Instructions are
+  intent; the codebase is truth. When they contradict, the codebase wins.
+- **Creating files before reading existing examples.** Without seeing
+  how the project structures similar resources, you'll produce
+  something that works but looks foreign in every review.

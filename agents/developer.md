@@ -10,7 +10,6 @@ skills:
   - investigation
   - command-execution
   - developer-patterns
-  - agentic-loop
   - context-updater
   - fast-queries
 ---

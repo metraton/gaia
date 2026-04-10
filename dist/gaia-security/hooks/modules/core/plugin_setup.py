@@ -433,8 +433,8 @@ def setup_project_hooks() -> bool:
     """Merge hooks from hooks.json into .claude/settings.local.json.
 
     In npm mode, Claude Code reads hooks from settings files, not hooks.json.
-    This converts ${CLAUDE_PLUGIN_ROOT}/hooks/<script> paths to .claude/hooks/<script>
-    and merges them into settings.local.json with deduplication by command string.
+    This resolves hook script paths to absolute paths (via .claude/hooks symlink)
+    so hooks work regardless of CWD at execution time.
 
     Returns True if settings were modified.
     """
@@ -469,9 +469,17 @@ def setup_project_hooks() -> bool:
     # Unwrap outer "hooks" key if present
     source_hooks = hooks_data.get("hooks", hooks_data)
 
-    # Convert ${CLAUDE_PLUGIN_ROOT}/hooks/<script> to .claude/hooks/<script>
+    # Resolve absolute path to hooks directory so hooks work regardless of
+    # CWD at execution time (Stop/PostCompact hooks may run from unknown CWD)
+    hooks_dir = claude_dir / "hooks"
+    if hooks_dir.exists():
+        hooks_abs = str(hooks_dir.resolve())
+    else:
+        # Fallback: use relative .claude/hooks/ if symlink not yet created
+        hooks_abs = str(claude_dir / "hooks")
+
     def convert_command(cmd: str) -> str:
-        return re.sub(r'\$\{CLAUDE_PLUGIN_ROOT\}/hooks/', '.claude/hooks/', cmd)
+        return re.sub(r'\$\{CLAUDE_PLUGIN_ROOT\}/hooks/', f'{hooks_abs}/', cmd)
 
     converted_hooks: dict = {}
     for event, entries in source_hooks.items():
@@ -493,10 +501,20 @@ def setup_project_hooks() -> bool:
         except (json.JSONDecodeError, OSError):
             existing = {}
 
-    # Smart merge: deduplicate by command string
+    # Migrate existing relative .claude/hooks/ paths to absolute
     existing_hooks = existing.get("hooks", {})
     changed = False
 
+    for event, entries in existing_hooks.items():
+        for entry in entries:
+            for h in entry.get("hooks", []):
+                if "command" in h and h["command"].startswith(".claude/hooks/"):
+                    h["command"] = h["command"].replace(
+                        ".claude/hooks/", f"{hooks_abs}/", 1
+                    )
+                    changed = True
+
+    # Smart merge: deduplicate by command string
     for event, new_entries in converted_hooks.items():
         if event not in existing_hooks:
             existing_hooks[event] = new_entries

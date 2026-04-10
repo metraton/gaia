@@ -9,8 +9,6 @@ metadata:
 # Orchestrator Approval
 
 ```
-THIS SKILL HANDLES REVIEW WITH approval_id (hook-blocked T3).
-Plain REVIEW (plan-first, no approval_id) is handled directly by the orchestrator.
 NEVER PRESENT AN APPROVAL WITHOUT SHOWING THE USER
 (1) WHAT WILL HAPPEN, (2) EXACT CONTENT/COMMAND, (3) WHAT IT MODIFIES.
 ```

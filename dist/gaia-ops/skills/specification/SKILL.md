@@ -154,7 +154,7 @@ show the updated section (not the full spec again), confirm.
 
 ## Step 6: Save
 
-When the user approves, delegate to the `devops-developer` agent to save
+When the user approves, delegate to the `developer` agent to save
 `spec.md` in the feature directory: `{speckit_root}/{feature-name}/spec.md`.
 
 The feature directory name: lowercase, hyphenated, descriptive.

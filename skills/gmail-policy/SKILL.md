@@ -29,7 +29,7 @@ addLabelIds is safe. removeLabelIds changes visibility. delete is forbidden.
 - `gws gmail +send` -- sends email on user's behalf
 - `gws gmail labels create` -- creates new label
 
-## Permanently Blocked (inapelable)
+## Permanently Blocked
 
 - `gws gmail messages delete` -- permanent deletion
 - `gws gmail messages trash` -- moves to trash
@@ -38,17 +38,36 @@ addLabelIds is safe. removeLabelIds changes visibility. delete is forbidden.
 
 ## Label Convention
 
-Gaia creates labels prefixed with `_gaia/`:
+### Workflow Labels (Capa 0 — `_gaia/*`)
 
 | Label | Purpose |
 |-------|---------|
-| `_gaia/review` | Needs human attention |
-| `_gaia/processed` | Already analyzed by Gaia |
-| `_gaia/urgent` | Classified as urgent |
-| `_gaia/archive` | Safe to archive |
-| `_gaia/spam` | Classified as spam (user deletes manually) |
+| `_gaia/pending` | Staging area — unprocessed emails during triage sessions |
+| `_gaia/remind` | Flagged as important by user or Gaia |
+| `_gaia/trash` | Soft delete — policy forbids actual deletion |
+
+No `_gaia/*` label = processed/done. No extra label needed.
+
+### Content Labels (Capa 1)
+
+| Category | Labels |
+|----------|--------|
+| Finance | `Finance/Bank`, `Finance/Transfers`, `Finance/Insurance` |
+| Jobs | `Jobs/Alerts`, `Jobs/Academic` |
+| Shopping | `Shopping/Promos`, `Shopping/Orders` |
+| Music | `Music/Nucleo`, `Music/DJ` |
+| Social | `Social/LinkedIn`, `Social/Facebook` |
+| Services | `Services/Subscriptions`, `Services/Utilities` |
+| Tech | `Tech/Programming`, `Tech/SalesForce` |
+| Personal | `Personal/Notes`, `Personal/Travel`, `Personal/Downloads` |
+| Legacy | `_gaia/legacy` — retired: Buzz!!, Isercon, WaReS, +1, multi-forward, GDrive, PokerStar |
 
 ## OAuth Scope
 
 Require `gmail.modify` scope. NEVER `https://mail.google.com/` (full access including delete).
 `gmail.modify` allows read + label + move but NOT delete -- this is the API-level lock.
+
+## Related Skills
+
+- `gmail-triage` — interactive triage workflow
+- `gws-setup` — CLI installation and authentication

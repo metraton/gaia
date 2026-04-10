@@ -3,9 +3,14 @@ name: context-updater
 description: Use when investigation reveals data that is missing from or differs from project-context.json
 metadata:
   user-invocable: false
+  type: protocol
 ---
 
 # Context Updater Protocol
+
+project-context.json is shared memory across agents. When you discover something
+about the project that other agents would need, you are the only one who saw it.
+If you do not write it, the next agent starts from zero on that question.
 
 ## When to Emit CONTEXT_UPDATE
 
@@ -16,7 +21,8 @@ Emit a `CONTEXT_UPDATE` block when ANY of these are true:
 3. **New resources found** — Resources not currently listed
 4. **Pattern discovered** — Investigation revealed a pattern, structure, or config not yet captured (see `investigation` skill DOCUMENT rule)
 
-Do NOT emit if findings match existing data exactly.
+Skip when findings match existing data exactly -- redundant writes
+create noise in the audit trail without adding information.
 
 ## Format
 
@@ -57,12 +63,12 @@ If `write_permissions` is absent, fall back to your agent contract in
 `config/context-contracts.json`. Do not invent section names.
 
 Writing to a section you do not own will be rejected by the hook.
-`gaia` and `speckit-planner` do not write to project-context — they manage
+`gaia` and `speckit-planner` do not write to project-context -- they manage
 gaia-ops internals and specs respectively.
 
 ## Progressive Enrichment Targets
 
-When a section you own is empty or sparse, prioritize populating it with high-value keys first.
+When a section you own is empty or sparse, prioritize populating it with high-value keys first. The ordering reflects how agents actually use context: they need to find resources before they can reason about relationships, and relationships before they can detect drift.
 
 | Priority | What to capture | Why |
 |----------|----------------|-----|

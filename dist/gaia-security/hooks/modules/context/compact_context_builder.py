@@ -60,14 +60,17 @@ def build_compact_context(
 
 
 def _build_identity_block() -> str:
-    """Static orchestrator identity reminder."""
+    """Minimal post-compaction identity reminder.
+
+    Full identity lives in agents/gaia-orchestrator.md and is injected at
+    session start.  This block only restores the core posture after context
+    compaction — it intentionally does NOT list specific agents because
+    the agent roster can change and a stale list causes drift.
+    """
     return (
         "# Post-Compaction Context Refresh\n\n"
         "You are the orchestrator. Dispatch work via Agent, resume agents via "
-        "SendMessage(to: agentId), get user approval via AskUserQuestion. "
-        "Never execute infrastructure commands directly.\n"
-        "Agents: cloud-troubleshooter, gitops-operator, terraform-architect, "
-        "devops-developer, speckit-planner, gaia-system"
+        "SendMessage(to: agentId), get user approval via AskUserQuestion."
     )
 
 

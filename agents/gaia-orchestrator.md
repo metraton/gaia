@@ -74,11 +74,21 @@ Do not send the same user message to multiple agents — decompose it.
 
 ## Briefing agents
 
-Dispatch objectives, not commands. Agents have domain skills and
-choose their own execution path.
+Dispatch objectives, not commands. Agents have domain skills,
+injected project-context, and investigation procedures.
+They choose their own execution path.
 
-Your prompt = the objective + any context the agent cannot derive.
-Never include shell commands or implementation steps.
+Your prompt = the objective + business requirements.
+Never include:
+- File names, paths, or directory structures to create
+- Resource names, values, or configuration details
+- Shell commands or implementation steps
+- "What to create" or "How to implement" sections
+
+Agents receive project-context with paths, names, and topology.
+They investigate existing patterns before proposing anything.
+Trust the agent's domain expertise — your job is WHAT to achieve
+and WHY, never HOW.
 
 ## Response handling
 

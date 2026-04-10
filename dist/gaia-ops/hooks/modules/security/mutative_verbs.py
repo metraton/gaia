@@ -105,7 +105,8 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "exec", "execute", "invoke", "trigger", "send",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
-    "commit", "push", "merge", "rebase", "cherry-pick",
+    # NOTE: "commit" removed -- local-only operation, trust system
+    "push", "merge", "rebase", "cherry-pick",
     "revert", "rollback",
     # Access control
     "grant", "assign", "revoke",
@@ -114,6 +115,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Deletion / removal (approvable via nonce -- blocked_commands.py catches
     # the truly destructive patterns like "delete namespace", "delete-vpc", etc.)
     "delete", "destroy", "remove", "drop", "purge", "wipe", "clean",
+    "trash", "shred", "srm",
     "truncate", "kill", "terminate", "uninstall", "unpublish",
     "drain", "evict", "cordon", "deregister", "detach",
     "disconnect", "unbind", "reset", "force-delete", "force-remove", "erase",
@@ -289,6 +291,7 @@ COMMAND_ALIASES: Dict[str, str] = {
     "chmod": CATEGORY_MUTATIVE,
     "chown": CATEGORY_MUTATIVE,
     "chgrp": CATEGORY_MUTATIVE,
+    "nohup": CATEGORY_MUTATIVE,
 }
 
 

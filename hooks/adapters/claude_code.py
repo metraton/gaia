@@ -1177,6 +1177,45 @@ class ClaudeCodeAdapter(HookAdapter):
                 _plan_status = str(parsed_contract["agent_status"].get("plan_status", ""))
 
             # ----------------------------------------------------------
+            # State transition tracking
+            # Validates that agent state transitions follow the state
+            # machine (e.g., no IN_PROGRESS -> COMPLETE without REVIEW
+            # when T3 is involved). Advisory warnings, hard reject only
+            # for illegal transitions.
+            # ----------------------------------------------------------
+            try:
+                from modules.agents.state_tracker import track_transition
+                _agent_id = resolve_agent_id(task_info)
+                if _plan_status and _agent_id:
+                    transition_result = track_transition(
+                        _agent_id,
+                        _plan_status,
+                        has_review_phase=False,  # Conservative: no T3 detection yet
+                    )
+                    if not transition_result.valid:
+                        anomalies.append({
+                            "type": "illegal_state_transition",
+                            "severity": "warning",
+                            "message": transition_result.error,
+                        })
+                        logger.warning(
+                            "State transition rejected for %s: %s",
+                            agent_type, transition_result.error,
+                        )
+                    elif transition_result.warning:
+                        anomalies.append({
+                            "type": "state_transition_warning",
+                            "severity": "info",
+                            "message": transition_result.warning,
+                        })
+                        logger.info(
+                            "State transition warning for %s: %s",
+                            agent_type, transition_result.warning,
+                        )
+            except Exception as exc:
+                logger.debug("State transition tracking failed (non-fatal): %s", exc)
+
+            # ----------------------------------------------------------
             # Approval request validation
             # Advisory only -- adds to anomalies but never blocks.
             # ----------------------------------------------------------
