@@ -86,7 +86,11 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "update", "patch", "set", "modify", "edit", "configure",
     "replace", "overwrite", "write",
     # Deployment / packaging
-    "deploy", "install", "upgrade", "downgrade", "publish", "release", "promote",
+    # NOTE: "release" removed -- it is a CLI subcommand group noun in `gh release`,
+    # `glab release`, etc. The actual mutative actions (create, delete, edit, upload)
+    # are already in MUTATIVE_VERBS. Keeping "release" here causes false positives on
+    # `gh release view` and any command with "release" as an argument string.
+    "deploy", "install", "upgrade", "downgrade", "publish", "promote",
     # Scaling
     "scale", "resize", "autoscale",
     # Lifecycle
