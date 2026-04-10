@@ -6,6 +6,12 @@
  * Verifies the complete Gaia-Ops installation is healthy.
  * Run after install, update, or when things seem broken.
  *
+ * Severity levels:
+ *   pass    - check passed
+ *   info    - informational, not an issue (e.g., prerequisites, auto-created dirs)
+ *   warning - actual issue that degrades functionality
+ *   error   - critical issue, Gaia won't work
+ *
  * Usage:
  *   npx gaia-doctor              # Full health check
  *   npx gaia-doctor --fix        # Attempt auto-fix for common issues
@@ -29,73 +35,89 @@ const __dirname = dirname(__filename);
 const CWD = process.cwd();
 
 // ============================================================================
+// Severity helpers
+// ============================================================================
+
+/** Create a check result with explicit severity. */
+function result(name, severity, detail, fix = null) {
+  // Backward-compatible `ok` field: pass and info are considered ok
+  const ok = severity === 'pass' || severity === 'info';
+  return { name, severity, ok, detail, ...(fix ? { fix } : {}) };
+}
+
+// ============================================================================
 // Health Checks
 // ============================================================================
 
 async function checkGaiaVersion() {
   try {
     const pkg = JSON.parse(await fs.readFile(join(__dirname, '..', 'package.json'), 'utf-8'));
-    return { name: 'Gaia-Ops', ok: true, detail: `v${pkg.version}` };
+    return result('Gaia-Ops', 'pass', `v${pkg.version}`);
   } catch {
-    return { name: 'Gaia-Ops', ok: false, detail: 'Version unknown', fix: 'Reinstall @jaguilar87/gaia-ops' };
+    return result('Gaia-Ops', 'error', 'Version unknown', 'Reinstall @jaguilar87/gaia-ops');
   }
 }
 
 async function checkSymlinks() {
   const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills', 'CHANGELOG.md'];
-  const results = [];
+  // Critical symlinks that break core functionality if missing
+  const critical = new Set(['agents', 'hooks', 'skills']);
+  const sub = [];
   let valid = 0;
+  let hasCriticalMissing = false;
 
   for (const name of names) {
     const linkPath = join(CWD, '.claude', name);
     const exists = existsSync(linkPath);
 
     if (exists) {
-      // Verify symlink target actually resolves
       try {
         await fs.realpath(linkPath);
         valid++;
-        results.push({ name, status: 'ok' });
+        sub.push({ name, status: 'ok' });
       } catch {
-        results.push({ name, status: 'broken', fix: `rm .claude/${name} && gaia-scan` });
+        if (critical.has(name)) hasCriticalMissing = true;
+        sub.push({ name, status: 'broken', fix: `rm .claude/${name} && gaia-scan` });
       }
     } else {
-      results.push({ name, status: 'missing', fix: 'Run gaia-scan to recreate' });
+      if (critical.has(name)) hasCriticalMissing = true;
+      sub.push({ name, status: 'missing', fix: 'Run gaia-scan to recreate' });
     }
   }
 
+  if (valid === names.length) {
+    return { ...result('Symlinks', 'pass', `${valid}/${names.length} valid`), sub };
+  }
+
+  const severity = hasCriticalMissing ? 'error' : 'warning';
   return {
-    name: 'Symlinks',
-    ok: valid === names.length,
-    detail: `${valid}/${names.length} valid`,
-    fix: valid < names.length ? 'Run gaia-scan to recreate symlinks' : null,
-    sub: results
+    ...result('Symlinks', severity, `${valid}/${names.length} valid`, 'Run gaia-scan to recreate symlinks'),
+    sub
   };
 }
 
 async function checkClaudeMd() {
   // CLAUDE.md is no longer generated -- identity is injected by UserPromptSubmit hook.
-  // If a project still has a CLAUDE.md from a previous version, that's fine but not required.
   const path = join(CWD, 'CLAUDE.md');
   if (existsSync(path)) {
-    return { name: 'CLAUDE.md', ok: true, detail: 'Present (legacy -- identity now injected by hook)' };
+    return result('CLAUDE.md', 'pass', 'Present (legacy -- identity now injected by hook)');
   }
-  return { name: 'CLAUDE.md', ok: true, detail: 'Not present (identity injected by UserPromptSubmit hook)' };
+  return result('CLAUDE.md', 'pass', 'Not present (identity injected by UserPromptSubmit hook)');
 }
 
 async function checkSettingsJson() {
   const path = join(CWD, '.claude', 'settings.json');
 
   if (!existsSync(path)) {
-    return { name: 'settings.json', ok: false, detail: 'Missing', fix: 'Run gaia-scan' };
+    return result('settings.json', 'error', 'Missing', 'Run gaia-scan');
   }
 
   try {
     const data = JSON.parse(await fs.readFile(path, 'utf-8'));
-    const issues = [];
+    const hookIssues = [];
+    const infoItems = [];
 
-    // Check hooks are configured — hooks may live in settings.json OR
-    // settings.local.json (gaia-update/gaia-scan puts them in local).
+    // Check hooks -- may live in settings.json OR settings.local.json
     let hooksConfig = data.hooks || null;
     const localPath = join(CWD, '.claude', 'settings.local.json');
     if (!hooksConfig && existsSync(localPath)) {
@@ -106,15 +128,14 @@ async function checkSettingsJson() {
     }
 
     if (!hooksConfig) {
-      issues.push('No hooks configured (check settings.json and settings.local.json)');
+      hookIssues.push('No hooks configured (check settings.json and settings.local.json)');
     } else {
       const hookTypes = Object.keys(hooksConfig);
-      if (!hookTypes.includes('PreToolUse')) issues.push('Missing PreToolUse hook');
-      if (!hookTypes.includes('PostToolUse')) issues.push('Missing PostToolUse hook');
+      if (!hookTypes.includes('PreToolUse')) hookIssues.push('Missing PreToolUse hook');
+      if (!hookTypes.includes('PostToolUse')) hookIssues.push('Missing PostToolUse hook');
     }
 
-    // Check permissions — now live in settings.local.json (not settings.json)
-    // localPath already declared above for hooks check
+    // Check permissions -- live in settings.local.json (not settings.json)
     let permCount = 0;
     if (existsSync(localPath)) {
       try {
@@ -129,17 +150,25 @@ async function checkSettingsJson() {
       permCount += Object.values(data.permissions).flat().length;
     }
     if (permCount === 0) {
-      issues.push('No permissions configured (check settings.local.json)');
+      // Zero permissions is not an error -- just means no auto-allowed tools
+      infoItems.push('No permissions configured (tools will prompt for approval)');
     }
 
-    if (issues.length > 0) {
-      return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan or npx gaia-update' };
+    // Hook issues are errors (injection breaks without hooks)
+    if (hookIssues.length > 0) {
+      return result('settings.json', 'error', hookIssues.join('; '), 'Run gaia-scan or npx gaia-update');
+    }
+
+    // Info items are informational, not problems
+    if (infoItems.length > 0) {
+      const hookCount = hooksConfig ? Object.keys(hooksConfig).length : 0;
+      return result('settings.json', 'info', `${hookCount} hook types, ${permCount} rules -- ${infoItems.join('; ')}`);
     }
 
     const hookCount = hooksConfig ? Object.keys(hooksConfig).length : 0;
-    return { name: 'settings.json', ok: true, detail: `${hookCount} hook types, ${permCount} rules` };
+    return result('settings.json', 'pass', `${hookCount} hook types, ${permCount} rules`);
   } catch {
-    return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-scan' };
+    return result('settings.json', 'error', 'Invalid JSON', 'Delete and run gaia-scan');
   }
 }
 
@@ -147,15 +176,16 @@ async function checkProjectContext() {
   const path = join(CWD, '.claude', 'project-context', 'project-context.json');
 
   if (!existsSync(path)) {
-    return { name: 'project-context', ok: false, detail: 'Missing', fix: 'Run gaia-scan or /speckit.init' };
+    return result('project-context', 'warning', 'Missing', 'Run gaia-scan or /speckit.init');
   }
 
   try {
     const data = JSON.parse(await fs.readFile(path, 'utf-8'));
-    const issues = [];
+    const warnings = [];
+    const infos = [];
 
-    if (!data.metadata) issues.push('Missing metadata section');
-    if (!data.sections) issues.push('Missing sections');
+    if (!data.metadata) warnings.push('Missing metadata section');
+    if (!data.sections) warnings.push('Missing sections');
 
     // Detect schema version: v2.0 uses metadata.version, v1.0 does not
     const isV2 = data.metadata?.version === '2.0' || data.metadata?.created_by === 'gaia-scan';
@@ -164,46 +194,52 @@ async function checkProjectContext() {
     const hasPaths = isV2
       ? !!data.sections?.infrastructure?.paths
       : !!data.paths;
-    if (!hasPaths) issues.push('Missing paths section');
+    if (!hasPaths) infos.push('No paths section');
 
-    // Check cloud provider: v2.0 in sections.infrastructure.cloud_providers, v1.0 in metadata
+    // Cloud provider and region are informational -- not all projects use cloud
     if (data.metadata) {
       const cloudProvider = isV2
         ? data.sections?.infrastructure?.cloud_providers?.[0]?.name
         : data.metadata.cloud_provider;
-      if (!cloudProvider) issues.push('No cloud provider set');
+      if (!cloudProvider) infos.push('No cloud provider set');
 
-      // Check region: v2.0 in terraform_infrastructure, v1.0 in metadata
       const region = isV2
         ? data.sections?.terraform_infrastructure?.provider_credentials?.gcp?.region
         : data.metadata.primary_region;
-      // Region is optional in v2.0 (not all providers use gcp credentials)
-      if (!isV2 && !region) issues.push('No region set');
+      if (!isV2 && !region) infos.push('No region set');
     }
 
     if (data.sections) {
       const sectionCount = Object.keys(data.sections).length;
-      if (sectionCount < 3) issues.push(`Only ${sectionCount} sections (expected >=3)`);
+      if (sectionCount < 3) infos.push(`Only ${sectionCount} sections (expected >=3)`);
     }
 
-    if (issues.length > 0) {
-      return { name: 'project-context', ok: false, detail: issues.join('; '), fix: 'Run /speckit.init to enrich' };
+    // Warnings are real problems
+    if (warnings.length > 0) {
+      const detail = [...warnings, ...infos].join('; ');
+      return result('project-context', 'warning', detail, 'Run /speckit.init to enrich');
+    }
+
+    // Info-only items are not problems
+    if (infos.length > 0) {
+      const sectionCount = data.sections ? Object.keys(data.sections).length : 0;
+      return result('project-context', 'info', `${sectionCount} sections -- ${infos.join('; ')}`);
     }
 
     const sectionCount = Object.keys(data.sections).length;
     const cloud = isV2
       ? (data.sections?.infrastructure?.cloud_providers?.[0]?.name?.toUpperCase() || '?')
       : (data.metadata.cloud_provider?.toUpperCase() || '?');
-    return { name: 'project-context', ok: true, detail: `${sectionCount} sections, ${cloud}` };
+    return result('project-context', 'pass', `${sectionCount} sections, ${cloud}`);
   } catch {
-    return { name: 'project-context', ok: false, detail: 'Invalid JSON', fix: 'Regenerate with /speckit.init' };
+    return result('project-context', 'warning', 'Invalid JSON', 'Regenerate with /speckit.init');
   }
 }
 
 async function checkPython() {
   const pyCmd = findPython();
   if (!pyCmd) {
-    return { name: 'Python', ok: false, detail: 'Not found', fix: 'Install Python 3.9+' };
+    return result('Python', 'error', 'Not found (hooks require Python)', 'Install Python 3.9+');
   }
 
   try {
@@ -215,22 +251,23 @@ async function checkPython() {
       const major = parseInt(match[1]);
       const minor = parseInt(match[2]);
       if (major < 3 || (major === 3 && minor < 9)) {
-        return { name: 'Python', ok: false, detail: `${version} (need >=3.9)`, fix: 'Upgrade Python to 3.9+' };
+        return result('Python', 'error', `${version} (need >=3.9)`, 'Upgrade Python to 3.9+');
       }
     }
 
-    return { name: 'Python', ok: true, detail: version };
+    return result('Python', 'pass', version);
   } catch {
-    return { name: 'Python', ok: false, detail: 'Not found', fix: 'Install Python 3.9+' };
+    return result('Python', 'error', 'Not found (hooks require Python)', 'Install Python 3.9+');
   }
 }
 
 async function checkClaudeCode() {
   try {
     const { stdout } = await execAsync('claude --version 2>/dev/null || claude-code --version 2>/dev/null');
-    return { name: 'Claude Code', ok: true, detail: stdout.trim().split('\n')[0] };
+    return result('Claude Code', 'pass', stdout.trim().split('\n')[0]);
   } catch {
-    return { name: 'Claude Code', ok: false, detail: 'Not installed', fix: 'npm install -g @anthropic-ai/claude-code' };
+    // Claude Code is a prerequisite, not a Gaia issue -- informational only
+    return result('Claude Code', 'info', 'Not installed', 'npm install -g @anthropic-ai/claude-code');
   }
 }
 
@@ -241,7 +278,8 @@ async function checkHooks() {
     { file: 'subagent_stop.py', required: false }
   ];
 
-  const issues = [];
+  const errors = [];
+  const infos = [];
   let valid = 0;
 
   for (const { file, required } of hooks) {
@@ -249,64 +287,83 @@ async function checkHooks() {
     if (existsSync(hookPath)) {
       valid++;
     } else if (required) {
-      issues.push(`${file} missing`);
+      errors.push(`${file} missing`);
+    } else {
+      infos.push(`${file} optional, not present`);
     }
   }
 
-  if (issues.length > 0) {
-    return { name: 'Hooks', ok: false, detail: issues.join('; '), fix: 'Recreate symlinks: gaia-scan' };
+  if (errors.length > 0) {
+    return result('Hooks', 'error', errors.join('; '), 'Recreate symlinks: gaia-scan');
   }
 
-  return { name: 'Hooks', ok: true, detail: `${valid}/${hooks.length} found` };
+  if (infos.length > 0) {
+    return result('Hooks', 'pass', `${valid}/${hooks.length} found (${infos.join('; ')})`);
+  }
+
+  return result('Hooks', 'pass', `${valid}/${hooks.length} found`);
 }
 
 async function checkMemoryDirs() {
+  // Each memory dir has its own severity -- some are auto-created, some need manual setup
   const checks = [
     {
       path: join(CWD, '.claude', 'project-context', 'speckit-project-specs'),
       label: 'speckit-project-specs',
+      severity: 'warning',
       fix: 'Run gaia-scan or /speckit.init'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md'),
       label: 'governance.md',
+      severity: 'warning',
       fix: 'Run /speckit.init to generate governance.md'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'workflow-episodic-memory'),
       label: 'workflow-episodic-memory',
+      severity: 'warning',
       fix: 'Run gaia-scan to create workflow memory directory'
     },
     {
       path: join(CWD, '.claude', 'project-context', 'episodic-memory'),
       label: 'episodic-memory',
-      fix: 'Directory is created automatically on first agent run'
+      severity: 'info',  // Auto-created on first agent run
+      fix: 'Created automatically on first agent run'
     },
   ];
 
-  const issues = [];
+  const warnings = [];
+  const infos = [];
   let found = 0;
-  for (const { path, label, fix } of checks) {
+
+  for (const { path, label, severity, fix } of checks) {
     if (existsSync(path)) {
       found++;
+    } else if (severity === 'info') {
+      infos.push({ label, fix });
     } else {
-      issues.push({ label, fix });
+      warnings.push({ label, fix });
     }
   }
 
-  if (issues.length > 0) {
-    const detail = issues.map(i => `${i.label} missing`).join('; ');
-    const fix = issues[0].fix;
-    return { name: 'Memory dirs', ok: false, detail, fix };
+  if (warnings.length > 0) {
+    const detail = warnings.map(i => `${i.label} missing`).join('; ');
+    return result('Memory dirs', 'warning', detail, warnings[0].fix);
   }
 
-  return { name: 'Memory dirs', ok: true, detail: `${found}/${checks.length} present` };
+  if (infos.length > 0) {
+    const detail = `${found}/${checks.length} present (${infos.map(i => `${i.label}: ${i.fix}`).join('; ')})`;
+    return result('Memory dirs', 'info', detail);
+  }
+
+  return result('Memory dirs', 'pass', `${found}/${checks.length} present`);
 }
 
 async function checkProjectDirs() {
   const contextPath = join(CWD, '.claude', 'project-context', 'project-context.json');
   if (!existsSync(contextPath)) {
-    return { name: 'Project dirs', ok: true, detail: 'Skipped (no context)' };
+    return result('Project dirs', 'pass', 'Skipped (no context)');
   }
 
   try {
@@ -322,12 +379,12 @@ async function checkProjectDirs() {
     }
 
     if (issues.length > 0) {
-      return { name: 'Project dirs', ok: false, detail: issues.join('; '), fix: 'Create missing directories or update paths' };
+      return result('Project dirs', 'warning', issues.join('; '), 'Create missing directories or update paths');
     }
 
-    return { name: 'Project dirs', ok: true, detail: `${Object.keys(paths).length} paths verified` };
+    return result('Project dirs', 'pass', `${Object.keys(paths).length} paths verified`);
   } catch {
-    return { name: 'Project dirs', ok: true, detail: 'Skipped (parse error)' };
+    return result('Project dirs', 'pass', 'Skipped (parse error)');
   }
 }
 
@@ -369,8 +426,6 @@ async function autoFix() {
     }
   }
 
-  // CLAUDE.md no longer generated -- identity injected by UserPromptSubmit hook
-
   // Create missing project dirs
   const contextPath = join(CWD, '.claude', 'project-context', 'project-context.json');
   if (existsSync(contextPath)) {
@@ -392,6 +447,32 @@ async function autoFix() {
 
   console.log(chalk.cyan(`\n  ${fixed} issue(s) fixed\n`));
   return fixed;
+}
+
+// ============================================================================
+// Display helpers
+// ============================================================================
+
+const SEVERITY_ICONS = {
+  pass:    { icon: '\u2713', color: chalk.green },     // check mark
+  info:    { icon: '\u2139', color: chalk.cyan },      // info symbol
+  warning: { icon: '\u26A0', color: chalk.yellow },    // warning triangle
+  error:   { icon: '\u2717', color: chalk.red },       // X mark
+};
+
+function severityIcon(severity) {
+  const entry = SEVERITY_ICONS[severity] || SEVERITY_ICONS.warning;
+  return entry.color(entry.icon);
+}
+
+function severityDetail(severity, detail) {
+  switch (severity) {
+    case 'pass': return chalk.gray(detail || '');
+    case 'info': return chalk.cyan(detail);
+    case 'warning': return chalk.yellow(detail);
+    case 'error': return chalk.red(detail);
+    default: return detail;
+  }
 }
 
 // ============================================================================
@@ -426,52 +507,57 @@ async function main() {
     try {
       results.push(await check());
     } catch (error) {
-      results.push({ name: check.name, ok: false, detail: `Error: ${error.message}` });
+      results.push(result(check.name, 'error', `Error: ${error.message}`));
     }
   }
+
+  // Compute overall status from severity levels
+  const hasErrors = results.some(r => r.severity === 'error');
+  const hasWarnings = results.some(r => r.severity === 'warning');
 
   // JSON output mode
   if (args.json) {
-    const allOk = results.every(r => r.ok);
-    console.log(JSON.stringify({ healthy: allOk, checks: results }, null, 2));
-    process.exit(allOk ? 0 : 1);
+    const status = hasErrors ? 'critical' : hasWarnings ? 'degraded' : 'healthy';
+    console.log(JSON.stringify({ healthy: !hasErrors && !hasWarnings, status, checks: results }, null, 2));
+    process.exit(hasErrors ? 2 : hasWarnings ? 1 : 0);
   }
 
   // Human-readable output
-  // Extract version for header
   const gaiaCheck = results.find(r => r.name === 'Gaia-Ops');
-  const versionTag = gaiaCheck?.ok ? chalk.gray(` (${gaiaCheck.detail})`) : '';
+  const versionTag = gaiaCheck?.severity === 'pass' ? chalk.gray(` (${gaiaCheck.detail})`) : '';
   console.log(chalk.cyan(`\n  Gaia-Ops Health Check${versionTag}\n`));
 
-  let allOk = true;
+  for (const r of results) {
+    const icon = severityIcon(r.severity);
+    const detail = severityDetail(r.severity, r.detail || '');
+    console.log(`    ${icon} ${r.name.padEnd(18)} ${detail}`);
 
-  for (const result of results) {
-    const icon = result.ok ? chalk.green('✓') : chalk.yellow('⚠');
-    const detail = result.ok ? chalk.gray(result.detail || '') : chalk.yellow(result.detail);
-    console.log(`    ${icon} ${result.name.padEnd(18)} ${detail}`);
-
-    if (!result.ok && result.fix) {
-      console.log(chalk.gray(`      Fix: ${result.fix}`));
+    if ((r.severity === 'warning' || r.severity === 'error') && r.fix) {
+      console.log(chalk.gray(`      Fix: ${r.fix}`));
     }
-
-    if (!result.ok) allOk = false;
   }
 
   console.log('');
 
-  if (allOk) {
-    console.log(chalk.green.bold('  Status: HEALTHY\n'));
-  } else {
-    console.log(chalk.yellow.bold('  Status: ISSUES FOUND\n'));
-
+  if (hasErrors) {
+    console.log(chalk.red.bold('  Status: CRITICAL\n'));
     if (args.fix) {
       await autoFix();
     } else {
       console.log(chalk.gray('  Run with --fix to attempt auto-repair\n'));
     }
+  } else if (hasWarnings) {
+    console.log(chalk.yellow.bold('  Status: ISSUES FOUND\n'));
+    if (args.fix) {
+      await autoFix();
+    } else {
+      console.log(chalk.gray('  Run with --fix to attempt auto-repair\n'));
+    }
+  } else {
+    console.log(chalk.green.bold('  Status: HEALTHY\n'));
   }
 
-  process.exit(allOk ? 0 : 1);
+  process.exit(hasErrors ? 2 : hasWarnings ? 1 : 0);
 }
 
 main();
