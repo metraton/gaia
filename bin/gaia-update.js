@@ -121,6 +121,32 @@ async function updateLocalPermissions() {
       return false;
     }
 
+    // Load existing settings.local.json — preserve everything (enabledPlugins, MCP servers, etc.)
+    let existing = {};
+    if (existsSync(localPath)) {
+      try {
+        existing = JSON.parse(await fs.readFile(localPath, 'utf-8'));
+      } catch {
+        existing = {};
+      }
+    }
+
+    // Track what changed
+    let changed = false;
+
+    // Set the orchestrator agent identity (always, even if Python extraction fails)
+    if (existing.agent !== 'gaia-orchestrator') {
+      existing.agent = 'gaia-orchestrator';
+      changed = true;
+    }
+
+    // Add env vars (smart merge: add if not present, don't overwrite)
+    existing.env = existing.env || {};
+    if (!('CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in existing.env)) {
+      existing.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      changed = true;
+    }
+
     // Load permissions from plugin_setup.py — the single source of truth.
     // We use ast.literal_eval to extract the constants without importing
     // the module (which has relative imports that fail standalone).
@@ -128,11 +154,16 @@ async function updateLocalPermissions() {
     try {
       const setupPath = join(__dirname, '..', 'hooks', 'modules', 'core', 'plugin_setup.py');
       const pythonCmd = findPython() || 'python3';
-      const { stdout } = await execAsync(
-        `${pythonCmd} -c "
-import ast, json, re
 
-source = open('${setupPath.replace(/'/g, "\\'")}').read()
+      // Write the extraction script to a temp file instead of using -c with
+      // inline code.  This avoids shell quoting issues on Windows where
+      // backslash paths and nested quotes break the inline Python string.
+      const tempScript = join(claudeDir, '.gaia-extract-perms.py');
+      const scriptContent = `
+import ast, json, re, sys
+
+setup_path = sys.argv[1]
+source = open(setup_path, encoding="utf-8").read()
 
 # Extract _DENY_RULES list
 deny_match = re.search(r'^_DENY_RULES\\s*=\\s*\\[', source, re.MULTILINE)
@@ -163,27 +194,31 @@ else:
     ops_perms = {'permissions': {'allow': [], 'deny': deny_rules, 'ask': []}}
 
 print(json.dumps(ops_perms))
-"`,
-        { timeout: 10000 }
-      );
-      gaiaPerms = JSON.parse(stdout.trim());
+`;
+      await fs.writeFile(tempScript, scriptContent);
+      try {
+        const { stdout } = await execAsync(
+          `${pythonCmd} "${tempScript}" "${setupPath}"`,
+          { timeout: 10000 }
+        );
+        gaiaPerms = JSON.parse(stdout.trim());
+      } finally {
+        // Clean up temp script
+        try { await fs.unlink(tempScript); } catch { /* ignore */ }
+      }
     } catch (pyError) {
       spinner.warn(`Could not load permissions from Python — ${pyError.message || 'unknown error'}`);
+      // Still write agent and env changes even if permissions extraction fails
+      if (changed) {
+        await fs.writeFile(localPath, JSON.stringify(existing, null, 2) + '\n');
+        spinner.succeed('settings.local.json agent and env merged (permissions skipped)');
+        return true;
+      }
       return false;
     }
 
     const ourAllow = new Set(gaiaPerms.permissions.allow || []);
     const ourDeny = new Set(gaiaPerms.permissions.deny || []);
-
-    // Load existing settings.local.json — preserve everything (enabledPlugins, MCP servers, etc.)
-    let existing = {};
-    if (existsSync(localPath)) {
-      try {
-        existing = JSON.parse(await fs.readFile(localPath, 'utf-8'));
-      } catch {
-        existing = {};
-      }
-    }
 
     const perms = existing.permissions || {};
     const currentAllow = new Set(perms.allow || []);
@@ -192,9 +227,6 @@ print(json.dumps(ops_perms))
     // Union merge — add ours without removing user's
     const mergedAllow = [...new Set([...currentAllow, ...ourAllow])].sort();
     const mergedDeny = [...new Set([...currentDeny, ...ourDeny])].sort();
-
-    // Track what changed
-    let changed = false;
 
     // Check if permissions changed
     const allowChanged = mergedAllow.length !== currentAllow.size
@@ -207,19 +239,6 @@ print(json.dumps(ops_perms))
       existing.permissions.allow = mergedAllow;
       existing.permissions.deny = mergedDeny;
       existing.permissions.ask = existing.permissions.ask || [];
-      changed = true;
-    }
-
-    // Add env vars (smart merge: add if not present, don't overwrite)
-    existing.env = existing.env || {};
-    if (!('CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in existing.env)) {
-      existing.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
-      changed = true;
-    }
-
-    // Set the orchestrator agent identity
-    if (existing.agent !== 'gaia-orchestrator') {
-      existing.agent = 'gaia-orchestrator';
       changed = true;
     }
 
