@@ -1,12 +1,14 @@
 ---
 name: agent-protocol
-description: Defines json:contract response format, state machine, and evidence reporting
+description: Use when producing any agent response -- governs the json:contract block, status reporting, and execution loop
 metadata:
   user-invocable: false
   type: protocol
 ---
 
 # Agent Protocol
+
+This protocol governs REPORTING FORMAT, not tool access. All agents may use their declared tools during any phase.
 
 ## Response Contract
 
@@ -27,79 +29,65 @@ Every response MUST end with a single fenced `json:contract` block.
     "key_outputs": [],
     "verbatim_outputs": [],
     "cross_layer_impacts": [],
-    "open_gaps": []
+    "open_gaps": [],
+    "verification": null
   },
   "consolidation_report": null,
   "approval_request": null
 }
 ```
 
-### agent_status (always required)
+**agent_status** -- `plan_status` (one of 5 states below), `agent_id` (generate once, reuse), `pending_steps` (`[]` when done), `next_action` (`"done"` or what's next).
 
-- `plan_status` -- one of the 5 valid states below
-- `agent_id` -- generate once, reuse across responses
-- `pending_steps` -- remaining work (`[]` when done)
-- `next_action` -- `"done"` or what happens next
+**evidence_report** -- Use `[]` when not applicable, 1-3 items each. `key_outputs`: what changed. `verbatim_outputs`: literal output, truncate ~100 lines. `cross_layer_impacts`: adjacent surfaces. `open_gaps`: what remains unverified. `verification`: **required when COMPLETE** (see Verification Gate), `null` otherwise.
 
-### evidence_report (always required)
+**consolidation_report** -- Required when `consolidation_required` or `multi_surface` is true. Otherwise `null`. Fields: `ownership_assessment`, `confirmed_findings`, `suspected_findings`, `conflicts`, `next_best_agent`. See `examples.md`.
 
-All 7 fields validated by runtime. Use `[]` when not applicable.
-Keep each to 1-3 items unless the task genuinely needs more.
+**approval_request** -- Required when REVIEW. Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`. On `[T3_BLOCKED]` with `approval_id`: set REVIEW, include `approval_id`, wait. See `examples.md`.
 
-- `key_outputs` -- actionable findings, not descriptions of what you ran. Highlight what matters: what is wrong, what changed, what needs attention.
-- `verbatim_outputs` -- literal command output; truncate at ~100 lines
-- `cross_layer_impacts` -- adjacent surfaces affected
-- `open_gaps` -- what remains unverified; never imply certainty
+## Universal Execution Loop
 
-### consolidation_report (when multi-surface)
+Each increment: **INVESTIGATE** (read, search) -> **PLAN** (propose; REVIEW if T3) -> **EXECUTE** (write, run) -> **VERIFY** (confirm results) -> **COMPLETE** or loop back on failure. Decompose large tasks into 2-5 increments; each is one action paired with one verification. Every increment ends verified. Fix before moving on -- compounding failures is exponential.
 
-Required when `investigation_brief.consolidation_required` or
-`surface_routing.multi_surface` is true. Otherwise `null`.
+## Verification Gate
 
-Fields: `ownership_assessment`, `confirmed_findings`,
-`suspected_findings`, `conflicts`, `open_gaps`, `next_best_agent`.
+An agent cannot set `plan_status: "COMPLETE"` without a `verification` object in `evidence_report`. When verification fails, loop back to EXECUTE -- do not complete.
 
-For examples, read `examples.md` in this skill directory.
+```json
+"verification": {
+  "method": "test | dry-run | metric | self-review",
+  "checks": ["what was checked"],
+  "result": "pass | fail",
+  "details": "concrete evidence"
+}
+```
 
-### approval_request (when REVIEW)
-
-Required when `plan_status` is `REVIEW`. Otherwise `null`.
-
-Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`.
-When a hook blocked a T3 command with `[T3_BLOCKED]` and an `approval_id`:
-- Do NOT retry the command -- retrying generates new nonces in a loop
-- Set `plan_status` to `REVIEW` and include `approval_id` in `approval_request`
-- The orchestrator will resume you after user approval; only then retry
+Choose the method that fits your domain. Infrastructure: `dry-run` (terraform plan). Code: `test` (pytest, lint). Gaia skills: `self-review` (line count, frontmatter). Email: `metric` (count match). Git/file ops: `test` or `self-review`. When no automated check exists, `self-review` is the minimum: state what you checked and what you observed. For full examples see `examples.md`.
 
 ## State Machine
 
 | Status | Meaning |
 |--------|---------|
-| `IN_PROGRESS` | Active work: investigating, planning, executing, retrying (max 2 cycles) |
-| `REVIEW` | Presenting plan or analysis for user feedback. May include `approval_id` when hook-blocked. |
-| `COMPLETE` | Task finished |
+| `IN_PROGRESS` | Investigating, planning, or executing work |
+| `REVIEW` | Presenting plan with evidence for approval |
+| `COMPLETE` | Verified -- `verification.result` is `"pass"` |
 | `BLOCKED` | Cannot proceed -- escalated |
 | `NEEDS_INPUT` | Missing information from user |
 
 ### Transitions
 
 ```
-IN_PROGRESS -> COMPLETE                                    (T0/T1/T2)
-IN_PROGRESS -> REVIEW -> IN_PROGRESS -> COMPLETE           (plan-first or hook-blocked T3)
-IN_PROGRESS -> BLOCKED | NEEDS_INPUT                       (any point)
-IN_PROGRESS -> IN_PROGRESS                                 (retry, max 2)
+IN_PROGRESS -> COMPLETE                  (requires verification evidence)
+IN_PROGRESS -> REVIEW -> IN_PROGRESS -> COMPLETE
+IN_PROGRESS -> BLOCKED | NEEDS_INPUT     (any point)
+IN_PROGRESS -> IN_PROGRESS               (retry or verify-fail loop, max 2)
 ```
 
 ## Error Handling
 
 | Type | Action | Status |
 |------|--------|--------|
-| Recoverable | Fix and retry (max 2 cycles) | `IN_PROGRESS` |
+| Recoverable | Fix and retry (max 2) | `IN_PROGRESS` |
 | Blocker | Log details, list solutions | `BLOCKED` |
 | Ambiguous | List options | `NEEDS_INPUT` |
-
-## Contract Repair
-
-If resumed with repair instructions, reissue a complete response
-with `json:contract`. Do not rerun the full investigation.
-Retries capped at 2.
+| Contract repair | Reissue `json:contract`, skip re-investigation (max 2) | `IN_PROGRESS` |

@@ -179,7 +179,7 @@ class RailUI:
         """
         self._write(f"{self._rail()}  Updated: {sections_updated} sections")
         self._write(f"{self._rail()}  Preserved: {sections_preserved} agent-enriched sections")
-        self._write(f"{self._rail()}  Synced: CLAUDE.md, settings.json")
+        self._write(f"{self._rail()}  Synced: settings.json, settings.local.json")
         self._write(self._rail())
 
     def footer(self, message: str) -> None:

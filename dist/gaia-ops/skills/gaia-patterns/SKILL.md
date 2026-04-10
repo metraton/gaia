@@ -63,6 +63,8 @@ The orchestrator owns the consolidation loop. Agents return `json:contract` bloc
 
 ## Agent Creation Standards
 
+Before creating a new agent, read 2-3 existing agent `.md` files in the `agents/` directory. They are the canonical examples of structure, tone, and scope boundaries.
+
 1. **YAML Frontmatter** — `name`, `description` (routing label), `tools`, `model`, `skills` (canonical order)
 2. **Identity** — 1-2 paragraphs: what domain, what output format
 3. **Scope** — CAN DO / CANNOT DO → DELEGATE table with agent names

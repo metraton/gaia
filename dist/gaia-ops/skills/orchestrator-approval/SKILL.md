@@ -9,8 +9,6 @@ metadata:
 # Orchestrator Approval
 
 ```
-THIS SKILL HANDLES REVIEW WITH approval_id (hook-blocked T3).
-Plain REVIEW (plan-first, no approval_id) is handled directly by the orchestrator.
 NEVER PRESENT AN APPROVAL WITHOUT SHOWING THE USER
 (1) WHAT WILL HAPPEN, (2) EXACT CONTENT/COMMAND, (3) WHAT IT MODIFIES.
 ```
@@ -47,12 +45,46 @@ Compare the blocked command's scope to what the user originally approved. If the
 **3. Fresh presentation every time.**
 Each hook-blocked REVIEW requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
-## Approval Procedure
+## AskUserQuestion Template
 
-1. Extract the 5 mandatory fields from `approval_request` in the subagent's `json:contract` block.
-2. Present to the user via AskUserQuestion with all mandatory fields populated. Use exactly these options: **Approve / Modify / Reject**. Never include the approval_id in user-facing text.
-3. On "Approve": resume the subagent via SendMessage with natural language describing the approved direction.
-4. On scope change: present the new scope with all mandatory fields and ask again.
+Map the 5 mandatory fields into AskUserQuestion parameters.
+
+**question** (multi-line string with all fields visible before the user chooses):
+```
+APPROVAL REQUIRED
+
+OPERATION: {approval_request.operation}
+CONTENT: {approval_request.exact_content}
+SCOPE: {approval_request.scope}
+RISK: {approval_request.risk_level}
+ROLLBACK: {approval_request.rollback}
+```
+
+**options** (depends on batch_scope):
+- Default: `["Approve", "Modify", "Reject"]`
+- When `batch_scope` present: `["Approve batch", "Approve single", "Modify", "Reject"]`
+
+**Steps:**
+1. Extract the 5 fields from `approval_request` in the agent's `json:contract`.
+2. Call AskUserQuestion with the template above. Never include approval_id in user-facing text.
+3. On "Approve": resume via SendMessage with natural language describing the approved direction.
+4. On "Modify": ask what to change, relay to agent via SendMessage.
+5. On scope change: present the new scope with all fields and ask again.
+
+## Batch Approval
+
+When `approval_request` contains `batch_scope: "verb_family"`, the agent requests a multi-use grant covering many commands with the same base CLI and verb but different arguments.
+
+**Presentation:** Use the same template above, but frame the scope as a batch:
+- OPERATION describes the batch (e.g., "Modify 500 Gmail messages")
+- CONTENT shows the command pattern (e.g., "`gws gmail users messages modify`")
+- SCOPE states the TTL (e.g., "All modify operations for the next 10 minutes")
+
+**Options:** `["Approve batch", "Approve single", "Modify", "Reject"]`
+- "Approve batch" creates a verb-family grant (multi-use, 10-minute TTL). The PostToolUse hook detects "batch" in the answer.
+- "Approve single" creates a normal single-use grant for only the first blocked command.
+
+**Resume:** After batch approval, resume via SendMessage with: "Batch approved. Proceed with all [verb] operations."
 
 ## Anti-Patterns
 
@@ -62,3 +94,4 @@ Each hook-blocked REVIEW requires its own presentation with all mandatory fields
 - **Details on demand** -- offering to show the plan instead of showing it upfront.
 - **"It's just a small change"** -- size does not change the contract. Show exact content regardless.
 - **"The subagent already showed it"** -- show it again in the approval prompt.
+- **Batch without showing TTL** -- batch grants expire. Always state the time window.

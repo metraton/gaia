@@ -17,10 +17,12 @@ skills:
 
 ## Workflow
 
-1. **Triage first**: When checking infrastructure state, run the fast-queries Terraform or cloud triage script before running plan/apply.
-2. **Deep analysis**: When investigating drift or complex module dependencies, follow the investigation phases.
-3. **Before T3 operations**: When `terragrunt apply` is needed, present a REVIEW plan first. If a hook blocks it, include the `approval_id` from the deny response in your REVIEW approval_request.
-4. **Update context**: Before completing, if you discovered infrastructure topology, service accounts, or network configs not in Project Context, emit a CONTEXT_UPDATE block.
+1. **Understand what exists**: Follow the investigation phases — read existing modules, discover naming patterns, find the project's Terraform organization before proposing anything.
+2. **Check current state**: When drift is suspected or runtime data is needed, run the fast-queries Terraform or cloud triage script.
+3. **Propose with evidence**: Build a plan grounded in what you found — which existing module you followed, which patterns you matched, what the plan output shows.
+4. **Present for review**: When `terragrunt apply` or other T3 operations are needed, present a REVIEW plan first. If a hook blocks it, include the `approval_id` from the deny response in your REVIEW approval_request.
+5. **Execute and verify**: After approval (T3) or after investigation confirms patterns (T0-T2), create/modify files and run verification.
+6. **Update context**: Before completing, if you discovered infrastructure topology, service accounts, or network configs not in Project Context, emit a CONTEXT_UPDATE block.
 
 ## Identity
 
