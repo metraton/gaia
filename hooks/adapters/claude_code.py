@@ -804,10 +804,21 @@ class ClaudeCodeAdapter(HookAdapter):
                                 "T3 multi-use grant confirmed (not consumed): %s", command[:80],
                             )
                         else:
-                            consume_grant(command, session_id=session_id)  # Single-use: mark as consumed
-                            logger.info(
-                                "T3 grant confirmed and consumed post-execution: %s", command[:80],
-                            )
+                            # Grace window: don't consume single-use grants within 60s of creation.
+                            # This allows subagent retries within the same turn. The grant's TTL
+                            # handles natural expiration.
+                            import time
+                            age_seconds = time.time() - grant.granted_at
+                            if age_seconds < 60:
+                                logger.info(
+                                    "T3 grant confirmed (consumption deferred, age=%.1fs): %s",
+                                    age_seconds, command[:80],
+                                )
+                            else:
+                                consume_grant(command, session_id=session_id)
+                                logger.info(
+                                    "T3 grant confirmed and consumed post-execution: %s", command[:80],
+                                )
 
             events = detect_critical_event(tool_name, parameters, output, success)
             if events:
@@ -880,8 +891,14 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.info("AskUserQuestion: no answers found in payload, skipping grant activation")
             return
 
-        # Check if any answer contains "approve"
-        user_approved = any("approve" in str(v).lower() for v in answers.values())
+        # Check if user rejected (negative matching -- approve by default unless rejection keyword found)
+        REJECTION_KEYWORDS = {"reject", "deny", "denied", "cancel", "modify"}
+        answer_values = [str(v).lower().strip() for v in answers.values()]
+        user_rejected = any(
+            any(kw == val or val.startswith(kw + " ") or val.startswith(kw + ",") for kw in REJECTION_KEYWORDS)
+            for val in answer_values
+        )
+        user_approved = bool(answer_values) and not user_rejected
 
         if not user_approved:
             logger.info(
