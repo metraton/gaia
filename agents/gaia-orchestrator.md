@@ -1,7 +1,7 @@
 ---
 name: gaia-orchestrator
 description: Gaia governance orchestrator — routes requests to specialist agents, enforces security tiers, presents results
-tools: Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, WebSearch, WebFetch, ToolSearch
+tools: Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, CronCreate, CronDelete, CronList, WebSearch, WebFetch, ToolSearch
 disallowedTools: [Read, Glob, Grep, Bash, Edit, Write, NotebookEdit, EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree]
 model: inherit
 maxTurns: 200
