@@ -31,6 +31,7 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 ├── approval/              # T3 plan presentation and approval workflow
 │   └── examples.md
 ├── execution/             # Post-approval execution protocol
+├── gmail-policy/          # Gmail domain policy (label-only, no delete)
 └── reference.md           # Cross-skill reference
 ```
 
@@ -59,7 +60,7 @@ skills:
 | cloud-troubleshooter | agent-protocol, security-tiers | fast-queries |
 | terraform-architect | agent-protocol, security-tiers, terraform-patterns | fast-queries |
 | gitops-operator | agent-protocol, security-tiers, gitops-patterns | fast-queries |
-| devops-developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
+| developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
 | gaia | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
 | speckit-planner | agent-protocol, security-tiers, speckit-workflow | - |
 
@@ -73,7 +74,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned to agents):
 |------|-----------|----------|
 | **Core** | Always via `skills:` | agent-protocol, security-tiers |
 | **Common** | Most agents via `skills:` | command-execution, context-updater |
-| **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns |
+| **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns, gmail-policy |
 | **Workflow** | On-demand (agent reads file) | approval, execution, git-conventions |
 | **Orchestrator** | On-demand via Skill tool | agent-response, orchestrator-approval |
 
@@ -106,4 +107,4 @@ Instructions and patterns the agent follows.
 
 ---
 
-**Updated:** 2026-03-19 | **Total skills:** 20
+**Updated:** 2026-04-03 | **Total skills:** 21

@@ -1,9 +1,13 @@
 """
-Cloud pipe/redirect/chaining validator.
+Command pipe/redirect/chaining validator.
 
-Detects pipe, redirect, and command-chaining violations in cloud/infra commands.
-Cloud CLIs (gcloud, kubectl, aws, terraform, helm, flux) expose native flags
-for filtering and formatting — there is never a valid reason to pipe their output.
+Two-tier validation:
+1. Cloud CLIs (gcloud, kubectl, aws, terraform, helm, flux) — ALL pipes,
+   redirects, and chaining operators are rejected because these CLIs expose
+   native flags for filtering and formatting.
+2. All other commands — redirects (>, >>) and background operator (&) are
+   rejected because Claude Code tools (Write, Edit) are the correct way to
+   produce file output, and background execution hides exit codes.
 
 This validator runs before tier classification so violations are caught early
 and the agent receives a corrective response rather than a blocked execution.
@@ -76,23 +80,69 @@ class PipeViolation:
     correction: str      # human-readable corrected approach
 
 
+# ---------------------------------------------------------------------------
+# Universal violations — apply to ALL commands regardless of CLI
+# ---------------------------------------------------------------------------
+UNIVERSAL_VIOLATIONS = [
+    (
+        "redirect",
+        # Match `>` or `>>` for file redirection, but NOT:
+        # - `>&` (file descriptor duplication, e.g. `2>&1`)
+        # - process substitution `<(` or `>(` (used in bash -c / diff)
+        re.compile(r'(?<![>&])>{1,2}(?![>&(])'),
+        (
+            "Use the Write tool to write output to a file instead of shell redirection.\n"
+            "  Write tool: creates or overwrites files cleanly without shell quoting issues.\n"
+            "  For append patterns, use the Edit tool or Read + Write."
+        ),
+    ),
+    (
+        "background",
+        # Match trailing `&` (background execution), but NOT `&&` or `>&`.
+        # Negative lookbehind for `>` avoids `>&` (fd dup).
+        # Negative lookbehind for `&` avoids the second `&` in `&&`.
+        # Negative lookahead for `&` avoids the first `&` in `&&`.
+        re.compile(r'(?<![>&])&(?!&)'),
+        (
+            "Do not run commands in the background with &. Background execution\n"
+            "  hides exit codes and prevents Claude Code from verifying the result.\n"
+            "  Run the command normally and let it complete."
+        ),
+    ),
+]
+
+
 def _find_violation(command: str) -> Optional[PipeViolation]:
     """
     Return the first pipe/redirect/chaining violation found in command,
     or None if the command is clean.
 
-    Only checks commands that start with a cloud/infra CLI.
+    Cloud/infra CLIs are checked against ALL violation rules (pipes, redirects,
+    chaining).  Non-cloud commands are checked against universal rules only
+    (redirects and background operator).
+
     Skips characters inside single or double quoted strings to avoid
     false positives (e.g. --filter='status:RUNNING' contains no violation).
     """
-    if not CLOUD_CLI_PATTERN.match(command):
-        return None
-
     # Strip quoted substrings before scanning for operators.
     # This prevents false positives from flag values like --filter='a|b'.
     unquoted = _strip_quoted_sections(command)
 
-    for rule_name, pattern, correction in VIOLATIONS:
+    is_cloud = bool(CLOUD_CLI_PATTERN.match(command))
+
+    if is_cloud:
+        # Cloud CLIs: check ALL rules (pipe, redirect, chaining)
+        for rule_name, pattern, correction in VIOLATIONS:
+            match = pattern.search(unquoted)
+            if match:
+                return PipeViolation(
+                    rule=rule_name,
+                    pattern=match.group(0),
+                    correction=correction,
+                )
+
+    # All commands (cloud and non-cloud): check universal rules
+    for rule_name, pattern, correction in UNIVERSAL_VIOLATIONS:
         match = pattern.search(unquoted)
         if match:
             return PipeViolation(

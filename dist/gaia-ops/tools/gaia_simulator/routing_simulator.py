@@ -181,7 +181,7 @@ class RoutingSimulator:
             primary_agent = recommended_agents[0]
         else:
             primary_agent = self._routing_config.get(
-                "reconnaissance_agent", "devops-developer"
+                "reconnaissance_agent", "developer"
             )
 
         skills = self._agent_skills.get(primary_agent, [])

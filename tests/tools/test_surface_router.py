@@ -41,7 +41,7 @@ def test_classify_multi_surface_task():
 
     routing = classify_surfaces(
         "Investigate why the CI pipeline changed the image tag, the deployment rollout failed, and kubectl logs show runtime errors.",
-        current_agent="devops-developer",
+        current_agent="developer",
         routing_config=config,
     )
 
@@ -66,6 +66,34 @@ def test_classify_falls_back_to_agent_surface_when_signals_are_weak():
     assert routing["confidence"] > 0.0
 
 
+def test_ssh_remote_operations_route_to_live_runtime():
+    config = load_surface_routing_config()
+
+    routing = classify_surfaces(
+        "ssh into Metra Tower and rsync the project files",
+        current_agent="cloud-troubleshooter",
+        routing_config=config,
+    )
+
+    assert "live_runtime" in routing["active_surfaces"]
+    assert routing["primary_surface"] == "live_runtime"
+    assert routing["confidence"] > 0.0
+    assert "cloud-troubleshooter" in routing["recommended_agents"]
+
+
+def test_tailscale_routes_to_live_runtime():
+    config = load_surface_routing_config()
+
+    routing = classify_surfaces(
+        "check tailscale status on Windows WSL machine",
+        current_agent="",
+        routing_config=config,
+    )
+
+    assert "live_runtime" in routing["active_surfaces"]
+    assert routing["confidence"] > 0.0
+
+
 def test_build_investigation_brief_for_cross_surface_task():
     config = load_surface_routing_config()
     contract_context = {
@@ -80,7 +108,7 @@ def test_build_investigation_brief_for_cross_surface_task():
 
     brief = build_investigation_brief(
         "Investigate why the CI pipeline changed the image tag, the deployment rollout failed, and kubectl logs show runtime errors.",
-        "devops-developer",
+        "developer",
         contract_context,
         routing_config=config,
     )

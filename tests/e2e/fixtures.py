@@ -134,7 +134,7 @@ PRETOOL_AGENT_DEVOPS = {
     "tool_name": "Agent",
     "tool_input": {
         "prompt": "Run npm audit",
-        "subagent_type": "devops-developer",
+        "subagent_type": "developer",
     },
     "hook_event_name": "PreToolUse",
     "session_id": "e2e-test-agent-002",
@@ -243,7 +243,7 @@ SUBAGENT_START = {
 }
 
 SUBAGENT_START_DEVOPS = {
-    "agent_type": "devops-developer",
+    "agent_type": "developer",
     "task_description": "Run npm audit and fix vulnerabilities",
     "hook_event_name": "SubagentStart",
     "session_id": "e2e-test-substart-002",

@@ -53,12 +53,12 @@ def load_surface_routing_config(config_file: Optional[Path] = None) -> Dict[str,
         config_file = _get_config_dir() / DEFAULT_SURFACE_ROUTING_FILE
 
     if not config_file.is_file():
-        return {"version": "missing", "reconnaissance_agent": "devops-developer", "surfaces": {}}
+        return {"version": "missing", "reconnaissance_agent": "developer", "surfaces": {}}
 
     try:
         return json.loads(config_file.read_text())
     except Exception:
-        return {"version": "invalid", "reconnaissance_agent": "devops-developer", "surfaces": {}}
+        return {"version": "invalid", "reconnaissance_agent": "developer", "surfaces": {}}
 
 
 @dataclass(frozen=True)
@@ -116,7 +116,7 @@ def classify_surfaces(
     """
     config = routing_config or load_surface_routing_config()
     surfaces_cfg = config.get("surfaces", {})
-    reconnaissance_agent = config.get("reconnaissance_agent", "devops-developer")
+    reconnaissance_agent = config.get("reconnaissance_agent", "developer")
     task_text = _normalize_text(task)
 
     matches: List[SurfaceMatch] = []

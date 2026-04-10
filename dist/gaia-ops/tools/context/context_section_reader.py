@@ -102,7 +102,7 @@ class ContextSectionReader:
             'cluster_details',
             'application_services',
         ],
-        'devops-developer': [
+        'developer': [
             'project_identity',
             'stack',
             'git',
@@ -110,6 +110,18 @@ class ContextSectionReader:
             'infrastructure',
             'application_services',
             'operational_guidelines',
+        ],
+        'gaia-operator': [
+            'project_identity',
+            'stack',
+            'git',
+            'environment',
+            'infrastructure',
+            'infrastructure_topology',
+            'application_services',
+            'architecture_overview',
+            'operational_guidelines',
+            'workspace_repos',
         ],
     }
 

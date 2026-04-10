@@ -97,7 +97,7 @@ $ARGUMENTS
    | terraform, terragrunt, .tf, infrastructure, vpc, gke, cloud-sql | terraform_iac | terraform-architect | T0 (read), T2 (plan), T3 (apply) |
    | kubectl, helm, flux, kubernetes, k8s, deployment, service, ingress | gitops_desired_state | gitops-operator | T0 (read), T2 (dry-run), T3 (push) |
    | gcloud, GCP, cloud logging, IAM, service account, live cluster, runtime drift | live_runtime | cloud-troubleshooter | T0 (diagnostics) |
-   | docker, npm, build, test, CI, pipeline, Dockerfile | app_ci_tooling | devops-developer | T0-T1 |
+   | docker, npm, build, test, CI, pipeline, Dockerfile | app_ci_tooling | developer | T0-T1 |
 
    If multiple rows match, treat the task as multi-surface in your reasoning. Keep one primary agent in the inline metadata, but note the adjacent surface(s) in the reasoning comment.
 

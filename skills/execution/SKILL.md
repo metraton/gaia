@@ -9,27 +9,28 @@ metadata:
 # Execution
 
 ```
-NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
-Commands finishing is not success. Verification criteria passing is success.
+Commands finishing is not success.
+Verification criteria passing is success.
 ```
 
 ## Mental Model
 
-T3 operations modify live state. Live state changes can be
-irreversible. You cannot claim COMPLETE until you have verified
-the result — not assumed it. A command can exit 0 and leave the
-system in a broken state.
+A command can exit 0 and leave the system in a broken state.
+`terraform apply` can succeed while creating a misconfigured resource.
+`kubectl apply` can succeed while a pod crash-loops. The only evidence
+that matters is verification against the criteria from your plan —
+not the exit code, not the absence of errors.
 
 ## Pre-Execution Checklist
 
-Before executing ANY approved operation:
+Before executing an approved operation:
 
-- [ ] User approved via AskUserQuestion and ElicitationResult hook activated the grant
-- [ ] Capture current state — know what you can roll back to
-- [ ] Plan still valid — re-run dry-run if time has passed
-- [ ] Commands will not prompt for interactive input
+- [ ] Grant is active — the hook activated the nonce via `APPROVE:<nonce>` user approval
+- [ ] Current state captured — without a rollback baseline, partial failure is unrecoverable
+- [ ] Plan still valid — state drifts between planning and execution; re-run dry-run if stale
+- [ ] No interactive prompts — agent sessions cannot provide stdin; commands that prompt will hang
 
-If ANY check fails → `BLOCKED`.
+If a check fails → `BLOCKED` with which check and why.
 
 ## Execution Protocol
 
@@ -61,6 +62,6 @@ your domain skill defines the specific rollback strategy.
 
 ## Anti-Patterns
 
-- COMPLETE without running verification criteria — the most common failure mode
-- Execute on approximate approval — "user approved something like this" is not the canonical token
-- Mutate without knowing rollback path — if you can't undo it, you're not ready to do it
+- **COMPLETE without verification** — the most common failure mode; exit 0 is not evidence
+- **Execute on approximate approval** — "user approved something like this" does not activate the grant; the hook checks exact nonces
+- **Mutate without a rollback path** — if you cannot describe how to undo it, partial failure becomes permanent damage

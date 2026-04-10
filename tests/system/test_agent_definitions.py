@@ -111,9 +111,19 @@ class TestProjectAgents:
         assert cloud_agent.exists(), "cloud-troubleshooter.md not found"
 
     def test_devops_developer_exists(self, agents_dir):
-        """devops-developer.md must exist"""
-        devops_agent = agents_dir / "devops-developer.md"
-        assert devops_agent.exists(), "devops-developer.md not found"
+        """developer.md must exist"""
+        devops_agent = agents_dir / "developer.md"
+        assert devops_agent.exists(), "developer.md not found"
+
+    def test_gaia_operator_exists(self, agents_dir):
+        """gaia-operator.md must exist"""
+        agent = agents_dir / "gaia-operator.md"
+        assert agent.exists(), "gaia-operator.md not found"
+
+    def test_gaia_orchestrator_exists(self, agents_dir):
+        """gaia-orchestrator.md must exist"""
+        agent = agents_dir / "gaia-orchestrator.md"
+        assert agent.exists(), "gaia-orchestrator.md not found"
 
 
 class TestAgentSecurity:

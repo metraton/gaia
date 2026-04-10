@@ -59,12 +59,24 @@ class TestRequiredFields:
             assert fm.get("name") == agent_file.stem, \
                 f"{agent_file.name}: name '{fm.get('name')}' != filename '{agent_file.stem}'"
 
+    # Agents that intentionally override the default model for cost efficiency.
+    # Key: agent stem name, Value: allowed model value.
+    ALLOWED_MODEL_OVERRIDES = {
+        "gaia-operator": "sonnet",  # simple workspace tasks, sonnet is cost-efficient
+    }
+
     def test_model_is_inherit(self, all_agent_files):
-        """All agents must use model: inherit."""
+        """All agents must use model: inherit unless explicitly listed in ALLOWED_MODEL_OVERRIDES."""
         for agent_file in all_agent_files:
             fm = parse_frontmatter(agent_file.read_text())
-            assert fm.get("model") == "inherit", \
-                f"{agent_file.name}: model must be 'inherit', got '{fm.get('model')}'"
+            model = fm.get("model")
+            allowed = self.ALLOWED_MODEL_OVERRIDES.get(agent_file.stem)
+            if allowed:
+                assert model == allowed, \
+                    f"{agent_file.name}: model must be '{allowed}', got '{model}'"
+            else:
+                assert model == "inherit", \
+                    f"{agent_file.name}: model must be 'inherit', got '{model}'"
 
     def test_description_not_empty(self, all_agent_files):
         """Description must be non-empty."""
@@ -112,7 +124,7 @@ class TestSkillsField:
     def test_project_agents_have_skills(self, agents_dir):
         """Project agents (non-meta) should have at least one skill."""
         project_agents = ["terraform-architect", "gitops-operator",
-                          "cloud-troubleshooter", "devops-developer"]
+                          "cloud-troubleshooter", "developer"]
         for agent_name in project_agents:
             agent_file = agents_dir / f"{agent_name}.md"
             if not agent_file.exists():
@@ -139,13 +151,21 @@ class TestFrontmatterTools:
                     assert tool, f"{agent_file.name}: empty tool name in tools list"
 
     def test_all_agents_have_read_tool(self, all_agent_files):
-        """All agents should have Read in their tools."""
+        """Specialist agents should have Read in their tools.
+
+        The orchestrator intentionally does NOT have Read (v5 architecture:
+        orchestrator delegates all file access to specialist agents).
+        """
         for agent_file in all_agent_files:
             fm = parse_frontmatter(agent_file.read_text())
             tools = fm.get("tools", "")
             tool_list = [t.strip() for t in tools.split(",")]
-            assert "Read" in tool_list, \
-                f"{agent_file.name} should have Read in tools"
+            if fm.get("name") == "gaia-orchestrator":
+                assert "Read" not in tool_list, \
+                    f"gaia-orchestrator.md must NOT have Read (v5: orchestrator delegates)"
+            else:
+                assert "Read" in tool_list, \
+                    f"{agent_file.name} should have Read in tools"
 
 
 if __name__ == "__main__":

@@ -86,19 +86,24 @@ FORBIDDEN_FOOTER_PATTERNS = [
 # hidden inside a string argument.  Classified as T2 (requires approval)
 # so the user sees what will actually run.
 # ---------------------------------------------------------------------------
+# Optional prefix commands that can wrap any shell invocation.
+# nohup, sudo, env, nice, etc. — the regex allows zero or more of these
+# before the real interpreter token so "nohup bash -c ..." is still caught.
+_WRAPPER_PREFIX = r"(?:(?:nohup|sudo|env|nice|ionice|setsid|strace|ltrace|time)\s+)*"
+
 INDIRECT_EXEC_PATTERNS = [
-    re.compile(r"^bash\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^sh\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^zsh\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^dash\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"bash\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"zsh\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"dash\s+-c\s+", re.IGNORECASE),
     re.compile(r"^\s*eval\s+", re.IGNORECASE),
-    re.compile(r"^python3?\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^node\s+-e\s+", re.IGNORECASE),
-    re.compile(r"^perl\s+-e\s+", re.IGNORECASE),
-    re.compile(r"^ruby\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"python3?\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"node\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"perl\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"ruby\s+-e\s+", re.IGNORECASE),
     # Process substitution and heredoc piped to shell
-    re.compile(r"^bash\s+<\(", re.IGNORECASE),
-    re.compile(r"^sh\s+<\(", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"bash\s+<\(", re.IGNORECASE),
+    re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+<\(", re.IGNORECASE),
 ]
 
 class BashValidator:
@@ -194,12 +199,111 @@ class BashValidator:
         return None
 
     def _has_operators(self, command: str) -> bool:
-        """Quick check if command has operators (before parsing)."""
+        """Quick check if command has operators (before parsing).
+
+        Detects pipes, logical operators, semicolons, redirects, and
+        background operators.  This is a fast pre-filter — the full
+        shell parser handles quote-aware splitting downstream.
+
+        Note: '>' and '&' are included so commands with redirects or
+        background operators reach the compound path, where the
+        sanitization layer can strip them.
+        """
         # Fast check for common operators outside quotes
         # This avoids expensive parsing for 70% of commands
-        if not any(op in command for op in ['|', '&&', '||', ';', '\n']):
+        if not any(op in command for op in ['|', '&&', '||', ';', '\n', '>', '&']):
             return False
         return True
+
+    # Regex patterns for operators that can be safely stripped from commands.
+    # Applied after quote-masking to avoid false positives.
+    _NOHUP_PREFIX_RE = re.compile(r"^\s*nohup\s+")
+    _TRAILING_BG_RE = re.compile(r"\s*&\s*$")
+    _REDIRECT_RE = re.compile(r"\s*>{1,2}\s*\S+\s*$")
+    # Fd duplication (2>&1) is harmless and should NOT be stripped.
+    _FD_DUP_RE = re.compile(r"\d+>&\d+")
+
+    def _try_sanitize_command(self, command: str) -> Optional[BashValidationResult]:
+        """Attempt to strip dangerous operators and return a clean command.
+
+        Sanitizable patterns (can be stripped without changing semantics):
+        - nohup prefix:  ``nohup cmd args`` -> ``cmd args``
+        - trailing &:    ``cmd args &``      -> ``cmd args``
+        - trailing redirect: ``cmd args > file`` -> ``cmd args``
+
+        Non-sanitizable patterns (reject with guidance):
+        - Pipes (change data flow between commands)
+        - Chaining operators (&&, ||, ;) — use one-command-per-step
+
+        Returns:
+            BashValidationResult with cleaned command via modified_input if
+            sanitization succeeded, or a block response if it cannot be cleaned.
+            None if no sanitization is needed (command has no dangerous operators).
+        """
+        original = command
+        cleaned = command
+        stripped_parts = []
+
+        # Strip nohup prefix
+        if self._NOHUP_PREFIX_RE.match(cleaned):
+            cleaned = self._NOHUP_PREFIX_RE.sub("", cleaned).strip()
+            stripped_parts.append("nohup")
+
+        # Strip trailing & (background) but not && or >&
+        # Mask fd duplications first to avoid false matching
+        test_str = self._FD_DUP_RE.sub("", cleaned)
+        if self._TRAILING_BG_RE.search(test_str):
+            cleaned = self._TRAILING_BG_RE.sub("", cleaned).strip()
+            stripped_parts.append("&")
+
+        # Strip trailing redirect (> file or >> file)
+        # Only strip if it's at the end of the command
+        test_str = self._FD_DUP_RE.sub("", cleaned)
+        redirect_match = self._REDIRECT_RE.search(test_str)
+        if redirect_match:
+            # Find the position in the original cleaned string
+            # We need to remove from the redirect operator onward
+            pos = cleaned.rfind(">")
+            if pos > 0:
+                before_redirect = cleaned[:pos].rstrip()
+                # Only strip if the > is not inside a flag value like --output=>
+                if before_redirect and not before_redirect.endswith("="):
+                    cleaned = before_redirect
+                    stripped_parts.append("> redirect")
+
+        if not stripped_parts:
+            return None  # Nothing to sanitize
+
+        if cleaned == original:
+            return None  # Sanitization didn't change anything
+
+        logger.info(
+            "Command sanitized: stripped [%s] from: %s",
+            ", ".join(stripped_parts),
+            original[:80],
+        )
+
+        # Build the response with the cleaned command via updatedInput
+        reason = (
+            f"Command sanitized: stripped {', '.join(stripped_parts)}. "
+            f"Read the command-execution skill for proper patterns.\n"
+            f"Original: {original[:120]}\n"
+            f"Cleaned:  {cleaned[:120]}"
+        )
+        hook_response = build_hook_permission_response(
+            "allow", reason, updated_input={"command": cleaned}
+        )
+        # Inject updatedInput into the response for the hook entry point
+        hook_response.setdefault("hookSpecificOutput", {})["updatedInput"] = {
+            "command": cleaned
+        }
+        return BashValidationResult(
+            allowed=True,
+            tier=SecurityTier.T0_READ_ONLY,
+            reason=reason,
+            modified_input={"command": cleaned},
+            block_response=hook_response,
+        )
 
     def validate(
         self,
@@ -293,8 +397,25 @@ class BashValidator:
             if not commit_validation.allowed:
                 return commit_validation
 
-        # Cloud pipe/redirect/chaining check -- runs AFTER blocked commands.
-        # Returns a structured block response dict if a violation is found.
+        # ================================================================
+        # SMART SANITIZATION: Before rejecting for pipe/redirect/background
+        # violations, attempt to strip dangerous operators and pass through
+        # the clean version via updatedInput.  If the command cannot be
+        # cleaned safely (e.g., pipes that change semantics), reject with
+        # guidance to read the command-execution skill.
+        # ================================================================
+        sanitized = self._try_sanitize_command(command)
+        if sanitized is not None:
+            if sanitized.allowed:
+                # Sanitization succeeded — pass the cleaned command
+                return sanitized
+            else:
+                # Sanitization determined the command cannot be cleaned
+                return sanitized
+
+        # Cloud pipe/redirect/chaining check -- runs AFTER blocked commands
+        # and sanitization.  Returns a structured block response dict if a
+        # violation is found.
         # block_response is set so the caller emits JSON and exits 0 (corrective),
         # not a plain string with exit 2 (which would terminate the agent).
         pipe_block = validate_cloud_pipe(command)

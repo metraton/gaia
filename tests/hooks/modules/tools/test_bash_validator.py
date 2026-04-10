@@ -171,27 +171,32 @@ class TestClaudeFooterStripping:
     """
 
     def test_footer_stripping_occurs_before_validation(self, validator):
-        """Test that footer stripping happens before dangerous verb detection."""
-        result = validator.validate('git commit -m "feat(test): add feature\n\nGenerated with Claude Code"')
-        # git commit is blocked by dangerous verb detector
-        assert result.allowed is False
-        assert result.block_response is not None
-        # The block response message should NOT contain the stripped footer
-        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
-        assert "Generated with Claude Code" not in reason
+        """Test that footer stripping happens before validation.
+
+        git commit is no longer mutative (v5), so the command is allowed.
+        Footer stripping still occurs; verify via the internal method and
+        that modified_input reflects the stripped command.
+        """
+        cmd = 'git commit -m "feat(test): add feature\n\nGenerated with Claude Code"'
+        result = validator.validate(cmd)
+        # git commit is no longer blocked
+        assert result.allowed is True
+        # Footer stripping still produces modified_input
+        if result.modified_input:
+            assert "Generated with Claude Code" not in result.modified_input.get("command", "")
 
     def test_strips_co_authored_by_before_validation(self, validator):
-        """Test that Co-Authored-By footer is stripped before dangerous verb detection."""
-        result = validator.validate('git commit -m "feat(test): add feature\n\nCo-Authored-By: Claude Opus 4.6"')
-        assert result.allowed is False
-        assert result.block_response is not None
+        """Test that Co-Authored-By footer is stripped before validation.
 
-    def test_clean_commit_blocked_by_dangerous_verb(self, validator):
-        """Test that clean commits are blocked by dangerous verb detector."""
+        git commit is no longer mutative (v5), so the command is allowed.
+        """
+        result = validator.validate('git commit -m "feat(test): add feature\n\nCo-Authored-By: Claude Opus 4.6"')
+        assert result.allowed is True
+
+    def test_clean_commit_allowed_in_v5(self, validator):
+        """git commit was removed from MUTATIVE_VERBS in v5 -- now allowed."""
         result = validator.validate('git commit -m "feat(api): add endpoint"')
-        assert result.allowed is False
-        assert result.tier == SecurityTier.T3_BLOCKED
-        assert "commit" in result.reason.lower()
+        assert result.allowed is True
 
     def test_internal_strip_method(self, validator):
         """Test the internal _strip_claude_footers method directly."""
@@ -501,13 +506,17 @@ class TestSafeByElimination:
         assert result.tier == SecurityTier.T0_READ_ONLY
 
     @pytest.mark.parametrize("command", [
-        "git commit -m 'feat: test'",
         "kubectl apply -f manifest.yaml",
         "glab api -X POST /projects/123/notes",
         "terraform apply",
+        "git push origin main",
     ])
     def test_mutative_commands_are_blocked(self, validator, command):
-        """Mutative commands still require nonce approval."""
+        """Mutative commands still require nonce approval.
+
+        Note: git commit was removed from MUTATIVE_VERBS in v5.
+        git push is used instead as a representative git mutative command.
+        """
         result = validator.validate(command)
         assert result.allowed is False
         assert result.tier == SecurityTier.T3_BLOCKED

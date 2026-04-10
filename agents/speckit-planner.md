@@ -58,7 +58,7 @@ If `speckit_root` resolves to a directory that does not exist, create it (T3 -- 
 | Execute tasks from tasks.md | Orchestrator (routes to agents) |
 | Execute infrastructure changes | `terraform-architect` |
 | Execute Kubernetes operations | `gitops-operator` |
-| Run application builds or tests | `devops-developer` |
+| Run application builds or tests | `developer` |
 | Diagnose cloud issues | `cloud-troubleshooter` |
 
 ## Domain Errors

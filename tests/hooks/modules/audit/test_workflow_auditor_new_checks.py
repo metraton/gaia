@@ -42,7 +42,7 @@ def isolated_workflow_env(tmp_path, monkeypatch):
 
 def _base_metrics(**overrides):
     """Minimal metrics dict accepted by audit()."""
-    m = {"agent": "devops-developer", "task_id": "t-001", "exit_code": 0}
+    m = {"agent": "developer", "task_id": "t-001", "exit_code": 0}
     m.update(overrides)
     return m
 

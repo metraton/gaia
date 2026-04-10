@@ -228,9 +228,8 @@ def create_claude_directory(project_root: Path) -> List[str]:
 def copy_claude_md(project_root: Path) -> bool:
     """Deprecated — CLAUDE.md is no longer generated from template.
 
-    Orchestrator identity is now injected by the UserPromptSubmit hook
-    via ops_identity.py + deterministic surface routing + on-demand skills (agent-response).
-    This avoids two sources of truth.
+    Orchestrator identity lives in agents/gaia-orchestrator.md, activated via
+    settings.local.json agent field.
 
     Kept as no-op for backward compatibility with callers.
     """

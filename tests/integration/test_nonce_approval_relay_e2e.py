@@ -67,12 +67,15 @@ class TestNonceApprovalRelayE2E:
     """
 
     def test_same_command_can_retry_after_grant_activation(self, isolated_nonce_env):
-        """T3 command gets 'ask' from orchestrator; grant passthrough works after activation."""
+        """T3 command gets 'ask' from orchestrator; grant passthrough works after activation.
+
+        Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
+        """
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
         core_state = isolated_nonce_env["core_state"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
-        command = 'git commit -m "feat(auth): add relay coverage"'
+        command = "git push origin feat/relay"
 
         # T3 command returns "ask" (orchestrator context, no agent_id)
         block = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
@@ -87,7 +90,7 @@ class TestNonceApprovalRelayE2E:
         approval_grants.write_pending_approval(
             nonce=nonce,
             command=command,
-            danger_verb="commit",
+            danger_verb="push",
             danger_category="MUTATIVE",
         )
         activation = approval_grants.activate_pending_approval(nonce)
@@ -107,20 +110,20 @@ class TestNonceApprovalRelayE2E:
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
-        commit_cmd = 'git commit -m "feat(auth): scoped approval"'
+        deploy_cmd = "kubectl apply -f deployment.yaml"
         push_cmd = "git push origin main"
 
         # T3 command returns "ask"
-        block = pre_tool_use.pre_tool_use_hook("Bash", {"command": commit_cmd})
+        block = pre_tool_use.pre_tool_use_hook("Bash", {"command": deploy_cmd})
         assert isinstance(block, dict)
         assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        # Create and activate a grant for commit directly
+        # Create and activate a grant for deploy directly
         nonce = approval_grants.generate_nonce()
         approval_grants.write_pending_approval(
             nonce=nonce,
-            command=commit_cmd,
-            danger_verb="commit",
+            command=deploy_cmd,
+            danger_verb="apply",
             danger_category="MUTATIVE",
         )
         activation = approval_grants.activate_pending_approval(nonce)

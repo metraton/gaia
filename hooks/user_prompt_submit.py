@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook — injects dynamic identity based on installed plugins."""
+"""UserPromptSubmit hook — injects routing recommendations and first-run welcome."""
 
 import sys
 import json
@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.paths import get_logs_dir
 from modules.core.stdin import has_stdin_data
 from modules.core.plugin_setup import run_first_time_setup
-from modules.identity.identity_provider import build_identity
+from modules.core.plugin_mode import get_plugin_mode
 
 # Configure logging — file only, no stderr
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -136,14 +136,17 @@ if __name__ == "__main__":
 
         # Ensure registry + permissions exist (idempotent, no mark).
         setup_msg = run_first_time_setup(mark_done=False)
-        identity = build_identity()
-        mode = "ops" if "Orchestrator" in identity else "security"
+        mode = get_plugin_mode()
+
+        # Build additionalContext: routing + welcome only.
+        # Identity now lives in agents/gaia-orchestrator.md (agent definition).
+        context_parts = []
 
         # First-time welcome: the marker does not exist yet because
         # neither SessionStart nor this call marked it.
         if first_run:
             welcome = _build_welcome(mode)
-            identity = f"{welcome}\n\n{identity}"
+            context_parts.append(welcome)
             mark_initialized()  # Mark AFTER building the welcome
             logger.info("First-run welcome prepended for %s mode", mode)
 
@@ -158,16 +161,17 @@ if __name__ == "__main__":
             if prompt_text:
                 routing_block = _build_routing_recommendation(prompt_text)
                 if routing_block:
-                    identity = identity + routing_block
+                    context_parts.append(routing_block)
             else:
                 logger.info("Could not extract user prompt from stdin, skipping routing")
 
-        logger.info("Identity injected: %s mode (%d chars)", mode, len(identity))
+        additional_context = "\n\n".join(context_parts)
+        logger.info("Context injected: %s mode (%d chars)", mode, len(additional_context))
 
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": identity,
+                "additionalContext": additional_context,
             }
         }))
         sys.exit(0)

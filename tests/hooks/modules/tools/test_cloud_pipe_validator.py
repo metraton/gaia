@@ -108,17 +108,37 @@ class TestChainingDetection:
 
 
 class TestNonCloudCommands:
-    """Test that non-cloud commands are NOT checked."""
+    """Test non-cloud command handling.
+
+    Pipes and chaining are cloud-only checks.
+    Redirects and background operators are universal checks (all commands).
+    """
 
     @pytest.mark.parametrize("command", [
         "ls -la | grep test",
-        "cat file.txt > output.txt",
         "echo hello && echo world",
         "python script.py | head",
     ])
-    def test_non_cloud_commands_pass(self, command):
-        """Non-cloud commands should not trigger any violation."""
+    def test_non_cloud_pipes_and_chains_pass(self, command):
+        """Non-cloud pipes and chaining should not trigger a violation."""
         result = validate_cloud_pipe(command)
+        assert result is None
+
+    def test_non_cloud_redirect_blocked(self):
+        """Redirects are blocked for ALL commands (use Write tool instead)."""
+        result = validate_cloud_pipe("cat file.txt > output.txt")
+        assert result is not None
+        assert "redirect" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_non_cloud_background_blocked(self):
+        """Background operator is blocked for ALL commands."""
+        result = validate_cloud_pipe("sleep 60 &")
+        assert result is not None
+        assert "background" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_non_cloud_fd_duplication_passes(self):
+        """File descriptor duplication (2>&1) should NOT trigger for non-cloud commands."""
+        result = validate_cloud_pipe("python3 script.py 2>&1")
         assert result is None
 
 

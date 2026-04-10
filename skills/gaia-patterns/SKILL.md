@@ -15,7 +15,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 ```
 1. User sends prompt
    ↓
-2. Orchestrator (identity injected by submit hook) — routes to the correct agent
+2. Orchestrator (agent definition: gaia-orchestrator.md) — routes to the correct agent
    ↓
 3. Pre-Tool Hook (pre_tool_use.py)
    ├─ Inject project-context.json (relevant sections per agent)
@@ -34,7 +34,7 @@ Domain knowledge for the gaia-ops meta-system. For the Component Map details, se
 
 ## Key Concepts
 
-- **Binary Delegation:** The orchestrator always delegates. Its only tools are Agent and AskUserQuestion.
+- **Delegation First:** The orchestrator delegates domain work. It cannot read files, run commands, or edit code — only route, track, and research.
 - **Agent Instantiation:** identity (.md) + skills (injected) + project-context (contracts) + orchestrator request.
 - **Security Tiers:** T0 (read) → T1 (validate) → T2 (simulate) → T3 (realize, requires approval).
 - **T3 Flow:** IN_PROGRESS → REVIEW → IN_PROGRESS → COMPLETE (plan-first or hook-blocked with approval_id).
@@ -62,6 +62,8 @@ The orchestrator owns the consolidation loop. Agents return `json:contract` bloc
 | Skill (injected) | < 100 lines | 100 |
 
 ## Agent Creation Standards
+
+Before creating a new agent, read 2-3 existing agent `.md` files in the `agents/` directory. They are the canonical examples of structure, tone, and scope boundaries.
 
 1. **YAML Frontmatter** — `name`, `description` (routing label), `tools`, `model`, `skills` (canonical order)
 2. **Identity** — 1-2 paragraphs: what domain, what output format

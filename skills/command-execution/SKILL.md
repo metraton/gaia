@@ -37,8 +37,8 @@ For file I/O, always use Claude Code tools over Bash:
 1. **No pipes** — find the CLI's native flag first.
 2. **One command per step** — no `&&` or `;`.
 3. **Tools over Bash** — for file I/O, always.
-4. **Absolute paths** — working directory is not reliable.
-5. **Quote variables** — always `"${VAR}"`.
+4. **Absolute paths** — agent cwd resets between calls; relative paths break silently.
+5. **Quote variables** — unquoted `${VAR}` with spaces becomes multiple arguments.
 
 ## Traps
 

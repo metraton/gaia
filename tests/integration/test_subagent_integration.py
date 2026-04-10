@@ -389,14 +389,14 @@ class TestSubagentEdgeCases:
         stdin_json = json.dumps({
             "hook_event_name": "SubagentStop",
             "session_id": "test",
-            "agent_type": "devops-developer",
+            "agent_type": "developer",
         })
 
         event = adapter.parse_event(stdin_json)
         completion = adapter.parse_agent_completion(event.payload)
 
         assert completion.agent_id == ""
-        assert completion.agent_type == "devops-developer"
+        assert completion.agent_type == "developer"
 
     def test_invalid_plan_status_detected(self):
         """Invalid PLAN_STATUS value -> invalid field reported."""

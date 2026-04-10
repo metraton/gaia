@@ -74,7 +74,7 @@ class TestAllFingerprintsPresent:
         """A declared skill whose fingerprint appears in transcript -> None."""
         transcript = "The agent loaded json:contract and plan_status correctly."
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=transcript,
             declared_skills=["agent-protocol"],
         )
@@ -114,7 +114,7 @@ class TestAllFingerprintsPresent:
         """Fingerprints found as substrings of larger text still match."""
         transcript = "Before doing anything, the agent invoked CONTEXT_UPDATE to enrich data."
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=transcript,
             declared_skills=["context-updater"],
         )
@@ -132,7 +132,7 @@ class TestMissingSkillAnomaly:
         """Declared skill with no fingerprint match -> anomaly."""
         transcript = "The agent did some work but never referenced any skill content."
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=transcript,
             declared_skills=["agent-protocol"],
         )
@@ -140,7 +140,7 @@ class TestMissingSkillAnomaly:
         assert result["type"] == "skill_injection_gap"
         assert result["severity"] == "advisory"
         assert "agent-protocol" in result["missing_skills"]
-        assert result["agent_type"] == "devops-developer"
+        assert result["agent_type"] == "developer"
 
     def test_some_present_some_missing(self):
         """When some skills are present and others missing, only missing ones are reported."""
@@ -170,7 +170,7 @@ class TestMissingSkillAnomaly:
         """A declared skill with no entry in SKILL_FINGERPRINTS is silently skipped."""
         transcript = "Nothing relevant here."
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=transcript,
             declared_skills=["nonexistent-skill"],
         )
@@ -180,7 +180,7 @@ class TestMissingSkillAnomaly:
         """Unknown skills are skipped, but known missing ones still produce anomaly."""
         transcript = "Nothing relevant here."
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=transcript,
             declared_skills=["nonexistent-skill", "agent-protocol"],
         )
@@ -199,7 +199,7 @@ class TestEmptyTranscript:
     def test_empty_string_transcript_returns_none(self):
         """Empty transcript with declared skills returns None (early return path)."""
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text="",
             declared_skills=["agent-protocol", "security-tiers"],
         )
@@ -208,7 +208,7 @@ class TestEmptyTranscript:
     def test_none_transcript_returns_none(self):
         """None transcript returns None (early return path)."""
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=None,
             declared_skills=["agent-protocol"],
         )
@@ -224,7 +224,7 @@ class TestEmptyDeclaredSkills:
 
     def test_empty_list_returns_none(self):
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text="Some transcript content with json:contract.",
             declared_skills=[],
         )
@@ -232,7 +232,7 @@ class TestEmptyDeclaredSkills:
 
     def test_none_declared_skills_returns_none(self):
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text="Some transcript content.",
             declared_skills=None,
         )
@@ -249,7 +249,7 @@ class TestEdgeCases:
     def test_whitespace_only_transcript(self):
         """Whitespace-only transcript is truthy but has no fingerprints."""
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text="   \n\t  ",
             declared_skills=["agent-protocol"],
         )
@@ -260,7 +260,7 @@ class TestEdgeCases:
         """Fingerprint matching is case-sensitive."""
         transcript = "JSON:CONTRACT and PLAN_STATUS"
         result = verify_skill_injection(
-            agent_type="devops-developer",
+            agent_type="developer",
             transcript_text=transcript,
             declared_skills=["agent-protocol"],
         )

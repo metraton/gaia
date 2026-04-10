@@ -93,17 +93,27 @@ async function checkSettingsJson() {
     const data = JSON.parse(await fs.readFile(path, 'utf-8'));
     const issues = [];
 
-    // Check hooks are configured
-    if (!data.hooks) {
-      issues.push('No hooks configured');
+    // Check hooks are configured — hooks may live in settings.json OR
+    // settings.local.json (gaia-update/gaia-scan puts them in local).
+    let hooksConfig = data.hooks || null;
+    const localPath = join(CWD, '.claude', 'settings.local.json');
+    if (!hooksConfig && existsSync(localPath)) {
+      try {
+        const localData = JSON.parse(await fs.readFile(localPath, 'utf-8'));
+        if (localData.hooks) hooksConfig = localData.hooks;
+      } catch { /* ignore parse errors */ }
+    }
+
+    if (!hooksConfig) {
+      issues.push('No hooks configured (check settings.json and settings.local.json)');
     } else {
-      const hookTypes = Object.keys(data.hooks);
+      const hookTypes = Object.keys(hooksConfig);
       if (!hookTypes.includes('PreToolUse')) issues.push('Missing PreToolUse hook');
       if (!hookTypes.includes('PostToolUse')) issues.push('Missing PostToolUse hook');
     }
 
     // Check permissions — now live in settings.local.json (not settings.json)
-    const localPath = join(CWD, '.claude', 'settings.local.json');
+    // localPath already declared above for hooks check
     let permCount = 0;
     if (existsSync(localPath)) {
       try {
@@ -125,7 +135,7 @@ async function checkSettingsJson() {
       return { name: 'settings.json', ok: false, detail: issues.join('; '), fix: 'Run gaia-scan or npx gaia-update' };
     }
 
-    const hookCount = data.hooks ? Object.keys(data.hooks).length : 0;
+    const hookCount = hooksConfig ? Object.keys(hooksConfig).length : 0;
     return { name: 'settings.json', ok: true, detail: `${hookCount} hook types, ${permCount} rules` };
   } catch {
     return { name: 'settings.json', ok: false, detail: 'Invalid JSON', fix: 'Delete and run gaia-scan' };

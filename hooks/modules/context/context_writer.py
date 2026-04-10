@@ -88,7 +88,7 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
         "monitoring_observability",
         "cluster_details",
     ],
-    "devops-developer": [
+    "developer": [
         "project_identity",
         "stack",
         "git",
@@ -96,6 +96,18 @@ LEGACY_AGENT_CONTRACTS: Dict[str, List[str]] = {
         "infrastructure",
         "application_services",
         "operational_guidelines",
+    ],
+    "gaia-operator": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "infrastructure",
+        "infrastructure_topology",
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines",
+        "workspace_repos",
     ],
 }
 

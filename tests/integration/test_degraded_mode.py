@@ -103,7 +103,7 @@ class TestContextProviderDegradedMode:
         from context_provider import load_universal_rules
 
         result = load_universal_rules(
-            "devops-developer",
+            "developer",
             rules_file=tmp_path / "nonexistent-rules.json",
         )
         assert result == {"universal": [], "agent_specific": []}
@@ -138,7 +138,7 @@ class TestSurfaceRouterDegradedMode:
             config_file=tmp_path / "nonexistent-routing.json"
         )
         assert result["version"] == "missing"
-        assert result["reconnaissance_agent"] == "devops-developer"
+        assert result["reconnaissance_agent"] == "developer"
         assert result["surfaces"] == {}
 
     def test_load_config_returns_default_on_invalid_json(self, tmp_path):
@@ -158,13 +158,13 @@ class TestSurfaceRouterDegradedMode:
 
         result = classify_surfaces(
             "check pod health",
-            current_agent="devops-developer",
-            routing_config={"surfaces": {}, "reconnaissance_agent": "devops-developer"},
+            current_agent="developer",
+            routing_config={"surfaces": {}, "reconnaissance_agent": "developer"},
         )
         assert result["active_surfaces"] == []
         assert result["dispatch_mode"] == "reconnaissance"
         assert result["confidence"] == 0.0
-        assert "devops-developer" in result["recommended_agents"]
+        assert "developer" in result["recommended_agents"]
 
     def test_classify_surfaces_uses_agent_fallback(self):
         """classify_surfaces falls back to agent surface when no signals match."""
@@ -173,16 +173,16 @@ class TestSurfaceRouterDegradedMode:
         routing_config = {
             "surfaces": {
                 "app_ci_tooling": {
-                    "primary_agent": "devops-developer",
+                    "primary_agent": "developer",
                     "signals": {"keywords": ["xyznonexistent"]},
                 },
             },
-            "reconnaissance_agent": "devops-developer",
+            "reconnaissance_agent": "developer",
         }
 
         result = classify_surfaces(
             "do something generic",
-            current_agent="devops-developer",
+            current_agent="developer",
             routing_config=routing_config,
         )
         # Falls back to the agent's own surface
@@ -192,11 +192,11 @@ class TestSurfaceRouterDegradedMode:
         """build_investigation_brief works with empty routing results."""
         from surface_router import build_investigation_brief
 
-        routing_config = {"surfaces": {}, "reconnaissance_agent": "devops-developer"}
+        routing_config = {"surfaces": {}, "reconnaissance_agent": "developer"}
 
         result = build_investigation_brief(
             "generic task",
-            "devops-developer",
+            "developer",
             {},
             routing_config=routing_config,
         )

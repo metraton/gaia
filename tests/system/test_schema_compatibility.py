@@ -1,7 +1,7 @@
 """
 Test schema compatibility between orchestrator identity and system components.
 
-Ensures the identity system (ops_identity.py + surface routing) contains
+Ensures the identity system (agents/gaia-orchestrator.md + surface routing) contains
 the essential structural elements that the hook system and surface routing depend on.
 """
 
@@ -19,10 +19,15 @@ class TestSchemaCompatibility:
 
     @pytest.fixture
     def identity_content(self, package_root):
-        """Load ops_identity.py and extract the identity string."""
-        identity_path = package_root / "hooks" / "modules" / "identity" / "ops_identity.py"
-        assert identity_path.exists(), "ops_identity.py not found"
-        content = identity_path.read_text()
+        """Load orchestrator identity from agents/gaia-orchestrator.md.
+
+        In v5, identity lives in agents/gaia-orchestrator.md. Tests verify the
+        orchestrator definition contains the required tool references and routing
+        instructions.
+        """
+        orchestrator_path = package_root / "agents" / "gaia-orchestrator.md"
+        assert orchestrator_path.exists(), "agents/gaia-orchestrator.md not found"
+        content = orchestrator_path.read_text()
         return content
 
     @pytest.fixture
@@ -75,7 +80,7 @@ class TestSchemaCompatibility:
             "terraform-architect",
             "gitops-operator",
             "cloud-troubleshooter",
-            "devops-developer",
+            "developer",
             "speckit-planner",
             "gaia-system",
         ]:
@@ -112,7 +117,7 @@ class TestSchemaCompatibility:
 
     def test_identity_references_routing(self, identity_content):
         """Identity must tell orchestrator about routing and agent-response."""
-        assert "routing recommendation" in identity_content
+        assert "routing suggestion" in identity_content
         assert "agent-response" in identity_content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):

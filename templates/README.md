@@ -40,7 +40,7 @@ Template for the project governance document. Placeholders are filled with value
 
 ## Note on CLAUDE.md
 
-Orchestrator identity is no longer generated from a template. It is injected dynamically by the UserPromptSubmit hook via `ops_identity.py` with deterministic surface routing and on-demand skills (`agent-response`).
+Orchestrator identity is no longer generated from a template. It is defined in `agents/gaia-orchestrator.md` and activated via `settings.json: { "agent": "gaia-orchestrator" }`. Surface routing is injected by the UserPromptSubmit hook; skills are loaded on-demand (`agent-response`).
 
 ## Usage
 

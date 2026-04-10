@@ -12,7 +12,33 @@ Project-specific conventions. Use values from your injected project-context — 
 
 For HCL examples (remote state, component structure, labels, outputs), read `reference.md` in this directory.
 
-## Directory Structure
+## Discover the Project's Organization
+
+Every project organizes Terraform differently. Before creating any
+file, discover how THIS project does it.
+
+1. **Find the modules directory.** Look for `tf_modules/`, `modules/`,
+   `terraform/`, or similar. The name varies — what matters is whether
+   reusable modules exist and where they live.
+2. **Read 2-3 existing terragrunt.hcl files.** Look at the `source =`
+   lines. Do they reference local modules? Registry modules? A mix?
+3. **Follow the majority pattern.** If 8 out of 10 components use
+   local module references, yours should too. Consistency with the
+   project matters more than what you'd choose on a greenfield.
+
+### Module vs Inline
+
+If the project has reusable modules for similar resource compositions
+(e.g., a cloud-sql module that composes instance + database + user +
+secrets), and your new resource follows a similar composition pattern,
+create a reusable module. If it's truly one-off glue with no reuse
+potential, inline is acceptable — but check first, because most
+projects lean one way.
+
+## Directory Structure (Reference)
+
+The structure below is a common starting point, not a prescription.
+If the codebase uses a different layout, follow the codebase.
 
 ```
 terraform/

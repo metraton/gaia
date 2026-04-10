@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -62,7 +63,7 @@ def _write_active_grant(
     *,
     scope_type: str = SCOPE_SEMANTIC_SIGNATURE,
     ttl_minutes: int = 10,
-    granted_at: float | None = None,
+    granted_at: Optional[float] = None,
     used: bool = False,
     confirmed: bool = True,
     session_id: str = "test-session-123",
@@ -572,10 +573,13 @@ class TestNonceEndToEnd:
     """
 
     def test_full_flow_block_activate_passthrough(self, clean_grants_dir):
-        """Manually write a pending approval, activate, and verify grant passthrough."""
+        """Manually write a pending approval, activate, and verify grant passthrough.
+
+        Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
+        """
         from modules.tools.bash_validator import BashValidator
 
-        command = 'git commit -m "feat(auth): add login endpoint"'
+        command = "git push origin feat/auth"
         session_id = "test-nonce-flow"
         validator = BashValidator()
 
@@ -590,7 +594,7 @@ class TestNonceEndToEnd:
         write_pending_approval(
             nonce=nonce,
             command=command,
-            danger_verb="commit",
+            danger_verb="push",
             danger_category="MUTATIVE",
             session_id=session_id,
         )
@@ -607,10 +611,13 @@ class TestNonceEndToEnd:
         assert "grant active" in result2.reason.lower()
 
     def test_blocked_t3_returns_ask_without_nonce(self, clean_grants_dir):
-        """BashValidator returns 'ask' for T3 commands without creating pending approvals."""
+        """BashValidator returns 'ask' for T3 commands without creating pending approvals.
+
+        Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
+        """
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate('git commit -m "feat(auth): add login endpoint"')
+        result = BashValidator().validate("git push origin feat/auth")
         assert result.allowed is False
         assert result.block_response is not None
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
@@ -691,10 +698,13 @@ class TestBashValidatorIntegration:
         assert not legacy_file.exists()
 
     def test_block_response_returns_ask(self, clean_grants_dir):
-        """BashValidator returns 'ask' for T3 commands (no nonce in response)."""
+        """BashValidator returns 'ask' for T3 commands (no nonce in response).
+
+        Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
+        """
         from modules.tools.bash_validator import BashValidator
 
-        result = BashValidator().validate('git commit -m "feat: test"')
+        result = BashValidator().validate("git push origin feat/test")
         assert result.allowed is False
         assert result.block_response is not None
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"

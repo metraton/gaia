@@ -129,7 +129,7 @@ class TestRoutingSimulator:
 
     def test_dockerfile_routes_to_devops_developer(self, simulator):
         result = simulator.simulate("fix the Dockerfile")
-        assert result.primary_agent == "devops-developer"
+        assert result.primary_agent == "developer"
         assert "app_ci_tooling" in result.surfaces_active
 
     def test_flux_routes_to_gitops_operator(self, simulator):
@@ -190,7 +190,7 @@ class TestRoutingSimulator:
         events = [
             {"prompt": "kubectl get pods", "agent": "cloud-troubleshooter"},
             {"prompt": "terraform plan", "agent": "terraform-architect"},
-            {"prompt": "fix Dockerfile", "agent": "devops-developer"},
+            {"prompt": "fix Dockerfile", "agent": "developer"},
         ]
         comparison = simulator.compare_routing(events)
         assert comparison["total"] == 3
@@ -233,18 +233,24 @@ class TestSkillsMapper:
         assert len(profiles) > 0
         names = [p.agent_name for p in profiles]
         assert "cloud-troubleshooter" in names
-        assert "devops-developer" in names
+        assert "developer" in names
         assert "gitops-operator" in names
         assert "terraform-architect" in names
         assert "gaia-system" in names
         assert "speckit-planner" in names
 
     def test_agent_profiles_have_skills(self, mapper):
+        """Specialist agents have skills via frontmatter; orchestrator uses on-demand Skill tool."""
         profiles = mapper.get_agent_profiles()
         for profile in profiles:
             assert isinstance(profile.skills, list)
-            # Every agent should have at least agent-protocol
-            assert "agent-protocol" in profile.skills
+            if profile.agent_name == "gaia-orchestrator":
+                # v5: orchestrator has skills: [] -- loads skills on-demand via Skill tool
+                assert profile.skills == [], \
+                    "Orchestrator should have empty skills list (uses on-demand Skill tool)"
+            else:
+                # Specialist agents should have at least agent-protocol
+                assert "agent-protocol" in profile.skills
 
     def test_agent_profiles_have_surfaces(self, mapper):
         profiles = mapper.get_agent_profiles()

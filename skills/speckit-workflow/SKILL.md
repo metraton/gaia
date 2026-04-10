@@ -3,33 +3,34 @@ name: speckit-workflow
 description: Use when planning features using the Spec-Kit framework (plan, tasks)
 metadata:
   user-invocable: false
+  type: technique
 ---
 
 # Spec-Kit Workflow
 
 Domain workflow for feature planning. Artifacts go to `{speckit_root}/{feature-name}/`.
-Templates live at `{project-root}/speckit/templates/`. Read the template before generating any artifact.
+Templates live at `{project-root}/speckit/templates/`. For artifact format summaries
+and task metadata examples, see `reference.md`.
 
-**Path resolution:** `speckit_root` comes from project-context.json `paths.speckit_root`. Default: `specs/` relative to project root. The agent definition's Context Resolution section is authoritative for path resolution.
+**Path resolution:** `speckit_root` from project-context.json `paths.speckit_root`.
+Default: `specs/`. Agent definition's Context Resolution section is authoritative.
 
 ## Flow
 
 ```
-Completed spec.md (from orchestrator)
-        |
-    Plan -> plan.md + research.md + data-model.md + contracts/
-        |
-    Tasks -> tasks.md (enriched, self-contained)
-        |
-    Return to orchestrator (routes tasks to agents)
+spec.md (from orchestrator) -> Plan -> Tasks -> orchestrator (routes tasks)
 ```
 
-## Phase 0: Governance Sync (MANDATORY before any phase)
+**Spec is WHAT. Plan is HOW. Tasks are DO.** Each phase stops at its boundary
+because auto-advancing skips the user's chance to catch design mistakes before
+they become implementation mistakes.
+
+## Phase 0: Governance Sync (before any phase)
 
 1. Read `project-context.json`. Missing -> BLOCKED, ask user for `npx gaia-scan`.
-2. Update `## Stack Definition` in `{speckit_root}/governance.md` from project-context.
+2. Sync `## Stack Definition` in `{speckit_root}/governance.md` from project-context.
    Missing governance.md -> create from template. Exists -> update Stack Definition only.
-3. Read updated governance.md -- this is your working context for all phases.
+3. Read governance.md -- this is your working context for all phases.
 
 ---
 
@@ -37,129 +38,82 @@ Completed spec.md (from orchestrator)
 
 **Input:** Validated `spec.md` (no unresolved `[NEEDS CLARIFICATION]`).
 **Output:** `plan.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`.
-**Template:** Read `speckit/templates/plan-template.md` FIRST.
+
+Read `speckit/templates/plan-template.md` before writing anything. Templates
+encode hard-won structure decisions -- skipping them produces artifacts that
+downstream phases cannot consume reliably.
 
 ### Procedure
 
-1. **Verify prerequisite.** Read spec.md. If missing -> BLOCKED, ask orchestrator to provide a completed spec. If unresolved
-   `[NEEDS CLARIFICATION]` markers remain -> STOP, resolve them first.
+1. **Verify prerequisite.** Read spec.md. Missing -> BLOCKED. Unresolved
+   `[NEEDS CLARIFICATION]` markers -> resolve before proceeding (ambiguity
+   in the spec becomes wrong assumptions in the plan).
 
-2. **Initialize plan.md** from the plan template. If plan.md already exists, skip (do not overwrite).
+2. **Initialize plan.md** from template. Exists -> skip (do not overwrite).
 
-3. **Clarify planning ambiguities** (max 5 questions):
-   - Scan for: functional scope, data model gaps, non-functional targets,
-     integration unknowns, edge cases, vague terminology.
-   - Ask one question at a time. Integrate answers into spec.md immediately.
+3. **Clarify planning ambiguities** (max 5 questions, one at a time).
+   Scan for: scope gaps, data model unknowns, non-functional targets,
+   integration points, vague terms. Integrate answers into spec.md.
 
-4. **Fill Technical Context** in plan.md:
-   - Language/version, dependencies, storage, testing framework, target platform.
-   - Ask user for anything you cannot infer.
+4. **Fill Technical Context** -- language, dependencies, storage, testing,
+   platform. Ask user for anything you cannot infer from project-context.
 
-5. **Run Constitution Check** against governance.md:
-   - GitOps patterns enforced? HTTPS for external endpoints? Health checks?
-     No `:latest` image tags? Scope boundaries respected?
-   - Violations -> document in Complexity Tracking with justification.
-   - Unjustifiable violations -> ERROR "Simplify approach first."
+5. **Constitution Check** against governance.md. Violations -> document
+   with justification. Unjustifiable violations -> ERROR "Simplify first."
 
-6. **Phase 0 -- Research.** For each unknown or technology choice:
-   - Research best practices. Consolidate in `research.md` with:
-     Decision, Rationale, Alternatives considered.
+6. **Research.** For each unknown: research best practices, consolidate in
+   `research.md` (Decision, Rationale, Alternatives considered).
 
-7. **Phase 1 -- Design.** From spec + research:
-   - Extract entities -> `data-model.md` (fields, relationships, validations).
-   - Generate API contracts from functional requirements -> `contracts/` directory.
-   - Generate failing contract tests (one per endpoint).
-   - Extract test scenarios from user stories -> `quickstart.md`.
+7. **Design.** From spec + research: entities -> `data-model.md`, API
+   contracts -> `contracts/`, failing contract tests, test scenarios -> `quickstart.md`.
 
-8. **Re-run Constitution Check.** New violations -> refactor, return to step 7.
+8. **Re-check constitution.** New violations -> refactor, return to step 7.
 
-9. **Describe Phase 2 task approach** in plan.md -- do NOT create tasks.md.
+9. **Describe task approach** in plan.md -- do NOT create tasks.md yet.
 
-10. **STOP.** Plan phase is complete. Suggest next step: `/speckit.tasks`.
+10. **STOP.** Suggest: `/speckit.tasks`.
 
 ---
 
 ## Phase 2: Tasks
 
-**Input:** `plan.md` + available design docs (`data-model.md`, `contracts/`, `research.md`).
+**Input:** `plan.md` + design docs (`data-model.md`, `contracts/`, `research.md`, `quickstart.md`).
 **Output:** `{feature-dir}/tasks.md`.
-**Template:** Read `speckit/templates/tasks-template.md` FIRST.
+
+Read `speckit/templates/tasks-template.md` first.
+
+### Why tasks must be self-contained
+
+The executing agent receives a single task, not the full plan. If a task
+says "implement the auth service" without specifying the tech stack, file
+paths, and exit criteria, the agent guesses -- and guesses diverge from the
+plan. Every task carries its own context slice so the agent works from
+evidence, not inference.
 
 ### Procedure
 
-1. **Verify prerequisite.** plan.md must exist. If missing -> ERROR.
+1. **Load all design documents** -- plan.md (required), others if they exist.
 
-2. **Load all available design documents:**
-   - plan.md (REQUIRED) -- tech stack, architecture, file structure.
-   - data-model.md (if exists) -- entities and relationships.
-   - contracts/ (if exists) -- API specifications.
-   - research.md (if exists) -- technical decisions.
-   - quickstart.md (if exists) -- test scenarios.
+2. **Generate tasks by category:**
+   Setup -> Tests (TDD) -> Core (models, services, endpoints) -> Integration -> Polish.
 
-3. **Read the tasks template** from `speckit/templates/tasks-template.md`.
+3. **Enrich every task** with inline metadata (see `reference.md` for format):
+   context slice, files, depends-on, exit-criteria, suggested-agent, tier, tags.
+   - **Agent routing:** terraform keywords -> `terraform-architect`, kubectl/helm -> `gitops-operator`, code/test -> `developer`, logs/monitoring -> `cloud-troubleshooter`.
+   - **Tier:** classify using `security-tiers` skill. T2/T3 get `<!-- HIGH RISK -->`.
+   - **Parallelism:** different files with no shared deps -> `[P]`. Same file -> sequential.
 
-4. **Generate tasks by category:**
-   - **Setup:** Project init, dependencies, linting, config.
-   - **Tests [P]:** One per contract, one per integration scenario (TDD -- tests first).
-   - **Core:** One per entity model, one per service, one per endpoint/command.
-   - **Integration:** DB connections, middleware, logging, external services.
-   - **Polish [P]:** Unit tests, performance tests, docs, cleanup.
+4. **Generate dependency graph** in YAML at bottom of tasks.md.
 
-5. **Apply parallelism rules:**
-   - Different files with no shared dependencies -> mark `[P]`.
-   - Same file -> sequential (no `[P]`).
+5. **Cross-artifact validation:** every spec requirement covered? Every contract
+   has a test task? Every entity has a model task? Critical gaps -> pause for
+   user approval. Minor gaps -> document in Dependencies section.
 
-6. **Order by dependency:**
-   Setup -> Tests -> Models -> Services -> Endpoints -> Integration -> Polish.
+6. **Report:** task count, coverage percentage, issues found.
 
-7. **Enrich EVERY task with inline metadata:**
-   ```markdown
-   - [ ] T001 Description
-     - context: relevant plan slice (tech stack, architecture decisions)
-     - files: expected file paths
-     - depends-on: task IDs or `none`
-     - exit-criteria: `command` expected outcome
-     - suggested-agent: {agent}
-     - tier: {T0|T1|T2|T3}
-     <!-- Tags: #tag1 #tag2 -->
-   ```
-   - **Agent:** terraform keywords -> `terraform-architect`, kubectl/helm -> `gitops-operator`,
-     code/test/build -> `devops-developer`, logs/monitoring -> `cloud-troubleshooter`.
-   - **Tier:** T0 (read), T1 (validate), T2 (simulate), T3 (mutate).
-   - **Tags:** tech (#terraform, #kubernetes), domain (#database, #security), type (#setup, #test).
-   - **T2/T3 tasks** get: `<!-- HIGH RISK: Analyze before execution -->`.
+## Anti-Patterns
 
-8. **CRITICAL -- every task MUST include:**
-   - An `exit-criteria:` line with a command or observable outcome.
-   - Enough context for the executing agent to work without loading multiple files.
-
-9. **Generate dependency graph** in YAML at the bottom of tasks.md.
-
-10. **Cross-artifact validation:**
-    - All spec requirements covered by at least one task?
-    - All contracts have test tasks? All entities have model tasks?
-    - CRITICAL gaps -> pause, require user approval.
-    - LOW/MEDIUM gaps -> add notes to Dependencies section.
-
-11. **Report** with: task count, coverage percentage, any issues found.
-    Tasks are returned to the orchestrator for execution.
-
----
-
-## Task Enrichment Rules (applies to Phase 2)
-
-Every task gets automatic metadata:
-- **Agent:** detect from keywords (terraform -> `terraform-architect`, kubectl -> `gitops-operator`,
-  code/test -> `devops-developer`, monitoring/logs -> `cloud-troubleshooter`).
-- **Security Tier:** classify using `security-tiers` skill.
-- **Tags:** technology (#terraform, #kubernetes), domain (#database, #security), type (#setup, #test).
-- **Exit criteria:** a command or observable outcome confirming completion.
-- **Context slice:** relevant portion of the plan so the task is self-contained.
-
-## Critical Rules
-
-1. **Always read templates** from `speckit/templates/` before generating any artifact.
-2. Every task MUST include: exit criteria + enough inline context to be self-contained.
-3. Tasks must be **self-contained** -- executable by the assigned agent without SpecKit knowledge.
-4. Each phase STOPS at its boundary. Do not auto-advance to the next phase.
-5. Spec is WHAT (no implementation details). Plan is HOW. Tasks are DO.
+- **Template-skipping** -- generating artifacts without reading templates produces structures that downstream phases cannot parse, breaking the pipeline.
+- **Auto-advancing** -- jumping from plan to tasks without stopping robs the user of design review, the cheapest place to catch architectural mistakes.
+- **Thin tasks** -- tasks without context slices force executing agents to load multiple files and guess at intent, producing drift from the plan.
+- **Over-specifying parallelism** -- marking tasks `[P]` when they share state causes race conditions that are harder to debug than sequential slowness.

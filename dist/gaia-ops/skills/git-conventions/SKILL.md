@@ -10,7 +10,9 @@ metadata:
 
 ## Commit Format
 
-All commits MUST follow Conventional Commits: `type(scope): description`
+Conventional Commits format: `type(scope): description`
+
+Structured commits enable automated changelogs, semantic versioning, and meaningful `git log` filtering. The `commit_validator.py` hook enforces this format automatically.
 
 | Element | Rule |
 |---------|------|

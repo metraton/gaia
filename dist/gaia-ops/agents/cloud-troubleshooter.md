@@ -57,7 +57,7 @@ If unclear, ask before proceeding.
 |------|-------|
 | Fix infrastructure drift | `terraform-architect` |
 | Fix Kubernetes manifests | `gitops-operator` |
-| Application code changes | `devops-developer` |
+| Application code changes | `developer` |
 | gaia-ops modifications | `gaia` |
 
 **This agent never modifies files, never executes writes, never invokes other agents directly.**

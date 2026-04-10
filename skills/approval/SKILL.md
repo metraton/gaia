@@ -56,30 +56,32 @@ handling path to take.
 
 ## Hook Block Flow
 
-When a hook blocks your command with `[T3_BLOCKED]` and an `approval_id`:
+When a hook blocks your command with `[T3_BLOCKED]`, it means the nonce
+system has no active grant for that operation. The deny response includes
+an `approval_id` — a one-time hex token tied to exactly this command.
 
-1. **STOP** -- do NOT retry the command. Retrying generates a new nonce
-   each time, creating an infinite loop.
-2. **Report REVIEW** -- set `plan_status` to `REVIEW` in your `json:contract`.
-3. **Include the approval_id** -- copy the hex identifier from the hook deny
-   response into `approval_request.approval_id`.
-4. **Wait** -- the orchestrator presents your plan to the user. When the user
-   approves, the orchestrator resumes you with the grant activated.
-5. **Then retry** -- only after the orchestrator resumes you, retry the command.
+The instinct is to retry. That is the wrong move: each retry generates a
+fresh nonce, so the old `approval_id` becomes stale, and you enter an
+infinite retry-block loop.
 
-The hook deny message looks like:
+Instead: report `REVIEW` with `plan_status`, include the `approval_id`
+in your `approval_request`, and let the orchestrator present the plan
+to the user. When the user approves, the grant activates and you are
+resumed to retry the command.
+
+The deny message format:
 ```
 [T3_BLOCKED] This command requires user approval.
 Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.
 approval_id: <hex>
 ```
 
-If you lose the approval_id, re-attempt the command once for a fresh one.
+If you lose the `approval_id`, re-attempt the command once for a fresh one.
 
 ## Anti-Patterns
 
-- **Retrying after T3_BLOCKED** -- generates a new nonce, causes infinite loop
-- Presenting approval without all 6 fields in `approval_request`
-- Putting approval fields in text only without the JSON object
-- Treating prior approvals as valid for new operations
-- Fabricating or paraphrasing the approval_id token
+- **Retrying after T3_BLOCKED** -- each retry generates a new nonce, making the previous approval_id stale; this loops forever
+- **Missing fields in approval_request** -- the orchestrator presents these fields directly to the user; missing fields mean the user approves blind
+- **Approval fields in prose only** -- the orchestrator parses the JSON object, not your text; prose-only plans bypass the structured approval flow
+- **Reusing prior approvals** -- grants are scoped to a specific nonce and command; a prior approval does not cover a new operation
+- **Fabricating the approval_id** -- the hook validates against its nonce store; an invented token will never match

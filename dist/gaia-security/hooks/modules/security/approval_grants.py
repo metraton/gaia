@@ -47,6 +47,7 @@ from ..core.state import get_session_id
 from .approval_scopes import (
     ApprovalSignature,
     SCOPE_SEMANTIC_SIGNATURE,
+    SCOPE_VERB_FAMILY,
     SUPPORTED_SCOPE_TYPES,
     build_approval_signature,
     matches_approval_signature,
@@ -110,11 +111,13 @@ class ApprovalGrant:
         session_id: The Claude session that owns this grant.
         approved_verbs: Human-readable verb summary for logs/debugging.
         approved_scope: Original approval scope text from the user.
-        scope_type: Approval scope mode (exact or semantic).
+        scope_type: Approval scope mode (exact, semantic, or verb_family).
         scope_signature: Persisted ApprovalSignature payload for matching.
         granted_at: Unix timestamp when the grant was created.
         ttl_minutes: How long the grant is valid.
         used: Whether the grant has been consumed.
+        multi_use: When True, the grant is NOT consumed after a single use.
+            Used by SCOPE_VERB_FAMILY grants for batch operations.
     """
     session_id: str = ""
     approved_verbs: List[str] = field(default_factory=list)
@@ -125,14 +128,23 @@ class ApprovalGrant:
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES
     used: bool = False
     confirmed: bool = False
+    multi_use: bool = False
 
     def is_expired(self) -> bool:
         """Check if the grant has expired."""
         return _is_ttl_expired(self.granted_at, self.ttl_minutes)
 
     def is_valid(self) -> bool:
-        """Check if the grant is still usable."""
-        return not self.is_expired() and not self.used
+        """Check if the grant is still usable.
+
+        Multi-use grants ignore the ``used`` flag and remain valid until
+        their TTL expires.
+        """
+        if self.is_expired():
+            return False
+        if self.multi_use:
+            return True
+        return not self.used
 
     def get_signature(self) -> Optional[ApprovalSignature]:
         """Deserialize the persisted scope signature, if present."""
@@ -305,7 +317,7 @@ def write_pending_approval(
     Args:
         nonce: Cryptographic nonce from generate_nonce().
         command: The command that was blocked.
-        danger_verb: The dangerous verb detected (e.g., "commit", "apply").
+        danger_verb: The dangerous verb detected (e.g., "push", "apply").
         danger_category: The danger category (e.g., "MUTATIVE", "DESTRUCTIVE").
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
         ttl_minutes: How long the pending approval is valid before expiry.
@@ -624,6 +636,12 @@ def consume_grant(command: str, session_id: str = None) -> bool:
                     continue
 
                 if grant.matches_command(command):
+                    if grant.multi_use:
+                        logger.info(
+                            "Grant matched (multi-use, not consumed): command='%s', grant=%s",
+                            command[:80], grant_file.name,
+                        )
+                        return True
                     data["used"] = True
                     grant_file.write_text(json.dumps(data, indent=2))
                     logger.info(
@@ -902,6 +920,92 @@ def activate_grants_for_session(
         )
 
     return results
+
+
+# ============================================================================
+# Batch (Verb-Family) Grant Creation
+# ============================================================================
+
+DEFAULT_BATCH_TTL_MINUTES = 10
+
+
+def create_verb_family_grant(
+    session_id: str,
+    base_cmd: str,
+    verb: str,
+    danger_category: str = "",
+    ttl_minutes: int = DEFAULT_BATCH_TTL_MINUTES,
+) -> Optional[Path]:
+    """Create a multi-use SCOPE_VERB_FAMILY grant directly (no pending phase).
+
+    Called when the user approves a batch operation.  The resulting grant
+    matches any command with the same ``base_cmd`` and ``verb``, regardless
+    of arguments or non-dangerous flags, and is NOT consumed after a single
+    use.  It expires after ``ttl_minutes``.
+
+    Args:
+        session_id: The Claude session that owns this grant.
+        base_cmd: CLI base command (e.g., "gws", "kubectl").
+        verb: The mutative verb (e.g., "modify", "delete").
+        danger_category: Optional danger category for stricter matching.
+        ttl_minutes: Grant lifetime in minutes (default 10).
+
+    Returns:
+        Path to the grant file, or None on failure.
+    """
+    from .mutative_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP
+
+    if not session_id or not base_cmd or not verb:
+        logger.error(
+            "create_verb_family_grant called with missing required args: "
+            "session_id=%s, base_cmd=%s, verb=%s",
+            session_id, base_cmd, verb,
+        )
+        return None
+
+    resolved_category = danger_category if danger_category else CATEGORY_UNKNOWN
+    cli_family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
+
+    signature = ApprovalSignature(
+        scope_type=SCOPE_VERB_FAMILY,
+        base_cmd=base_cmd,
+        cli_family=cli_family,
+        danger_category=resolved_category,
+        verb=verb.lower(),
+        # Intentionally empty -- verb_family matching ignores these:
+        semantic_tokens=(),
+        normalized_flags=(),
+        dangerous_flags=(),
+        exact_tokens=(),
+    )
+
+    grant = ApprovalGrant(
+        session_id=session_id,
+        approved_verbs=[verb.lower()],
+        approved_scope=f"batch:{base_cmd} {verb}",
+        scope_type=SCOPE_VERB_FAMILY,
+        scope_signature=signature.to_dict(),
+        granted_at=time.time(),
+        ttl_minutes=ttl_minutes,
+        used=False,
+        confirmed=False,
+        multi_use=True,
+    )
+
+    try:
+        grants_dir = _get_grants_dir()
+        grant_file = grants_dir / f"grant-{session_id}-batch-{int(time.time() * 1000)}.json"
+        grant_file.write_text(json.dumps(asdict(grant), indent=2))
+        logger.info(
+            "Verb-family batch grant created: base_cmd=%s, verb=%s, "
+            "ttl=%d min, session=%s, file=%s",
+            base_cmd, verb, ttl_minutes, session_id[:12], grant_file.name,
+        )
+        return grant_file
+
+    except Exception as e:
+        logger.error("Failed to create verb-family grant: %s", e)
+        return None
 
 
 def _cleanup_grant(grant_file: Path) -> None:

@@ -46,7 +46,7 @@ You are a senior GitOps operator. You manage the entire lifecycle of Kubernetes 
 |------|-------|
 | Terraform / cloud infrastructure | `terraform-architect` |
 | Query live cloud state (`gcloud`, `aws`) | `cloud-troubleshooter` |
-| Application code (Python, Node.js) | `devops-developer` |
+| Application code (Python, Node.js) | `developer` |
 | gaia-ops modifications | `gaia` |
 
 ## Domain Errors

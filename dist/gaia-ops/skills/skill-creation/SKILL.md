@@ -52,7 +52,33 @@ State machine / flow → Mandatory format → State transitions → Error handli
 
 ---
 
-## Step 3: Write the description field (CSO)
+## Step 3: Write for judgment, not compliance
+
+A skill that says "ALWAYS do X" is a rule. Rules get skipped the moment the agent encounters a situation where X seems unnecessary. A skill that explains *what goes wrong when you skip X* forms judgment. Judgment holds even in situations the skill never anticipated.
+
+The test: for each rule or step you write, ask — if the agent saw enough real examples of this going wrong, would it reach the same conclusion on its own? If yes, you're capturing genuine wisdom. If no, it's probably an arbitrary preference that needs more context before it can guide decisions.
+
+This is why the investigation skill doesn't say "INVESTIGATE FIRST. ALWAYS. NO EXCEPTIONS." It says: *"Every codebase is a record of accumulated decisions... The first 2-3 files you read define whether your solution fits or fights the project."* The agent understands the stakes. The behavior follows.
+
+### Tone by type
+
+**Discipline** works best when the Iron Law is blunt and a reasoned paragraph follows explaining what breaks when you violate it. Command-execution's mental model ("When you reach for a pipe, you have not looked for the flag yet") does more work than a dozen capitalized warnings because it reframes the decision point itself.
+
+**Technique** should read like a mentor sharing experience. Not "do step 1, step 2, step 3" but "when you encounter X, the thing that matters most is Y, because Z." The agent needs to internalize the priority, not memorize the sequence.
+
+**Domain** skills guide discovery of the project's conventions, not dictate a generic structure. The codebase is the source of truth; the skill is a reference that helps the agent find and interpret what's already there.
+
+**Reference** is where tone matters least and accuracy matters most. Tables, classifications, format specs. Get the content right.
+
+**Protocol** needs precision in its state machines and formats, but transitions should explain why they exist. An agent that understands why REVIEW precedes IN_PROGRESS for T3 operations will handle edge cases the protocol didn't enumerate.
+
+### Connecting to design philosophy
+
+The gaia-patterns Workflow Design Philosophy already captures this: *"Be positive -- describe what to do, not what to avoid"* and *"Allow discovery -- agent reaches conclusions empirically."* These principles apply directly to skill writing. A skill full of prohibitions ("never do X", "do NOT do Y") trains avoidance, not understanding. A skill that describes the better path and explains why it's better trains judgment that generalizes.
+
+---
+
+## Step 4: Write the description field (CSO)
 
 The description determines when the agent reads the skill. It must contain **triggering conditions only** — never summarize the process.
 
@@ -68,7 +94,7 @@ description: Use when executing any bash command, cloud CLI, or shell operation
 
 ---
 
-## Step 4: Respect the line budget
+## Step 5: Respect the line budget
 
 | Injection method | Budget | Reason |
 |-----------------|--------|--------|

@@ -256,6 +256,16 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+~/?", re.IGNORECASE),
         re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+~/?", re.IGNORECASE),
     ],
+
+    # Gmail - Permanent deletion/trash/purge (NEVER DELETE, ONLY LABEL)
+    "email_critical": [
+        re.compile(r"\bgws\s+gmail\s+(?:messages?\s+)?delete\b", re.IGNORECASE),
+        re.compile(r"\bgws\s+gmail\s+(?:messages?\s+)?trash\b", re.IGNORECASE),
+        re.compile(r"\bgws\s+gmail\s+(?:messages?\s+)?purge\b", re.IGNORECASE),
+        re.compile(r"\bgws\s+gmail\s+(?:drafts?\s+)?delete\b", re.IGNORECASE),
+        re.compile(r"\bgam\s+.*\bdelete\s+message\b", re.IGNORECASE),
+        re.compile(r"\bgam\s+.*\bpurge\s+message\b", re.IGNORECASE),
+    ],
 }
 
 # Suggestions for permanently blocked commands
@@ -360,6 +370,14 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     # rm critical
     "rm -rf /": "[BLOCKED] Filesystem destruction is irreversible",
     "rm -rf ~": "[BLOCKED] Home directory destruction is irreversible",
+
+    # Gmail critical
+    "gws gmail delete": "[BLOCKED] Gmail deletion is permanent and irreversible. Use labels instead: gws gmail messages modify --addLabelIds",
+    "gws gmail trash": "[BLOCKED] Gmail trash is destructive. Use labels instead: gws gmail messages modify --addLabelIds",
+    "gws gmail purge": "[BLOCKED] Gmail purge is permanent and irreversible. Use labels instead: gws gmail messages modify --addLabelIds",
+    "gws gmail drafts delete": "[BLOCKED] Gmail draft deletion is irreversible. Use labels instead",
+    "gam delete message": "[BLOCKED] GAM message deletion is permanent. Use labels instead",
+    "gam purge message": "[BLOCKED] GAM message purge is permanent. Use labels instead",
 }
 
 # Structured deny signatures complement the raw regex patterns above.

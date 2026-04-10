@@ -69,7 +69,7 @@ function setupProject({ includeTelemetry = true } = {}) {
       {
         id: 'ep-002',
         timestamp: recent(15),
-        agent: 'devops-developer',
+        agent: 'developer',
         task_id: 'task-002',
         exit_code: 0,
         plan_status: 'COMPLETE',
@@ -141,7 +141,7 @@ skills:
         session_id: 'sess-002',
         task_id: 'task-002',
         agent_id: 'task-002',
-        agent: 'devops-developer',
+        agent: 'developer',
         tier: 'T0',
         plan_status: 'COMPLETE',
         context_snapshot: {
@@ -160,7 +160,7 @@ skills:
         context_sections_updated: [],
         context_rejected_sections: [],
         default_skills_snapshot: {
-          agent: 'devops-developer',
+          agent: 'developer',
           model: 'fast',
           tools: ['Read', 'Edit', 'Bash'],
           skills: ['agent-protocol', 'developer-patterns', 'command-execution'],

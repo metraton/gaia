@@ -8,6 +8,7 @@ pending approval grants for the current session.
 The hook NEVER blocks (always exits 0). It is purely side-effectful:
 reading the user's answer and activating grants when appropriate.
 """
+from __future__ import annotations
 
 import sys
 import json

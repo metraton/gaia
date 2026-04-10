@@ -81,13 +81,13 @@ class TestFormatBlockedMessageKnownCategories:
         ("gcp_critical", "terraform-architect"),
         ("kubernetes_critical", "gitops-operator"),
         ("flux_critical", "gitops-operator"),
-        ("git_destructive", "devops-developer"),
-        ("docker_critical", "devops-developer"),
-        ("npm_critical", "devops-developer"),
-        ("sql_critical", "devops-developer"),
-        ("disk_operations", "devops-developer"),
-        ("rm_critical", "devops-developer"),
-        ("repo_delete", "devops-developer"),
+        ("git_destructive", "developer"),
+        ("docker_critical", "developer"),
+        ("npm_critical", "developer"),
+        ("sql_critical", "developer"),
+        ("disk_operations", "developer"),
+        ("rm_critical", "developer"),
+        ("repo_delete", "developer"),
     ])
     def test_known_category_includes_agent_routing(self, category, expected_agent):
         """Each known category must produce a Dispatch-to line with the correct agent."""

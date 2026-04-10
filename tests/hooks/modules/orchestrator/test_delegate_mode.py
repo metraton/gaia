@@ -79,7 +79,7 @@ class TestCheckDelegateMode(unittest.TestCase):
     def test_blocks_bash_for_orchestrator(self):
         result = check_delegate_mode("Bash", self._orchestrator_payload("Bash"))
         self.assertTrue(result.blocked)
-        self.assertIn("DELEGATE MODE", result.reason)
+        self.assertIn("DELEGATION REQUIRED", result.reason)
 
     def test_blocks_read_for_orchestrator(self):
         result = check_delegate_mode("Read", self._orchestrator_payload("Read"))

@@ -81,7 +81,7 @@ def _make_existing_context() -> Dict[str, Any]:
             "tool_preferences": {"file_viewer": "bat"},
         },
         "operational_guidelines": {
-            "_source": "agent:devops-developer",
+            "_source": "agent:developer",
             "deployment_strategy": "blue-green",
             "rollback_procedure": "manual",
         },

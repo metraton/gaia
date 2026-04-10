@@ -12,7 +12,7 @@
 
 ## Execution Contract
 
-- Each task is self-contained: a `devops-developer` agent executes it without SpecKit knowledge
+- Each task is self-contained: a `developer` agent executes it without SpecKit knowledge
 - Each task includes a verify command that proves completion
 - When ALL acceptance criteria pass and verify succeeds, the executing agent MUST mark `[ ]` as `[x]` in this file
 - Quality gate tasks validate the milestone before proceeding
@@ -53,7 +53,7 @@ Every task MUST follow this structure exactly:
 - **Acceptance criteria**:
   - All T{first}-T{last} verify commands pass
   - {Milestone-specific validation}
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T0 (read-only validation)
 - **Tags**: #validation #quality-gate
 - **Verify**: `{command that validates all milestone tasks}`
@@ -112,7 +112,7 @@ The following examples show the format for common task types. Replace with real 
   - Directory structure: `src/myfeature/`, `src/myfeature/core/`, `tests/myfeature/`
   - `src/myfeature/__init__.py` exports `__version__` string
 - **Complexity**: S
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T3 (creates files)
 - **Tags**: #python #setup #foundation
 - **Verify**: `python3 -c "from src.myfeature import __version__; print(__version__)"`
@@ -129,7 +129,7 @@ The following examples show the format for common task types. Replace with real 
   - Subclass that does not implement `handle()` raises `TypeError` on instantiation
   - Docstring documents the interface contract
 - **Complexity**: S
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T3
 - **Tags**: #python #architecture #interface
 - **Verify**: `python3 -c "from src.myfeature.core.base import BaseHandler; print('OK')"`
@@ -145,7 +145,7 @@ The following examples show the format for common task types. Replace with real 
   - All T001-T002 verify commands pass
   - Package structure is correct and importable
   - Base interface enforces its contract
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T0 (read-only validation)
 - **Tags**: #validation #quality-gate
 - **Verify**: `python3 -c "from src.myfeature.core.base import BaseHandler; print('M1 GATE PASS')"`
@@ -164,7 +164,7 @@ The following examples show the format for common task types. Replace with real 
   - Detection logic returns correct results for known test fixtures
   - Includes `_source` metadata
 - **Complexity**: M
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T3
 - **Tags**: #python #handler #implementation
 - **Verify**: `python3 -c "from src.myfeature.handlers.handler_a import HandlerA; print('OK')"`
@@ -181,7 +181,7 @@ The following examples show the format for common task types. Replace with real 
   - Returns empty result when no B indicators found
   - Includes `_source` metadata
 - **Complexity**: M
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T3
 - **Tags**: #python #handler #implementation
 - **Verify**: `python3 -c "from src.myfeature.handlers.handler_b import HandlerB; print('OK')"`
@@ -200,7 +200,7 @@ The following examples show the format for common task types. Replace with real 
   - Atomic write: output file is either fully written or not present
   - Existing offline tests still pass
 - **Complexity**: L
-- **Agent**: `devops-developer`
+- **Agent**: `developer`
 - **Tier**: T3
 - **Tags**: #python #integration #external-api
 - **Verify**: `python3 -m pytest tests/myfeature/test_orchestrator.py -v --tb=short`

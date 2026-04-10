@@ -17,7 +17,7 @@
  * - Update (.claude/ exists):
  *   1. Show version transition (previous → current)
  *   2. settings.json: create only if missing (non-invasive, never overwrites)
- *   3. Merge permissions + env vars into settings.local.json (union, preserves user config)
+ *   3. Merge permissions, env vars, and agent key into settings.local.json (union, preserves user config)
  *   4. Merge hooks from hooks.json into settings.local.json (npm mode requires this)
  *   5. Symlinks: recreate if missing, fix broken ones
  *   5. Verify: hooks, python, project-context, config files
@@ -32,7 +32,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join, relative } from 'path';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import chalk from 'chalk';
@@ -188,31 +188,43 @@ print(json.dumps(ops_perms))
     const mergedAllow = [...new Set([...currentAllow, ...ourAllow])].sort();
     const mergedDeny = [...new Set([...currentDeny, ...ourDeny])].sort();
 
-    // Check if anything changed
+    // Track what changed
+    let changed = false;
+
+    // Check if permissions changed
     const allowChanged = mergedAllow.length !== currentAllow.size
       || mergedAllow.some(r => !currentAllow.has(r));
     const denyChanged = mergedDeny.length !== currentDeny.size
       || mergedDeny.some(r => !currentDeny.has(r));
 
-    if (!allowChanged && !denyChanged) {
-      spinner.succeed('settings.local.json permissions already up to date');
-      return false;
+    if (allowChanged || denyChanged) {
+      existing.permissions = existing.permissions || {};
+      existing.permissions.allow = mergedAllow;
+      existing.permissions.deny = mergedDeny;
+      existing.permissions.ask = existing.permissions.ask || [];
+      changed = true;
     }
-
-    // Update only permissions, preserve everything else
-    existing.permissions = existing.permissions || {};
-    existing.permissions.allow = mergedAllow;
-    existing.permissions.deny = mergedDeny;
-    existing.permissions.ask = existing.permissions.ask || [];
 
     // Add env vars (smart merge: add if not present, don't overwrite)
     existing.env = existing.env || {};
     if (!('CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS' in existing.env)) {
       existing.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      changed = true;
+    }
+
+    // Set the orchestrator agent identity
+    if (existing.agent !== 'gaia-orchestrator') {
+      existing.agent = 'gaia-orchestrator';
+      changed = true;
+    }
+
+    if (!changed) {
+      spinner.succeed('settings.local.json permissions already up to date');
+      return false;
     }
 
     await fs.writeFile(localPath, JSON.stringify(existing, null, 2) + '\n');
-    spinner.succeed('settings.local.json permissions and env merged');
+    spinner.succeed('settings.local.json permissions, env, and agent merged');
     return true;
   } catch (error) {
     spinner.fail(`settings.local.json: ${error.message}`);
@@ -249,9 +261,17 @@ async function updateLocalHooks() {
     // Unwrap outer "hooks" key if present
     const sourceHooks = hooksData.hooks || hooksData;
 
-    // Convert ${CLAUDE_PLUGIN_ROOT}/hooks/<script> to .claude/hooks/<script> for npm mode
+    // Resolve absolute path to hooks directory so hooks work regardless of
+    // CWD at execution time (Stop/PostCompact hooks may run from unknown CWD)
+    const hooksSymlink = join(claudeDir, 'hooks');
+    let hooksAbs;
+    try {
+      hooksAbs = realpathSync(hooksSymlink);
+    } catch {
+      hooksAbs = hooksSymlink; // Fallback if symlink not yet created
+    }
     const convertCommand = (cmd) => {
-      return cmd.replace(/\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\//g, '.claude/hooks/');
+      return cmd.replace(/\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\//g, `${hooksAbs}/`);
     };
 
     const convertedHooks = {};
@@ -278,10 +298,22 @@ async function updateLocalHooks() {
       }
     }
 
-    // Smart merge: for each hook event, deduplicate by command string
+    // Migrate existing relative .claude/hooks/ paths to absolute
     const existingHooks = existing.hooks || {};
     let changed = false;
 
+    for (const [event, entries] of Object.entries(existingHooks)) {
+      for (const entry of entries) {
+        for (const h of (entry.hooks || [])) {
+          if (h.command && h.command.startsWith('.claude/hooks/')) {
+            h.command = h.command.replace('.claude/hooks/', `${hooksAbs}/`);
+            changed = true;
+          }
+        }
+      }
+    }
+
+    // Smart merge: for each hook event, deduplicate by command string
     for (const [event, newEntries] of Object.entries(convertedHooks)) {
       if (!existingHooks[event]) {
         existingHooks[event] = newEntries;
@@ -449,7 +481,7 @@ async function runVerification() {
   }
 
   // 5. Agent definitions accessible
-  const agentFiles = ['terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'devops-developer.md', 'gaia-system.md', 'speckit-planner.md'];
+  const agentFiles = ['gaia-orchestrator.md', 'gaia-operator.md', 'terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'developer.md', 'gaia-system.md', 'speckit-planner.md'];
   let agentsOk = 0;
   for (const agent of agentFiles) {
     if (existsSync(join(CWD, '.claude', 'agents', agent))) agentsOk++;

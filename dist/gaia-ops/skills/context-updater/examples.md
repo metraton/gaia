@@ -38,7 +38,7 @@ CONTEXT_UPDATE:
 }
 ```
 
-## devops-developer
+## developer
 
 ```
 CONTEXT_UPDATE:

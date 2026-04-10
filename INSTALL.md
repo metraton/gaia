@@ -276,7 +276,7 @@ When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templ
 | `.claude/logs/` | ✅ **Preserved** | Safe |
 | Other `.claude/` files | ✅ **Auto-updated via symlinks** | Safe |
 
-Orchestrator identity is injected dynamically by the UserPromptSubmit hook -- no `CLAUDE.md` is generated.
+Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated via `settings.json: { "agent": "gaia-orchestrator" }` -- no `CLAUDE.md` is generated.
 
 ### Update Process
 
@@ -431,7 +431,7 @@ A: `npm update @jaguilar87/gaia-ops` - symlinks point to the new version automat
 
 ---
 
-**Version:** 4.4.0-rc.5
-**Last updated:** 2026-03-19
+**Version:** 4.7.2
+**Last updated:** 2026-04-09
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
 

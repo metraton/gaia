@@ -28,12 +28,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 
-const META_AGENTS = new Set(["gaia-system", "Explore", "Plan"]);
+const META_AGENTS = new Set(["gaia-system", "gaia-orchestrator", "Explore", "Plan", "general-purpose", "claude-code-guide"]);
 const CONTEXT_INJECTED_AGENTS = new Set([
+  "gaia-operator",
   "terraform-architect",
   "gitops-operator",
   "cloud-troubleshooter",
-  "devops-developer",
+  "developer",
 ]);
 const REQUIRED_PROJECT_SKILLS = ["agent-protocol", "context-updater"];
 
@@ -180,7 +181,9 @@ function resolveRuntimePaths(projectRoot) {
     hooksDir: inProject && exists(path.join(claudeDir, "hooks"))
       ? path.join(claudeDir, "hooks")
       : path.join(PACKAGE_ROOT, "hooks"),
-    settingsPath: path.join(claudeDir, "settings.json"),
+    settingsPath: exists(path.join(claudeDir, "settings.json"))
+      ? path.join(claudeDir, "settings.json")
+      : path.join(claudeDir, "settings.local.json"),
     testsDir: path.join(PACKAGE_ROOT, "tests"),
   };
 
@@ -477,12 +480,12 @@ function validateInjectionWiring(ctx, findings, checks) {
   } else {
     const content = readText(preToolUsePath);
 
-    if (!content.includes("def _inject_project_context")) {
+    if (!content.includes("build_project_context")) {
       addFinding(findings, {
         severity: "high",
         code: "CONTEXT_INJECTION_FUNCTION_MISSING",
         title: "Context injection function missing",
-        detail: "_inject_project_context() not found in pre_tool_use.py.",
+        detail: "build_project_context() not found in pre_tool_use.py.",
         evidence: preToolUsePath,
         remediation: "Reintroduce or repair context injection handler.",
       });
@@ -607,7 +610,12 @@ function validateRoutingContract(ctx, findings, checks) {
   }
 
   const content = readText(validatorPath);
-  const match = content.match(/AVAILABLE_AGENTS\s*=\s*\[(.*?)\]/s);
+  // Try AVAILABLE_AGENTS first, then fall back to _BASE_AGENTS (used when
+  // AVAILABLE_AGENTS is derived via list comprehension)
+  let match = content.match(/AVAILABLE_AGENTS\s*=\s*\[(.*?)\]/s);
+  if (!match) {
+    match = content.match(/_BASE_AGENTS\s*=\s*\[(.*?)\]/s);
+  }
   if (!match) {
     addFinding(findings, {
       severity: "medium",
@@ -615,7 +623,7 @@ function validateRoutingContract(ctx, findings, checks) {
       title: "Could not parse AVAILABLE_AGENTS",
       detail: "Routing contract check skipped.",
       evidence: validatorPath,
-      remediation: "Keep AVAILABLE_AGENTS as a simple static list for validation tooling.",
+      remediation: "Keep AVAILABLE_AGENTS or _BASE_AGENTS as a simple static list for validation tooling.",
     });
     checks.push({ name: "routing-contract", ok: false, detail: "could not parse AVAILABLE_AGENTS" });
     return;
@@ -626,7 +634,7 @@ function validateRoutingContract(ctx, findings, checks) {
   );
 
   const missingOnDisk = [...availableAgents].filter((agent) => !META_AGENTS.has(agent) && !agentsOnDisk.has(agent));
-  const missingInValidator = [...agentsOnDisk].filter((agent) => !availableAgents.has(agent));
+  const missingInValidator = [...agentsOnDisk].filter((agent) => !META_AGENTS.has(agent) && !availableAgents.has(agent));
 
   if (missingOnDisk.length > 0) {
     addFinding(findings, {
@@ -690,8 +698,8 @@ function detectLegacyGapPatterns(ctx, findings, checks) {
   const conftestPath = path.join(testsDir, "conftest.py");
   if (exists(conftestPath)) {
     const content = readText(conftestPath);
-    // CLAUDE.md is no longer generated -- identity injected by UserPromptSubmit hook.
-    // conftest.py fixture now falls back to ops_identity.py + dispatch/response skills.
+    // CLAUDE.md is no longer generated -- identity lives in agents/gaia-orchestrator.md.
+    // conftest.py fixture reads agents/gaia-orchestrator.md directly.
   }
 
   checks.push({
@@ -756,7 +764,7 @@ function runTestProbe(ctx, findings, checks) {
       });
     }
 
-    // CLAUDE.md is no longer required -- conftest.py falls back to ops_identity.py
+    // CLAUDE.md is no longer required -- conftest.py reads agents/gaia-orchestrator.md
   }
 
   checks.push({

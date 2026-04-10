@@ -96,7 +96,7 @@
         "infrastructure_topology"
       ]
     },
-    "devops-developer": {
+    "developer": {
       "read": [
         "project_identity",
         "stack",
@@ -126,6 +126,18 @@
         "workspace_repos"
       ],
       "write": []
+    },
+    "gaia-operator": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "workspace_repos"
+      ],
+      "write": [
+        "workspace_repos"
+      ]
     }
   }
 }

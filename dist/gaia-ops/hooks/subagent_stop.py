@@ -229,7 +229,7 @@ def _handle_subagent_stop(event) -> None:
     response = adapter.adapt_subagent_stop(event)
 
     if response.exit_code == 2:
-        error_msg = response.output.get("error", "unknown") if isinstance(response.output, dict) else str(response.output)
+        error_msg = response.output.get("contract_rejection_reason", response.output.get("error", "unknown")) if isinstance(response.output, dict) else str(response.output)
         print(
             f"HOOK ERROR: Contract rejected: {error_msg}",
             file=sys.stderr,

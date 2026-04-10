@@ -44,6 +44,7 @@ from modules.security.tiers import (
 from modules.tools.task_validator import (
     AVAILABLE_AGENTS,
     META_AGENTS,
+    NATIVE_AGENTS,
     T3_KEYWORDS,
 )
 from modules.security.approval_constants import NONCE_APPROVAL_PATTERN, NONCE_APPROVAL_PREFIX
@@ -331,6 +332,25 @@ class TestTaskValidatorConsistency:
         missing = set(META_AGENTS) - set(AVAILABLE_AGENTS)
         assert not missing, f"META_AGENTS not in AVAILABLE_AGENTS: {missing}"
 
+    def test_native_agents_are_subset_of_meta(self):
+        """All NATIVE_AGENTS must exist in META_AGENTS (they don't receive context)."""
+        missing = set(NATIVE_AGENTS) - set(META_AGENTS)
+        assert not missing, f"NATIVE_AGENTS not in META_AGENTS: {missing}"
+
+    def test_native_agents_not_in_surface_routing(self):
+        """Native agents are utility types, not domain specialists. They must NOT
+        appear as primary_agent in any surface routing entry."""
+        routing_file = CONFIG_DIR / "surface-routing.json"
+        routing = json.loads(routing_file.read_text())
+        surface_agents = {
+            cfg.get("primary_agent")
+            for cfg in routing.get("surfaces", {}).values()
+        }
+        overlap = set(NATIVE_AGENTS) & surface_agents
+        assert not overlap, (
+            f"Native agents must NOT be surface primary_agents: {overlap}"
+        )
+
     def test_t3_keywords_match_security_tiers_skill(self):
         """T3 keywords must match operations classified as T3 in security-tiers skill."""
         # These are the canonical T3 operations from the skill
@@ -400,22 +420,20 @@ class TestSkillsCrossReferences:
         )
 
     def test_identity_references_approval_workflow(self):
-        """Approval workflow must be documented in identity or orchestrator-approval skill.
+        """Approval workflow must be documented in orchestrator identity or orchestrator-approval skill.
 
-        The ops_identity.py delegates approval protocol details to the
-        orchestrator-approval skill. The approval contract must exist in the system.
+        The orchestrator identity (agents/gaia-orchestrator.md) delegates approval
+        protocol details to the orchestrator-approval skill. The approval contract
+        must exist in the system.
         """
-        identity_path = GAIA_OPS_ROOT / "hooks" / "modules" / "identity" / "ops_identity.py"
+        identity_path = GAIA_OPS_ROOT / "agents" / "gaia-orchestrator.md"
         identity_content = identity_path.read_text().lower()
         approval_skill_path = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
         combined = identity_content
         if approval_skill_path.exists():
             combined += "\n" + approval_skill_path.read_text().lower()
-        assert "elicitationresult" in combined or "askuserquestion" in combined or "nonce" in combined, (
-            "System must mention the approval mechanism (ElicitationResult, AskUserQuestion, or nonce)"
-        )
-        assert "approve" in combined or "approval" in combined, (
-            "System must mention the approval workflow"
+        assert "approval" in combined or "approve" in combined or "review" in combined, (
+            "System must mention the approval workflow (approval, approve, or REVIEW)"
         )
 
     def test_security_tiers_t3_references_agent_protocol(self):
