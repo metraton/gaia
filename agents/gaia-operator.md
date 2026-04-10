@@ -9,6 +9,8 @@ skills:
   - command-execution
   - context-updater
   - memory-management
+  - gmail-triage
+  - gws-setup
 ---
 
 # Workspace Operator

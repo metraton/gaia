@@ -25,7 +25,7 @@ not the exit code, not the absence of errors.
 
 Before executing an approved operation:
 
-- [ ] Grant is active — the hook activated the nonce via user approval
+- [ ] Grant is active — the hook activated the nonce via `APPROVE:<nonce>` user approval
 - [ ] Current state captured — without a rollback baseline, partial failure is unrecoverable
 - [ ] Plan still valid — state drifts between planning and execution; re-run dry-run if stale
 - [ ] No interactive prompts — agent sessions cannot provide stdin; commands that prompt will hang

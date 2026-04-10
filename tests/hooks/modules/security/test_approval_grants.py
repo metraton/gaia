@@ -7,6 +7,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -62,7 +63,7 @@ def _write_active_grant(
     *,
     scope_type: str = SCOPE_SEMANTIC_SIGNATURE,
     ttl_minutes: int = 10,
-    granted_at: float | None = None,
+    granted_at: Optional[float] = None,
     used: bool = False,
     confirmed: bool = True,
     session_id: str = "test-session-123",
