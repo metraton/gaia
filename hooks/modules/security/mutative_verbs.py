@@ -19,7 +19,7 @@ Categories retained internally for verb classification:
 import functools
 import logging
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Tuple
+from typing import Dict, FrozenSet, List, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
 from .command_semantics import analyze_command
@@ -393,7 +393,7 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
 # ============================================================================
 
 def _scan_dangerous_flags(
-    tokens: List[str] | tuple,
+    tokens: Union[List[str], tuple],
     cli: str,
 ) -> Tuple[str, ...]:
     """Scan tokens for dangerous flags with context sensitivity.
@@ -791,7 +791,7 @@ def _check_inline_code(command: str, base_cmd: str, family: str) -> MutativeResu
     )
 
 
-def _find_first_non_flag(tokens: List[str] | tuple) -> tuple:
+def _find_first_non_flag(tokens: Union[List[str], tuple]) -> tuple:
     """Find the first semantic token after tokens[0].
 
     Returns:

@@ -41,7 +41,7 @@ Every response MUST end with a single fenced `json:contract` block.
 
 **evidence_report** -- Use `[]` when not applicable, 1-3 items each. `key_outputs`: what changed. `verbatim_outputs`: literal output, truncate ~100 lines. `cross_layer_impacts`: adjacent surfaces. `open_gaps`: what remains unverified. `verification`: **required when COMPLETE** (see Verification Gate), `null` otherwise.
 
-**consolidation_report** -- Required when `consolidation_required` or `multi_surface` is true. Otherwise `null`. See `examples.md`.
+**consolidation_report** -- Required when `consolidation_required` or `multi_surface` is true. Otherwise `null`. Fields: `ownership_assessment`, `confirmed_findings`, `suspected_findings`, `conflicts`, `next_best_agent`. See `examples.md`.
 
 **approval_request** -- Required when REVIEW. Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`. On `[T3_BLOCKED]` with `approval_id`: set REVIEW, include `approval_id`, wait. See `examples.md`.
 

@@ -10,7 +10,7 @@ The approval system supports three explicit scope shapes:
 """
 
 from dataclasses import asdict, dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 from .command_semantics import analyze_command, tokenize_command
 from .mutative_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP, detect_mutative_command
@@ -159,6 +159,6 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     return False
 
 
-def _sorted_unique_lower(values: Tuple[str, ...] | list[str]) -> Tuple[str, ...]:
+def _sorted_unique_lower(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:
     """Normalize string tokens for deterministic matching."""
     return tuple(sorted({value.lower() for value in values if value}))
