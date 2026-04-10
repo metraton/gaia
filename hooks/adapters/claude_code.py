@@ -753,7 +753,7 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.audit.logger import log_execution
         from modules.audit.event_detector import detect_critical_event
         from modules.session.session_context_writer import SessionContextWriter
-        from modules.security.approval_grants import check_approval_grant, confirm_grant, consume_grant
+        from modules.security.approval_grants import check_approval_grant, confirm_grant
 
         hook_data = event.payload
         tool_result_data = self.parse_post_tool_use(hook_data)
@@ -791,7 +791,9 @@ class ClaudeCodeAdapter(HookAdapter):
                 tier=tier,
             )
 
-            # Confirm unconfirmed T3 grants after successful Bash execution
+            # Confirm unconfirmed T3 grants after successful Bash execution.
+            # Grants are consumed later at SubagentStop, not here -- the grant
+            # lives for the full subagent session so retries work naturally.
             if tool_name == "Bash" and success:
                 command = parameters.get("command", "")
                 session_id = hook_data.get("session_id", "")
@@ -799,26 +801,9 @@ class ClaudeCodeAdapter(HookAdapter):
                     grant = check_approval_grant(command, session_id=session_id)
                     if grant is not None and not grant.confirmed:
                         confirm_grant(command, session_id=session_id)
-                        if grant.multi_use:
-                            logger.info(
-                                "T3 multi-use grant confirmed (not consumed): %s", command[:80],
-                            )
-                        else:
-                            # Grace window: don't consume single-use grants within 60s of creation.
-                            # This allows subagent retries within the same turn. The grant's TTL
-                            # handles natural expiration.
-                            import time
-                            age_seconds = time.time() - grant.granted_at
-                            if age_seconds < 60:
-                                logger.info(
-                                    "T3 grant confirmed (consumption deferred, age=%.1fs): %s",
-                                    age_seconds, command[:80],
-                                )
-                            else:
-                                consume_grant(command, session_id=session_id)
-                                logger.info(
-                                    "T3 grant confirmed and consumed post-execution: %s", command[:80],
-                                )
+                        logger.info(
+                            "T3 grant confirmed (will be consumed at SubagentStop): %s", command[:80],
+                        )
 
             events = detect_critical_event(tool_name, parameters, output, success)
             if events:
@@ -891,14 +876,7 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.info("AskUserQuestion: no answers found in payload, skipping grant activation")
             return
 
-        # Check if user rejected (negative matching -- approve by default unless rejection keyword found)
-        REJECTION_KEYWORDS = {"reject", "deny", "denied", "cancel", "modify"}
-        answer_values = [str(v).lower().strip() for v in answers.values()]
-        user_rejected = any(
-            any(kw == val or val.startswith(kw + " ") or val.startswith(kw + ",") for kw in REJECTION_KEYWORDS)
-            for val in answer_values
-        )
-        user_approved = bool(answer_values) and not user_rejected
+        user_approved = any("approve" in str(v).lower() for v in answers.values())
 
         if not user_approved:
             logger.info(
@@ -1070,6 +1048,19 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
 
             cleanup_approval(agent_type)
+
+            # Consume all confirmed grants for this session -- the subagent
+            # is done, so grants should not survive past its lifetime.
+            try:
+                from modules.security.approval_grants import consume_session_grants
+                consumed = consume_session_grants(session_id)
+                if consumed:
+                    logger.info(
+                        "SubagentStop consumed %d grant(s) for session %s",
+                        consumed, session_id[:12],
+                    )
+            except Exception as exc:
+                logger.debug("Grant consumption at SubagentStop failed (non-fatal): %s", exc)
 
             commands_executed = extract_commands_from_evidence(agent_output)
             context_update_result = process_context_updates(agent_output, task_info)

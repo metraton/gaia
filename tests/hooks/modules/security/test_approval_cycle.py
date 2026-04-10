@@ -35,6 +35,7 @@ from modules.security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     consume_grant,
+    consume_session_grants,
     generate_nonce,
     get_pending_approvals_for_session,
     write_pending_approval,
@@ -638,14 +639,14 @@ class TestConditionalActivation:
         assert grant is not None, "Answers from tool_input fallback should work"
 
 
-class TestConsumeGrantInPostToolUse:
-    """Test 12: consume_grant called after confirm_grant in post_tool_use."""
+class TestConsumeGrantAtSubagentStop:
+    """Test 12: grants live for the full subagent session, consumed at SubagentStop."""
 
-    def test_full_cycle_grant_consumed_after_execution(self):
-        """After deny -> activate -> passthrough -> consume, grant is single-use.
+    def test_full_cycle_grant_consumed_at_subagent_stop(self):
+        """After deny -> activate -> passthrough -> confirm -> SubagentStop consume.
 
-        With grant passthrough, retry after activation returns allowed=True
-        immediately. PostToolUse then confirms and consumes the grant.
+        Grants survive PostToolUse (only confirmed there) and are consumed
+        when the subagent session ends via consume_session_grants().
         """
         command = "terraform apply"
         session_id = "test-cycle-session"
@@ -667,16 +668,22 @@ class TestConsumeGrantInPostToolUse:
         )
         assert result2.allowed, "Active grant should passthrough"
 
-        # Step 4: Confirm the grant (as post_tool_use would after execution)
+        # Step 4: Confirm the grant (as PostToolUse would after execution)
         confirmed = confirm_grant(command, session_id=session_id)
         assert confirmed
 
-        # Step 5: Consume the grant (as post_tool_use would)
-        consumed = consume_grant(command, session_id=session_id)
-        assert consumed, "Grant should be consumable after confirm"
-
-        # Step 6: Same command again should be blocked (grant consumed)
+        # Step 5: Grant is still usable (not consumed yet -- lives for session)
         result3 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
-        assert not result3.allowed, "Command should be blocked after grant consumed"
+        assert result3.allowed, "Confirmed grant should still be usable within the session"
+
+        # Step 6: SubagentStop consumes all confirmed grants
+        consumed = consume_session_grants(session_id)
+        assert consumed >= 1, "SubagentStop should consume confirmed grants"
+
+        # Step 7: Same command should now be blocked (grant consumed)
+        result4 = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert not result4.allowed, "Command should be blocked after SubagentStop consumed grant"

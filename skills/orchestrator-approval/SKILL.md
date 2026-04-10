@@ -64,6 +64,17 @@ ROLLBACK: {approval_request.rollback}
 - Default: `["Approve", "Modify", "Reject"]`
 - When `batch_scope` present: `["Approve batch", "Approve single", "Modify", "Reject"]`
 
+**Label convention -- ALL approval option labels MUST start with "Approve".**
+The PostToolUse hook activates grants by checking for `"approve"` in the answer value.
+Labels that do not contain "approve" will NOT activate the grant, even if the user's
+intent was to proceed.
+
+Valid examples:
+- "Approve" -- activates grant
+- "Approve batch" -- activates grant (batch)
+- "Approve -- merge + borrar branch" -- activates grant
+- "Merge + borrar branch" -- WILL NOT activate grant (missing "Approve" prefix)
+
 **Steps:**
 1. Extract the 5 fields from `approval_request` in the agent's `json:contract`.
 2. Call AskUserQuestion with the template above. Never include approval_id in user-facing text.

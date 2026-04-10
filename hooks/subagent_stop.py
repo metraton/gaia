@@ -126,6 +126,13 @@ def subagent_stop_hook(task_info, agent_output):
 
         cleanup_approval(agent_type)
 
+        # Consume all confirmed grants -- subagent session is over
+        try:
+            from modules.security.approval_grants import consume_session_grants
+            consume_session_grants(session_id)
+        except Exception:
+            pass
+
         commands_executed = extract_commands_from_evidence(agent_output)
         context_update_result = process_context_updates(agent_output, task_info)
 
