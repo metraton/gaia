@@ -35,6 +35,12 @@ _RUNTIME_DEFINITIONS: List[Tuple[str, str]] = [
     ("java", "--version"),
 ]
 
+# On Windows, python3 may not exist -- fall back to "python" if it reports 3.x.
+# Maps (fallback_binary, version_flag) -> canonical_name
+_RUNTIME_FALLBACKS: Dict[str, List[Tuple[str, str]]] = {
+    "python3": [("python", "--version")],
+}
+
 # Env file names to check for (presence ONLY -- never read contents)
 _ENV_FILE_NAMES: List[str] = [
     ".env",
@@ -182,14 +188,32 @@ class EnvironmentScanner(BaseScanner):
         """Detect installed language runtimes via --version commands.
 
         Uses shutil.which() to find binaries, then subprocess with 2s timeout
-        to get version strings.
+        to get version strings.  For runtimes with fallbacks (e.g. python3 ->
+        python on Windows), the fallback is tried when the primary is missing
+        and the result is reported under the canonical name.
         """
         runtimes: List[Dict[str, str]] = []
+        detected_canonical: set = set()
 
         for binary_name, version_flag in _RUNTIME_DEFINITIONS:
             try:
                 binary_path = shutil.which(binary_name)
                 if binary_path is None:
+                    # Try fallbacks (e.g. python -> python3 on Windows)
+                    fallbacks = _RUNTIME_FALLBACKS.get(binary_name, [])
+                    for fb_binary, fb_flag in fallbacks:
+                        fb_path = shutil.which(fb_binary)
+                        if fb_path is None:
+                            continue
+                        version = self._get_version(fb_binary, fb_flag, warnings)
+                        if version is not None and version.startswith("3."):
+                            runtimes.append({
+                                "name": binary_name,  # canonical name
+                                "version": version,
+                                "path": fb_path,
+                            })
+                            detected_canonical.add(binary_name)
+                            break
                     continue
 
                 version = self._get_version(binary_name, version_flag, warnings)
@@ -199,6 +223,7 @@ class EnvironmentScanner(BaseScanner):
                         "version": version,
                         "path": binary_path,
                     })
+                    detected_canonical.add(binary_name)
 
             except Exception as exc:
                 warnings.append(f"Runtime detection failed for {binary_name}: {exc}")

@@ -18,6 +18,7 @@
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { findPython } from './python-detect.js';
 import chalk from 'chalk';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
@@ -49,7 +50,8 @@ function callReviewEngine(action, opts = {}) {
     process.exit(1);
   }
 
-  let cmd = `python3 "${enginePath}" ${action}`;
+  const pyCmd = findPython() || 'python3';
+  let cmd = `${pyCmd} "${enginePath}" ${action}`;
   if (opts.updateId) cmd += ` --update-id "${opts.updateId}"`;
   if (opts.contextPath) cmd += ` --context-path "${opts.contextPath}"`;
   cmd += ' --json';

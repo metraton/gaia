@@ -18,6 +18,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { findPython } from './python-detect.js';
 import chalk from 'chalk';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
@@ -200,8 +201,13 @@ async function checkProjectContext() {
 }
 
 async function checkPython() {
+  const pyCmd = findPython();
+  if (!pyCmd) {
+    return { name: 'Python', ok: false, detail: 'Not found', fix: 'Install Python 3.9+' };
+  }
+
   try {
-    const { stdout } = await execAsync('python3 --version');
+    const { stdout } = await execAsync(`${pyCmd} --version`);
     const version = stdout.trim();
     const match = version.match(/(\d+)\.(\d+)/);
 

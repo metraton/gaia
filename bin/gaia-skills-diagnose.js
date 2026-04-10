@@ -18,6 +18,7 @@
 
 import fs from "fs";
 import path from "path";
+import { findPython } from "./python-detect.js";
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 import chalk from "chalk";
@@ -728,7 +729,8 @@ function runTestProbe(ctx, findings, checks) {
     "Phase1SkillsInjection or load_skills",
   ];
 
-  const res = spawnSync("python3", args, {
+  const pyCmd = findPython() || "python3";
+  const res = spawnSync(pyCmd, args, {
     cwd: ctx.packageRoot,
     encoding: "utf-8",
   });
@@ -741,7 +743,7 @@ function runTestProbe(ctx, findings, checks) {
       code: "PYTEST_PROBE_EXEC_FAILED",
       title: "Unable to execute pytest probe",
       detail: res.error.message,
-      evidence: `python3 ${args.join(" ")}`,
+      evidence: `${pyCmd} ${args.join(" ")}`,
       remediation: "Install pytest and Python dependencies to run the probe.",
     });
     checks.push({ name: "test-probe", ok: false, detail: "execution failed" });

@@ -37,6 +37,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import chalk from 'chalk';
 import ora from 'ora';
+import { findPython } from './python-detect.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -126,8 +127,9 @@ async function updateLocalPermissions() {
     let gaiaPerms;
     try {
       const setupPath = join(__dirname, '..', 'hooks', 'modules', 'core', 'plugin_setup.py');
+      const pythonCmd = findPython() || 'python3';
       const { stdout } = await execAsync(
-        `python3 -c "
+        `${pythonCmd} -c "
 import ast, json, re
 
 source = open('${setupPath.replace(/'/g, "\\'")}').read()
@@ -453,13 +455,16 @@ async function runVerification() {
     }
   }
 
-  // 2. Python available
-  try {
-    const { stdout } = await execAsync('python3 --version', { timeout: 5000 });
-    checks.push({ name: 'python3', ok: true, detail: stdout.trim() });
-  } catch {
-    checks.push({ name: 'python3', ok: false });
-    issues.push('Python 3 not found (required for hooks)');
+  // 2. Python available (try python3 first, fall back to python on Windows)
+  {
+    const pyCmd = findPython();
+    if (pyCmd) {
+      const { stdout } = await execAsync(`${pyCmd} --version`, { timeout: 5000 });
+      checks.push({ name: 'python3', ok: true, detail: stdout.trim() });
+    } else {
+      checks.push({ name: 'python3', ok: false });
+      issues.push('Python 3 not found (required for hooks)');
+    }
   }
 
   // 3. project-context.json exists and is valid
@@ -540,12 +545,12 @@ async function runFreshInstall() {
 
   console.log(chalk.cyan(`\n  gaia-ops ${chalk.green(current)} — fresh install\n`));
 
-  // 1. Check Python 3 is available
+  // 1. Check Python 3 is available (try python3, then python)
   const spinner = ora('Checking Python 3...').start();
-  try {
-    await execAsync('python3 --version', { timeout: 5000 });
-    spinner.succeed('Python 3 found');
-  } catch {
+  const pyCmd = findPython();
+  if (pyCmd) {
+    spinner.succeed(`Python 3 found (${pyCmd})`);
+  } else {
     spinner.warn('Python 3 not found — skipping project setup');
     console.log(chalk.gray('  Install Python 3.9+ and run: npx gaia-scan\n'));
     return;
@@ -555,7 +560,7 @@ async function runFreshInstall() {
   const scanSpinner = ora('Running gaia-scan...').start();
   try {
     const { stdout, stderr } = await execAsync(
-      `python3 "${scanScript}" --npm-postinstall --root "${CWD}"`,
+      `${pyCmd} "${scanScript}" --npm-postinstall --root "${CWD}"`,
       { timeout: 60000 }
     );
     scanSpinner.succeed('Project scanned and configured');

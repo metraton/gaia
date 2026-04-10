@@ -21,6 +21,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { fileURLToPath } from 'url';
+import { findPython } from './python-detect.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -371,15 +372,17 @@ class PrePublishValidator {
           'tools/context/context_provider.py'
         ];
 
+        const pyCmd = findPython();
+        if (!pyCmd) throw new Error('Python not available');
         pythonFiles.forEach(file => {
           const filePath = path.join(baseDir, file);
           if (fs.existsSync(filePath)) {
-            this.execute(`python3 -m py_compile "${filePath}"`, GAIA_OPS_ROOT, true);
+            this.execute(`${pyCmd} -m py_compile "${filePath}"`, GAIA_OPS_ROOT, true);
             this.log(`  ✓ ${file}`, 'success');
           }
         });
       } catch (error) {
-        this.log(`  ⚠️  Python validation skipped (python3 not available or syntax error)`, 'warning');
+        this.log(`  ⚠️  Python validation skipped (python3/python not available or syntax error)`, 'warning');
       }
 
       // Test 3: Check if bin scripts are executable
