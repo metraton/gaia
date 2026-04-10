@@ -6,11 +6,24 @@
  * Verifies the complete Gaia-Ops installation is healthy.
  * Run after install, update, or when things seem broken.
  *
+ * Checks (in order):
+ *   1. Gaia-Ops version    - package.json readable
+ *   2. Claude Code         - CLI installed (prerequisite)
+ *   3. Python              - Python 3.9+ available (hooks need it)
+ *   4. Plugin mode         - ops vs security, registry valid
+ *   5. Symlinks            - .claude/ symlinks resolve to package content
+ *   6. Identity            - orchestrator agent configured in settings
+ *   7. Settings            - hooks registered, permissions, deny rules
+ *   8. Hook files          - all hook scripts present on disk
+ *   9. project-context     - project-context.json valid and enriched
+ *  10. Project dirs        - paths declared in context exist
+ *  11. Memory dirs         - speckit, episodic memory dirs present
+ *
  * Severity levels:
  *   pass    - check passed
- *   info    - informational, not an issue (e.g., prerequisites, auto-created dirs)
- *   warning - actual issue that degrades functionality
- *   error   - critical issue, Gaia won't work
+ *   info    - informational, not an issue
+ *   warning - degrades functionality
+ *   error   - critical, Gaia will not work
  *
  * Usage:
  *   npx gaia-doctor              # Full health check
@@ -58,6 +71,31 @@ async function checkGaiaVersion() {
   }
 }
 
+async function checkPluginMode() {
+  // Determine plugin mode (ops vs security) and verify the registry.
+  const registryPath = join(CWD, '.claude', 'plugin-registry.json');
+
+  if (!existsSync(registryPath)) {
+    return result('Plugin mode', 'warning', 'No plugin-registry.json', 'Run gaia-scan or restart Claude Code');
+  }
+
+  try {
+    const registry = JSON.parse(await fs.readFile(registryPath, 'utf-8'));
+    const installed = (registry.installed || []).map(p => p.name);
+    const source = registry.source || 'unknown';
+
+    if (installed.includes('gaia-ops')) {
+      return result('Plugin mode', 'pass', `ops (source: ${source})`);
+    } else if (installed.includes('gaia-security')) {
+      return result('Plugin mode', 'pass', `security (source: ${source})`);
+    } else {
+      return result('Plugin mode', 'warning', `Unknown plugin: ${installed.join(', ')}`, 'Verify installation');
+    }
+  } catch {
+    return result('Plugin mode', 'warning', 'Invalid plugin-registry.json', 'Delete and restart Claude Code');
+  }
+}
+
 async function checkSymlinks() {
   const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills', 'CHANGELOG.md'];
   // Critical symlinks that break core functionality if missing
@@ -96,79 +134,111 @@ async function checkSymlinks() {
   };
 }
 
-async function checkClaudeMd() {
-  // CLAUDE.md is no longer generated -- identity is injected by UserPromptSubmit hook.
-  const path = join(CWD, 'CLAUDE.md');
-  if (existsSync(path)) {
-    return result('CLAUDE.md', 'pass', 'Present (legacy -- identity now injected by hook)');
+async function checkIdentity() {
+  // Identity is defined in the orchestrator agent definition (.md file) and
+  // activated by the `agent` field in settings.local.json.  CLAUDE.md is no
+  // longer used and should not be present.
+  const issues = [];
+  const infos = [];
+
+  // 1. Check that orchestrator agent definition exists
+  const agentPath = join(CWD, '.claude', 'agents', 'gaia-orchestrator.md');
+  if (!existsSync(agentPath)) {
+    issues.push('gaia-orchestrator.md not found');
   }
-  return result('CLAUDE.md', 'pass', 'Not present (identity injected by UserPromptSubmit hook)');
+
+  // 2. Check that settings.local.json has `agent` field pointing to orchestrator
+  const localSettingsPath = join(CWD, '.claude', 'settings.local.json');
+  if (existsSync(localSettingsPath)) {
+    try {
+      const data = JSON.parse(await fs.readFile(localSettingsPath, 'utf-8'));
+      if (data.agent === 'gaia-orchestrator') {
+        // pass -- correct agent configured
+      } else if (data.agent) {
+        issues.push(`Agent set to "${data.agent}" (expected "gaia-orchestrator")`);
+      } else {
+        issues.push('No agent field in settings.local.json');
+      }
+    } catch { /* handled by settings check */ }
+  } else {
+    issues.push('settings.local.json missing');
+  }
+
+  // 3. Warn if legacy CLAUDE.md is still present
+  const claudeMdPath = join(CWD, 'CLAUDE.md');
+  if (existsSync(claudeMdPath)) {
+    infos.push('Legacy CLAUDE.md present (no longer used)');
+  }
+
+  if (issues.length > 0) {
+    return result('Identity', 'error', issues.join('; '), 'Run gaia-scan or npx gaia-update');
+  }
+
+  if (infos.length > 0) {
+    return result('Identity', 'info', `Orchestrator configured -- ${infos.join('; ')}`);
+  }
+
+  return result('Identity', 'pass', 'Orchestrator agent configured');
 }
 
-async function checkSettingsJson() {
-  const path = join(CWD, '.claude', 'settings.json');
+async function checkSettings() {
+  // Configuration lives in settings.local.json (hooks, permissions, agent, env).
+  // settings.json exists for Claude Code to detect the project but may be empty.
+  const localPath = join(CWD, '.claude', 'settings.local.json');
 
-  if (!existsSync(path)) {
-    return result('settings.json', 'error', 'Missing', 'Run gaia-scan');
+  if (!existsSync(localPath)) {
+    return result('Settings', 'error', 'settings.local.json missing', 'Run gaia-scan or npx gaia-update');
   }
 
   try {
-    const data = JSON.parse(await fs.readFile(path, 'utf-8'));
-    const hookIssues = [];
-    const infoItems = [];
+    const data = JSON.parse(await fs.readFile(localPath, 'utf-8'));
+    const issues = [];
+    const infos = [];
 
-    // Check hooks -- may live in settings.json OR settings.local.json
-    let hooksConfig = data.hooks || null;
-    const localPath = join(CWD, '.claude', 'settings.local.json');
-    if (!hooksConfig && existsSync(localPath)) {
-      try {
-        const localData = JSON.parse(await fs.readFile(localPath, 'utf-8'));
-        if (localData.hooks) hooksConfig = localData.hooks;
-      } catch { /* ignore parse errors */ }
-    }
-
+    // Check hooks configuration
+    const hooksConfig = data.hooks || null;
     if (!hooksConfig) {
-      hookIssues.push('No hooks configured (check settings.json and settings.local.json)');
+      issues.push('No hooks configured');
     } else {
       const hookTypes = Object.keys(hooksConfig);
-      if (!hookTypes.includes('PreToolUse')) hookIssues.push('Missing PreToolUse hook');
-      if (!hookTypes.includes('PostToolUse')) hookIssues.push('Missing PostToolUse hook');
+      const required = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'SessionStart'];
+      const missing = required.filter(h => !hookTypes.includes(h));
+      if (missing.length > 0) {
+        issues.push(`Missing hooks: ${missing.join(', ')}`);
+      }
     }
 
-    // Check permissions -- live in settings.local.json (not settings.json)
-    let permCount = 0;
-    if (existsSync(localPath)) {
-      try {
-        const localData = JSON.parse(await fs.readFile(localPath, 'utf-8'));
-        if (localData.permissions) {
-          permCount = Object.values(localData.permissions).flat().length;
-        }
-      } catch { /* ignore parse errors */ }
+    // Check permissions
+    const perms = data.permissions || {};
+    const allowCount = (perms.allow || []).length;
+    const denyCount = (perms.deny || []).length;
+    if (allowCount === 0) {
+      infos.push('No allow rules (tools will prompt for approval)');
     }
-    // Also count permissions in settings.json (legacy installs)
-    if (data.permissions) {
-      permCount += Object.values(data.permissions).flat().length;
-    }
-    if (permCount === 0) {
-      // Zero permissions is not an error -- just means no auto-allowed tools
-      infoItems.push('No permissions configured (tools will prompt for approval)');
+    if (denyCount === 0) {
+      issues.push('No deny rules (destructive commands not blocked)');
     }
 
-    // Hook issues are errors (injection breaks without hooks)
-    if (hookIssues.length > 0) {
-      return result('settings.json', 'error', hookIssues.join('; '), 'Run gaia-scan or npx gaia-update');
+    // Check env vars
+    const env = data.env || {};
+    if (!env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS) {
+      infos.push('AGENT_TEAMS env not set');
     }
 
-    // Info items are informational, not problems
-    if (infoItems.length > 0) {
-      const hookCount = hooksConfig ? Object.keys(hooksConfig).length : 0;
-      return result('settings.json', 'info', `${hookCount} hook types, ${permCount} rules -- ${infoItems.join('; ')}`);
+    if (issues.length > 0) {
+      return result('Settings', 'error', issues.join('; '), 'Run gaia-scan or npx gaia-update');
     }
 
     const hookCount = hooksConfig ? Object.keys(hooksConfig).length : 0;
-    return result('settings.json', 'pass', `${hookCount} hook types, ${permCount} rules`);
+    const permCount = allowCount + denyCount;
+
+    if (infos.length > 0) {
+      return result('Settings', 'info', `${hookCount} hook types, ${permCount} rules -- ${infos.join('; ')}`);
+    }
+
+    return result('Settings', 'pass', `${hookCount} hook types, ${permCount} rules`);
   } catch {
-    return result('settings.json', 'error', 'Invalid JSON', 'Delete and run gaia-scan');
+    return result('Settings', 'error', 'Invalid JSON in settings.local.json', 'Delete and run gaia-scan');
   }
 }
 
@@ -272,36 +342,46 @@ async function checkClaudeCode() {
 }
 
 async function checkHooks() {
+  // Hook files that must exist for Gaia to function.
+  // Required: break core functionality if missing.
+  // Expected: part of the standard pipeline but non-fatal if absent.
   const hooks = [
     { file: 'pre_tool_use.py', required: true },
     { file: 'post_tool_use.py', required: true },
-    { file: 'subagent_stop.py', required: false }
+    { file: 'user_prompt_submit.py', required: true },
+    { file: 'session_start.py', required: true },
+    { file: 'subagent_stop.py', expected: true },
+    { file: 'subagent_start.py', expected: true },
+    { file: 'stop_hook.py', expected: true },
+    { file: 'task_completed.py', expected: true },
+    { file: 'post_compact.py', expected: true },
+    { file: 'elicitation_result.py', expected: true }
   ];
 
   const errors = [];
-  const infos = [];
+  const warnings = [];
   let valid = 0;
 
-  for (const { file, required } of hooks) {
+  for (const { file, required, expected } of hooks) {
     const hookPath = join(CWD, '.claude', 'hooks', file);
     if (existsSync(hookPath)) {
       valid++;
     } else if (required) {
       errors.push(`${file} missing`);
-    } else {
-      infos.push(`${file} optional, not present`);
+    } else if (expected) {
+      warnings.push(file);
     }
   }
 
   if (errors.length > 0) {
-    return result('Hooks', 'error', errors.join('; '), 'Recreate symlinks: gaia-scan');
+    return result('Hook files', 'error', errors.join('; '), 'Recreate symlinks: gaia-scan');
   }
 
-  if (infos.length > 0) {
-    return result('Hooks', 'pass', `${valid}/${hooks.length} found (${infos.join('; ')})`);
+  if (warnings.length > 0) {
+    return result('Hook files', 'warning', `${valid}/${hooks.length} found (missing: ${warnings.join(', ')})`, 'Run gaia-scan to recreate symlinks');
   }
 
-  return result('Hooks', 'pass', `${valid}/${hooks.length} found`);
+  return result('Hook files', 'pass', `${valid}/${hooks.length} found`);
 }
 
 async function checkMemoryDirs() {
@@ -488,16 +568,18 @@ async function main() {
     .version(false)
     .parse();
 
-  // Run all checks
+  // Run all checks -- ordered from most fundamental to most specific.
+  // Core platform first, then Gaia configuration, then project-specific.
   const checks = [
     checkGaiaVersion,
     checkClaudeCode,
-    checkSymlinks,
-    checkClaudeMd,
-    checkSettingsJson,
-    checkProjectContext,
     checkPython,
+    checkPluginMode,
+    checkSymlinks,
+    checkIdentity,
+    checkSettings,
     checkHooks,
+    checkProjectContext,
     checkProjectDirs,
     checkMemoryDirs
   ];
