@@ -659,6 +659,59 @@ def consume_grant(command: str, session_id: str = None) -> bool:
     return False
 
 
+def consume_session_grants(session_id: str = None) -> int:
+    """Consume all confirmed grants for a session.
+
+    Called at SubagentStop to clean up all grants that were used during the
+    subagent's lifetime. Multi-use grants are also consumed (session is over).
+
+    Args:
+        session_id: Session ID to scope consumption (defaults to env var).
+
+    Returns:
+        Number of grants consumed.
+    """
+    if not session_id:
+        session_id = _get_session_id()
+
+    consumed_count = 0
+    try:
+        grants_dir = _get_grants_dir()
+        if not grants_dir.exists():
+            return 0
+
+        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
+            try:
+                data = json.loads(grant_file.read_text())
+                grant = ApprovalGrant(**data)
+
+                if grant.used:
+                    continue  # already consumed
+
+                if not grant.is_valid():
+                    if grant.is_expired():
+                        _cleanup_grant(grant_file)
+                    continue
+
+                # Consume all confirmed grants (single-use and multi-use)
+                if grant.confirmed:
+                    data["used"] = True
+                    grant_file.write_text(json.dumps(data, indent=2))
+                    consumed_count += 1
+                    logger.info(
+                        "Grant consumed at SubagentStop: grant=%s, multi_use=%s",
+                        grant_file.name, grant.multi_use,
+                    )
+
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    except Exception as e:
+        logger.error("Error consuming session grants: %s", e)
+
+    return consumed_count
+
+
 def confirm_grant(command: str, session_id: str = None) -> bool:
     """Mark the first unconfirmed grant matching command as confirmed.
 

@@ -11,7 +11,7 @@ skills:
   - investigation
   - command-execution
   - gaia-patterns
-  - gaia-devmode
+  - gaia-release
   - skill-creation
 ---
 
