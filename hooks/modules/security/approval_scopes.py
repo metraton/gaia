@@ -20,11 +20,13 @@ APPROVAL_SCOPE_VERSION = 2
 SCOPE_EXACT_COMMAND = "exact_command"
 SCOPE_SEMANTIC_SIGNATURE = "semantic_signature"
 SCOPE_VERB_FAMILY = "verb_family"
+SCOPE_FILE_PATH = "file_path"
 
 SUPPORTED_SCOPE_TYPES = frozenset({
     SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
     SCOPE_VERB_FAMILY,
+    SCOPE_FILE_PATH,
 })
 
 
@@ -157,6 +159,58 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
         return True
 
     return False
+
+
+def build_file_path_signature(file_path: str) -> Optional[ApprovalSignature]:
+    """Build a stable scope signature for a Write/Edit file path.
+
+    Unlike build_approval_signature, this does not parse a shell command.
+    The file path is stored verbatim as a single exact_token so that
+    matches_approval_signature can do exact-path matching.
+
+    Args:
+        file_path: Absolute or relative path to the file being written/edited.
+
+    Returns:
+        ApprovalSignature with scope_type=SCOPE_FILE_PATH, or None if the
+        path is empty.
+    """
+    stripped = file_path.strip() if file_path else ""
+    if not stripped:
+        return None
+
+    return ApprovalSignature(
+        version=APPROVAL_SCOPE_VERSION,
+        scope_type=SCOPE_FILE_PATH,
+        base_cmd="",
+        cli_family="unknown",
+        danger_category="FILE_WRITE",
+        verb="write",
+        semantic_tokens=(),
+        normalized_flags=(),
+        dangerous_flags=(),
+        exact_tokens=(stripped,),
+    )
+
+
+def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> bool:
+    """Return True when file_path is covered by a SCOPE_FILE_PATH grant.
+
+    Exact-path comparison only -- both sides are normalised by stripping
+    leading/trailing whitespace.  Symlink resolution is NOT performed here
+    (the hook already resolves paths before storing the grant).
+
+    Args:
+        signature: The ApprovalSignature from a stored grant.
+        file_path: The file path being written/edited right now.
+
+    Returns:
+        True if the signature covers this file path.
+    """
+    if signature.scope_type != SCOPE_FILE_PATH:
+        return False
+    stripped = file_path.strip() if file_path else ""
+    return bool(signature.exact_tokens) and signature.exact_tokens[0] == stripped
 
 
 def _sorted_unique_lower(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:

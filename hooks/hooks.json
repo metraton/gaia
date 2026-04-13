@@ -70,6 +70,10 @@
         "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_compact.py"}]
       }
     ],
-    "ElicitationResult": []
+    "ElicitationResult": [
+      {
+        "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/elicitation_result.py"}]
+      }
+    ]
   }
 }

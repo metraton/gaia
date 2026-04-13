@@ -11,8 +11,15 @@
       "hooks/session_start.py"
     ],
     "matchers": {
-      "PreToolUse": [{"matcher": "Bash"}],
-      "PostToolUse": [{"matcher": "Bash"}],
+      "PreToolUse": [
+        {"matcher": "Bash"},
+        {"matcher": "Write"},
+        {"matcher": "Edit"}
+      ],
+      "PostToolUse": [
+        {"matcher": "Bash"},
+        {"matcher": "AskUserQuestion"}
+      ],
       "Stop": [{}],
       "UserPromptSubmit": [{}],
       "SessionStart": [{"matcher": "startup"}]

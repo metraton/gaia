@@ -19,9 +19,14 @@
         {"matcher": "Bash"},
         {"matcher": "Task"},
         {"matcher": "Agent"},
-        {"matcher": "SendMessage"}
+        {"matcher": "SendMessage"},
+        {"matcher": "Write"},
+        {"matcher": "Edit"}
       ],
-      "PostToolUse": [{"matcher": "Bash"}],
+      "PostToolUse": [
+        {"matcher": "Bash"},
+        {"matcher": "AskUserQuestion"}
+      ],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup"}],
       "PostCompact": [{}],
