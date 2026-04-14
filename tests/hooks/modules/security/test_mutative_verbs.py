@@ -723,18 +723,14 @@ class TestDetectMutativeCommand:
         ("git rebase main", "rebase"),
         ("git tag v1.0.0", "tag"),
         ("git tag -d v1.0.0", "tag"),
-        ("git cherry-pick abc123", "cherry-pick"),
-        ("git revert HEAD", "revert"),
     ], ids=[
         "merge",
         "rebase",
         "tag-create",
         "tag-delete",
-        "cherry-pick",
-        "revert",
     ])
     def test_git_destructive_local_still_mutative(self, cmd, expected_verb):
-        """git merge/rebase/tag/cherry-pick/revert are NOT in the safe list."""
+        """git merge/rebase/tag are NOT in the safe list."""
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert result.verb == expected_verb
@@ -763,6 +759,12 @@ class TestDetectMutativeCommand:
         ("git stash", "stash"),
         ("git stash list", "stash"),
         ("git stash pop", "stash"),
+        ("git reset HEAD~1", "reset"),
+        ("git reset --soft HEAD~1", "reset"),
+        ("git revert HEAD", "revert"),
+        ("git revert abc123", "revert"),
+        ("git cherry-pick abc123", "cherry-pick"),
+        ("git cherry-pick feature~2", "cherry-pick"),
     ], ids=[
         "add-dot",
         "add-all",
@@ -783,6 +785,12 @@ class TestDetectMutativeCommand:
         "stash-bare",
         "stash-list",
         "stash-pop",
+        "reset",
+        "reset-soft",
+        "revert-head",
+        "revert-sha",
+        "cherry-pick",
+        "cherry-pick-ref",
     ])
     def test_git_local_commands_not_mutative(self, cmd, expected_verb):
         """Git local-only subcommands are non-mutative."""
