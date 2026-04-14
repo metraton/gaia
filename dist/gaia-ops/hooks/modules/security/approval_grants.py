@@ -46,11 +46,14 @@ from ..core.paths import find_claude_dir, get_plugin_data_dir
 from ..core.state import get_session_id
 from .approval_scopes import (
     ApprovalSignature,
+    SCOPE_FILE_PATH,
     SCOPE_SEMANTIC_SIGNATURE,
     SCOPE_VERB_FAMILY,
     SUPPORTED_SCOPE_TYPES,
     build_approval_signature,
+    build_file_path_signature,
     matches_approval_signature,
+    matches_file_path_approval,
 )
 
 logger = logging.getLogger(__name__)
@@ -464,7 +467,7 @@ def activate_pending_approval(
             )
 
         signature = ApprovalSignature.from_dict(scope_signature_data)
-        if signature.scope_type != SCOPE_SEMANTIC_SIGNATURE:
+        if signature.scope_type not in (SCOPE_SEMANTIC_SIGNATURE, SCOPE_FILE_PATH):
             logger.warning(
                 "Pending approval for nonce %s has unsupported scope_type=%s",
                 nonce,
@@ -478,7 +481,10 @@ def activate_pending_approval(
                 reason="Pending approval uses an unsupported scope type.",
             )
 
-        if not signature.verb and not danger_verb:
+        # For file-path scopes, verb validation is not applicable.
+        if signature.scope_type == SCOPE_FILE_PATH:
+            verbs = ["write"]
+        elif not signature.verb and not danger_verb:
             logger.warning(
                 "Could not validate semantic signature for pending approval command: %s",
                 command,
@@ -488,8 +494,8 @@ def activate_pending_approval(
                 status=ACTIVATION_INVALID_SIGNATURE,
                 reason="Approval signature could not be validated safely.",
             )
-
-        verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
+        else:
+            verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
 
         # Create active grant
         grant = ApprovalGrant(
@@ -925,6 +931,166 @@ def find_pending_for_command(
                     logger.info(
                         "Reusing existing pending approval nonce=%s for command: %s",
                         nonce, command[:80],
+                    )
+                    return nonce
+        except Exception:
+            continue
+
+    return None
+
+
+def write_pending_approval_for_file(
+    nonce: str,
+    file_path: str,
+    session_id: Optional[str] = None,
+    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+) -> Optional[Path]:
+    """Write a pending approval file when a Write/Edit to a protected path is blocked.
+
+    Analogous to write_pending_approval() but uses SCOPE_FILE_PATH so that
+    the file path (not a shell command) is the scope identifier.
+
+    Args:
+        nonce: Cryptographic nonce from generate_nonce().
+        file_path: The absolute path of the file being written/edited.
+        session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
+        ttl_minutes: How long the pending approval is valid before expiry.
+
+    Returns:
+        Path to the pending file, or None on failure.
+    """
+    if session_id is None:
+        session_id = _get_session_id()
+
+    signature = build_file_path_signature(file_path)
+    if signature is None:
+        logger.error(
+            "Failed to build file-path approval signature for pending file: %s",
+            file_path,
+        )
+        return None
+
+    pending_data = {
+        "nonce": nonce,
+        "session_id": session_id,
+        "command": file_path,
+        "danger_verb": "write",
+        "danger_category": "FILE_WRITE",
+        "scope_type": signature.scope_type,
+        "scope_signature": signature.to_dict(),
+        "timestamp": time.time(),
+        "ttl_minutes": ttl_minutes,
+    }
+
+    try:
+        grants_dir = _get_grants_dir()
+        pending_file = grants_dir / f"pending-{nonce}.json"
+        pending_file.write_text(json.dumps(pending_data, indent=2))
+        _rebuild_pending_index(session_id)
+
+        logger.info(
+            "Pending file-path approval written: nonce=%s, file=%s, session=%s",
+            nonce, file_path, session_id,
+        )
+        return pending_file
+
+    except Exception as e:
+        logger.error("Failed to write pending file-path approval: %s", e)
+        return None
+
+
+def check_approval_grant_for_file(
+    file_path: str,
+    session_id: str = None,
+) -> Optional[ApprovalGrant]:
+    """Check if there is an active approval grant for a Write/Edit file path.
+
+    Called by _adapt_write_edit before blocking a protected-path write. If
+    a valid SCOPE_FILE_PATH grant exists for this path, the write should be
+    allowed through.
+
+    Args:
+        file_path: The file path being written/edited.
+        session_id: Session ID for grant scoping (defaults to env var).
+
+    Returns:
+        The matching ApprovalGrant if found and valid, None otherwise.
+    """
+    if not session_id:
+        session_id = _get_session_id()
+
+    try:
+        grants_dir = _get_grants_dir()
+        if not grants_dir.exists():
+            return None
+
+        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
+            try:
+                data = json.loads(grant_file.read_text())
+                grant = ApprovalGrant(**data)
+
+                if not grant.is_valid():
+                    if grant.is_expired():
+                        _cleanup_grant(grant_file)
+                    continue
+
+                signature = grant.get_signature()
+                if signature is None or signature.scope_type != SCOPE_FILE_PATH:
+                    continue
+
+                if matches_file_path_approval(signature, file_path):
+                    logger.info(
+                        "File-path approval grant matched: file='%s', grant=%s",
+                        file_path, grant_file.name,
+                    )
+                    return grant
+
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning("Invalid grant file %s: %s", grant_file, e)
+                _cleanup_grant(grant_file)
+                continue
+
+    except Exception as e:
+        logger.error("Error checking file-path approval grants: %s", e)
+
+    return None
+
+
+def find_pending_for_file(
+    session_id: str,
+    file_path: str,
+) -> Optional[str]:
+    """Find an existing pending approval nonce for this file path and session.
+
+    When a subagent retries a blocked Write/Edit, a pending approval may
+    already exist from the first attempt.  Reusing the existing nonce
+    prevents generating a new approval_id on every retry while the user
+    reviews the first one.
+
+    Args:
+        session_id: Session to search.
+        file_path: The file path to match against pending approvals.
+
+    Returns:
+        The nonce (approval_id) if a matching pending approval exists, else None.
+    """
+    pending_list = get_pending_approvals_for_session(session_id)
+    if not pending_list:
+        return None
+
+    stripped = file_path.strip() if file_path else ""
+    for pending_data in pending_list:
+        pending_sig_data = pending_data.get("scope_signature")
+        if not pending_sig_data:
+            continue
+        try:
+            pending_sig = ApprovalSignature.from_dict(pending_sig_data)
+            if matches_file_path_approval(pending_sig, stripped):
+                nonce = pending_data.get("nonce")
+                if nonce:
+                    logger.info(
+                        "Reusing existing pending file-path approval nonce=%s for file: %s",
+                        nonce, file_path,
                     )
                     return nonce
         except Exception:

@@ -32,6 +32,9 @@ class CommandSemantics:
     non_flag_tokens: Tuple[str, ...] = ()
     semantic_tokens: Tuple[str, ...] = ()
     semantic_head_tokens: Tuple[str, ...] = ()
+    # Same as semantic_head_tokens but preserves original token casing.
+    # Used for camelCase splitting where lowercase destroys word boundaries.
+    semantic_head_tokens_raw: Tuple[str, ...] = ()
 
     @property
     def normalized_command(self) -> str:
@@ -64,13 +67,16 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
 
     flag_tokens = []
     non_flag_tokens = []
+    non_flag_tokens_raw = []  # preserve original casing for camelCase splitting
     for token in args:
         if _is_flag(token):
             flag_tokens.extend(_normalize_flag_token(token))
             continue
         non_flag_tokens.append(token.lower())
+        non_flag_tokens_raw.append(token)
 
     semantic_tokens = (base_cmd, *non_flag_tokens)
+    semantic_tokens_raw = (tokens[0], *non_flag_tokens_raw)
     head_size = max(1, semantic_scan_limit + 1)
 
     return CommandSemantics(
@@ -82,6 +88,7 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
         non_flag_tokens=tuple(non_flag_tokens),
         semantic_tokens=tuple(semantic_tokens),
         semantic_head_tokens=tuple(semantic_tokens[:head_size]),
+        semantic_head_tokens_raw=tuple(semantic_tokens_raw[:head_size]),
     )
 
 

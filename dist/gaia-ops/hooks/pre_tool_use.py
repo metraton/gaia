@@ -50,7 +50,7 @@ from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_A
 from modules.security.prompt_validator import classify_resume_prompt
 from modules.context.context_injector import build_project_context
 from modules.session.session_event_injector import build_session_events
-from modules.core.state import create_pre_hook_state, save_hook_state
+from modules.core.state import create_pre_hook_state, save_hook_state, get_session_id
 from modules.security.approval_grants import (
     cleanup_expired_grants,
 )
@@ -93,6 +93,8 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
             return _handle_task(tool_name, parameters)
         elif tool_name.lower() == "sendmessage":
             return _handle_send_message(tool_name, parameters)
+        elif tool_name.lower() in ("write", "edit"):
+            return _handle_write_edit(tool_name, parameters)
         else:
             return None
 
@@ -262,6 +264,34 @@ def _handle_send_message(tool_name: str, parameters: dict) -> str | None:
     save_hook_state(state)
 
     logger.info(f"ALLOWED SendMessage: agent {agent_id} - message length: {len(message)}")
+    return None
+
+
+def _handle_write_edit(tool_name: str, parameters: dict) -> str | dict | None:
+    """
+    Handle Write/Edit tool path protection (backward-compatible API).
+
+    Delegates to the adapter's _adapt_write_edit method for consistency.
+    session_id comes from get_session_id() and is_subagent defaults to False
+    because the CLI test interface always runs as the main session.
+
+    Returns:
+        None: allowed (no modification)
+        dict: requires user approval (hookSpecificOutput with ask)
+    """
+    from adapters.claude_code import ClaudeCodeAdapter
+    from adapters.types import HookResponse
+
+    adapter = ClaudeCodeAdapter()
+    response = adapter._adapt_write_edit(
+        tool_name, parameters,
+        session_id=get_session_id(),
+        is_subagent=False,
+    )
+
+    # Convert HookResponse back to backward-compat API format
+    if isinstance(response.output, dict) and response.output:
+        return response.output
     return None
 
 

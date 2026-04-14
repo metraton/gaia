@@ -487,6 +487,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
             elif tool_name.lower() == "sendmessage":
                 return self._adapt_send_message(tool_name, tool_input)
+            elif tool_name.lower() in ("write", "edit"):
+                is_subagent = bool(hook_data and hook_data.get("agent_id"))
+                session_id = (hook_data or {}).get("session_id", "")
+                return self._adapt_write_edit(
+                    tool_name, tool_input,
+                    session_id=session_id,
+                    is_subagent=is_subagent,
+                )
             else:
                 # Other tools pass through
                 return HookResponse(output={}, exit_code=0)
@@ -731,6 +739,167 @@ class ClaudeCodeAdapter(HookAdapter):
 
         logger.info("ALLOWED SendMessage: agent %s - message length: %d", agent_id, len(message))
         return HookResponse(output={}, exit_code=0)
+
+    def _adapt_write_edit(
+        self,
+        tool_name: str,
+        parameters: dict,
+        session_id: str = "",
+        is_subagent: bool = False,
+    ) -> HookResponse:
+        """Handle Write and Edit tool path protection.
+
+        Blocks modifications to Gaia hooks, settings, and security config
+        by requiring user approval for any path that matches protected path
+        patterns.
+
+        Foreground (orchestrator) flow: returns permissionDecision "ask" so
+        the native Claude Code dialog handles approval.
+
+        Subagent flow: mirrors the bash_validator nonce-based pattern.
+        - Checks for an existing pending approval (retry guard).
+        - If found, returns deny with the existing approval_id.
+        - If not found, writes a pending approval and returns deny with a
+          new approval_id so the orchestrator can ask the user and activate
+          the grant via the ElicitationResult hook.
+        - On retry, if an active grant exists for this path, allows through.
+
+        Protected paths:
+        - The gaia-ops hooks directory (where this file package lives)
+        - Any path containing /hooks/ within a gaia-ops package
+        - .claude/settings.json and .claude/settings.local.json
+        """
+        from modules.security.approval_grants import (
+            check_approval_grant_for_file,
+            find_pending_for_file,
+            generate_nonce,
+            write_pending_approval_for_file,
+        )
+
+        file_path = parameters.get("file_path", "")
+        if not file_path:
+            return HookResponse(output={}, exit_code=0)
+
+        hooks_dir = Path(__file__).parent.parent.resolve()
+
+        def _is_protected(path_str):
+            p = Path(path_str)
+            try:
+                rp = p.resolve()
+            except Exception:
+                rp = p
+            try:
+                rp.relative_to(hooks_dir)
+                return True
+            except ValueError:
+                pass
+            parts = rp.parts
+            for i, part in enumerate(parts):
+                if part == "hooks" and i > 0:
+                    parent_str = "/".join(parts[:i])
+                    if "gaia-ops" in parent_str or "gaia-security" in parent_str:
+                        return True
+            if p.name in ("settings.json", "settings.local.json"):
+                for part in rp.parts:
+                    if part == ".claude":
+                        return True
+            return False
+
+        if not _is_protected(file_path):
+            return HookResponse(output={}, exit_code=0)
+
+        logger.warning(
+            "PROTECTED_PATH: %s attempted to modify %s (subagent=%s)",
+            tool_name, file_path, is_subagent,
+        )
+
+        if not is_subagent:
+            # Foreground / orchestrator context: use native approval dialog.
+            reason = (
+                "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
+                "require approval."
+            )
+            return HookResponse(
+                output={
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "ask",
+                        "permissionDecisionReason": reason,
+                    }
+                },
+                exit_code=0,
+            )
+
+        # Subagent context: nonce-based pending approval flow.
+
+        # 1. Check if a grant has already been activated for this path (retry
+        #    after user approved).
+        existing_grant = check_approval_grant_for_file(file_path, session_id or None)
+        if existing_grant:
+            logger.info(
+                "File-path grant active, allowing %s through: %s",
+                tool_name, file_path,
+            )
+            return HookResponse(output={}, exit_code=0)
+
+        # 2. Check if a pending approval already exists (guard against infinite
+        #    approval_id generation while the user is still reviewing).
+        existing_nonce = find_pending_for_file(session_id or "", file_path)
+        if existing_nonce:
+            approval_id = existing_nonce
+            logger.info(
+                "Reusing pending approval_id=%s for retry: %s",
+                approval_id, file_path,
+            )
+        else:
+            # 3. No existing pending -- generate a new nonce.
+            approval_id = generate_nonce()
+            pending_path = write_pending_approval_for_file(
+                nonce=approval_id,
+                file_path=file_path,
+                session_id=session_id or None,
+            )
+            if pending_path is None:
+                # Persistence failure -- fall back to native ask dialog.
+                logger.warning(
+                    "Failed to persist pending file-path approval for subagent; "
+                    "falling back to ask: %s",
+                    file_path,
+                )
+                reason = (
+                    "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
+                    "require approval. (Pending approval persistence failed; "
+                    "native dialog fallback.)"
+                )
+                return HookResponse(
+                    output={
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "ask",
+                            "permissionDecisionReason": reason,
+                        }
+                    },
+                    exit_code=0,
+                )
+
+        reason = (
+            f"[T3_BLOCKED] This file modification requires user approval.\n"
+            f"Do NOT retry this operation. Report REVIEW with this approval_id "
+            f"in your json:contract.\n"
+            f"File: {file_path}\n"
+            f"Tool: {tool_name}\n"
+            f"approval_id: {approval_id}"
+        )
+        return HookResponse(
+            output={
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            },
+            exit_code=0,
+        )
 
     @staticmethod
     def _format_blocked_message(result) -> str:

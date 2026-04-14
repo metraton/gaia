@@ -1,6 +1,6 @@
 {
   "name": "gaia-ops",
-  "version": "5.0.0-beta.6",
+  "version": "5.0.0-beta.7",
   "description": "Full DevOps orchestration for Claude Code. Six specialized agents handle the complete development lifecycle \u2014 analysis, planning, execution, and deployment. Gaia-Ops scans your codebase to understand it and injects the right context into each sub-agent. Every command is classified by risk: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
   "author": {
     "name": "jaguilar87"

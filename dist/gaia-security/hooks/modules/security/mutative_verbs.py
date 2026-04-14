@@ -172,6 +172,26 @@ VERB_FLAG_READ_ONLY_OVERRIDES: Dict[Tuple[str, str], FrozenSet[str]] = {
 
 
 # ============================================================================
+# CLI-Verb Tier Exceptions (unconditional downgrade from MUTATIVE)
+# ============================================================================
+# Downgrade specific (cli_family, verb) combos to a lower tier regardless of
+# flags.  Use only when the API-level semantics of the verb are safe despite
+# the generic verb name being in MUTATIVE_VERBS.
+#
+# Key:   (cli_family, verb)  — cli_family comes from CLI_FAMILY_LOOKUP above.
+# Value: target category constant (CATEGORY_READ_ONLY or CATEGORY_SIMULATION).
+#
+# This dict is protected by the Write/Edit T3 hook (it lives inside the hooks
+# directory).  Modifications require user approval.
+
+CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
+    # Gmail API: "modify" only changes labels/flags on messages — it cannot
+    # alter message content, send mail, or delete anything.  Safe as T0.
+    ("workspace", "modify"): CATEGORY_READ_ONLY,
+}
+
+
+# ============================================================================
 # Inline Code Detection — Language-Agnostic 3-Layer Approach
 # ============================================================================
 # When the base command is a runtime interpreter with an inline code flag
@@ -373,7 +393,7 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
     "docker": "docker", "podman": "docker",
     "docker-compose": "docker", "podman-compose": "docker",
     "aws": "cloud", "gcloud": "cloud", "gsutil": "cloud", "az": "cloud",
-    "eksctl": "cloud", "gh": "cloud", "glab": "cloud",
+    "eksctl": "cloud", "gh": "cloud", "glab": "cloud", "gws": "workspace",
     "vercel": "cloud", "netlify": "cloud",
     "fly": "cloud", "flyctl": "cloud", "heroku": "cloud",
     "npm": "package", "npx": "package", "pnpm": "package",
@@ -463,6 +483,23 @@ def _scan_dangerous_flags(
                 found.append(token)
 
     return tuple(found)
+
+
+# ============================================================================
+# CamelCase Splitting
+# ============================================================================
+
+def split_camel_case(token: str) -> List[str]:
+    """Split a camelCase token into lowercase component words.
+
+    Examples:
+        "batchDelete"   -> ["batch", "delete"]
+        "deleteMessages" -> ["delete", "messages"]
+        "GET"           -> ["get"]          (all-caps stays as one token)
+        "already_snake" -> ["already_snake"] (no camelCase boundary)
+    """
+    parts = _re.sub(r"([a-z])([A-Z])", r"\1 \2", token).split()
+    return [p.lower() for p in parts] if len(parts) > 1 else [token.lower()]
 
 
 # ============================================================================
@@ -609,6 +646,21 @@ def detect_mutative_command(command: str) -> MutativeResult:
                         reason=f"Verb '{verb}' overridden to read-only by flag",
                     )
 
+            # Check unconditional tier exceptions: some (cli_family, verb)
+            # combos are safe despite the verb being in MUTATIVE_VERBS.
+            # Example: Gmail API "modify" only changes labels/flags.
+            exception_key = (family, verb)
+            if exception_key in CLI_VERB_TIER_EXCEPTIONS:
+                target_category = CLI_VERB_TIER_EXCEPTIONS[exception_key]
+                return MutativeResult(
+                    is_mutative=False,
+                    category=target_category,
+                    verb=verb,
+                    cli_family=family,
+                    confidence="high",
+                    reason=f"Verb '{verb}' for '{family}' CLI excepted to {target_category.lower()} by config",
+                )
+
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
             flag_detail = (
                 f" with dangerous flags {dangerous_flags}"
@@ -623,6 +675,53 @@ def detect_mutative_command(command: str) -> MutativeResult:
                 confidence=confidence,
                 reason=f"Mutative verb '{verb}'{flag_detail}",
             )
+
+        # --- Secondary check: camelCase splitting ---
+        # "batchDelete" -> ["batch", "delete"] -> "delete" is in MUTATIVE_VERBS
+        # Use the raw (original-case) token because semantic_head_tokens is
+        # lowercased, which destroys the camelCase word boundaries that
+        # split_camel_case relies on (regex: [a-z][A-Z]).
+        raw_token = semantics.semantic_head_tokens_raw[semantic_index] if semantic_index < len(semantics.semantic_head_tokens_raw) else token
+        camel_parts = split_camel_case(raw_token)
+        if len(camel_parts) > 1:
+            for part in camel_parts:
+                if part in MUTATIVE_VERBS:
+                    override_key = (family, part)
+                    if override_key in VERB_FLAG_READ_ONLY_OVERRIDES:
+                        override_flags = VERB_FLAG_READ_ONLY_OVERRIDES[override_key]
+                        if override_flags & frozenset(semantics.flag_tokens):
+                            return MutativeResult(
+                                is_mutative=False,
+                                category=CATEGORY_READ_ONLY,
+                                verb=part,
+                                cli_family=family,
+                                confidence="high",
+                                reason=f"CamelCase verb '{part}' (from '{raw_token}') overridden to read-only by flag",
+                            )
+                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS:
+                        target_category = CLI_VERB_TIER_EXCEPTIONS[(family, part)]
+                        return MutativeResult(
+                            is_mutative=False,
+                            category=target_category,
+                            verb=part,
+                            cli_family=family,
+                            confidence="high",
+                            reason=f"CamelCase verb '{part}' (from '{raw_token}') excepted to {target_category.lower()} by config",
+                        )
+                    dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+                    flag_detail = (
+                        f" with dangerous flags {dangerous_flags}"
+                        if dangerous_flags else ""
+                    )
+                    return MutativeResult(
+                        is_mutative=True,
+                        category=CATEGORY_MUTATIVE,
+                        verb=part,
+                        dangerous_flags=dangerous_flags,
+                        cli_family=family,
+                        confidence=confidence,
+                        reason=f"CamelCase verb '{part}' (from '{raw_token}'){flag_detail}",
+                    )
 
         if candidate in READ_ONLY_VERBS or full_lower in READ_ONLY_VERBS:
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
