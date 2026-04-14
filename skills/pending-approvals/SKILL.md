@@ -39,11 +39,18 @@ RISK:      {danger_category}
 ROLLBACK:  {rollback from context field}
 ```
 
-3. AskUserQuestion options: `["Approve -- {specific_action}", "Reject"]`
+3. AskUserQuestion options: `["Approve -- {specific_action} [P-{nonce_prefix8}]", "Reject"]`
    - Label MUST start with "Approve" (PostToolUse grant activation checks for "approve")
-   - Label MUST name the specific action (e.g., "Approve -- kubectl apply -f manifest.yaml")
+   - Label MUST end with `[P-{nonce_prefix8}]` (PostToolUse hook extracts nonce from label for targeted activation)
+   - Label MUST name the specific action (e.g., "Approve -- kubectl apply -f manifest.yaml [P-8072af80]")
    - NEVER use vague labels like "Approve -- aplicar cambios" or "Approve -- proceed"
-4. On Approve: dispatch a one-shot agent to execute the command; pass the nonce
+4a. Cross-session check: if `pending.session_id` ≠ current `CLAUDE_SESSION_ID`:
+    - The nonce is stale (from a prior session) — do NOT pass it to the agent
+    - Call `activate_cross_session_pending(pending_data)` — this creates an active grant in the current session
+    - Delete the old pending file
+    - Dispatch a one-shot agent with ONLY the command (no nonce) — instruct it to run the command directly
+    - The hook will find the pre-activated grant and allow the T3 operation through
+4b. Same-session: dispatch a one-shot agent to execute the command; pass the nonce
 5. On Reject: delete the pending file; confirm deletion to user
 
 ## When user says "rechazar P-XXXX"
@@ -58,5 +65,6 @@ ROLLBACK:  {rollback from context field}
 - Asking for approval without AskUserQuestion — the PostToolUse grant hook will not activate
 - Prefixing the approve option with anything other than "Approve" (e.g. "Sí, ejecutar")
 - Dispatching execution before AskUserQuestion confirms approval
+- Omitting the `[P-{nonce_prefix8}]` suffix from the Approve label — the hook cannot do targeted activation without it
 
 For JSON schema, format templates, flow example, and dispatch template: read `reference.md`.

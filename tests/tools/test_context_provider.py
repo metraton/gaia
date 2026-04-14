@@ -190,6 +190,21 @@ def test_speckit_planner_contract(temp_project_context: Path):
     assert "operational_guidelines" in contract
     assert "application_services" in contract
 
+def test_gaia_planner_contract(temp_project_context: Path):
+    """Verify gaia-planner gets all contracted sections (mirrors speckit-planner)."""
+    result = run_script(temp_project_context, "gaia-planner", "Plan the auth feature.")
+
+    assert "project_knowledge" in result
+    contract = result["project_knowledge"]
+
+    assert "project_identity" in contract
+    assert "stack" in contract
+    assert "git" in contract
+    assert "environment" in contract
+    assert "infrastructure" in contract
+    assert "operational_guidelines" in contract
+    assert "application_services" in contract
+
 def test_gaia_system_is_meta_agent_without_contracts(temp_project_context: Path):
     """Verify gaia-system (meta-agent) is not in context-contracts and context_provider rejects it."""
     script_path = TOOLS_DIR / "context" / "context_provider.py"

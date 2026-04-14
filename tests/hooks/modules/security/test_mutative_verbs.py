@@ -409,6 +409,21 @@ class TestInlineCodeDetection:
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
 
+    def test_heredoc_stdin_import_safe(self):
+        """python3 - <<'PYEOF' with import in body must NOT be flagged as mutative."""
+        cmd = "python3 - <<'PYEOF'\nimport json\nprint(json.dumps({}))\nPYEOF"
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_heredoc_stdin_dangerous_still_caught(self):
+        """python3 - <<'PYEOF' with os.remove() must still be caught."""
+        cmd = "python3 - <<'PYEOF'\nimport os\nos.remove('/tmp/x')\nPYEOF"
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "os-delete"
+
 
 class TestUniversalInlineCodeDetection:
     """Language-agnostic 3-layer inline code detection for node, ruby, perl, etc."""

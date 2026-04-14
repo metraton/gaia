@@ -74,9 +74,9 @@ AskUserQuestion(
         f"RIESGO:    {danger_category}\n"
         f"ROLLBACK:  {rollback}"
     ),
-    options=[f"Approve -- {danger_verb} {base_cmd} {target}", "Reject"]
+    options=[f"Approve -- {danger_verb} {base_cmd} {target} [P-{nonce[:8]}]", "Reject"]
     # Option label MUST name the specific action, e.g.:
-    # "Approve -- kubectl apply -f manifest.yaml"
+    # "Approve -- kubectl apply -f manifest.yaml [P-8072af80]"
     # NEVER: "Approve", "Approve -- proceed", "Approve -- aplicar cambios"
 )
 ```
@@ -86,7 +86,11 @@ The PostToolUse hook checks `answer.lower().startswith("approve")` to activate t
 
 ## Post-Approval Dispatch Template
 
-After AskUserQuestion returns "Approve", dispatch a one-shot agent:
+After AskUserQuestion returns "Approve", check whether the pending file belongs to the current session.
+
+### Same-session dispatch
+
+When `pending.session_id == CLAUDE_SESSION_ID` — pass the nonce; the agent activates the grant via `APPROVE:{nonce}`:
 
 ```
 Ejecuta este comando aprobado por el usuario. No requiere confirmación adicional.
@@ -96,7 +100,24 @@ Comando: {command}
 
 The agent runs the command. The hook finds the nonce, activates the grant, and allows the T3 operation through.
 
+### Cross-session dispatch
+
+When `pending.session_id != CLAUDE_SESSION_ID` — the nonce is stale and cannot be used:
+
+1. Call `activate_cross_session_pending(pending_data)` — creates an active grant in the current session
+2. Delete the old pending file
+3. Dispatch a one-shot agent with the command only (no nonce):
+
+```
+Ejecuta este comando aprobado por el usuario. No requiere confirmación adicional.
+Comando: {command}
+```
+
+The agent runs the command. The hook finds the pre-activated grant (by command signature) and allows the T3 operation through.
+
 ## Complete Flow Example
+
+### Same-session path
 
 ```
 SessionStart
@@ -113,11 +134,35 @@ User: "ver P-8072af8"
 
 User: "aprobar P-8072af8"
   → orchestrator calls AskUserQuestion with all 5 fields visible
-  → user selects "Approve"
-  → PostToolUse hook activates grant for nonce 8072af8044f0da0571c348041ad2cef6
+  → user selects "Approve -- kubectl apply -f manifest.yaml [P-8072af80]"
+  → PostToolUse hook extracts nonce from label, activates grant for nonce 8072af8044f0da0571c348041ad2cef6
   → orchestrator dispatches one-shot agent with nonce + command
   → agent runs command; hook validates nonce and allows T3 through
   → agent returns COMPLETE; pending file deleted
+```
+
+### Cross-session path
+
+```
+SessionStart (new session)
+  → scans .claude/cache/approvals/pending-*.json
+  → pending-8072af8044f0da0571c348041ad2cef6.json has session_id = "prior-session"
+  → scanner annotates entry with [session anterior]
+  → injects summary into additionalContext
+
+User sees:
+  "Tienes 1 aprobación pendiente:
+   P-8072af8  kubectl apply -f manifest.yaml  [apply]  hace 5 min  [session anterior]"
+
+User: "aprobar P-8072af8"
+  → orchestrator calls AskUserQuestion with all 5 fields visible
+  → user selects "Approve -- kubectl apply -f manifest.yaml [P-8072af80]"
+  → orchestrator detects pending.session_id != CLAUDE_SESSION_ID
+  → calls activate_cross_session_pending(pending_data) — grant created in current session
+  → deletes old pending file
+  → dispatches one-shot agent with command only (no nonce)
+  → agent runs command; hook finds pre-activated grant and allows T3 through
+  → agent returns COMPLETE
 ```
 
 ## Pending File Location

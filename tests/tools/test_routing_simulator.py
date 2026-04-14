@@ -238,6 +238,7 @@ class TestSkillsMapper:
         assert "terraform-architect" in names
         assert "gaia-system" in names
         assert "speckit-planner" in names
+        assert "gaia-planner" in names
 
     def test_agent_profiles_have_skills(self, mapper):
         """Specialist agents have skills via frontmatter; orchestrator uses on-demand Skill tool."""

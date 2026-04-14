@@ -28,6 +28,7 @@ Before calling AskUserQuestion, verify ALL of the following. If any check fails,
 2. Does the question text contain all 5 labeled fields (OPERATION, COMMAND, SCOPE, RISK, ROLLBACK)?
 3. Does the "Approve" option label name the SPECIFIC action (e.g., "Approve -- push 2 commits to origin/main"), not a generic phrase?
 4. Is the command/content complete? No "..." truncation, no "the above changes".
+5. Does the "Approve" option label end with `[P-{nonce_prefix8}]`? The nonce comes from `approval_request.approval_id` (first 8 chars).
 
 ## Mandatory Presentation Format
 
@@ -47,14 +48,15 @@ ROLLBACK:   {approval_request.rollback}
 
 The "Approve" option MUST name the specific action. The PostToolUse hook activates grants by checking for "approve" in the answer value.
 
-- Format: `"Approve -- {specific_action_description}"`
+- Format: `"Approve -- {specific_action_description} [P-{nonce_prefix8}]"`
 - The action description comes from `approval_request.operation`
+- The nonce comes from `approval_request.approval_id` (first 8 chars)
 
 ## Rules
 
-1. **Grant activates through the PostToolUse hook for AskUserQuestion -- not SendMessage.** Resume the subagent via SendMessage with natural language only.
+1. **Grant activates through the PostToolUse hook for AskUserQuestion -- not SendMessage.** Resume the subagent via SendMessage with natural language only. The grant is active before SendMessage is sent -- no delay or verification step is needed.
 
-2. **Scope guard.** Compare the blocked command's scope to what the user originally approved. If the command expands scope, changes operation, or targets something materially different -- present the new scope and ask again.
+2. **Scope guard -- resume only with the approved command.** The grant is scoped to the exact command that was blocked. When the agent's `approval_request.exact_content` differs in ANY argument from what the orchestrator put in `COMANDO:` -- even one path segment, one flag, one filename -- the grant will miss and the agent will be blocked again. Do NOT send the agent a resume message that instructs it to run a different command. If the operation has genuinely changed, present a new approval.
 
 3. **Fresh presentation every time.** Each hook-blocked REVIEW requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
@@ -69,5 +71,8 @@ The "Approve" option MUST name the specific action. The PostToolUse hook activat
 | "'Approve -- aplicar cambios' describes it" | That is a paraphrase in another language -- name the actual operation |
 | "'Approve -- los 3' is clear from context" | Context is not the label -- spell out what "the 3" are |
 | "The command is long, I'll shorten it" | Show it complete -- truncation hides what the user is approving |
+| "Same operation, slightly different path" | Grants match by command signature -- different path = grant miss = immediate re-block |
+| "I'll tell the agent to run a similar rm" | The agent must run the exact command that was approved, or it gets blocked again |
+| "I'll skip the [P-...] suffix, it's cosmetic" | "The hook extracts the nonce from the label — without it, targeted activation fails" |
 
 For GOOD vs BAD examples, batch flow, and grant mechanics, see `reference.md`.

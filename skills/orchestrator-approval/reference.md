@@ -35,7 +35,7 @@ AskUserQuestion(
     "RIESGO:    MEDIUM -- modifies shared branch history\n"
     "ROLLBACK:  git revert a1b2c3..d4e5f6"
   ),
-  options=["Approve -- push 2 commits to origin/main", "Modify", "Reject"]
+  options=["Approve -- push 2 commits to origin/main [P-a1b2c3d4]", "Modify", "Reject"]
 )
 ```
 
@@ -58,7 +58,7 @@ AskUserQuestion(
     "RIESGO:    MEDIUM -- creates new cloud resources in dev\n"
     "ROLLBACK:  terraform -chdir=/infra/dev destroy -auto-approve"
   ),
-  options=["Approve -- terraform apply (3 resources in dev)", "Modify", "Reject"]
+  options=["Approve -- terraform apply (3 resources in dev) [P-9c4e1f2a]", "Modify", "Reject"]
 )
 ```
 
@@ -84,7 +84,7 @@ AskUserQuestion(
     "RIESGO:    HIGH -- production config, affects live API routing\n"
     "ROLLBACK:  git checkout HEAD -- /app/config/prod.yaml /app/config/staging.yaml /app/.env.production"
   ),
-  options=["Approve -- update API endpoint in 3 config files", "Modify", "Reject"]
+  options=["Approve -- update API endpoint in 3 config files [P-d7f3a09b]", "Modify", "Reject"]
 )
 ```
 
@@ -92,9 +92,10 @@ AskUserQuestion(
 
 | Pattern | Verdict | Why |
 |---------|---------|-----|
-| `"Approve -- push 2 commits to origin/main"` | GOOD | Names the exact action |
-| `"Approve -- terraform apply (3 resources in dev)"` | GOOD | Names tool, count, environment |
-| `"Approve -- delete branch feature/old-login"` | GOOD | Names the destructive action and target |
+| `"Approve -- push 2 commits to origin/main [P-a1b2c3d4]"` | GOOD | Names exact action, includes nonce suffix |
+| `"Approve -- terraform apply (3 resources in dev) [P-9c4e1f2a]"` | GOOD | Names tool, count, environment, includes nonce suffix |
+| `"Approve -- delete branch feature/old-login [P-f5b0e871]"` | GOOD | Names the destructive action and target, includes nonce suffix |
+| `"Approve -- push 2 commits to origin/main"` | BAD | Missing `[P-{8hex}]` suffix -- hook cannot do targeted activation |
 | `"Approve"` | BAD | No action description |
 | `"Approve -- aplicar cambios"` | BAD | Vague paraphrase |
 | `"Approve -- los 3"` | BAD | What 3? |
@@ -112,7 +113,7 @@ multi-use grant covering many commands with the same base CLI and verb but diffe
 - COMANDO shows the command pattern (e.g., "`gws gmail users messages modify`")
 - SCOPE states the TTL (e.g., "All modify operations for the next 10 minutes")
 
-**Options:** `["Approve batch -- modify 500 Gmail messages", "Approve single", "Modify", "Reject"]`
+**Options:** `["Approve batch -- modify 500 Gmail messages [P-{nonce_prefix8}]", "Approve single -- {first_command} [P-{nonce_prefix8}]", "Modify", "Reject"]`
 - "Approve batch" creates a verb-family grant (multi-use, 10-minute TTL)
 - "Approve single" creates a normal single-use grant for only the first blocked command
 
@@ -121,3 +122,39 @@ multi-use grant covering many commands with the same base CLI and verb but diffe
 ## Grant Activation Mechanics
 
 When a hook blocks a T3 command, it writes a pending approval and returns an `approval_id` in the deny response. The subagent includes this `approval_id` in its `approval_request`. The orchestrator presents the plan via AskUserQuestion with structured options. When the user selects an "Approve" option, the PostToolUse hook for AskUserQuestion fires and activates the pending grant. No nonce or approval_id is relayed through SendMessage -- grant activation is handled entirely by the hook.
+
+**Timing:** Grant activation is synchronous. The PostToolUse hook runs before AskUserQuestion returns to the orchestrator. By the time the orchestrator is ready to send SendMessage, the grant is already active. There is no race condition and no delay is needed.
+
+## Scope Mismatch -- The Common Re-block Trap
+
+Grants are matched by **semantic signature**: `base_cmd + verb + normalized arguments`. Two commands with the same verb but different path arguments are different signatures and do NOT share a grant.
+
+**Example of the trap:**
+
+1. Agent is blocked trying to run:
+   `rm /path/to/approvals/grant-default-1776179289490.json`
+
+2. Orchestrator approves it. The grant is scoped to that exact command.
+
+3. Orchestrator sends resume: "Delete the stale grant file and then do the git operations"
+
+4. Agent decides to run:
+   `rm /path/to/approvals/grant-session-1776179452326.json`
+   (different filename, same directory)
+
+5. **Blocked again** -- the grant scope does not cover the new path.
+
+**Why it happens:** The orchestrator paraphrased the operation ("delete the stale grant file") instead of quoting the approved command verbatim. The agent had latitude to choose a different target.
+
+**Correct resume message:** Quote the exact approved command in the resume.
+
+```
+# BAD resume
+"Proceed. Delete the stale grant file and then do the git operations."
+
+# GOOD resume
+"Proceed. Run exactly: rm /path/to/approvals/grant-default-1776179289490.json"
+"Then continue with the git operations."
+```
+
+If the correct target has changed since the approval (e.g., the file that was blocked no longer exists and a different file needs to be deleted), present a new approval for the new command -- do not resume with modified instructions.

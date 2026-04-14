@@ -202,7 +202,6 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
         create_claude_directory,
         ensure_claude_code,
         ensure_gaia_ops_package,
-        generate_governance,
         generate_project_context,
         install_git_hooks,
         merge_hooks_to_settings_local,
@@ -250,7 +249,6 @@ def _mode_fresh(project_root: Path, scan_config: ScanConfig, args) -> int:
     merge_hooks_to_settings_local(project_root)
     install_git_hooks(project_root)
     generate_project_context(project_root, config, scan_context=output.context)
-    generate_governance(project_root, config)
 
     # Step 5: VERIFY (silent -- used for health check)
     run_verification(project_root)

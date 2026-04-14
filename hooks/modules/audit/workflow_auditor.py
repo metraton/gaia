@@ -252,6 +252,40 @@ def _check_cache_efficiency(
     return None
 
 
+def _check_bash_permission_gate(
+    analysis: TranscriptAnalysis,
+    metrics: Dict[str, Any],
+) -> Optional[Dict[str, str]]:
+    """Warning if agent declares Bash but made 0 Bash calls.
+
+    When the native Claude Code permission layer denies Bash before the
+    hook fires, our hook never runs and no log entry is produced. The agent
+    reports 'Permission to use Bash has been denied' but the failure is
+    otherwise invisible.  A declared-Bash agent with 0 actual Bash calls is
+    a reliable signal of this invisible gate.
+    """
+    snapshot = metrics.get("default_skills_snapshot") or {}
+    declared_tools = snapshot.get("tools", [])
+    if not isinstance(declared_tools, list):
+        return None
+
+    declared_lower = [t.lower() for t in declared_tools]
+    if "bash" not in declared_lower:
+        return None
+
+    if len(analysis.bash_commands) == 0:
+        agent_name = metrics.get("agent", "unknown")
+        return {
+            "type": "bash_permission_gate",
+            "severity": "warning",
+            "message": (
+                f"WARNING: Agent {agent_name} declares Bash but made 0 Bash calls. "
+                f"Possible native permission layer block."
+            ),
+        }
+    return None
+
+
 def _check_duplicate_write_storm(
     analysis: TranscriptAnalysis,
 ) -> Optional[Dict[str, str]]:
@@ -341,6 +375,7 @@ def audit(
     - model_mismatch: transcript model != agent definition model
     - skill_order: skills injected in unexpected order
     - duplicate_tools: duplicate tool calls detected
+    - bash_permission_gate: agent declares Bash but made 0 calls (native layer block)
 
     Args:
         metrics: Workflow metrics dict (from workflow_recorder.record()).
@@ -517,7 +552,7 @@ def audit(
             anomalies.append(result)
 
         # Checks that need metrics
-        for check_fn_m in (_check_model_mismatch, _check_skill_order):
+        for check_fn_m in (_check_model_mismatch, _check_skill_order, _check_bash_permission_gate):
             result = check_fn_m(transcript_analysis, metrics)
             if result is not None:
                 anomalies.append(result)

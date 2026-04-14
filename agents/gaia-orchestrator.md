@@ -40,7 +40,7 @@ If 2+ match, dispatch in parallel.
 | terraform_iac | terraform-architect | Create, modify, review, or validate IaC — Terraform, Terragrunt, cloud resources, state, plan/apply |
 | gitops_desired_state | gitops-operator | Create, modify, or review Kubernetes desired state — Flux, Helm, Kustomize, manifests |
 | app_ci_tooling | developer | Write, modify, test, or build app code — Node/TS, Python, Docker, CI/CD, packages |
-| planning_specs | speckit-planner | Plan features, break down requirements, create specs, plans, task lists |
+| planning_specs | gaia-planner | Plan features, break down requirements, create specs, plans, task lists |
 | gaia_system | gaia-system | Modify or analyze Gaia itself — hooks, skills, agents, routing, security, architecture |
 | workspace | gaia-operator | Personal workspace — memory, loops, email, file transfers, general automation |
 

@@ -6,13 +6,20 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 
-def scan_pending_approvals(approvals_dir: Path, session_id: Optional[str] = None) -> List[Dict]:
+def scan_pending_approvals(
+    approvals_dir: Path,
+    session_id: Optional[str] = None,
+    current_session_id: Optional[str] = None,
+) -> List[Dict]:
     """Scan approvals directory for pending files.
 
     Returns list of dicts with: nonce (short), command, verb, category,
-    age_human (e.g. "14 hours ago"), context (if enriched), timestamp.
+    age_human (e.g. "14 hours ago"), context (if enriched), timestamp,
+    cross_session (bool), pending_session_id.
 
     If session_id provided, filter to that session. Otherwise return all.
+    current_session_id is used to annotate items from prior sessions
+    (cross_session=True when pending.session_id != current_session_id).
     """
     results = []
 
@@ -37,6 +44,12 @@ def scan_pending_approvals(approvals_dir: Path, session_id: Optional[str] = None
             age_seconds = time.time() - data.get("timestamp", 0)
             age_human = _format_age(age_seconds)
 
+            # Detect cross-session pending approvals
+            pending_sid = data.get("session_id", "unknown")
+            cross_session = bool(
+                current_session_id and pending_sid != current_session_id
+            )
+
             results.append({
                 "nonce_short": data["nonce"][:8],
                 "nonce_full": data["nonce"],
@@ -47,6 +60,8 @@ def scan_pending_approvals(approvals_dir: Path, session_id: Optional[str] = None
                 "timestamp": data.get("timestamp", 0),
                 "context": data.get("context", {}),
                 "scope_type": data.get("scope_type", "semantic_signature"),
+                "cross_session": cross_session,
+                "pending_session_id": pending_sid,
             })
         except Exception:
             continue
@@ -68,7 +83,8 @@ def format_pending_summary(pendings: List[Dict]) -> str:
         desc = ctx.get("description", p["command"])
         risk = ctx.get("risk", "unknown")
 
-        lines.append(f"**#{i} [P-{p['nonce_short']}]** `{p['command'][:60]}`")
+        cross_tag = " [session anterior]" if p.get("cross_session") else ""
+        lines.append(f"**#{i} [P-{p['nonce_short']}]** `{p['command'][:60]}`{cross_tag}")
         lines.append(f"  Hace: {p['age_human']} | Source: {source} | Risk: {risk}")
         if desc != p["command"]:
             lines.append(f"  {desc}")

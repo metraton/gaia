@@ -92,9 +92,9 @@ class TestContractAgentConsistency:
         # Build full set of meta-agent names including namespaced forms
         meta_set = set(META_AGENTS) | {f"gaia-ops:{m}" for m in META_AGENTS}
         project_agents = [a for a in AVAILABLE_AGENTS if a not in meta_set]
-        # speckit-planner doesn't need context contracts (it has its own workflow);
+        # speckit-planner and gaia-planner are optional during the migration period;
         # namespaced project agents are aliases and don't appear in contracts.
-        optional_agents = {"speckit-planner"}
+        optional_agents = {"speckit-planner", "gaia-planner"}
         # Namespaced forms (gaia-ops:agent-name) are routing aliases, not in contracts
         namespaced = {a for a in project_agents if ":" in a}
         required_agents = set(project_agents) - optional_agents - namespaced

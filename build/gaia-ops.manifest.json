@@ -47,11 +47,12 @@
     "agents/cloud-troubleshooter.md",
     "agents/gitops-operator.md",
     "agents/terraform-architect.md",
-    "agents/speckit-planner.md"
+    "agents/gaia-planner.md"
   ],
   "skills": "all",
   "commands": [
-    "commands/gaia.md"
+    "commands/gaia.md",
+    "commands/gaia-plan.md"
   ],
   "tools": "all",
   "config": "all",

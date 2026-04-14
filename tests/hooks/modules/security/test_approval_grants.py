@@ -23,6 +23,8 @@ from modules.security.approval_grants import (
     ACTIVATION_NOT_FOUND,
     ACTIVATION_SESSION_MISMATCH,
     ApprovalGrant,
+    activate_cross_session_pending,
+    activate_grants_for_session,
     activate_pending_approval,
     check_approval_grant,
     cleanup_expired_grants,
@@ -30,6 +32,11 @@ from modules.security.approval_grants import (
     generate_nonce,
     get_latest_pending_approval,
     write_pending_approval,
+)
+
+from modules.security.approval_grants import (
+    extract_nonce_from_label,
+    load_pending_by_nonce_prefix,
 )
 from modules.security.approval_scopes import (
     SCOPE_EXACT_COMMAND,
@@ -739,3 +746,512 @@ class TestBashValidatorIntegration:
         assert grant is not None
         refreshed = json.loads(grant_file.read_text())
         assert refreshed["used"] is False
+
+
+class TestCrossSessionActivation:
+    """activate_cross_session_pending should use explicit session_id when provided."""
+
+    def test_uses_explicit_session_id(self, clean_grants_dir):
+        """When session_id is passed, the grant is created under that ID."""
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id="prior-session-xyz",
+        )
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        pending_data = json.loads(pending_path.read_text())
+
+        result = activate_cross_session_pending(
+            pending_data,
+            session_id="explicit-session-abc",
+        )
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert result.grant_path is not None
+        assert "grant-explicit-session-abc-" in result.grant_path.name
+        grant_data = json.loads(result.grant_path.read_text())
+        assert grant_data["session_id"] == "explicit-session-abc"
+
+    def test_falls_back_to_env_session_id(self, clean_grants_dir):
+        """Without explicit session_id, the env-based session ID is used."""
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id="prior-session-xyz",
+        )
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        pending_data = json.loads(pending_path.read_text())
+
+        result = activate_cross_session_pending(pending_data)
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert result.grant_path is not None
+        assert "grant-test-session-123-" in result.grant_path.name
+        grant_data = json.loads(result.grant_path.read_text())
+        assert grant_data["session_id"] == "test-session-123"
+
+
+class TestCrossSessionNonceTargeted:
+    """Nonce-targeted cross-session activation: the orchestrator extracts a nonce
+    from the AskUserQuestion option label and activates that specific pending
+    approval under the CURRENT session, regardless of which session created it.
+    """
+
+    # ------------------------------------------------------------------ #
+    # 1. extract_nonce_from_label
+    # ------------------------------------------------------------------ #
+
+    def test_extract_nonce_from_approve_label(self):
+        """Nonce is extracted from the [P-xxxxxxxx] tag in the approve label."""
+        # Standard approve label with 8-char hex nonce
+        label = "Approve -- git push origin main [P-e68be5b8]"
+        assert extract_nonce_from_label(label) == "e68be5b8"
+
+    def test_extract_nonce_from_label_without_nonce_returns_none(self):
+        """Labels without a [P-...] tag return None."""
+        assert extract_nonce_from_label("Approve -- git push origin main") is None
+
+    def test_extract_nonce_from_reject_label_returns_none(self):
+        """Reject labels never contain a nonce."""
+        assert extract_nonce_from_label("Reject") is None
+        assert extract_nonce_from_label("Reject [P-e68be5b8]") is None
+
+    # ------------------------------------------------------------------ #
+    # 2. Targeted activation creates grant under current session
+    # ------------------------------------------------------------------ #
+
+    def test_cross_session_targeted_activation_creates_grant_under_current_session(
+        self, clean_grants_dir, monkeypatch,
+    ):
+        """Pending created under session_A, activated with explicit session_B:
+        the grant must live under session_B, not session_A or 'default'."""
+        session_a = "session-A-originator"
+        session_b = "session-B-current"
+
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        pending_data = json.loads(pending_path.read_text())
+        assert pending_data["session_id"] == session_a
+
+        result = activate_cross_session_pending(
+            pending_data,
+            session_id=session_b,
+        )
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert result.grant_path is not None
+
+        # Grant file is named with session_B
+        assert f"grant-{session_b}-" in result.grant_path.name
+
+        # Grant data records session_B
+        grant_data = json.loads(result.grant_path.read_text())
+        assert grant_data["session_id"] == session_b
+
+        # Grant is NOT findable under session_A
+        assert check_approval_grant("git push origin main", session_id=session_a) is None
+
+        # Grant IS findable under session_B
+        grant = check_approval_grant("git push origin main", session_id=session_b)
+        assert grant is not None
+        assert "push" in grant.approved_verbs
+
+    # ------------------------------------------------------------------ #
+    # 3. Targeted activation cleans pending file
+    # ------------------------------------------------------------------ #
+
+    def test_cross_session_targeted_activation_cleans_pending_file(
+        self, clean_grants_dir,
+    ):
+        """After cross-session activation the pending file and its session_A
+        index must be cleaned up."""
+        session_a = "session-A-cleanup"
+        session_b = "session-B-cleanup"
+
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        index_path = clean_grants_dir / f"pending-index-{session_a}.json"
+        assert pending_path.exists()
+        assert index_path.exists()
+
+        pending_data = json.loads(pending_path.read_text())
+        result = activate_cross_session_pending(pending_data, session_id=session_b)
+        assert result.success is True
+
+        # Pending file removed
+        assert not pending_path.exists()
+
+        # Index for session_A rebuilt (should be gone since that was the only pending)
+        assert not index_path.exists()
+
+    # ------------------------------------------------------------------ #
+    # 4. Cross-session grant matches exact command
+    # ------------------------------------------------------------------ #
+
+    def test_cross_session_grant_matches_exact_command(self, clean_grants_dir):
+        """A cross-session grant for 'git push origin main' must NOT match
+        'git push origin develop'."""
+        session_a = "session-A-exact"
+        session_b = "session-B-exact"
+
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+        pending_data = json.loads(
+            (clean_grants_dir / f"pending-{nonce}.json").read_text()
+        )
+        result = activate_cross_session_pending(pending_data, session_id=session_b)
+        assert result.success is True
+
+        # Exact command matches
+        assert check_approval_grant("git push origin main", session_id=session_b) is not None
+
+        # Different target branch does NOT match
+        assert check_approval_grant("git push origin develop", session_id=session_b) is None
+
+    # ------------------------------------------------------------------ #
+    # 5. Cross-session activation preserves scope signature
+    # ------------------------------------------------------------------ #
+
+    def test_cross_session_activation_preserves_scope_signature(self, clean_grants_dir):
+        """The scope_signature written by write_pending_approval must survive
+        intact through cross-session activation into the grant file."""
+        session_a = "session-A-sig"
+        session_b = "session-B-sig"
+
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+        pending_data = json.loads(
+            (clean_grants_dir / f"pending-{nonce}.json").read_text()
+        )
+        original_signature = pending_data["scope_signature"]
+
+        result = activate_cross_session_pending(pending_data, session_id=session_b)
+        assert result.success is True
+
+        grant_data = json.loads(result.grant_path.read_text())
+        grant_signature = grant_data["scope_signature"]
+
+        # Key fields must match exactly
+        assert grant_signature["scope_type"] == original_signature["scope_type"]
+        assert grant_signature["base_cmd"] == original_signature["base_cmd"]
+        assert grant_signature["verb"] == original_signature["verb"]
+        assert grant_signature["cli_family"] == original_signature["cli_family"]
+        assert grant_signature["semantic_tokens"] == original_signature["semantic_tokens"]
+        assert grant_signature["danger_category"] == original_signature["danger_category"]
+
+    # ------------------------------------------------------------------ #
+    # 6. Pending file stores cwd
+    # ------------------------------------------------------------------ #
+
+    def test_pending_file_stores_cwd(self, clean_grants_dir):
+        """write_pending_approval() persists the cwd parameter in the pending JSON file."""
+        nonce = generate_nonce()
+        target_cwd = "/home/jorge/ws/me/gaia-ops-dev"
+
+        # NEW API — cwd parameter does not exist yet
+        path = write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            cwd=target_cwd,
+        )
+        assert path is not None
+        assert path.exists()
+
+        data = json.loads(path.read_text())
+        assert data["cwd"] == target_cwd
+
+    # ------------------------------------------------------------------ #
+    # 7. Session-wide activation does NOT activate cross-session pendings
+    # ------------------------------------------------------------------ #
+
+    def test_session_wide_activation_does_not_activate_cross_session_pendings(
+        self, clean_grants_dir, monkeypatch,
+    ):
+        """activate_grants_for_session('session_B') must NOT activate pending
+        approvals that belong to session_A. This documents that the existing
+        session-wide flow stays session-scoped — it does not reach across
+        sessions."""
+        session_a = "session-A-scoped"
+        session_b = "session-B-scoped"
+
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+
+        # Attempt session-wide activation under session_B
+        monkeypatch.setenv("CLAUDE_SESSION_ID", session_b)
+        results = activate_grants_for_session(session_b)
+
+        # No grants should have been activated (pending belongs to session_A)
+        assert len(results) == 0
+
+        # Pending file is still there (untouched)
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        assert pending_path.exists()
+
+        # No grant exists under session_B
+        assert check_approval_grant("git push origin main", session_id=session_b) is None
+
+    # ------------------------------------------------------------------ #
+    # 8. Nonce-targeted activation works regardless of session
+    # ------------------------------------------------------------------ #
+
+    def test_nonce_targeted_activation_works_regardless_of_session(
+        self, clean_grants_dir,
+    ):
+        """Unlike session-wide activation, nonce-targeted (cross-session)
+        activation does NOT care which session created the pending. It loads
+        pending data directly and creates the grant under the specified
+        current session."""
+        session_a = "session-A-any"
+        session_b = "session-B-any"
+
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+
+        # Load pending data directly (nonce-targeted — no session filtering)
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        pending_data = json.loads(pending_path.read_text())
+
+        # Activate under session_B even though pending belongs to session_A
+        result = activate_cross_session_pending(pending_data, session_id=session_b)
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+        # Grant is findable under session_B
+        grant = check_approval_grant("git push origin main", session_id=session_b)
+        assert grant is not None
+        assert grant.confirmed is True  # cross-session grants are pre-confirmed
+
+        # Grant is NOT findable under session_A
+        assert check_approval_grant("git push origin main", session_id=session_a) is None
+
+
+# ====================================================================== #
+# TestNonceTargetedHookActivation -- hook-level nonce-targeted activation
+# ====================================================================== #
+
+
+class TestNonceTargetedHookActivation:
+    """Tests for the nonce-targeted activation flow used by
+    _handle_ask_user_question_result in the PostToolUse hook.
+
+    This class tests the building blocks: load_pending_by_nonce_prefix,
+    same-session activation via prefix, cross-session activation via
+    prefix, and the session-wide fallback path.
+    """
+
+    # ------------------------------------------------------------------ #
+    # 1. load_pending_by_nonce_prefix
+    # ------------------------------------------------------------------ #
+
+    def test_load_pending_by_nonce_prefix_finds_matching_file(
+        self, clean_grants_dir,
+    ):
+        """A pending file can be found by the first 8 chars of its nonce."""
+        nonce = generate_nonce()
+        prefix = nonce[:8]
+
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id="session-prefix-test",
+        )
+
+        result = load_pending_by_nonce_prefix(prefix)
+        assert result is not None
+        assert result["nonce"] == nonce
+        assert result["command"] == "git push origin main"
+        assert result["session_id"] == "session-prefix-test"
+
+    def test_load_pending_by_nonce_prefix_returns_none_for_no_match(
+        self, clean_grants_dir,
+    ):
+        """When no pending file matches the prefix, None is returned."""
+        result = load_pending_by_nonce_prefix("deadbeef")
+        assert result is None
+
+    # ------------------------------------------------------------------ #
+    # 2. Same-session nonce-targeted activation via prefix
+    # ------------------------------------------------------------------ #
+
+    def test_nonce_targeted_same_session_activation_via_prefix(
+        self, clean_grants_dir,
+    ):
+        """Simulates the hook flow for same-session approval:
+        extract prefix -> load pending -> activate_pending_approval."""
+        session_id = "session-same-nonce"
+        nonce = generate_nonce()
+        prefix = nonce[:8]
+
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        # Step 1: load by prefix (simulates what hook does after extract_nonce_from_label)
+        pending_data = load_pending_by_nonce_prefix(prefix)
+        assert pending_data is not None
+        assert pending_data["session_id"] == session_id  # same session
+
+        # Step 2: same session -> activate_pending_approval
+        result = activate_pending_approval(
+            nonce=pending_data["nonce"],
+            session_id=session_id,
+        )
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+        # Step 3: grant is findable under this session
+        grant = check_approval_grant("git push origin main", session_id=session_id)
+        assert grant is not None
+        assert "push" in grant.approved_verbs
+
+        # Pending file is cleaned up
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        assert not pending_path.exists()
+
+    # ------------------------------------------------------------------ #
+    # 3. Cross-session nonce-targeted activation via prefix
+    # ------------------------------------------------------------------ #
+
+    def test_nonce_targeted_cross_session_activation_via_prefix(
+        self, clean_grants_dir,
+    ):
+        """Simulates the hook flow for cross-session approval:
+        extract prefix -> load pending -> detect different session ->
+        activate_cross_session_pending under current session."""
+        session_a = "session-A-originator"
+        session_b = "session-B-current"
+
+        nonce = generate_nonce()
+        prefix = nonce[:8]
+
+        write_pending_approval(
+            nonce=nonce,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_a,
+        )
+
+        # Step 1: load by prefix
+        pending_data = load_pending_by_nonce_prefix(prefix)
+        assert pending_data is not None
+        assert pending_data["session_id"] == session_a  # different from current
+
+        # Step 2: cross session -> activate_cross_session_pending
+        result = activate_cross_session_pending(
+            pending_data,
+            session_id=session_b,
+        )
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+        # Step 3: grant is under session_B (the current session)
+        grant = check_approval_grant("terraform apply", session_id=session_b)
+        assert grant is not None
+        assert grant.confirmed is True  # cross-session grants are pre-confirmed
+        assert "apply" in grant.approved_verbs
+
+        # Grant is NOT under session_A
+        assert check_approval_grant("terraform apply", session_id=session_a) is None
+
+        # Pending file is cleaned up
+        pending_path = clean_grants_dir / f"pending-{nonce}.json"
+        assert not pending_path.exists()
+
+    # ------------------------------------------------------------------ #
+    # 4. Session-wide fallback (no nonce in label)
+    # ------------------------------------------------------------------ #
+
+    def test_session_wide_fallback_when_no_nonce(
+        self, clean_grants_dir,
+    ):
+        """When no nonce prefix is available, activate_grants_for_session
+        activates ALL pending approvals for the session (backward compat)."""
+        session_id = "session-fallback"
+
+        # Create two pending approvals for the same session
+        nonce1 = generate_nonce()
+        nonce2 = generate_nonce()
+
+        write_pending_approval(
+            nonce=nonce1,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+        write_pending_approval(
+            nonce=nonce2,
+            command="git tag v1.0",
+            danger_verb="tag",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        # Session-wide activation (the fallback path)
+        results = activate_grants_for_session(session_id)
+        activated = sum(1 for r in results if r.success)
+        assert activated == 2
+
+        # Both grants are findable
+        assert check_approval_grant("git push origin main", session_id=session_id) is not None
+        assert check_approval_grant("git tag v1.0", session_id=session_id) is not None
+
+        # Both pending files are cleaned up
+        assert not (clean_grants_dir / f"pending-{nonce1}.json").exists()
+        assert not (clean_grants_dir / f"pending-{nonce2}.json").exists()

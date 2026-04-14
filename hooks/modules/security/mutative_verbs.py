@@ -592,6 +592,20 @@ def detect_mutative_command(command: str) -> MutativeResult:
     if base_cmd in _INLINE_CODE_CLIS and cli_flags & set(semantics.flag_tokens):
         return _check_inline_code(command, base_cmd, family)
 
+    # --- Step 3c: Heredoc safety check ---
+    # When a runtime interpreter is invoked with '-' (stdin) and the command
+    # contains a heredoc ('<<'), the heredoc body is script source --
+    # not shell subcommands.  Route through inline code analysis.
+    # The length heuristic is suppressed: multi-line heredocs are normal
+    # and must not be flagged on size alone.
+    if (
+        base_cmd in _INLINE_CODE_CLIS
+        and "<<" in command
+        and semantics.non_flag_tokens
+        and semantics.non_flag_tokens[0] == "-"
+    ):
+        return _check_inline_code(command, base_cmd, family, skip_length_check=True)
+
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
@@ -800,7 +814,7 @@ def detect_mutative_command(command: str) -> MutativeResult:
 # Helpers
 # ============================================================================
 
-def _check_inline_code(command: str, base_cmd: str, family: str) -> MutativeResult:
+def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
     """Check inline code for dangerous patterns using a 3-layer approach.
 
     Layer 1: Extract string literals from inline code and check them against
@@ -870,7 +884,7 @@ def _check_inline_code(command: str, base_cmd: str, family: str) -> MutativeResu
             code_portion = command[idx + len(flag) + 2:]
             break
 
-    if len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
+    if not skip_length_check and len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,
