@@ -15,6 +15,7 @@ Pipeline (ordered by priority):
 6. Everything else -> SAFE (auto-approved by elimination)
 """
 
+import os
 import re
 import json
 import logging
@@ -564,6 +565,7 @@ class BashValidator:
                         danger_verb=result.verb,
                         danger_category=result.category,
                         session_id=session_id or None,
+                        cwd=os.getcwd(),
                     )
                     if pending_path is None:
                         # Persistence failure — fall back to ask

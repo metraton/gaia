@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -383,6 +384,83 @@ def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# ------------------------------------------------------------------ #
+# Environment snapshot capture
+# ------------------------------------------------------------------ #
+
+# CLI families whose environment state is worth capturing at blocking time.
+_GIT_CMD_PATTERN = re.compile(r"\bgit\b")
+
+_ENV_SNAPSHOT_TIMEOUT_SECONDS = 2
+
+
+def _run_git_query(args: List[str], cwd: Optional[str] = None) -> Optional[str]:
+    """Run a git sub-command and return stripped stdout, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True,
+            text=True,
+            timeout=_ENV_SNAPSHOT_TIMEOUT_SECONDS,
+            cwd=cwd,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def capture_environment_snapshot(
+    command: str,
+    cwd: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Capture relevant environment state at the time a command is blocked.
+
+    Designed to be fast (<2 s) and failure-tolerant -- a failed capture
+    returns an empty dict and MUST NOT prevent the pending file from being
+    written.
+
+    Currently supports:
+    - **git** commands: local HEAD, remote HEAD (origin/main), current branch.
+
+    Extensible to kubectl, terraform, etc. in future iterations.
+
+    Args:
+        command: The blocked command string.
+        cwd: Working directory context (used for git queries).
+
+    Returns:
+        A dict with captured state, or ``{}`` if nothing could be captured
+        or the command class is not yet supported.
+    """
+    if not _GIT_CMD_PATTERN.search(command):
+        return {}
+
+    try:
+        snapshot: Dict[str, Any] = {"command_class": "git"}
+
+        head = _run_git_query(["rev-parse", "HEAD"], cwd=cwd)
+        if head:
+            snapshot["local_head"] = head
+
+        branch = _run_git_query(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
+        if branch:
+            snapshot["branch"] = branch
+
+        remote_head = _run_git_query(
+            ["rev-parse", "origin/main"], cwd=cwd,
+        )
+        if remote_head:
+            snapshot["remote_head"] = remote_head
+
+        return snapshot
+
+    except Exception as exc:
+        logger.debug("Environment snapshot capture failed: %s", exc)
+        return {}
+
+
 def write_pending_approval(
     nonce: str,
     command: str,
@@ -392,6 +470,7 @@ def write_pending_approval(
     ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
     context: Optional[Dict[str, Any]] = None,
     cwd: Optional[str] = None,
+    environment: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Write a pending approval file when a T3 command is blocked.
 
@@ -410,6 +489,8 @@ def write_pending_approval(
         context: Optional dict with enriched context (source, description,
             risk, rollback, branch, files_changed, etc.).
         cwd: Optional working directory where the command was invoked.
+        environment: Optional dict with environment state at blocking time.
+            If not provided, auto-captured via capture_environment_snapshot().
 
     Returns:
         Path to the pending file, or None on failure.
@@ -430,6 +511,14 @@ def write_pending_approval(
         )
         return None
 
+    # Auto-capture environment if not explicitly provided.
+    if environment is None:
+        try:
+            environment = capture_environment_snapshot(command, cwd=cwd)
+        except Exception as exc:
+            logger.debug("Auto environment capture failed (non-fatal): %s", exc)
+            environment = {}
+
     pending_data = {
         "nonce": nonce,
         "session_id": session_id,
@@ -441,6 +530,7 @@ def write_pending_approval(
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
         "context": context or {},
+        "environment": environment,
     }
     if cwd is not None:
         pending_data["cwd"] = cwd

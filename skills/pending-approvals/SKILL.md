@@ -44,13 +44,12 @@ ROLLBACK:  {rollback from context field}
    - Label MUST end with `[P-{nonce_prefix8}]` (PostToolUse hook extracts nonce from label for targeted activation)
    - Label MUST name the specific action (e.g., "Approve -- kubectl apply -f manifest.yaml [P-8072af80]")
    - NEVER use vague labels like "Approve -- aplicar cambios" or "Approve -- proceed"
-4a. Cross-session check: if `pending.session_id` ≠ current `CLAUDE_SESSION_ID`:
-    - The nonce is stale (from a prior session) — do NOT pass it to the agent
-    - Call `activate_cross_session_pending(pending_data)` — this creates an active grant in the current session
-    - Delete the old pending file
-    - Dispatch a one-shot agent with ONLY the command (no nonce) — instruct it to run the command directly
+4a. Cross-session check: if `pending.session_id` != current `CLAUDE_SESSION_ID`:
+    - The nonce is stale (from a prior session) -- do NOT pass it to the agent
+    - The PostToolUse hook will have already activated the grant under the current session
+    - Dispatch a one-shot agent using the dispatch template from `reference.md` (command + cwd + preflight + recovery instructions, no nonce)
     - The hook will find the pre-activated grant and allow the T3 operation through
-4b. Same-session: dispatch a one-shot agent to execute the command; pass the nonce
+4b. Same-session: dispatch a one-shot agent using the dispatch template from `reference.md` (command + cwd + nonce + preflight + recovery instructions)
 5. On Reject: delete the pending file; confirm deletion to user
 
 ## When user says "rechazar P-XXXX"
@@ -66,5 +65,6 @@ ROLLBACK:  {rollback from context field}
 - Prefixing the approve option with anything other than "Approve" (e.g. "Sí, ejecutar")
 - Dispatching execution before AskUserQuestion confirms approval
 - Omitting the `[P-{nonce_prefix8}]` suffix from the Approve label — the hook cannot do targeted activation without it
+- Fire-and-forget dispatch -- omitting preflight checks and recovery instructions from the dispatch prompt
 
 For JSON schema, format templates, flow example, and dispatch template: read `reference.md`.

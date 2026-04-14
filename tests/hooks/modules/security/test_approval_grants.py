@@ -3,11 +3,13 @@
 
 import json
 import re
+import subprocess
 import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -26,6 +28,7 @@ from modules.security.approval_grants import (
     activate_cross_session_pending,
     activate_grants_for_session,
     activate_pending_approval,
+    capture_environment_snapshot,
     check_approval_grant,
     cleanup_expired_grants,
     confirm_grant,
@@ -1255,3 +1258,104 @@ class TestNonceTargetedHookActivation:
         # Both pending files are cleaned up
         assert not (clean_grants_dir / f"pending-{nonce1}.json").exists()
         assert not (clean_grants_dir / f"pending-{nonce2}.json").exists()
+
+
+class TestCaptureEnvironmentSnapshot:
+    """Environment snapshot capture for pending approvals."""
+
+    # ------------------------------------------------------------------ #
+    # 1. Git command: captures HEAD, branch, remote HEAD
+    # ------------------------------------------------------------------ #
+
+    @patch("modules.security.approval_grants.subprocess.run")
+    def test_capture_env_snapshot_for_git_command(self, mock_run):
+        """For git commands, capture local HEAD, branch, and remote HEAD."""
+        def _fake_run(args, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            cmd = " ".join(args)
+            if "rev-parse HEAD" in cmd and "--abbrev-ref" not in cmd:
+                result.stdout = "abc123def456\n"
+            elif "--abbrev-ref HEAD" in cmd:
+                result.stdout = "main\n"
+            elif "origin/main" in cmd:
+                result.stdout = "789xyz000111\n"
+            else:
+                result.returncode = 1
+                result.stdout = ""
+            return result
+
+        mock_run.side_effect = _fake_run
+
+        snapshot = capture_environment_snapshot("git push origin main")
+
+        assert snapshot["command_class"] == "git"
+        assert snapshot["local_head"] == "abc123def456"
+        assert snapshot["branch"] == "main"
+        assert snapshot["remote_head"] == "789xyz000111"
+
+    # ------------------------------------------------------------------ #
+    # 2. Non-git command: returns empty dict
+    # ------------------------------------------------------------------ #
+
+    def test_capture_env_snapshot_for_non_git_command(self):
+        """Non-git commands return an empty dict (extensible later)."""
+        snapshot = capture_environment_snapshot("kubectl apply -f deploy.yaml")
+        assert snapshot == {}
+
+        snapshot = capture_environment_snapshot("terraform apply")
+        assert snapshot == {}
+
+    # ------------------------------------------------------------------ #
+    # 3. Subprocess failure: returns empty dict gracefully
+    # ------------------------------------------------------------------ #
+
+    @patch("modules.security.approval_grants.subprocess.run")
+    def test_capture_env_snapshot_handles_failure(self, mock_run):
+        """When subprocess calls fail, return empty dict without raising."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=2)
+
+        snapshot = capture_environment_snapshot("git push origin main")
+
+        # Should return a dict with command_class but no git details
+        # (all individual queries failed gracefully)
+        assert isinstance(snapshot, dict)
+        assert snapshot.get("command_class") == "git"
+        assert "local_head" not in snapshot
+        assert "branch" not in snapshot
+        assert "remote_head" not in snapshot
+
+    # ------------------------------------------------------------------ #
+    # 4. Pending file includes auto-captured environment
+    # ------------------------------------------------------------------ #
+
+    @patch("modules.security.approval_grants.capture_environment_snapshot")
+    def test_pending_file_includes_environment(
+        self, mock_capture, clean_grants_dir,
+    ):
+        """write_pending_approval auto-captures and persists environment."""
+        mock_capture.return_value = {
+            "command_class": "git",
+            "local_head": "aaa111",
+            "branch": "feature-x",
+        }
+
+        nonce = generate_nonce()
+        path = write_pending_approval(
+            nonce=nonce,
+            command="git push origin feature-x",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+        )
+        assert path is not None
+
+        data = json.loads(path.read_text())
+        assert "environment" in data
+        assert data["environment"]["command_class"] == "git"
+        assert data["environment"]["local_head"] == "aaa111"
+        assert data["environment"]["branch"] == "feature-x"
+
+        # Verify auto-capture was called with the command
+        mock_capture.assert_called_once_with(
+            "git push origin feature-x", cwd=None,
+        )

@@ -86,34 +86,62 @@ The PostToolUse hook checks `answer.lower().startswith("approve")` to activate t
 
 ## Post-Approval Dispatch Template
 
-After AskUserQuestion returns "Approve", check whether the pending file belongs to the current session.
+After AskUserQuestion returns "Approve", check whether the pending file belongs to the current session. Both dispatch paths use the same smart prompt structure -- the only difference is whether the nonce is included.
+
+### Dispatch prompt structure
+
+The dispatch prompt tells the agent three things: what to run, where to run it, and how to handle failure. This replaces fire-and-forget dispatch, which reports failure without attempting recovery.
+
+```
+Ejecuta este comando aprobado por el usuario. No requiere confirmacion adicional.
+{Nonce: {nonce}  -- only for same-session dispatch}
+Comando: {command}
+Directorio: {cwd}
+
+PREFLIGHT: Before executing, verify preconditions still hold.
+- For git push: fetch and check if the local branch is ahead of remote.
+- For kubectl/helm apply: confirm the target resource exists and is not mid-rollout.
+- For terraform apply: run a quick plan to confirm no unexpected drift.
+- General: if the command depends on state that may have changed, check that state first.
+If a precondition fails, report what changed and do NOT execute.
+
+RECOVERY: If the command fails with a recoverable error, attempt ONE standard local recovery, then retry.
+- git push (non-fast-forward): pull --rebase, then retry push.
+- terraform apply (state conflict): refresh state, then retry apply.
+- kubectl apply (conflict): re-fetch the resource, re-apply.
+- General: if the error message suggests a local fix (rebase, refresh, retry), do that fix ONCE.
+Do NOT attempt remote-mutating recovery (force push, remote delete, taint, import).
+Do NOT retry more than once -- if recovery + retry fails, report the error.
+```
+
+The `cwd` field may be present in the pending JSON. When present, include it in the dispatch as `Directorio:`. When absent, omit the line.
 
 ### Same-session dispatch
 
-When `pending.session_id == CLAUDE_SESSION_ID` — pass the nonce; the agent activates the grant via `APPROVE:{nonce}`:
+When `pending.session_id == CLAUDE_SESSION_ID` -- pass the nonce:
 
-```
-Ejecuta este comando aprobado por el usuario. No requiere confirmación adicional.
-Nonce: {nonce}
-Comando: {command}
-```
-
-The agent runs the command. The hook finds the nonce, activates the grant, and allows the T3 operation through.
+1. Build the dispatch prompt with nonce, command, and cwd (if available)
+2. Dispatch the one-shot agent
+3. The hook finds the nonce, activates the grant, and allows the T3 operation through
 
 ### Cross-session dispatch
 
-When `pending.session_id != CLAUDE_SESSION_ID` — the nonce is stale and cannot be used:
+When `pending.session_id != CLAUDE_SESSION_ID` -- the nonce is stale:
 
-1. Call `activate_cross_session_pending(pending_data)` — creates an active grant in the current session
-2. Delete the old pending file
-3. Dispatch a one-shot agent with the command only (no nonce):
+1. The PostToolUse hook will have already activated the grant under the current session
+2. Build the dispatch prompt with command and cwd (if available), no nonce
+3. Dispatch the one-shot agent
+4. The hook finds the pre-activated grant (by command signature) and allows the T3 operation through
 
-```
-Ejecuta este comando aprobado por el usuario. No requiere confirmación adicional.
-Comando: {command}
-```
+### Recovery scope guardrail
 
-The agent runs the command. The hook finds the pre-activated grant (by command signature) and allows the T3 operation through.
+Recovery actions must only modify LOCAL state. The agent should never attempt:
+- `git push --force` or `git push --force-with-lease` (remote-mutating)
+- `terraform state rm` or `terraform import` (state-mutating beyond refresh)
+- `kubectl delete` followed by re-create (destructive recovery)
+- Any action that would require its own T3 approval
+
+If the only path forward requires remote mutation, the agent reports the failure and lets the user decide.
 
 ## Complete Flow Example
 
