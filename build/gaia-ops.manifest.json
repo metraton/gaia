@@ -51,8 +51,7 @@
   ],
   "skills": "all",
   "commands": [
-    "commands/gaia.md",
-    "commands/gaia-plan.md"
+    "commands/gaia.md"
   ],
   "tools": "all",
   "config": "all",
