@@ -1,24 +1,19 @@
 ---
 name: schedule-task
-description: Use when the user wants to dispatch work to an agent -- "mejorar", "iterar", "loop", "schedule", "cron", "cada noche", "hasta que", "trabaja en esto", "optimiza", "programa"
+description: Reference material for dispatch parameter extraction and prompt templates. The orchestrator's dispatch execution section covers the core principles -- load this skill for detailed templates and examples.
 metadata:
   user-invocable: false
-  type: technique
+  type: reference
 ---
 
 # Schedule Task
 
-Classify the user's request, extract parameters, build the right prompt, and dispatch to a specialist. The orchestrator dispatches the goal -- it never executes the loop or micromanages iterations.
+On-demand reference for parameter extraction, prompt templates, and task
+classification details. The orchestrator's "Dispatch execution" identity
+section covers when and how to dispatch. Load this skill when you need
+the exact templates or extraction patterns.
 
-## Step 1: Is it measurable?
-
-| Condition | Classification |
-|-----------|---------------|
-| A test/eval script exists | measurable |
-| One can be created (tests, benchmarks, health checks) | creatable |
-| No way to measure automatically | not measurable |
-
-## Step 2: What type of task?
+## Task classification
 
 | Measurable? | Improvable? | Type | Action |
 |-------------|-------------|------|--------|
@@ -27,31 +22,25 @@ Classify the user's request, extract parameters, build the right prompt, and dis
 | Creatable | Yes | two-phase | Phase 1: create eval. Phase 2: agentic-loop |
 | No | N/A | manual-review | Warn user, offer alternatives |
 
-## Step 3: Extract parameters (agentic-loop only)
+## Parameter extraction (agentic-loop only)
 
 Required: `goal`, `eval_command`, `metric`, `direction`, `threshold`
 Optional: `max_iterations` (default 20), `files_in_scope`, `branch` prefix
 
-If any required param is missing -- ASK the user. Do not guess eval commands or thresholds.
+If any required param is missing -- ASK the user. Do not guess eval commands
+or thresholds. See `reference.md` for extraction examples and confirmation
+patterns.
 
-## Step 4: Build the prompt
+## Prompt templates
 
-For agentic-loop tasks, use the template in `reference.md`. The prompt MUST include the `Carga la skill agentic-loop` header -- this triggers skill injection in the agent.
+For agentic-loop tasks, use the template in `reference.md`. The prompt MUST
+include the `Carga la skill agentic-loop` header -- this triggers skill
+injection in the agent.
 
 For simple tasks, build a focused objective prompt without the loop header.
 For two-phase tasks, dispatch Phase 1 first (create eval), then Phase 2 (loop).
 
-## Step 5: Choose agent
-
-| Domain | Agent |
-|--------|-------|
-| Hooks, agents, skills, routing, gaia internals | gaia-system |
-| App code, tests, CI/CD, packages | developer |
-| K8s manifests, Helm, Flux | gitops-operator |
-| IaC, Terraform, Terragrunt | terraform-architect |
-| Live diagnostics, logs, pods | cloud-troubleshooter |
-
-## Step 6: Schedule (if requested)
+## Scheduling with CronCreate
 
 When the user wants recurring execution ("cada noche", "cron", "schedule"):
 - Use `CronCreate` with the built prompt
@@ -72,5 +61,4 @@ When an agent returns `loop_status` in its `json:contract`:
 - Dispatching a loop without `eval_command` -- the agent cannot measure progress
 - Including loop protocol details in the dispatch prompt -- `agentic-loop` skill handles that
 - Micromanaging the agent's iterations -- dispatch the goal, not the steps
-- Scheduling without confirming measurability first
 - Guessing thresholds the user did not provide

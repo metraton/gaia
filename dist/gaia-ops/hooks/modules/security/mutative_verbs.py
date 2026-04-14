@@ -110,8 +110,8 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
     # NOTE: "commit" removed -- local-only operation, trust system
-    "push", "merge", "rebase", "cherry-pick",
-    "revert", "rollback",
+    "push", "merge", "rebase",
+    "rollback",
     # Access control
     "grant", "assign", "revoke",
     # Reconciliation
@@ -122,7 +122,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "trash", "shred", "srm",
     "truncate", "kill", "terminate", "uninstall", "unpublish",
     "drain", "evict", "cordon", "deregister", "detach",
-    "disconnect", "unbind", "reset", "force-delete", "force-remove", "erase",
+    "disconnect", "unbind", "force-delete", "force-remove", "erase",
     # Collaboration (GitHub/GitLab CLI)
     "comment", "label", "annotate", "approve", "close", "reopen", "tag",
     # Helm-specific
@@ -173,8 +173,6 @@ COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
 #   merge   -- in MUTATIVE_VERBS (local but destructive merge commit)
 #   rebase  -- in MUTATIVE_VERBS (rewrites history)
 #   tag     -- in MUTATIVE_VERBS (creates refs, tag -d deletes)
-#   reset   -- in MUTATIVE_VERBS (can discard commits)
-#   cherry-pick, revert -- in MUTATIVE_VERBS
 
 GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "commit",
@@ -193,6 +191,9 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "shortlog",
     "whatchanged",
     "notes",
+    "reset",       # local-only: modifies local refs/staging, never touches remote
+    "revert",      # local-only: creates a new commit undoing changes, no remote side effects
+    "cherry-pick", # local-only: applies commits from another branch, no remote side effects
 })
 
 

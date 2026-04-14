@@ -44,12 +44,6 @@
         "load_balancers"
       ],
       "write": []
-    },
-    "speckit-planner": {
-      "read": [
-        "aws_accounts"
-      ],
-      "write": []
     }
   },
   "section_schemas": {

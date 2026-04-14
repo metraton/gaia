@@ -60,10 +60,6 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
     "developer-patterns": [
         "developer-patterns",
     ],
-    "speckit-workflow": [
-        "speckit-workflow",
-        "speckit",
-    ],
 }
 
 

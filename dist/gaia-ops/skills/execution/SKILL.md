@@ -32,6 +32,26 @@ Before executing an approved operation:
 
 If a check fails → `BLOCKED` with which check and why.
 
+## Precondition Verification
+
+Before executing any approved command, verify that the preconditions for success still hold. Use domain knowledge to determine what to check -- this is not a lookup table, it is a judgment call.
+
+The world changes between approval and execution. A command approved 5 minutes ago may fail because the environment moved. Checking first avoids a wasted failure cycle.
+
+**Principle**: If the command depends on external state, verify that state before executing.
+
+**Recovery**: If a precondition fails and the fix is local (pull --rebase, state refresh, resource re-fetch), attempt it ONCE, then retry the original command. If recovery also fails, report the situation -- do not loop.
+
+**Boundary**: Recovery actions must only modify LOCAL state. Never attempt remote-mutating recovery (force push, remote delete, state import) without explicit user approval.
+
+## Environment Drift Detection
+
+When the pending file includes an `environment` snapshot (captured when the command was originally blocked), compare current state against it before executing.
+
+If drift is detected (e.g., remote HEAD has moved, resource version changed), surface the drift to the user before proceeding. The user decides whether to continue or abort.
+
+When no snapshot is available, verify observable state regardless -- the absence of a snapshot does not exempt the agent from precondition checks.
+
 ## Execution Protocol
 
 1. Run each step separately — verify exit code before next
@@ -59,9 +79,13 @@ your domain skill defines the specific rollback strategy.
 | "Dry-run passed during planning" | Stale dry-run ≠ current state — re-run |
 | "All commands exited 0, I'm done" | Exit 0 ≠ desired state — run verification criteria |
 | "It's only dev, fewer checks needed" | Irreversibility is irreversibility regardless of env |
+| "Preconditions held during planning" | State changes between approval and execution -- verify again |
+| "No environment snapshot, no drift check" | Verify observable state regardless of whether a snapshot exists |
 
 ## Anti-Patterns
 
 - **COMPLETE without verification** — the most common failure mode; exit 0 is not evidence
 - **Execute on approximate approval** — "user approved something like this" does not activate the grant; the hook checks exact nonces
 - **Mutate without a rollback path** — if you cannot describe how to undo it, partial failure becomes permanent damage
+- **Skipping precondition verification because the user already approved** — approval reflects state at approval time; state may have changed
+- **Looping on failed recovery instead of reporting after one attempt** — attempt recovery once, then report; do not retry in a loop

@@ -33,7 +33,6 @@ _BASE_AGENTS = [
     "gaia-planner",
     "Explore",
     "Plan",
-    "speckit-planner",
     "claude-code-guide",
     "general-purpose",
 ]
@@ -44,7 +43,6 @@ AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia-ops:{a}" for a in _BASE_AGENTS]
 # not gaia domain specialists. They don't require context_provider and don't
 # appear in surface routing. They are valid dispatch targets that the
 # orchestrator can legitimately use.
-# speckit-planner is a project agent that DOES receive context, so it is NOT listed here.
 NATIVE_AGENTS = ["Explore", "Plan", "general-purpose", "claude-code-guide"]
 
 # Meta-agents that don't require context_provider (superset: gaia-system + native agents).

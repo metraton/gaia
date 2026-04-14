@@ -162,7 +162,7 @@ def create_claude_directory(project_root: Path) -> List[str]:
     """Create .claude/ directory with symlinks to the gaia-ops package.
 
     Creates:
-    - Symlinks: agents, tools, hooks, commands, templates, config, speckit, skills, CHANGELOG.md
+    - Symlinks: agents, tools, hooks, commands, templates, config, skills, CHANGELOG.md
     - Directories: logs, tests, project-context, project-context/workflow-episodic-memory, approvals
 
     Args:
@@ -190,7 +190,7 @@ def create_claude_directory(project_root: Path) -> List[str]:
     # Create symlinks
     symlink_names = [
         "agents", "tools", "hooks", "commands",
-        "templates", "config", "speckit", "skills",
+        "templates", "config", "skills",
     ]
     created = []
 
@@ -519,15 +519,6 @@ def _enrich_scan_context(
     # Remove top-level paths if present (single source: infrastructure.paths)
     context.pop("paths", None)
 
-    # Ensure operational_guidelines has speckit_root
-    sections = context.setdefault("sections", {})
-    op_guide = sections.setdefault("operational_guidelines", {})
-    if "speckit_root" not in op_guide:
-        op_guide["speckit_root"] = config.get(
-            "speckit_root",
-            ".claude/project-context/speckit-project-specs",
-        )
-
     # Enrich sections from contract file
     _enrich_from_contracts(context, config, project_root)
 
@@ -568,8 +559,6 @@ def _build_minimal_context(
     if cloud_provider in ("aws", "multi-cloud") and config.get("project_id"):
         cloud_entry["account_id"] = config["project_id"]
 
-    speckit_root = config.get("speckit_root", ".claude/project-context/speckit-project-specs")
-
     # Build paths dict, filtering out empty strings
     infra_paths: Dict[str, str] = {}
     for key in ("gitops", "terraform", "app_services"):
@@ -601,7 +590,6 @@ def _build_minimal_context(
                 "paths": infra_paths,
             },
             "operational_guidelines": {
-                "speckit_root": speckit_root,
                 "commit_standards": {
                     "format": "conventional_commits",
                     "validation_required": True,

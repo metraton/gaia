@@ -39,12 +39,6 @@
         "gcp_services"
       ],
       "write": []
-    },
-    "speckit-planner": {
-      "read": [
-        "gcp_services"
-      ],
-      "write": []
     }
   },
   "section_schemas": {

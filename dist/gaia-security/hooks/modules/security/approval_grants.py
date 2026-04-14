@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -62,8 +63,8 @@ logger = logging.getLogger(__name__)
 # Default grant TTL in minutes
 DEFAULT_GRANT_TTL_MINUTES = 5
 
-# Default pending TTL in minutes (0 = no expiry)
-DEFAULT_PENDING_TTL_MINUTES = 0
+# Default pending TTL in minutes (24 hours)
+DEFAULT_PENDING_TTL_MINUTES = 1440
 
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
 _last_cleanup_time: float = 0.0
@@ -103,6 +104,11 @@ def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
         return True
     elapsed_minutes = (time.time() - timestamp) / 60
     return elapsed_minutes > ttl_minutes
+
+
+def _is_rejected(data: Dict[str, Any]) -> bool:
+    """Return True if a pending approval has been rejected."""
+    return data.get("status") == "rejected"
 
 
 @dataclass(frozen=True)
@@ -223,6 +229,8 @@ def _rebuild_pending_index(session_id: str) -> None:
             continue
         data = _read_json_file(pending_file)
         if not data or data.get("session_id") != session_id:
+            continue
+        if _is_rejected(data):
             continue
 
         nonce = data.get("nonce")
@@ -363,7 +371,7 @@ def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
             if not fname_nonce.startswith(prefix):
                 continue
             data = _read_json_file(pending_file)
-            if data:
+            if data and not _is_rejected(data):
                 candidates.append(data)
 
         if not candidates:
@@ -383,6 +391,83 @@ def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# ------------------------------------------------------------------ #
+# Environment snapshot capture
+# ------------------------------------------------------------------ #
+
+# CLI families whose environment state is worth capturing at blocking time.
+_GIT_CMD_PATTERN = re.compile(r"\bgit\b")
+
+_ENV_SNAPSHOT_TIMEOUT_SECONDS = 2
+
+
+def _run_git_query(args: List[str], cwd: Optional[str] = None) -> Optional[str]:
+    """Run a git sub-command and return stripped stdout, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True,
+            text=True,
+            timeout=_ENV_SNAPSHOT_TIMEOUT_SECONDS,
+            cwd=cwd,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def capture_environment_snapshot(
+    command: str,
+    cwd: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Capture relevant environment state at the time a command is blocked.
+
+    Designed to be fast (<2 s) and failure-tolerant -- a failed capture
+    returns an empty dict and MUST NOT prevent the pending file from being
+    written.
+
+    Currently supports:
+    - **git** commands: local HEAD, remote HEAD (origin/main), current branch.
+
+    Extensible to kubectl, terraform, etc. in future iterations.
+
+    Args:
+        command: The blocked command string.
+        cwd: Working directory context (used for git queries).
+
+    Returns:
+        A dict with captured state, or ``{}`` if nothing could be captured
+        or the command class is not yet supported.
+    """
+    if not _GIT_CMD_PATTERN.search(command):
+        return {}
+
+    try:
+        snapshot: Dict[str, Any] = {"command_class": "git"}
+
+        head = _run_git_query(["rev-parse", "HEAD"], cwd=cwd)
+        if head:
+            snapshot["local_head"] = head
+
+        branch = _run_git_query(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
+        if branch:
+            snapshot["branch"] = branch
+
+        remote_head = _run_git_query(
+            ["rev-parse", "origin/main"], cwd=cwd,
+        )
+        if remote_head:
+            snapshot["remote_head"] = remote_head
+
+        return snapshot
+
+    except Exception as exc:
+        logger.debug("Environment snapshot capture failed: %s", exc)
+        return {}
+
+
 def write_pending_approval(
     nonce: str,
     command: str,
@@ -392,6 +477,7 @@ def write_pending_approval(
     ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
     context: Optional[Dict[str, Any]] = None,
     cwd: Optional[str] = None,
+    environment: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Write a pending approval file when a T3 command is blocked.
 
@@ -410,6 +496,8 @@ def write_pending_approval(
         context: Optional dict with enriched context (source, description,
             risk, rollback, branch, files_changed, etc.).
         cwd: Optional working directory where the command was invoked.
+        environment: Optional dict with environment state at blocking time.
+            If not provided, auto-captured via capture_environment_snapshot().
 
     Returns:
         Path to the pending file, or None on failure.
@@ -430,6 +518,14 @@ def write_pending_approval(
         )
         return None
 
+    # Auto-capture environment if not explicitly provided.
+    if environment is None:
+        try:
+            environment = capture_environment_snapshot(command, cwd=cwd)
+        except Exception as exc:
+            logger.debug("Auto environment capture failed (non-fatal): %s", exc)
+            environment = {}
+
     pending_data = {
         "nonce": nonce,
         "session_id": session_id,
@@ -441,6 +537,7 @@ def write_pending_approval(
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
         "context": context or {},
+        "environment": environment,
     }
     if cwd is not None:
         pending_data["cwd"] = cwd
@@ -1078,6 +1175,12 @@ def cleanup_expired_grants() -> int:
                         sessions_to_rebuild.add(session_id)
                     cleaned += 1
                     continue
+                if _is_rejected(data):
+                    _cleanup_grant(pending_file)
+                    if session_id:
+                        sessions_to_rebuild.add(session_id)
+                    cleaned += 1
+                    continue
                 timestamp = data.get("timestamp", 0)
                 ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
                 if _is_ttl_expired(timestamp, ttl):
@@ -1126,6 +1229,8 @@ def get_pending_approvals_for_session(
                 continue
             data = _read_json_file(pending_file)
             if not data or data.get("session_id") != session_id:
+                continue
+            if _is_rejected(data):
                 continue
             timestamp = data.get("timestamp", 0)
             ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
@@ -1187,6 +1292,49 @@ def find_pending_for_command(
             continue
 
     return None
+
+
+def reject_pending(nonce_prefix: str) -> bool:
+    """Mark a pending approval as rejected without deleting the file.
+
+    Finds the pending file whose nonce starts with ``nonce_prefix``, sets
+    ``status`` to ``"rejected"`` and ``rejected_at`` to the current time,
+    writes the file back, and rebuilds the session index.
+
+    Rejected pendings are invisible to all readers (``_is_rejected`` filter)
+    and are cleaned up by the pending scanner on its next sweep.
+
+    Args:
+        nonce_prefix: Hex prefix of the nonce (typically 8 chars from ``[P-xxx]``).
+
+    Returns:
+        True if a matching pending was found and rejected, False otherwise.
+    """
+    try:
+        grants_dir = _get_grants_dir()
+        for pending_file in grants_dir.glob("pending-*.json"):
+            if pending_file.name.startswith("pending-index-"):
+                continue
+            fname_nonce = pending_file.stem.removeprefix("pending-")
+            if not fname_nonce.startswith(nonce_prefix):
+                continue
+            data = _read_json_file(pending_file)
+            if not data or _is_rejected(data):
+                continue
+            data["status"] = "rejected"
+            data["rejected_at"] = time.time()
+            pending_file.write_text(json.dumps(data, indent=2))
+            session_id = data.get("session_id")
+            if session_id:
+                _rebuild_pending_index(session_id)
+            logger.info(
+                "Pending approval rejected: nonce_prefix=%s, nonce=%s",
+                nonce_prefix, data.get("nonce", "?"),
+            )
+            return True
+    except Exception as e:
+        logger.error("Error rejecting pending approval for prefix %s: %s", nonce_prefix, e)
+    return False
 
 
 def write_pending_approval_for_file(

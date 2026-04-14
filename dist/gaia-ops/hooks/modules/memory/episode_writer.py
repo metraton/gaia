@@ -26,7 +26,7 @@ def get_session_events() -> Dict[str, Any]:
     Get critical events from active session context.
 
     Returns:
-        Dict with categorized session events (commits, pushes, file_mods, speckit)
+        Dict with categorized session events (commits, pushes, file_mods)
     """
     context_path = Path(".claude/session/active/context.json")
 
@@ -71,15 +71,6 @@ def get_session_events() -> Dict[str, Any]:
             if e.get("event_type") == "file_modifications"
         ]
 
-        speckit = [
-            {
-                "command": e.get("command", ""),
-                "timestamp": e.get("timestamp", "")
-            }
-            for e in critical_events
-            if e.get("event_type") == "speckit_milestone"
-        ]
-
         result = {}
         if commits:
             result["git_commits"] = commits
@@ -87,8 +78,6 @@ def get_session_events() -> Dict[str, Any]:
             result["git_pushes"] = pushes
         if file_mods:
             result["file_modifications"] = file_mods
-        if speckit:
-            result["speckit_milestones"] = speckit
 
         if result:
             logger.info(f"Found {len(critical_events)} session events")

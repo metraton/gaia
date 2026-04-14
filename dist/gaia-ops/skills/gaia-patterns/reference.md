@@ -50,7 +50,6 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 | cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics |
 | gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux |
 | terraform-architect | `agents/terraform-architect.md` | Terraform/Terragrunt IaC |
-| speckit-planner | `agents/speckit-planner.md` | Feature specification and planning (deprecated, use gaia-planner) |
 | gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition |
 
 ### Skills (24 directories + 1 top-level reference)
@@ -78,8 +77,6 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 | `orchestrator-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
-| `specification/` | Technique | Injected (speckit-planner) |
-| `speckit-workflow/` | Domain | Injected (speckit-planner) |
 | `terraform-patterns/` | Domain | Injected (terraform-architect) |
 | `skills/reference.md` | Reference | On-demand (shared security-tiers ref) |
 
@@ -89,11 +86,7 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 |---------|------|---------|
 | `/gaia` | `commands/gaia.md` | Invoke gaia meta-agent |
 | `/scan-project` | `commands/scan-project.md` | Scan project, generate project-context.json |
-| `/speckit.init` | `commands/speckit.init.md` | Bootstrap Spec-Kit structure |
-| `/speckit.plan` | `commands/speckit.plan.md` | Implementation planning |
-| `/speckit.tasks` | `commands/speckit.tasks.md` | Task generation from spec |
-| `/speckit.add-task` | `commands/speckit.add-task.md` | Add task to existing plan |
-| `/speckit.analyze-task` | `commands/speckit.analyze-task.md` | Analyze specific task |
+| `/gaia-plan` | `commands/gaia-plan.md` | Plan a feature, create brief, decompose into tasks |
 
 ### Tools (7 subsystems)
 

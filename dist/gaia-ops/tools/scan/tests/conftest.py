@@ -666,7 +666,7 @@ def sample_project_context_v1() -> Dict[str, Any]:
             "cloud_provider": "gcp",
             "project_id": "my-gcp-project",
             "region": "us-central1",
-            "speckit_root": "specs/",
+            "project_root": "specs/",
         },
         "application_architecture": {
             "package_name": "legacy-app",

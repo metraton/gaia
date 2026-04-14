@@ -21,7 +21,6 @@ AGENT_EVENT_FILTERS = {
     "cloud-troubleshooter": "*",  # All events (needs full history for diagnosis)
     "gaia-system": "*",  # All events (workflow analysis)
     "gaia-operator": ["git_commit", "file_modifications", "infrastructure_change"],
-    "speckit-planner": ["git_commit", "file_modifications"],
     "gaia-planner": ["git_commit", "file_modifications"],
 }
 

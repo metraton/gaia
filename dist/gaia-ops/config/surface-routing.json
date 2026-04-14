@@ -253,7 +253,7 @@
       }
     },
     "planning_specs": {
-      "intent": "The user needs to plan a feature, break down requirements, create specs, implementation plans, or task lists using the Spec-Kit workflow.",
+      "intent": "The user needs to create a brief/spec, plan a feature, execute a plan, check plan status, or break down requirements into tasks.",
       "primary_agent": "gaia-planner",
       "adjacent_surfaces": [
         "app_ci_tooling",
@@ -274,44 +274,31 @@
         "Tag adjacent surfaces explicitly when the plan crosses infra, runtime, or app boundaries",
         "Do not silently choose an implementation path when multiple valid options remain"
       ],
+      "skills": ["brief-spec"],
       "signals": {
         "keywords": [
+          "brief",
           "spec",
           "plan",
+          "execute plan",
+          "plan status",
           "tasks",
-          "research",
-          "data-model",
           "acceptance criteria",
           "feature breakdown",
-          "workflow phase",
-          "speckit",
           "specification",
           "specify",
-          "task generation",
           "implementation plan",
           "feature planning",
-          "pre-implementation",
           "feature spec",
           "task breakdown",
-          "brief",
-          "gaia-plan"
+          "create a plan",
+          "run the plan"
         ],
-        "commands": [
-          "/gaia-plan",
-          "/speckit.plan",
-          "/speckit.tasks",
-          "/speckit.init",
-          "/speckit.add-task",
-          "/speckit.analyze-task"
-        ],
+        "commands": [],
         "artifacts": [
           "brief.md",
           "spec.md",
-          "plan.md",
-          "tasks.md",
-          "research.md",
-          "data-model.md",
-          "governance.md"
+          "plan.md"
         ]
       }
     },

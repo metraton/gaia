@@ -40,7 +40,8 @@ If 2+ match, dispatch in parallel.
 | terraform_iac | terraform-architect | Create, modify, review, or validate IaC — Terraform, Terragrunt, cloud resources, state, plan/apply |
 | gitops_desired_state | gitops-operator | Create, modify, or review Kubernetes desired state — Flux, Helm, Kustomize, manifests |
 | app_ci_tooling | developer | Write, modify, test, or build app code — Node/TS, Python, Docker, CI/CD, packages |
-| planning_specs | gaia-planner | Plan features, break down requirements, create specs, plans, task lists |
+| planning_specs (brief) | orchestrator (brief-spec skill) | Create a brief/spec conversationally with the user -- load Skill('brief-spec') inline |
+| planning_specs (plan) | gaia-planner | Create a plan from a brief -- returns plan.md for orchestrator dispatch |
 | gaia_system | gaia-system | Modify or analyze Gaia itself — hooks, skills, agents, routing, security, architecture |
 | workspace | gaia-operator | Personal workspace — memory, loops, email, file transfers, general automation |
 
@@ -56,6 +57,55 @@ After routing, for each matched agent ask:
 
 Each agent gets a DIFFERENT prompt focused on their domain.
 Do not send the same user message to multiple agents — decompose it.
+
+## Dispatch execution
+
+Every dispatch carries a goal and acceptance criteria. The goal tells the agent
+WHAT to achieve. The AC tells the orchestrator HOW to verify it succeeded.
+The agent decides HOW to achieve the goal -- the orchestrator never prescribes
+implementation.
+
+### Dispatch prompt structure
+
+Every Agent() dispatch includes:
+- **Goal**: What the agent must achieve (from user request, plan task, or brief)
+- **AC**: How to verify success (test command, expected output, observable state)
+- **Context**: Minimal context the agent needs (stack, paths, constraints)
+
+### Three dispatch modes
+
+| Mode | When | How |
+|------|------|-----|
+| **One-shot** | Single task, binary outcome | Dispatch -> verify AC -> done/retry/blocked |
+| **Iterative** | Optimization, measurable improvement | Dispatch with agentic-loop skill + metric + threshold |
+| **Deferred** | Scheduled or recurring | CronCreate with the dispatch prompt |
+
+### Post-dispatch verification
+
+When an agent completes:
+1. Check the AC (run verify command or evaluate result)
+2. **Pass** -> task complete, update status if from a plan
+3. **Fail** -> retry once with failure context. If still fails -> report blocked
+4. **Blocked** -> present blocker to user, ask for direction
+
+### Classifying dispatch mode
+
+| User signal | Mode |
+|-------------|------|
+| Direct request ("haz X", "implementa Y") | one-shot |
+| Improvement ("mejora", "optimiza", "hasta que") | iterative |
+| Schedule ("cada noche", "cron", "programa") | deferred |
+| Plan task ("ejecuta T1 del plan") | one-shot (goal+AC from plan) |
+
+### Agent selection
+
+Match by the DOMAIN of the goal, not the topic of conversation:
+- Infrastructure (terraform, cloud resources) -> terraform-architect
+- Kubernetes (manifests, helm, flux) -> gitops-operator
+- Application code (tests, APIs, packages) -> developer
+- Gaia internals (hooks, skills, agents) -> gaia-system
+- Live diagnostics (logs, pods, health) -> cloud-troubleshooter
+- Planning (create plan from brief) -> gaia-planner
 
 ## Model selection
 
@@ -94,14 +144,6 @@ the orchestrator then presents a vague summary, the user approves blind, and the
 agent retries without a valid nonce, looping on hook rejections.
 After any approval or feedback, resume the SAME agent via SendMessage --
 it already holds investigation context. A new Agent dispatch loses that context.
-
-## Memory Protocol
-
-When something notable surfaces during a session — a decision that
-changes direction, a completed milestone, a pattern worth revisiting,
-or ideas that emerged but aren't being pursued yet — suggest saving
-it to memory. The threshold: would this matter in the next session?
-Use Claude Code's native memory mechanism directly.
 
 ## Failures
 
