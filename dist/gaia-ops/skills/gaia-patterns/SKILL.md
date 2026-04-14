@@ -1,94 +1,88 @@
 ---
 name: gaia-patterns
-description: Use when analyzing, designing, or modifying the gaia-ops orchestration system architecture
+description: Use when building or modifying gaia-ops components -- agents, skills, hooks, CLI tools, commands, or routing config
 metadata:
   user-invocable: false
   type: domain
 ---
 
-# Gaia-Ops Patterns
+# Gaia-Ops Code Patterns
 
-Domain knowledge for the gaia-ops meta-system. For the Component Map details, see `reference.md`.
+Construction patterns for building Gaia components. Every component type follows a discoverable pattern -- read 2-3 existing examples before creating a new one. For the full component inventory, see `reference.md`.
 
-## Prompt → Result Flow
+## Prompt -> Result Flow
 
 ```
 1. User sends prompt
-   ↓
-2. Orchestrator (agent definition: gaia-orchestrator.md) — routes to the correct agent
-   ↓
+   |
+2. Orchestrator routes to agent (surface-routing.json)
+   |
 3. Pre-Tool Hook (pre_tool_use.py)
-   ├─ Inject project-context.json (relevant sections per agent)
-   ├─ Load skills from frontmatter
-   └─ Validate permissions
-   ↓
-4. Agent Executes — uses tools, follows skills, returns `json:contract` block
-   ↓
-5. Post-Tool Hook — audit + metrics
-   ↓
-6. Orchestrator processes `json:contract` block (plan_status)
-   ├─ REVIEW → present plan, get feedback → resume (with approval_id if hook-blocked)
-   ├─ NEEDS_INPUT → ask user → resume
-   └─ COMPLETE → respond to user
+   +-- Inject project-context.json
+   +-- Load skills from frontmatter
+   +-- Validate permissions
+   |
+4. Agent executes -> returns json:contract
+   |
+5. Post-Tool Hook -> audit + metrics
+   |
+6. Orchestrator processes plan_status (REVIEW / NEEDS_INPUT / COMPLETE)
 ```
 
-## Key Concepts
+## Hook Patterns
 
-- **Delegation First:** The orchestrator delegates domain work. It cannot read files, run commands, or edit code — only route, track, and research.
-- **Agent Instantiation:** identity (.md) + skills (injected) + project-context (contracts) + orchestrator request.
-- **Security Tiers:** T0 (read) → T1 (validate) → T2 (simulate) → T3 (realize, requires approval).
-- **T3 Flow:** IN_PROGRESS → REVIEW → IN_PROGRESS → COMPLETE (plan-first or hook-blocked with approval_id).
-- **Consolidation Loop:** for multi-surface work, Gaia may dispatch more than one round of agents, but only while gaps are actionable and evidence is still improving.
-- **Principle:** Skills teach process. Agents teach identity and domain knowledge. Runtime enforces deterministic contracts. Never duplicate.
+Entry points (`hooks/*.py`) are stdin/stdout glue only. All logic lives in the adapter layer.
 
-## Multi-Agent Consolidation
+```
+hooks/pre_tool_use.py          -- reads stdin, calls adapter, writes stdout
+  -> adapters/claude_code.py   -- parses event, dispatches to modules
+    -> modules/security/*      -- blocked_commands, mutative_verbs
+    -> modules/context/*       -- context_injector, contracts_loader
+    -> modules/agents/*        -- contract_validator, skill_injection
+```
 
-The orchestrator owns the consolidation loop. Agents return `json:contract` blocks with `consolidation` objects; the orchestrator merges, decides whether to dispatch another round, and stops when gaps are no longer actionable.
+**To add a new module:** Write module in `modules/<package>/`, import and call it from the relevant adapter method. Modules receive parsed context and return results; they never read stdin or write stdout.
 
-## Workflow Design Philosophy
+**To add a new hook entry point:** Create `hooks/<event_name>.py`, register it in `build/<plugin>.manifest.json`, add matchers. The entry point reads stdin JSON, calls the adapter, and prints the response.
 
-1. **Flow naturally** — each step leads to the next without friction
-2. **Be positive** — describe what to do, not what to avoid
-3. **Allow discovery** — agent reaches conclusions empirically
-4. **Be concise** — leave room for growth
-5. **Be measurable** — goals with numbers, not subjective terms
+## Agent Patterns
 
-## Line Budget
+```yaml
+---
+name: agent-name
+description: Routing label -- triggers when orchestrator sees matching intent
+tools: Read, Edit, Write, Glob, Grep, Bash  # restrict per domain
+model: inherit
+skills:
+  - agent-protocol        # always first
+  - security-tiers        # always second
+  - command-execution     # if agent runs commands
+  - domain-skill          # agent's domain patterns
+  - context-updater       # if agent modifies project state
+---
+```
 
-| Document | Target | Max |
-|----------|--------|-----|
-| Agent `.md` | 80 lines | 120 |
-| `CLAUDE.md` | 60 lines | 100 |
-| Skill (injected) | < 100 lines | 100 |
+**Identity** (1-2 paragraphs): domain, output format. **Scope**: CAN DO / CANNOT DO -> DELEGATE table. **Domain Errors**: agent-specific errors only.
 
-## Agent Creation Standards
+Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + project-context (filtered by context-contracts.json) + orchestrator request.
 
-Before creating a new agent, read 2-3 existing agent `.md` files in the `agents/` directory. They are the canonical examples of structure, tone, and scope boundaries.
+## Routing Patterns
 
-1. **YAML Frontmatter** — `name`, `description` (routing label), `tools`, `model`, `skills` (canonical order)
-2. **Identity** — 1-2 paragraphs: what domain, what output format
-3. **Scope** — CAN DO / CANNOT DO → DELEGATE table with agent names
-4. **Domain Errors** — domain-specific errors only
+`config/surface-routing.json` maps user intent to agents. Each surface has: `intent`, `primary_agent`, `adjacent_surfaces`, and `signals` (high/medium confidence keyword patterns).
 
-**Canonical injected skills order:** `agent-protocol` → `security-tiers` → `investigation` → `command-execution` → domain skill → `context-updater` → `fast-queries`
+**To add a surface:** Add entry to `surfaces` with intent + primary_agent + signals. Update L1 routing tests.
+**To add a signal:** Add keyword patterns to the appropriate confidence level in an existing surface.
 
-**On-demand workflow skills:** `approval`, `execution`, `git-conventions`
+## CLI Tool Patterns
 
-## Documentation Standards
+CLI tools live in `bin/` and are registered in `package.json` `bin` field. Pattern: parse args, resolve paths (follow symlinks to source), run checks, exit with code. `gaia-doctor` is the diagnostic model -- read it first.
 
-**Required sections (in order):** What it does, Where it fits, How it works, Components, Usage, References.
+## Command Patterns
 
-**The zoom lens rule:** every README shows the complete system flow and bolds where this module participates.
+Slash commands live in `commands/<name>.md` -- markdown files that instruct the orchestrator on `/<name>`. To add: create the `.md`, add to `build/<plugin>.manifest.json`.
 
-**Writing rules:** every line earns its place — no duplication, discoverable over documented.
+## Key Principles
 
-## Release Management
-
-- **Package:** `@jaguilar87/gaia-ops` (npm public registry)
-- **Symlinks:** `.claude/` symlinks to `node_modules/@jaguilar87/gaia-ops/`
-
-| Change | Version |
-|--------|---------|
-| Bug fix in agent or skill | PATCH |
-| New agent or skill | MINOR |
-| Breaking change to `json:contract` format | MAJOR |
+- **Skills teach process. Agents teach identity. Runtime enforces contracts.** Never duplicate across these layers.
+- **Delegation first.** The orchestrator routes; it cannot read files, run commands, or edit code.
+- **Consolidation loop.** For multi-surface work, the orchestrator may dispatch multiple agent rounds, stopping when gaps are no longer actionable.

@@ -69,23 +69,42 @@ The file is named `YYYY-MM-DD-slug.html` and placed in `_posts/`.
 - The Spanish section has `hidden` attribute (JavaScript toggles it)
 - The closing line uses `class="closing-line"` with `<em>` wrapper
 
-## Existing Articles (for style reference)
+## Article Catalog
 
-| Date | Slug | Theme |
-|------|------|-------|
-| 2025-09-29 | context-design-agentic-deployment | Context engineering and agentic deployment on GCP |
-| 2025-11-01 | beyond-delegation-agentic-systems | Moving past simple delegation in agentic workflows |
-| 2026-04-02 | faster-development-orchestration | How orchestration improves faster development cycles |
-| 2026-04-10 | writing-skills-that-actually-work | Skill design for LLM agents -- judgment over compliance |
+| Date | Slug | Status |
+|------|------|--------|
+| 2025-09-29 | context-design-agentic-deployment | PUBLISHED |
+| 2025-11-01 | beyond-delegation-agentic-systems | PUBLISHED |
+| 2026-04-02 | faster-development-orchestration | PUBLISHED |
+| 2026-04-10 | writing-skills-that-actually-work | PUBLISHED |
+| TBD | how-to-build-an-agent-identity | PENDING |
 
-## Local Preview
+## Environment & Tooling
 
-```bash
-cd /home/jorge/ws/me/metraton.github.io
-bundle exec jekyll serve
-# Preview at http://localhost:4000
-# Note: WSL2 may require port forwarding for browser access
-```
+| Resource | Location |
+|----------|----------|
+| Blog repo | `/home/jorge/ws/me/metraton.github.io/` |
+| Jekyll server | `cd /home/jorge/ws/me/metraton.github.io && bash jekyll-loop.sh` (port 4000) |
+| Playwright | `~/.cache/ms-playwright/`, requires `NODE_PATH=/home/jorge/ws/aaxis/rnd/node_modules` |
+| Git branch | `master` (not main) |
+| GitHub Pages | `https://metraton.github.io/` |
+
+Check if Jekyll is running: `ps aux | grep jekyll`
+
+## Visual Components Catalog
+
+All CSS lives inline in `_layouts/default.html` -- no external stylesheets.
+
+| Component | CSS Class | When to Use |
+|-----------|-----------|-------------|
+| Before/After Grid | `.file-structure-demo` | Comparing old vs new approaches, code transformations |
+| Card Grid | `.subagents-grid` / `.subagent-box` | Showing related concepts as cards (agents, types, categories) |
+| Skills Grid | `.skills-grid` | 5-column card grid with optional `.lead-agent` header |
+| Callout Box | `.callout` | Highlighted info, tips, key takeaways |
+| Blockquote | `<blockquote>` | Editorial quotes, citations, reflective text |
+| Chapter Layout | `.chapter` / `.chapter-layout` | Text + ASCII diagram side by side |
+| Code Block | `<pre><code>` | Actual code, config files, terminal output |
+| Table | `<table>` | Data comparison (note: limited CSS, consider cards instead) |
 
 ## Publication
 
@@ -93,10 +112,19 @@ bundle exec jekyll serve
 cd /home/jorge/ws/me/metraton.github.io
 git add _posts/YYYY-MM-DD-slug.html
 git commit -m "Add: article title"
-git push origin main
+git push origin master
 # GitHub Pages deploys automatically
 ```
 
-## Pending Article Ideas
+## LinkedIn Post Template
 
-- **"How to Build an Agent Identity"** -- about agent identities, what they contain, how to structure them, the relationship between identity and skills. More reflective than technical.
+```
+[1-3 sentence hook connecting to the article's core insight]
+
+https://metraton.github.io/<slug>/
+
+P.D.: Lo escribí en formato bilingüe (ES/EN), para que lo leas de la forma que prefieras.
+```
+
+Tone: conversational but technical. No aggressive hashtags. The article preview image does the heavy lifting -- text just hooks.
+

@@ -28,7 +28,7 @@ Skip when spec.md already exists, or the user asks about live state.
 
 ## Step 1: Load Context and Constraints
 
-Before the first question, delegate to the `gaia` agent to read
+Before the first question, delegate to the `gaia-system` agent to read
 `governance.md` and `project-context.json`. The `speckit_root` path comes
 from `project-context.json` at `paths.speckit_root` (default: `specs/`).
 Missing path -> BLOCKED.
@@ -67,21 +67,8 @@ Never ask implementation questions (schema design, API endpoints, module choice)
 ## Step 4: Draft the Spec
 
 Use `speckit/templates/spec-template.md` as the canonical format.
-
-**Mandatory sections:**
-1. **Problem Statement** -- 2-3 sentences. Why this matters and who feels it.
-2. **User Stories** -- "As [actor], I want [goal], so that [benefit]." 1-5 stories; each names a real actor, not "the system."
-3. **Acceptance Criteria** -- Given/When/Then. At least one per story. These are the contract -- if a criterion cannot be tested without knowing the implementation, rewrite it.
-4. **Scope Boundaries** -- IN / OUT columns. Explicit exclusions prevent scope creep during planning.
-5. **Constraints** -- From governance.md. Only constraints relevant to this feature.
-6. **Key Entities** -- If data is involved. Plain language, no field types or schemas.
-
-**Optional:** Edge Cases, Security Considerations, Performance Expectations.
-Mark uncertainty with `[NEEDS CLARIFICATION: specific question]`.
-
-Before presenting, verify: every story names a real actor, every criterion
-is implementation-agnostic, technologies appear only as context, scope
-excludes at least one adjacent concern, constraints come from governance.
+For mandatory sections, optional sections, and the pre-presentation
+checklist, see `reference.md` in this directory.
 
 ## Step 5: Present and Iterate
 

@@ -10,18 +10,14 @@ metadata:
 
 ## Commit Format
 
-Conventional Commits format: `type(scope): description`
-
-Structured commits enable automated changelogs, semantic versioning, and meaningful `git log` filtering. The `commit_validator.py` hook enforces this format automatically.
-
 | Element | Rule |
 |---------|------|
 | Format | `type(scope): short description` |
 | Types | feat, fix, refactor, docs, test, chore, ci, perf, style, build |
 | Scope | Optional, reflects module/area changed |
 | Subject | Max 72 chars, lowercase start, imperative mood, no period, no emoji |
-| Body | Optional, blank line after subject, 72 char line wrap (warning) |
-| Footers | `BREAKING CHANGE:`, `Refs:`, `Closes:`, `Fixes:` allowed |
+| Body | Optional, blank line after subject, 72 char line wrap |
+| Footers | `BREAKING CHANGE:`, `Refs:`, `Closes:`, `Fixes:`, `Implements:`, `See:` |
 
 ## Examples
 
@@ -32,19 +28,20 @@ refactor: simplify context provider logic
 chore(deps): update terraform to v1.6.0
 ```
 
-## Rules
+## Git Path Flags
 
-- Use `git commit -m "type(scope): description"` format
-- Do NOT add `Co-Authored-By` or `Generated with Claude Code` footers (hooks auto-strip these)
-- Description starts lowercase, imperative mood
-- **Never use git path flags** -- do not use `git -C <path>`, `git --git-dir=<path>`, or `git --work-tree=<path>`. The permission system matches command prefixes; these flags break all `git <subcommand>:*` allow/deny rules. Per `command-execution` Rule 2, run `cd` as a separate Bash call before running git commands.
-- **Push to the feature branch by default.** Only push directly to `main` if explicitly instructed or the plan is already on main. Never force-push (`git push --force`).
+`git -C <path>`, `git --git-dir=<path>`, and `git --work-tree=<path>` break
+the permission system. Allow/deny rules match command prefixes like
+`git commit:*` -- path flags inserted before the subcommand shift the prefix
+and bypass all rules silently. Run `cd` as a separate Bash call, then run git.
 
-## Hook Enforcement (Automatic)
+## Push Defaults
 
-The `commit_validator.py` hook validates against `config/git_standards.json`:
+Push to the feature branch. Only push directly to `main` when explicitly
+instructed or when the work is already on main. Force-push (`--force`)
+requires explicit user instruction.
 
-- **Forbidden footers** (error): `Co-Authored-By: Claude`, `Generated with Claude Code`, emoji-prefixed footers
-- **Conventional Commits format** (error): must match `type(scope): description` with allowed types
-- **Subject rules** (error): max 72 chars, no trailing period, no emoji
-- **Body rules** (warning): blank line after subject, 72 char line wrap
+## Hook Enforcement
+
+The `commit_validator.py` hook validates against `config/git_standards.json`.
+Format violations block the commit. Body line length triggers warnings only.

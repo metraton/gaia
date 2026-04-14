@@ -1,6 +1,6 @@
 ---
 name: agent-protocol
-description: Use when producing any agent response -- governs the json:contract block, status reporting, and execution loop
+description: Use when producing any agent response
 metadata:
   user-invocable: false
   type: protocol

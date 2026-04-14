@@ -44,7 +44,7 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 | Agent | File | Domain |
 |-------|------|--------|
 | gaia-orchestrator | `agents/gaia-orchestrator.md` | Routes requests, manages workflow, consolidation |
-| gaia-operator | `agents/gaia-operator.md` | CI/CD, pipelines, release automation |
+| gaia-operator | `agents/gaia-operator.md` | Workspace operator -- personal workspace tasks, memory management, integrations |
 | gaia-system | `agents/gaia-system.md` | Gaia-ops meta-system itself |
 | developer | `agents/developer.md` | Application code (Node/TS, Python) |
 | cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics |
@@ -52,25 +52,29 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 | terraform-architect | `agents/terraform-architect.md` | Terraform/Terragrunt IaC |
 | speckit-planner | `agents/speckit-planner.md` | Feature specification and planning |
 
-### Skills (20 directories + 1 top-level reference)
+### Skills (24 directories + 1 top-level reference)
 
 | Skill | Type | Injection |
 |-------|------|-----------|
 | `agent-protocol/` | Protocol | Injected (all agents) |
-| `agent-response/` | Technique | Injected (orchestrator) |
+| `agent-response/` | Protocol | Injected (orchestrator) |
 | `approval/` | Technique | On-demand |
+| `blog-writing/` | Technique | Injected (gaia-operator) |
 | `command-execution/` | Discipline | Injected |
-| `context-updater/` | Technique | Injected |
+| `context-updater/` | Protocol | Injected |
 | `developer-patterns/` | Domain | Injected (developer) |
 | `execution/` | Discipline | On-demand |
-| `fast-queries/` | Technique | Injected |
+| `fast-queries/` | Reference | Injected |
 | `gaia-patterns/` | Domain | Injected (gaia-system) |
+| `gaia-release/` | Technique | Injected (gaia-system) |
 | `git-conventions/` | Reference | On-demand |
 | `gitops-patterns/` | Domain | Injected (gitops-operator) |
-| `gmail-policy/` | Domain | Injected (orchestrator) |
+| `gmail-policy/` | Reference | Injected (orchestrator) |
+| `gmail-triage/` | Technique | Injected (gaia-operator) |
+| `gws-setup/` | Technique | On-demand |
 | `investigation/` | Technique | Injected |
-| `memory-management/` | Technique | Injected (orchestrator) |
-| `orchestrator-approval/` | Technique | Injected (orchestrator) |
+| `memory-curation/` | Reference | Injected (orchestrator) |
+| `orchestrator-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
 | `specification/` | Technique | Injected (speckit-planner) |
@@ -156,9 +160,20 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 |----------|----------------|------------|
 | T3 approval | Claude Code native dialog (`permissionDecision: ask`) | Hook blocks with nonce, orchestrator approval flow |
 | Agents | None | 8 agents routed by orchestrator |
-| Skills | None | 20 skills injected per frontmatter |
+| Skills | None | 24 skills injected per frontmatter |
 | Commands | None | 7 slash commands |
 | PreToolUse matchers | `Bash` only | `Bash`, `Task`, `Agent`, `SendMessage`, multi-tool |
+
+### Security Tiers (quick reference)
+
+| Tier | Name | Side Effects | Approval |
+|------|------|-------------|----------|
+| T0 | Read-Only | None | No |
+| T1 | Validation | None (local) | No |
+| T2 | Simulation | None (dry-run) | No |
+| T3 | Realization | Modifies state | Yes |
+
+Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (nonce-based approval). Everything not blocked and not mutative is safe by elimination.
 
 ---
 
@@ -283,7 +298,18 @@ npm publish                    # publishes @jaguilar87/gaia-ops
 
 ---
 
-## 6. Dev Workflow
+## 6. Metrics and Anomaly Detection
+
+| Module | What It Tracks |
+|--------|----------------|
+| `audit/metrics.py` | Hook invocations, tier distribution, approval rates |
+| `audit/event_detector.py` | Anomalous patterns in agent behavior |
+| `audit/workflow_auditor.py` | Workflow compliance and audit trail |
+| `npx gaia-metrics` | CLI access to collected metrics |
+
+---
+
+## 7. Dev Workflow
 
 ### Dev Mode (symlinks to source)
 
@@ -328,7 +354,7 @@ npm publish                           # publish to npm
 
 ---
 
-## 7. Validation Tools
+## 8. Validation Tools
 
 ### Routing Simulator
 

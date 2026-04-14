@@ -247,8 +247,8 @@ OPS_PERMISSIONS = {
             "WebFetch",
             "WebSearch",
             "NotebookEdit",
-            "Edit(/tmp/*)",
-            "Write(/tmp/*)",
+            "Edit",
+            "Write",
         ],
         "deny": _DENY_RULES,
         "ask": [],
@@ -270,6 +270,36 @@ def mark_initialized() -> None:
         "mode": get_plugin_mode(),
     }))
     logger.info("Plugin marked as initialized: %s", marker)
+
+
+def _tool_name(entry: str) -> str:
+    """Extract the base tool name from a permission entry.
+
+    Examples:
+        "Edit"          -> "Edit"
+        "Edit(/tmp/*)"  -> "Edit"
+        "Bash(*)"       -> "Bash"
+        "Bash(aws ec2 delete-vpc:*)" -> "Bash"
+    """
+    paren = entry.find("(")
+    return entry[:paren] if paren != -1 else entry
+
+
+def _authoritative_merge(current: set[str], ours: set[str]) -> list[str]:
+    """Merge permissions so Gaia's entries are authoritative.
+
+    For every base tool name that Gaia defines, ALL existing entries for
+    that tool are replaced with Gaia's current values.  User-added entries
+    for tool names Gaia does NOT manage are preserved.
+
+    This prevents stale scoped entries (e.g. ``Edit(/tmp/*)`` lingering
+    after Gaia changes to ``Edit``) while keeping user customizations
+    for tools outside Gaia's scope.
+    """
+    gaia_tool_names = {_tool_name(e) for e in ours}
+    # Keep only user entries whose tool name Gaia doesn't manage
+    user_entries = {e for e in current if _tool_name(e) not in gaia_tool_names}
+    return sorted(user_entries | ours)
 
 
 def setup_project_permissions() -> bool:
@@ -297,13 +327,15 @@ def setup_project_permissions() -> bool:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Merge permissions — add ours without removing user's
+    # Authoritative merge: Gaia's entries replace any existing entries for the
+    # same base tool name (removes stale scoped variants like Edit(/tmp/*) when
+    # Gaia now says Edit).  User entries for tools Gaia doesn't manage survive.
     perms = existing.get("permissions", {})
     current_allow = set(perms.get("allow", []))
     current_deny = set(perms.get("deny", []))
 
-    merged_allow = sorted(current_allow | our_allow)
-    merged_deny = sorted(current_deny | our_deny)
+    merged_allow = _authoritative_merge(current_allow, our_allow)
+    merged_deny = _authoritative_merge(current_deny, our_deny)
 
     if current_allow == set(merged_allow) and current_deny == set(merged_deny):
         logger.info("Project permissions already include gaia rules, skipping")
@@ -501,46 +533,15 @@ def setup_project_hooks() -> bool:
         except (json.JSONDecodeError, OSError):
             existing = {}
 
-    # Migrate existing relative .claude/hooks/ paths to absolute
+    # Replace hooks entirely — gaia is the sole author of hook entries.
+    # Previous merge-append logic caused duplicates when setup ran twice
+    # per session (session_start + user_prompt_submit).
     existing_hooks = existing.get("hooks", {})
-    changed = False
-
-    for event, entries in existing_hooks.items():
-        for entry in entries:
-            for h in entry.get("hooks", []):
-                if "command" in h and h["command"].startswith(".claude/hooks/"):
-                    h["command"] = h["command"].replace(
-                        ".claude/hooks/", f"{hooks_abs}/", 1
-                    )
-                    changed = True
-
-    # Smart merge: deduplicate by command string
-    for event, new_entries in converted_hooks.items():
-        if event not in existing_hooks:
-            existing_hooks[event] = new_entries
-            changed = True
-            continue
-
-        # Collect existing command strings
-        existing_commands: set = set()
-        for entry in existing_hooks[event]:
-            for h in entry.get("hooks", []):
-                if "command" in h:
-                    existing_commands.add(h["command"])
-
-        # Add entries whose commands are not already present
-        for new_entry in new_entries:
-            new_commands = [h["command"] for h in new_entry.get("hooks", []) if "command" in h]
-            all_present = len(new_commands) > 0 and all(c in existing_commands for c in new_commands)
-            if not all_present:
-                existing_hooks[event].append(new_entry)
-                changed = True
-
-    if not changed:
+    if existing_hooks == converted_hooks:
         logger.info("settings.local.json hooks already up to date")
         return False
 
-    existing["hooks"] = existing_hooks
+    existing["hooks"] = converted_hooks
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
     logger.info("Merged hooks into %s", settings_path)

@@ -8,7 +8,7 @@ skills:
   - security-tiers
   - command-execution
   - context-updater
-  - memory-management
+  - memory-curation
   - gmail-triage
   - gws-setup
 ---
@@ -37,7 +37,7 @@ Load them with `Skill('skill-name')` when the task requires it.
 
 | Task | How |
 |------|-----|
-| Create/update/search memory files | Read/Write + memory-management skill |
+| Curate/reorganize memory files | Read/Write + memory-curation skill |
 | Web research and summarization | WebSearch + WebFetch |
 | File organization and management | Bash + Read/Write |
 | Load integration skills on-demand | Skill('gmail-policy'), Skill('calendar'), etc. |
