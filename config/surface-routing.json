@@ -284,7 +284,6 @@
           "acceptance criteria",
           "feature breakdown",
           "workflow phase",
-          "speckit",
           "specification",
           "specify",
           "task generation",
@@ -297,12 +296,7 @@
           "gaia-plan"
         ],
         "commands": [
-          "/gaia-plan",
-          "/speckit.plan",
-          "/speckit.tasks",
-          "/speckit.init",
-          "/speckit.add-task",
-          "/speckit.analyze-task"
+          "/gaia-plan"
         ],
         "artifacts": [
           "brief.md",

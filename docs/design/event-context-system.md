@@ -56,7 +56,7 @@ files, and agnostic to Claude Code.
 
 **What it captures:**
 - Complete workflow metadata: agent, task, duration, commands, plan_status
-- Session events (git commits, pushes, file mods, speckit milestones)
+- Session events (git commits, pushes, file mods)
 - Anomalies detected during workflow audit
 - Context anchor hit rates
 

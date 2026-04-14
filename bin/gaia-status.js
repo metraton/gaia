@@ -216,9 +216,6 @@ async function main() {
   const episodeCount = episodicData.episodes.length || null;
   const agentSessionCount = episodicData.episodes.filter(e => e.agent).length;
 
-  const governancePath = join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md');
-  const governanceOk = existsSync(governancePath);
-
   const SEP = chalk.gray('─'.repeat(50));
 
   console.log(chalk.cyan('\n  Gaia System Status'));
@@ -256,9 +253,7 @@ async function main() {
     console.log(`  Context:      ${chalk.yellow('project-context.json missing — run gaia-scan')}`);
   }
 
-  // Governance
-  const govStatus = governanceOk ? chalk.green('OK') : chalk.yellow('MISSING — run /speckit.init');
-  console.log(`  Governance:   speckit-project-specs/governance.md — ${govStatus}`);
+
 
   // Memory
   const epStr = episodeCount ? `${episodeCount} episodes` : 'no episodic-memory';

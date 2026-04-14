@@ -50,7 +50,6 @@ ALL_RESOLUTION = {
     "skills": "skills/",
     "tools": "tools/",
     "config": "config/",
-    "speckit": "speckit/",
 }
 
 
@@ -132,13 +131,6 @@ def resolve_file_list(manifest: dict) -> list[Path]:
     if isinstance(config, list):
         for cfg in config:
             _collect_paths(REPO_ROOT / cfg, files)
-
-    # Speckit
-    speckit = manifest.get("speckit")
-    if speckit == "all":
-        speckit_dir = REPO_ROOT / ALL_RESOLUTION["speckit"]
-        if speckit_dir.exists():
-            _collect_paths(speckit_dir, files)
 
     return files
 

@@ -95,14 +95,6 @@ agent retries without a valid nonce, looping on hook rejections.
 After any approval or feedback, resume the SAME agent via SendMessage --
 it already holds investigation context. A new Agent dispatch loses that context.
 
-## Memory Protocol
-
-When something notable surfaces during a session — a decision that
-changes direction, a completed milestone, a pattern worth revisiting,
-or ideas that emerged but aren't being pursued yet — suggest saving
-it to memory. The threshold: would this matter in the next session?
-Use Claude Code's native memory mechanism directly.
-
 ## Failures
 
 - Hook blocks a command -- relay the message verbatim, do not suggest alternatives

@@ -17,7 +17,7 @@
  *   8. Hook files          - all hook scripts present on disk
  *   9. project-context     - project-context.json valid and enriched
  *  10. Project dirs        - paths declared in context exist
- *  11. Memory dirs         - speckit, episodic memory dirs present
+ *  11. Memory dirs         - episodic memory dirs present
  *
  * Severity levels:
  *   pass    - check passed
@@ -97,7 +97,7 @@ async function checkPluginMode() {
 }
 
 async function checkSymlinks() {
-  const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills', 'CHANGELOG.md'];
+  const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'skills', 'CHANGELOG.md'];
   // Critical symlinks that break core functionality if missing
   const critical = new Set(['agents', 'hooks', 'skills']);
   const sub = [];
@@ -246,7 +246,7 @@ async function checkProjectContext() {
   const path = join(CWD, '.claude', 'project-context', 'project-context.json');
 
   if (!existsSync(path)) {
-    return result('project-context', 'warning', 'Missing', 'Run gaia-scan or /speckit.init');
+    return result('project-context', 'warning', 'Missing', 'Run gaia-scan');
   }
 
   try {
@@ -287,7 +287,7 @@ async function checkProjectContext() {
     // Warnings are real problems
     if (warnings.length > 0) {
       const detail = [...warnings, ...infos].join('; ');
-      return result('project-context', 'warning', detail, 'Run /speckit.init to enrich');
+      return result('project-context', 'warning', detail, 'Run gaia-scan to enrich');
     }
 
     // Info-only items are not problems
@@ -302,7 +302,7 @@ async function checkProjectContext() {
       : (data.metadata.cloud_provider?.toUpperCase() || '?');
     return result('project-context', 'pass', `${sectionCount} sections, ${cloud}`);
   } catch {
-    return result('project-context', 'warning', 'Invalid JSON', 'Regenerate with /speckit.init');
+    return result('project-context', 'warning', 'Invalid JSON', 'Regenerate with gaia-scan');
   }
 }
 
@@ -388,18 +388,6 @@ async function checkMemoryDirs() {
   // Each memory dir has its own severity -- some are auto-created, some need manual setup
   const checks = [
     {
-      path: join(CWD, '.claude', 'project-context', 'speckit-project-specs'),
-      label: 'speckit-project-specs',
-      severity: 'warning',
-      fix: 'Run gaia-scan or /speckit.init'
-    },
-    {
-      path: join(CWD, '.claude', 'project-context', 'speckit-project-specs', 'governance.md'),
-      label: 'governance.md',
-      severity: 'warning',
-      fix: 'Run /speckit.init to generate governance.md'
-    },
-    {
       path: join(CWD, '.claude', 'project-context', 'workflow-episodic-memory'),
       label: 'workflow-episodic-memory',
       severity: 'warning',
@@ -483,7 +471,7 @@ async function autoFix() {
     const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
     if (existsSync(packagePath)) {
       const relPath = relative(claudeDir, packagePath);
-      const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills'];
+      const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'skills'];
       // Use junctions on Windows (no admin required), regular symlinks elsewhere
       const linkType = process.platform === 'win32' ? 'junction' : 'dir';
 

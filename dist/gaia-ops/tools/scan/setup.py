@@ -10,7 +10,6 @@ Functions:
 - copy_claude_md: deprecated no-op (identity now via submit hook)
 - copy_settings_json: create minimal settings.json only if missing (non-invasive)
 - install_git_hooks: copy commit-msg hook to all git repos
-- generate_governance: interpolate governance.template.md
 - ensure_gaia_ops_package: npm install @jaguilar87/gaia-ops
 - ensure_claude_code: check/install claude CLI
 - generate_project_context: create/merge project-context.json
@@ -69,18 +68,6 @@ def _find_installed_package_root(project_root: Path) -> Optional[Path]:
     if pkg_path.is_dir():
         return pkg_path
     return None
-
-
-def _get_template_path(name: str) -> Path:
-    """Get the path to a template file.
-
-    Args:
-        name: Template filename (e.g., 'governance.template.md').
-
-    Returns:
-        Absolute path to the template file.
-    """
-    return _find_package_root() / "templates" / name
 
 
 def ensure_gaia_ops_package(project_root: Path) -> bool:
@@ -439,73 +426,6 @@ def install_git_hooks(project_root: Path) -> int:
             logger.warning("Failed to install hook in %s: %s", dir_path, exc)
 
     return installed
-
-
-def generate_governance(project_root: Path, config: Dict[str, Any]) -> bool:
-    """Generate governance.md from template with config interpolation.
-
-    Only creates governance.md if it does not already exist (it is managed
-    by speckit.init after initial creation).
-
-    Args:
-        project_root: Project root directory.
-        config: Configuration dict with keys: cloud_provider, region,
-                project_id, cluster_name, gitops, terraform.
-
-    Returns:
-        True if governance.md was created or already exists.
-    """
-    speckit_root = config.get("speckit_root", ".claude/project-context/speckit-project-specs")
-
-    if os.path.isabs(speckit_root):
-        resolved_root = Path(speckit_root)
-    else:
-        resolved_root = project_root / speckit_root
-
-    resolved_root.mkdir(parents=True, exist_ok=True)
-    dest_path = resolved_root / "governance.md"
-
-    if dest_path.is_file():
-        logger.info("governance.md already exists -- skipping (managed by speckit.init)")
-        return True
-
-    template_path = _get_template_path("governance.template.md")
-    if not template_path.is_file():
-        logger.warning("governance.template.md not found -- skipping")
-        return False
-
-    try:
-        template = template_path.read_text()
-
-        cloud_provider = config.get("cloud_provider", "gcp")
-        k8s_platform = {
-            "aws": "EKS",
-            "gcp": "GKE",
-        }.get(cloud_provider, "Kubernetes")
-
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        interpolated = (
-            template
-            .replace("[CLOUD_PROVIDER]", (cloud_provider or "gcp").upper())
-            .replace("[PRIMARY_REGION]", config.get("region", "") or "N/A")
-            .replace("[PROJECT_ID]", config.get("project_id", "") or "N/A")
-            .replace("[CLUSTER_NAME]", config.get("cluster_name", "") or "N/A")
-            .replace("[GITOPS_PATH]", config.get("gitops", "") or "N/A")
-            .replace("[TERRAFORM_PATH]", config.get("terraform", "") or "N/A")
-            .replace("[POSTGRES_INSTANCE]", "N/A")
-            .replace("[CONTAINER_REGISTRY]", "N/A")
-            .replace("[K8S_PLATFORM]", k8s_platform)
-            .replace("[DATE]", today)
-        )
-
-        dest_path.write_text(interpolated)
-        logger.info("governance.md created at %s", dest_path)
-        return True
-
-    except OSError as exc:
-        logger.error("Failed to create governance.md: %s", exc)
-        return False
 
 
 def generate_project_context(

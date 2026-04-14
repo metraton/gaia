@@ -56,7 +56,6 @@
   ],
   "tools": "all",
   "config": "all",
-  "speckit": "all",
   "settings": {
     "permissions": {
       "allow": [

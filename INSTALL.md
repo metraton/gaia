@@ -78,7 +78,6 @@ Creates symlinks to gaia-ops:
   .claude/commands → node_modules/.../commands
   .claude/config → node_modules/.../config
   .claude/skills → node_modules/.../skills
-  .claude/speckit → node_modules/.../speckit
   .claude/templates → node_modules/.../templates
          ↓
 Generates config files:
@@ -190,7 +189,6 @@ your-project/
 │   ├── commands/ (symlink)     → Slash commands
 │   ├── config/ (symlink)       → Configuration (contracts, rules)
 │   ├── templates/ (symlink)    → Installation templates
-│   ├── speckit/ (symlink)      → Spec-Kit framework
 │   ├── project-context/        ← Your project context (SSOT)
 │   ├── logs/                   ← Audit logs
 │   └── settings.json           ← Security configuration
@@ -210,11 +208,10 @@ Once installed, you have access to **complete documentation** in each directory:
 .claude/
 ├── agents/               6 agents (terraform-architect, gitops-operator, etc.)
 ├── skills/README.md      20 skill modules
-├── commands/README.md    6 slash commands (5 speckit + scan-project)
+├── commands/README.md    Slash commands (gaia-plan, scan-project)
 ├── config/README.md      Contracts, git standards, universal rules
 ├── hooks/README.md       8 hook scripts (4 primary + 4 event handlers)
 ├── tools/                Context, memory, validation, review
-├── speckit/README.md     Spec-Kit framework
 ├── templates/README.md   Installation templates
 └── bin/README.md         CLI utilities
 ```

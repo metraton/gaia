@@ -60,6 +60,22 @@ if __name__ == "__main__":
         if setup_message:
             response["setup_message"] = setup_message
 
+        # Pending approval scan: surface deferred approvals from any session
+        try:
+            from modules.session.pending_scanner import scan_pending_approvals, format_pending_summary
+            from modules.core.paths import get_plugin_data_dir
+            from modules.core.state import get_session_id
+
+            approvals_dir = get_plugin_data_dir() / "cache" / "approvals"
+            pendings = scan_pending_approvals(
+                approvals_dir, current_session_id=get_session_id()
+            )
+            if pendings:
+                response["pending_summary"] = format_pending_summary(pendings)
+                logger.info("SessionStart: found %d pending approvals", len(pendings))
+        except Exception as e:
+            logger.warning("SessionStart: pending scan failed (non-fatal): %s", e)
+
         print(json.dumps(response))
         sys.exit(0)
 

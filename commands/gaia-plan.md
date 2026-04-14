@@ -37,8 +37,10 @@ $ARGUMENTS
    - Extract constraints relevant to the feature (stack, cloud, git, services)
    - Missing context -> suggest `/scan-project`
 
-3. **Load the gaia-planner skill:**
-   - `Skill('gaia-planner')` and follow `reference.md` for Phase 1
+3. **Dispatch to gaia-planner agent:**
+   - Use `Task(subagent_type="gaia-planner")` to dispatch the planning work
+   - Pass the feature description and context as the task prompt
+   - The gaia-planner agent has its own `reference.md` for Phase 1
 
 4. **Run Phase 1 (Brief Creation):**
    - Size the work (S/M/L)

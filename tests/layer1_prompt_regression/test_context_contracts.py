@@ -87,14 +87,14 @@ class TestContractAgentConsistency:
         """All project agents should appear in at least one contract.
 
         Excludes meta-agents (both bare and plugin-namespaced forms like
-        gaia-ops:Explore) and optional agents like speckit-planner.
+        gaia-ops:Explore) and optional agents like gaia-planner.
         """
         # Build full set of meta-agent names including namespaced forms
         meta_set = set(META_AGENTS) | {f"gaia-ops:{m}" for m in META_AGENTS}
         project_agents = [a for a in AVAILABLE_AGENTS if a not in meta_set]
-        # speckit-planner and gaia-planner are optional during the migration period;
+        # gaia-planner is optional (not in all contract variants);
         # namespaced project agents are aliases and don't appear in contracts.
-        optional_agents = {"speckit-planner", "gaia-planner"}
+        optional_agents = {"gaia-planner"}
         # Namespaced forms (gaia-ops:agent-name) are routing aliases, not in contracts
         namespaced = {a for a in project_agents if ":" in a}
         required_agents = set(project_agents) - optional_agents - namespaced

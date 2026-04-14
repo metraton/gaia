@@ -81,7 +81,7 @@ class TestSchemaCompatibility:
             "gitops-operator",
             "cloud-troubleshooter",
             "developer",
-            "speckit-planner",
+            "gaia-planner",
             "gaia-system",
         ]:
             assert agent in agents_found, (

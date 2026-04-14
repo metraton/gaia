@@ -793,12 +793,6 @@ class ClaudeCodeAdapter(HookAdapter):
                 return True
             except ValueError:
                 pass
-            parts = rp.parts
-            for i, part in enumerate(parts):
-                if part == "hooks" and i > 0:
-                    parent_str = "/".join(parts[:i])
-                    if "gaia-ops" in parent_str or "gaia-security" in parent_str:
-                        return True
             if p.name in ("settings.json", "settings.local.json"):
                 for part in rp.parts:
                     if part == ".claude":
@@ -1009,9 +1003,15 @@ class ClaudeCodeAdapter(HookAdapter):
     def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
         """Conditionally activate pending grants based on user's answer.
 
-        Inspects the answers dict from tool_response (or tool_input as fallback)
-        to determine if the user approved. Only activates grants when at least
-        one answer value contains "approve" (case-insensitive).
+        Uses nonce-targeted activation when the approved answer contains a
+        ``[P-<hex>]`` tag (the nonce prefix).  This works identically for
+        same-session and cross-session approvals:
+          1. Extract the nonce prefix from the approved label.
+          2. Load the specific pending file by prefix (any session).
+          3. Activate the grant under the CURRENT session.
+
+        Falls back to session-wide activation when no nonce is present in
+        the answer (backward compatibility with older approval labels).
 
         When the answer also contains "batch", a SCOPE_VERB_FAMILY multi-use
         grant is created alongside the normal semantic grants.  This allows
@@ -1020,21 +1020,20 @@ class ClaudeCodeAdapter(HookAdapter):
 
         Never blocks (no exceptions raised to caller).
         """
-        import json as _json
         from modules.security.approval_grants import (
+            activate_cross_session_pending,
             activate_grants_for_session,
+            activate_pending_approval,
             create_verb_family_grant,
+            extract_nonce_from_label,
             get_pending_approvals_for_session,
+            load_pending_by_nonce_prefix,
         )
 
         session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
 
-        # Debug logging
-        tool_response = hook_data.get("tool_response", {})
-        logger.info("AskUserQuestion PostToolUse keys: %s", list(hook_data.keys()))
-        logger.info("AskUserQuestion tool_response: %s", _json.dumps(tool_response, default=str)[:500])
-
         # Extract answers from tool_response first, then tool_input as fallback
+        tool_response = hook_data.get("tool_response", {})
         answers = {}
         if isinstance(tool_response, dict):
             answers = tool_response.get("answers", {})
@@ -1065,28 +1064,95 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.info("AskUserQuestion: no session_id available, skipping grant activation")
                 return
 
-            # Check for pending approvals before activating
-            pending = get_pending_approvals_for_session(session_id)
-            if not pending:
-                logger.info("AskUserQuestion: no pending grants for session %s", session_id)
-                return
+            # Try nonce-targeted activation first: extract nonce from answer labels
+            nonce_prefix = None
+            for v in answers.values():
+                nonce_prefix = extract_nonce_from_label(str(v))
+                if nonce_prefix:
+                    break
 
-            results = activate_grants_for_session(session_id)
-            activated = sum(1 for r in results if r.success)
-            logger.info(
-                "AskUserQuestion activated %d/%d pending grants for session %s",
-                activated, len(results), session_id,
-            )
+            activated_pending_data = None  # Track for batch grant creation
 
-            # Batch approval: create a verb-family grant for each pending
-            # approval's base_cmd + verb, so future commands with different
+            if nonce_prefix:
+                # Nonce-targeted: load this specific pending regardless of session
+                pending_data = load_pending_by_nonce_prefix(nonce_prefix)
+                if pending_data:
+                    pending_session = pending_data.get("session_id", "")
+                    full_nonce = pending_data.get("nonce", "")
+
+                    if pending_session == session_id:
+                        # Same session -- use standard activation
+                        result = activate_pending_approval(
+                            nonce=full_nonce,
+                            session_id=session_id,
+                        )
+                    else:
+                        # Cross session -- activate under current session
+                        result = activate_cross_session_pending(
+                            pending_data,
+                            session_id=session_id,
+                        )
+
+                    if result.success:
+                        logger.info(
+                            "AskUserQuestion nonce-targeted activation: prefix=%s, "
+                            "pending_session=%s, current_session=%s, status=%s",
+                            nonce_prefix, pending_session[:12], session_id[:12],
+                            getattr(result.status, "value", str(result.status)),
+                        )
+                        activated_pending_data = pending_data
+                    else:
+                        logger.warning(
+                            "AskUserQuestion nonce-targeted activation failed: "
+                            "prefix=%s, status=%s, reason=%s",
+                            nonce_prefix,
+                            getattr(result.status, "value", str(result.status)),
+                            result.reason,
+                        )
+                else:
+                    logger.warning(
+                        "AskUserQuestion: nonce prefix %s found in label but no "
+                        "matching pending file -- falling back to session-wide",
+                        nonce_prefix,
+                    )
+                    # Fall through to session-wide activation below
+                    nonce_prefix = None
+
+            if not nonce_prefix:
+                # No nonce in label (or prefix lookup failed) -- fall back to
+                # session-wide activation for backward compatibility
+                pending = get_pending_approvals_for_session(session_id)
+                if not pending:
+                    logger.info("AskUserQuestion: no pending grants for session %s", session_id)
+                    return
+
+                results = activate_grants_for_session(session_id)
+                activated = sum(1 for r in results if r.success)
+                logger.info(
+                    "AskUserQuestion session-wide activation: %d/%d pending grants for session %s",
+                    activated, len(results), session_id,
+                )
+                # Use the pending list for batch grant creation
+                if is_batch:
+                    activated_pending_data = pending  # List for batch iteration
+
+            # Batch approval: create a verb-family grant for each activated
+            # pending's base_cmd + verb, so future commands with different
             # arguments are covered without per-command approval.
-            if is_batch and pending:
+            if is_batch and activated_pending_data:
                 from modules.security.approval_grants import DEFAULT_BATCH_TTL_MINUTES
                 from modules.security.approval_scopes import ApprovalSignature
 
-                for pending_data in pending:
-                    sig_data = pending_data.get("scope_signature")
+                # Normalize to list: nonce-targeted gives a single dict,
+                # session-wide gives a list
+                pending_list = (
+                    activated_pending_data
+                    if isinstance(activated_pending_data, list)
+                    else [activated_pending_data]
+                )
+
+                for pd in pending_list:
+                    sig_data = pd.get("scope_signature")
                     if not sig_data:
                         continue
                     try:
@@ -1705,9 +1771,12 @@ class ClaudeCodeAdapter(HookAdapter):
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Parse SubagentStart event and forward cached context to the subagent.
 
-        PreToolUse:Agent caches the built project context. This method reads
-        the cache and returns it as additionalContext so Claude Code injects
-        it into the subagent (not the orchestrator).
+        Two paths:
+        1. Cache hit (normal start via Task/Agent tool): PreToolUse:Agent
+           caches context, this method reads and forwards it.
+        2. Cache miss (resume via SendMessage): No PreToolUse:Agent fires,
+           so no cache exists. If agent_type is present in the payload and
+           is a known project agent, rebuild context on-demand.
         """
         session_id = raw.get("session_id", "")
 
@@ -1724,9 +1793,53 @@ class ClaudeCodeAdapter(HookAdapter):
                 sections_provided=[],
             )
 
+        # Resume path: SendMessage skips PreToolUse:Agent so no cache is
+        # written. If agent_type is present in the payload, rebuild context
+        # on-demand so the resumed agent has its project context and tools.
+        agent_type = raw.get("agent_type", "")
+        if agent_type:
+            try:
+                from modules.context.context_injector import build_project_context
+                from modules.session.session_event_injector import build_session_events
+                from modules.tools.task_validator import AVAILABLE_AGENTS, META_AGENTS
+
+                project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
+
+                if agent_type in project_agents:
+                    hooks_dir = Path(__file__).parent.parent
+                    task_description = raw.get("task_description", "")
+                    parameters = {
+                        "subagent_type": agent_type,
+                        "prompt": task_description or f"resume {agent_type}",
+                    }
+
+                    context_text, _telemetry = build_project_context(
+                        parameters, project_agents, hooks_dir,
+                    )
+                    events_text = build_session_events(parameters, project_agents)
+                    additional = "\n".join(filter(None, [context_text, events_text]))
+
+                    if additional:
+                        logger.info(
+                            "SubagentStart: rebuilt context on resume for "
+                            "agent=%s (session=%s)",
+                            agent_type, session_id,
+                        )
+                        return ContextResult(
+                            context_injected=True,
+                            additional_context=additional,
+                            sections_provided=[],
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "SubagentStart: resume context rebuild failed for "
+                    "agent=%s: %s", agent_type, exc,
+                )
+
         logger.info(
-            "SubagentStart: no cached context found for session=%s (passthrough)",
-            session_id,
+            "SubagentStart: no cached context found for session=%s "
+            "agent=%s (passthrough)",
+            session_id, agent_type or "unknown",
         )
         return ContextResult(
             context_injected=False,

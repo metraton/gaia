@@ -35,6 +35,7 @@ Security properties:
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass, field, asdict
@@ -60,6 +61,9 @@ logger = logging.getLogger(__name__)
 
 # Default grant TTL in minutes
 DEFAULT_GRANT_TTL_MINUTES = 5
+
+# Default pending TTL in minutes (0 = no expiry)
+DEFAULT_PENDING_TTL_MINUTES = 0
 
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
 _last_cleanup_time: float = 0.0
@@ -89,7 +93,12 @@ ACTIVATION_ERROR = ActivationStatus.ERROR
 
 
 def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
-    """Return True if the given timestamp is older than ttl_minutes."""
+    """Return True if the given timestamp is older than ttl_minutes.
+
+    A ttl_minutes of 0 means "no expiry" -- always returns False.
+    """
+    if ttl_minutes == 0:
+        return False
     if timestamp == 0:
         return True
     elapsed_minutes = (time.time() - timestamp) / 60
@@ -303,13 +312,86 @@ def generate_nonce() -> str:
     return secrets.token_hex(16)
 
 
+# Regex for extracting a nonce from an AskUserQuestion approve label.
+# Only matches labels that start with "Approve" and contain [P-<hex>].
+_APPROVE_NONCE_RE = re.compile(r"^Approve\b.*\[P-([a-f0-9]+)\]")
+
+
+def extract_nonce_from_label(label: str) -> Optional[str]:
+    """Extract the nonce from an AskUserQuestion option label.
+
+    Approve labels may contain a ``[P-<hex>]`` tag that identifies the
+    pending approval to activate.  Reject labels never carry a nonce,
+    even if one is superficially present in the text.
+
+    Args:
+        label: The option label string (e.g. ``"Approve -- git push origin main [P-e68be5b8]"``).
+
+    Returns:
+        The hex nonce string if found in an Approve label, otherwise ``None``.
+    """
+    m = _APPROVE_NONCE_RE.search(label)
+    return m.group(1) if m else None
+
+
+def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
+    """Load a pending approval file whose nonce starts with the given prefix.
+
+    The ``[P-<hex>]`` tag in AskUserQuestion labels carries the first 8
+    characters of the full 32-character nonce.  This function scans the
+    grants directory for a matching ``pending-{nonce}.json`` file and
+    returns its parsed contents.
+
+    If multiple files match (extremely unlikely with 8 hex chars), the
+    most recent one (by timestamp) is returned.
+
+    Args:
+        prefix: Hex prefix extracted from a ``[P-xxx]`` label (typically 8 chars).
+
+    Returns:
+        The parsed pending approval dict, or ``None`` if no match was found.
+    """
+    try:
+        grants_dir = _get_grants_dir()
+        candidates: List[Dict[str, Any]] = []
+
+        for pending_file in grants_dir.glob("pending-*.json"):
+            if pending_file.name.startswith("pending-index-"):
+                continue
+            # Extract nonce from filename: pending-{nonce}.json
+            fname_nonce = pending_file.stem.removeprefix("pending-")
+            if not fname_nonce.startswith(prefix):
+                continue
+            data = _read_json_file(pending_file)
+            if data:
+                candidates.append(data)
+
+        if not candidates:
+            logger.info("No pending approval found for nonce prefix %s", prefix)
+            return None
+
+        # Return newest by timestamp
+        candidates.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
+        logger.info(
+            "Found pending approval for nonce prefix %s: full_nonce=%s",
+            prefix, candidates[0].get("nonce", "?")[:12],
+        )
+        return candidates[0]
+
+    except Exception as e:
+        logger.error("Error loading pending by nonce prefix %s: %s", prefix, e)
+        return None
+
+
 def write_pending_approval(
     nonce: str,
     command: str,
     danger_verb: str,
     danger_category: str,
     session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
+    context: Optional[Dict[str, Any]] = None,
+    cwd: Optional[str] = None,
 ) -> Optional[Path]:
     """Write a pending approval file when a T3 command is blocked.
 
@@ -323,7 +405,11 @@ def write_pending_approval(
         danger_verb: The dangerous verb detected (e.g., "push", "apply").
         danger_category: The danger category (e.g., "MUTATIVE", "DESTRUCTIVE").
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
-        ttl_minutes: How long the pending approval is valid before expiry.
+        ttl_minutes: How long the pending approval is valid before expiry
+            (0 = no expiry).
+        context: Optional dict with enriched context (source, description,
+            risk, rollback, branch, files_changed, etc.).
+        cwd: Optional working directory where the command was invoked.
 
     Returns:
         Path to the pending file, or None on failure.
@@ -354,7 +440,10 @@ def write_pending_approval(
         "scope_signature": signature.to_dict(),
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
+        "context": context or {},
     }
+    if cwd is not None:
+        pending_data["cwd"] = cwd
 
     try:
         grants_dir = _get_grants_dir()
@@ -508,7 +597,7 @@ def activate_pending_approval(
             ttl_minutes=ttl_minutes,
         )
 
-        grant_file = grants_dir / f"grant-{session_id}-{int(time.time() * 1000)}.json"
+        grant_file = grants_dir / f"grant-{session_id}-{int(time.time() * 1000)}-{nonce[:8]}.json"
         grant_file.write_text(json.dumps(asdict(grant), indent=2))
 
         # Delete pending file (one-time activation)
@@ -540,6 +629,167 @@ def activate_pending_approval(
             status=ACTIVATION_ERROR,
             reason="Unexpected error while activating approval.",
         )
+
+def activate_cross_session_pending(
+    pending_data: dict,
+    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    session_id: Optional[str] = None,
+) -> ApprovalActivationResult:
+    """Create an active grant from a pending file that belongs to a prior session.
+
+    Called ONLY when the user has already confirmed approval via AskUserQuestion.
+    Unlike activate_pending_approval(), this function skips the session_id equality
+    check because the pending file is from a previous session whose nonce can never
+    match the current session.  All other validation (nonce presence, TTL, signature)
+    is performed normally.
+
+    The new grant is created under the CURRENT session ID so that
+    check_approval_grant() can find it when the dispatched agent runs the command.
+    confirmed is set to True directly because the human has already approved.
+
+    Args:
+        pending_data: The dict loaded from a pending-{nonce}.json file.
+        ttl_minutes: TTL for the active grant (default DEFAULT_GRANT_TTL_MINUTES).
+        session_id: Optional explicit session ID to use for the new grant.  When
+            provided this value is used directly, which avoids relying on the
+            CLAUDE_SESSION_ID environment variable -- important when the function
+            is called from a dispatched agent's subprocess where the env var may
+            not be set.  Defaults to None, which falls back to _get_session_id()
+            (backward compatible).
+
+    Returns:
+        Structured activation result with status and optional grant path.
+    """
+    current_session_id = session_id if session_id is not None else _get_session_id()
+
+    try:
+        grants_dir = _get_grants_dir()
+
+        # Validate required fields
+        nonce = pending_data.get("nonce")
+        if not nonce:
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_PENDING,
+                reason="Pending approval file is missing a nonce.",
+            )
+
+        pending_file = grants_dir / f"pending-{nonce}.json"
+
+        # Validate not expired (TTL check still applies)
+        pending_timestamp = pending_data.get("timestamp", 0)
+        pending_ttl = pending_data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
+        if _is_ttl_expired(pending_timestamp, pending_ttl):
+            logger.warning(
+                "Cross-session pending approval expired for nonce %s: TTL=%d min",
+                nonce, pending_ttl,
+            )
+            _cleanup_grant(pending_file)
+            prior_session_id = pending_data.get("session_id", "unknown")
+            _rebuild_pending_index(prior_session_id)
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_EXPIRED,
+                reason="Approval nonce expired before cross-session activation.",
+            )
+
+        command = pending_data.get("command", "")
+        danger_verb = pending_data.get("danger_verb", "")
+        scope_signature_data = pending_data.get("scope_signature")
+        if not scope_signature_data:
+            logger.warning(
+                "Cross-session pending approval for nonce %s is missing scope_signature",
+                nonce,
+            )
+            _cleanup_grant(pending_file)
+            prior_session_id = pending_data.get("session_id", "unknown")
+            _rebuild_pending_index(prior_session_id)
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_PENDING,
+                reason="Pending approval file is missing a semantic signature.",
+            )
+
+        signature = ApprovalSignature.from_dict(scope_signature_data)
+        if signature.scope_type not in (SCOPE_SEMANTIC_SIGNATURE, SCOPE_FILE_PATH):
+            logger.warning(
+                "Cross-session pending for nonce %s has unsupported scope_type=%s",
+                nonce,
+                signature.scope_type,
+            )
+            _cleanup_grant(pending_file)
+            prior_session_id = pending_data.get("session_id", "unknown")
+            _rebuild_pending_index(prior_session_id)
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_SIGNATURE,
+                reason="Pending approval uses an unsupported scope type.",
+            )
+
+        # For file-path scopes, verb validation is not applicable.
+        if signature.scope_type == SCOPE_FILE_PATH:
+            verbs = ["write"]
+        elif not signature.verb and not danger_verb:
+            logger.warning(
+                "Could not validate semantic signature for cross-session command: %s",
+                command,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_SIGNATURE,
+                reason="Approval signature could not be validated safely.",
+            )
+        else:
+            verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
+
+        # Create active grant under the CURRENT session; confirmed=True because
+        # the human already approved via AskUserQuestion.
+        grant = ApprovalGrant(
+            session_id=current_session_id,
+            approved_verbs=verbs,
+            approved_scope=command,
+            scope_type=signature.scope_type,
+            scope_signature=signature.to_dict(),
+            granted_at=time.time(),
+            ttl_minutes=ttl_minutes,
+            confirmed=True,
+        )
+
+        grant_file = grants_dir / f"grant-{current_session_id}-{int(time.time() * 1000)}-{nonce[:8]}.json"
+        grant_file.write_text(json.dumps(asdict(grant), indent=2))
+
+        # Delete the old pending file (one-time activation)
+        _cleanup_grant(pending_file)
+        prior_session_id = pending_data.get("session_id", "unknown")
+        _rebuild_pending_index(prior_session_id)
+
+        logger.info(
+            "Cross-session pending activated: nonce=%s, prior_session=%s, "
+            "current_session=%s, verbs=%s, grant=%s",
+            nonce, prior_session_id, current_session_id, verbs, grant_file.name,
+        )
+        return ApprovalActivationResult(
+            success=True,
+            status=ACTIVATION_ACTIVATED,
+            reason="Cross-session pending approval activated.",
+            grant_path=grant_file,
+        )
+
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error("Invalid pending approval data for cross-session activation: %s", e)
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_INVALID_PENDING,
+            reason="Pending approval data is invalid or corrupt.",
+        )
+    except Exception as e:
+        logger.error("Failed to activate cross-session pending approval: %s", e)
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_ERROR,
+            reason="Unexpected error while activating cross-session approval.",
+        )
+
 
 def check_approval_grant(command: str, session_id: str = None) -> Optional[ApprovalGrant]:
     """Check if there is an active approval grant for a command.
@@ -943,7 +1193,8 @@ def write_pending_approval_for_file(
     nonce: str,
     file_path: str,
     session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Write a pending approval file when a Write/Edit to a protected path is blocked.
 
@@ -954,7 +1205,10 @@ def write_pending_approval_for_file(
         nonce: Cryptographic nonce from generate_nonce().
         file_path: The absolute path of the file being written/edited.
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
-        ttl_minutes: How long the pending approval is valid before expiry.
+        ttl_minutes: How long the pending approval is valid before expiry
+            (0 = no expiry).
+        context: Optional dict with enriched context (source, description,
+            risk, rollback, branch, files_changed, etc.).
 
     Returns:
         Path to the pending file, or None on failure.
@@ -980,6 +1234,7 @@ def write_pending_approval_for_file(
         "scope_signature": signature.to_dict(),
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
+        "context": context or {},
     }
 
     try:

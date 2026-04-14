@@ -30,6 +30,7 @@ _BASE_AGENTS = [
     "developer",
     "gaia-operator",
     "gaia-system",
+    "gaia-planner",
     "Explore",
     "Plan",
     "speckit-planner",

@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # [Feature Name]
 
 ## Objective

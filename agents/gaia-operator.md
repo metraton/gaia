@@ -51,7 +51,7 @@ Load them with `Skill('skill-name')` when the task requires it.
 | Kubernetes manifests, Helm, Flux | gitops-operator |
 | Live infrastructure diagnostics | cloud-troubleshooter |
 | Gaia system changes (hooks, skills, agents) | gaia-system |
-| Feature planning and specs | speckit-planner |
+| Feature planning and specs | gaia-planner |
 
 ## Domain Errors
 

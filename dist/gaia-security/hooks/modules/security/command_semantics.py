@@ -68,12 +68,38 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
     flag_tokens = []
     non_flag_tokens = []
     non_flag_tokens_raw = []  # preserve original casing for camelCase splitting
-    for token in args:
+    skip_next = False
+    seen_non_flag = False
+    for i, token in enumerate(args):
+        if skip_next:
+            # This token is the value argument of a preceding short flag.
+            # Absorb it into flag_tokens so it does not pollute semantic
+            # analysis (e.g., the path after ``git -C <path>`` is not a
+            # subcommand or positional argument).
+            flag_tokens.append(token.lower())
+            skip_next = False
+            continue
         if _is_flag(token):
             flag_tokens.extend(_normalize_flag_token(token))
+            # A single-letter short flag appearing *before* the first
+            # non-flag token (the subcommand) typically consumes the next
+            # token as its value argument (POSIX convention).  Examples:
+            #   git -C <path>   kubectl -n <namespace>   tar -f <file>
+            # Mark the next token for absorption if:
+            #   1. It is a single-letter short flag (not combined like -rf)
+            #   2. No non-flag token (subcommand) has been seen yet
+            #   3. The next token exists and is not itself a flag
+            if (
+                not seen_non_flag
+                and _is_short_value_flag(token)
+                and i + 1 < len(args)
+                and not _is_flag(args[i + 1])
+            ):
+                skip_next = True
             continue
         non_flag_tokens.append(token.lower())
         non_flag_tokens_raw.append(token)
+        seen_non_flag = True
 
     semantic_tokens = (base_cmd, *non_flag_tokens)
     semantic_tokens_raw = (tokens[0], *non_flag_tokens_raw)
@@ -121,6 +147,24 @@ def _pathless(token: str) -> str:
 def _is_flag(token: str) -> bool:
     """Check whether a token is flag-shaped."""
     return token.startswith("-") and token != "-"
+
+
+def _is_short_value_flag(token: str) -> bool:
+    """Return True when *token* is a single-letter short flag.
+
+    Single-letter short flags (``-C``, ``-n``, ``-f``, ...) that appear
+    before the first positional argument typically consume the next token
+    as their value in POSIX-style CLIs.  Combined flags (``-rf``,
+    ``-av``) and long flags (``--chdir``) are excluded -- combined flags
+    are boolean bundles, and long flags use ``=`` for values which is
+    already handled by ``_normalize_flag_token``.
+    """
+    # Must start with a single dash, NOT "--"
+    if not token.startswith("-") or token.startswith("--"):
+        return False
+    body = token[1:]
+    # Exactly one character (letter or uppercase, e.g., -C, -n, -f)
+    return len(body) == 1 and body.isalpha()
 
 
 def _normalize_flag_token(token: str) -> Tuple[str, ...]:

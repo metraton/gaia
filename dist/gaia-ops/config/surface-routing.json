@@ -254,7 +254,7 @@
     },
     "planning_specs": {
       "intent": "The user needs to plan a feature, break down requirements, create specs, implementation plans, or task lists using the Spec-Kit workflow.",
-      "primary_agent": "speckit-planner",
+      "primary_agent": "gaia-planner",
       "adjacent_surfaces": [
         "app_ci_tooling",
         "gaia_system"
@@ -292,9 +292,12 @@
           "feature planning",
           "pre-implementation",
           "feature spec",
-          "task breakdown"
+          "task breakdown",
+          "brief",
+          "gaia-plan"
         ],
         "commands": [
+          "/gaia-plan",
           "/speckit.plan",
           "/speckit.tasks",
           "/speckit.init",
@@ -302,6 +305,7 @@
           "/speckit.analyze-task"
         ],
         "artifacts": [
+          "brief.md",
           "spec.md",
           "plan.md",
           "tasks.md",

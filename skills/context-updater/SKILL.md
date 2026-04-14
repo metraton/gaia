@@ -34,8 +34,7 @@ shown in the injected context under **Your Write Permissions**. The
 
 If `write_permissions` is absent, fall back to your agent contract in
 `config/context-contracts.json`. Do not invent section names. Writing to a
-section you do not own will be rejected by the hook. `gaia-system`,
-`gaia-planner`, and `speckit-planner` do not write to project-context -- they
+section you do not own will be rejected by the hook. `gaia-system` and `gaia-planner` do not write to project-context -- they
 manage gaia-ops internals and planning respectively.
 
 **Step 2: Build the CONTEXT_UPDATE block**

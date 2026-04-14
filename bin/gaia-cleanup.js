@@ -6,7 +6,7 @@
  * Purpose:
  * - Remove CLAUDE.md
  * - Remove settings.json
- * - Remove all symlinks (agents, tools, hooks, commands, config, templates, speckit, CHANGELOG.md)
+ * - Remove all symlinks (agents, tools, hooks, commands, config, templates, CHANGELOG.md)
  * - Preserve project-specific data (logs, tests, project-context, session, metrics)
  *
  * Usage:
@@ -128,7 +128,6 @@ async function removeSymlinks() {
       join(claudeDir, 'commands'),
       join(claudeDir, 'templates'),
       join(claudeDir, 'config'),
-      join(claudeDir, 'speckit'),
       join(claudeDir, 'CHANGELOG.md'),
       join(claudeDir, 'README.en.md'),
       join(claudeDir, 'README.md')

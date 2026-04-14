@@ -113,20 +113,6 @@
         "architecture_overview"
       ]
     },
-    "speckit-planner": {
-      "read": [
-        "project_identity",
-        "stack",
-        "git",
-        "environment",
-        "application_services",
-        "architecture_overview",
-        "operational_guidelines",
-        "infrastructure",
-        "workspace_repos"
-      ],
-      "write": []
-    },
     "gaia-planner": {
       "read": [
         "project_identity",

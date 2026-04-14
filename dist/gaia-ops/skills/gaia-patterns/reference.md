@@ -50,7 +50,8 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 | cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics |
 | gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux |
 | terraform-architect | `agents/terraform-architect.md` | Terraform/Terragrunt IaC |
-| speckit-planner | `agents/speckit-planner.md` | Feature specification and planning |
+| speckit-planner | `agents/speckit-planner.md` | Feature specification and planning (deprecated, use gaia-planner) |
+| gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition |
 
 ### Skills (24 directories + 1 top-level reference)
 

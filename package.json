@@ -48,7 +48,6 @@
     "commands/",
     "templates/",
     "config/",
-    "speckit/",
     "skills/",
     "dist/",
     "git-hooks/",

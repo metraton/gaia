@@ -32,8 +32,12 @@ problem statement without guessing and list 2+ acceptance scenarios.
 
 ### Step 4: Write brief.md
 
-Use `templates/brief-template.md` as structure. Write to the working
-directory or a path the user specifies.
+Use `templates/brief-template.md` as structure. Write to:
+`.claude/project-context/briefs/{feature-name}/brief.md`
+
+Create the directory if it does not exist. The `{feature-name}` should be
+a kebab-case slug derived from the feature title (e.g., `oauth2-auth`,
+`planner-cleanup`).
 
 **Acceptance criteria rules:**
 - Every AC has a human description AND a verify command
@@ -100,6 +104,34 @@ When an agent completes a task, check the `json:contract` verification:
 
 For graded or optimization tasks where binary pass/fail does not apply,
 route through the agentic-loop skill instead.
+
+## Task List Checkpoint
+
+Before dispatching any tasks, present the complete task list to the user
+and wait for confirmation. The checkpoint must show:
+
+- Task number, title, and target agent
+- Dependencies (blocked-by relationships)
+- Estimated size (S/M/L)
+
+Ask: "Here are the tasks I plan to dispatch. Confirm to proceed, or
+suggest changes." Do not dispatch until the user confirms.
+
+## Completion Rollup
+
+When all tasks complete successfully, update the brief frontmatter
+`status` from `draft` (or `in-progress`) to `completed`. If any tasks
+are blocked or failed, set status to `blocked` and report which tasks
+need attention.
+
+## TaskCreate Routing Limitation
+
+Tasks created via TaskCreate dispatch to generic Claude Code subagents,
+not to named Gaia agents. The `subject` field describes intent, and the
+task description should include enough context for any capable subagent
+to execute. Do not assume the receiving agent has Gaia skills or
+project-context injection -- inline all necessary context in the task
+description.
 
 ## Progress Tracking
 

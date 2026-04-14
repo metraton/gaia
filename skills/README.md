@@ -25,8 +25,7 @@ Skills are knowledge modules that extend agent capabilities. They use Claude Cod
 │   └── reference.md
 ├── developer-patterns/    # Developer workflow patterns
 ├── fast-queries/          # Quick diagnostic scripts
-├── speckit-workflow/      # Speckit phase management
-├── specification/         # Feature specification workflow
+├── gaia-planner/          # Feature planning, briefs, task decomposition
 ├── orchestrator-approval/ # T3 approval presentation for orchestrator
 ├── approval/              # T3 plan presentation and approval workflow
 │   └── examples.md
@@ -62,7 +61,7 @@ skills:
 | gitops-operator | agent-protocol, security-tiers, gitops-patterns | fast-queries |
 | developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
 | gaia-system | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
-| speckit-planner | agent-protocol, security-tiers, speckit-workflow | - |
+| gaia-planner | agent-protocol, security-tiers | - |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned to agents):
 - **agent-response** -- contract status interpretation and presentation

@@ -28,7 +28,6 @@ class TestCoreDirectories:
             "agents",
             "hooks",
             "commands",
-            "speckit",
             "templates",
             "config",
             "tests",
@@ -186,43 +185,6 @@ class TestConfigDirectory:
                     json.load(f)
             except json.JSONDecodeError as e:
                 pytest.fail(f"Invalid JSON in {config_file.name}: {e}")
-
-
-class TestSpecKitDirectory:
-    """Test Spec-Kit directory structure"""
-
-    @pytest.fixture
-    def speckit_dir(self):
-        """Get the speckit directory path"""
-        speckit = Path(__file__).resolve().parents[2] / "speckit"
-        return speckit.resolve() if speckit.is_symlink() else speckit
-
-    def test_speckit_subdirectories_exist(self, speckit_dir):
-        """Spec-Kit subdirectories must exist"""
-        required_subdirs = ["templates", "scripts"]
-
-        for subdir in required_subdirs:
-            subdir_path = speckit_dir / subdir
-            assert subdir_path.exists(), f"Spec-Kit subdirectory missing: {subdir}"
-
-    def test_speckit_templates_exist(self, speckit_dir):
-        """Spec-Kit templates must exist"""
-        templates_dir = speckit_dir / "templates"
-        required_templates = [
-            "spec-template.md",
-            "plan-template.md",
-            "tasks-template.md",
-            "adr-template.md"
-        ]
-
-        for template in required_templates:
-            template_path = templates_dir / template
-            assert template_path.exists(), f"Spec-Kit template missing: {template}"
-
-    def test_templates_dir_exists(self, speckit_dir):
-        """templates directory must exist for spec-kit artifacts."""
-        templates = speckit_dir / "templates"
-        assert templates.exists(), "speckit/templates/ not found"
 
 
 if __name__ == "__main__":

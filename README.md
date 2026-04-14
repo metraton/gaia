@@ -15,7 +15,7 @@ Multi-agent DevOps system that classifies every operation by risk, routes work t
 ### Features
 
 - **Multi-cloud support** - GCP, AWS, Azure
-- **8 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, developer, speckit-planner, gaia-operator, gaia-orchestrator, gaia-system (meta-agent)
+- **8 agents** - terraform-architect, gitops-operator, cloud-troubleshooter, developer, gaia-planner, gaia-operator, gaia-orchestrator, gaia-system (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
 - **Dynamic identity** - Orchestrator identity defined in `agents/gaia-orchestrator.md`, activated via `settings.json` agent config; skills loaded on-demand
 - **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (inalterable via symlink)
@@ -94,7 +94,6 @@ ln -s ../node_modules/@jaguilar87/gaia-ops/commands commands
 ln -s ../node_modules/@jaguilar87/gaia-ops/config config
 ln -s ../node_modules/@jaguilar87/gaia-ops/templates templates
 ln -s ../node_modules/@jaguilar87/gaia-ops/skills skills
-ln -s ../node_modules/@jaguilar87/gaia-ops/speckit speckit
 ```
 
 ## Usage
@@ -140,10 +139,9 @@ node_modules/@jaguilar87/gaia-ops/
 ├── skills/              # Skill modules (21 skills)
 ├── tools/               # Orchestration tools
 ├── hooks/               # Claude Code hooks (modular architecture)
-├── commands/            # Slash commands (5 speckit + scan-project)
+├── commands/            # Slash commands (gaia-plan, scan-project)
 ├── config/              # Configuration (contracts, git standards, rules)
-├── templates/           # Installation templates (settings, governance, managed-settings)
-├── speckit/             # Spec-Kit framework (templates)
+├── templates/           # Installation templates (settings, brief template)
 ├── bin/                 # CLI utilities (11 scripts)
 └── tests/               # Test suite
 ```
@@ -175,9 +173,8 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 - [config/](./config/) - Configuration (contracts, git standards, universal rules)
 - [agents/](./agents/) - Agent definitions
 - [skills/](./skills/) - Skill modules
-- [commands/](./commands/) - Slash commands (spec-kit)
+- [commands/](./commands/) - Slash commands (gaia-plan, scan-project)
 - [hooks/](./hooks/) - Hook system (security, validation, audit)
-- [speckit/](./speckit/) - Spec-Kit framework
 - [bin/](./bin/) - CLI utilities
 - [tests/](./tests/) - Test suite
 

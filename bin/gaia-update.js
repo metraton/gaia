@@ -395,7 +395,7 @@ async function updateSymlinks() {
     }
 
     const relativePath = relative(claudeDir, packagePath);
-    const symlinks = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'speckit', 'skills'];
+    const symlinks = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'skills'];
     let fixed = 0;
 
     for (const name of symlinks) {
@@ -516,7 +516,7 @@ async function runVerification() {
   }
 
   // 5. Agent definitions accessible
-  const agentFiles = ['gaia-orchestrator.md', 'gaia-operator.md', 'terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'developer.md', 'gaia-system.md', 'speckit-planner.md'];
+  const agentFiles = ['gaia-orchestrator.md', 'gaia-operator.md', 'terraform-architect.md', 'gitops-operator.md', 'cloud-troubleshooter.md', 'developer.md', 'gaia-system.md', 'gaia-planner.md'];
   let agentsOk = 0;
   for (const agent of agentFiles) {
     if (existsSync(join(CWD, '.claude', 'agents', agent))) agentsOk++;

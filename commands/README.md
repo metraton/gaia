@@ -26,104 +26,38 @@ Result to user
 
 ## Available Commands
 
-### Spec-Kit Commands
+### Planning Commands
 
-The Spec-Kit framework provides a structured workflow for feature planning. Spec creation happens conversationally with the orchestrator. Task execution is handled by the orchestrator routing tasks to agents.
-
-#### `/speckit.init`
-Initializes Spec-Kit in the current project, creating/validating `project-context.json`.
+#### `/gaia-plan`
+Plan a feature -- create a brief and decompose into verifiable tasks.
 
 **When to use:**
-- First time using Spec-Kit in a project
-- To validate existing configuration
+- Starting a new feature or project
+- Breaking down work into agent-dispatched tasks
 
 **Example:**
 ```bash
-/speckit.init
+/gaia-plan
+/gaia-plan Add OAuth2 authentication
+/gaia-plan --execute .claude/project-context/briefs/auth/brief.md
 ```
+
+**What it does:**
+- Sizes the work (S/M/L)
+- Asks focused questions for M/L features
+- Writes a brief with acceptance criteria and verify commands
+- Decomposes into Tasks dispatched to domain agents
 
 ---
 
-#### `/speckit.plan [spec-root] [spec-id]`
-Generates implementation plan from a completed spec.
+### Project Commands
+
+#### `/scan-project`
+Scan the current project to detect stack, infrastructure, tools, and generate/update `project-context.json`.
 
 **When to use:**
-- After completing the spec conversationally with the orchestrator
-- Before generating tasks
-
-**Example:**
-```bash
-/speckit.plan spec-kit-auth 003-oauth2-auth
-```
-
-**What it generates:**
-- `plan.md` - Detailed technical plan
-- `data-model.md` - Data model
-- `contracts/` - API contracts
-- Clarification questions (if ambiguities exist)
-
----
-
-#### `/speckit.tasks [spec-root] [spec-id]`
-Generates enriched task list with inline metadata.
-
-**When to use:**
-- After completing the plan
-- Before the orchestrator begins task execution
-
-**Example:**
-```bash
-/speckit.tasks spec-kit-auth 003-oauth2-auth
-```
-
-**What it generates:**
-- `tasks.md` with complete metadata:
-  - Assigned agent
-  - Security tier
-  - Category tags
-  - Confidence score
-- Automatic coverage validation
-- Gate if critical issues exist
-
----
-
-#### `/speckit.add-task [spec-root] [spec-id]`
-Adds an ad-hoc task during implementation.
-
-**When to use:**
-- During implementation
-- For tasks not foreseen in the plan
-
-**Example:**
-```bash
-/speckit.add-task spec-kit-auth 003-oauth2-auth
-```
-
-**Asks interactively:**
-- Task description
-- Task ID
-- Implementation phase
-- Dependencies
-
----
-
-#### `/speckit.analyze-task [spec-root] [spec-id] [task-id]`
-Deep analysis of a specific task (auto-triggered for T2/T3).
-
-**When to use:**
-- For high-risk tasks
-- Before executing T3 operations
-
-**Example:**
-```bash
-/speckit.analyze-task spec-kit-auth 003-oauth2-auth T055
-```
-
-**What it analyzes:**
-- Potential risks
-- Dependencies
-- System impact
-- Execution recommendations
+- First time setting up Gaia in a project
+- After significant project changes
 
 ---
 
@@ -185,23 +119,20 @@ usage: Usage syntax
 
 ```
 commands/
-├── speckit.init.md
-├── speckit.plan.md
-├── speckit.tasks.md
-├── speckit.add-task.md
-├── speckit.analyze-task.md
+├── gaia-plan.md
+├── gaia.md
 └── scan-project.md
 ```
 
-**Total:** 6 commands (5 speckit + scan-project)
+**Total:** 3 commands
 
-> **Note:** The Gaia meta-agent is invoked directly via the `gaia` agent (see [agents/gaia.md](../agents/gaia.md)), not as a slash command.
+> **Note:** The Gaia meta-agent is invoked directly via the `gaia` agent (see [agents/gaia-system.md](../agents/gaia-system.md)), not as a slash command.
 
 ## References
 
 **Related documentation:**
-- [Spec-Kit Framework](../speckit/README.md) - Complete Spec-Kit details
-- [Gaia Agent](../agents/gaia.md) - The meta-agent
+- [Gaia Planner](../skills/gaia-planner/reference.md) - Planning workflow reference
+- [Gaia Agent](../agents/gaia-system.md) - The meta-agent
 - [Episodic Memory](../tools/memory/episodic.py) - Context memory system
 - [Config](../config/) - System configuration
 
