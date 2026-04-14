@@ -12,6 +12,7 @@
       "hooks/subagent_stop.py",
       "hooks/session_start.py",
       "hooks/task_completed.py",
+      "hooks/pre_compact.py",
       "hooks/post_compact.py"
     ],
     "matchers": {
@@ -29,6 +30,7 @@
       ],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup"}],
+      "PreCompact": [{}],
       "PostCompact": [{}],
       "Stop": [{}],
       "TaskCompleted": [{}],

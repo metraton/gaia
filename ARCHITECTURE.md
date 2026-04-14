@@ -122,7 +122,7 @@ Classifies user tasks into surfaces using signal matching against `config/surfac
 | `terraform_iac` | terraform-architect | Terraform, Terragrunt, IAM, modules |
 | `app_ci_tooling` | developer | CI/CD, Docker, package tooling |
 | `planning_specs` | speckit-planner | specs, plans, task breakdowns |
-| `gaia_system` | gaia | hooks, skills, agents/, CLAUDE.md |
+| `gaia_system` | gaia-system | hooks, skills, agents/, CLAUDE.md |
 | `workspace` | gaia-operator | memory, email, schedules, file transfers |
 
 **Classification algorithm:**

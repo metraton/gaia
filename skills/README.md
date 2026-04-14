@@ -61,7 +61,7 @@ skills:
 | terraform-architect | agent-protocol, security-tiers, terraform-patterns | fast-queries |
 | gitops-operator | agent-protocol, security-tiers, gitops-patterns | fast-queries |
 | developer | agent-protocol, security-tiers, developer-patterns | fast-queries |
-| gaia | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
+| gaia-system | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
 | speckit-planner | agent-protocol, security-tiers, speckit-workflow | - |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned to agents):
@@ -74,7 +74,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned to agents):
 |------|-----------|----------|
 | **Core** | Always via `skills:` | agent-protocol, security-tiers |
 | **Common** | Most agents via `skills:` | command-execution, context-updater |
-| **Domain** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns, gmail-policy |
+| **Per-agent** | Per-agent via `skills:` | terraform-patterns, gitops-patterns, developer-patterns, gaia-patterns, gmail-policy |
 | **Workflow** | On-demand (agent reads file) | approval, execution, git-conventions |
 | **Orchestrator** | On-demand via Skill tool | agent-response, orchestrator-approval |
 

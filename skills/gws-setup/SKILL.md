@@ -8,7 +8,7 @@ metadata:
 
 # GWS Setup
 
-Setup and configure gws CLI for any Google account (personal @gmail.com or organizational). Derived from real setup sessions -- every trap is documented.
+The gws CLI looks straightforward but breaks in subtle ways -- Google's OAuth flow has undocumented constraints that differ between personal and organizational accounts, and the gws tool itself has open bugs around scopes and multi-account. This procedure captures the working path and the traps discovered through real setup sessions, so you avoid the silent failures that waste hours.
 
 **Prerequisites:** gcloud CLI installed, browser access for OAuth, interactive terminal for auth steps.
 

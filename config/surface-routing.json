@@ -389,8 +389,12 @@
       ],
       "signals": {
         "keywords": [
-          "memory",
-          "remember",
+          "save this",
+          "remember this",
+          "note this",
+          "save to memory",
+          "add to memory",
+          "update memory",
           "schedule",
           "loop",
           "cron",
@@ -402,20 +406,12 @@
           "automate",
           "workspace",
           "personal",
-          "general task",
-          "save this",
-          "remember this",
-          "note this",
-          "search for",
-          "look up",
-          "find online"
+          "general task"
         ],
         "commands": [
           "cron"
         ],
         "artifacts": [
-          "memory/",
-          "MEMORY.md",
           "crontab"
         ]
       }

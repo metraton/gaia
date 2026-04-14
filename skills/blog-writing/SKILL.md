@@ -55,9 +55,31 @@ Once the Markdown draft is approved, convert to the bilingual HTML format. The S
 
 Final HTML goes in: `/home/jorge/ws/me/metraton.github.io/_posts/YYYY-MM-DD-slug.html`
 
-### 6. Preview and publish
+### 6. Editorial review
 
-Run Jekyll locally for preview (port 4000). Then commit and push to publish via GitHub Pages.
+Before publishing, pass through both language versions checking:
+- Spelling, grammar, flow, and consistency
+- HTML entities are correct (`&mdash;` `&rsquo;` `&eacute;` etc.)
+- Technical terms stay in English in the Spanish version
+- Gender consistency for borrowed terms ("los skills" not "las skills")
+- No broken anglicisms ("marcar" not "flagear")
+- Citations link to real, accessible URLs
+
+### 7. Visual verification
+
+Ensure Jekyll is running locally (see `reference.md` for environment details). Preview at localhost:4000. Use Playwright to take screenshots at desktop (1280x900) and mobile (375x812). Check that all visual components render, no horizontal overflow, responsive breakpoints work.
+
+### 8. Publish
+
+Commit and push to `master` in the blog repo. GitHub Pages deploys automatically.
+
+### 9. Live verification
+
+Wait ~45s after push for GitHub Pages to build. Use Playwright to screenshot the live URL and compare against the localhost preview.
+
+### 10. LinkedIn post
+
+Draft a sharing post: 1-3 sentence personal hook connecting to the article's insight, the link, and a bilingual P.D. See `reference.md` for the template. Conversational but technical tone, no aggressive hashtags -- the article preview image does the heavy lifting.
 
 ## Jorge's Voice
 

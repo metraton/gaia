@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook — injects routing recommendations and first-run welcome."""
+"""UserPromptSubmit hook — injects routing recommendations, first-run welcome, and agentic-loop resume context."""
 
 import sys
 import json
@@ -138,7 +138,7 @@ if __name__ == "__main__":
         setup_msg = run_first_time_setup(mark_done=False)
         mode = get_plugin_mode()
 
-        # Build additionalContext: routing + welcome only.
+        # Build additionalContext: welcome + agentic-loop + routing.
         # Identity now lives in agents/gaia-orchestrator.md (agent definition).
         context_parts = []
 
@@ -149,6 +149,18 @@ if __name__ == "__main__":
             context_parts.append(welcome)
             mark_initialized()  # Mark AFTER building the welcome
             logger.info("First-run welcome prepended for %s mode", mode)
+
+        # Detect active agentic-loop and inject resume context (ops mode only).
+        # Lightweight: checks file existence + small JSON read, fully fail-safe.
+        if mode == "ops":
+            try:
+                from modules.context.agentic_loop_detector import build_resume_context
+                loop_context = build_resume_context()
+                if loop_context:
+                    context_parts.append(loop_context)
+                    logger.info("Agentic loop resume context injected")
+            except Exception as e:
+                logger.debug("Agentic loop detection skipped (non-fatal): %s", e)
 
         # Append deterministic surface routing recommendation (ops mode only)
         if mode == "ops":
