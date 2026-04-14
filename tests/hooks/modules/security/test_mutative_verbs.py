@@ -15,6 +15,7 @@ from modules.security.mutative_verbs import (
     COMMAND_ALIASES,
     SIMULATION_FLAGS,
     MUTATIVE_VERBS,
+    GIT_LOCAL_SAFE_SUBCOMMANDS,
 )
 
 
@@ -648,3 +649,285 @@ class TestBuildT3BlockResponse:
         )
         response = build_t3_block_response("kubectl apply -f x.yaml", danger, nonce="abc123")
         assert "NONCE:abc123" in response["message"]
+
+
+# ============================================================================
+# Comprehensive detect_mutative_command tests
+# ============================================================================
+
+class TestDetectMutativeCommand:
+    """Comprehensive tests for detect_mutative_command covering the git commit
+    message false-positive fix (GIT_LOCAL_SAFE_SUBCOMMANDS guard) and general
+    classification correctness."""
+
+    # ------------------------------------------------------------------
+    # Git commit/stash: message body must NOT affect classification
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("cmd", [
+        'git commit -m "fix: update docs"',
+        'git commit -m "feat: create new feature"',
+        'git commit -m "chore: deploy pipeline"',
+        'git commit -m "refactor: replace old code"',
+        'git commit --amend -m "update: send fix"',
+        "git stash push -m 'save before deploy'",
+        'git commit -m "push to production"',
+        'git commit -m "delete unused imports"',
+        'git commit -m "apply formatting rules"',
+        'git commit -m "merge conflicts resolved"',
+        'git commit -m "install dependencies"',
+    ], ids=[
+        "update-in-msg",
+        "create-in-msg",
+        "deploy-in-msg",
+        "replace-in-msg",
+        "amend-update-send-in-msg",
+        "stash-deploy-in-msg",
+        "push-in-msg",
+        "delete-in-msg",
+        "apply-in-msg",
+        "merge-in-msg",
+        "install-in-msg",
+    ])
+    def test_git_message_body_does_not_trigger_t3(self, cmd):
+        """Mutative words inside -m message must not trigger T3."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is False, (
+            f"Command {cmd!r} should be non-mutative but got "
+            f"verb={result.verb!r} category={result.category}"
+        )
+
+    # ------------------------------------------------------------------
+    # Git commands that MUST remain mutative
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("cmd,expected_verb", [
+        ("git push origin main", "push"),
+        ("git push --force origin main", "push"),
+        ("git push --delete origin feature-branch", "push"),
+        ("git push -u origin feature", "push"),
+    ], ids=[
+        "push-plain",
+        "push-force",
+        "push-delete",
+        "push-upstream",
+    ])
+    def test_git_push_always_mutative(self, cmd, expected_verb):
+        """git push (all variants) must remain mutative."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is True
+        assert result.verb == expected_verb
+
+    @pytest.mark.parametrize("cmd,expected_verb", [
+        ("git merge feature-x", "merge"),
+        ("git rebase main", "rebase"),
+        ("git tag v1.0.0", "tag"),
+        ("git tag -d v1.0.0", "tag"),
+        ("git cherry-pick abc123", "cherry-pick"),
+        ("git revert HEAD", "revert"),
+    ], ids=[
+        "merge",
+        "rebase",
+        "tag-create",
+        "tag-delete",
+        "cherry-pick",
+        "revert",
+    ])
+    def test_git_destructive_local_still_mutative(self, cmd, expected_verb):
+        """git merge/rebase/tag/cherry-pick/revert are NOT in the safe list."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is True
+        assert result.verb == expected_verb
+
+    # ------------------------------------------------------------------
+    # Git local/safe commands
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("cmd,expected_verb", [
+        ("git add .", "add"),
+        ("git add -A", "add"),
+        ("git log --oneline", "log"),
+        ("git log --all --graph", "log"),
+        ("git diff HEAD", "diff"),
+        ("git diff --staged", "diff"),
+        ("git status", "status"),
+        ("git status -s", "status"),
+        ("git branch feature-x", "branch"),
+        ("git checkout main", "checkout"),
+        ("git switch develop", "switch"),
+        ("git reflog", "reflog"),
+        ("git show HEAD", "show"),
+        ("git shortlog -s", "shortlog"),
+        ("git blame README.md", "blame"),
+        ("git bisect start", "bisect"),
+        ("git stash", "stash"),
+        ("git stash list", "stash"),
+        ("git stash pop", "stash"),
+    ], ids=[
+        "add-dot",
+        "add-all",
+        "log-oneline",
+        "log-all-graph",
+        "diff-head",
+        "diff-staged",
+        "status",
+        "status-short",
+        "branch-create",
+        "checkout",
+        "switch",
+        "reflog",
+        "show",
+        "shortlog",
+        "blame",
+        "bisect",
+        "stash-bare",
+        "stash-list",
+        "stash-pop",
+    ])
+    def test_git_local_commands_not_mutative(self, cmd, expected_verb):
+        """Git local-only subcommands are non-mutative."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is False, (
+            f"Command {cmd!r} should be non-mutative but got "
+            f"verb={result.verb!r} category={result.category}"
+        )
+        assert result.verb == expected_verb
+
+    # ------------------------------------------------------------------
+    # Git dangerous flags on local commands still trigger T3
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("cmd,expected_flag", [
+        ("git branch -D feature", "-D"),
+        ("git branch -M old-name new-name", "-M"),
+        ("git checkout --force main", "--force"),
+    ], ids=[
+        "branch-force-delete",
+        "branch-force-move",
+        "checkout-force",
+    ])
+    def test_git_local_with_dangerous_flags_mutative(self, cmd, expected_flag):
+        """Local git subcommands with dangerous flags must remain mutative."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is True
+        assert expected_flag in result.dangerous_flags
+
+    # ------------------------------------------------------------------
+    # Git local commands: correct category assignment
+    # ------------------------------------------------------------------
+
+    def test_git_diff_is_simulation_category(self):
+        """git diff should have SIMULATION category (diff is a simulation verb)."""
+        result = detect_mutative_command("git diff HEAD")
+        assert result.category == "SIMULATION"
+
+    def test_git_log_is_read_only_category(self):
+        """git log should have READ_ONLY category."""
+        result = detect_mutative_command("git log --all")
+        assert result.category == "READ_ONLY"
+
+    def test_git_status_is_read_only_category(self):
+        """git status should have READ_ONLY category."""
+        result = detect_mutative_command("git status")
+        assert result.category == "READ_ONLY"
+
+    def test_git_commit_is_unknown_category(self):
+        """git commit is local-safe but 'commit' is not in READ_ONLY or SIMULATION verbs."""
+        result = detect_mutative_command("git commit -m 'msg'")
+        assert result.category == "UNKNOWN"
+        assert result.is_mutative is False
+
+    # ------------------------------------------------------------------
+    # Non-git mutative commands (sanity checks)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("cmd,expected_verb", [
+        ("kubectl apply -f manifest.yaml", "apply"),
+        ("terraform apply", "apply"),
+        ("rm -rf /tmp/data", "rm"),
+        ("docker rm container-id", "rm"),
+        ("helm install release chart", "install"),
+        ("kubectl delete pod my-pod", "delete"),
+    ], ids=[
+        "kubectl-apply",
+        "terraform-apply",
+        "rm-rf",
+        "docker-rm",
+        "helm-install",
+        "kubectl-delete",
+    ])
+    def test_non_git_mutative(self, cmd, expected_verb):
+        """Non-git mutative commands must stay classified as T3."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is True
+        assert result.verb == expected_verb
+
+    # ------------------------------------------------------------------
+    # Non-git safe commands (sanity checks)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("cmd", [
+        "kubectl get pods",
+        "terraform plan",
+        "ls -la",
+        "docker ps",
+    ], ids=[
+        "kubectl-get",
+        "terraform-plan",
+        "ls",
+        "docker-ps",
+    ])
+    def test_non_git_safe(self, cmd):
+        """Non-git read-only/simulation commands must be non-mutative."""
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is False
+
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    def test_git_commit_no_m_flag(self):
+        """git commit without -m flag is safe."""
+        result = detect_mutative_command("git commit")
+        assert result.is_mutative is False
+        assert result.verb == "commit"
+
+    def test_git_commit_empty_message(self):
+        """git commit -m '' (empty message) is safe."""
+        result = detect_mutative_command('git commit -m ""')
+        assert result.is_mutative is False
+
+    def test_git_commit_with_path_prefix(self):
+        """/usr/bin/git commit -m 'deploy fix' is safe."""
+        result = detect_mutative_command('/usr/bin/git commit -m "deploy fix"')
+        assert result.is_mutative is False
+
+    def test_git_commit_with_c_flag(self):
+        """git -C /path commit -m 'update config' is safe (global -C flag)."""
+        result = detect_mutative_command('git -C /some/path commit -m "update config"')
+        assert result.is_mutative is False
+        assert result.verb == "commit"
+
+    # ------------------------------------------------------------------
+    # GIT_LOCAL_SAFE_SUBCOMMANDS constant integrity
+    # ------------------------------------------------------------------
+
+    def test_safe_subcommands_constant_contents(self):
+        """Verify the expected subcommands are in GIT_LOCAL_SAFE_SUBCOMMANDS."""
+        expected = {
+            "commit", "stash", "add", "log", "diff", "status",
+            "branch", "checkout", "switch", "reflog",
+        }
+        assert expected.issubset(GIT_LOCAL_SAFE_SUBCOMMANDS)
+
+    def test_push_not_in_safe_subcommands(self):
+        """push must NEVER be in GIT_LOCAL_SAFE_SUBCOMMANDS."""
+        assert "push" not in GIT_LOCAL_SAFE_SUBCOMMANDS
+
+    def test_mutative_verbs_not_in_safe_subcommands(self):
+        """Subcommands that are in MUTATIVE_VERBS should not be in the safe list."""
+        overlap = GIT_LOCAL_SAFE_SUBCOMMANDS & MUTATIVE_VERBS
+        assert overlap == set(), (
+            f"These subcommands are in both GIT_LOCAL_SAFE_SUBCOMMANDS and "
+            f"MUTATIVE_VERBS: {overlap}"
+        )

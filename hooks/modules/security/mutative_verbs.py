@@ -160,6 +160,43 @@ COMPOUND_READ_ONLY_SUBCOMMANDS: FrozenSet[str] = frozenset({
 
 
 # ============================================================================
+# Git Local-Only Subcommands (early-exit guard)
+# ============================================================================
+# Git subcommands that NEVER mutate remote state.  When the base command is
+# "git" and the first non-flag token is one of these, short-circuit to
+# non-mutative.  This prevents message body text (after -m) from leaking
+# into the verb scanner and triggering false positives on words like
+# "update", "create", "deploy" inside commit messages.
+#
+# NOT included here (intentionally left to the verb scanner):
+#   push    -- mutates remote
+#   merge   -- in MUTATIVE_VERBS (local but destructive merge commit)
+#   rebase  -- in MUTATIVE_VERBS (rewrites history)
+#   tag     -- in MUTATIVE_VERBS (creates refs, tag -d deletes)
+#   reset   -- in MUTATIVE_VERBS (can discard commits)
+#   cherry-pick, revert -- in MUTATIVE_VERBS
+
+GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
+    "commit",
+    "stash",
+    "add",
+    "log",
+    "diff",
+    "status",
+    "branch",
+    "checkout",
+    "switch",
+    "reflog",
+    "bisect",
+    "blame",
+    "show",
+    "shortlog",
+    "whatchanged",
+    "notes",
+})
+
+
+# ============================================================================
 # Verb+Flag Overrides (mutative verb downgraded to READ_ONLY by a flag)
 # ============================================================================
 # Map of (cli_family, verb) -> frozenset of flag tokens that override to READ_ONLY.
@@ -605,6 +642,36 @@ def detect_mutative_command(command: str) -> MutativeResult:
         and semantics.non_flag_tokens[0] == "-"
     ):
         return _check_inline_code(command, base_cmd, family, skip_length_check=True)
+
+    # --- Step 3d: Git local-only subcommand guard ---
+    # When base_cmd is "git" and the subcommand is local-only (commit, stash,
+    # add, log, etc.), short-circuit to non-mutative.  This prevents message
+    # body text after -m from leaking into the verb scanner and triggering
+    # false positives on words like "update", "create", "deploy".
+    # Dangerous flags (-D, -M, --force) are still checked so that
+    # "git branch -D feature" remains flagged.
+    if base_cmd == "git" and semantics.non_flag_tokens:
+        git_subcmd = semantics.non_flag_tokens[0]
+        if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
+            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+            if dangerous_flags:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=git_subcmd,
+                    dangerous_flags=dangerous_flags,
+                    cli_family=family,
+                    confidence="high",
+                    reason=f"Git local subcommand '{git_subcmd}' with dangerous flags {dangerous_flags}",
+                )
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_SIMULATION if git_subcmd in SIMULATION_VERBS else CATEGORY_READ_ONLY if git_subcmd in READ_ONLY_VERBS else CATEGORY_UNKNOWN,
+                verb=git_subcmd,
+                cli_family=family,
+                confidence="high",
+                reason=f"Git local-only subcommand '{git_subcmd}' is safe",
+            )
 
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
