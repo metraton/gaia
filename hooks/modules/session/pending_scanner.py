@@ -1,6 +1,7 @@
 """Scan for deferred pending approvals and format a human-readable summary."""
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -31,12 +32,23 @@ def scan_pending_approvals(
             continue
         try:
             data = json.loads(f.read_text())
-            # Skip expired pendings (ttl > 0 and expired)
+            # Clean up expired pendings (ttl > 0 and expired)
             ttl = data.get("ttl_minutes", 0)
             if ttl > 0:
                 elapsed = (time.time() - data.get("timestamp", 0)) / 60
                 if elapsed > ttl:
+                    try:
+                        os.unlink(str(f))
+                    except OSError:
+                        pass
                     continue
+            # Clean up rejected pendings
+            if data.get("status") == "rejected":
+                try:
+                    os.unlink(str(f))
+                except OSError:
+                    pass
+                continue
             # Filter by session if requested
             if session_id and data.get("session_id") != session_id:
                 continue

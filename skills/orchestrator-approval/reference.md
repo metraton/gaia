@@ -117,6 +117,20 @@ multi-use grant covering many commands with the same base CLI and verb but diffe
 - "Approve batch" creates a verb-family grant (multi-use, 10-minute TTL)
 - "Approve single" creates a normal single-use grant for only the first blocked command
 
+**CRITICAL -- "batch" in the label:** The word "batch" MUST appear in the Approve option label for verb-family grants to activate. The PostToolUse hook checks the label text to decide whether to create a verb-family (multi-use) grant or a single-use grant. Without "batch" in the label, the hook creates a single-use grant and every command after the first one gets blocked again.
+
+**BAD -- missing "batch" keyword:**
+```
+options=["Approve -- modify 500 Gmail messages [P-a1b2c3d4]", "Reject"]
+```
+Result: single-use grant created. First `gws gmail users messages modify` succeeds. Second one is blocked. Agent enters re-block loop for remaining 499 messages.
+
+**GOOD -- "batch" keyword present:**
+```
+options=["Approve batch -- modify 500 Gmail messages [P-a1b2c3d4]", "Reject"]
+```
+Result: verb-family grant created (multi-use, 10-minute TTL). All 500 `gws gmail users messages modify` commands pass through.
+
 **Resume:** After batch approval, resume via SendMessage with: "Batch approved. Proceed with all [verb] operations."
 
 ## Grant Activation Mechanics

@@ -50,12 +50,14 @@ ROLLBACK:  {rollback from context field}
     - Dispatch a one-shot agent using the dispatch template from `reference.md` (command + cwd + preflight + recovery instructions, no nonce)
     - The hook will find the pre-activated grant and allow the T3 operation through
 4b. Same-session: dispatch a one-shot agent using the dispatch template from `reference.md` (command + cwd + nonce + preflight + recovery instructions)
-5. On Reject: delete the pending file; confirm deletion to user
+5. On Reject: call `reject_pending(nonce_prefix)` to mark the pending as rejected; confirm to user
 
 ## When user says "rechazar P-XXXX"
 
-1. Delete the pending file at `.claude/cache/approvals/pending-{nonce}.json`
-2. Confirm: "P-XXXX rechazado y eliminado"
+1. The orchestrator dispatches an agent to edit the pending JSON file at `.claude/cache/approvals/pending-{nonce}.json`, setting `"status": "rejected"` and `"rejected_at"` to the current timestamp
+2. Do NOT use `rm` to delete the file -- that triggers T3 approval. The `reject_pending()` function in `approval_grants.py` handles this via file I/O (read JSON, modify, write back)
+3. The pending scanner will clean up rejected files on its next sweep
+4. Confirm: "P-XXXX rechazado"
 
 ## Anti-patterns
 

@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 # Default grant TTL in minutes
 DEFAULT_GRANT_TTL_MINUTES = 5
 
-# Default pending TTL in minutes (0 = no expiry)
-DEFAULT_PENDING_TTL_MINUTES = 0
+# Default pending TTL in minutes (24 hours)
+DEFAULT_PENDING_TTL_MINUTES = 1440
 
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
 _last_cleanup_time: float = 0.0
@@ -104,6 +104,11 @@ def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
         return True
     elapsed_minutes = (time.time() - timestamp) / 60
     return elapsed_minutes > ttl_minutes
+
+
+def _is_rejected(data: Dict[str, Any]) -> bool:
+    """Return True if a pending approval has been rejected."""
+    return data.get("status") == "rejected"
 
 
 @dataclass(frozen=True)
@@ -224,6 +229,8 @@ def _rebuild_pending_index(session_id: str) -> None:
             continue
         data = _read_json_file(pending_file)
         if not data or data.get("session_id") != session_id:
+            continue
+        if _is_rejected(data):
             continue
 
         nonce = data.get("nonce")
@@ -364,7 +371,7 @@ def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
             if not fname_nonce.startswith(prefix):
                 continue
             data = _read_json_file(pending_file)
-            if data:
+            if data and not _is_rejected(data):
                 candidates.append(data)
 
         if not candidates:
@@ -1168,6 +1175,12 @@ def cleanup_expired_grants() -> int:
                         sessions_to_rebuild.add(session_id)
                     cleaned += 1
                     continue
+                if _is_rejected(data):
+                    _cleanup_grant(pending_file)
+                    if session_id:
+                        sessions_to_rebuild.add(session_id)
+                    cleaned += 1
+                    continue
                 timestamp = data.get("timestamp", 0)
                 ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
                 if _is_ttl_expired(timestamp, ttl):
@@ -1216,6 +1229,8 @@ def get_pending_approvals_for_session(
                 continue
             data = _read_json_file(pending_file)
             if not data or data.get("session_id") != session_id:
+                continue
+            if _is_rejected(data):
                 continue
             timestamp = data.get("timestamp", 0)
             ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
@@ -1277,6 +1292,49 @@ def find_pending_for_command(
             continue
 
     return None
+
+
+def reject_pending(nonce_prefix: str) -> bool:
+    """Mark a pending approval as rejected without deleting the file.
+
+    Finds the pending file whose nonce starts with ``nonce_prefix``, sets
+    ``status`` to ``"rejected"`` and ``rejected_at`` to the current time,
+    writes the file back, and rebuilds the session index.
+
+    Rejected pendings are invisible to all readers (``_is_rejected`` filter)
+    and are cleaned up by the pending scanner on its next sweep.
+
+    Args:
+        nonce_prefix: Hex prefix of the nonce (typically 8 chars from ``[P-xxx]``).
+
+    Returns:
+        True if a matching pending was found and rejected, False otherwise.
+    """
+    try:
+        grants_dir = _get_grants_dir()
+        for pending_file in grants_dir.glob("pending-*.json"):
+            if pending_file.name.startswith("pending-index-"):
+                continue
+            fname_nonce = pending_file.stem.removeprefix("pending-")
+            if not fname_nonce.startswith(nonce_prefix):
+                continue
+            data = _read_json_file(pending_file)
+            if not data or _is_rejected(data):
+                continue
+            data["status"] = "rejected"
+            data["rejected_at"] = time.time()
+            pending_file.write_text(json.dumps(data, indent=2))
+            session_id = data.get("session_id")
+            if session_id:
+                _rebuild_pending_index(session_id)
+            logger.info(
+                "Pending approval rejected: nonce_prefix=%s, nonce=%s",
+                nonce_prefix, data.get("nonce", "?"),
+            )
+            return True
+    except Exception as e:
+        logger.error("Error rejecting pending approval for prefix %s: %s", nonce_prefix, e)
+    return False
 
 
 def write_pending_approval_for_file(

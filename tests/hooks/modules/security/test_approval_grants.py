@@ -38,8 +38,11 @@ from modules.security.approval_grants import (
 )
 
 from modules.security.approval_grants import (
+    DEFAULT_PENDING_TTL_MINUTES,
     extract_nonce_from_label,
+    get_pending_approvals_for_session,
     load_pending_by_nonce_prefix,
+    reject_pending,
 )
 from modules.security.approval_scopes import (
     SCOPE_EXACT_COMMAND,
@@ -1359,3 +1362,76 @@ class TestCaptureEnvironmentSnapshot:
         mock_capture.assert_called_once_with(
             "git push origin feature-x", cwd=None,
         )
+
+
+# ====================================================================== #
+# TestRejectPending -- rejection flow and TTL default
+# ====================================================================== #
+
+
+class TestRejectPending:
+    """Rejection marks pendings as rejected without deleting the file.
+    Rejected pendings are invisible to all readers."""
+
+    def test_reject_pending_marks_status_rejected(self, clean_grants_dir):
+        """reject_pending sets status='rejected' and rejected_at in the JSON file."""
+        nonce = generate_nonce()
+        prefix = nonce[:8]
+        path = write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+        )
+        assert path is not None
+
+        result = reject_pending(prefix)
+        assert result is True
+
+        # File still exists but is marked rejected
+        assert path.exists()
+        data = json.loads(path.read_text())
+        assert data["status"] == "rejected"
+        assert "rejected_at" in data
+        assert isinstance(data["rejected_at"], float)
+
+    def test_rejected_pending_not_found_by_load_prefix(self, clean_grants_dir):
+        """After rejection, load_pending_by_nonce_prefix returns None."""
+        nonce = generate_nonce()
+        prefix = nonce[:8]
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+        )
+
+        reject_pending(prefix)
+
+        result = load_pending_by_nonce_prefix(prefix)
+        assert result is None
+
+    def test_rejected_pending_not_found_by_session(self, clean_grants_dir):
+        """After rejection, get_pending_approvals_for_session skips it."""
+        nonce = generate_nonce()
+        prefix = nonce[:8]
+        write_pending_approval(
+            nonce=nonce,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+        )
+
+        # Before rejection: visible
+        pendings_before = get_pending_approvals_for_session()
+        assert any(p["nonce"] == nonce for p in pendings_before)
+
+        reject_pending(prefix)
+
+        # After rejection: invisible
+        pendings_after = get_pending_approvals_for_session()
+        assert not any(p["nonce"] == nonce for p in pendings_after)
+
+    def test_ttl_default_is_24_hours(self):
+        """DEFAULT_PENDING_TTL_MINUTES must be 1440 (24 hours)."""
+        assert DEFAULT_PENDING_TTL_MINUTES == 1440
