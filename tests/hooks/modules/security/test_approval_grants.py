@@ -371,14 +371,17 @@ class TestActivatePendingApproval:
 
     def test_activation_fails_for_expired_pending(self, clean_grants_dir):
         nonce = generate_nonce()
-        write_pending_approval(
+        pending_file = write_pending_approval(
             nonce=nonce,
             command="git commit -m 'feat: test'",
             danger_verb="commit",
             danger_category="MUTATIVE",
-            ttl_minutes=0,
+            ttl_minutes=1,
         )
-        time.sleep(0.1)
+        # Backdate the timestamp so the 1-minute TTL has elapsed
+        data = json.loads(pending_file.read_text())
+        data["timestamp"] = 1000000.0
+        pending_file.write_text(json.dumps(data, indent=2))
         result = activate_pending_approval(nonce)
         assert result.success is False
         assert result.status == ACTIVATION_EXPIRED
@@ -489,6 +492,7 @@ class TestCleanup:
             command="git commit -m 'test'",
             danger_verb="commit",
             danger_category="MUTATIVE",
+            ttl_minutes=1,
         )
         data = json.loads(pending_file.read_text())
         data["timestamp"] = 1000000.0

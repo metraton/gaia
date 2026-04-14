@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 # Default grant TTL in minutes
 DEFAULT_GRANT_TTL_MINUTES = 5
 
+# Default pending TTL in minutes (0 = no expiry)
+DEFAULT_PENDING_TTL_MINUTES = 0
+
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
 _last_cleanup_time: float = 0.0
 _CLEANUP_INTERVAL_SECONDS = 60
@@ -89,7 +92,12 @@ ACTIVATION_ERROR = ActivationStatus.ERROR
 
 
 def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
-    """Return True if the given timestamp is older than ttl_minutes."""
+    """Return True if the given timestamp is older than ttl_minutes.
+
+    A ttl_minutes of 0 means "no expiry" -- always returns False.
+    """
+    if ttl_minutes == 0:
+        return False
     if timestamp == 0:
         return True
     elapsed_minutes = (time.time() - timestamp) / 60
@@ -309,7 +317,8 @@ def write_pending_approval(
     danger_verb: str,
     danger_category: str,
     session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Write a pending approval file when a T3 command is blocked.
 
@@ -323,7 +332,10 @@ def write_pending_approval(
         danger_verb: The dangerous verb detected (e.g., "push", "apply").
         danger_category: The danger category (e.g., "MUTATIVE", "DESTRUCTIVE").
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
-        ttl_minutes: How long the pending approval is valid before expiry.
+        ttl_minutes: How long the pending approval is valid before expiry
+            (0 = no expiry).
+        context: Optional dict with enriched context (source, description,
+            risk, rollback, branch, files_changed, etc.).
 
     Returns:
         Path to the pending file, or None on failure.
@@ -354,6 +366,7 @@ def write_pending_approval(
         "scope_signature": signature.to_dict(),
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
+        "context": context or {},
     }
 
     try:
@@ -943,7 +956,8 @@ def write_pending_approval_for_file(
     nonce: str,
     file_path: str,
     session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Write a pending approval file when a Write/Edit to a protected path is blocked.
 
@@ -954,7 +968,10 @@ def write_pending_approval_for_file(
         nonce: Cryptographic nonce from generate_nonce().
         file_path: The absolute path of the file being written/edited.
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
-        ttl_minutes: How long the pending approval is valid before expiry.
+        ttl_minutes: How long the pending approval is valid before expiry
+            (0 = no expiry).
+        context: Optional dict with enriched context (source, description,
+            risk, rollback, branch, files_changed, etc.).
 
     Returns:
         Path to the pending file, or None on failure.
@@ -980,6 +997,7 @@ def write_pending_approval_for_file(
         "scope_signature": signature.to_dict(),
         "timestamp": time.time(),
         "ttl_minutes": ttl_minutes,
+        "context": context or {},
     }
 
     try:
