@@ -232,6 +232,118 @@ class TestActivateGrants:
         assert len(pending_after) == 0, "All pending should be consumed"
 
 
+class TestNonceTargetedActivation:
+    """Test nonce-targeted activation via _activate_grants(response=...)."""
+
+    def test_nonce_targeted_activation_via_elicitation(self):
+        """Response with [P-<nonce>] activates only that specific pending grant."""
+        session_id = "test-elicitation-session"
+
+        # Create two pending approvals
+        nonce1 = generate_nonce()
+        write_pending_approval(
+            nonce=nonce1,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        nonce2 = generate_nonce()
+        write_pending_approval(
+            nonce=nonce2,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        # Build a response that contains the nonce prefix for the first pending
+        nonce_prefix = nonce1[:8]
+        response = f"Approve -- terraform apply [P-{nonce_prefix}]"
+
+        # Activate using the nonce-targeted path
+        _activate_grants(session_id, response=response)
+
+        # The first grant (terraform apply) should be activated
+        grant1 = check_approval_grant("terraform apply")
+        assert grant1 is not None, "Targeted grant should be active"
+        assert grant1.approved_scope == "terraform apply"
+
+        # The second grant (git push) should still be pending -- NOT activated
+        pending_after = get_pending_approvals_for_session(session_id)
+        assert len(pending_after) == 1, (
+            "Only the targeted pending should be consumed; the other should remain"
+        )
+
+    def test_fallback_to_session_wide_when_no_nonce(self):
+        """Response without [P-...] falls back to session-wide activation."""
+        session_id = "test-elicitation-session"
+
+        nonce1 = generate_nonce()
+        write_pending_approval(
+            nonce=nonce1,
+            command="terraform apply",
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        nonce2 = generate_nonce()
+        write_pending_approval(
+            nonce=nonce2,
+            command="git push origin main",
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
+        # Response has no [P-...] tag -- legacy approval
+        response = "Approve -- Allow the operation to proceed"
+
+        _activate_grants(session_id, response=response)
+
+        # Both grants should be activated (session-wide fallback)
+        grant1 = check_approval_grant("terraform apply")
+        assert grant1 is not None, "First grant should be active (session-wide)"
+
+        grant2 = check_approval_grant("git push origin main")
+        assert grant2 is not None, "Second grant should be active (session-wide)"
+
+        pending_after = get_pending_approvals_for_session(session_id)
+        assert len(pending_after) == 0, "All pending should be consumed"
+
+    def test_cross_session_nonce_activation_via_elicitation(self):
+        """Response nonce from a prior session creates grant under current session."""
+        from modules.security.approval_grants import activate_cross_session_pending
+
+        prior_session = "prior-session-abc"
+        current_session = "test-elicitation-session"
+
+        # Create pending in a DIFFERENT session
+        nonce = generate_nonce()
+        write_pending_approval(
+            nonce=nonce,
+            command="kubectl delete pod nginx",
+            danger_verb="delete",
+            danger_category="DESTRUCTIVE",
+            session_id=prior_session,
+        )
+
+        nonce_prefix = nonce[:8]
+        response = f"Approve -- kubectl delete pod nginx [P-{nonce_prefix}]"
+
+        # Activate from the current session -- cross-session path
+        _activate_grants(current_session, response=response)
+
+        # The grant should exist and be usable from the current session
+        grant = check_approval_grant("kubectl delete pod nginx")
+        assert grant is not None, (
+            "Cross-session grant should be active under current session"
+        )
+        assert grant.approved_scope == "kubectl delete pod nginx"
+
+
 class TestMalformedInput:
     """Test that malformed/empty input does not crash the hook."""
 

@@ -27,6 +27,18 @@ Every dispatch through the Agent tool carries security policies, audit trails, a
 - **WebSearch/WebFetch** — research that doesn't require delegation; use directly when the question is informational, not operational
 - **ToolSearch** — discover deferred tool schemas before calling a tool that may not be loaded
 
+## Pending Approvals
+
+When `additionalContext` contains an `[ACTIONABLE]` pending approvals block, present the
+pending approvals to the user BEFORE routing the current request. Do not silently skip
+injected approval context — the user cannot act on pending approvals they cannot see.
+
+Presentation flow:
+1. Load `Skill('pending-approvals')` to get the presentation and dispatch templates
+2. Show the summary to the user (list of P-XXXX items with command + age)
+3. Ask: present the pending list and offer "ver P-XXXX", "aprobar P-XXXX", or "continuar sin aprobar"
+4. Handle their choice before routing the original request
+
 ## Routing
 
 Each message may include a routing suggestion from signal matching.

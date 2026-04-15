@@ -122,6 +122,48 @@ def _build_welcome(mode: str) -> str:
     )
 
 
+def _build_pending_context() -> str:
+    """Scan for pending approvals and format as actionable context.
+
+    Returns an [ACTIONABLE]-framed summary if pending approvals exist,
+    or empty string if none found.  Includes cross-session fallback:
+    scans current session first, then all sessions if empty.
+
+    Fully fail-safe — never raises exceptions.
+    """
+    try:
+        from modules.session.pending_scanner import scan_pending_approvals, format_pending_summary
+        from modules.core.paths import get_plugin_data_dir
+        from modules.core.state import get_session_id
+
+        approvals_dir = get_plugin_data_dir() / "cache" / "approvals"
+        session_id = get_session_id()
+
+        # Current session first
+        pendings = scan_pending_approvals(
+            approvals_dir, session_id=session_id, current_session_id=session_id
+        )
+
+        # Cross-session fallback: scan all sessions if current has none
+        if not pendings:
+            pendings = scan_pending_approvals(
+                approvals_dir, current_session_id=session_id
+            )
+
+        if not pendings:
+            return ""
+
+        summary = format_pending_summary(pendings)
+        logger.info("Pending context: %d approvals found", len(pendings))
+        return (
+            "[ACTIONABLE] Pending approvals require your attention before "
+            "routing this request.\n\n" + summary
+        )
+    except Exception as e:
+        logger.debug("Pending context scan skipped (non-fatal): %s", e)
+        return ""
+
+
 if __name__ == "__main__":
     if not has_stdin_data():
         sys.exit(0)
@@ -161,6 +203,13 @@ if __name__ == "__main__":
                     logger.info("Agentic loop resume context injected")
             except Exception as e:
                 logger.debug("Agentic loop detection skipped (non-fatal): %s", e)
+
+        # Inject pending approval context (ops mode only, before routing).
+        if mode == "ops":
+            pending_block = _build_pending_context()
+            if pending_block:
+                context_parts.append(pending_block)
+                logger.info("Pending approval context injected")
 
         # Append deterministic surface routing recommendation (ops mode only)
         if mode == "ops":

@@ -74,13 +74,59 @@ def _is_approval(response: str) -> bool:
     return any(word in normalized for word in approval_words)
 
 
-def _activate_grants(session_id: str) -> None:
-    """Activate all pending approval grants for this session."""
+def _activate_grants(session_id: str, response: str = "") -> None:
+    """Activate approval grants for this session.
+
+    When *response* contains a ``[P-<nonce>]`` tag (nonce-labeled approval),
+    only the specific grant identified by that nonce is activated.  When no
+    nonce is present (legacy approvals that predate nonce labeling) the
+    function falls back to session-wide activation for backward compatibility.
+    """
     from modules.security.approval_grants import (
         activate_grants_for_session,
+        activate_pending_approval,
+        activate_cross_session_pending,
+        extract_nonce_from_label,
+        load_pending_by_nonce_prefix,
         get_pending_approvals_for_session,
     )
 
+    # Try nonce-targeted activation first
+    nonce_prefix = extract_nonce_from_label(response) if response else None
+    if nonce_prefix:
+        logger.info(
+            "ElicitationResult: nonce prefix found in response: %s", nonce_prefix,
+        )
+        pending_data = load_pending_by_nonce_prefix(nonce_prefix)
+        if pending_data:
+            full_nonce = pending_data.get("nonce", "")
+            pending_session = pending_data.get("session_id", "")
+            if pending_session == session_id:
+                # Same session -- standard targeted activation
+                result = activate_pending_approval(
+                    nonce=full_nonce, session_id=session_id,
+                )
+            else:
+                # Cross-session pending -- approval came from a prior session
+                result = activate_cross_session_pending(
+                    pending_data, session_id=session_id,
+                )
+            logger.info(
+                "ElicitationResult nonce-targeted activation: "
+                "nonce=%s success=%s status=%s",
+                full_nonce[:12] if full_nonce else nonce_prefix,
+                result.success,
+                result.status,
+            )
+            return
+        else:
+            logger.warning(
+                "ElicitationResult: nonce prefix %s not found in pending files, "
+                "falling back to session-wide activation",
+                nonce_prefix,
+            )
+
+    # Fallback: session-wide activation (backward compat for unlabeled approvals)
     pending = get_pending_approvals_for_session(session_id)
     if not pending:
         logger.info("No pending approvals to activate for session %s", session_id)
@@ -120,7 +166,7 @@ if __name__ == "__main__":
         # Check if the response indicates approval
         if _is_approval(response):
             if session_id:
-                _activate_grants(session_id)
+                _activate_grants(session_id, response=response)
             else:
                 logger.warning("Approval detected but no session_id available")
         else:
