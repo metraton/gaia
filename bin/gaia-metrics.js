@@ -1193,6 +1193,8 @@ async function displayAgentDetail(agentName, workflowMetrics, auditLogs, runSnap
 // ─────────────────────────────────────────────────────────────
 
 async function main() {
+  process.stderr.write('[DEPRECATED] gaia-metrics.js is deprecated. Use: python3 bin/gaia metrics\n[DEPRECATED] Migration guide: see CHANGELOG.md\n');
+
   // Parse --agent flag
   const agentFlagIdx = process.argv.indexOf('--agent');
   const agentName = agentFlagIdx !== -1 ? process.argv[agentFlagIdx + 1] : null;

@@ -133,6 +133,8 @@ function colorStatus(status) {
 // ─────────────────────────────────────────────────────────────
 
 async function main() {
+  process.stderr.write('[DEPRECATED] gaia-history.js is deprecated. Use: python3 bin/gaia history\n[DEPRECATED] Migration guide: see CHANGELOG.md\n');
+
   const args = yargs(hideBin(process.argv))
     .option('today', { alias: 't', type: 'boolean', default: false, description: 'Show today only' })
     .option('blocked', { alias: 'b', type: 'boolean', default: false, description: 'Show BLOCKED/NEEDS_INPUT only' })

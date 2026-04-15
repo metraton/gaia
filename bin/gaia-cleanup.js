@@ -468,6 +468,8 @@ async function applyRetentionPolicy() {
  * Main function
  */
 async function main() {
+  process.stderr.write('[DEPRECATED] gaia-cleanup.js is deprecated. Use: python3 bin/gaia cleanup\n[DEPRECATED] Migration guide: see CHANGELOG.md\n');
+
   const args = process.argv.slice(2);
   const pruneOnly = args.includes('--prune') || args.includes('--retain');
 

@@ -548,6 +548,8 @@ function severityDetail(severity, detail) {
 // ============================================================================
 
 async function main() {
+  process.stderr.write('[DEPRECATED] gaia-doctor.js is deprecated. Use: python3 bin/gaia doctor\n[DEPRECATED] Migration guide: see CHANGELOG.md\n');
+
   const args = yargs(hideBin(process.argv))
     .usage('Usage: $0 [options]')
     .option('fix', { type: 'boolean', description: 'Attempt auto-fix for common issues', default: false })

@@ -5,6 +5,7 @@
   "main": "index.js",
   "type": "module",
   "bin": {
+    "gaia": "bin/gaia",
     "gaia-doctor": "bin/gaia-doctor.js",
     "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
     "gaia-cleanup": "bin/gaia-cleanup.js",

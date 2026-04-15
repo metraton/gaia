@@ -191,6 +191,8 @@ function formatTime(iso) {
 // ─────────────────────────────────────────────────────────────
 
 async function main() {
+  process.stderr.write('[DEPRECATED] gaia-status.js is deprecated. Use: python3 bin/gaia status\n[DEPRECATED] Migration guide: see CHANGELOG.md\n');
+
   const claudeDir = join(CWD, '.claude');
   if (!existsSync(claudeDir)) {
     console.log(chalk.yellow('\n  gaia-ops not installed in this directory'));

@@ -614,6 +614,8 @@ async function runFreshInstall() {
 }
 
 async function main() {
+  process.stderr.write('[DEPRECATED] gaia-update.js is deprecated. Use: python3 bin/gaia update\n[DEPRECATED] Migration guide: see CHANGELOG.md\n');
+
   const claudeDir = join(CWD, '.claude');
   const isUpdate = existsSync(claudeDir);
 

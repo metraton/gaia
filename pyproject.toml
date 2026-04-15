@@ -27,3 +27,6 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "tools/scan/tests"]
+markers = [
+    "parity: JS-Python CLI parity comparison tests",
+]

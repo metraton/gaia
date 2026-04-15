@@ -5,6 +5,54 @@ All notable changes to the gaia-ops orchestration system are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Gaia CLI (M6)
+
+### Unified Python CLI + JS CLI Deprecation
+
+The JS CLIs (`gaia-status`, `gaia-doctor`, `gaia-cleanup`, `gaia-update`, `gaia-history`, `gaia-metrics`) are now deprecated in favor of the unified `bin/gaia` Python CLI. The JS CLIs remain functional but print deprecation warnings to stderr on every invocation.
+
+#### Migration: Old Command → New Command
+
+| Old JS command | New unified command |
+|---|---|
+| `npx gaia-status` | `python3 bin/gaia status` |
+| `npx gaia-doctor` | `python3 bin/gaia doctor` |
+| `npx gaia-cleanup` | `python3 bin/gaia cleanup` |
+| `npx gaia-update` | `python3 bin/gaia update` |
+| `npx gaia-history` | `python3 bin/gaia history` |
+| `npx gaia-metrics` | `python3 bin/gaia metrics` |
+
+#### New commands with no JS equivalent
+
+The unified CLI also provides subcommands that did not exist as standalone JS CLIs:
+
+| New command | Description |
+|---|---|
+| `python3 bin/gaia approvals list` | List pending T3 approval requests |
+| `python3 bin/gaia approvals show APPROVAL_ID` | Show approval detail |
+| `python3 bin/gaia approvals reject NONCE` | Reject a pending approval |
+| `python3 bin/gaia approvals clean` | Remove expired grants |
+| `python3 bin/gaia approvals stats` | Show approval statistics |
+| `python3 bin/gaia plans list` | List all feature briefs |
+| `python3 bin/gaia plans show BRIEF_NAME` | Show a brief and plan |
+| `python3 bin/gaia context show` | Display project-context.json summary |
+| `python3 bin/gaia context scan` | Invoke gaia-scan to refresh context |
+
+#### Deprecation timeline
+
+- **Now (M6):** JS CLIs print `[DEPRECATED]` warnings to stderr. All functionality remains intact.
+- **Future version (TBD):** JS CLIs will be removed from `package.json` bin field.
+
+#### Why a unified CLI?
+
+- Zero external dependencies (stdlib only, Python 3.9+)
+- Single entry point: `bin/gaia --help` for all subcommands
+- Machine-readable `--json` output on all subcommands
+- Consistent exit codes: 0=ok, 1=warnings, 2=errors
+- Extensible: add subcommands by dropping a `bin/cli/<name>.py` file
+
+---
+
 ## [4.5.0] - 2026-03-24
 
 ### Settings Architecture Redesign + Multi-Cloud Security

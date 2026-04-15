@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""
+gaia -- Unified Gaia-Ops CLI
+
+Entry point that discovers subcommand plugins from bin/cli/ and dispatches
+to the matching handler. Zero external dependencies (stdlib only).
+
+Usage:
+    python bin/gaia <subcommand> [options]
+    python bin/gaia --help
+    python bin/gaia status [--json]
+    python bin/gaia doctor [--json] [--fix]
+"""
+
+import argparse
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
+
+# Ensure the package root is on sys.path so submodules resolve correctly.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PACKAGE_ROOT = _SCRIPT_DIR.parent
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
+# Also ensure bin/ is on the path so bin/cli/ resolves as a package.
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+_CLI_DIR = _SCRIPT_DIR / "cli"
+
+
+def _discover_plugins():
+    """Return a sorted list of (module_name, module) for all bin/cli/*.py plugins."""
+    plugins = []
+    if not _CLI_DIR.is_dir():
+        return plugins
+
+    for path in sorted(_CLI_DIR.glob("*.py")):
+        if path.stem == "__init__":
+            continue
+        spec = importlib.util.spec_from_file_location(f"cli.{path.stem}", path)
+        if spec is None:
+            continue
+        try:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            plugins.append((path.stem, mod))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: could not load plugin {path.name}: {exc}", file=sys.stderr)
+
+    return plugins
+
+
+def main(argv=None):
+    """CLI entry point. Returns exit code."""
+    parser = argparse.ArgumentParser(
+        prog="gaia",
+        description="Gaia-Ops unified CLI -- manage and inspect your Gaia installation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output results as JSON (machine-readable)",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        default=False,
+        help="Print version and exit",
+    )
+
+    subparsers = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
+    # Discover and register plugins
+    plugins = _discover_plugins()
+    for _name, mod in plugins:
+        if hasattr(mod, "register"):
+            mod.register(subparsers)
+
+    args = parser.parse_args(argv)
+
+    if args.version:
+        # Print version from package.json
+        try:
+            import json
+            pkg = _PACKAGE_ROOT / "package.json"
+            version = json.loads(pkg.read_text())["version"]
+            print(f"gaia {version}")
+        except Exception:
+            print("gaia (version unknown)")
+        return 0
+
+    if args.subcommand is None:
+        parser.print_help()
+        return 0
+
+    # Dispatch to the matching plugin handler
+    for name, mod in plugins:
+        if name == args.subcommand and hasattr(mod, f"cmd_{name}"):
+            handler = getattr(mod, f"cmd_{name}")
+            return handler(args) or 0
+
+    # Subcommand registered but handler not found -- should not happen
+    print(f"gaia: unknown subcommand '{args.subcommand}'", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
