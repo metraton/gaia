@@ -29,9 +29,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 
-const META_AGENTS = new Set(["gaia-system", "gaia-orchestrator", "Explore", "Plan", "general-purpose", "claude-code-guide"]);
+const META_AGENTS = new Set(["gaia-orchestrator", "Explore", "Plan", "general-purpose", "claude-code-guide"]);
 const CONTEXT_INJECTED_AGENTS = new Set([
   "gaia-operator",
+  "gaia-system",
   "terraform-architect",
   "gitops-operator",
   "cloud-troubleshooter",

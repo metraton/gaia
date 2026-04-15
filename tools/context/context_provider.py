@@ -17,6 +17,14 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+# Ensure the package root (gaia-ops-dev/) is on sys.path so that
+# `tools.memory.scoring` and `tools.memory.search_store` resolve when
+# this file runs as a subprocess with cwd=workspace-root.
+# Pattern: same as hooks/pre_tool_use.py line 22.
+_PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, _PACKAGE_ROOT)
+
 try:
     from ._paths import resolve_config_dir
     from .surface_router import (
