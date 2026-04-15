@@ -330,6 +330,11 @@ except ImportError:
         _rank_episodes = None
         _HAS_SCORING = False
 
+try:
+    from tools.memory.search_store import search as fts5_search
+except ImportError:
+    fts5_search = None
+
 
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters."""
@@ -417,17 +422,54 @@ def load_relevant_episodes(
         layer1_tokens = _estimate_tokens(layer1_text)
         remaining_budget = max_tokens - layer1_tokens
 
-        # --- Score and rank episodes ---
+        # --- Score and rank episodes: hybrid FTS5 + keyword fallback ---
+        # Build a lookup map from episode id to index entry for fast access
+        ep_by_id = {ep["id"]: ep for ep in all_index_episodes if "id" in ep}
+
+        # Try FTS5 first; results are BM25-ranked (better quality)
+        fts5_ids: List[str] = []
+        if fts5_search is not None:
+            try:
+                fts5_results = fts5_search(user_task, max_results=max_episodes * 3)
+                fts5_ids = [r["episode_id"] for r in fts5_results if "episode_id" in r]
+                print(
+                    f"FTS5 search returned {len(fts5_ids)} candidates for retrieval",
+                    file=sys.stderr,
+                )
+            except Exception as _fts_err:
+                print(
+                    f"Warning: FTS5 search failed (non-fatal): {_fts_err}",
+                    file=sys.stderr,
+                )
+                fts5_ids = []
+
+        # Build ranked list: FTS5 hits first, then fill with keyword/scoring results
+        fts5_id_set = set(fts5_ids)
+
+        # Keyword/scoring baseline (used to fill gaps and as full fallback)
         if _HAS_SCORING and _rank_episodes is not None:
-            # Use scoring module: enrich each index entry with _score for ranking
-            ranked = _rank_episodes(all_index_episodes, user_task)
+            keyword_ranked = _rank_episodes(all_index_episodes, user_task)
         else:
-            # Fallback: keyword scoring
-            ranked = sorted(
+            keyword_ranked = sorted(
                 [dict(ep, _score=_fallback_keyword_score(ep, user_task)) for ep in all_index_episodes],
                 key=lambda x: x["_score"],
                 reverse=True,
             )
+
+        # If FTS5 found candidates, prepend them (with decay scoring if available)
+        if fts5_ids:
+            fts5_episodes = [ep_by_id[eid] for eid in fts5_ids if eid in ep_by_id]
+            if _HAS_SCORING and _rank_episodes is not None:
+                fts5_episodes = _rank_episodes(fts5_episodes, user_task)
+            else:
+                # Assign a generous score so they sort above keyword results
+                fts5_episodes = [dict(ep, _score=max(ep.get("_score", 0.0), 0.5)) for ep in fts5_episodes]
+            # Fill remaining slots with keyword results not already in FTS5 set
+            keyword_fill = [ep for ep in keyword_ranked if ep.get("id") not in fts5_id_set]
+            ranked = fts5_episodes + keyword_fill
+        else:
+            # FTS5 not available or returned nothing — fall back entirely to keyword
+            ranked = keyword_ranked
 
         # --- Layer 2: full content of top episodes within remaining budget ---
         full_episodes = []

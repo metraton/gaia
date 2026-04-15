@@ -27,6 +27,11 @@ import re
 from dataclasses import dataclass, asdict, field
 import hashlib
 
+try:
+    from tools.memory.search_store import index_episode as _fts5_index
+except ImportError:
+    _fts5_index = None
+
 
 # Valid relationship types for episode connections
 RELATIONSHIP_TYPES = frozenset([
@@ -363,6 +368,12 @@ class EpisodicMemory:
         self._save_index(index)
 
         print(f"Stored episode: {episode_id} with {len(keywords)} keywords", file=sys.stderr)
+
+        if _fts5_index:
+            try:
+                _fts5_index(episode_id, prompt, enriched_prompt, ' '.join(tags or []), title)
+            except Exception:
+                pass
 
         return episode_id
 
