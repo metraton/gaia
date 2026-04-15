@@ -53,6 +53,7 @@ name: agent-name
 description: Routing label -- triggers when orchestrator sees matching intent
 tools: Read, Edit, Write, Glob, Grep, Bash  # restrict per domain
 model: inherit
+permissionMode: acceptEdits  # required for most agents; omit only for orchestrator and read-only agents
 skills:
   - agent-protocol        # always first
   - security-tiers        # always second
