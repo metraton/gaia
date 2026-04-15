@@ -47,7 +47,22 @@ def _import_approval_grants():
 
 
 def _import_grants_dir():
-    """Get the grants directory path via the approval_grants module."""
+    """Get the grants directory path for approval files.
+
+    Resolution order mirrors get_plugin_data_dir() in paths.py:
+    1. CLAUDE_PLUGIN_DATA env var (set by Claude Code at runtime) -- data
+       lives at <CLAUDE_PLUGIN_DATA>/cache/approvals/.
+    2. Delegate to the approval_grants module which calls get_plugin_data_dir(),
+       which in turn walks up from CWD to find .claude/.
+
+    Keeping CLAUDE_PLUGIN_DATA as the first check ensures the CLI finds the
+    same approvals directory the hooks use when invoked from any working
+    directory (e.g. from inside gaia-ops-dev/ during development).
+    """
+    import os
+    plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
+    if plugin_data:
+        return Path(plugin_data) / "cache" / "approvals"
     from modules.security.approval_grants import _get_grants_dir
     return _get_grants_dir()
 
@@ -119,12 +134,61 @@ def _pending_to_display(p: dict) -> dict:
 # Subcommand: list
 # ---------------------------------------------------------------------------
 
-def cmd_list(args) -> int:
-    """List all pending approvals."""
+def _list_all_pending() -> list:
+    """Return all non-expired, non-rejected pending approvals across all sessions.
+
+    Used when no ``--session`` filter is given.  Mirrors the scan in
+    ``cmd_stats`` so that ``gaia approvals list`` shows everything a human
+    reviewer would care about regardless of which session created it.
+
+    Raises:
+        Exception: propagated from _import_grants_dir() so that cmd_list
+            can catch it and return exit code 1 consistently.
+    """
+    # Let ImportError / other failures from _import_grants_dir propagate up.
+    grants_dir = _import_grants_dir()
+
+    results = []
+    now = time.time()
+
     try:
-        ag = _import_approval_grants()
-        session_id = getattr(args, "session", None)
-        raw = ag["get_pending_approvals_for_session"](session_id)
+        for pending_file in grants_dir.glob("pending-*.json"):
+            if pending_file.name.startswith("pending-index-"):
+                continue
+            try:
+                data = json.loads(pending_file.read_text())
+            except Exception:
+                continue
+            if data.get("status") == "rejected":
+                continue
+            ts = float(data.get("timestamp", 0))
+            ttl = int(data.get("ttl_minutes", 1440))
+            if ttl > 0 and (now - ts) / 60 > ttl:
+                continue
+            results.append(data)
+    except Exception:
+        pass
+
+    results.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
+    return results
+
+
+def cmd_list(args) -> int:
+    """List pending approvals.
+
+    Without ``--session``, all sessions are shown so the CLI is useful as a
+    cross-session review tool.  With ``--session SESSION_ID``, only that
+    session's approvals are shown.
+    """
+    session_id = getattr(args, "session", None)
+
+    try:
+        if session_id is None:
+            # All sessions -- scan directly so we don't filter by current session.
+            raw = _list_all_pending()
+        else:
+            ag = _import_approval_grants()
+            raw = ag["get_pending_approvals_for_session"](session_id)
     except Exception as exc:
         _print_error(f"Failed to load approvals: {exc}", args)
         return 1

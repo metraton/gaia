@@ -16,11 +16,50 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _find_project_root(start: Path) -> Path | None:
-    """Walk up from start until a .claude/ directory is found."""
+    """Locate the project root that owns .claude/project-context/briefs/.
+
+    Resolution order:
+    1. CLAUDE_PLUGIN_DATA env var (set by Claude Code at runtime) -- its
+       parent is the project root.
+    2. Walk up from ``start`` looking for .claude/project-context/briefs/
+       that actually exists (contains user brief data, not plugin config).
+    3. Walk up from ``start`` looking for .claude/project-context/ (has
+       project-context data even if briefs/ is absent).
+    4. Walk up from ``start`` for any .claude/ directory (original fallback).
+
+    Strategies 2-3 ensure the CLI skips a plugin's own .claude/ config dir
+    (e.g., gaia-ops-dev/.claude/) and continues up to the user's project root
+    (e.g., ~/ws/me/.claude/) when the CLI is invoked from inside the plugin
+    subdirectory.
+    """
+    import os
+    plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
+    if plugin_data:
+        candidate = Path(plugin_data)
+        # CLAUDE_PLUGIN_DATA points to .claude/ itself; its parent is the root.
+        if candidate.is_dir():
+            return candidate.parent
+        # If the path doesn't exist yet, still trust the env var.
+        return candidate.parent
+
     current = start.resolve()
-    for parent in [current, *current.parents]:
+    candidates = [current, *current.parents]
+
+    # Pass 1: prefer a root that has the actual briefs data directory.
+    for parent in candidates:
+        if (parent / ".claude" / "project-context" / "briefs").is_dir():
+            return parent
+
+    # Pass 2: accept any root that has project-context/ (data dir present).
+    for parent in candidates:
+        if (parent / ".claude" / "project-context").is_dir():
+            return parent
+
+    # Pass 3: original fallback -- any .claude/ directory.
+    for parent in candidates:
         if (parent / ".claude").is_dir():
             return parent
+
     return None
 
 

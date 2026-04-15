@@ -17,11 +17,46 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _find_project_root(start: Path) -> Path | None:
-    """Walk up from start until a .claude/ directory is found."""
+    """Locate the project root that owns .claude/project-context/project-context.json.
+
+    Resolution order:
+    1. CLAUDE_PLUGIN_DATA env var (set by Claude Code at runtime) -- its
+       parent is the project root.
+    2. Walk up from ``start`` looking for .claude/project-context/project-context.json
+       (has actual user context data, not just plugin config).
+    3. Walk up from ``start`` looking for .claude/project-context/ directory.
+    4. Walk up from ``start`` for any .claude/ directory (original fallback).
+
+    This ensures the CLI skips a plugin's own .claude/ config dir (e.g.,
+    gaia-ops-dev/.claude/) and continues up to the user's project root when
+    the CLI is invoked from inside a plugin subdirectory.
+    """
+    import os
+    plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
+    if plugin_data:
+        candidate = Path(plugin_data)
+        if candidate.is_dir():
+            return candidate.parent
+        return candidate.parent
+
     current = start.resolve()
-    for parent in [current, *current.parents]:
+    candidates = [current, *current.parents]
+
+    # Pass 1: prefer a root that has the actual project-context.json file.
+    for parent in candidates:
+        if (parent / ".claude" / "project-context" / "project-context.json").is_file():
+            return parent
+
+    # Pass 2: accept any root that has project-context/ directory.
+    for parent in candidates:
+        if (parent / ".claude" / "project-context").is_dir():
+            return parent
+
+    # Pass 3: original fallback -- any .claude/ directory.
+    for parent in candidates:
         if (parent / ".claude").is_dir():
             return parent
+
     return None
 
 

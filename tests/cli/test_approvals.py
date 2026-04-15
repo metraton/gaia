@@ -82,28 +82,35 @@ def _make_args(**kwargs):
 # ---------------------------------------------------------------------------
 
 class TestCmdList:
-    def test_list_empty_returns_0(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
+    """Tests for cmd_list.
+
+    When --session is not provided, cmd_list uses _list_all_pending() which
+    reads directly from the grants directory via _import_grants_dir().  Tests
+    for the no-session path therefore patch _import_grants_dir to return an
+    empty tmp directory so they don't touch the real filesystem.
+
+    When --session is provided, cmd_list delegates to
+    get_pending_approvals_for_session() via _import_approval_grants(); those
+    tests patch _import_approval_grants as before.
+    """
+
+    def test_list_empty_returns_0(self, capsys, tmp_path):
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
             rc = approvals_mod.cmd_list(_make_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "No pending approvals" in captured.out
 
-    def test_list_with_items_shows_table(self, capsys):
-        pending = [_make_pending()]
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=pending),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
+    def test_list_with_items_shows_table(self, capsys, tmp_path):
+        pending = _make_pending()
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        # Write the pending file to the fake grants dir
+        pending_path = grants_dir / f"pending-{pending['nonce']}.json"
+        pending_path.write_text(json.dumps(pending))
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
             rc = approvals_mod.cmd_list(_make_args())
         assert rc == 0
         captured = capsys.readouterr()
@@ -112,15 +119,13 @@ class TestCmdList:
         # Command is truncated in table to 40 chars; check the prefix
         assert "git push origin m" in captured.out
 
-    def test_list_json_output(self, capsys):
-        pending = [_make_pending()]
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=pending),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
+    def test_list_json_output(self, capsys, tmp_path):
+        pending = _make_pending()
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        pending_path = grants_dir / f"pending-{pending['nonce']}.json"
+        pending_path.write_text(json.dumps(pending))
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
             rc = approvals_mod.cmd_list(_make_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
@@ -129,14 +134,10 @@ class TestCmdList:
         assert len(data["pending"]) == 1
         assert data["pending"][0]["approval_id"] == "P-abcd1234"
 
-    def test_list_json_empty(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
+    def test_list_json_empty(self, capsys, tmp_path):
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
             rc = approvals_mod.cmd_list(_make_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
@@ -145,7 +146,7 @@ class TestCmdList:
         assert data["pending"] == []
 
     def test_list_import_error_returns_1(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants", side_effect=ImportError("no module")):
+        with patch.object(approvals_mod, "_import_grants_dir", side_effect=ImportError("no module")):
             rc = approvals_mod.cmd_list(_make_args())
         assert rc == 1
 
