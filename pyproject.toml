@@ -26,4 +26,4 @@ select = ["E", "F", "W", "I"]
 quote-style = "double"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tools/scan/tests"]

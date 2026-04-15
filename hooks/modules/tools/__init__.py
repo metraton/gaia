@@ -5,11 +5,13 @@ Provides:
 - bash_validator: Bash command validation
 - task_validator: Task tool validation with context enforcement
 - shell_parser: Shell command parsing (pipes, chains, etc.)
+- stage_decomposer: Operator-preserving command decomposition
 """
 
 from .shell_parser import ShellCommandParser, get_shell_parser, parse_command
 from .bash_validator import BashValidator, validate_bash_command
 from .task_validator import TaskValidator, validate_task_invocation
+from .stage_decomposer import StageDecomposer
 
 __all__ = [
     # Shell parser
@@ -22,4 +24,6 @@ __all__ = [
     # Task validator
     "TaskValidator",
     "validate_task_invocation",
+    # Stage decomposer
+    "StageDecomposer",
 ]
