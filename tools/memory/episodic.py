@@ -332,6 +332,8 @@ class EpisodicMemory:
             "output_length": (workflow_metrics or {}).get("output_length", 0),
             "output_tokens_approx": (workflow_metrics or {}).get("output_tokens_approx", 0),
             "prompt": (workflow_metrics or {}).get("prompt", ""),
+            "retrieval_count": 0,
+            "last_retrieved": None,
         }
         index["episodes"].append(index_entry)
 
@@ -345,9 +347,10 @@ class EpisodicMemory:
                     "timestamp": episode.timestamp
                 })
 
-        # Keep only last 1000 episodes in index (for performance)
-        if len(index["episodes"]) > 1000:
-            index["episodes"] = index["episodes"][-1000:]
+        # Keep only last N episodes in index (configurable via GAIA_EPISODE_INDEX_LIMIT)
+        _episode_index_limit = int(os.environ.get("GAIA_EPISODE_INDEX_LIMIT", "50000"))
+        if len(index["episodes"]) > _episode_index_limit:
+            index["episodes"] = index["episodes"][-_episode_index_limit:]
 
         # Keep only last 5000 relationships in index
         if len(index["relationships"]) > 5000:

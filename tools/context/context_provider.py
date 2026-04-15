@@ -317,8 +317,89 @@ def get_context_update_contract(
 # EPISODIC MEMORY
 # ============================================================================
 
-def load_relevant_episodes(user_task: str, max_episodes: int = 2) -> Dict[str, Any]:
-    """Load relevant historical episodes for the user's task."""
+try:
+    from tools.memory.scoring import rank_episodes as _rank_episodes
+    _HAS_SCORING = True
+except ImportError:
+    try:
+        import importlib, sys as _sys
+        _scoring = importlib.import_module("tools.memory.scoring")
+        _rank_episodes = _scoring.rank_episodes
+        _HAS_SCORING = True
+    except ImportError:
+        _rank_episodes = None
+        _HAS_SCORING = False
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: 1 token ≈ 4 characters."""
+    return len(text) // 4
+
+
+def _build_memory_index_table(index_episodes: List[Dict[str, Any]]) -> str:
+    """Build a compact markdown table of all memory sources for Layer 1."""
+    lines = ["## Memory Index", "", "| # | Title | Type | Score | Age |", "|----|-------|------|-------|-----|"]
+    for i, ep in enumerate(index_episodes, 1):
+        title = ep.get("title", "")[:40]
+        ep_type = ep.get("type", "unknown")
+        score = ep.get("relevance_score", ep.get("_score", 0.0))
+        age = ep.get("age_days", "?")
+        lines.append(f"| {i} | {title} | {ep_type} | {score:.2f} | {age}d |")
+    return "\n".join(lines)
+
+
+def _fallback_keyword_score(episode: Dict[str, Any], user_task: str) -> float:
+    """Keyword-based relevance scoring fallback when scoring module is unavailable."""
+    task_lower = user_task.lower()
+    task_words = set(task_lower.split())
+    score = 0.0
+    for tag in episode.get("tags", []):
+        if tag.lower() in task_lower:
+            score += 0.4
+    title_words = set(episode.get("title", "").lower().split())
+    common_words = task_words & title_words
+    if common_words:
+        score += 0.3 * (len(common_words) / max(len(title_words), 1))
+    return score * episode.get("relevance_score", 0.5)
+
+
+def load_relevant_episodes(
+    user_task: str,
+    max_episodes: int = 2,
+    max_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Load relevant historical episodes using 2-layer progressive disclosure.
+
+    Layer 1 (always): A compact markdown table of all scored memory sources
+    (~200 tokens), returned under the ``memory_index`` key.
+
+    Layer 2 (selective): Full content of top-N episodes ranked by
+    ``tools.memory.scoring.rank_episodes()``, loaded only within the
+    remaining token budget.
+
+    Parameters
+    ----------
+    user_task:
+        Free-text description of the user's current task.
+    max_episodes:
+        Legacy cap on the number of full episodes to include (Layer 2).
+    max_tokens:
+        Total token budget for the episodic memory block.  Reads from
+        ``GAIA_MEMORY_TOKEN_BUDGET`` env var when not supplied explicitly.
+        Defaults to 2000.
+    """
+    import os as _os
+
+    if max_tokens is None:
+        env_budget = _os.environ.get("GAIA_MEMORY_TOKEN_BUDGET")
+        if env_budget:
+            try:
+                max_tokens = int(env_budget)
+            except ValueError:
+                max_tokens = 2000
+        else:
+            max_tokens = 2000
+
     try:
         index_file = Path(".claude/project-context/episodic-memory/index.json")
         if not index_file.exists():
@@ -327,45 +408,123 @@ def load_relevant_episodes(user_task: str, max_episodes: int = 2) -> Dict[str, A
         with open(index_file) as f:
             index = json.load(f)
 
-        task_lower = user_task.lower()
-        task_words = set(task_lower.split())
+        all_index_episodes = index.get("episodes", [])
+        if not all_index_episodes:
+            return {}
 
-        relevant_episodes = []
-        for episode in index.get("episodes", []):
-            score = 0.0
-            for tag in episode.get("tags", []):
-                if tag.lower() in task_lower:
-                    score += 0.4
-            title_words = set(episode.get("title", "").lower().split())
-            common_words = task_words & title_words
-            if common_words:
-                score += 0.3 * (len(common_words) / max(len(title_words), 1))
+        # --- Layer 1: Memory Index -- compact markdown table (~200 tokens, always included) ---
+        layer1_text = _build_memory_index_table(all_index_episodes)
+        layer1_tokens = _estimate_tokens(layer1_text)
+        remaining_budget = max_tokens - layer1_tokens
 
-            final_score = score * episode.get("relevance_score", 0.5)
+        # --- Score and rank episodes ---
+        if _HAS_SCORING and _rank_episodes is not None:
+            # Use scoring module: enrich each index entry with _score for ranking
+            ranked = _rank_episodes(all_index_episodes, user_task)
+        else:
+            # Fallback: keyword scoring
+            ranked = sorted(
+                [dict(ep, _score=_fallback_keyword_score(ep, user_task)) for ep in all_index_episodes],
+                key=lambda x: x["_score"],
+                reverse=True,
+            )
 
-            if final_score > 0.1:
-                full_episode = load_full_episode(episode["id"], index_file.parent)
-                if full_episode:
-                    relevant_episodes.append({
-                        "id": full_episode["id"],
-                        "title": full_episode["title"],
-                        "type": full_episode["type"],
-                        "relevance": final_score,
-                        "lessons_learned": full_episode.get("lessons_learned", [])[:2],
-                        "resolution": full_episode.get("resolution", "")[:200]
-                    })
+        # --- Layer 2: full content of top episodes within remaining budget ---
+        full_episodes = []
+        tokens_used = 0
+        for ep in ranked:
+            if len(full_episodes) >= max_episodes:
+                break
+            score = ep.get("_score", 0.0)
+            if score <= 0.05:
+                continue
+            if remaining_budget <= 0:
+                break
 
-        relevant_episodes.sort(key=lambda x: x["relevance"], reverse=True)
-        relevant_episodes = relevant_episodes[:max_episodes]
+            full_ep = load_full_episode(ep["id"], index_file.parent)
+            if not full_ep:
+                continue
 
-        if relevant_episodes:
-            print(f"Added {len(relevant_episodes)} historical episodes to context", file=sys.stderr)
-            return {
-                "episodes": relevant_episodes,
-                "summary": f"Found {len(relevant_episodes)} relevant historical episodes"
+            episode_entry = {
+                "id": full_ep["id"],
+                "title": full_ep["title"],
+                "type": full_ep["type"],
+                "relevance": round(score, 4),
+                "lessons_learned": full_ep.get("lessons_learned", [])[:2],
+                "resolution": full_ep.get("resolution", "")[:200],
             }
+            entry_text = json.dumps(episode_entry)
+            entry_tokens = _estimate_tokens(entry_text)
 
-        return {}
+            if tokens_used + entry_tokens > remaining_budget:
+                break
+
+            full_episodes.append(episode_entry)
+            tokens_used += entry_tokens
+
+        result: Dict[str, Any] = {
+            "memory_index": layer1_text,
+        }
+
+        if full_episodes:
+            result["episodes"] = full_episodes
+            result["summary"] = f"Found {len(full_episodes)} relevant historical episodes"
+            print(
+                f"Added {len(full_episodes)} historical episodes to context "
+                f"(budget={max_tokens}, used≈{layer1_tokens + tokens_used})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Memory index built ({len(all_index_episodes)} entries, "
+                f"no full episodes within score/budget threshold)",
+                file=sys.stderr,
+            )
+
+        # --- Retrieval strengthening: update retrieval_count + last_retrieved ---
+        # Failure here must never block context injection.
+        try:
+            if full_episodes:
+                import tempfile as _tempfile
+                from datetime import datetime as _datetime
+
+                selected_ids = {ep["id"] for ep in full_episodes}
+                now_iso = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                updated = False
+                for entry in index.get("episodes", []):
+                    if entry.get("id") in selected_ids:
+                        entry["retrieval_count"] = entry.get("retrieval_count", 0) + 1
+                        entry["last_retrieved"] = now_iso
+                        updated = True
+
+                if updated:
+                    index_path = index_file.resolve()
+                    index_dir = index_path.parent
+                    fd, tmp_path = _tempfile.mkstemp(
+                        dir=str(index_dir), suffix=".tmp", prefix="index_"
+                    )
+                    try:
+                        with _os.fdopen(fd, "w", encoding="utf-8") as tf:
+                            json.dump(index, tf, indent=2)
+                        _os.rename(tmp_path, str(index_path))
+                        print(
+                            f"Retrieval strengthening: updated {len(selected_ids)} episode(s)",
+                            file=sys.stderr,
+                        )
+                    except Exception:
+                        try:
+                            _os.unlink(tmp_path)
+                        except Exception:
+                            pass
+                        raise
+        except Exception as _rs_err:
+            print(
+                f"Warning: retrieval_count update failed (non-fatal): {_rs_err}",
+                file=sys.stderr,
+            )
+
+        return result
 
     except Exception as e:
         print(f"Warning: Could not load episodic memory: {e}", file=sys.stderr)
@@ -396,6 +555,8 @@ def load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, A
 
 def main():
     """Main function to generate and print the context payload."""
+    import os as _os
+
     parser = argparse.ArgumentParser(
         description="Generates a structured context payload for a Claude agent."
     )
@@ -408,8 +569,29 @@ def main():
         default=DEFAULT_CONTEXT_PATH,
         help=f"Path to the project-context.json file. Defaults to '{DEFAULT_CONTEXT_PATH}'"
     )
+    parser.add_argument(
+        "--memory-token-budget",
+        type=int,
+        default=None,
+        help=(
+            "Token budget for episodic memory injection. "
+            "Overrides GAIA_MEMORY_TOKEN_BUDGET env var. Default: 2000."
+        ),
+    )
 
     args = parser.parse_args()
+
+    # Resolve memory token budget: CLI arg > env var > default
+    memory_token_budget: Optional[int] = args.memory_token_budget
+    if memory_token_budget is None:
+        env_budget = _os.environ.get("GAIA_MEMORY_TOKEN_BUDGET")
+        if env_budget:
+            try:
+                memory_token_budget = int(env_budget)
+            except ValueError:
+                memory_token_budget = 2000
+        else:
+            memory_token_budget = 2000
 
     # Load project context
     project_context = load_project_context(args.context_file)
@@ -434,8 +616,8 @@ def main():
     )
     context_update_contract = get_context_update_contract(args.agent_name, provider_contracts)
 
-    # Load historical episodes
-    historical_context = load_relevant_episodes(args.user_task)
+    # Load historical episodes (2-layer progressive disclosure)
+    historical_context = load_relevant_episodes(args.user_task, max_tokens=memory_token_budget)
 
     # Load universal rules
     rules_context = load_universal_rules(args.agent_name)
