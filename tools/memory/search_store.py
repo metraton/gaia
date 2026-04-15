@@ -124,10 +124,16 @@ class FTS5Provider(SearchProvider):
 
     @staticmethod
     def _sanitize_query(query: str) -> str:
-        """Wrap each word in double quotes to avoid FTS5 syntax errors."""
+        """Append * wildcard to each word for FTS5 prefix matching.
+
+        Uses prefix matching instead of exact quoted tokens so that
+        "approval" matches "approvals", "approving", etc.
+        Special characters that would break FTS5 syntax are stripped.
+        """
         words = query.split()
-        escaped = ['"' + w.replace('"', '""') + '"' for w in words]
-        return " ".join(escaped)
+        # Strip characters that break FTS5 syntax, then append wildcard
+        safe = [w.replace('"', '').replace("'", '').strip('*') for w in words if w]
+        return " ".join(w + "*" for w in safe if w)
 
     # -- SearchProvider interface ------------------------------------------
 

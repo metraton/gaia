@@ -343,13 +343,24 @@ def _estimate_tokens(text: str) -> int:
 
 def _build_memory_index_table(index_episodes: List[Dict[str, Any]]) -> str:
     """Build a compact markdown table of all memory sources for Layer 1."""
+    from datetime import datetime, timezone
     lines = ["## Memory Index", "", "| # | Title | Type | Score | Age |", "|----|-------|------|-------|-----|"]
     for i, ep in enumerate(index_episodes, 1):
         title = ep.get("title", "")[:40]
         ep_type = ep.get("type", "unknown")
         score = ep.get("relevance_score", ep.get("_score", 0.0))
-        age = ep.get("age_days", "?")
-        lines.append(f"| {i} | {title} | {ep_type} | {score:.2f} | {age}d |")
+        # Calculate age from timestamp field
+        ts = ep.get("timestamp", "")
+        try:
+            if ts:
+                ep_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - ep_time).days
+                age_str = f"{age}d"
+            else:
+                age_str = "?d"
+        except Exception:
+            age_str = "?d"
+        lines.append(f"| {i} | {title} | {ep_type} | {score:.2f} | {age_str} |")
     return "\n".join(lines)
 
 
