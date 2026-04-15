@@ -3,6 +3,7 @@ name: gaia-operator
 description: Workspace operator — extensible agent for personal workspace tasks, memory management, and integrations
 tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill, WebSearch, WebFetch
 model: sonnet
+permissionMode: acceptEdits
 skills:
   - agent-protocol
   - security-tiers

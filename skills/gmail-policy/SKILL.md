@@ -12,15 +12,15 @@ metadata:
 
 | Operation | Tier | Notes |
 |-----------|------|-------|
-| `gws gmail messages list` | T0 | Search/filter messages |
-| `gws gmail messages get` | T0 | Read message content |
-| `gws gmail labels list` | T0 | List available labels |
-| `gws gmail labels get` | T0 | Read label details |
-| `gws gmail messages modify --addLabelIds` | T0 | Add any `_gaia/*` label (non-destructive) |
-| `gws gmail messages modify --removeLabelIds` | T3 | Changes message visibility |
-| `gws gmail messages modify` (action→waiting after send) | T1 | Auto-transition after user reply -- logged, no approval |
+| `gws gmail users messages list` | T0 | Search/filter messages |
+| `gws gmail users messages get` | T0 | Read message content |
+| `gws gmail users labels list` | T0 | List available labels |
+| `gws gmail users labels get` | T0 | Read label details |
+| `gws gmail users messages modify --addLabelIds` | T0 | Add any `_gaia/*` label (non-destructive) |
+| `gws gmail users messages modify --removeLabelIds` | T3 | Changes message visibility |
+| `gws gmail users messages modify` (action→waiting after send) | T1 | Auto-transition after user reply -- logged, no approval |
 | `gws gmail +send` | T3 | Sends on user's behalf |
-| `gws gmail labels create` | T3 | Creates new label |
+| `gws gmail users labels create` | T3 | Creates new label |
 
 ### Blocked Operations
 
@@ -28,10 +28,10 @@ Permanently denied by the hook -- `gmail.modify` OAuth scope excludes delete at 
 
 | Operation | Reason |
 |-----------|--------|
-| `gws gmail messages delete` | Permanent, unrecoverable |
-| `gws gmail messages trash` | Moves to trash (use `_gaia/trash` label instead) |
-| `gws gmail messages purge` | Permanent purge |
-| `gws gmail drafts delete` | Draft deletion |
+| `gws gmail users messages delete` | Permanent, unrecoverable |
+| `gws gmail users messages trash` | Moves to trash (use `_gaia/trash` label instead) |
+| `gws gmail users messages purge` | Permanent purge |
+| `gws gmail users drafts delete` | Draft deletion |
 
 ## Label Convention
 

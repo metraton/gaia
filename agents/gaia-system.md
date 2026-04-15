@@ -5,6 +5,7 @@ tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill, Agent, WebSearch, WebFe
 model: inherit
 maxTurns: 50
 effort: high
+permissionMode: acceptEdits
 skills:
   - agent-protocol
   - security-tiers

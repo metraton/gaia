@@ -4,6 +4,7 @@ description: Planning agent that reads briefs and produces execution plans
 tools: Read, Edit, Write, Glob, Grep, Skill, AskUserQuestion, WebSearch, WebFetch
 model: inherit
 maxTurns: 50
+permissionMode: acceptEdits
 disallowedTools: [Bash, NotebookEdit, Agent]
 skills:
   - agent-protocol

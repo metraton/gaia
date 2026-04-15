@@ -4,6 +4,7 @@ description: A specialized agent that manages the cloud infrastructure lifecycle
 tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill, WebFetch
 model: inherit
 maxTurns: 40
+permissionMode: acceptEdits
 disallowedTools: [NotebookEdit]
 skills:
   - agent-protocol

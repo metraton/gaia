@@ -4,6 +4,7 @@ description: A specialized agent that manages the Kubernetes application lifecyc
 tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill
 model: inherit
 maxTurns: 40
+permissionMode: acceptEdits
 disallowedTools: [NotebookEdit]
 skills:
   - agent-protocol
