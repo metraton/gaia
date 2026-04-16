@@ -8,6 +8,10 @@ Provides:
 - gitops_validator: kubectl/helm/flux validation
 - approval_constants: Approval token patterns (legacy APPROVE: and ElicitationResult)
 - approval_grants: Time-limited T3 command passthrough after user approval
+- shell_unwrapper: Detect and strip wrapper shells for inner command classification
+- flag_classifiers: Flag-dependent classifiers for 15 command families
+- composition_rules: Cross-stage pipe composition rules (exfiltration, RCE, obfuscation)
+- network_hosts: Network host classification for curl/wget/httpie targets
 """
 
 from .tiers import SecurityTier, classify_command_tier
@@ -47,6 +51,17 @@ from .approval_grants import (
     last_check_found_expired,
     ApprovalGrant,
 )
+from .shell_unwrapper import ShellUnwrapper
+from .flag_classifiers import classify_by_flags, FlagClassifierResult
+from .composition_rules import (
+    check_composition,
+    build_composition_stages,
+    CompositionResult,
+    CompositionStage,
+    CompositionDecision,
+    StageType,
+)
+from .network_hosts import classify_host, extract_url_from_tokens, HostClassification
 
 __all__ = [
     # Tiers
@@ -86,4 +101,20 @@ __all__ = [
     "get_latest_pending_approval",
     "last_check_found_expired",
     "ApprovalGrant",
+    # Shell unwrapper
+    "ShellUnwrapper",
+    # Flag classifiers
+    "classify_by_flags",
+    "FlagClassifierResult",
+    # Composition rules
+    "check_composition",
+    "build_composition_stages",
+    "CompositionResult",
+    "CompositionStage",
+    "CompositionDecision",
+    "StageType",
+    # Network hosts
+    "classify_host",
+    "extract_url_from_tokens",
+    "HostClassification",
 ]

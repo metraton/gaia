@@ -3,8 +3,100 @@
     "universal": [
       {
         "rule": "Your prompt includes a Project Context section with confirmed project knowledge. Extract relevant data from it BEFORE executing commands."
+      },
+      {
+        "rule": "context_map: The Project Context section is organized into named sections (e.g. project_identity, stack, git, infrastructure). Each section contains data scanned from the project. Reading the wrong section wastes tokens and produces stale assumptions; reading none at all causes commands built on defaults to fail in ways that are hard to trace back to the root cause."
       }
     ],
-    "agent_specific": {}
+    "agent_specific": {
+      "cloud-troubleshooter": {
+        "rules": [
+          {
+            "rule": "monitoring_observability and cluster_details are the primary diagnostic surfaces. A diagnosis that skips these sections will miss the live state of the cluster and produce recommendations that contradict what is already deployed."
+          },
+          {
+            "rule": "infrastructure_topology describes how services are connected across regions and availability zones. Ignoring it when investigating connectivity or latency issues leads to remediation steps that address symptoms rather than the structural cause."
+          },
+          {
+            "rule": "operational_guidelines encodes team conventions for runbooks, escalation paths, and SLOs. Bypassing it risks proposing changes that violate on-call agreements or SLA boundaries."
+          }
+        ]
+      },
+      "gitops-operator": {
+        "rules": [
+          {
+            "rule": "gitops_configuration holds the source-of-truth for Flux/ArgoCD sync targets, kustomize overlays, and reconciliation intervals. Writing manifests without reading this section produces changes that the GitOps controller will override or reject on the next sync cycle."
+          },
+          {
+            "rule": "cluster_details defines the Kubernetes version, node pools, and namespacing conventions. A manifest targeting the wrong API version or namespace will apply cleanly and then fail at runtime, making the error hard to attribute."
+          },
+          {
+            "rule": "operational_guidelines specifies change-window and approval policies. Bypassing it risks triggering a sync during a protected window and causing a production incident."
+          }
+        ]
+      },
+      "terraform-architect": {
+        "rules": [
+          {
+            "rule": "terraform_infrastructure contains existing module versions, backend configuration, and remote state references. Planning without this data generates a diff that replaces instead of updates, and can destroy live resources that were not in scope."
+          },
+          {
+            "rule": "infrastructure_topology maps provider accounts, VPCs, and cross-account trust relationships. Missing this context leads to resource definitions that introduce duplicate CIDR blocks or broken IAM trust chains."
+          },
+          {
+            "rule": "operational_guidelines captures cost-center tagging requirements and provider version constraints. Ignoring them produces plans that pass validation but are rejected at code review or fail cost attribution."
+          }
+        ]
+      },
+      "developer": {
+        "rules": [
+          {
+            "rule": "stack defines the languages, frameworks, and build tools in use. Writing code against a different stack version or framework than what is declared here produces changes that pass local tests and break in CI."
+          },
+          {
+            "rule": "application_services describes service boundaries, ports, and inter-service contracts. Changing a service's interface without consulting this section breaks consumers that are not under active development and not visible in the immediate file context."
+          },
+          {
+            "rule": "operational_guidelines specifies coding standards, test coverage thresholds, and linting rules. Code that meets the functional requirement but ignores these standards will be rejected at the review gate, requiring a rework cycle."
+          }
+        ]
+      },
+      "gaia-planner": {
+        "rules": [
+          {
+            "rule": "architecture_overview describes the current system design and known constraints. A plan that ignores these constraints will produce tasks that are technically coherent but architecturally incompatible with the existing system, requiring replanning after the first implementation attempt."
+          },
+          {
+            "rule": "application_services lists live services and their owners. Omitting this context leads to plans that assume capabilities are missing when they already exist, or that schedule work in the wrong order relative to service dependencies."
+          },
+          {
+            "rule": "operational_guidelines records process constraints such as deployment windows and team capacity limits. A plan that ignores them will hit blockers during execution that were predictable at planning time."
+          }
+        ]
+      },
+      "gaia-operator": {
+        "rules": [
+          {
+            "rule": "workspace_repos is this agent's primary surface: it lists every repository in the workspace with its path, platform, and role. Operating on a repo that is absent from this list risks working in the wrong directory or missing the canonical remote URL, causing pushes to fail or go to the wrong origin."
+          },
+          {
+            "rule": "git describes the platform, default branch, and branching strategy. Ignoring it produces branch names or merge strategies that conflict with the project's CI configuration and require manual cleanup."
+          }
+        ]
+      },
+      "gaia-system": {
+        "rules": [
+          {
+            "rule": "architecture_overview is the write target for system-level changes: updates made without first reading the current state overwrite accurate data with stale assumptions, corrupting the context that all other agents depend on."
+          },
+          {
+            "rule": "operational_guidelines captures team-agreed constraints on the Gaia system itself. Proposing architectural changes that contradict these guidelines produces recommendations that will be rejected and mislead agents that read the context between now and the rejection."
+          },
+          {
+            "rule": "infrastructure provides the deployment environment for Gaia components. Missing this section leads to skill or hook designs that assume capabilities (e.g. network access, file system layout) that do not exist in the actual runtime environment."
+          }
+        ]
+      }
+    }
   }
 }

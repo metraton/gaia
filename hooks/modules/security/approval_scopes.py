@@ -128,6 +128,17 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     if semantics.base_cmd != signature.base_cmd:
         return False
 
+    # Verb-family matching: only base_cmd + verb matter.
+    # Skip flag and category checks -- they would reject tier-excepted commands
+    # (e.g. gws modify is CATEGORY_READ_ONLY at runtime but the grant may have
+    # been created with danger_category="MUTATIVE").
+    if signature.scope_type == SCOPE_VERB_FAMILY:
+        if signature.verb:
+            danger = detect_mutative_command(stripped)
+            if danger.verb and danger.verb.lower() != signature.verb:
+                return False
+        return True
+
     danger = detect_mutative_command(stripped)
     incoming_dangerous_flags = _sorted_unique_lower(danger.dangerous_flags)
     if incoming_dangerous_flags != signature.dangerous_flags:
@@ -150,13 +161,6 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
             incoming_semantic_tokens == signature.semantic_tokens
             and incoming_flags == signature.normalized_flags
         )
-
-    if signature.scope_type == SCOPE_VERB_FAMILY:
-        # Verb-family matching: base_cmd + verb + danger_category + dangerous_flags.
-        # Arguments and non-dangerous flags are intentionally ignored so that a
-        # single batch grant covers many commands with different payloads
-        # (e.g., modifying 500 different emails).
-        return True
 
     return False
 

@@ -23,6 +23,61 @@ from .contracts_loader import build_context_update_reminder
 
 logger = logging.getLogger(__name__)
 
+# Inline explanations for every field the investigation brief can contain.
+# Appended as YAML comments when the brief is rendered via _dict_to_yaml_annotated().
+BRIEF_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "goal": "the task as stated by the orchestrator",
+    "agent_role": "your relationship to this task: primary (owns it), cross_check (verify peer's work), adjacent (related surface), reconnaissance (explore)",
+    "primary_surface": "the surface that owns the fix or decision",
+    "active_surfaces": "all surfaces involved; drives cross_check_required",
+    "adjacent_surfaces": "surfaces that may be impacted but do not own the fix",
+    "dispatch_mode": "single_surface = one agent owns it; multi_surface = multiple agents coordinate",
+    "cross_check_required": "true when >1 active surface or this agent is not primary; fill CROSS_LAYER_IMPACTS",
+    "patterns_required": "true means load the domain skill for this surface before executing",
+    "contract_sections_to_anchor": "project-context sections to cite as evidence in your contract",
+    "required_checks": "mandatory verifications before declaring COMPLETE",
+    "evidence_required": "fields that must appear in your evidence_report json:contract block",
+    "consolidation_required": "true when cross_check_required; fill consolidation_report with ownership_assessment and conflicts",
+    "consolidation_fields": "fields required inside consolidation_report when consolidation_required is true",
+    "recommended_peer_agents": "agents to delegate to or coordinate with for non-primary surfaces",
+    "stop_conditions": "conditions under which further investigation adds no value",
+}
+
+
+def _dict_to_yaml_annotated(d: dict, descriptions: dict[str, str], indent: int = 0) -> str:
+    """Render a dict as YAML-like key-value pairs with inline description comments.
+
+    Works like _dict_to_yaml but appends ``# <description>`` after each
+    top-level scalar or list header when a matching entry exists in
+    *descriptions*.  Nested structures and list items are rendered without
+    annotations to keep the output readable.
+    """
+    lines = []
+    prefix = "  " * indent
+    for key, value in d.items():
+        desc = descriptions.get(key, "") if indent == 0 else ""
+        comment = f"  # {desc}" if desc else ""
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if isinstance(value, dict):
+            lines.append(f"{prefix}{key}:{comment}")
+            lines.append(_dict_to_yaml(value, indent + 1))
+        elif isinstance(value, list):
+            lines.append(f"{prefix}{key}:{comment}")
+            for item in value:
+                if isinstance(item, dict):
+                    item_lines = _dict_to_yaml(item, indent + 1).splitlines()
+                    if item_lines:
+                        first = item_lines[0].lstrip()
+                        lines.append(f"{prefix}  - {first}")
+                        for il in item_lines[1:]:
+                            lines.append(f"{prefix}  {il}")
+                else:
+                    lines.append(f"{prefix}  - {item}")
+        else:
+            lines.append(f"{prefix}{key}: {value}{comment}")
+    return "\n".join(lines)
+
 
 def _find_python() -> str:
     """Return the Python 3 command name for this platform.
@@ -36,6 +91,40 @@ def _find_python() -> str:
         if shutil.which(cmd):
             return cmd
     return sys.executable
+
+
+def _dict_to_yaml(d, indent: int = 0) -> str:
+    """Convert a dict to indented YAML-like key-value pairs (no external dependency).
+
+    - Nested dicts are indented by 2 spaces per level.
+    - Lists are rendered as markdown bullet lists (- item).
+    - Scalar values are rendered inline.
+    - None/empty values are skipped.
+    """
+    lines = []
+    prefix = "  " * indent
+    for key, value in d.items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if isinstance(value, dict):
+            lines.append(f"{prefix}{key}:")
+            lines.append(_dict_to_yaml(value, indent + 1))
+        elif isinstance(value, list):
+            lines.append(f"{prefix}{key}:")
+            for item in value:
+                if isinstance(item, dict):
+                    # Render first key inline, rest indented
+                    item_lines = _dict_to_yaml(item, indent + 1).splitlines()
+                    if item_lines:
+                        first = item_lines[0].lstrip()
+                        lines.append(f"{prefix}  - {first}")
+                        for il in item_lines[1:]:
+                            lines.append(f"{prefix}  {il}")
+                else:
+                    lines.append(f"{prefix}  - {item}")
+        else:
+            lines.append(f"{prefix}{key}: {value}")
+    return "\n".join(lines)
 
 
 def _prune_empty_values(data: dict) -> dict:
@@ -351,11 +440,36 @@ def build_project_context(
         metadata = context_payload.get("metadata", {})
         historical = context_payload.get("historical_context", {})
 
+        # Extract memory_index from historical before JSON rendering to avoid duplication
+        memory_index_text = historical.pop("memory_index", "") if historical else ""
+        memory_index_section = f"\n### Memory Index\n\n{memory_index_text}\n" if memory_index_text else ""
+
         # Optional sections
         rules_section = f"\n## Rules\n\n{json.dumps(rules, indent=2)}\n" if rules.get("universal") or rules.get("agent_specific") else ""
         routing_section = f"\n## Surface Routing\n\n{json.dumps(surface_routing_data, indent=2)}\n" if surface_routing_data else ""
         metadata_section = f"\n## Metadata\n\n{json.dumps(metadata, indent=2)}\n" if metadata else ""
         historical_section = f"\n## Historical Context\n\n{json.dumps(historical, indent=2)}\n" if historical else ""
+
+        # Build Context Orientation header listing which sections are present
+        orientation_lines = ["# Context Orientation\n"]
+        orientation_lines.append("Sections present in this payload:\n")
+        if project_knowledge:
+            orientation_lines.append("- **Project Context** -- structured knowledge about the current project; guides scope and conventions")
+        if rules_section:
+            orientation_lines.append("- **Rules** -- universal and agent-specific constraints that override default behavior")
+        if routing_section:
+            orientation_lines.append("- **Surface Routing** -- intent-to-agent mapping; use when delegating or checking ownership")
+        if investigation_brief:
+            orientation_lines.append("- **Brief** -- goal, acceptance criteria, and scope for the current task")
+        if write_perms:
+            orientation_lines.append("- **Permissions** -- which context sections are writable vs readable; required before emitting CONTEXT_UPDATE")
+        if memory_index_section:
+            orientation_lines.append("- **Memory Index** -- ranked memory documents relevant to this session; read high-score entries first")
+        if historical_section:
+            orientation_lines.append("- **Historical Context** -- past episodes and learned patterns; consult before repeating prior work")
+        if metadata_section:
+            orientation_lines.append("- **Metadata** -- session and environment metadata; use for debugging and traceability")
+        orientation_section = "\n".join(orientation_lines) + "\n"
 
         # Save context_payload to disk for downstream hooks (SubagentStop)
         try:
@@ -368,32 +482,33 @@ def build_project_context(
         except Exception as exc:
             logger.debug(f"Failed to save context payload to disk (non-fatal): {exc}")
 
-        # Build brief as full JSON (all fields, not just 3)
-        brief_json = json.dumps(investigation_brief, indent=2) if investigation_brief else "{}"
+        # Build brief as YAML/Markdown-KV with inline field descriptions
+        brief_mkv = _dict_to_yaml_annotated(investigation_brief, BRIEF_FIELD_DESCRIPTIONS) if investigation_brief else ""
 
-        # Build write permissions as JSON
-        write_perms_json = json.dumps({
+        # Build write permissions as YAML/Markdown-KV
+        write_perms_dict = {
             "writable": write_perms.get("writable_sections", []),
             "readable": write_perms.get("readable_sections", []),
             "context_update_required": [s for s in write_perms.get("writable_sections", [])
-                                         if not project_knowledge.get(s)]
-        }, indent=2)
+                                         if not project_knowledge.get(s)],
+        }
+        write_perms_mkv = _dict_to_yaml(write_perms_dict)
 
-        context_string = f"""{rules_section}
+        context_string = f"""{orientation_section}{rules_section}
 # Project Context
 
-{json.dumps(project_knowledge, indent=2)}
+{_dict_to_yaml(project_knowledge)}
 
 # Routing
 {routing_section}
 # Brief
 
-{brief_json}
+{brief_mkv}
 
 # Permissions
 
-{write_perms_json}
-{pending_warning}{update_reminder}{metadata_section}{historical_section}"""
+{write_perms_mkv}
+{memory_index_section}{pending_warning}{update_reminder}{metadata_section}{historical_section}"""
 
         # Append anomaly signal flag (consume once)
         context_string = consume_anomaly_flag(context_string)

@@ -4,6 +4,7 @@ description: Full-stack software engineer for application code, CI/CD, and devel
 tools: Read, Edit, Write, Agent, Glob, Grep, Bash, Task, Skill, WebSearch, WebFetch
 model: inherit
 maxTurns: 50
+permissionMode: acceptEdits
 skills:
   - agent-protocol
   - security-tiers

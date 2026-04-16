@@ -53,6 +53,7 @@ name: agent-name
 description: Routing label -- triggers when orchestrator sees matching intent
 tools: Read, Edit, Write, Glob, Grep, Bash  # restrict per domain
 model: inherit
+permissionMode: acceptEdits  # required for most agents; omit only for orchestrator and read-only agents
 skills:
   - agent-protocol        # always first
   - security-tiers        # always second
@@ -80,6 +81,24 @@ CLI tools live in `bin/` and are registered in `package.json` `bin` field. Patte
 ## Command Patterns
 
 Slash commands live in `commands/<name>.md` -- markdown files that instruct the orchestrator on `/<name>`. To add: create the `.md`, add to `build/<plugin>.manifest.json`.
+
+## Documentation Drift Awareness
+
+When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check if existing reference docs describe that component's behavior. If drift exists, report it via `cross_layer_impacts` in your json:contract. The orchestrator then decides whether to dispatch a documentation update task.
+
+**Do NOT update docs yourself** -- your job is to flag the drift and let the orchestrator choose the next action.
+
+**Examples of drift to flag:**
+- Changed `_is_protected()` paths in `adapters/claude_code.py` → check `security-tiers/SKILL.md` for path documentation
+- Added a new agent definition → check `gaia-patterns/reference.md` for agents table
+- Modified hook enforcement logic → check `security-tiers` and `agent-protocol` references
+
+**Format:** In `cross_layer_impacts`, list the doc file and the behavior change, e.g.:
+```
+"cross_layer_impacts": [
+  "security-tiers/SKILL.md: _is_protected() now excludes .claude/settings.local.json"
+]
+```
 
 ## Key Principles
 

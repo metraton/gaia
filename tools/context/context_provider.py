@@ -77,10 +77,12 @@ def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> 
             rules_data = json.load(f)
 
         universal = [r["rule"] for r in rules_data.get("rules", {}).get("universal", [])]
-        agent_specific = [
-            r["rule"]
-            for r in rules_data.get("rules", {}).get("agent_specific", {}).get(agent_name, [])
-        ]
+        # agent_specific values may be a flat list [{rule:...}] or a nested
+        # dict {"rules": [{rule:...}]} -- handle both formats.
+        agent_raw = rules_data.get("rules", {}).get("agent_specific", {}).get(agent_name, [])
+        if isinstance(agent_raw, dict):
+            agent_raw = agent_raw.get("rules", [])
+        agent_specific = [r["rule"] for r in agent_raw]
 
         total_rules = len(universal) + len(agent_specific)
         if total_rules > 0:

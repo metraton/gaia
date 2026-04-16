@@ -1,6 +1,6 @@
 # Agent Reference
 
-Reference material for the gaia meta-agent. Load from disk when needed.
+> **Legacy reference.** Current patterns and the full component inventory are in `gaia-patterns/reference.md`. This file is retained for historical context and the agent template below.
 
 ## Agent Template
 
@@ -10,6 +10,7 @@ name: agent-name
 description: One-line description of what this agent does
 tools: Tool1, Tool2, Tool3
 model: inherit
+permissionMode: acceptEdits  # standard for most agents; omit for orchestrator and read-only agents
 skills:
   - security-tiers
   - agent-protocol

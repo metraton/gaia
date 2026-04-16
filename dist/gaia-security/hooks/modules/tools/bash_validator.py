@@ -5,14 +5,22 @@ Primary security gate for all Bash tool invocations. With Bash(*) in the
 settings.json allow list, ALL commands reach this hook -- it is the sole
 enforcement layer for dangerous command detection.
 
-Pipeline (ordered by priority):
-0. Indirect execution detection -- bash -c, eval, python -c etc. (T2 approval)
-1. blocked_commands FIRST -- permanently denied patterns (exit 2)
-2. Claude footer stripping -- transparent cleanup via updatedInput
-3. Commit message validation -- conventional commits format
-4. Cloud pipe/redirect/chain check -- corrective deny (exit 0)
-5. Mutative verb detection -- MUTATIVE -> nonce-based deny (exit 0)
-6. Everything else -> SAFE (auto-approved by elimination)
+5-Phase Pipeline:
+  1. UNWRAP      -- ShellUnwrapper strips wrapper shells (bash -c, sh -c, ...);
+                    depth >= _OBFUSCATION_DEPTH_LIMIT = permanent block.
+                    Existing _detect_indirect_execution() runs as fallback for
+                    eval, python -c, node -e, etc.
+  2. DECOMPOSE   -- StageDecomposer splits into operator-linked stages.
+  3. CLASSIFY    -- blocked_commands + cloud_pipe_validator + mutative_verbs
+                    per stage (existing logic, unchanged).
+  4. COMPOSITION -- cross-stage composition rules (exfiltration, RCE,
+                    obfuscated exec via pipe analysis).
+  5. AGGREGATE   -- combine stage results into final BashValidationResult.
+
+Earlier flat-pipeline order preserved within phases for backward compat:
+  - Footer stripping runs before phase 1 (EARLY NORMALIZATION)
+  - Indirect execution detection is the first check in phase 1
+  - Blocked commands run before cloud_pipe and mutative_verbs in phase 3
 """
 
 import os
@@ -29,6 +37,11 @@ from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
 )
+from ..security.flag_classifiers import (
+    classify_by_flags,
+    OUTCOME_BLOCKED as FLAG_BLOCKED,
+    OUTCOME_MUTATIVE as FLAG_MUTATIVE,
+)
 from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
@@ -41,11 +54,21 @@ from ..security.approval_messages import (
     build_pending_approval_unavailable_message,
     build_t3_approval_instructions,
 )
+from ..security.shell_unwrapper import ShellUnwrapper
+from ..security.composition_rules import (
+    build_composition_stages,
+    check_composition,
+    CompositionDecision,
+)
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
 from .hook_response import build_hook_permission_response
+from .stage_decomposer import StageDecomposer, DecomposedCommand
 
 logger = logging.getLogger(__name__)
+
+# Maximum wrapper depth before treating as obfuscation (permanent block).
+_OBFUSCATION_DEPTH_LIMIT = 5
 
 
 @dataclass
@@ -108,11 +131,17 @@ INDIRECT_EXEC_PATTERNS = [
 ]
 
 class BashValidator:
-    """Validator for Bash tool invocations."""
+    """Validator for Bash tool invocations.
+
+    Implements a 5-phase pipeline: unwrap -> decompose -> classify ->
+    composition -> aggregate.  See module docstring for phase details.
+    """
 
     def __init__(self):
-        """Initialize validator."""
+        """Initialize validator with parser, unwrapper, and decomposer."""
         self.shell_parser = get_shell_parser()
+        self._unwrapper = ShellUnwrapper()
+        self._decomposer = StageDecomposer()
 
     def _detect_indirect_execution(self, command: str) -> Optional[BashValidationResult]:
         """Detect indirect execution wrappers that can bypass regex blocking.
@@ -313,7 +342,14 @@ class BashValidator:
         session_id: str = "",
     ) -> BashValidationResult:
         """
-        Validate a Bash command.
+        Validate a Bash command through the 5-phase pipeline.
+
+        Phases:
+            1. UNWRAP      - strip shell wrappers, detect obfuscation
+            2. DECOMPOSE   - split into operator-linked stages
+            3. CLASSIFY    - blocked_commands + cloud_pipe + mutative_verbs
+            4. COMPOSITION - cross-stage pattern checks (stub for T4)
+            5. AGGREGATE   - combine results into final verdict
 
         Args:
             command: Command string to validate
@@ -348,23 +384,56 @@ class BashValidator:
             logger.info("Auto-stripped Claude Code footer from commit command")
 
         # ================================================================
-        # PRIORITY 0: Indirect execution detection.
-        # Commands like "bash -c '...'" or "eval '...'" can hide blocked
-        # commands inside string arguments, bypassing regex patterns.
-        # Detected wrappers are routed to approval or blocked if the inner
-        # payload matches a blocked command.
+        # PHASE 1: UNWRAP
+        # Use ShellUnwrapper to detect and strip shell wrapper layers
+        # (bash -c, sh -c, env bash -c, etc.).  If the wrapper nesting
+        # depth exceeds _OBFUSCATION_DEPTH_LIMIT, permanently block
+        # the command as obfuscated.
+        #
+        # After the unwrapper, _detect_indirect_execution() runs as a
+        # fallback for patterns the unwrapper does not cover: eval,
+        # python -c, node -e, perl -e, ruby -e, process substitution.
         # ================================================================
+        unwrap_result = self._unwrapper.unwrap(command)
+        if unwrap_result.depth >= _OBFUSCATION_DEPTH_LIMIT:
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=(
+                    f"Obfuscated shell nesting detected: {unwrap_result.depth} "
+                    f"wrapper layers exceeds limit of {_OBFUSCATION_DEPTH_LIMIT}"
+                ),
+            )
+
         indirect_result = self._detect_indirect_execution(command)
         if indirect_result is not None:
             return indirect_result
 
         # ================================================================
-        # PRIORITY 1: Blocked commands check on FULL command (exit 2).
-        # This MUST run before any other validator to ensure permanently
-        # blocked commands (kubectl delete namespace, etc.) are caught
-        # with a reliable exit 2 — even if the command also triggers
-        # cloud_pipe_validator or has compound operators.
+        # PHASE 2: DECOMPOSE
+        # Split the command into operator-linked stages using
+        # StageDecomposer.  The decomposed result is available for
+        # phase 4 (composition rules, T4) and provides operator context
+        # that ShellCommandParser.parse() discards.
         # ================================================================
+        decomposed = self._decomposer.decompose(command)
+
+        # ================================================================
+        # PHASE 3: CLASSIFY STAGES
+        # Apply existing classification logic in priority order:
+        #   3a. blocked_commands on full command (exit 2)
+        #   3b. blocked_commands on each compound component (exit 2)
+        #   3c. Git commit message validation
+        #   3d. Smart sanitization (strip nohup, &, redirects)
+        #   3e. Cloud pipe/redirect/chain check (corrective deny)
+        #   3f. Dispatch to single/compound classification
+        #        (mutative_verbs, gitops_validator, safe-by-elimination)
+        # ================================================================
+
+        # 3a. Blocked commands check on FULL command (exit 2).
+        # This MUST run before any other classifier to ensure permanently
+        # blocked commands (kubectl delete namespace, etc.) are caught
+        # with a reliable exit 2.
         blocked_result = is_blocked_command(command)
         if blocked_result.is_blocked:
             return BashValidationResult(
@@ -374,13 +443,14 @@ class BashValidator:
                 suggestions=[blocked_result.suggestion] if blocked_result.suggestion else [],
             )
 
-        # Parse compound commands once (reused for blocked-command check and validation dispatch).
-        # Runs AFTER footer stripping so components also use the normalized command.
+        # 3b. Parse compound commands and check each component against the
+        # deny list.  Uses ShellCommandParser (not StageDecomposer) for
+        # backward compat — the decomposed stages are used in phase 4.
         has_operators = self._has_operators(command)
         parsed_components = None
         if has_operators:
             parsed_components = self.shell_parser.parse(command)
-            # Check each component of compound commands against the deny list.
+            # Check each component against the deny list.
             # This catches "ls && kubectl delete namespace prod" early.
             for component in parsed_components:
                 comp_blocked = is_blocked_command(component.strip())
@@ -392,33 +462,21 @@ class BashValidator:
                         suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
                     )
 
-        # Validate git commit messages (on the potentially cleaned command)
+        # 3c. Validate git commit messages (on the potentially cleaned command).
         if "git commit" in command and "-m" in command:
             commit_validation = self._validate_commit_message(command)
             if not commit_validation.allowed:
                 return commit_validation
 
-        # ================================================================
-        # SMART SANITIZATION: Before rejecting for pipe/redirect/background
-        # violations, attempt to strip dangerous operators and pass through
-        # the clean version via updatedInput.  If the command cannot be
-        # cleaned safely (e.g., pipes that change semantics), reject with
-        # guidance to read the command-execution skill.
-        # ================================================================
+        # 3d. Smart sanitization: strip nohup, trailing &, trailing redirect.
         sanitized = self._try_sanitize_command(command)
         if sanitized is not None:
             if sanitized.allowed:
-                # Sanitization succeeded — pass the cleaned command
                 return sanitized
             else:
-                # Sanitization determined the command cannot be cleaned
                 return sanitized
 
-        # Cloud pipe/redirect/chaining check -- runs AFTER blocked commands
-        # and sanitization.  Returns a structured block response dict if a
-        # violation is found.
-        # block_response is set so the caller emits JSON and exits 0 (corrective),
-        # not a plain string with exit 2 (which would terminate the agent).
+        # 3e. Cloud pipe/redirect/chaining check.
         pipe_block = validate_cloud_pipe(command)
         if pipe_block is not None:
             return BashValidationResult(
@@ -430,7 +488,24 @@ class BashValidator:
                 block_response=pipe_block,
             )
 
-        # Dispatch to single or compound validation using already-parsed components
+        # ================================================================
+        # PHASE 4: CHECK COMPOSITION
+        # Cross-stage composition rules detect dangerous pipe patterns:
+        #   - Exfiltration: sensitive_read | network_write
+        #   - RCE:          network_read   | exec_sink
+        #   - Obfuscated:   decode         | exec_sink
+        #   - File-to-exec: file_read      | exec_sink  (escalate)
+        # Only pipe-connected stages are checked; &&/; are independent.
+        # ================================================================
+        _composition_result = self._phase4_check_composition(decomposed)
+        if _composition_result is not None:
+            return _composition_result
+
+        # ================================================================
+        # PHASE 5: AGGREGATE
+        # 3f. Dispatch to per-stage classifiers (single or compound)
+        # and combine into the final BashValidationResult.
+        # ================================================================
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
@@ -625,6 +700,44 @@ class BashValidator:
                     suggestions=gitops_result.suggestions,
                 )
 
+        # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
+        # This supplements mutative_verbs -- it catches flag-dependent mutations
+        # that verb-based detection misses (e.g. "sed" has no mutative verb, but
+        # "sed -i" is mutative).  Runs after blocked_commands and mutative_verbs
+        # to avoid double-classification.
+        #
+        # Git commands are EXCLUDED from the MUTATIVE path here because
+        # detect_mutative_command() already has deliberate git handling.  If it
+        # chose not to block a git command, that decision should be respected.
+        # Git BLOCKED results still fire as a safety net (force push, etc.).
+        flag_result = classify_by_flags(command)
+        if flag_result is not None:
+            if flag_result.outcome == FLAG_BLOCKED:
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Command blocked by flag classifier: {flag_result.reason}",
+                    suggestions=[],
+                )
+            if flag_result.outcome == FLAG_MUTATIVE:
+                # Skip git commands -- mutative_verbs already handles them.
+                if flag_result.command_family.startswith("git_"):
+                    pass  # Fall through to safe-by-elimination
+                else:
+                    reason = (
+                        f"[T3_APPROVAL_REQUIRED] Flag-dependent mutation detected.\n"
+                        f"Command: {command}\n"
+                        f"Flag: {flag_result.matched_pattern} ({flag_result.command_family})\n"
+                        f"Reason: {flag_result.reason}"
+                    )
+                    hook_ask = build_hook_permission_response("ask", reason)
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T3_BLOCKED,
+                        reason=f"Mutative flag detected: {flag_result.reason}",
+                        block_response=hook_ask,
+                    )
+
         # Not blocked, not mutative -> SAFE by elimination
         return BashValidationResult(
             allowed=True,
@@ -674,6 +787,59 @@ class BashValidator:
             tier=highest_tier,
             reason=f"All {len(components)} components validated",
         )
+
+    def _phase4_check_composition(
+        self, decomposed: DecomposedCommand,
+    ) -> Optional[BashValidationResult]:
+        """Check cross-stage composition patterns (Phase 4).
+
+        Detects dangerous pipe compositions:
+        - Exfiltration: sensitive_read | network_write  -> permanent block
+        - RCE: network_read | exec_sink                 -> permanent block
+        - Obfuscated exec: decode | exec_sink           -> permanent block
+        - File-to-exec: file_read | exec_sink           -> escalate (ask)
+
+        Args:
+            decomposed: Output from StageDecomposer.decompose().
+
+        Returns:
+            BashValidationResult if a composition rule fires, else None.
+        """
+        if not decomposed.stages or len(decomposed.stages) < 2:
+            return None
+
+        # Check whether any stages are pipe-connected.
+        has_pipe = any(s.operator == "|" for s in decomposed.stages)
+        if not has_pipe:
+            return None
+
+        # Build classified composition stages and check rules.
+        comp_stages = build_composition_stages(decomposed.stages)
+        result = check_composition(comp_stages)
+
+        if result.decision == CompositionDecision.BLOCK:
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=f"Dangerous pipe composition blocked: {result.reason}",
+            )
+
+        if result.decision == CompositionDecision.ESCALATE:
+            reason = (
+                f"[T3_APPROVAL_REQUIRED] Potentially dangerous pipe composition.\n"
+                f"Pattern: {result.pattern}\n"
+                f"Reason: {result.reason}"
+            )
+            hook_ask = build_hook_permission_response("ask", reason)
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=f"Pipe composition requires approval: {result.reason}",
+                block_response=hook_ask,
+            )
+
+        # No composition rule fired — continue to Phase 5.
+        return None
 
     def _detect_claude_footers(self, command: str) -> bool:
         """Detect Claude Code attribution footers in command."""

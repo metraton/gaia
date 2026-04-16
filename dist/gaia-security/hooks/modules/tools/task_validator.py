@@ -45,8 +45,11 @@ AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia-ops:{a}" for a in _BASE_AGENTS]
 # orchestrator can legitimately use.
 NATIVE_AGENTS = ["Explore", "Plan", "general-purpose", "claude-code-guide"]
 
-# Meta-agents that don't require context_provider (superset: gaia-system + native agents).
-META_AGENTS = ["gaia-system"] + NATIVE_AGENTS
+# Meta-agents that don't require context_provider.
+# gaia-system was removed: it now receives context injection (has a contract
+# in context-contracts.json) so it can see project state when working on
+# Gaia internals.
+META_AGENTS = list(NATIVE_AGENTS)
 
 # T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
 # to verify that these commands are classified as T3 by the verb detector.

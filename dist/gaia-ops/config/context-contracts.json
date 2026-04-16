@@ -138,6 +138,21 @@
       "write": [
         "workspace_repos"
       ]
+    },
+    "gaia-system": {
+      "read": [
+        "project_identity",
+        "stack",
+        "git",
+        "environment",
+        "application_services",
+        "architecture_overview",
+        "operational_guidelines",
+        "infrastructure"
+      ],
+      "write": [
+        "architecture_overview"
+      ]
     }
   }
 }

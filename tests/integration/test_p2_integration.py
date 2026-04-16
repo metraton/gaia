@@ -211,16 +211,17 @@ class TestSubagentStartFlow:
         assert event.event_type == HookEventType.SUBAGENT_START
 
     def test_subagent_start_returns_context_result(self):
-        """SubagentStart produces a ContextResult."""
+        """SubagentStart produces a ContextResult with context for project agents."""
         _, result, response = _run_subagent_start_flow({
             "agent_type": "developer",
             "task_description": "Run npm audit",
         })
 
         assert isinstance(result, ContextResult)
-        # Default: no additional context (passthrough until business logic wired)
-        assert result.context_injected is False
-        assert result.additional_context is None
+        # Project agents get context injected (via cache or on-demand rebuild)
+        assert result.context_injected is True
+        assert result.additional_context is not None
+        assert isinstance(result.additional_context, str)
 
     def test_subagent_start_exit_zero(self):
         """SubagentStart response has exit code 0."""

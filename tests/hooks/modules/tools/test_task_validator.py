@@ -248,14 +248,19 @@ class TestT3ApprovalRequirement:
         assert result.is_t3_operation is True
         assert result.tier == SecurityTier.T3_BLOCKED
 
-    def test_git_commit_is_t3(self, validator):
-        """git commit must be treated as T3."""
+    def test_git_commit_is_not_t3(self, validator):
+        """git commit is in GIT_LOCAL_SAFE_SUBCOMMANDS (v5) and is not T3.
+
+        git commit is local-only: it does not transmit data or modify remote
+        state.  The Bash-time gate (mutative_verbs) classifies it as safe
+        unless dangerous flags are present.
+        """
         params = {
             "subagent_type": "developer",
             "prompt": "Run git commit -m 'feat: update deployment config'",
         }
         result = validator.validate(params)
-        assert result.is_t3_operation is True
+        assert result.is_t3_operation is False
 
     def test_git_push_any_branch_is_t3(self, validator):
         """git push should be T3 regardless of branch name."""

@@ -177,13 +177,14 @@ class TestAdaptSubagentStart:
     """Test adapt_subagent_start method."""
 
     def test_extracts_agent_type(self, adapter, subagent_start_payload):
-        """SubagentStart extracts agent_type from payload."""
+        """SubagentStart extracts agent_type and injects context for project agents."""
         result = adapter.adapt_subagent_start(subagent_start_payload)
 
         assert isinstance(result, ContextResult)
-        # Default: no context injection
-        assert result.context_injected is False
-        assert result.additional_context is None
+        # Project agents get context injected (via cache or on-demand rebuild)
+        assert result.context_injected is True
+        assert result.additional_context is not None
+        assert isinstance(result.additional_context, str)
         assert result.sections_provided == []
 
     def test_empty_payload(self, adapter):

@@ -12,6 +12,7 @@ skills:
   - memory-curation
   - gmail-triage
   - gws-setup
+  - blog-writing
 ---
 
 # Workspace Operator

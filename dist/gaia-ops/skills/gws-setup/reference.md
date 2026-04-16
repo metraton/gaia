@@ -18,6 +18,7 @@ Heavy reference material for the `gws-setup` skill. Read on-demand during scope 
 | `tasks` | Manage Tasks |
 | `userinfo.email` | Read email address |
 | `userinfo.profile` | Read basic profile |
+| `cloud-platform` | GCP platform access -- granted and working |
 
 ## Blocked Scopes (organizational / enterprise only)
 
@@ -29,7 +30,6 @@ NEVER select these for personal @gmail.com accounts:
 | `cloud-identity.*` | Organizational accounts only |
 | `classroom.*` | Google Classroom (educational) |
 | `ediscovery.*` | Enterprise Vault only |
-| `cloud-platform` | Overly broad, dangerous |
 | `directory.*` | Organizational directory only |
 
 Including any of these causes `400: invalid_scope` for personal accounts (gws issue #119).
@@ -46,13 +46,13 @@ gws gmail users messages list --params '{"userId":"me","maxResults":N}'
 gws gmail users labels list --params '{"userId":"me"}'
 
 # Create label
-gws gmail users labels create --params '{"userId":"me"}' --body '{"name":"label-name"}'
+gws gmail users labels create --params '{"userId":"me"}' --json '{"name":"label-name"}'
 
 # Get message
 gws gmail users messages get --params '{"userId":"me","id":"<message-id>"}'
 
 # Modify message labels
-gws gmail users messages modify --params '{"userId":"me","id":"<message-id>"}' --body '{"addLabelIds":["LABEL_ID"]}'
+gws gmail users messages modify --params '{"userId":"me","id":"<message-id>"}' --json '{"addLabelIds":["LABEL_ID"]}'
 ```
 
 ## Credential Paths

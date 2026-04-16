@@ -41,16 +41,16 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 
 ### Agents (8)
 
-| Agent | File | Domain |
-|-------|------|--------|
-| gaia-orchestrator | `agents/gaia-orchestrator.md` | Routes requests, manages workflow, consolidation |
-| gaia-operator | `agents/gaia-operator.md` | Workspace operator -- personal workspace tasks, memory management, integrations |
-| gaia-system | `agents/gaia-system.md` | Gaia-ops meta-system itself |
-| developer | `agents/developer.md` | Application code (Node/TS, Python) |
-| cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics |
-| gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux |
-| terraform-architect | `agents/terraform-architect.md` | Terraform/Terragrunt IaC |
-| gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition |
+| Agent | File | Domain | permissionMode |
+|-------|------|--------|----------------|
+| gaia-orchestrator | `agents/gaia-orchestrator.md` | Routes requests, manages workflow, consolidation | (not set) |
+| gaia-operator | `agents/gaia-operator.md` | Workspace operator -- personal workspace tasks, memory management, integrations | `acceptEdits` |
+| gaia-system | `agents/gaia-system.md` | Gaia-ops meta-system itself | `acceptEdits` |
+| developer | `agents/developer.md` | Application code (Node/TS, Python) | `acceptEdits` |
+| cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics | (not set) |
+| gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux | `acceptEdits` |
+| terraform-architect | `agents/terraform-architect.md` | Terraform/Terragrunt IaC | `acceptEdits` |
+| gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition | `acceptEdits` |
 
 ### Skills (24 directories + 1 top-level reference)
 
@@ -157,6 +157,7 @@ Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
 | Skills | None | 24 skills injected per frontmatter |
 | Commands | None | 7 slash commands |
 | PreToolUse matchers | `Bash` only | `Bash`, `Task`, `Agent`, `SendMessage`, multi-tool |
+| File write protection | `_is_protected()` blocks hooks/ and settings*.json for Edit/Write tools | Same -- fires regardless of permissionMode |
 
 ### Security Tiers (quick reference)
 
@@ -200,7 +201,7 @@ npm publish                    # publishes @jaguilar87/gaia-ops
 2. Run `gaia-scan --npm-postinstall` to create `.claude/`, symlinks, settings, project-context
 3. Create `plugin-registry.json`
 4. Merge permissions into `settings.local.json`
-5. Merge hooks into `settings.local.json`
+5. Merge hooks into `settings.local.json` -- also writes `defaultMode: acceptEdits` to `settings.local.json` for the parent session
 6. Verification
 
 **Update** (`.claude/` exists):

@@ -244,13 +244,15 @@ class TestExpiredPendingNotActivated:
 
         nonce = generate_nonce()
         # Write a pending with a very short TTL
+        # Note: ttl_minutes=0 means "no expiry" in the code, so use ttl_minutes=1
+        # and backdate the timestamp so the 1-minute TTL has elapsed.
         path = write_pending_approval(
             nonce=nonce,
             command="terraform apply",
             danger_verb="apply",
             danger_category="MUTATIVE",
             session_id="test-cycle-session",
-            ttl_minutes=0,  # Already expired (0 minutes TTL)
+            ttl_minutes=1,
         )
         assert path is not None
 
