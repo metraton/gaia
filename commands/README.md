@@ -1,148 +1,64 @@
-# Gaia-Ops Slash Commands
+# Commands
 
-Slash commands are quick shortcuts that let you invoke specific system functions directly. They're like keyboard shortcuts for common tasks.
+Slash commands are direct shortcuts into Gaia's orchestration layer. When you type `/gaia` or `/scan-project`, Claude Code detects the slash prefix, finds the matching `.md` file in this directory, and injects its contents as instructions to the currently active orchestrator. There is no subagent spawn — the orchestrator reads the command file and executes inline.
 
-## Purpose
+This makes slash commands different from agent dispatch. An agent dispatch creates a new Claude Code subprocess with its own identity, skills, and tool set. A slash command is a context injection into the orchestrator's current session. Think of it as a macro: the `.md` file says "when the user invokes this command, do the following." The orchestrator follows those instructions directly.
 
-Slash commands provide a fast and consistent way to access advanced features without needing to write complete natural language requests.
+The practical implication is that slash commands are best suited for tasks that the orchestrator can complete by delegating to existing agents — not tasks that require a new agent identity. They are entry points, not agents.
 
-**Problem it solves:** Some tasks require direct invocation of specific tools. Instead of verbosely describing what you want to do, you simply use a slash command.
-
-## How It Works
-
-### Architecture Flow
+## Cuándo se activa
 
 ```
-User types /command
+User types /command-name [args]
         |
-[Claude Code] detects / pattern
+Claude Code detects / prefix
         |
-[Command Handler] loads command .md file
+Looks up commands/<command-name>.md
         |
-[Orchestrator] executes command instructions
+Injects the file's contents into the orchestrator's active context
         |
-Result to user
+Orchestrator reads the command instructions and executes them
+  (may dispatch agents, call tools, or respond directly)
+        |
+Result returned to user in the current session
 ```
 
-## Available Commands
+No subagent is spawned. No new identity is loaded. The orchestrator handles execution within its current session using its existing tool set and the instructions from the command file.
 
-### Planning Commands
-
-#### `/gaia-plan`
-Plan a feature -- create a brief and decompose into verifiable tasks.
-
-**When to use:**
-- Starting a new feature or project
-- Breaking down work into agent-dispatched tasks
-
-**Example:**
-```bash
-/gaia-plan
-/gaia-plan Add OAuth2 authentication
-/gaia-plan --execute .claude/project-context/briefs/auth/brief.md
-```
-
-**What it does:**
-- Sizes the work (S/M/L)
-- Asks focused questions for M/L features
-- Writes a brief with acceptance criteria and verify commands
-- Decomposes into Tasks dispatched to domain agents
-
----
-
-### Project Commands
-
-#### `/scan-project`
-Scan the current project to detect stack, infrastructure, tools, and generate/update `project-context.json`.
-
-**When to use:**
-- First time setting up Gaia in a project
-- After significant project changes
-
----
-
-## General Usage
-
-### Basic Syntax
-
-```bash
-/command [arguments]
-```
-
-### Common Features
-
-**Autocomplete:**
-Claude Code suggests available commands when typing `/`
-
-**Inline help:**
-All commands support contextual help if invoked without arguments
-
-**Validation:**
-Commands validate arguments and give clear feedback if information is missing
-
-### Difference vs Natural Language
-
-| Natural Language | Slash Command |
-|------------------|---------------|
-| "Create a spec for OAuth authentication" | Talk to the orchestrator conversationally |
-
-**Advantages of slash commands:**
-- Faster
-- Consistent syntax
-- Direct tool invocation
-- Less ambiguous
-
-**When to use natural language:**
-- Exploratory questions
-- Problem diagnosis
-- Complex queries
-
-## Technical Details
-
-### Command Structure
-
-Each command is a Markdown file in `commands/[name].md` with frontmatter:
-
-```markdown
----
-name: command
-description: Brief description
-usage: Usage syntax
----
-
-# Command
-
-[Detailed instructions for the orchestrator]
-```
-
-### Available Commands
+## Qué hay aquí
 
 ```
 commands/
-├── gaia-plan.md
-├── gaia.md
-└── scan-project.md
+├── gaia.md           # /gaia — invoke the Gaia meta-agent (gaia-system) for system work
+└── scan-project.md   # /scan-project — scan codebase, detect stack, update project-context.json
 ```
 
-**Total:** 3 commands
+Note: a `/gaia-plan` command is referenced in some older documentation but the file does not exist here. Planning is handled conversationally through the orchestrator and the `gaia-planner` agent — not via a slash command.
 
-> **Note:** The Gaia meta-agent is invoked directly via the `gaia` agent (see [agents/gaia-system.md](../agents/gaia-system.md)), not as a slash command.
+## Convenciones
 
-## References
+**File format:**
 
-**Related documentation:**
-- [Gaia Planner](../skills/gaia-planner/reference.md) - Planning workflow reference
-- [Gaia Agent](../agents/gaia-system.md) - The meta-agent
-- [Episodic Memory](../tools/memory/episodic.py) - Context memory system
-- [Config](../config/) - System configuration
-
-**Underlying tools:**
-- Context provider: `tools/context/context_provider.py`
-- Episodic memory: `tools/memory/episodic.py`
-
+```markdown
+---
+name: command-name
+description: One-line description shown in Claude Code autocomplete
 ---
 
-**Version:** 4.2.0
-**Last updated:** 2026-03-11
-**Total commands:** 5 spec-kit
-**Maintained by:** Gaia (meta-agent)
+# Command Name
+
+[Instructions the orchestrator follows when this command is invoked]
+```
+
+**Registration:** Each command file must also be listed in `build/gaia-ops.manifest.json` under the `commands` array. A file that exists here but is not in the manifest will not appear in Claude Code's slash command list.
+
+**Scope:** Commands inject instructions into the orchestrator. If the task requires domain work (Terraform, code changes, cloud ops), the command's instructions should dispatch the appropriate agent — the command itself should not attempt domain execution.
+
+**Arguments:** Slash commands can receive arguments after the command name (e.g., `/gaia-plan Add OAuth2 support`). The command's `.md` file can reference these as context, and the orchestrator receives them as part of the injected content.
+
+## Ver también
+
+- [`build/gaia-ops.manifest.json`](../build/gaia-ops.manifest.json) — command registration
+- [`agents/gaia-system.md`](../agents/gaia-system.md) — the Gaia meta-agent invoked by `/gaia`
+- [`agents/gaia-orchestrator.md`](../agents/gaia-orchestrator.md) — orchestrator that executes command instructions
+- [`skills/gaia-planner/SKILL.md`](../skills/gaia-planner/SKILL.md) — planning workflow (used by gaia-planner agent, not a slash command)

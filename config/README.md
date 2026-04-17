@@ -1,58 +1,71 @@
-# Gaia-Ops Configuration Files
+# Config
 
-Central configuration for the orchestration system. Contracts are the SSOT for agent context provisioning.
+Configuration lives here, separate from hooks, because these are data files — not code. Hooks are Python scripts that run at runtime; config files are JSON documents that those scripts read to make decisions. Keeping them apart means you can audit and change system behavior (which agents see which context sections, what git commit patterns are allowed, which surfaces route where) without touching executable code. It also makes the config files version-controllable and reviewable on their own terms.
 
-## Files
+The contracts are the most important piece in this directory. `context-contracts.json` defines, per agent, which sections of `project-context.json` the agent is allowed to read and which it is allowed to write. This is the access control layer for project knowledge — an agent that is not in the contracts file receives no context injection at all. The cloud extension files in `cloud/` extend these contracts for cloud-specific sections without modifying the base file, so adding a new cloud provider is a new file, not an edit to the core.
 
-| File | Purpose | Read by |
-|------|---------|---------|
-| `context-contracts.json` | Base cloud-agnostic contracts: `read`/`write` sections per agent, `core_sections` list, `workspace_repos` schema | `context_provider.py`, `context_writer.py`, `pre_tool_use.py` |
-| `cloud/gcp.json` | GCP extensions: `gcp_services`, `workload_identity`, `static_ips` | Same trio, merged at runtime |
-| `cloud/aws.json` | AWS extensions: `vpc_mapping`, `load_balancers`, `api_gateway`, `irsa_bindings`, `aws_accounts` | Same trio, merged at runtime |
-| `git_standards.json` | Commit standards (Conventional Commits), allowed types, forbidden footers | `hooks/modules/validation/commit_validator.py` |
-| `universal-rules.json` | Behavior rules injected into all agents | `context_provider.py` |
-| `surface-routing.json` | Generic surface classification and investigation-brief rules | `surface_router.py`, `context_provider.py`, Spec-Kit |
+The other files — routing, git standards, universal rules — are each consumed by a specific module and do exactly what their names say. There is no magic here: the files are loaded, parsed, and applied by the module that reads them.
 
-## How the base+cloud merge works
+## Cuándo se activa
 
-At runtime, `tools/context/context_provider.py` executes the following logic:
+This component does not activate as a runtime process. Each file is read on-demand by the module that needs it. The table below shows the read point for each file.
+
+**Cuándo se lee cada archivo:**
+
+| File | Read by | When |
+|------|---------|------|
+| `surface-routing.json` | `hooks/user_prompt_submit.py` | Every prompt — determines routing recommendation injected into orchestrator context |
+| `context-contracts.json` | `tools/context/context_provider.py` | Every agent dispatch — determines which project-context sections to inject |
+| `git_standards.json` | `hooks/modules/validation/commit_validator.py` | Every `git commit` call intercepted by PreToolUse |
+| `universal-rules.json` | `tools/context/context_provider.py` | Every agent dispatch — injected into all agents alongside project context |
+| `cloud/gcp.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = gcp` in project-context.json |
+| `cloud/aws.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = aws` in project-context.json |
+
+**Base + cloud merge flow:**
 
 ```
-1. Read context-contracts.json         <- cloud-agnostic sections (all clouds)
-2. Detect cloud_provider from project-context.json
-3. Read cloud/{provider}.json          <- cloud-specific sections
-4. Merge: extend read/write lists per agent (no duplicates)
-5. Result: complete contract for the agent on that cloud
+Agent dispatch triggered
+        |
+context_provider.py reads context-contracts.json    <- cloud-agnostic base
+        |
+Detects cloud_provider from project-context.json
+        |
+Reads cloud/{provider}.json                         <- cloud extensions
+        |
+Merges: extends read/write lists per agent (no duplicates)
+        |
+Result: complete contract for this agent on this cloud
+        |
+Agent receives filtered project-context sections
 ```
 
-## Structure
+## Qué hay aquí
 
 ```
 config/
-├── context-contracts.json        <- agnostic base (all agents, v4)
+├── context-contracts.json   # Per-agent read/write access to project-context sections
+├── surface-routing.json     # Intent classification and agent routing signals
+├── git_standards.json       # Commit type allowlist, footer rules, Conventional Commits config
+├── universal-rules.json     # Behavior rules injected into all agents at dispatch time
 ├── cloud/
-│   ├── gcp.json                  <- GCP extensions + section_schemas
-│   └── aws.json                  <- AWS extensions + section_schemas
-├── surface-routing.json          <- generic surface routing + investigation brief config
-├── git_standards.json
-├── universal-rules.json
+│   ├── gcp.json             # GCP-specific context sections (extends base contracts)
+│   └── aws.json             # AWS-specific context sections (extends base contracts)
 └── README.md
 ```
 
-## Adding support for a new cloud (Azure, etc.)
+## Convenciones
 
-> **Note:** Only GCP and AWS are currently implemented.
+**context-contracts.json schema:** Each entry is keyed by agent name. Each agent has `read` (list of project-context section names the agent receives) and `write` (list of sections the agent can update via CONTEXT_UPDATE). `core_sections` is a top-level list of sections injected into every agent regardless of per-agent config.
 
-1. Create `cloud/azure.json` with the same schema as `cloud/gcp.json`
-2. Define agents and their Azure-specific sections
-3. No code changes needed -- `context_provider.py` detects it automatically
+**Adding a new cloud:** Create `cloud/azure.json` following the same schema as `cloud/gcp.json`. Define agent-specific sections for that cloud. No code changes needed — `context_provider.py` detects the file automatically by matching `cloud_provider` from project-context.
 
-## References
+**surface-routing.json format:** Each surface entry has `intent`, `primary_agent`, `adjacent_surfaces`, and `signals` (with `high` and `medium` confidence keyword lists). High-confidence signals are checked first; medium signals act as tie-breakers.
 
-- [Hooks](../hooks/) - Security hooks (use contracts for validation)
-- [Tools](../tools/) - Context provisioning tools
-- [Tests](../tests/) - Test suite
+**universal-rules.json:** Changes here affect every agent in every session. Add only rules that are truly universal — constraints that apply regardless of domain. Domain-specific rules belong in the relevant skill (`security-tiers`, `command-execution`, etc.).
 
----
+## Ver también
 
-**Updated:** 2026-03-25 | **Active contracts:** base v4 + 2 clouds (GCP, AWS)
+- [`hooks/user_prompt_submit.py`](../hooks/user_prompt_submit.py) — reads `surface-routing.json` on every prompt
+- [`hooks/modules/validation/`](../hooks/modules/validation/) — reads `git_standards.json` on commit validation
+- [`tools/context/`](../tools/context/) — reads contracts and universal-rules at agent dispatch time
+- [`agents/README.md`](../agents/README.md) — agent names that must match context-contracts.json keys

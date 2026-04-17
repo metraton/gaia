@@ -1,61 +1,79 @@
-# Gaia-Ops Utility Scripts
+# Bin
 
-Utility scripts to install, update, diagnose, and manage the gaia-ops package.
+The `bin/` directory holds the command-line utilities that surround Gaia — the install helpers, the diagnostics, the status reporters, and the cleanup scripts. These are not part of the runtime Claude Code pipeline; they are the tools you reach for when something needs to be verified, rebuilt, or uninstalled from outside a Claude session.
 
-## Purpose
+Each script here is registered in `package.json` under the `bin` field, which makes it callable through `npx` (e.g., `npx gaia-doctor`) once the package is installed. Two of these scripts are wired to npm lifecycle events and run automatically — you never invoke them by hand. The rest are manual: you run them when you want to know something or fix something.
 
-Automate common package management tasks, providing a friendly interface for operations that would otherwise require complex manual steps.
+The diagnostic model to learn first is `gaia-doctor`. Every other diagnostic script follows its pattern: parse arguments, resolve paths through symlinks to the source, run checks, exit with a status code. Reading `gaia-doctor.js` once will tell you how every other script here works.
 
-## How It Works
+## Cuándo se activa
+
+The scripts in this directory split into two categories based on how they get triggered.
+
+**Category A — npm lifecycle scripts (automatic):**
 
 ```
-User executes bin/script
+User runs: npm install @jaguilar87/gaia-ops
         |
-[Script] detects current state
+npm fires postinstall lifecycle event
         |
-    Executes actions
-    |               |
-[Installation]   [Cleanup]
-    |               |
-Configure symlinks  Remove files
+bin/gaia-update.js runs automatically
+        |
+Updates hooks template, merges permissions into settings.local.json,
+ensures plugin-registry entry
 ```
 
-## Available Scripts
+```
+User runs: npm uninstall @jaguilar87/gaia-ops
+        |
+npm fires preuninstall lifecycle event
+        |
+bin/gaia-cleanup.js runs automatically
+        |
+Cleans temporary caches, old logs (>30 days), __pycache__ directories
+Preserves project-context.json and .claude/ symlinks
+```
 
-### Installation and Setup
+**Category B — manual invocation (on-demand):**
 
-| Script | Description |
-|--------|-------------|
-| `gaia-scan` | Project scanner and installer (Python) |
-| `gaia-update.js` | Configuration updater (postinstall hook) — updates hooks template, merges permissions into settings.local.json, ensures plugin-registry |
+```
+User runs: npx gaia-doctor  (or gaia-status, gaia-scan, etc.)
+        |
+npm/npx resolves the bin entry in package.json
+        |
+Executes the script
+        |
+Exits with status code
+```
 
-### Diagnostics and Monitoring
+No Claude Code session is involved in either category. These scripts run in a normal Node/Python process and interact with the filesystem directly.
 
-| Script | Description |
-|--------|-------------|
-| `gaia-doctor.js` | System health check |
-| `gaia-skills-diagnose.js` | Diagnoses skills, injection wiring, and contract gaps |
-| `gaia-status.js` | Current system status |
-| `gaia-metrics.js` | Metrics and usage statistics |
-| `gaia-history.js` | Operation history viewer |
-| `gaia-review.js` | Review engine interface |
+## Qué hay aquí
 
-### Cleanup and Uninstall
+```
+bin/
+├── gaia                       # Wrapper for convenience (shell)
+├── gaia-scan                  # Project scanner (Python entry)
+├── gaia-scan.py               # Python implementation of gaia-scan
+├── gaia-update.js             # npm postinstall: updates hooks template, merges permissions
+├── gaia-cleanup.js            # npm preuninstall: cleans caches, old logs, __pycache__
+├── gaia-doctor.js             # System health check — the diagnostic model to learn first
+├── gaia-status.js             # Current system status
+├── gaia-skills-diagnose.js    # Skills injection wiring diagnosis
+├── gaia-metrics.js            # Metrics and usage statistics
+├── gaia-history.js            # Operation history viewer
+├── gaia-review.js             # Review engine interface
+├── gaia-uninstall.js          # Complete uninstall (manual)
+├── pre-publish-validate.js    # Pre-publish validation gate (used by release pipeline)
+├── python-detect.js           # Python runtime detection helper
+└── cli/                       # Shared CLI utilities
+```
 
-| Script | Description |
-|--------|-------------|
-| `gaia-cleanup.js` | Cleans temporary files (preuninstall hook) |
-| `gaia-uninstall.js` | Complete uninstall |
+## Convenciones
 
-### Validation
+**Lifecycle binding:** Only `gaia-update.js` (postinstall) and `gaia-cleanup.js` (preuninstall) are wired to npm events via `package.json` `scripts`. Every other script is manual.
 
-| Script | Description |
-|--------|-------------|
-| `pre-publish-validate.js` | Pre-publish validation |
-
-## npm Binaries
-
-Defined in `package.json`:
+**npx-invocable list** (from `package.json` `bin`):
 
 ```json
 {
@@ -74,76 +92,15 @@ Defined in `package.json`:
 }
 ```
 
-## Common Usage
+**Path resolution:** Scripts must resolve paths through symlinks to the source package. The pattern is visible in `gaia-doctor.js` — use `fs.realpathSync` on the symlink target before running checks.
 
-### First Installation
+**Exit codes:** `0` on success, non-zero on failure. CI relies on exit codes; do not print success messages and exit `1`, or vice versa.
 
-```bash
-npm install @jaguilar87/gaia-ops
-npx gaia-scan
-claude
-```
+**Preserved on cleanup:** `project-context.json` and `.claude/` symlinks are never touched by `gaia-cleanup.js`. Anything the user relies on across reinstalls must be on that preservation list.
 
-### Update
+## Ver también
 
-```bash
-npm update @jaguilar87/gaia-ops
-# Postinstall hook updates automatically
-```
-
-### Diagnostics
-
-```bash
-# System health check
-npx gaia-doctor
-
-# Skills diagnosis (structure + wiring + known gaps)
-npx gaia-skills-diagnose
-
-# Include focused pytest probe for skills/injection
-npx gaia-skills-diagnose --run-tests
-
-# JSON output for CI
-npx gaia-skills-diagnose --json --strict
-
-# View metrics
-npx gaia-metrics
-
-# View operation history
-npx gaia-history
-```
-
-### Uninstall
-
-```bash
-npx gaia-uninstall
-npm uninstall @jaguilar87/gaia-ops
-```
-
-## gaia-cleanup.js
-
-**What it cleans:**
-- Temporary caches
-- Old logs (>30 days)
-- __pycache__ directories
-
-**What it preserves:**
-- `project-context.json`
-- `.claude/` symlinks
-
-## Environment Variables
-
-```bash
-export CLAUDE_GITOPS_DIR="./my-gitops"
-export CLAUDE_PROJECT_ID="my-gcp-project"
-npx gaia-scan --non-interactive
-```
-
-## References
-
-- [INSTALL.md](../INSTALL.md) - Installation guide
-- [README.md](../README.md) - Package overview
-
----
-
-**Version:** 4.7.2 | **Updated:** 2026-04-09 | **Scripts:** 11
+- [`package.json`](../package.json) — `bin` field registers these scripts; `scripts.postinstall` / `scripts.preuninstall` wire the lifecycle scripts
+- [`INSTALL.md`](../INSTALL.md) — installation workflow that calls these scripts
+- [`templates/README.md`](../templates/README.md) — `gaia-update.js` and `gaia-scan.py` consume templates from here
+- [`hooks/README.md`](../hooks/README.md) — `gaia-doctor.js` verifies the hook registrations are valid
