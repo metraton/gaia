@@ -541,3 +541,47 @@ class TestEdgeCases:
         # echo with quoted string is safe, && inside quotes is not an operator
         assert result.allowed is True
         assert result.tier == SecurityTier.T0_READ_ONLY
+
+
+class TestIndirectExecInnerVerb:
+    """Indirect execution wrappers should name the inner mutative verb.
+
+    When `bash -c '...'` or similar wrapper is detected, the user-facing
+    reason string should identify the mutative verb inside the wrapper so
+    the operator has context for the approval decision.
+    """
+
+    def test_bash_c_mv_names_mv_in_reason(self, validator):
+        """bash -c 'mv ...' reason should mention 'mv'."""
+        result = validator.validate('bash -c "mv foo bar"')
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T2_DRY_RUN
+        assert "'mv'" in result.reason
+        assert "inner mutative verb" in result.reason
+
+    def test_bash_c_rm_names_rm_in_reason(self, validator):
+        """bash -c 'rm ...' reason should mention 'rm'."""
+        result = validator.validate('bash -c "rm -rf /tmp/x"')
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T2_DRY_RUN
+        assert "'rm'" in result.reason
+        assert "inner mutative verb" in result.reason
+
+    def test_bash_c_non_mutative_uses_generic_reason(self, validator):
+        """bash -c 'ls ...' with non-mutative inner keeps the generic message."""
+        result = validator.validate('bash -c "ls /tmp"')
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T2_DRY_RUN
+        # Generic fallback -- no specific verb named, no "inner mutative verb" phrase
+        assert "inner mutative verb" not in result.reason
+        # Generic fallback preserves the word "wrapper" for backward compatibility
+        assert "wrapper" in result.reason.lower()
+
+    def test_bash_c_for_loop_with_mv_names_mv(self, validator):
+        """Compound inner (for-loop with mv) should surface a mutative verb."""
+        result = validator.validate('bash -c "for d in *; do mv a b; done"')
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T2_DRY_RUN
+        # Detector returns first mutative verb found -- should be 'mv'
+        assert "'mv'" in result.reason
+        assert "inner mutative verb" in result.reason
