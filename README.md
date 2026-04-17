@@ -6,7 +6,22 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/node/v/@jaguilar87/gaia-ops.svg)](https://nodejs.org)
 
-Multi-agent DevOps system that classifies every operation by risk, routes work to specialist agents, and blocks irreversible commands automatically.
+## Cómo leer este repo
+
+Gaia is event-driven. Every capability in the codebase is attached to a moment in the Claude Code lifecycle — a prompt arriving, a tool being called, an agent completing. Reading the folder structure without that lens makes it look like a collection of files. Reading it with that lens, everything clicks into place.
+
+The flow is this: a user sends a prompt, the `UserPromptSubmit` hook fires and injects the orchestrator's identity and a routing recommendation. The orchestrator picks a specialist agent and dispatches it. Before that agent's first tool call lands, the `PreToolUse` hook intercepts it — injecting context, validating permissions, blocking dangerous commands. The agent does its work and returns a `json:contract`. The `SubagentStop` hook fires, validates the contract, records metrics, and writes to episodic memory.
+
+```
+UserPromptSubmit  ->  routing  ->  PreToolUse  ->  agent  ->  PostToolUse  ->  SubagentStop
+      |                  |               |              |             |               |
+  identity           surface-        security       json:contract  audit log     metrics +
+  injection          routing.json    gate +                                      memory
+                                     context
+                                     injection
+```
+
+That pipeline is the spine. Everything else in this repo is either a component of that pipeline (`hooks/`, `agents/`, `skills/`, `config/`) or infrastructure that supports it (`build/`, `bin/`, `tests/`, `templates/`). Start with the folder that matches the behavior you want to understand, and its README will tell you where it fits in the flow.
 
 ## Overview
 
@@ -134,16 +149,17 @@ For organization-wide enforcement, deploy `templates/managed-settings.template.j
 ## Project Structure
 
 ```
-node_modules/@jaguilar87/gaia-ops/
-├── agents/              # Agent definitions (8 agents)
-├── skills/              # Skill modules (21 skills)
-├── tools/               # Orchestration tools
-├── hooks/               # Claude Code hooks (modular architecture)
-├── commands/            # Slash commands (gaia-plan, scan-project)
-├── config/              # Configuration (contracts, git standards, rules)
-├── templates/           # Installation templates (settings, brief template)
-├── bin/                 # CLI utilities (11 scripts)
-└── tests/               # Test suite
+gaia-ops-dev/
+├── agents/              # Agent definitions (8 agents) — specialist identities + tool grants
+├── skills/              # Skill modules (21 skills) — injected procedural knowledge
+├── hooks/               # Claude Code hooks — the event-driven pipeline
+├── config/              # Configuration — routing, contracts, rules, git standards
+├── commands/            # Slash commands — /gaia, /scan-project
+├── build/               # Plugin manifests — hook + agent registration for Claude Code
+├── templates/           # Installation templates — managed-settings for enterprise
+├── bin/                 # CLI utilities (11 scripts) — gaia-doctor, gaia-scan, etc.
+├── tests/               # Test suite — 3-layer pyramid (pytest, LLM eval, e2e)
+└── tools/               # Context provisioning tools
 ```
 
 ## API
@@ -163,18 +179,17 @@ This package follows [Semantic Versioning](https://semver.org/):
 - **MINOR:** New features
 - **PATCH:** Bug fixes
 
-Current version: **4.5.0**
-
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
 ## Documentation
 
 - [INSTALL.md](./INSTALL.md) - Installation guide
+- [agents/](./agents/) - Agent definitions and lifecycle
+- [skills/](./skills/) - Skill modules and assignment matrix
+- [hooks/](./hooks/) - Hook pipeline and security architecture
 - [config/](./config/) - Configuration (contracts, git standards, universal rules)
-- [agents/](./agents/) - Agent definitions
-- [skills/](./skills/) - Skill modules
-- [commands/](./commands/) - Slash commands (gaia-plan, scan-project)
-- [hooks/](./hooks/) - Hook system (security, validation, audit)
+- [commands/](./commands/) - Slash commands
+- [build/](./build/) - Plugin manifests
 - [bin/](./bin/) - CLI utilities
 - [tests/](./tests/) - Test suite
 
