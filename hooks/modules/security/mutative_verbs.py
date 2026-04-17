@@ -369,6 +369,42 @@ SIMULATION_FLAGS: FrozenSet[str] = frozenset({
 
 
 # ============================================================================
+# --help Exemption Whitelist (T3 -> T0 downgrade for well-known CLIs)
+# ============================================================================
+# Only CLIs listed here get the --help exemption in Step 3.5 of the detection
+# algorithm. Command aliases (rm, mv, dd, etc.) are intentionally excluded:
+# they may process arguments before honoring --help, so keeping them T3
+# preserves safety.
+
+HELP_FLAGS: FrozenSet[str] = frozenset({"--help", "-h", "-?", "--usage"})
+
+# CLI families where `<cli> <verb> --help` is idempotent (exit-and-print).
+# Keys come from CLI_FAMILY_LOOKUP (defined further below in this module).
+HELP_IDEMPOTENT_FAMILIES: FrozenSet[str] = frozenset({
+    "k8s",       # kubectl, helm, flux, kustomize
+    "iac",       # terraform, terragrunt, pulumi
+    "git",       # git subcommands respect --help via man page
+    "docker",    # docker, podman
+    "cloud",     # aws, gcloud, gh, glab, az
+    "package",   # npm, pip, yarn, bun, cargo, brew, apt
+    "build",     # make, cmake, bazel, gradle, mvn
+    "runtime",   # node, python, python3
+    "linter",    # pytest, mypy, ruff, black, flake8
+})
+
+# Explicit base_cmd whitelist (not covered by CLI_FAMILY_LOOKUP).
+HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
+    "gaia",      # project CLI, not in CLI_FAMILY_LOOKUP
+})
+
+# Shell redirect tokens (e.g., "2>&1", ">out", "<in") that shlex produces
+# as non-flag tokens but carry no CLI semantic value. Used by the --help
+# exemption to count only real positional args.
+import re as _re_help
+_SHELL_REDIRECT_RE = _re_help.compile(r"^(\d*[<>]&?\d*|[<>]{1,2}.*)$")
+
+
+# ============================================================================
 # Dangerous Flags (context-sensitive)
 # ============================================================================
 
@@ -621,6 +657,51 @@ def detect_mutative_command(command: str) -> MutativeResult:
             confidence="high",
             reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
+
+    # --- Step 3.5: --help exemption (whitelist + positional boundary) ---
+    # A --help / -h invocation on a well-known CLI only prints usage text.
+    # Three simultaneous conditions are required so the exemption does not
+    # degrade safety on command-aliases or unknown tools:
+    #   (a) CLI is in the whitelist (family OR base_cmd explicitly trusted)
+    #   (b) a help flag is present in the PARSED flags (ignores strings
+    #       that happen to contain "--help" inside a path or argument value)
+    #   (c) the command invocation is simple (<=2 non-flag positional tokens):
+    #       "gaia update --help" (1), "gaia approvals clean --help" (2) OK;
+    #       "kubectl delete pod mypod --help" (3) stays T3 because the CLI
+    #       may process the mutative args before honoring --help.
+    # Root cause: ghost pendings P-738355ab and P-0b06738b were created by
+    # `gaia update --help` and `gaia approvals clean --help` being
+    # classified as MUTATIVE; this exemption prevents recurrence.
+    if (
+        base_cmd in HELP_IDEMPOTENT_BASE_CMDS
+        or family in HELP_IDEMPOTENT_FAMILIES
+    ):
+        flag_set = set(semantics.flag_tokens)
+        # Count semantic non-flag tokens only. Shell redirect shorthands
+        # like "2>&1", ">file", "<file" appear as non-flag tokens in shlex
+        # output but carry no CLI semantic value -- filtering them keeps
+        # "gaia approvals clean --help 2>&1" at threshold 2 instead of 3.
+        semantic_non_flags = [
+            t for t in semantics.non_flag_tokens
+            if not _SHELL_REDIRECT_RE.match(t)
+        ]
+        if flag_set & HELP_FLAGS and len(semantic_non_flags) <= 2:
+            verb = (
+                semantic_non_flags[0]
+                if semantic_non_flags
+                else "help"
+            )
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb=verb,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"--help on whitelisted CLI '{base_cmd}' "
+                    f"with simple invocation (<=2 non-flag tokens)"
+                ),
+            )
 
     # --- Step 3b: Inline code safety check (python3 -c, node -e, etc.) ---
     # For runtime interpreters with inline code flags, scan the code string
