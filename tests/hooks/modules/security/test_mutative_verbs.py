@@ -88,8 +88,29 @@ class TestCommandAliases:
 
     def test_all_aliases_in_constant(self):
         """Verify all expected command aliases are registered."""
-        expected_aliases = {"rm", "rmdir", "mv", "cp", "ln", "dd", "mkfs", "fdisk", "chmod", "chown", "chgrp", "nohup"}
+        expected_aliases = {"rm", "rmdir", "mkdir", "mv", "cp", "ln", "dd", "mkfs", "fdisk", "chmod", "chown", "chgrp", "nohup"}
         assert expected_aliases == set(COMMAND_ALIASES.keys())
+
+
+class TestMkdir:
+    """mkdir creates directories -- MUTATIVE via COMMAND_ALIASES."""
+
+    def test_mkdir_basic(self):
+        result = detect_mutative_command("mkdir foo")
+        assert result.is_mutative is True
+        assert result.verb == "mkdir"
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_p(self):
+        """mkdir -p is still mutative: it creates directories even if idempotent.
+
+        The -p flag makes mkdir idempotent on existing directories, but it can
+        still create new state (nested directories). Approval is still required.
+        """
+        result = detect_mutative_command("mkdir -p foo/bar/baz")
+        assert result.is_mutative is True
+        assert result.verb == "mkdir"
+        assert result.category == "MUTATIVE"
 
 
 class TestMutativeVerbScanning:
