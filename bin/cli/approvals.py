@@ -5,6 +5,7 @@ Subcommands:
   list [--json] [--session SESSION_ID]   -- list pending approvals
   show APPROVAL_ID [--json]              -- show full detail of one approval
   reject NONCE [--reason REASON]         -- reject a pending approval
+  reject --all [--reason REASON]         -- reject ALL pending approvals in one call
   clean [--dry-run]                      -- remove expired/stale approvals
   stats [--json]                         -- approval system statistics
 
@@ -290,8 +291,27 @@ def cmd_show(args) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_reject(args) -> int:
-    """Reject a pending approval by nonce prefix."""
-    nonce = args.nonce.strip()
+    """Reject a pending approval by nonce prefix, or all pending approvals.
+
+    With ``--all``: rejects every non-expired pending approval across all
+    sessions.  Exits 0 whether or not any approvals existed.
+
+    Without ``--all``: rejects the single approval identified by NONCE
+    (P-XXXX label or raw hex prefix).  Exits 1 when not found.
+    """
+    reject_all = getattr(args, "all", False)
+    reason = getattr(args, "reason", None)
+
+    if reject_all:
+        return _cmd_reject_all(args, reason)
+
+    # Single-reject path (original behavior)
+    nonce = getattr(args, "nonce", None)
+    if nonce is None:
+        _print_error("NONCE is required when --all is not specified.", args)
+        return 1
+
+    nonce = nonce.strip()
     # Accept P-XXXX or raw hex prefix
     if nonce.upper().startswith("P-"):
         nonce = nonce[2:]
@@ -303,7 +323,6 @@ def cmd_reject(args) -> int:
         _print_error(f"Failed to reject approval: {exc}", args)
         return 1
 
-    reason = getattr(args, "reason", None)
     if ok:
         msg = f"Rejected P-{nonce}"
         if reason:
@@ -316,6 +335,70 @@ def cmd_reject(args) -> int:
     else:
         _print_error(f"No pending approval found for P-{nonce}", args)
         return 1
+
+
+def _cmd_reject_all(args, reason: str | None) -> int:
+    """Reject all pending approvals across all sessions.
+
+    Scans the same queue that ``gaia approvals list`` shows, then calls
+    ``reject_pending`` for each non-expired, non-rejected pending approval.
+    Exits 0 always -- an empty queue is not an error.
+    """
+    try:
+        raw = _list_all_pending()
+    except Exception as exc:
+        _print_error(f"Failed to load approvals: {exc}", args)
+        return 1
+
+    if not raw:
+        if getattr(args, "json", False):
+            print(json.dumps({"status": "ok", "rejected": 0, "ids": []}))
+        else:
+            print("No pending approvals to reject.")
+        return 0
+
+    try:
+        ag = _import_approval_grants()
+        reject_fn = ag["reject_pending"]
+    except Exception as exc:
+        _print_error(f"Failed to load approval module: {exc}", args)
+        return 1
+
+    rejected_ids = []
+    failed_ids = []
+    for pending in raw:
+        nonce = pending.get("nonce", "")
+        nonce_prefix = _nonce_short(nonce)
+        try:
+            ok = reject_fn(nonce_prefix)
+            if ok:
+                rejected_ids.append(f"P-{nonce_prefix}")
+            else:
+                failed_ids.append(f"P-{nonce_prefix}")
+        except Exception:
+            failed_ids.append(f"P-{nonce_prefix}")
+
+    n = len(rejected_ids)
+    if getattr(args, "json", False):
+        payload: dict = {
+            "status": "ok" if not failed_ids else "partial",
+            "rejected": n,
+            "ids": rejected_ids,
+        }
+        if reason:
+            payload["reason"] = reason
+        if failed_ids:
+            payload["failed"] = failed_ids
+        print(json.dumps(payload))
+    else:
+        summary = f"Rejected {n} approval(s): {', '.join(rejected_ids)}"
+        if reason:
+            summary += f" (reason: {reason})"
+        print(summary)
+        if failed_ids:
+            _print_error(f"Failed to reject: {', '.join(failed_ids)}", args)
+
+    return 0 if not failed_ids else 1
 
 
 # ---------------------------------------------------------------------------
@@ -521,9 +604,28 @@ def register(subparsers) -> None:
     p_show.set_defaults(func=cmd_show)
 
     # reject
-    p_reject = sub.add_parser("reject", help="Reject a pending approval")
-    p_reject.add_argument("nonce", metavar="NONCE", help="P-XXXX identifier or nonce prefix")
-    p_reject.add_argument("--reason", metavar="REASON", help="Rejection reason (informational)")
+    p_reject = sub.add_parser(
+        "reject",
+        help="Reject a pending approval (or all with --all)",
+        description=(
+            "Reject a pending T3 approval.\n\n"
+            "Single reject: provide NONCE (P-XXXX or raw hex prefix).\n"
+            "Bulk reject:   use --all to reject every pending approval in one call."
+        ),
+    )
+    p_reject.add_argument(
+        "nonce",
+        metavar="NONCE",
+        nargs="?",
+        help="P-XXXX identifier or nonce prefix (omit when using --all)",
+    )
+    p_reject.add_argument(
+        "--all",
+        action="store_true",
+        dest="all",
+        help="Reject ALL pending approvals (ignores NONCE)",
+    )
+    p_reject.add_argument("--reason", metavar="REASON", help="Rejection reason applied to all rejected approvals")
     p_reject.add_argument("--json", action="store_true", help="JSON output")
     p_reject.set_defaults(func=cmd_reject)
 
@@ -558,6 +660,7 @@ def cmd_approvals(args) -> int:
 def _approvals_default(args) -> int:
     """Default handler when no sub-subcommand is given."""
     print("Usage: gaia approvals {list,show,reject,clean,stats} [options]")
+    print("       gaia approvals reject --all [--reason TEXT]  # bulk reject")
     print("Run 'gaia approvals --help' for more information.")
     return 0
 
@@ -584,8 +687,9 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_show.add_argument("--json", action="store_true")
     p_show.set_defaults(func=cmd_show)
 
-    p_reject = subparsers.add_parser("reject", help="Reject a pending approval")
-    p_reject.add_argument("nonce", metavar="NONCE")
+    p_reject = subparsers.add_parser("reject", help="Reject a pending approval (or all with --all)")
+    p_reject.add_argument("nonce", metavar="NONCE", nargs="?")
+    p_reject.add_argument("--all", action="store_true", dest="all", help="Reject all pending approvals")
     p_reject.add_argument("--reason", metavar="REASON")
     p_reject.add_argument("--json", action="store_true")
     p_reject.set_defaults(func=cmd_reject)

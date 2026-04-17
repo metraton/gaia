@@ -316,6 +316,188 @@ class TestCmdReject:
         captured = capsys.readouterr()
         assert "risky operation" in captured.out
 
+    def test_reject_no_nonce_no_all_returns_1(self, capsys):
+        """Without --all and without a nonce, reject should return exit code 1."""
+        args = _make_args()
+        args.nonce = None
+        rc = approvals_mod.cmd_reject(args)
+        assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: cmd_reject --all (bulk reject)
+# ---------------------------------------------------------------------------
+
+class TestCmdRejectAll:
+    def _make_reject_all_args(self, **kwargs):
+        """Build args with all=True and nonce=None."""
+        base = _make_args(**kwargs)
+        base.all = True
+        base.nonce = None
+        return base
+
+    def test_reject_all_empty_queue(self, capsys, tmp_path):
+        """When queue is empty, exit 0 with informational message."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            rc = approvals_mod.cmd_reject(self._make_reject_all_args())
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No pending approvals to reject" in captured.out
+
+    def test_reject_all_empty_queue_json(self, capsys, tmp_path):
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["rejected"] == 0
+        assert data["ids"] == []
+
+    def test_reject_all_rejects_all_pending(self, capsys, tmp_path):
+        """With two pending approvals, both should be rejected."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222", command="git push origin main")
+        p2 = _make_pending(nonce="cccc3333dddd4444cccc3333dddd4444", command="kubectl delete pod x")
+        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
+        (grants_dir / f"pending-{p2['nonce']}.json").write_text(json.dumps(p2))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(return_value=True),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject(self._make_reject_all_args())
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Rejected 2 approval(s)" in captured.out
+        assert "P-aaaa1111" in captured.out or "P-cccc3333" in captured.out
+
+    def test_reject_all_json_output(self, capsys, tmp_path):
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(return_value=True),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["status"] == "ok"
+        assert data["rejected"] == 1
+        assert len(data["ids"]) == 1
+        assert data["ids"][0] == "P-aaaa1111"
+
+    def test_reject_all_with_reason(self, capsys, tmp_path):
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(return_value=True),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject(self._make_reject_all_args(reason="bulk-test"))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "bulk-test" in captured.out
+
+    def test_reject_all_reason_in_json(self, capsys, tmp_path):
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(return_value=True),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True, reason="bulk-test"))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["reason"] == "bulk-test"
+
+    def test_reject_all_partial_failure(self, capsys, tmp_path):
+        """When one reject_pending call fails, exit 1 and report partial status."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        p2 = _make_pending(nonce="cccc3333dddd4444cccc3333dddd4444")
+        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
+        (grants_dir / f"pending-{p2['nonce']}.json").write_text(json.dumps(p2))
+
+        # First call succeeds, second fails
+        side_effects = [True, False]
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(side_effect=side_effects),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["status"] == "partial"
+        assert data["rejected"] == 1
+        assert len(data["failed"]) == 1
+
+    def test_reject_all_parser_flag(self):
+        """Verify the --all flag parses correctly from registered parser."""
+        import argparse
+        root = argparse.ArgumentParser()
+        subparsers = root.add_subparsers(dest="command")
+        approvals_mod.register(subparsers)
+        args = root.parse_args(["approvals", "reject", "--all", "--reason", "bulk-test"])
+        assert args.all is True
+        assert args.nonce is None
+        assert args.reason == "bulk-test"
+
+    def test_reject_all_standalone_parser(self):
+        parser = approvals_mod._build_standalone_parser()
+        args = parser.parse_args(["reject", "--all", "--reason", "cleanup"])
+        assert args.all is True
+        assert args.nonce is None
+        assert args.reason == "cleanup"
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_clean
