@@ -187,5 +187,71 @@ class TestConfigDirectory:
                 pytest.fail(f"Invalid JSON in {config_file.name}: {e}")
 
 
+class TestReadmePresence:
+    """Test that key component folders have README.md files.
+
+    Every Gaia component folder should be self-documenting. A missing README
+    means activation paths, conventions, and mental models are undocumented.
+    See skills/readme-writing/SKILL.md for the canonical README structure.
+    """
+
+    @pytest.fixture
+    def package_root(self):
+        """Get the package root directory (gaia-ops/)"""
+        return Path(__file__).resolve().parents[2]
+
+    def test_top_level_folders_have_readme(self, package_root):
+        """All key top-level component folders must have a README.md"""
+        required_readme_dirs = [
+            "agents",
+            "skills",
+            "hooks",
+            "commands",
+            "config",
+            "bin",
+            "tests",
+            "build",
+            "templates",
+        ]
+
+        missing = []
+        for dir_name in required_readme_dirs:
+            dir_path = package_root / dir_name
+            # Follow symlinks to the real directory
+            if dir_path.is_symlink():
+                dir_path = dir_path.resolve()
+            if not dir_path.exists():
+                continue  # Directory itself missing is caught by test_required_directories_exist
+            readme = dir_path / "README.md"
+            if not readme.exists():
+                missing.append(dir_name)
+
+        assert not missing, (
+            f"These folders are missing README.md: {missing}. "
+            "Add a README following skills/readme-writing/SKILL.md template."
+        )
+
+    def test_skill_folders_have_skill_md(self, package_root):
+        """Every skill subfolder must contain a SKILL.md file"""
+        skills_dir = package_root / "skills"
+        if skills_dir.is_symlink():
+            skills_dir = skills_dir.resolve()
+
+        if not skills_dir.exists():
+            pytest.skip("skills/ directory not found")
+
+        missing = []
+        for entry in skills_dir.iterdir():
+            if entry.is_dir() and not entry.name.startswith("."):
+                skill_md = entry / "SKILL.md"
+                if not skill_md.exists():
+                    missing.append(entry.name)
+
+        assert not missing, (
+            f"These skill folders are missing SKILL.md: {missing}. "
+            "Every skill folder must have a SKILL.md with valid frontmatter."
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
