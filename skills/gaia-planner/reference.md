@@ -37,8 +37,13 @@ is three tasks that should have been split.
 
 ### Step 3: Write plan.md
 
-Use the structure below. Write to the same directory as the brief:
-`.claude/project-context/briefs/{feature-name}/plan.md`
+Use the structure below. Write plan.md to the same directory as the brief.
+Do not reconstruct the path from the feature name -- read the brief's actual
+directory path (which may have any prefix: `open_`, `in-progress_`, `closed_`)
+and write plan.md there. This keeps the skill prefix-tolerant.
+
+If the directory does not exist yet, default to:
+`.claude/project-context/briefs/open_{feature-name}/plan.md`
 
 ## Plan Structure
 

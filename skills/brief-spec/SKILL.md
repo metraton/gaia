@@ -40,8 +40,16 @@ co-create a brief with the user before dispatching to gaia-planner.
    an explicit "N/A".
 
 4. **Write brief.md** -- Use the structure below. Write to:
-   `.claude/project-context/briefs/{feature-name}/brief.md`
+   `.claude/project-context/briefs/open_{feature-name}/brief.md`
    where `{feature-name}` is a kebab-case slug.
+
+   **Directory prefix convention:**
+   - `open_` -- draft or ready, no work started yet (this skill always creates with `open_`)
+   - `in-progress_` -- work has begun
+   - `closed_` -- complete, verified, or done
+
+   Transitions between prefixes are done with `gaia plans rename`. This skill
+   only ever creates with `open_`.
 
 ## Brief Structure
 

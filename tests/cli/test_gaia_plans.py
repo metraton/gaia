@@ -18,6 +18,9 @@ from cli.plans import (
     _collect_briefs,
     _find_project_root,
     _parse_frontmatter,
+    _resolve_brief_dir,
+    _rename_one,
+    _strip_prefix,
     cmd_plans,
 )
 
@@ -243,6 +246,214 @@ class TestCmdPlansShow:
         args = _MockArgs(plans_cmd="show", name="anything", json=False)
         with patch("cli.plans._find_project_root", return_value=None):
             rc = cmd_plans(args)
+        assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Integration: run via entry point with subprocess
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# _strip_prefix
+# ---------------------------------------------------------------------------
+
+class TestStripPrefix:
+    def test_strips_open(self):
+        assert _strip_prefix("open_my-feature") == "my-feature"
+
+    def test_strips_in_progress(self):
+        assert _strip_prefix("in-progress_my-feature") == "my-feature"
+
+    def test_strips_closed(self):
+        assert _strip_prefix("closed_my-feature") == "my-feature"
+
+    def test_bare_name_unchanged(self):
+        assert _strip_prefix("my-feature") == "my-feature"
+
+    def test_unknown_prefix_unchanged(self):
+        assert _strip_prefix("pending_my-feature") == "pending_my-feature"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_brief_dir
+# ---------------------------------------------------------------------------
+
+class TestResolveBriefDir:
+    def test_exact_match_with_prefix(self, tmp_path):
+        _make_brief(tmp_path, "open_feature-a")
+        result = _resolve_brief_dir(tmp_path / "briefs", "open_feature-a")
+        assert result is not None
+        assert result.name == "open_feature-a"
+
+    def test_fuzzy_match_without_prefix(self, tmp_path):
+        _make_brief(tmp_path, "closed_feature-a")
+        result = _resolve_brief_dir(tmp_path / "briefs", "feature-a")
+        assert result is not None
+        assert result.name == "closed_feature-a"
+
+    def test_returns_none_when_not_found(self, tmp_path):
+        (tmp_path / "briefs").mkdir(parents=True)
+        result = _resolve_brief_dir(tmp_path / "briefs", "nonexistent")
+        assert result is None
+
+    def test_raises_on_ambiguous(self, tmp_path):
+        # Two directories with same bare name but different prefixes
+        _make_brief(tmp_path, "open_feature-a")
+        _make_brief(tmp_path, "closed_feature-a")
+        with pytest.raises(ValueError, match="Ambiguous"):
+            _resolve_brief_dir(tmp_path / "briefs", "feature-a")
+
+    def test_nonexistent_briefs_dir_returns_none(self, tmp_path):
+        result = _resolve_brief_dir(tmp_path / "no-briefs", "feature-a")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _rename_one
+# ---------------------------------------------------------------------------
+
+class TestRenameOne:
+    def test_rename_open_to_closed_on_verified_status(self, tmp_path):
+        brief_dir = _make_brief(tmp_path, "open_feature-a", brief_status="verified")
+        result = _rename_one(tmp_path / "briefs", "open_feature-a")
+        assert result["old_name"] == "open_feature-a"
+        assert result["new_name"] == "closed_feature-a"
+        assert result["status"] == "verified"
+        assert result["action"] == "renamed"
+        assert not brief_dir.exists()
+        assert (tmp_path / "briefs" / "closed_feature-a").is_dir()
+
+    def test_rename_open_to_in_progress(self, tmp_path):
+        _make_brief(tmp_path, "open_feature-b", brief_status="in-progress")
+        result = _rename_one(tmp_path / "briefs", "open_feature-b")
+        assert result["new_name"] == "in-progress_feature-b"
+        assert result["action"] == "renamed"
+
+    def test_already_correct_returns_already_correct(self, tmp_path):
+        _make_brief(tmp_path, "open_feature-c", brief_status="draft")
+        result = _rename_one(tmp_path / "briefs", "open_feature-c")
+        assert result["action"] == "already-correct"
+        assert result["new_name"] == "open_feature-c"
+
+    def test_resolve_by_bare_name(self, tmp_path):
+        _make_brief(tmp_path, "in-progress_feature-d", brief_status="done")
+        result = _rename_one(tmp_path / "briefs", "feature-d")
+        assert result["old_name"] == "in-progress_feature-d"
+        assert result["new_name"] == "closed_feature-d"
+        assert result["action"] == "renamed"
+
+    def test_raises_on_unknown_status(self, tmp_path):
+        _make_brief(tmp_path, "open_feature-e", brief_status="unknown-status")
+        with pytest.raises(ValueError, match="Unknown status"):
+            _rename_one(tmp_path / "briefs", "open_feature-e")
+
+    def test_raises_when_not_found(self, tmp_path):
+        (tmp_path / "briefs").mkdir(parents=True)
+        with pytest.raises(ValueError, match="not found"):
+            _rename_one(tmp_path / "briefs", "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# cmd_plans rename (subcommand)
+# ---------------------------------------------------------------------------
+
+class TestCmdPlansRename:
+    def _run_rename(self, tmp_path, name=None, rename_all=False, json_output=False):
+        args = _MockArgs(plans_cmd="rename", name=name, **{"all": rename_all}, json=json_output)
+        with patch("cli.plans._find_project_root", return_value=tmp_path):
+            with patch("cli.plans._get_briefs_dir", return_value=tmp_path / "briefs"):
+                return cmd_plans(args)
+
+    def test_rename_single_returns_zero(self, tmp_path):
+        _make_brief(tmp_path, "open_evidence-runner", brief_status="verified")
+        rc = self._run_rename(tmp_path, name="open_evidence-runner")
+        assert rc == 0
+
+    def test_rename_single_json_output(self, tmp_path, capsys):
+        _make_brief(tmp_path, "open_evidence-runner", brief_status="verified")
+        rc = self._run_rename(tmp_path, name="open_evidence-runner", json_output=True)
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["old_name"] == "open_evidence-runner"
+        assert data["new_name"] == "closed_evidence-runner"
+        assert data["status"] == "verified"
+        assert data["action"] == "renamed"
+        assert rc == 0
+
+    def test_rename_already_correct_json(self, tmp_path, capsys):
+        _make_brief(tmp_path, "open_my-feature", brief_status="draft")
+        rc = self._run_rename(tmp_path, name="open_my-feature", json_output=True)
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["action"] == "already-correct"
+        assert rc == 0
+
+    def test_rename_all_batch_sync(self, tmp_path, capsys):
+        _make_brief(tmp_path, "open_a", brief_status="done")
+        _make_brief(tmp_path, "in-progress_b", brief_status="draft")
+        _make_brief(tmp_path, "closed_c", brief_status="verified")
+        rc = self._run_rename(tmp_path, rename_all=True, json_output=True)
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        results = data["results"]
+        result_map = {r["old_name"]: r for r in results}
+        assert result_map["open_a"]["new_name"] == "closed_a"
+        assert result_map["open_a"]["action"] == "renamed"
+        assert result_map["in-progress_b"]["new_name"] == "open_b"
+        assert result_map["in-progress_b"]["action"] == "renamed"
+        assert result_map["closed_c"]["action"] == "already-correct"
+        assert rc == 0
+
+    def test_rename_missing_root_returns_1(self):
+        args = _MockArgs(plans_cmd="rename", name="anything", **{"all": False}, json=False)
+        with patch("cli.plans._find_project_root", return_value=None):
+            rc = cmd_plans(args)
+        assert rc == 1
+
+    def test_rename_unknown_brief_returns_1(self, tmp_path):
+        (tmp_path / "briefs").mkdir(parents=True)
+        rc = self._run_rename(tmp_path, name="nonexistent")
+        assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_plans show -- prefix-tolerant
+# ---------------------------------------------------------------------------
+
+class TestCmdPlansShowPrefixTolerant:
+    def _run_show(self, tmp_path, name, json_output=False):
+        args = _MockArgs(plans_cmd="show", name=name, json=json_output)
+        with patch("cli.plans._find_project_root", return_value=tmp_path):
+            with patch("cli.plans._get_briefs_dir", return_value=tmp_path / "briefs"):
+                return cmd_plans(args)
+
+    def test_show_without_prefix_finds_brief(self, tmp_path):
+        _make_brief(tmp_path, "closed_evidence-runner", brief_status="verified")
+        rc = self._run_show(tmp_path, "evidence-runner")
+        assert rc == 0
+
+    def test_show_without_prefix_json_has_correct_name(self, tmp_path, capsys):
+        _make_brief(tmp_path, "open_my-feature", brief_status="draft")
+        rc = self._run_show(tmp_path, "my-feature", json_output=True)
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["name"] == "open_my-feature"
+        assert rc == 0
+
+    def test_show_with_correct_prefix_works(self, tmp_path):
+        _make_brief(tmp_path, "in-progress_my-feature", brief_status="in-progress")
+        rc = self._run_show(tmp_path, "in-progress_my-feature")
+        assert rc == 0
+
+    def test_show_ambiguous_returns_1(self, tmp_path):
+        _make_brief(tmp_path, "open_my-feature", brief_status="draft")
+        _make_brief(tmp_path, "closed_my-feature", brief_status="verified")
+        rc = self._run_show(tmp_path, "my-feature")
+        assert rc == 1
+
+    def test_show_nonexistent_returns_1(self, tmp_path):
+        (tmp_path / "briefs").mkdir(parents=True)
+        rc = self._run_show(tmp_path, "nonexistent")
         assert rc == 1
 
 
