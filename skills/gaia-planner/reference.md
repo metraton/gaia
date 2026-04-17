@@ -6,9 +6,12 @@
 
 Read the brief.md provided by the orchestrator. Extract:
 - Objectives and approach
-- Acceptance criteria with verify commands
+- Acceptance criteria: id, description, evidence{type, shape}, artifact
 - Constraints from project-context
 - Out of scope boundaries
+
+Every task you write must cite which brief AC-id(s) it satisfies. A task
+with no AC-id satisfies nothing observable; split or delete it.
 
 No brief -> BLOCKED. Tell the orchestrator to create one first (brief-spec skill).
 
@@ -18,7 +21,16 @@ Each task MUST:
 - **Fit in one context window.** If you need to say "see also", split it.
 - **Name its agent target.** Route by domain: terraform keywords -> terraform-architect, k8s/helm -> gitops-operator, code/test/build -> developer, gaia internals -> gaia-system.
 - **Carry its own context slice.** The agent receives the task description, not the brief. Inline relevant constraints, file paths, and tech stack.
-- **Have ACs with verify commands.** Binary pass/fail.
+- **Cite the brief AC-ids it satisfies.** Every task lists `satisfies: [AC-1, AC-3]`. Unreferenced tasks get removed; uncovered ACs get new tasks.
+- **Have a task-level AC with a command.** Binary pass/fail, internal to the task (build green, test passes, file exists).
+- **Inherit the evidence slot from the brief AC.** The task AC is the technical proof (e.g. `pytest tests/auth/ -q` exits 0); the brief AC (e.g. login URL flow) is verified separately by the orchestrator post-dispatch.
+
+Two AC levels, one per layer:
+- **Brief AC (product):** what the user observes. Verified once, post-execution.
+- **Task AC (technical):** what the agent must produce. Verified per task.
+
+A feature is COMPLETE only when every task AC passes AND every brief AC's
+evidence has been executed and persisted.
 
 Task sizing: aim for 2-5 minutes of agent work. A task that takes 15 minutes
 is three tasks that should have been split.
@@ -47,7 +59,8 @@ created: {date}
 ### T1: {Task title}
 - agent: {agent-type}
 - status: pending
-- AC: `{verify command}`
+- satisfies: [AC-1, AC-2]   # brief AC-ids this task contributes to
+- AC: `{verify command}`    # task-level technical proof, binary pass/fail
 - blocked-by: none
 
 **Context:** {Inline context slice}

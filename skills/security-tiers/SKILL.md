@@ -57,7 +57,7 @@ Conditional commands like `git branch` are safe for listing but T3 with mutative
 The pre_tool_use hook also gates Edit and Write tools via `_is_protected()` in `adapters/claude_code.py`. This is a separate enforcement path from Bash command protection.
 
 **Protected paths:**
-- `.claude/hooks/` -- resolved via `Path.resolve().relative_to()` to catch symlinks
+- `.claude/hooks/` -- resolved via `Path.resolve().relative_to()` to catch symlinks (exception: `.md` files are exempt since documentation does not execute code; see `_is_protected()` in `hooks/adapters/claude_code.py`)
 - `.claude/settings.json` and `.claude/settings.local.json` -- matched by filename within a `.claude/` path
 
 **Why this matters:** `_is_protected()` fires regardless of `permissionMode`. An agent with `permissionMode: acceptEdits` can still be blocked from writing to hooks/ or settings files. In headless/cron mode where Claude Code native prompts cannot display, hooks remain the real security boundary.
