@@ -765,8 +765,7 @@ class ClaudeCodeAdapter(HookAdapter):
         - On retry, if an active grant exists for this path, allows through.
 
         Protected paths:
-        - The gaia-ops hooks directory (where this file package lives)
-        - Any path containing /hooks/ within a gaia-ops package
+        - Any path that resolves within the gaia-ops hooks directory (Path.resolve().relative_to(hooks_dir)), EXCEPT .md files — documentation does not execute code and is exempt
         - .claude/settings.json and .claude/settings.local.json
         """
         from modules.security.approval_grants import (
@@ -790,6 +789,8 @@ class ClaudeCodeAdapter(HookAdapter):
                 rp = p
             try:
                 rp.relative_to(hooks_dir)
+                if rp.suffix == ".md":
+                    return False  # docs don't execute code; exempt from protection
                 return True
             except ValueError:
                 pass
