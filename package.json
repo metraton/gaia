@@ -15,7 +15,8 @@
     "gaia-status": "bin/gaia-status.js",
     "gaia-history": "bin/gaia-history.js",
     "gaia-update": "bin/gaia-update.js",
-    "gaia-scan": "bin/gaia-scan"
+    "gaia-scan": "bin/gaia-scan",
+    "gaia-evidence": "bin/gaia-evidence"
   },
   "keywords": [
     "claude-code",

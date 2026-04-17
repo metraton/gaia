@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""
+gaia-evidence -- Execute evidence.shape blocks from a brief's frontmatter.
+
+Usage:
+    gaia-evidence run <brief.md>
+    gaia-evidence --help
+
+The runner resolves each AC's evidence type and delegates to run_command or
+run_artifact. Artifacts are persisted under the brief's evidence/ directory
+and a fresh INDEX.md is rendered. Exit code 0 means every AC passed.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+# Make gaia-ops-dev importable so `hooks.modules.evidence` resolves whether
+# this script runs from a checkout or a symlinked install.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PLUGIN_ROOT = _SCRIPT_DIR.parent
+if str(_PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_ROOT))
+
+from hooks.modules.evidence.index_writer import write_index
+from hooks.modules.evidence.loader import (
+    InvalidBriefFrontmatter,
+    UnknownEvidenceType,
+    load_acs,
+)
+from hooks.modules.evidence.runner import (
+    EvidenceResult,
+    run_artifact,
+    run_command,
+)
+
+
+def _cmd_run(brief_path_str: str) -> int:
+    """Execute every AC in the brief; return 0 if all pass."""
+    brief_path = Path(brief_path_str).resolve()
+    if not brief_path.is_file():
+        print(f"error: brief not found: {brief_path}", file=sys.stderr)
+        return 2
+
+    try:
+        acs = load_acs(brief_path)
+    except InvalidBriefFrontmatter as exc:
+        print(f"error: invalid frontmatter: {exc}", file=sys.stderr)
+        return 2
+    except UnknownEvidenceType as exc:
+        print(f"error: unknown evidence type: {exc}", file=sys.stderr)
+        return 2
+
+    if not acs:
+        print("no acceptance_criteria in brief", file=sys.stderr)
+        return 0
+
+    brief_dir = brief_path.parent
+    evidence_dir = brief_dir / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[tuple[str, EvidenceResult]] = []
+    all_passed = True
+
+    for ac in acs:
+        artifact_rel = ac.artifact or f"evidence/{ac.id}.txt"
+        artifact_path = (brief_dir / artifact_rel).resolve()
+
+        if ac.type == "command":
+            result = run_command(ac.shape, artifact_path)
+        elif ac.type == "artifact":
+            result = run_artifact(ac.shape, artifact_path)
+        else:
+            # Types registered by the loader but not yet supported.
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(
+                f"evidence type '{ac.type}' not yet implemented\n",
+                encoding="utf-8",
+            )
+            result = EvidenceResult(
+                passed=False,
+                output=f"unsupported type: {ac.type}",
+                artifact_path=artifact_path,
+                error=f"unsupported_type:{ac.type}",
+            )
+
+        status = "PASS" if result.passed else "FAIL"
+        err = f" ({result.error})" if result.error else ""
+        print(f"[{status}] {ac.id}: {ac.description}{err}")
+        if not result.passed:
+            all_passed = False
+        results.append((ac.id, result))
+
+    write_index(evidence_dir, results)
+    return 0 if all_passed else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="gaia-evidence",
+        description=(
+            "Execute evidence.shape blocks declared in a brief's frontmatter "
+            "and persist artifacts under the brief's evidence/ directory."
+        ),
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = sub.add_parser(
+        "run",
+        help="Run every AC in the given brief.md",
+    )
+    run_parser.add_argument(
+        "brief",
+        help="Path to brief.md with an acceptance_criteria frontmatter block",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "run":
+        return _cmd_run(args.brief)
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
