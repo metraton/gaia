@@ -410,8 +410,8 @@ class TestSubagentRetryReusesPendingNonce:
         assert "Do NOT retry" in reason, (
             f"T3_BLOCKED message should instruct not to retry, got: {reason}"
         )
-        assert "REVIEW" in reason, (
-            f"T3_BLOCKED message should mention REVIEW status, got: {reason}"
+        assert "APPROVAL_REQUEST" in reason, (
+            f"T3_BLOCKED message should mention APPROVAL_REQUEST status, got: {reason}"
         )
 
 

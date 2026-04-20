@@ -57,12 +57,12 @@ class TestLegalTransitions:
 
     def test_in_progress_to_review(self):
         track_transition("a12345", "IN_PROGRESS")
-        result = track_transition("a12345", "REVIEW")
+        result = track_transition("a12345", "APPROVAL_REQUEST")
         assert result.valid is True
 
     def test_review_to_in_progress(self):
         track_transition("a12345", "IN_PROGRESS")
-        track_transition("a12345", "REVIEW")
+        track_transition("a12345", "APPROVAL_REQUEST")
         result = track_transition("a12345", "IN_PROGRESS")
         assert result.valid is True
 
@@ -77,10 +77,10 @@ class TestLegalTransitions:
         assert result.valid is True
 
     def test_full_t3_flow(self):
-        """IN_PROGRESS -> REVIEW -> IN_PROGRESS -> COMPLETE"""
+        """IN_PROGRESS -> APPROVAL_REQUEST -> IN_PROGRESS -> COMPLETE"""
         r1 = track_transition("a12345", "IN_PROGRESS")
         assert r1.valid is True
-        r2 = track_transition("a12345", "REVIEW")
+        r2 = track_transition("a12345", "APPROVAL_REQUEST")
         assert r2.valid is True
         r3 = track_transition("a12345", "IN_PROGRESS")
         assert r3.valid is True
@@ -93,21 +93,21 @@ class TestIllegalTransitions:
 
     def test_review_to_complete(self):
         track_transition("a12345", "IN_PROGRESS")
-        track_transition("a12345", "REVIEW")
+        track_transition("a12345", "APPROVAL_REQUEST")
         result = track_transition("a12345", "COMPLETE")
         assert result.valid is False
         assert "Illegal state transition" in result.error
 
     def test_review_to_blocked(self):
         track_transition("a12345", "IN_PROGRESS")
-        track_transition("a12345", "REVIEW")
+        track_transition("a12345", "APPROVAL_REQUEST")
         result = track_transition("a12345", "BLOCKED")
         assert result.valid is False
 
     def test_review_to_review(self):
         track_transition("a12345", "IN_PROGRESS")
-        track_transition("a12345", "REVIEW")
-        result = track_transition("a12345", "REVIEW")
+        track_transition("a12345", "APPROVAL_REQUEST")
+        result = track_transition("a12345", "APPROVAL_REQUEST")
         assert result.valid is False
 
 
@@ -136,7 +136,7 @@ class TestRetryLimits:
     def test_retry_count_resets_after_review(self):
         track_transition("a12345", "IN_PROGRESS")
         track_transition("a12345", "IN_PROGRESS")  # count=2
-        track_transition("a12345", "REVIEW")
+        track_transition("a12345", "APPROVAL_REQUEST")
         result = track_transition("a12345", "IN_PROGRESS")  # reset to 1
         assert result.valid is True
         assert result.in_progress_count == 1
@@ -149,7 +149,7 @@ class TestReviewWarning:
         track_transition("a12345", "IN_PROGRESS", has_review_phase=True)
         result = track_transition("a12345", "COMPLETE", has_review_phase=True)
         assert result.valid is True  # Valid but with warning
-        assert "without an intervening REVIEW" in result.warning
+        assert "without an intervening APPROVAL_REQUEST" in result.warning
 
     def test_skip_review_without_flag(self):
         track_transition("a12345", "IN_PROGRESS")
@@ -159,7 +159,7 @@ class TestReviewWarning:
 
     def test_no_warning_when_review_seen(self):
         track_transition("a12345", "IN_PROGRESS", has_review_phase=True)
-        track_transition("a12345", "REVIEW", has_review_phase=True)
+        track_transition("a12345", "APPROVAL_REQUEST", has_review_phase=True)
         track_transition("a12345", "IN_PROGRESS", has_review_phase=True)
         result = track_transition("a12345", "COMPLETE", has_review_phase=True)
         assert result.valid is True
@@ -188,13 +188,13 @@ class TestStatePersistence:
     def test_multiple_agents_independent(self):
         track_transition("a11111", "IN_PROGRESS")
         track_transition("a22222", "IN_PROGRESS")
-        track_transition("a11111", "REVIEW")
+        track_transition("a11111", "APPROVAL_REQUEST")
         # a22222 should still be IN_PROGRESS
         state = get_agent_state("a22222")
         assert state["state"] == "IN_PROGRESS"
-        # a11111 should be REVIEW
+        # a11111 should be APPROVAL_REQUEST
         state = get_agent_state("a11111")
-        assert state["state"] == "REVIEW"
+        assert state["state"] == "APPROVAL_REQUEST"
 
 
 class TestTerminalStateRecovery:
@@ -229,6 +229,6 @@ class TestCaseInsensitivity:
 
     def test_mixed_case_input(self):
         track_transition("a12345", "In_Progress")
-        result = track_transition("a12345", "Review")
+        result = track_transition("a12345", "Approval_Request")
         assert result.valid is True
-        assert result.current_state == "REVIEW"
+        assert result.current_state == "APPROVAL_REQUEST"

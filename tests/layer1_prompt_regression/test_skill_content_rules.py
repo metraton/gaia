@@ -133,7 +133,7 @@ class TestAgentProtocolSkill:
 
         The skill documents the 5 active statuses.
         """
-        statuses = ["COMPLETE", "NEEDS_INPUT", "REVIEW",
+        statuses = ["COMPLETE", "NEEDS_INPUT", "APPROVAL_REQUEST",
                     "BLOCKED", "IN_PROGRESS"]
         for status in statuses:
             assert status in content, \

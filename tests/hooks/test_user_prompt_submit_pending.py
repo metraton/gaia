@@ -68,7 +68,7 @@ class TestBuildPendingContext:
         """When pending approvals exist, result starts with [ACTIONABLE]."""
         fake_pendings = [_make_fake_pending()]
 
-        def mock_scan(approvals_dir, session_id=None, current_session_id=None):
+        def mock_scan(approvals_dir, session_id=None, current_session_id=None, exclude_live_sessions=False):
             return fake_pendings
 
         monkeypatch.setattr(
@@ -87,7 +87,7 @@ class TestBuildPendingContext:
 
     def test_returns_empty_when_no_pending(self, monkeypatch):
         """When no pending approvals, returns empty string."""
-        def mock_scan(approvals_dir, session_id=None, current_session_id=None):
+        def mock_scan(approvals_dir, session_id=None, current_session_id=None, exclude_live_sessions=False):
             return []
 
         import modules.session.pending_scanner as ps
@@ -101,8 +101,12 @@ class TestBuildPendingContext:
         call_log = []
         cross_pending = [_make_fake_pending(nonce_short="cross123", cross_session=True)]
 
-        def mock_scan(approvals_dir, session_id=None, current_session_id=None):
-            call_log.append({"session_id": session_id, "current_session_id": current_session_id})
+        def mock_scan(approvals_dir, session_id=None, current_session_id=None, exclude_live_sessions=False):
+            call_log.append({
+                "session_id": session_id,
+                "current_session_id": current_session_id,
+                "exclude_live_sessions": exclude_live_sessions,
+            })
             # First call: current session filter -> empty
             # Second call: no session filter -> cross-session pending
             if session_id is not None:
@@ -126,7 +130,7 @@ class TestBuildPendingContext:
 
     def test_returns_empty_on_error(self, monkeypatch):
         """On any exception, returns empty string (fail-safe)."""
-        def mock_scan(approvals_dir, session_id=None, current_session_id=None):
+        def mock_scan(approvals_dir, session_id=None, current_session_id=None, exclude_live_sessions=False):
             raise RuntimeError("simulated failure")
 
         import modules.session.pending_scanner as ps

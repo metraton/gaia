@@ -97,7 +97,7 @@ class TestCollectBriefs:
         assert b["name"] == "feature-a"
         assert b["brief_status"] == "active"
         assert b["has_plan"] is False
-        assert b["plan_status"] == "(absent)"
+        assert b["plan_file_status"] == "(absent)"
 
     def test_brief_with_plan(self, tmp_path):
         _make_brief(tmp_path, "feature-b", brief_status="draft", plan_status="pending")
@@ -105,7 +105,7 @@ class TestCollectBriefs:
         assert len(briefs) == 1
         b = briefs[0]
         assert b["has_plan"] is True
-        assert b["plan_status"] == "pending"
+        assert b["plan_file_status"] == "pending"
 
     def test_multiple_briefs_sorted(self, tmp_path):
         _make_brief(tmp_path, "zzz-last")

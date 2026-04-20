@@ -629,7 +629,7 @@ class BashValidator:
                         )
                         reason = (
                             f"[T3_BLOCKED] This command requires user approval.\n"
-                            f"Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.\n"
+                            f"Do NOT retry this command. Report APPROVAL_REQUEST with this approval_id in your json:contract.\n"
                             f"Command: {command}\n"
                             f"Verb: '{result.verb}' ({result.category})\n"
                             f"approval_id: {approval_id}"
@@ -670,7 +670,7 @@ class BashValidator:
                         )
                     reason = (
                         f"[T3_BLOCKED] This command requires user approval.\n"
-                        f"Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.\n"
+                        f"Do NOT retry this command. Report APPROVAL_REQUEST with this approval_id in your json:contract.\n"
                         f"Command: {command}\n"
                         f"Verb: '{result.verb}' ({result.category})\n"
                         f"approval_id: {approval_id}"

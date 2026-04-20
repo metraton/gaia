@@ -98,7 +98,7 @@ class TestSchemaCompatibility:
         # The skill documents the 5 active statuses.
         required_statuses = [
             "IN_PROGRESS",
-            "REVIEW",
+            "APPROVAL_REQUEST",
             "COMPLETE",
             "BLOCKED",
             "NEEDS_INPUT",

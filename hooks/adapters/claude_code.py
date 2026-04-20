@@ -879,7 +879,7 @@ class ClaudeCodeAdapter(HookAdapter):
 
         reason = (
             f"[T3_BLOCKED] This file modification requires user approval.\n"
-            f"Do NOT retry this operation. Report REVIEW with this approval_id "
+            f"Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
             f"in your json:contract.\n"
             f"File: {file_path}\n"
             f"Tool: {tool_name}\n"

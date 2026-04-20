@@ -28,7 +28,7 @@ from .contract_validator import parse_contract
 
 VALID_PLAN_STATUSES = {
     "IN_PROGRESS",
-    "REVIEW",
+    "APPROVAL_REQUEST",
     "COMPLETE",
     "BLOCKED",
     "NEEDS_INPUT",
@@ -63,7 +63,7 @@ CONSOLIDATION_FIELDS = [
 RECOMMENDED_ACTION_NONE = "none"
 
 # Statuses that should carry an approval_request block
-APPROVAL_REQUEST_STATUSES = {"REVIEW"}
+APPROVAL_REQUEST_STATUSES = {"APPROVAL_REQUEST"}
 
 APPROVAL_REQUEST_REQUIRED_FIELDS = [
     "operation",
@@ -385,8 +385,8 @@ def validate_response_contract(
             risk = str(approval_req.get("risk_level", "")).upper()
             if risk and risk not in VALID_RISK_LEVELS:
                 warnings.append(f"APPROVAL_REQUEST_INVALID_RISK_LEVEL:{risk}")
-            # Check for approval_id when status is REVIEW
-            if status.plan_status == "REVIEW":
+            # Check for approval_id when status is APPROVAL_REQUEST
+            if status.plan_status == "APPROVAL_REQUEST":
                 pass  # approval_id presence is advisory, not enforced
 
     valid = not missing and not invalid

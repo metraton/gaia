@@ -187,7 +187,7 @@ def _collect_briefs(briefs_dir: Path) -> list[dict]:
             {
                 "name": entry.name,
                 "brief_status": brief_fm.get("status", "(none)"),
-                "plan_status": plan_fm.get("status", "(absent)") if plan_file.exists() else "(absent)",
+                "plan_file_status": plan_fm.get("status", "(absent)") if plan_file.exists() else "(absent)",
                 "has_plan": plan_file.exists(),
             }
         )
@@ -223,7 +223,7 @@ def _cmd_list(args) -> int:
     # Human-readable table
     col_name = max(len("BRIEF"), max(len(b["name"]) for b in briefs))
     col_brief = max(len("BRIEF STATUS"), max(len(b["brief_status"]) for b in briefs))
-    col_plan = max(len("PLAN STATUS"), max(len(b["plan_status"]) for b in briefs))
+    col_plan = max(len("PLAN STATUS"), max(len(b["plan_file_status"]) for b in briefs))
 
     header = (
         f"{'BRIEF':<{col_name}}  {'BRIEF STATUS':<{col_brief}}  {'PLAN STATUS':<{col_plan}}"
@@ -233,7 +233,7 @@ def _cmd_list(args) -> int:
     print(sep)
     for b in briefs:
         print(
-            f"{b['name']:<{col_name}}  {b['brief_status']:<{col_brief}}  {b['plan_status']:<{col_plan}}"
+            f"{b['name']:<{col_name}}  {b['brief_status']:<{col_brief}}  {b['plan_file_status']:<{col_plan}}"
         )
     return 0
 
