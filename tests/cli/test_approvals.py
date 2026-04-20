@@ -72,6 +72,7 @@ def _make_args(**kwargs):
         "session": None,
         "dry_run": False,
         "reason": None,
+        "orphans_only": False,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -84,14 +85,21 @@ def _make_args(**kwargs):
 class TestCmdList:
     """Tests for cmd_list.
 
-    When --session is not provided, cmd_list uses _list_all_pending() which
-    reads directly from the grants directory via _import_grants_dir().  Tests
-    for the no-session path therefore patch _import_grants_dir to return an
-    empty tmp directory so they don't touch the real filesystem.
+    When --session is not provided, cmd_list uses _scan_pending_shared()
+    which delegates to scan_pending_approvals() in
+    modules.session.pending_scanner, reading directly from the grants
+    directory via _import_grants_dir().  Tests for the no-session path
+    therefore patch _import_grants_dir to return a tmp directory populated
+    with fake pending-*.json files so they don't touch the real filesystem.
 
     When --session is provided, cmd_list delegates to
     get_pending_approvals_for_session() via _import_approval_grants(); those
     tests patch _import_approval_grants as before.
+
+    When --orphans-only is set, _scan_pending_shared passes
+    exclude_live_sessions=True to the scanner, which filters out pendings
+    whose session_id is currently registered as alive in session_registry.
+    Tests for that path additionally patch get_live_sessions().
     """
 
     def test_list_empty_returns_0(self, capsys, tmp_path):
@@ -161,6 +169,95 @@ class TestCmdList:
             }
             approvals_mod.cmd_list(_make_args(session="sess-xyz"))
         mock_fn.assert_called_once_with("sess-xyz")
+
+    # ----- --orphans-only --------------------------------------------------
+
+    def test_list_orphans_only_filters_live_sessions(self, capsys, tmp_path):
+        """With --orphans-only, pendings from live sessions are hidden."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        alive = _make_pending(
+            nonce="aaaa1111bbbb2222aaaa1111bbbb2222",
+            session_id="session-alive",
+            command="live cmd",
+        )
+        dead = _make_pending(
+            nonce="cccc3333dddd4444cccc3333dddd4444",
+            session_id="session-dead",
+            command="orphan cmd",
+        )
+        (grants_dir / f"pending-{alive['nonce']}.json").write_text(json.dumps(alive))
+        (grants_dir / f"pending-{dead['nonce']}.json").write_text(json.dumps(dead))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch(
+                "modules.session.session_registry.get_live_sessions",
+                return_value={"session-alive"},
+            ):
+                rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["count"] == 1, (
+            "--orphans-only must hide pendings whose session is alive."
+        )
+        assert data["pending"][0]["approval_id"] == "P-cccc3333"
+
+    def test_list_orphans_only_empty_when_all_alive(self, capsys, tmp_path):
+        """If every pending's session is alive, --orphans-only returns none."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        alive = _make_pending(
+            nonce="aaaa1111bbbb2222aaaa1111bbbb2222",
+            session_id="session-alive",
+        )
+        (grants_dir / f"pending-{alive['nonce']}.json").write_text(json.dumps(alive))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch(
+                "modules.session.session_registry.get_live_sessions",
+                return_value={"session-alive"},
+            ):
+                rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["count"] == 0
+
+    def test_list_without_orphans_only_shows_all(self, capsys, tmp_path):
+        """Default behavior (no flag) keeps pre-T13 semantics."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        alive = _make_pending(
+            nonce="aaaa1111bbbb2222aaaa1111bbbb2222",
+            session_id="session-alive",
+        )
+        dead = _make_pending(
+            nonce="cccc3333dddd4444cccc3333dddd4444",
+            session_id="session-dead",
+        )
+        (grants_dir / f"pending-{alive['nonce']}.json").write_text(json.dumps(alive))
+        (grants_dir / f"pending-{dead['nonce']}.json").write_text(json.dumps(dead))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch(
+                "modules.session.session_registry.get_live_sessions",
+                return_value={"session-alive"},
+            ):
+                rc = approvals_mod.cmd_list(_make_args(json=True))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["count"] == 2, (
+            "Without --orphans-only, behavior must be unchanged: both "
+            "live and dead session pendings are listed."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +778,18 @@ class TestRegister:
         args = root.parse_args(["approvals", "list", "--json"])
         assert args.json is True
 
+    def test_register_list_orphans_only_parses(self):
+        """--orphans-only must be exposed on `gaia approvals list`."""
+        import argparse
+        root = argparse.ArgumentParser()
+        subparsers = root.add_subparsers(dest="command")
+        approvals_mod.register(subparsers)
+        args = root.parse_args(["approvals", "list", "--orphans-only"])
+        assert args.orphans_only is True
+        # Default must be False so existing consumers are unaffected.
+        args2 = root.parse_args(["approvals", "list"])
+        assert args2.orphans_only is False
+
     def test_register_reject_subcommand_parses(self):
         import argparse
         root = argparse.ArgumentParser()
@@ -709,6 +818,11 @@ class TestStandaloneParser:
         args = parser.parse_args(["list", "--json"])
         assert args.json is True
         assert args.func == approvals_mod.cmd_list
+
+    def test_standalone_parser_list_orphans_only(self):
+        parser = approvals_mod._build_standalone_parser()
+        args = parser.parse_args(["list", "--orphans-only"])
+        assert args.orphans_only is True
 
     def test_standalone_parser_show(self):
         parser = approvals_mod._build_standalone_parser()

@@ -13,6 +13,7 @@ Architecture:
 - Exit code 0 = allow stop, exit code 2 = continue instead of stop
 """
 
+import os
 import sys
 import json
 import logging
@@ -24,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from adapters.claude_code import ClaudeCodeAdapter
 from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
+from modules.session.session_registry import unregister_session, SessionRegistryError
 
 # Configure logging
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -55,6 +57,17 @@ def _handle_stop(event) -> None:
         quality_result.quality_sufficient,
         quality_result.score,
     )
+
+    # Unregister this session from the user-scoped session registry.
+    # Non-fatal: "session not found" is already a silent no-op inside the
+    # registry; SessionRegistryError here only signals I/O failure, which
+    # is expected in shutdown race conditions.
+    try:
+        _sid = os.environ.get("CLAUDE_SESSION_ID")
+        if _sid:
+            unregister_session(session_id=_sid)
+    except SessionRegistryError as _reg_exc:
+        logger.debug("session_registry unregister failed (non-fatal): %s", _reg_exc)
 
     response = adapter.format_quality_response(quality_result)
     print(json.dumps(response.output))

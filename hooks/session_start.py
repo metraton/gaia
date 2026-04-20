@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SessionStart hook — first-time setup + project scan (ops only)."""
 
+import os
 import sys
 import json
 import logging
@@ -13,6 +14,7 @@ from modules.core.stdin import has_stdin_data
 from modules.core.paths import get_logs_dir
 from modules.core.plugin_mode import is_ops_mode
 from modules.core.plugin_setup import run_first_time_setup
+from modules.session.session_registry import register_session, SessionRegistryError
 
 # Configure logging — file only
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -30,6 +32,16 @@ if __name__ == "__main__":
 
     try:
         sys.stdin.read()
+
+        # Register this session in the user-scoped session registry.
+        # Base infrastructure for T12/T13 liveness filter. Failures are
+        # non-fatal: a missing registry entry must never block session start.
+        try:
+            _sid = os.environ.get("CLAUDE_SESSION_ID")
+            if _sid:
+                register_session(session_id=_sid, pid=os.getpid())
+        except SessionRegistryError as _reg_exc:
+            logger.warning("session_registry register failed (non-fatal): %s", _reg_exc)
 
         # First-time setup: create project permissions if needed.
         # mark_done=False so UserPromptSubmit can detect first-run

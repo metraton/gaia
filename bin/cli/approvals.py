@@ -2,7 +2,10 @@
 gaia approvals -- Approval System v2 Track 1 CLI subcommand.
 
 Subcommands:
-  list [--json] [--session SESSION_ID]   -- list pending approvals
+  list [--json] [--session SESSION_ID] [--orphans-only]
+                                         -- list pending approvals
+                                            (--orphans-only filters to
+                                             pendings from dead sessions)
   show APPROVAL_ID [--json]              -- show full detail of one approval
   reject NONCE [--reason REASON]         -- reject a pending approval
   reject --all [--reason REASON]         -- reject ALL pending approvals in one call
@@ -135,40 +138,46 @@ def _pending_to_display(p: dict) -> dict:
 # Subcommand: list
 # ---------------------------------------------------------------------------
 
-def _list_all_pending() -> list:
+def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
     """Return all non-expired, non-rejected pending approvals across all sessions.
 
-    Used when no ``--session`` filter is given.  Mirrors the scan in
-    ``cmd_stats`` so that ``gaia approvals list`` shows everything a human
-    reviewer would care about regardless of which session created it.
+    Thin wrapper around the shared ``scan_pending_approvals`` in
+    ``modules.session.pending_scanner`` so CLI and hook consumers share one
+    implementation of pending discovery + liveness filtering.
+
+    When ``exclude_live_sessions=True``, only pendings whose owning session
+    is NOT currently alive (orphans) are returned — this backs the
+    ``--orphans-only`` flag.
 
     Raises:
-        Exception: propagated from _import_grants_dir() so that cmd_list
+        Exception: propagated from ``_import_grants_dir()`` so ``cmd_list``
             can catch it and return exit code 1 consistently.
     """
     # Let ImportError / other failures from _import_grants_dir propagate up.
     grants_dir = _import_grants_dir()
 
-    results = []
-    now = time.time()
+    from modules.session.pending_scanner import scan_pending_approvals
 
-    try:
-        for pending_file in grants_dir.glob("pending-*.json"):
-            if pending_file.name.startswith("pending-index-"):
-                continue
-            try:
-                data = json.loads(pending_file.read_text())
-            except Exception:
-                continue
-            if data.get("status") == "rejected":
-                continue
-            ts = float(data.get("timestamp", 0))
-            ttl = int(data.get("ttl_minutes", 1440))
-            if ttl > 0 and (now - ts) / 60 > ttl:
-                continue
-            results.append(data)
-    except Exception:
-        pass
+    scanned = scan_pending_approvals(
+        grants_dir, exclude_live_sessions=exclude_live_sessions
+    )
+
+    # scan_pending_approvals returns a display-ish shape; we rehydrate each
+    # scanned result back into the on-disk pending dict keys that
+    # _pending_to_display expects. Single source of truth for the scan,
+    # but the CLI's display contract is preserved unchanged.
+    results = []
+    for s in scanned:
+        results.append({
+            "nonce": s.get("nonce_full") or s.get("nonce_short", ""),
+            "session_id": s.get("pending_session_id", ""),
+            "command": s.get("command", ""),
+            "danger_verb": s.get("verb", ""),
+            "danger_category": s.get("category", ""),
+            "scope_type": s.get("scope_type", ""),
+            "timestamp": s.get("timestamp", 0),
+            "context": s.get("context", {}),
+        })
 
     results.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
     return results
@@ -180,13 +189,19 @@ def cmd_list(args) -> int:
     Without ``--session``, all sessions are shown so the CLI is useful as a
     cross-session review tool.  With ``--session SESSION_ID``, only that
     session's approvals are shown.
+
+    With ``--orphans-only``, only pendings whose owning session is no longer
+    alive (per session_registry) are shown.  This is the operator-facing
+    tool for diagnosing cross-session drift after the T11/T12 liveness
+    plumbing landed.
     """
     session_id = getattr(args, "session", None)
+    orphans_only = getattr(args, "orphans_only", False)
 
     try:
         if session_id is None:
             # All sessions -- scan directly so we don't filter by current session.
-            raw = _list_all_pending()
+            raw = _scan_pending_shared(exclude_live_sessions=orphans_only)
         else:
             ag = _import_approval_grants()
             raw = ag["get_pending_approvals_for_session"](session_id)
@@ -345,7 +360,10 @@ def _cmd_reject_all(args, reason: str | None) -> int:
     Exits 0 always -- an empty queue is not an error.
     """
     try:
-        raw = _list_all_pending()
+        # Bulk reject operates on the full queue regardless of liveness;
+        # we intentionally pass exclude_live_sessions=False so the operator
+        # can clear orphaned and live-session pendings in one call.
+        raw = _scan_pending_shared(exclude_live_sessions=False)
     except Exception as exc:
         _print_error(f"Failed to load approvals: {exc}", args)
         return 1
@@ -595,6 +613,12 @@ def register(subparsers) -> None:
     p_list = sub.add_parser("list", help="List pending approvals")
     p_list.add_argument("--json", action="store_true", help="JSON output")
     p_list.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
+    p_list.add_argument(
+        "--orphans-only",
+        action="store_true",
+        dest="orphans_only",
+        help="Show only pendings from sessions no longer alive (via session_registry)",
+    )
     p_list.set_defaults(func=cmd_list)
 
     # show
@@ -680,6 +704,10 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_list = subparsers.add_parser("list", help="List pending approvals")
     p_list.add_argument("--json", action="store_true")
     p_list.add_argument("--session", metavar="SESSION_ID")
+    p_list.add_argument(
+        "--orphans-only", action="store_true", dest="orphans_only",
+        help="Show only pendings from sessions no longer alive",
+    )
     p_list.set_defaults(func=cmd_list)
 
     p_show = subparsers.add_parser("show", help="Show approval detail")
