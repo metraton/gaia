@@ -84,7 +84,7 @@ class TestAgentSkillReferences:
         for skills in agent_skill_map.values():
             all_referenced.update(skills)
 
-        # Also check agent body text references (e.g., "skills/approval/SKILL.md")
+        # Also check agent body text references (e.g., "skills/request-approval/SKILL.md")
         for agent_file in all_agent_files:
             content = agent_file.read_text()
             for skill_dir in all_skill_dirs:

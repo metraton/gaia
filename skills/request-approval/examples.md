@@ -1,4 +1,4 @@
-# Approval Plan Examples
+# Approval Request Examples
 
 Reference examples for agents. Read on-demand when building your first plan or when unsure about format.
 
@@ -26,13 +26,13 @@ Reference examples for agents. Read on-demand when building your first plan or w
 ### Validation Results
 
 **Dry-run status:**
-- ✅ `terragrunt plan` - No errors, 4 to add, 0 to change, 0 to destroy
-- ✅ `terragrunt hclfmt --check` - No formatting issues
-- ✅ `terraform validate` - Success
+- `terragrunt plan` - No errors, 4 to add, 0 to change, 0 to destroy
+- `terragrunt hclfmt --check` - No formatting issues
+- `terraform validate` - Success
 
 **Dependencies verified:**
-- GCP project [project-id]: accessible ✓
-- No CIDR conflicts with existing networks ✓
+- GCP project [project-id]: accessible
+- No CIDR conflicts with existing networks
 
 ### Risk Assessment
 
@@ -42,7 +42,7 @@ Reference examples for agents. Read on-demand when building your first plan or w
 1. CIDR overlap with existing VPC networks
    - Mitigation: Verified no overlaps via `gcloud compute networks list`
 2. Subnet creation timeout
-   - Mitigation: Timeout set to 300s, idempotent — safe to retry
+   - Mitigation: Timeout set to 300s, idempotent -- safe to retry
 
 **Rollback Plan:**
 - If creation fails: `terragrunt destroy --terragrunt-working-dir "/abs/path/to/terraform/vpc"`
@@ -58,8 +58,8 @@ When approved, will execute:
 
 ### Verification Criteria
 
-- `gcloud compute networks describe prod-network --project=[project-id]` → `status: ACTIVE`
-- `gcloud compute networks subnets list --filter="network:prod-network" --project=[project-id]` → 3 subnets listed
+- `gcloud compute networks describe prod-network --project=[project-id]` -> `status: ACTIVE`
+- `gcloud compute networks subnets list --filter="network:prod-network" --project=[project-id]` -> 3 subnets listed
 
 ### Files Affected
 
@@ -89,15 +89,15 @@ When approved, will execute:
 
 **HelmRelease to MODIFY:**
 - `graphql-server` in namespace `common`
-  - Image: ghcr.io/vtr/graphql-server:v1.0.176 → v1.0.180
+  - Image: ghcr.io/vtr/graphql-server:v1.0.176 -> v1.0.180
   - No other changes
 
 ### Validation Results
 
 **Dry-run status:**
-- ✅ `kubectl apply --dry-run=client` - Valid manifest
-- ✅ YAML syntax check - Passed
-- ✅ Image exists in registry - Verified
+- `kubectl apply --dry-run=client` - Valid manifest
+- YAML syntax check - Passed
+- Image exists in registry - Verified
 
 ### Risk Assessment
 
@@ -123,8 +123,8 @@ When approved, will execute:
 
 ### Verification Criteria
 
-- `kubectl get helmrelease graphql-server -n common --request-timeout=30s` → `READY=True`, revision contains `v1.0.180`
-- `kubectl get pods -n common -l app=graphql-server --request-timeout=30s` → all pods `Running`
+- `kubectl get helmrelease graphql-server -n common --request-timeout=30s` -> `READY=True`, revision contains `v1.0.180`
+- `kubectl get pods -n common -l app=graphql-server --request-timeout=30s` -> all pods `Running`
 
 ### Files Affected
 

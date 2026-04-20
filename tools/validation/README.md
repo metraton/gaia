@@ -233,7 +233,7 @@ Example entry:
 ## See Also
 
 - `.claude/config/git_standards.json` - Git standards configuration
-- `.claude/skills/approval/SKILL.md` - Approval workflow patterns
+- `.claude/skills/request-approval/SKILL.md` - Approval-request workflow patterns
 - `.claude/skills/execution/SKILL.md` - Execution workflow patterns
 - `CLAUDE.md` - Orchestrator protocol with T3 workflow
 

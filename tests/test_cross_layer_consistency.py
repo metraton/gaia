@@ -413,10 +413,10 @@ class TestSkillsCrossReferences:
         )
 
     def test_approval_skill_references_approval_id_concept(self):
-        """Approval skill must reference the approval_id mechanism."""
-        content = (SKILLS_DIR / "approval" / "SKILL.md").read_text().lower()
+        """Approval-request skill must reference the approval_id mechanism."""
+        content = (SKILLS_DIR / "request-approval" / "SKILL.md").read_text().lower()
         assert "approval_id" in content, (
-            "Approval skill must mention the approval_id mechanism"
+            "request-approval skill must mention the approval_id mechanism"
         )
 
     def test_identity_references_approval_workflow(self):

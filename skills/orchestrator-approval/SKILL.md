@@ -76,3 +76,30 @@ The "Approve" option MUST name the specific action. The PostToolUse hook activat
 | "I'll skip the [P-...] suffix, it's cosmetic" | "The hook extracts the nonce from the label — without it, targeted activation fails" |
 
 For GOOD vs BAD examples, batch flow, and grant mechanics, see `reference.md`.
+
+## Dispatch mode checklist
+
+Before dispatching a subagent, run through this checklist:
+
+**When to pass `mode: acceptEdits`:**
+- Dispatch edits briefs, plans, or evidence files (`.claude/project-context/**`)
+- Dispatch edits skills, agents, or commands (`.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**`)
+- Dispatch writes any file under `.claude/` that is NOT hooks/ or settings files
+
+**When NOT to use `acceptEdits`:**
+- Dispatch requires mutative Bash (acceptEdits does not cover Bash -- Gaia T3 flow still fires)
+- Dispatch is exploratory/read-only (use `default` or omit mode)
+- Dispatch touches `.claude/hooks/` or `settings.json` -- Gaia blocks these regardless of mode
+
+**foreground vs background:**
+- **foreground**: can call AskUserQuestion; T3 approval flows work end-to-end
+- **background**: AskUserQuestion does not display; T3 operations that require user consent will stall or be auto-denied -- dispatch only read or pre-approved operations to background agents
+
+**The mode is not inherited.** If you run with `acceptEdits`, your subagents still receive `default` unless you pass `mode: acceptEdits` explicitly in the dispatch. Set it per dispatch, not once per session.
+
+| Dispatch type | mode to pass | session |
+|--------------|-------------|---------|
+| Reads only (investigate, report) | omit (default) | foreground or background |
+| Edits `.claude/skills/`, briefs, evidence | `acceptEdits` | foreground or background |
+| T3 requiring user approval | `default` or `acceptEdits` | **foreground only** |
+| Edits `.claude/hooks/` or settings | never dispatch directly | n/a -- requires Gaia approval flow |

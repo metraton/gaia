@@ -34,9 +34,9 @@ Agent starts with all listed skills already in context
 Agent is running and encounters a situation
 requiring a workflow skill (e.g. approval, execution, git-conventions)
         |
-Agent calls Skill tool: Skill("approval")
+Agent calls Skill tool: Skill("request-approval")
         |
-Claude Code reads skills/approval/SKILL.md from disk
+Claude Code reads skills/request-approval/SKILL.md from disk
         |
 Content is injected into the agent's active context window
         |
@@ -70,10 +70,14 @@ skills/
 ├── fast-queries/          # Quick diagnostic scripts for cloud/system state
 ├── gaia-planner/          # Feature planning, briefs, task decomposition
 ├── orchestrator-approval/ # T3 approval presentation for orchestrator
-├── approval/              # T3 plan presentation and approval workflow
+├── gaia-compact/          # Orchestrator: structured /compact prompt with preservation contract
+├── request-approval/      # T3 approval-request workflow (attempt first, emit APPROVAL_REQUEST)
+│   ├── reference.md
 │   └── examples.md
 ├── execution/             # Post-approval execution discipline
 ├── gmail-policy/          # Gmail domain policy (label-only, no delete)
+├── memory-curation/       # Curate MEMORY.md index and topic files
+├── memory-search/         # Query episodic memory via `gaia memory` CLI
 ├── readme-writing/        # How to write READMEs for Gaia component folders
 └── reference.md           # Cross-skill reference index
 ```
@@ -94,6 +98,7 @@ skills/
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
 - `orchestrator-approval` — T3 approval presentation and grant activation
+- `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
 
 **Skill types:**
 
@@ -102,7 +107,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 | Core | Always via `skills:` frontmatter | agent-protocol, security-tiers |
 | Common | Most agents via `skills:` frontmatter | command-execution, context-updater |
 | Domain | Per-agent via `skills:` frontmatter | terraform-patterns, gaia-patterns |
-| Workflow | On-demand (agent reads from disk) | approval, execution, git-conventions |
+| Workflow | On-demand (agent reads from disk) | request-approval, execution, git-conventions |
 | Orchestrator | On-demand via Skill tool | agent-response, orchestrator-approval |
 
 **SKILL.md format:**

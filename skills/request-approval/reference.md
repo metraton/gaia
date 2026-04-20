@@ -1,6 +1,6 @@
-# Approval Plan Template
+# Approval Request Plan Template
 
-Use this template when presenting a T3 plan for user approval.
+Use this template when requesting user approval for a T3 operation.
 The fields below map directly to the `approval_request` object in your `json:contract` block.
 
 ```markdown
@@ -43,7 +43,7 @@ These 6 fields MUST appear in the `approval_request` object of your `json:contra
 | `rollback` | `"terraform -chdir=/infra/dev apply -target=module.vpc -var='cidr=10.0.0.0/16'"` |
 | `verification` | `"terraform -chdir=/infra/dev output vpc_id -- expect vpc-xxx"` |
 
-When a hook blocked the command, also include:
+When a hook blocked the command (attempt first path), also include:
 | Field | Example value |
 |-------|---------------|
 | `approval_id` | `"a1b2c3d4e5f6..."` (hex from hook deny response) |
