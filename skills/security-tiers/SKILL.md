@@ -73,6 +73,23 @@ The pre_tool_use hook also gates Edit and Write tools via `_is_protected()` in `
 
 Note: `bypassPermissions` does not propagate to subagents (CC limitation). `acceptEdits` requires `permissionMode` in the agent frontmatter -- it does not flow through settings to subagents.
 
+### Dispatch mode rule
+
+Para Edit/Write sobre `.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**` desde subagente, el orchestrator debe pasar `mode: acceptEdits` en la dispatch del Agent tool. Sin ese mode, CC native intercepta con prompt (foreground) o auto-deny (background). El mode se pasa en la dispatch de cada invocación del Agent tool y no se hereda del orchestrator al subagente.
+
+<!-- T8-anchor: insert permissionMode comparison table after this line -->
+
+### permissionMode comparison
+
+| Modo | Qué hace | uso recomendado | Cuándo NO usar |
+|------|----------|-----------------|----------------|
+| `default` | Todas las operaciones requieren prompt nativo de CC | Sesiones interactivas normales, trabajo exploratorio donde el usuario quiere control granular | Dispatches headless o background -- CC no puede mostrar prompts, result: auto-deny |
+| `acceptEdits` | Edit y Write pasan sin prompt nativo; Bash y herramientas destructivas siguen requiriendo aprobación | Dispatches que editan `.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**`, briefs, plans, evidence | Operaciones que requieren Bash mutativo sin supervisión; nunca como sustituto de `bypassPermissions` |
+| `bypassPermissions` | Todos los permisos de CC skipeados -- Edit, Write, Bash, todo | Solo uso interno del CLI (`gaia-doctor`, scripts de instalación), test pipelines controlados | **Nunca** en dispatches normales de agentes; bypassa CC native pero no bypassa Gaia hooks |
+| `plan` | El agente propone un plan y requiere aprobación explícita antes de ejecutar cualquier herramienta | Cuando la propuesta del agente debe revisarse antes de actuar -- alto riesgo, cambios estructurales | Tareas operativas rutinarias donde la aprobación por cada herramienta crea fricción innecesaria |
+
+> **Nota de precedencia:** `mode` en la dispatch del Agent tool aplica solo a esa invocación -- no se hereda del orchestrator al subagente ni de una dispatch a otra. Ver **Dispatch mode rule** arriba. `bypassPermissions` satisface CC native pero no bypassa Gaia `_is_protected()` ni el flujo nonce de `mutative_verbs.py`.
+
 **Double defense for `.claude/` paths.** For `rm`, `mv`, and other destructive commands targeting paths under `.claude/`, both layers fire independently: CC native prompts the user for any write in `.claude/` regardless of Gaia classification, AND Gaia T3 approval flows for the mutative verb itself. Neither layer bypasses the other. A subagent dispatched with `mode: bypassPermissions` satisfies CC native but still faces the Gaia hook; shell wrappers like `bash -c '...'` may trigger `_detect_indirect_execution` but CC native can still intercept writes inside `.claude/`.
 
 ## T3 Workflow
@@ -80,5 +97,6 @@ Note: `bypassPermissions` does not propagate to subagents (CC limitation). `acce
 For T3 operations, follow the state flow in `agent-protocol`: IN_PROGRESS -- REVIEW -- IN_PROGRESS -- COMPLETE (plan-first or hook-blocked with approval_id).
 
 On-demand workflow skills (read from disk when needed):
-- `.claude/skills/approval/SKILL.md` -- informed-consent plan quality and approval presentation
+- `.claude/skills/request-approval/SKILL.md` -- informed-consent plan quality, approval-request presentation, and the dispatch mode + foreground/background combination table
+- `.claude/skills/orchestrator-approval/SKILL.md` -- orchestrator checklist for when to pass `mode: acceptEdits` and when to restrict dispatches to foreground
 - `.claude/skills/execution/SKILL.md` -- post-approval execution discipline and verification
