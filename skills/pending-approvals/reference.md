@@ -116,6 +116,19 @@ Do NOT retry more than once -- if recovery + retry fails, report the error.
 
 The `cwd` field may be present in the pending JSON. When present, include it in the dispatch as `Directorio:`. When absent, omit the line.
 
+### Dispatch `mode` for post-approval execution
+
+The Gaia grant activates on the blocked command signature -- that covers the Gaia hook, but CC native is a separate gate. Pick `mode` based on the command target:
+
+| Approved command targets... | mode | session | Why |
+|-----------------------------|------|---------|-----|
+| Normal paths (src/, infra/, /tmp/) | `default` | foreground | CC native does not protect these; no mode needed |
+| `.claude/` writes only (Edit/Write on skills, agents, briefs) | `acceptEdits` | foreground | CC native prompts on `.claude/` writes; `acceptEdits` satisfies it |
+| Bash mutativo sobre `.claude/` (rm, mv, mkdir) | `bypassPermissions` | foreground | CC native intercepts `.claude/` destructive ops regardless of verb; bypass satisfies it |
+| Bundle: Bash on `.claude/` + Edits on `.claude/` | `bypassPermissions` | foreground | The bundle needs one mode that covers both layers; pack all steps in one dispatch turn |
+
+The dispatch is single-turn and cannot split: if the bundle emits APPROVAL_REQUEST mid-execution, the orchestrator must re-dispatch fresh with the same mode, not SendMessage resume -- mode does not survive resume.
+
 ### Same-session dispatch
 
 When `pending.session_id == CLAUDE_SESSION_ID` -- pass the nonce:

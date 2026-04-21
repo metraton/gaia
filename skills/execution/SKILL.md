@@ -81,6 +81,13 @@ your domain skill defines the specific rollback strategy.
 | "It's only dev, fewer checks needed" | Irreversibility is irreversibility regardless of env |
 | "Preconditions held during planning" | State changes between approval and execution -- verify again |
 | "No environment snapshot, no drift check" | Verify observable state regardless of whether a snapshot exists |
+| "Half the bundle ran, I can finish after a SendMessage resume" | `mode` dies on resume; if the remaining steps touch `.claude/` writes, CC native re-blocks. Emit BLOCKED, let orchestrator re-dispatch fresh with the same mode. |
+
+## Bundled Multi-Step Execution on Protected Paths
+
+When the approved operation is a **bundle** of steps on `.claude/` paths (e.g., mv directory + 4 Edits across `.claude/project-context/`), execute every step in the SAME turn the dispatch started. Splitting the bundle across dispatch + SendMessage resume fails because `mode` is per-dispatch and does not survive a SendMessage resume -- CC native re-blocks the later Edits in `default` mode.
+
+If a hook blocks a step mid-bundle, emit BLOCKED and stop. Do NOT emit APPROVAL_REQUEST mid-bundle hoping to continue after resume. The orchestrator's correct recovery is a fresh dispatch (same mode, bundle re-packed) after any required approval, not a SendMessage back into the same subagent.
 
 ## Anti-Patterns
 
@@ -89,3 +96,4 @@ your domain skill defines the specific rollback strategy.
 - **Mutate without a rollback path** — if you cannot describe how to undo it, partial failure becomes permanent damage
 - **Skipping precondition verification because the user already approved** — approval reflects state at approval time; state may have changed
 - **Looping on failed recovery instead of reporting after one attempt** — attempt recovery once, then report; do not retry in a loop
+- **Splitting a `.claude/` bundle across a SendMessage resume** — `mode` is per-dispatch; the resume runs in `default` and CC native re-blocks the remaining steps

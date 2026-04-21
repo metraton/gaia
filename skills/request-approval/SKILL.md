@@ -109,6 +109,8 @@ When a subagent edits `.claude/skills/**`, `.claude/agents/**`, `.claude/command
 
 **The `mode` is NOT inherited.** Each dispatch of the Agent tool is independent. If the orchestrator runs with `acceptEdits`, that does not flow to any subagent it invokes. The mode must be specified explicitly in every dispatch that needs it.
 
+**The `mode` also does NOT survive a SendMessage resume.** If your original dispatch gave you `mode: bypassPermissions` and you emit APPROVAL_REQUEST mid-task, the orchestrator's SendMessage resume runs in `default`. The Gaia grant activates for the exact blocked command, but CC native re-blocks the next Edit/Write/Bash on `.claude/` because the mode is gone. Consequence for the subagent: when the task is a multi-step bundle on protected paths (e.g., mv on `.claude/**` + Edits in `.claude/project-context/**`), execute every step in the SAME turn the dispatch started. If a hook blocks a step, emit BLOCKED and stop -- do NOT emit APPROVAL_REQUEST mid-task expecting to continue after a SendMessage resume. The orchestrator will re-dispatch fresh.
+
 **Foreground vs background is a separate axis.** It governs whether a user-facing interaction (like AskUserQuestion) can display. It does not resolve CC native permission prompts -- those are governed by `mode`.
 
 ### Combination table
@@ -135,3 +137,4 @@ For the full `permissionMode` comparison, see `security-tiers/SKILL.md`.
 - **Reusing prior approvals** -- grants are scoped to a specific nonce and command; a prior approval does not cover a new operation
 - **Fabricating the approval_id** -- the hook validates against its nonce store; an invented token will never match
 - **Omitting `mode: acceptEdits` from dispatch** -- subagents dispatched without it will hit CC native prompts on `.claude/` writes; in background, this auto-denies silently
+- **Assuming `mode` survives a SendMessage resume** -- it does not; if the task depends on bypass/acceptEdits, pack all steps in one dispatch turn, or emit BLOCKED and let the orchestrator re-dispatch fresh
