@@ -51,35 +51,44 @@ Orchestrator-level skills (`agent-response`, `orchestrator-approval`) are always
 skills/
 ├── agent-protocol/        # Response contract format, state machine, error handling
 ├── agent-response/        # Orchestrator: interpret agent json:contract responses
-├── security-tiers/        # T0-T3 classification + hook enforcement model
-│   └── reference.md
-├── investigation/         # Diagnosis methodology and pattern analysis
+├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
+├── blog-writing/          # Blog article writing and publishing for metraton.github.io
+├── brief-spec/            # Brief and spec creation for features before planning
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── context-updater/       # CONTEXT_UPDATE format and writable sections contract
 │   └── examples.md
-├── git-conventions/       # Conventional Commits (on-demand workflow skill)
-├── skill-creation/        # How to design and write new skills
+├── developer-patterns/    # Application code patterns (Node.js, Python)
+├── execution/             # Post-approval execution discipline
+├── fast-queries/          # Quick diagnostic scripts for cloud/system state
+├── gaia-compact/          # Orchestrator: structured /compact prompt with preservation contract
 ├── gaia-patterns/         # Gaia component patterns: hooks, agents, routing, CLI
 │   └── reference.md
-├── terraform-patterns/    # Terraform/Terragrunt patterns
-│   └── reference.md
+├── gaia-planner/          # Feature planning, briefs, task decomposition
+├── gaia-release/          # Gaia release pipeline: live, dry-run, beta, stable
+├── gaia-self-check/       # Validate internal consistency of the .claude/ installation
+├── gaia-verify/           # Verify a Gaia installation across delivery surfaces
+├── git-conventions/       # Conventional Commits (on-demand workflow skill)
 ├── gitops-patterns/       # GitOps/Flux/Kubernetes patterns
 │   └── reference.md
-├── developer-patterns/    # Application code patterns (Node.js, Python)
-├── fast-queries/          # Quick diagnostic scripts for cloud/system state
-├── gaia-planner/          # Feature planning, briefs, task decomposition
+├── gmail-policy/          # Gmail domain policy (label-only, no delete)
+├── gmail-triage/          # Interactive Gmail inbox triage
+├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
+├── investigation/         # Diagnosis methodology and pattern analysis
+├── memory-curation/       # Curate MEMORY.md index and topic files
+├── memory-search/         # Query episodic memory via `gaia memory` CLI
 ├── orchestrator-approval/ # T3 approval presentation for orchestrator
-├── gaia-compact/          # Orchestrator: structured /compact prompt with preservation contract
+├── pending-approvals/     # Present and manage pending approval requests
+├── readme-writing/        # How to write READMEs for Gaia component folders
 ├── request-approval/      # T3 approval-request workflow (attempt first, emit APPROVAL_REQUEST)
 │   ├── reference.md
 │   └── examples.md
-├── execution/             # Post-approval execution discipline
-├── gmail-policy/          # Gmail domain policy (label-only, no delete)
-├── memory-curation/       # Curate MEMORY.md index and topic files
-├── memory-search/         # Query episodic memory via `gaia memory` CLI
-├── gaia-self-check/       # Validate internal consistency of the .claude/ installation
-├── readme-writing/        # How to write READMEs for Gaia component folders
+├── schedule-task/         # Dispatch parameter extraction and prompt templates
+├── security-tiers/        # T0-T3 classification + hook enforcement model
+│   └── reference.md
+├── skill-creation/        # How to design and write new skills
+├── terraform-patterns/    # Terraform/Terragrunt patterns
+│   └── reference.md
 └── reference.md           # Cross-skill reference index
 ```
 
@@ -89,17 +98,27 @@ skills/
 
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
-| cloud-troubleshooter | agent-protocol, security-tiers, command-execution | fast-queries, investigation |
-| terraform-architect | agent-protocol, security-tiers, command-execution, terraform-patterns | fast-queries |
-| gitops-operator | agent-protocol, security-tiers, command-execution, gitops-patterns | fast-queries |
-| developer | agent-protocol, security-tiers, command-execution, developer-patterns | fast-queries |
-| gaia-system | agent-protocol, security-tiers, gaia-patterns, skill-creation | - |
-| gaia-planner | agent-protocol, security-tiers | - |
+| cloud-troubleshooter | agent-protocol, security-tiers, investigation, command-execution | context-updater, fast-queries |
+| terraform-architect | agent-protocol, security-tiers, investigation, command-execution, terraform-patterns | context-updater, fast-queries |
+| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, gitops-patterns | context-updater, fast-queries |
+| developer | agent-protocol, security-tiers, investigation, command-execution, developer-patterns | context-updater, fast-queries |
+| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, gaia-release, skill-creation | gaia-verify |
+| gaia-planner | agent-protocol, security-tiers | gaia-planner |
+| gaia-operator | agent-protocol, security-tiers, command-execution, context-updater, memory-curation, memory-search, gmail-triage, gws-setup | blog-writing |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
 - `orchestrator-approval` — T3 approval presentation and grant activation
 - `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
+
+Workflow skills (on-demand injection, not in any agent frontmatter):
+- `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt, `user-invocable: false`
+- `brief-spec` — brief and spec creation; loaded on demand by orchestrator
+- `execution` — post-approval execution discipline
+- `git-conventions` — Conventional Commits format
+- `pending-approvals` — present and resolve pending approval requests
+- `request-approval` — T3 approval-request workflow
+- `schedule-task` — dispatch parameter templates
 
 **Skill types:**
 
