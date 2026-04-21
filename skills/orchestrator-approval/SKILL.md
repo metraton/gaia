@@ -103,3 +103,40 @@ Before dispatching a subagent, run through this checklist:
 | Edits `.claude/skills/`, briefs, evidence | `acceptEdits` | foreground or background |
 | T3 requiring user approval | `default` or `acceptEdits` | **foreground only** |
 | Edits `.claude/hooks/` or settings | never dispatch directly | n/a -- requires Gaia approval flow |
+
+## Dispatch mode decision -- checklist pre-dispatch
+
+Antes de cada dispatch del Agent tool, recorre este árbol. Si algún paso produce ambigüedad, detente y pregunta al usuario.
+
+**1. ¿El goal es read-only o escribe?**
+- Read-only → `default` (o `acceptEdits` si necesita escribir evidence)
+- Escribe → paso 2
+
+**2. ¿Dónde escribe?**
+- Solo archivos declarativos (`.md`, `.yaml`, `.json` bajo `.claude/` o `gaia-ops-dev/`) → `acceptEdits`
+- Código runtime (`.py` bajo `hooks/`, `bin/`, `agents/`) → `acceptEdits` + aceptar grants Bash file-scoped esperados
+- Paths protegidos (`.git`, `.vscode`, `.husky`, `.claude/hooks/`, `settings.json`) → `default` + prompt explícito; nunca bypass
+
+**3. ¿Requiere Bash mutativo (mv, rm, mkdir)?**
+- Atómico, scope enumerado, user-approved conceptualmente, hooks hardened → `bypassPermissions`
+- Multi-step / multi-file → `acceptEdits` (acepta fricción file-scoped; NO bypass: pierde audit per-file porque background pre-aprueba el bundle entero)
+
+**4. ¿Puede emitir `approval_request` mid-task?**
+- Sí (scope puede evolucionar, T3 esperados) → foreground
+- No (scope cerrado, permisos pre-satisfechos) → background + mode que pre-satisfaga permisos
+
+**5. ¿El goal enumera el scope concreto?**
+- No → DETÉN y pregunta al usuario antes del dispatch. No elegir mode sobre scope vago.
+- Sí → continúa con la combinación decidida.
+
+Cross-reference: para qué hace cada mode, ver `skills/security-tiers/SKILL.md` → "permissionMode comparison" y "Decision tree".
+
+### Ejemplos concretos
+
+| Goal | mode | session | Razón |
+|------|------|---------|-------|
+| Editar brief.md o plan.md | `acceptEdits` | background | Declarativo, scope cerrado, no requiere prompts mid-task |
+| Mover directorio de brief al cerrar (`open_X` → `closed_X`) | `bypassPermissions` | foreground | Atómico, scope aprobado, hardened bash_validator; foreground porque puede descubrir conflicto de nombre |
+| Split de enum en 3 archivos Python runtime | `acceptEdits` | background | Grants file-scoped esperados per-file -- fricción intencional para audit |
+| Bulk reject de pendings via CLI | `acceptEdits` | foreground | CLI maneja inline; foreground por si requiere confirmación mid-loop |
+| Investigation read-only con evidence write | `default` al leer, `acceptEdits` al escribir evidence | foreground | Dos dispatches distintos con modes distintos; no heredar entre ellos |
