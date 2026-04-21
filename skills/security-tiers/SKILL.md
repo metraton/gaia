@@ -62,6 +62,8 @@ The pre_tool_use hook also gates Edit and Write tools via `_is_protected()` in `
 
 **Why this matters:** `_is_protected()` fires regardless of `permissionMode`. An agent with `permissionMode: acceptEdits` can still be blocked from writing to hooks/ or settings files. In headless/cron mode where Claude Code native prompts cannot display, hooks remain the real security boundary.
 
+**Write tool creates parent directories implicitly.** Writing a file to a path whose parent does not yet exist creates the parent. Use this to avoid an explicit `mkdir` Bash step when creating new files under `.claude/` -- one Write tool call instead of mkdir (T3 Bash) + Write.
+
 **Permission model:**
 
 | Path | Parent session | Subagents | Enforced by |
@@ -88,7 +90,7 @@ Para Edit/Write sobre `.claude/skills/**`, `.claude/agents/**`, `.claude/command
 | `bypassPermissions` | Todos los permisos de CC skipeados -- Edit, Write, Bash, todo | Bash atómico single-command de housekeeping (mv dir, bulk cleanup) cuando el scope ya está aprobado conceptualmente por el usuario y hooks `PreToolUse` están hardened | Multi-file refactor -- bypass en background pre-aprueba el bundle entero, por lo que hooks `PreToolUse` no se re-invocan por operación; se pierde audit per-file |
 | `plan` | El agente propone un plan y requiere aprobación explícita antes de ejecutar cualquier herramienta | Revisar plan antes de ejecutar sin side effects -- útil para validar goals ambiguos | Tareas operativas rutinarias donde la aprobación por cada herramienta crea fricción innecesaria |
 
-> **Nota de precedencia:** `mode` en la dispatch del Agent tool aplica solo a esa invocación -- no se hereda del orchestrator al subagente ni de una dispatch a otra. Ver **Dispatch mode rule** arriba. `bypassPermissions` satisface CC native pero no bypassa Gaia `_is_protected()` ni el flujo nonce de `mutative_verbs.py`.
+> **Nota de precedencia:** `mode` en la dispatch del Agent tool aplica solo a esa invocación -- no se hereda del orchestrator al subagente, no se hereda entre dispatches distintas, y **no sobrevive a un SendMessage resume**. Si el subagente emite APPROVAL_REQUEST mid-task y el orchestrator resume vía SendMessage, el resume corre en `default` -- CC native vuelve a interceptar writes en `.claude/` aunque la dispatch original fuera `bypassPermissions`. Para tareas multi-step en paths protegidos, o se empaquetan todos los steps en un solo turno de la dispatch original, o el orchestrator re-dispatcha fresco con el mismo mode tras aprobar. Ver **Dispatch mode rule** arriba. `bypassPermissions` satisface CC native pero no bypassa Gaia `_is_protected()` ni el flujo nonce de `mutative_verbs.py`.
 
 ### Decision tree -- elegir mode por goal
 
@@ -124,6 +126,8 @@ La elección foreground/background es ortogonal al mode, pero la combinación im
 Regla de selección: si el agente puede descubrir algo inesperado mid-task y necesita emitir `approval_request` (ej: housekeeping que encuentra archivos no previstos), usa foreground. Si el scope está completamente definido y los permisos pre-satisfechos, background es viable.
 
 **Nota sobre hooks y background:** Los hooks `PreToolUse` son ortogonales al mode -- se invocan independientemente. Pero `bypassPermissions` en background pre-aprueba el bundle de permisos de CC, lo que en la práctica significa que operaciones encadenadas no re-disparan el prompt nativo por operación. Los hooks de Gaia (`_is_protected()`, `mutative_verbs.py`) siguen activos.
+
+**bypassPermissions + Gaia hook: comportamiento no determinístico.** En la práctica, el Gaia hook (`mutative_verbs.py`) no siempre dispara cuando `bypassPermissions` está activo en background. Causa observada: pre-approval del bundle por CC en background puede suprimir la cadena de invocación del hook en algunos pasos. No asumir que el hook disparará consistentemente bajo `bypassPermissions` + background -- diseñar el bundle asumiendo que podría no haber segunda validación por parte del hook.
 
 **Double defense for `.claude/` paths.** For `rm`, `mv`, and other destructive commands targeting paths under `.claude/`, both layers fire independently: CC native prompts the user for any write in `.claude/` regardless of Gaia classification, AND Gaia T3 approval flows for the mutative verb itself. Neither layer bypasses the other. A subagent dispatched with `mode: bypassPermissions` satisfies CC native but still faces the Gaia hook; shell wrappers like `bash -c '...'` may trigger `_detect_indirect_execution` but CC native can still intercept writes inside `.claude/`.
 
