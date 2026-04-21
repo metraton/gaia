@@ -1,0 +1,2 @@
+{"timestamp": "2026-04-20T10:00:00.100000", "session_id": "s7-clean", "tool_name": "Bash", "command": "ls -la", "parameters": {"command": "ls -la"}, "duration_ms": 10.0, "exit_code": 0, "tier": "T0"}
+{"timestamp": "2026-04-20T10:00:01.200000", "session_id": "s7-clean", "tool_name": "Bash", "command": "grep -l error logs/app.log", "parameters": {"command": "grep -l error logs/app.log"}, "duration_ms": 8.0, "exit_code": 0, "tier": "T0"}

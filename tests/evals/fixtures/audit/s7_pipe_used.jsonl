@@ -1,0 +1,1 @@
+{"timestamp": "2026-04-20T10:00:00.100000", "session_id": "s7-fail", "tool_name": "Bash", "command": "cat foo.txt | grep bar", "parameters": {"command": "cat foo.txt | grep bar"}, "duration_ms": 15.0, "exit_code": 0, "tier": "T0"}

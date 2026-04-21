@@ -1,0 +1,2 @@
+{"timestamp": "2026-04-20T10:00:00.100000", "session_id": "s7-test", "tool_name": "Bash", "command": "ls -la", "parameters": {"command": "ls -la"}, "duration_ms": 12.0, "exit_code": 0, "tier": "T0"}
+{"timestamp": "2026-04-20T10:00:01.200000", "session_id": "s7-test", "tool_name": "Bash", "command": "cat /etc/hosts", "parameters": {"command": "cat /etc/hosts"}, "duration_ms": 8.0, "exit_code": 0, "tier": "T0"}

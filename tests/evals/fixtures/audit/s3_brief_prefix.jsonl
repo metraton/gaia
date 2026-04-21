@@ -1,0 +1,1 @@
+{"timestamp": "2026-04-20T13:00:00.100000", "session_id": "s3-ok", "tool_name": "Read", "command": "", "parameters": {"file_path": "/home/jorge/ws/me/.claude/project-context/briefs/open_context-evals/brief.md"}, "duration_ms": 5.0, "exit_code": 0, "tier": ""}
