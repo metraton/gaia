@@ -960,3 +960,46 @@ class TestDetectMutativeCommand:
             f"These subcommands are in both GIT_LOCAL_SAFE_SUBCOMMANDS and "
             f"MUTATIVE_VERBS: {overlap}"
         )
+
+
+class TestGwsMacroPrefix:
+    """gws CLI exposes convenience macros prefixed with '+' (e.g. +reply, +send,
+    +search) that wrap underlying API calls. The verb scanner must strip the
+    '+' before the taxonomy lookup so the macros classify like their base
+    verbs, otherwise mutative macros slip through as 'safe by elimination'
+    and bypass T3 approval (bug found 2026-04-17 with gws gmail +reply).
+    """
+
+    def test_gws_gmail_plus_reply_is_mutative(self):
+        """gws gmail +reply is a send-a-reply macro; must be T3."""
+        result = detect_mutative_command(
+            'gws gmail +reply --message-id 19d988b417469c8a --body "hello"'
+        )
+        assert result.is_mutative is True
+        assert result.verb == "reply"
+        assert result.category == "MUTATIVE"
+
+    def test_gws_gmail_plus_send_is_mutative(self):
+        """gws gmail +send wraps messages send; must be T3."""
+        result = detect_mutative_command(
+            'gws gmail +send --to user@example.com --subject Hi --body Test'
+        )
+        assert result.is_mutative is True
+        assert result.verb == "send"
+        assert result.category == "MUTATIVE"
+
+    def test_gws_gmail_plus_search_is_read_only(self):
+        """gws gmail +search is a list wrapper; stays read-only after strip."""
+        result = detect_mutative_command('gws gmail +search "from:boss"')
+        assert result.is_mutative is False
+        assert result.verb == "search"
+        assert result.category == "READ_ONLY"
+
+    def test_gws_gmail_users_messages_send_still_mutative(self):
+        """Regression guard: the explicit messages send path keeps working."""
+        result = detect_mutative_command(
+            'gws gmail users messages send --params \'{"userId":"me","raw":"..."}\''
+        )
+        assert result.is_mutative is True
+        assert result.verb == "send"
+        assert result.category == "MUTATIVE"

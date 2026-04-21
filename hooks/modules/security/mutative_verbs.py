@@ -106,7 +106,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "attach", "bind", "connect", "mount",
     # Execution
     # NOTE: "run" removed -- safe by elimination (e.g., docker run is common dev workflow)
-    "exec", "execute", "invoke", "trigger", "send",
+    "exec", "execute", "invoke", "trigger", "send", "reply",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
     # NOTE: "commit" removed -- local-only operation, trust system
@@ -771,11 +771,23 @@ def detect_mutative_command(command: str) -> MutativeResult:
                 reason=f"Compound read-only subcommand '{token}'",
             )
 
+        # Strip leading '+' macro prefix before verb lookup.
+        # Some CLIs (notably `gws`) expose convenience macros with a '+' prefix
+        # that wrap an underlying mutative API call:
+        #   gws gmail +reply   -> sends a reply (equivalent to messages send)
+        #   gws gmail +send    -> sends a new message
+        #   gws gmail +search  -> list/search wrapper (read-only)
+        # Without stripping '+', these tokens miss MUTATIVE_VERBS / READ_ONLY_VERBS
+        # lookups and fall through to "safe by elimination", bypassing T3 approval.
+        # Stripping here resolves the macro to its base verb so the taxonomy below
+        # classifies it correctly.
+        stripped_token = token.lstrip("+")
+
         # Split hyphenated tokens: "delete-stack" -> check "delete"
-        candidate = token.split("-", 1)[0] if "-" in token else token
+        candidate = stripped_token.split("-", 1)[0] if "-" in stripped_token else stripped_token
 
         # Also check full token for exact matches (e.g., "force-delete")
-        full_lower = token
+        full_lower = stripped_token
 
         # Determine confidence from position
         confidence = "high" if semantic_index <= 2 else "medium"
