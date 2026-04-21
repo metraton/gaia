@@ -64,6 +64,9 @@ dist/
 .claude/project-context/briefs/*/evidence/*
 !.claude/project-context/briefs/*/evidence/INDEX.md
 
+# Transient eval smoke run artifacts (baseline.json is tracked)
+tests/evals/results/*-smoke.json
+
 # Temporary probe/test artifacts
 tmp-*
 probe-*.md
