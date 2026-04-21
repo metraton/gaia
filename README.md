@@ -37,7 +37,9 @@ That pipeline is the spine. Everything else in this repo is either a component o
 - **Indirect execution detection** - Catches `bash -c`, `eval`, `python -c` wrappers that bypass regex patterns
 - **Approval gates** for T3 operations via native `ask` dialog
 - **Git commit validation** with Conventional Commits
-- **21 skills** - Injected procedural knowledge modules for agents
+- **32 skills** - Injected procedural knowledge modules for agents (protocol, domain, workflow)
+- **Episodic memory** - `gaia memory` CLI with FTS5 search, episode inspection, and session context orientation
+- **Context evals** - pytest-driven agent evaluation (5 graders, 3 backends, 10 scenarios, baseline + drift detection)
 - **Plugin + npm** - Distributable as Claude Code native plugin or npm package
 - **Enterprise ready** - Managed settings template for organization-wide deployment
 
@@ -151,7 +153,7 @@ For organization-wide enforcement, deploy `templates/managed-settings.template.j
 ```
 gaia-ops-dev/
 ├── agents/              # Agent definitions (8 agents) — specialist identities + tool grants
-├── skills/              # Skill modules (21 skills) — injected procedural knowledge
+├── skills/              # Skill modules (32 skills) — injected procedural knowledge
 ├── hooks/               # Claude Code hooks — the event-driven pipeline
 ├── config/              # Configuration — routing, contracts, rules, git standards
 ├── commands/            # Slash commands — /gaia, /scan-project
