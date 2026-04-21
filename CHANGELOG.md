@@ -5,9 +5,54 @@ All notable changes to the gaia-ops orchestration system are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - Gaia CLI (M6)
+## [Unreleased]
 
-### Unified Python CLI + JS CLI Deprecation
+## [5.0.0-rc1] - 2026-04-21
+
+### Release Candidate: Context Evals, Planner M1-M6, Memory CLI, Security Hardening
+
+First release candidate for v5.0.0. Consolidates the agentic-loop evaluation
+framework, the closed gaia-planner milestones, the unified `gaia memory` CLI,
+and a round of security hardening covering approval lifecycle, Gmail policy,
+and session compaction.
+
+#### Added
+- **Context-evals framework** — full pytest-driven evaluation suite for agent
+  context consumption. 5 graders (code, contract, trace, routing,
+  skill-injection), 3 backends (static, headless, live), 10 scenarios in
+  catalog, baseline snapshot with drift detection, and reporter for CI-friendly
+  output. Tests under `tests/evals/` with `baseline.json` tracked and
+  `{timestamp}-smoke.json` gitignored.
+- **gaia-planner M1-M6 closed** — brief-spec + gaia-planner agent pipeline
+  end-to-end. Includes plan state machine, REVIEW -> APPROVAL_REQUEST split,
+  session_registry liveness filter, and approvals-drift-fix closed 2026-04-20.
+- **gaia memory CLI** — `python3 bin/gaia memory` subcommand with search
+  (`gaia memory search`), episode inspection (`gaia memory show <id>`), FTS5
+  full-text index, scoring overhaul, and session context orientation.
+- **gaia-compact skill** — structured session compaction preserving decisions,
+  components, gaps, file map, and next steps. Invoked via `/compact` or
+  orchestrator-level "compacta" triggers.
+- **tools/__init__.py** — namespace marker for pytest rootdir parity. Resolves
+  8 collection errors when running full suite (tests goes to 3702 passed,
+  36 skipped, 0 errors).
+
+#### Changed
+- **Gmail policy** — macro-prefix fix: `+` in label prefixes now correctly
+  strips before state-machine classification. Reply classified as mutative
+  (was previously read-only, causing false negatives in T3 flow).
+- **Approval workflow docs** — documented that `permissionMode` does not
+  survive SendMessage resume. Subagents emitting APPROVAL_REQUEST mid-task
+  require orchestrator to re-dispatch fresh (mode does not inherit on resume).
+- **Package version** — `package.json` aligned with `pyproject.toml` at
+  `5.0.0-rc1` (previously drifted at `5.0.0-beta.9`).
+
+#### Fixed
+- **pytest collection** — `tools/__init__.py` prevents rootdir walk-up mismatch
+  between `tests/` and `tools/scan/tests/`. Full suite now collects cleanly.
+- **Evals smoke JSONs** — transient artifacts no longer tracked in git;
+  `tests/evals/results/*-smoke.json` gitignored, `baseline.json` preserved.
+
+### Unified Python CLI + JS CLI Deprecation (inherited from beta cycle)
 
 The JS CLIs (`gaia-status`, `gaia-doctor`, `gaia-cleanup`, `gaia-update`, `gaia-history`, `gaia-metrics`) are now deprecated in favor of the unified `bin/gaia` Python CLI. The JS CLIs remain functional but print deprecation warnings to stderr on every invocation.
 
