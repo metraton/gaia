@@ -78,6 +78,7 @@ skills/
 ├── gmail-policy/          # Gmail domain policy (label-only, no delete)
 ├── memory-curation/       # Curate MEMORY.md index and topic files
 ├── memory-search/         # Query episodic memory via `gaia memory` CLI
+├── gaia-self-check/       # Validate internal consistency of the .claude/ installation
 ├── readme-writing/        # How to write READMEs for Gaia component folders
 └── reference.md           # Cross-skill reference index
 ```
