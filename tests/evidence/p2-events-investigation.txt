@@ -1,0 +1,60 @@
+P2 Events Test Investigation
+Date: 2026-04-18
+Status: FIXED (cheap fix applied)
+
+## Tests Investigated
+
+1. tests/hooks/adapters/test_p2_events.py::TestAdaptSubagentStart::test_extracts_agent_type
+2. tests/integration/test_p2_integration.py::TestSubagentStartFlow::test_subagent_start_returns_context_result
+
+## Root Cause
+
+Both tests call adapt_subagent_start() with a known project agent (cloud-troubleshooter /
+developer) and assert result.context_injected is True.
+
+The resume path in adapt_subagent_start() (claude_code.py:1800-1838) imports and calls
+build_project_context() inline. That function spawns context_provider.py as a subprocess,
+which reads .claude/project-context/project-context.json. That file does not exist in the
+test environment. The subprocess exits non-zero, build_project_context returns (None, {}),
+additional is empty, the if additional: branch is skipped, and the function falls through
+to ContextResult(context_injected=False).
+
+The exception is silently swallowed at line 1834 (except Exception as exc: logger.warning).
+The test then sees context_injected=False and fails.
+
+Diagnosis: test isolation failure. The test was written to assert production behavior
+(context injection for known project agents) without mocking the external filesystem
+dependency. This is a test problem, not a code problem -- the production code path is
+correct. The test should mock build_project_context/build_session_events so it is
+independent of the real context file.
+
+## Fix Applied
+
+Category: cheap (8 lines added across 2 files, no logic changes)
+
+File: tests/hooks/adapters/test_p2_events.py
+- Added: from unittest.mock import patch
+- Added: with patch() context around adapt_subagent_start call in
+  TestAdaptSubagentStart.test_extracts_agent_type, mocking
+  modules.context.context_injector.build_project_context -> ("# Context stub", {})
+  modules.session.session_event_injector.build_session_events -> ""
+
+File: tests/integration/test_p2_integration.py
+- Added: from unittest.mock import patch
+- Added: same with patch() context around _run_subagent_start_flow() call in
+  TestSubagentStartFlow.test_subagent_start_returns_context_result
+
+Patch target rationale: build_project_context and build_session_events are imported inline
+inside the function body, so patching the definition site (the module where the function
+lives) is correct. The mock is active when the inline import resolves.
+
+## Verification
+
+Before fix: 1 failed in test_p2_events.py; 1 failed in test_p2_integration.py
+After fix:  3253 passed, 26 skipped, 0 failed (full tests/ suite)
+
+## No production code changed
+
+hooks/adapters/claude_code.py was not touched.
+hooks/modules/* were not touched.
+Only test files modified.

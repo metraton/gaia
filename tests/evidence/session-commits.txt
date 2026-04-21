@@ -1,0 +1,33 @@
+## Session Commits Evidence — 2026-04-18
+
+### git log --oneline -5
+
+3da3ed8 test(hooks): isolate p2 event tests from project-context subprocess
+ff871dd fix(memory): FTS5 hyphen tokenization + instance-root path resolution
+9814e13 feat(memory): add gaia memory CLI + doctor/status integration
+4b00ac5 feat(approvals): add session liveness filter for pending approvals
+d4cb073 refactor(skills): rename approval->request-approval, align docs
+
+### git status (post-commits)
+
+On branch main
+Your branch is ahead of 'origin/main' by 34 commits.
+
+Changes not staged for commit (excluded from these commits — belong to a future session):
+  modified:   hooks/modules/security/mutative_verbs.py   (gws +reply macro fix)
+  modified:   skills/gmail-policy/SKILL.md               (gmail-policy additions)
+  modified:   tests/hooks/modules/security/test_mutative_verbs.py
+
+Untracked (excluded):
+  skills/gaia-compact/
+  skills/gmail-policy/reference.md
+  tests/evidence/fts5-hyphen-fix.txt
+  tests/evidence/instance-root-fix.txt
+  tests/evidence/memory-stats-investigation.txt
+  tests/evidence/p2-events-investigation.txt
+
+### Notes
+
+- skills/README.md and tools/gaia_simulator/skills_mapper.py had no diff — already committed or unchanged
+- Split used: simplified alternative 2 (memory.py + test_gaia_memory.py fully in commit 1; commit 2 tools-only)
+- 3 unstaged files left: mutative_verbs.py gws +reply fix + gmail-policy — separate concern, next session

@@ -1,0 +1,112 @@
+FTS5 Hyphen Fix — Evidence
+==========================
+Date: 2026-04-18
+
+## Fix Applied
+
+File: tools/memory/search_store.py
+Function: FTS5Provider._sanitize_query()
+Change: Added `query = query.replace("-", " ")` before tokenisation
+
+Root cause: FTS5 treats hyphens as token separators at index time,
+so "brief-spec" stored as two tokens "brief" and "spec". Passing
+"brief-spec" as a phrase query produced 0 results because the index
+never stores a "brief-spec" token. Pre-processing replaces hyphens
+with spaces so "brief-spec" -> "brief spec" -> "brief* spec*".
+
+## AC 1 — gaia memory search 'brief-spec' --json
+
+$ python3 bin/gaia memory search 'brief-spec' --json
+{"results": []}
+
+Note: 0 results is CORRECT. The live search.db contains 32 indexed episodes,
+none of which include the word "brief" in their content (episodes are code
+and session tasks from April 9 2026, predating any brief-spec work).
+The fix is verified via unit tests (see AC 3) where synthetic content
+containing "brief spec" is correctly found by a "brief-spec" query.
+
+## AC 2 — gaia memory search 'context-v5' --json
+
+$ python3 bin/gaia memory search 'context-v5' --json
+{
+  "results": [
+    {"id": "ep_20260409_152710_6b6736a7", "title": "You are gaia-system", "score": 0.3286, "date": "2026-04-09", ...},
+    {"id": "ep_20260409_134403_f3fa05cb", "title": "In .../feat/gaia-v5, create agentic-loop skill...", ...},
+    {"id": "ep_20260409_134553_e1f77a09", ...},
+    {"id": "ep_20260409_132634_6646a36f", ...},
+    {"id": "ep_20260409_132316_afad1373", ...},
+    {"id": "ep_20260409_134416_e302ace2", ...}
+  ]
+}
+
+6 hits returned (was 0 before fix). The query "context-v5" is now split
+into "context* v5*" prefix terms that match episodes containing both words.
+
+## AC 3 — pytest tests/tools/test_search_store.py tests/cli/test_gaia_memory.py -v
+
+$ python3 -m pytest tests/tools/test_search_store.py tests/cli/test_gaia_memory.py -v
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3
+collected 39 items
+
+tests/tools/test_search_store.py::TestFTS5Available::test_fts5_available PASSED
+tests/tools/test_search_store.py::TestIndexAndSearch::test_index_and_search PASSED
+tests/tools/test_search_store.py::TestIndexAndSearch::test_search_empty_query_returns_empty PASSED
+tests/tools/test_search_store.py::TestIndexAndSearch::test_search_no_match_returns_empty PASSED
+tests/tools/test_search_store.py::TestCount::test_count_matches_expected PASSED
+tests/tools/test_search_store.py::TestCount::test_count_empty_store PASSED
+tests/tools/test_search_store.py::TestSearchRanking::test_search_ranking PASSED
+tests/tools/test_search_store.py::TestGetBackendFTS5::test_get_backend_fts5 PASSED
+tests/tools/test_search_store.py::TestGetBackendFTS5::test_get_backend_returns_string PASSED
+tests/tools/test_search_store.py::TestHasEngram::test_has_engram_returns_bool PASSED
+tests/tools/test_search_store.py::TestHasEngram::test_has_engram_false_when_not_on_path PASSED
+tests/tools/test_search_store.py::TestHyphenQueryPreprocessing::test_hyphen_query_matches_spaced_content PASSED
+tests/tools/test_search_store.py::TestHyphenQueryPreprocessing::test_plain_query_still_works_after_hyphen_fix PASSED
+tests/tools/test_search_store.py::TestHyphenQueryPreprocessing::test_multi_word_hyphen_query PASSED
+tests/tools/test_search_store.py::TestIdempotentIndex::test_idempotent_index PASSED
+tests/tools/test_search_store.py::TestIdempotentIndex::test_idempotent_index_with_different_text PASSED
+tests/tools/test_search_store.py::TestIdempotentIndex::test_multiple_different_episodes_not_deduplicated PASSED
+tests/cli/test_gaia_memory.py::TestRegisterMemorySubcommand::test_register_adds_memory_to_choices PASSED
+tests/cli/test_gaia_memory.py::TestRegisterMemorySubcommand::test_register_nested_actions_present PASSED
+tests/cli/test_gaia_memory.py::TestCmdSearch::test_search_returns_results_json PASSED
+tests/cli/test_gaia_memory.py::TestCmdSearch::test_search_empty_results_ok PASSED
+tests/cli/test_gaia_memory.py::TestCmdSearch::test_search_human_output_no_crash PASSED
+tests/cli/test_gaia_memory.py::TestCmdSearch::test_search_without_search_store_returns_error PASSED
+tests/cli/test_gaia_memory.py::TestCmdStats::test_stats_returns_four_keys PASSED
+tests/cli/test_gaia_memory.py::TestCmdStats::test_stats_episode_count_from_index PASSED
+tests/cli/test_gaia_memory.py::TestCmdStats::test_stats_indexed_from_search_store PASSED
+tests/cli/test_gaia_memory.py::TestCmdStats::test_stats_human_output_no_crash PASSED
+tests/cli/test_gaia_memory.py::TestCmdShow::test_show_found_returns_all_keys PASSED
+tests/cli/test_gaia_memory.py::TestCmdShow::test_show_not_found_returns_exit_1 PASSED
+tests/cli/test_gaia_memory.py::TestCmdShow::test_show_without_episodic_module_returns_error PASSED
+tests/cli/test_gaia_memory.py::TestCmdShow::test_show_human_output_has_content PASSED
+tests/cli/test_gaia_memory.py::TestCmdConflicts::test_conflicts_no_conflicts_returns_empty_list PASSED
+tests/cli/test_gaia_memory.py::TestCmdConflicts::test_conflicts_with_conflicts_normalizes_similarity_to_score PASSED
+tests/cli/test_gaia_memory.py::TestCmdConflicts::test_conflicts_structure_has_required_keys PASSED
+tests/cli/test_gaia_memory.py::TestCmdConflicts::test_conflicts_without_detector_module_returns_error PASSED
+tests/cli/test_gaia_memory.py::TestCmdConflicts::test_conflicts_human_output_no_crash PASSED
+tests/cli/test_gaia_memory.py::TestJsonFlag::test_search_json_is_parseable PASSED
+tests/cli/test_gaia_memory.py::TestJsonFlag::test_stats_json_is_parseable PASSED
+tests/cli/test_gaia_memory.py::TestJsonFlag::test_conflicts_json_is_parseable PASSED
+============================== 39 passed in 0.11s ==============================
+
+New tests added (TestHyphenQueryPreprocessing):
+- test_hyphen_query_matches_spaced_content: PASS
+- test_plain_query_still_works_after_hyphen_fix: PASS (regression guard)
+- test_multi_word_hyphen_query: PASS
+
+## AC 4 — Full suite (tests/ -q)
+
+$ python3 -m pytest tests/ -q
+3248 passed, 26 skipped in 34.45s
+
+0 failed. 26 skipped = llm/e2e tests (marked, expected).
+
+## Files Modified
+
+- tools/memory/search_store.py          (FTS5Provider._sanitize_query: hyphen fix)
+- tests/tools/test_search_store.py      (added TestHyphenQueryPreprocessing class)
+- tests/cli/test_gaia_memory.py         (fixed test isolation: _make_fake_modules
+                                          now replaces tools.memory attr too;
+                                          test_search_without_search_store patches
+                                          _import_search_store directly)

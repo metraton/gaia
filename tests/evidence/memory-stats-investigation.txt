@@ -1,0 +1,174 @@
+# Memory Stats Investigation — `gaia memory stats` discrepancy
+
+**Date:** 2026-04-18
+**Investigator:** developer agent
+**Question:** Why did `gaia memory stats` report `total_episodes=20, indexed=20` in T1
+but `total_episodes=1380, indexed=9524` in gaia-operator Q1/Q2?
+
+---
+
+## Qué es `total_episodes`
+
+`total_episodes` = `len(index.get("episodes", []))` from `index.json`.
+
+Source: `_cmd_stats` in `bin/cli/memory.py` lines 203-205:
+
+```python
+index = _load_index(project_root)
+episodes = index.get("episodes", [])
+total_episodes = len(episodes)
+```
+
+`_load_index` reads `{project_root}/.claude/project-context/episodic-memory/index.json`.
+`project_root` is resolved by `_find_project_root()` which walks up from `cwd` until it
+finds a directory containing `.claude/`.
+
+**Conclusion:** `total_episodes` is a plain Python `len()` of the episodes array in
+`index.json`. It counts logical episodes (rolling window), NOT FTS5 entries.
+
+---
+
+## Qué es `indexed`
+
+`indexed` = `search_store.count()` which calls:
+
+```python
+conn.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()[0]
+```
+
+Source: `FTS5Provider.count()` in `tools/memory/search_store.py` lines 194-200.
+
+`episodes_fts` is a SQLite FTS5 virtual table in `search.db`. Each row is **one
+episode** — the table schema has `episode_id` as a column, not a term index.
+`INSERT OR IGNORE` logic prevents duplicates. `SELECT COUNT(*) FROM episodes_fts`
+returns the number of distinct episode rows stored in FTS5.
+
+**Conclusion:** `indexed` is the number of episode rows in the FTS5 virtual table —
+not n-grams, not terms, not a tokenizer artifact. It is a head count of distinct
+indexed episodes. FTS5 virtual tables do NOT expose n-gram/term counts via
+`COUNT(*)`; that number would require querying the shadow tables directly.
+
+This means `indexed > total_episodes` is **structurally valid**: the FTS5 database
+can contain more episodes than the current rolling window in `index.json` because
+backfill operations (and past sessions) accumulate rows in `search.db` persistently,
+while `index.json` only tracks the most recent N episodes.
+
+---
+
+## Por qué el cambio 20 → 1380
+
+The discrepancy is **not** a UX bug, a backfill side-effect, or an n-gram artifact.
+It is caused by **two entirely different `search.db` files being queried** —
+one per distinct `project_root`.
+
+### The two databases confirmed
+
+| Path | index.json episodes | search.db FTS5 rows |
+|------|--------------------:|--------------------:|
+| `/home/jorge/ws/me/.claude/project-context/episodic-memory/` | **1385** | **9524** |
+| `/home/jorge/ws/me/gaia-ops-dev/.claude/project-context/episodic-memory/` | **20** | **32** |
+
+### Root cause: `_find_project_root()` is cwd-sensitive
+
+`_find_project_root()` in `bin/cli/memory.py` and `_resolve_db_path()` in
+`tools/memory/search_store.py` both walk up from `Path.cwd()` until they find a
+directory containing `.claude/`.
+
+- **T1 execution context:** cwd was `/home/jorge/ws/me/gaia-ops-dev`. Walking up
+  from there, the first `.claude/` found is
+  `/home/jorge/ws/me/gaia-ops-dev/.claude/`. Therefore `index.json` had 20 episodes
+  and `search.db` had 20 FTS5 rows (at that moment in time).
+
+- **gaia-operator Q1/Q2 execution context:** cwd was `/home/jorge/ws/me` (confirmed
+  by the session last-result.json at
+  `/home/jorge/ws/me/.claude/session/active/response-contract/session-205151-8816db97/last-result.json`
+  which shows `agent: gaia-operator` and the verbatim output
+  `{"total_episodes": 1380, "indexed": 9524}`). Walking up from
+  `/home/jorge/ws/me`, the first `.claude/` found is `/home/jorge/ws/me/.claude/`.
+  That database has 1385 episodes in `index.json` and 9524 rows in `search.db`.
+
+### Note on slight number drift
+
+The Q1/Q2 output showed `total_episodes=1380`; the current read of that same
+`index.json` shows 1385. This 5-episode difference is explained by normal episodic
+memory writes that occurred between the gaia-operator Q1 run (today, a few minutes
+ago) and this investigation. No anomaly.
+
+### Role of backfill (T4 doctor --fix)
+
+T4 evidence shows that `doctor --fix` ran on `2026-04-18` and rebuilt the
+`gaia-ops-dev` search.db from scratch (deleted it, then backfilled 20 episodes).
+This caused the gaia-ops-dev search.db row count to change from 20 → 0 → 20 and
+later to 32 (12 additional episodes were indexed after T4). The backfill **did not
+affect** the root `ws/me` database (different path). The 20 → 1380 jump is not
+caused by backfill; it is caused entirely by the cwd switch between sessions.
+
+---
+
+## ¿Son consistentes los dos números entre sí?
+
+Within each database, yes:
+
+- `gaia-ops-dev`: `total_episodes=20` (index.json), `indexed=32` (FTS5).
+  The gap of 12 means 12 episodes were indexed into FTS5 via backfill or
+  `index_episode()` calls but have since rotated out of the rolling window in
+  `index.json`. Structurally valid.
+
+- `ws/me` root: `total_episodes=1385` (index.json), `indexed=9524` (FTS5).
+  Large gap: 8139 FTS5 rows exist for episodes no longer in the rolling window.
+  This is the accumulation of all past `index_episode()` calls since the database
+  was created. Also structurally valid — FTS5 never purges old rows unless explicitly
+  deleted.
+
+---
+
+## Recomendación
+
+### 1. UX: add `db_path` to stats output (P1)
+
+`gaia memory stats` should include the resolved `search.db` path in its JSON output
+so operators immediately see which database is being queried:
+
+```json
+{
+  "total_episodes": 20,
+  "indexed": 32,
+  "db_path": "/home/jorge/ws/me/gaia-ops-dev/.claude/project-context/episodic-memory/search.db",
+  ...
+}
+```
+
+This would have surfaced the discrepancy immediately in Q1/Q2.
+
+### 2. Operational: gaia agents should be dispatched from a consistent cwd (P0)
+
+The two-database situation arises because `/home/jorge/ws/me` and
+`/home/jorge/ws/me/gaia-ops-dev` both have a `.claude/` directory. Any agent
+dispatched from the repo root (`ws/me`) hits the production memory; any agent
+dispatched from the dev repo (`gaia-ops-dev`) hits the dev memory. This is
+probably intentional (dev isolation) but should be documented as a known
+operational invariant.
+
+### 3. Hygiene: FTS5 never prunes (P2)
+
+The `ws/me` FTS5 index has 9524 rows vs 1385 in index.json. Old FTS5 rows from
+rotated-out episodes are never purged. Over time this causes:
+- `indexed` to diverge far above `total_episodes`
+- Stale results from `memory search` for episodes no longer in index.json
+- Growing `search.db` file size
+
+A periodic reconciliation pass (delete FTS5 rows whose `episode_id` is not in
+`index.json`) should be added to `doctor --fix`.
+
+---
+
+## Summary table
+
+| Question | Answer |
+|----------|--------|
+| What is `total_episodes`? | `len(index.json["episodes"])` — rolling window of recent episodes |
+| What is `indexed`? | `SELECT COUNT(*) FROM episodes_fts` — cumulative episode rows in SQLite FTS5, never pruned |
+| Are they consistent? | Yes within each DB; gap is structurally expected (FTS5 accumulates, index.json rotates) |
+| What explains 20 → 1380? | Two different databases: gaia-ops-dev cwd hits dev DB (20 eps), ws/me cwd hits prod DB (1380+ eps) |
+| Was backfill the cause? | No — T4 backfill only rebuilt gaia-ops-dev DB; prod DB was untouched |
+| Is `indexed=9524` an n-gram count? | No — it is a count of episode rows; FTS5 COUNT(*) on virtual table returns row count, not term count |

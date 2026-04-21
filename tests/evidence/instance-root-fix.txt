@@ -1,0 +1,98 @@
+# Instance Root Fix — Evidence
+
+**Date:** 2026-04-18
+**Brief:** Change path resolution to always point to the highest Gaia .claude/ instance
+
+---
+
+## AC1: From ws/me (instance root)
+
+```
+$ python3 gaia-ops-dev/bin/gaia memory stats --json
+{
+  "total_episodes": 1389,
+  "indexed": 9524,
+  "avg_score": 0.171,
+  "conflicts": 1
+}
+```
+
+## AC2: From gaia-ops-dev/ (subcarpeta)
+
+```
+$ cd /home/jorge/ws/me/gaia-ops-dev && python3 bin/gaia memory stats --json
+{
+  "total_episodes": 1389,
+  "indexed": 9524,
+  "avg_score": 0.171,
+  "conflicts": 1
+}
+```
+
+## AC3: From gaia-ops-dev/tests/ (carpeta más profunda)
+
+```
+$ cd /home/jorge/ws/me/gaia-ops-dev/tests && python3 ../bin/gaia memory stats --json
+{
+  "total_episodes": 1389,
+  "indexed": 9524,
+  "avg_score": 0.171,
+  "conflicts": 1
+}
+```
+
+All three contexts return identical total_episodes=1389 and indexed=9524.
+Before the fix, running from gaia-ops-dev/ returned total_episodes=20.
+
+---
+
+## AC4: Full suite
+
+```
+$ cd /home/jorge/ws/me/gaia-ops-dev && python3 -m pytest tests/ -q
+2 failed, 3251 passed, 26 skipped in 38.78s
+```
+
+The 2 failures are pre-existing (test_p2_events.py::test_extracts_agent_type and
+test_p2_integration.py::test_subagent_start_returns_context_result) — both reference
+a missing project-context.json and are unrelated to memory path resolution.
+
+New unit tests added: 5 tests, all passing.
+  - tests/cli/test_gaia_memory.py::TestFindProjectRoot (3 tests)
+  - tests/tools/test_search_store.py::TestResolveDbPathHighestRoot (2 tests)
+
+---
+
+## Implementation Notes
+
+### Root cause of the original bug
+
+`_find_project_root()` and `_resolve_db_path()` both stopped at the FIRST
+`.claude/` found walking upward from cwd. Running from `gaia-ops-dev/` found
+`gaia-ops-dev/.claude/` first, yielding the dev database (20 episodes).
+
+### Why the original "walk to HOME" approach needed refinement
+
+`$HOME/.claude/` exists as Claude Code's user settings directory.
+Walking all the way to HOME and picking the highest `.claude/` would return
+`/home/jorge` — but that dir's `.claude/` has no episodic memory data (no
+`index.json`). It is a CC settings dir, not a Gaia instance.
+
+### Final approach: Gaia marker discrimination
+
+`find_highest_claude_root()` (in tools/memory/paths.py) now:
+1. Walks from cwd up to Path.home() (inclusive)
+2. Collects candidates that have a `.claude/` AND at least one Gaia marker
+   (`hooks/`, `agents/`, or `skills/`) under it
+3. Returns the highest (closest to HOME) Gaia-qualified candidate
+4. Falls back to highest plain `.claude/` if no Gaia-qualified one found
+
+This discriminates Gaia instance roots from the CC user settings dir at $HOME.
+
+### Files changed
+
+- tools/memory/paths.py          (new: shared helper)
+- bin/cli/memory.py              (_find_project_root updated)
+- tools/memory/search_store.py   (_resolve_db_path updated)
+- tests/cli/test_gaia_memory.py  (3 new tests: TestFindProjectRoot)
+- tests/tools/test_search_store.py (2 new tests: TestResolveDbPathHighestRoot)
