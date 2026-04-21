@@ -219,10 +219,15 @@ class TestParityDoctor:
             )
 
     def test_python_doctor_check_count(self, minimal_project):
-        """Python gaia doctor should run all 11 checks."""
+        """Python gaia doctor should run all 14 checks.
+
+        Count was 11 before T3 of plan open_memory-cli added 3 memory checks:
+        memory_fts5_db, memory_fts5_count, memory_scoring.
+        Update this value when new checks are added to cmd_doctor's check_fns list.
+        """
         data = _assert_python_json_valid("doctor", minimal_project)
-        assert len(data["checks"]) == 11, (
-            f"Expected 11 checks, got {len(data['checks'])}: {[c['name'] for c in data['checks']]}"
+        assert len(data["checks"]) == 14, (
+            f"Expected 14 checks, got {len(data['checks'])}: {[c['name'] for c in data['checks']]}"
         )
 
     def test_python_doctor_status_values(self, minimal_project):

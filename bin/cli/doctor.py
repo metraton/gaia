@@ -350,6 +350,111 @@ def check_project_dirs(project_root: Path) -> dict:
     return _result("Project dirs", "pass", f"{len(paths)} paths verified")
 
 
+def check_memory_fts5_db(project_root: Path) -> dict:
+    """Check if the FTS5 search.db exists for episodic memory."""
+    db_path = project_root / ".claude" / "project-context" / "episodic-memory" / "search.db"
+    if db_path.is_file():
+        return _result("memory_fts5_db", "pass", f"search.db present ({db_path.stat().st_size} bytes)")
+    return _result(
+        "memory_fts5_db",
+        "info",
+        "search.db not found (created on first use)",
+        "Run: gaia doctor --fix",
+    )
+
+
+def check_memory_fts5_count(project_root: Path) -> dict:
+    """Check FTS5 indexed count against total episode count in index.json."""
+    index_path = project_root / ".claude" / "project-context" / "episodic-memory" / "index.json"
+
+    if not index_path.is_file():
+        return _result("memory_fts5_count", "info", "index.json not found — no episodes yet")
+
+    index_data = _read_json(index_path)
+    if not index_data:
+        return _result("memory_fts5_count", "info", "index.json unreadable")
+
+    total = len(index_data.get("episodes") or [])
+
+    try:
+        import sys as _sys
+        # Ensure package root is on path for lazy import
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        from tools.memory import search_store  # noqa: PLC0415
+        indexed = search_store.count()
+    except ImportError:
+        return _result(
+            "memory_fts5_count",
+            "info",
+            "tools.memory.search_store not importable — FTS5 count skipped",
+        )
+    except Exception as exc:
+        return _result("memory_fts5_count", "info", f"Could not query FTS5 count: {exc}")
+
+    if total == 0:
+        return _result("memory_fts5_count", "pass", "No episodes to index")
+
+    pct = indexed / total
+    if pct < 0.90:
+        return _result(
+            "memory_fts5_count",
+            "warning",
+            f"FTS5 index incomplete: {indexed}/{total} episodes indexed ({pct:.0%})",
+            "Run: gaia doctor --fix",
+        )
+    return _result("memory_fts5_count", "pass", f"{indexed}/{total} episodes indexed ({pct:.0%})")
+
+
+def check_memory_scoring(project_root: Path) -> dict:
+    """Check that tools.memory.scoring is importable (scoring module available)."""
+    try:
+        import sys as _sys
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        import tools.memory.scoring  # noqa: F401, PLC0415
+        return _result("memory_scoring", "pass", "Scoring module importable")
+    except ImportError as exc:
+        return _result(
+            "memory_scoring",
+            "warning",
+            f"Scoring module unavailable: {exc} (scoring disabled)",
+        )
+    except Exception as exc:
+        return _result("memory_scoring", "warning", f"Scoring module error: {exc}")
+
+
+def _apply_fts5_backfill(project_root: Path) -> dict:
+    """Run FTS5 backfill and return a fix-result dict."""
+    try:
+        import sys as _sys
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+
+        # Ensure backfill_fts5 finds the correct project root by setting cwd context
+        # via the module's own _find_project_root (walks up from cwd).
+        # We temporarily add project_root to env if needed, but the module uses cwd.
+        import os as _os
+        orig_cwd = _os.getcwd()
+        try:
+            _os.chdir(project_root)
+            from tools.memory import backfill_fts5  # noqa: PLC0415
+            rc = backfill_fts5.main()
+        finally:
+            _os.chdir(orig_cwd)
+
+        if rc == 0:
+            return {"name": "fts5_backfill", "status": "applied", "detail": "FTS5 index rebuilt successfully"}
+        return {"name": "fts5_backfill", "status": "failed", "detail": f"backfill_fts5.main() returned {rc}"}
+    except ImportError as exc:
+        return {"name": "fts5_backfill", "status": "failed", "detail": f"Cannot import backfill_fts5: {exc}"}
+    except Exception as exc:
+        return {"name": "fts5_backfill", "status": "failed", "detail": f"Backfill error: {exc}"}
+
+
 def check_memory_dirs(project_root: Path) -> dict:
     """Check episodic memory directories are present."""
     checks = [
@@ -456,6 +561,9 @@ def cmd_doctor(args) -> int:
         lambda: check_project_context(project_root),
         lambda: check_project_dirs(project_root),
         lambda: check_memory_dirs(project_root),
+        lambda: check_memory_fts5_db(project_root),
+        lambda: check_memory_fts5_count(project_root),
+        lambda: check_memory_scoring(project_root),
     ]
 
     results = []
@@ -468,18 +576,50 @@ def cmd_doctor(args) -> int:
     has_errors = any(r["severity"] == "error" for r in results)
     has_warnings = any(r["severity"] == "warning" for r in results)
 
+    # --fix: run auto-fixers for triggered checks
+    fixes = []
+    if getattr(args, "fix", False):
+        fts5_db_check = next((r for r in results if r["name"] == "memory_fts5_db"), None)
+        fts5_count_check = next((r for r in results if r["name"] == "memory_fts5_count"), None)
+
+        db_needs_fix = fts5_db_check and fts5_db_check["severity"] == "info"
+        count_needs_fix = fts5_count_check and fts5_count_check["severity"] == "warning"
+
+        if db_needs_fix or count_needs_fix:
+            fix_result = _apply_fts5_backfill(project_root)
+            fixes.append(fix_result)
+
+            if fix_result["status"] == "applied":
+                # Re-run the affected checks to reflect post-fix state
+                if fts5_db_check:
+                    idx = results.index(fts5_db_check)
+                    results[idx] = check_memory_fts5_db(project_root)
+                if fts5_count_check:
+                    idx = results.index(fts5_count_check)
+                    results[idx] = check_memory_fts5_count(project_root)
+
+                # Recompute summary flags after re-checks
+                has_errors = any(r["severity"] == "error" for r in results)
+                has_warnings = any(r["severity"] == "warning" for r in results)
+
     if getattr(args, "json", False):
         status = "critical" if has_errors else "degraded" if has_warnings else "healthy"
         output = {
             "healthy": not has_errors and not has_warnings,
             "status": status,
             "checks": results,
+            "fixes": fixes,
         }
         print(json.dumps(output, indent=2))
     else:
         gaia_check = next((r for r in results if r["name"] == "Gaia-Ops"), None)
         version_detail = gaia_check["detail"] if gaia_check and gaia_check["severity"] == "pass" else ""
         _print_human(results, version_detail)
+        if fixes:
+            print("  Fixes applied:")
+            for fix in fixes:
+                print(f"    [{fix['status'].upper()}] {fix['name']}: {fix['detail']}")
+            print()
 
     if has_errors:
         return 2

@@ -97,6 +97,58 @@ def _get_context_last_updated(project_root: Path):
     return None
 
 
+def _get_memory_v2_stats(project_root: Path) -> dict:
+    """Get Memory v2 stats: indexed count and avg score.
+
+    Lazily imports tools.memory.search_store and tools.memory.scoring.
+    Returns {"indexed": 0, "avg_score": None} on any failure.
+    """
+    base = {"indexed": 0, "avg_score": None}
+    try:
+        import tools.memory.search_store as search_store  # noqa: PLC0415
+        import tools.memory.scoring as scoring  # noqa: PLC0415
+    except ImportError:
+        return base
+
+    try:
+        indexed = search_store.count()
+    except Exception:
+        return base
+
+    # Compute avg_score from a sample of index entries
+    index_path = (
+        project_root / ".claude" / "project-context" / "episodic-memory" / "index.json"
+    )
+    avg_score = None
+    try:
+        data = _read_json(index_path)
+        if data and isinstance(data.get("episodes"), list):
+            episodes = data["episodes"]
+            if episodes:
+                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+                scores = []
+                for ep in episodes[:50]:  # sample at most 50 entries
+                    ts = ep.get("timestamp") or ep.get("created_at")
+                    retrieval_count = ep.get("retrieval_count", 0) or 0
+                    if ts:
+                        try:
+                            dt = __import__("datetime").datetime.fromisoformat(
+                                ts.replace("Z", "+00:00")
+                            )
+                            days_old = max(0.0, (now - dt).total_seconds() / 86400)
+                        except Exception:
+                            days_old = 0.0
+                    else:
+                        days_old = 0.0
+                    scores.append(scoring.score_memory(days_old, retrieval_count))
+                if scores:
+                    avg_score = sum(scores) / len(scores)
+    except Exception:
+        pass
+
+    return {"indexed": indexed, "avg_score": avg_score}
+
+
 def _get_contract_stats(project_root: Path):
     """Get response contract validation stats from session directories."""
     contract_dir = project_root / ".claude" / "session" / "active" / "response-contract"
@@ -144,6 +196,7 @@ def _collect_status(project_root: Path) -> dict:
     anomaly_count = _get_anomaly_count(project_root)
     context_updated = _get_context_last_updated(project_root)
     contract_stats = _get_contract_stats(project_root)
+    memory_v2 = _get_memory_v2_stats(project_root)
 
     last_agent = episodic["last_agent"]
     episodes = episodic["episodes"]
@@ -158,6 +211,8 @@ def _collect_status(project_root: Path) -> dict:
         "anomaly_count": anomaly_count,
         "context_updated": context_updated,
         "contract_stats": contract_stats,
+        "indexed": memory_v2["indexed"],
+        "avg_score": memory_v2["avg_score"],
     }
 
 
@@ -202,7 +257,12 @@ def _print_human(status: dict) -> None:
     ag = status["agent_session_count"]
     ep_str = f"{ep} episodes" if ep else "no episodic-memory"
     ag_str = f"{ag} agent sessions" if ag > 0 else "no agent sessions"
-    print(f"  Memory:       {ep_str}  |  {ag_str}")
+    indexed = status.get("indexed", 0)
+    avg_score = status.get("avg_score")
+    if avg_score is not None:
+        print(f"  Memory:       {ep_str}  |  {ag_str}  |  {indexed} indexed  |  avg score {avg_score:.2f}")
+    else:
+        print(f"  Memory:       {ep_str}  |  {ag_str}  |  {indexed} indexed")
 
     # Contracts
     cs = status["contract_stats"]

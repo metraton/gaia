@@ -210,6 +210,71 @@ class TestCmdStatusJson:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Memory v2 stats (T5)
+# ---------------------------------------------------------------------------
+
+class TestMemoryV2Stats:
+    """Test enhanced memory line with indexed count and avg_score."""
+
+    def test_status_json_includes_indexed(self, project_dir, monkeypatch, capsys):
+        """JSON output must include 'indexed' key."""
+        # Monkeypatch search_store.count() to return a predictable value
+        import types
+
+        fake_search_store = types.ModuleType("tools.memory.search_store")
+        fake_search_store.count = lambda: 42
+
+        fake_scoring = types.ModuleType("tools.memory.scoring")
+        fake_scoring.score_memory = lambda days_old, retrieval_count, **kw: 0.5
+
+        monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+        monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
+        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_search_store)
+        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
+
+        monkeypatch.chdir(project_dir)
+        args = SimpleNamespace(json=True, subcommand="status")
+        rc = status_mod.cmd_status(args)
+
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "indexed" in data
+        assert data["indexed"] == 42
+
+    def test_status_memory_line_shows_indexed(self, project_dir, monkeypatch, capsys):
+        """Human output memory line must contain 'indexed'."""
+        import types
+
+        fake_search_store = types.ModuleType("tools.memory.search_store")
+        fake_search_store.count = lambda: 7
+
+        fake_scoring = types.ModuleType("tools.memory.scoring")
+        fake_scoring.score_memory = lambda days_old, retrieval_count, **kw: 0.75
+
+        monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+        monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
+        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_search_store)
+        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
+
+        monkeypatch.chdir(project_dir)
+        args = SimpleNamespace(json=False, subcommand="status")
+        rc = status_mod.cmd_status(args)
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "indexed" in out
+
+    def test_get_memory_v2_stats_import_failure(self, project_dir, monkeypatch):
+        """When tools.memory is not importable, returns safe defaults."""
+        monkeypatch.setitem(sys.modules, "tools.memory.search_store", None)
+        monkeypatch.setitem(sys.modules, "tools.memory.scoring", None)
+
+        stats = status_mod._get_memory_v2_stats(project_dir)
+        assert stats["indexed"] == 0
+        assert stats["avg_score"] is None
+
+
+# ---------------------------------------------------------------------------
 # Tests: contract stats
 # ---------------------------------------------------------------------------
 
