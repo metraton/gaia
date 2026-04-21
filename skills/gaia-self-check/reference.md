@@ -17,7 +17,7 @@ The skill operates exclusively on `.claude/`. The inventory walk covers:
 | `.claude/skills/` | Skills | Yes |
 | `.claude/agents/` | Agents | Yes |
 | `.claude/commands/` | Slash commands | Yes |
-| `.claude/hooks/` | Hooks | Only if referenced in `settings.json` |
+| `.claude/hooks/` | Hooks | Yes |
 
 No path outside `.claude/` is read, regardless of what a component's
 frontmatter references.
@@ -73,11 +73,13 @@ for each component file:
 
 Required fields by component type:
 
-| Type | Required fields |
-|------|----------------|
-| Skill (`SKILL.md`) | `name`, `description` |
-| Agent (`agents/*.md`) | `name`, `description`, `tools` |
-| Command (`commands/*.md`) | `name`, `description` |
+| Type | Required fields | Notes |
+|------|----------------|-------|
+| Skill (`SKILL.md`) | `name`, `description` | |
+| Agent (`agents/*.md`) | `name`, `description`, `tools` | `tools` is the correct field; `allowed-tools` is not valid here |
+| Command (`commands/*.md`) | `name`, `description` | Commands use `allowed-tools` (not `tools`) for tool restrictions -- both field names are valid depending on whether the command is a CC slash command or an agent-facing command |
+
+**Convención `tools` vs `allowed-tools`:** Agent frontmatters declare their tool access with `tools`. Command frontmatters (slash commands) use `allowed-tools` when restricting tool access. These are two distinct conventions for two distinct component types. When validating frontmatter, apply the correct expected field per component type -- flagging `allowed-tools` in a command as "wrong field" is a false positive.
 
 **Ejemplo de finding:**
 
@@ -157,33 +159,84 @@ references (e.g., `` `skills/foo/SKILL.md` ``), not every mention of a name.
 
 ### Orphan/listed consistency (routing)
 
-**Qué verifica:** Two independent checks:
+**Qué verifica:** Three independent sub-checks. Each sub-check targets a
+distinct source of truth that drifts independently.
 
-1. **Disk vs listing**: Every skill directory under `.claude/skills/` that
-   contains a `SKILL.md` should appear in `skills/README.md`. Skills
-   present on disk but absent from the README are orphans.
-2. **Listing vs disk**: Every skill listed in `skills/README.md` should
-   have a matching directory with a `SKILL.md` on disk. Listed-but-missing
-   skills are broken references.
+#### Sub-check A: Orphan detection (skills)
 
-For agents: same pattern against any listing in `agents/README.md` if one
-exists.
+A skill is an orphan only when it meets both conditions simultaneously:
 
-For routing config: if `.claude/config/surface-routing.json` exists,
-each `primary_agent` value must match a file stem in `.claude/agents/`.
-A routing entry pointing to a non-existent agent is a broken cross-reference
-between config and agents directory.
+1. No agent frontmatter anywhere in `.claude/agents/` lists it under `skills:`.
+2. It is absent from the directory tree in `skills/README.md`.
 
-**Cómo detectarlo:**
+If the skill appears in at least one agent's `skills:` list, it is a
+**referenced skill** -- not an orphan. It may still be missing from the README
+tree (that is doc drift, see Sub-check B), but it is not orphaned.
 
 ```
-skills on disk   = {dir.name for dir in .claude/skills/ if (dir/SKILL.md).exists()}
-skills in README = {name parsed from each row in skills/README.md table}
+skills_on_disk   = {dir.name for dir in .claude/skills/ if (dir/SKILL.md).exists()}
+agent_referenced = {skill for each agent in .claude/agents/*.md
+                         for skill in yaml(agent).get('skills', [])}
+skills_in_tree   = {name parsed from directory tree section of skills/README.md}
 
-orphans  = skills_on_disk - skills_in_README
-missing  = skills_in_README - skills_on_disk
+orphans          = skills_on_disk - agent_referenced - skills_in_tree
+doc_drift        = (skills_on_disk & agent_referenced) - skills_in_tree
+```
 
-routing  = parse .claude/config/surface-routing.json
+`orphans` -> FINDING: skill not referenced by any agent and absent from README
+`doc_drift` -> FINDING (lower severity): skill is referenced by agents but missing from README tree
+
+#### Sub-check B: README sources of truth
+
+`skills/README.md` contains two distinct structures that drift independently:
+
+1. **Directory tree**: the visual listing of skill directories.
+2. **Skill-to-agent assignment matrix**: which skills are assigned to which agents.
+
+Verify both explicitly:
+
+```
+# Tree check
+skills_in_tree   = {name from directory tree section}
+skills_on_disk   = {dir.name for dir in .claude/skills/ if (dir/SKILL.md).exists()}
+missing_from_tree = skills_on_disk - skills_in_tree
+stale_in_tree    = skills_in_tree - skills_on_disk
+
+# Matrix check
+skills_in_matrix = {name from each row of the assignment table}
+for each skill in skills_in_matrix:
+  if skill not in skills_on_disk:
+    FINDING: matrix references skill that does not exist on disk
+```
+
+Report tree drift and matrix drift as separate findings -- they require
+different fixes (update the tree listing vs update the assignment table).
+
+The same two-source check applies to `agents/README.md` and
+`commands/README.md`: each surface has its own README and each may contain
+both a directory listing and cross-reference tables.
+
+#### Sub-check C: READMEs for all three surfaces
+
+The check covers all three surface READMEs explicitly:
+
+| README | Surface | What to check |
+|--------|---------|---------------|
+| `skills/README.md` | Skills | Directory tree + assignment matrix |
+| `agents/README.md` | Agents | Directory listing vs `.claude/agents/*.md` |
+| `commands/README.md` | Commands | Directory listing vs `.claude/commands/*.md` |
+
+If a README does not exist for a surface, report "README absent for
+`<surface>/`" rather than skipping silently.
+
+#### Sub-check D: Routing config
+
+If `.claude/config/surface-routing.json` exists, each `primary_agent` value
+must match a file stem in `.claude/agents/`. A routing entry pointing to a
+non-existent agent is a broken cross-reference between config and agents.
+
+```
+routing        = parse .claude/config/surface-routing.json
 agents_on_disk = {f.stem for f in .claude/agents/*.md}
 for each surface in routing.surfaces:
   agent = surface.primary_agent
@@ -195,38 +248,59 @@ for each surface in routing.surfaces:
 
 | Componente | Tipo | Inconsistencia | Fix propuesto |
 |------------|------|----------------|---------------|
-| `skills/gaia-self-check/` | Skill | Directorio existe en disco, no listado en `skills/README.md` | Agregar entrada en `skills/README.md` |
-| `skills/old-skill/` | Skill | Listado en `skills/README.md` pero directorio ausente en disco | Eliminar entrada del README o restaurar la skill |
+| `skills/gaia-self-check/` | Skill | En disco y referenciada por agents, ausente del árbol en `skills/README.md` | Agregar al árbol de directorios en `skills/README.md` (doc drift, no orphan) |
+| `skills/draft-skill/` | Skill | En disco, sin referencias en ningún agent, ausente del README | requires_human_review: ¿skill en construcción o puede eliminarse? |
+| `skills/README.md` | Doc | `nah-skill` en la matriz de asignación pero directorio ausente en disco | Eliminar `nah-skill` de la matriz o restaurar la skill |
+| `skills/old-skill/` | Skill | Listado en árbol del README pero directorio ausente en disco | Eliminar entrada del árbol en el README o restaurar la skill |
+| `agents/README.md` | Doc | README ausente para la superficie `agents/` | Crear `agents/README.md` con listado de agents |
 | `config/surface-routing.json` | Config | `primary_agent: ghost-agent` no existe en `.claude/agents/` | Actualizar `primary_agent` o crear `ghost-agent.md` |
 
 ---
 
-### hooks/ (opcional)
+### hooks/ (siempre)
 
-**Cuándo aplicar:** Only when `settings.json` contains `hooks` entries that
-reference files under `.claude/hooks/`.
+**Qué verifica:** Hooks are always part of the scan. Two directions:
 
-**Qué verifica:** Each hook file referenced in `settings.json` must exist
-at the declared path. A hook registered but absent on disk causes silent
-failures at runtime -- the harness calls the hook and gets a file-not-found
-error.
+1. **settings.json -> disk**: Every hook file declared in `settings.json`
+   must exist on disk. A hook registered but missing on disk causes silent
+   runtime failures -- the harness calls the hook and gets a file-not-found
+   error.
+2. **disk -> settings.json**: Every file under `.claude/hooks/` must be
+   registered in `settings.json`. A hook file present on disk but not
+   registered is dead code -- it runs nowhere.
 
 **Cómo detectarlo:**
 
 ```
-settings = parse .claude/settings.json
-for each hook entry in settings.hooks:
-  path = hook entry command or file path
-  if path starts with .claude/hooks/:
+# Parse settings.json (may not exist)
+if .claude/settings.json does not exist:
+  report: "no active hooks detected -- settings.json absent"
+  skip hooks check
+else:
+  settings = parse .claude/settings.json
+  hooks_in_settings = {resolve path from each hook entry in settings.hooks}
+
+  # Direction 1: registered -> disk
+  for each path in hooks_in_settings:
     if file does not exist at path:
-      FINDING: hook registered in settings.json but file missing
+      FINDING: hook registered in settings.json but file missing on disk
+
+  # Direction 2: disk -> registered
+  hooks_on_disk = {f for f in .claude/hooks/*.py}
+  for each file in hooks_on_disk:
+    if file not in hooks_in_settings:
+      FINDING: hook file on disk but not registered in settings.json
+
+  if hooks_in_settings is empty:
+    report: "no active hooks detected -- settings.json present but no hooks entries"
 ```
 
 **Ejemplo de finding:**
 
 | Componente | Tipo | Inconsistencia | Fix propuesto |
 |------------|------|----------------|---------------|
-| `settings.json` | Config | Hook `.claude/hooks/post_tool_use.py` registrado pero archivo no existe | Crear el archivo del hook o eliminar la entrada de `settings.json` |
+| `settings.json` | Config | Hook `.claude/hooks/post_tool_use.py` registrado pero archivo no existe en disco | Crear el archivo del hook o eliminar la entrada de `settings.json` |
+| `hooks/pre_tool_use.py` | Hook | Archivo presente en disco pero no registrado en `settings.json` | Agregar entrada en `settings.json` o eliminar el archivo |
 
 ## Propuesta y Aprobación
 
@@ -346,7 +420,7 @@ Situations that trigger `requires_human_review`:
 
 | Situation | Why it is ambiguous |
 |-----------|---------------------|
-| Orphan skill directory (has `SKILL.md`, not in README, no agent references it) | Could be deliberate (WIP skill not yet published) or a forgotten leftover |
+| Orphan skill directory (has `SKILL.md`, not referenced in any agent frontmatter, absent from README) | Could be deliberate (WIP skill not yet published) or a forgotten leftover |
 | Agent `name` vs file stem mismatch where both the name and the stem look intentional | Renaming the file or the field both produce valid results -- only the user knows the intent |
 | Cross-reference to a skill that existed and was deleted (deletion was recent per git blame) | Could be a stale ref or could be that the user intends to restore the skill |
 | Routing entry for an agent with no skills list | Might be a new agent mid-construction or a misconfiguration |
