@@ -51,13 +51,26 @@ def _resolve_db_path() -> Path:
 
     Priority:
         1. GAIA_SEARCH_DB_PATH environment variable
-        2. Default relative path anchored to project root (same detection
-           logic as episodic.py -- walk up from cwd until .claude/ is found)
+        2. Highest ancestor with a .claude/ directory (closest to HOME),
+           so that a nested .claude/ in a sub-repository or dev checkout
+           never shadows the real Gaia instance.
+        3. Bare relative path fallback (last resort, same as before).
     """
     env_path = os.environ.get("GAIA_SEARCH_DB_PATH")
     if env_path:
         return Path(env_path)
 
+    try:
+        from memory.paths import find_highest_claude_root
+        root = find_highest_claude_root()
+        if root is not None:
+            return root / _DEFAULT_RELATIVE_PATH
+    except ImportError:
+        pass
+
+    # Fallback: original first-match walk (keeps behaviour if paths.py is
+    # somehow unavailable, e.g. during isolated unit tests that only add
+    # the tools/ root to sys.path after import).
     current = Path.cwd()
     for parent in [current, *current.parents]:
         if (parent / ".claude").is_dir():
@@ -129,7 +142,16 @@ class FTS5Provider(SearchProvider):
         Uses prefix matching instead of exact quoted tokens so that
         "approval" matches "approvals", "approving", etc.
         Special characters that would break FTS5 syntax are stripped.
+
+        Hyphens are replaced with spaces before tokenisation so that
+        queries like "brief-spec" or "context-v5" are treated as two
+        separate prefix terms ("brief*" "spec*") rather than a single
+        phrase that FTS5 cannot match (FTS5 treats hyphens as token
+        separators at index time, so the stored tokens never contain
+        hyphens).
         """
+        # Replace hyphens with spaces so "brief-spec" → "brief spec"
+        query = query.replace("-", " ")
         words = query.split()
         # Strip characters that break FTS5 syntax, then append wildcard
         safe = [w.replace('"', '').replace("'", '').strip('*') for w in words if w]

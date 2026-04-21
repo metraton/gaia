@@ -222,6 +222,62 @@ class TestHasEngram:
 
 
 # ---------------------------------------------------------------------------
+# Test: hyphen query preprocessing
+# ---------------------------------------------------------------------------
+
+class TestHyphenQueryPreprocessing:
+    """Verify that hyphenated queries find content stored as space-separated tokens."""
+
+    def test_hyphen_query_matches_spaced_content(self, tmp_path, monkeypatch):
+        """search('brief-spec') must find an episode whose text contains 'brief spec'.
+
+        FTS5 tokenises stored text on hyphens, so the index never stores
+        'brief-spec' as a single token.  The fix pre-processes the query by
+        replacing hyphens with spaces before passing it to FTS5 MATCH.
+        """
+        monkeypatch.setenv("GAIA_SEARCH_DB_PATH", str(tmp_path / "test_search.db"))
+        provider = FTS5Provider()
+
+        provider.index("ep_brief", "working on brief spec for the new feature")
+        provider.index("ep_other", "unrelated kubernetes deployment work")
+
+        results = provider.search("brief-spec")
+
+        assert len(results) == 1, (
+            f"Expected 1 result for 'brief-spec', got {len(results)}: {results}"
+        )
+        assert results[0]["episode_id"] == "ep_brief"
+
+    def test_plain_query_still_works_after_hyphen_fix(self, tmp_path, monkeypatch):
+        """Non-hyphenated queries must continue to return correct results (no regression)."""
+        monkeypatch.setenv("GAIA_SEARCH_DB_PATH", str(tmp_path / "test_search.db"))
+        provider = FTS5Provider()
+
+        provider.index("ep_deploy", "deploy terraform infrastructure to production")
+        provider.index("ep_memory", "gaia memory episodic search store fix")
+
+        results = provider.search("terraform")
+
+        assert len(results) == 1
+        assert results[0]["episode_id"] == "ep_deploy"
+
+    def test_multi_word_hyphen_query(self, tmp_path, monkeypatch):
+        """search('context-v5') (multi-part concept) returns the relevant episode."""
+        monkeypatch.setenv("GAIA_SEARCH_DB_PATH", str(tmp_path / "test_search.db"))
+        provider = FTS5Provider()
+
+        provider.index("ep_ctx", "migrated context v5 to sqlite backend")
+        provider.index("ep_other", "fixed approval workflow state machine")
+
+        results = provider.search("context-v5")
+
+        assert len(results) >= 1, (
+            f"Expected at least 1 result for 'context-v5', got {len(results)}: {results}"
+        )
+        assert results[0]["episode_id"] == "ep_ctx"
+
+
+# ---------------------------------------------------------------------------
 # Test: idempotent indexing
 # ---------------------------------------------------------------------------
 
@@ -264,3 +320,68 @@ class TestIdempotentIndex:
         assert provider.count() == 2, (
             f"Expected count=2 for 2 distinct episode_ids, got {provider.count()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: _resolve_db_path picks highest .claude/ (instance-root fix)
+# ---------------------------------------------------------------------------
+
+class TestResolveDbPathHighestRoot:
+    """Verify _resolve_db_path() returns the highest Gaia .claude/ in the hierarchy.
+
+    Tree: tmp_path/.claude/hooks/  (Gaia instance root — has hooks/ marker)
+          tmp_path/sub/.claude/    (nested plain .claude/, no Gaia markers)
+
+    When cwd is tmp_path/sub/, the resolved DB path must point to
+    tmp_path/.claude/ — NOT to tmp_path/sub/.claude/.
+    """
+
+    def _make_tree(self, tmp_path: Path):
+        """Create a two-level .claude/ tree rooted at tmp_path.
+
+        The instance root has a hooks/ marker; the nested sub/ dir has a
+        bare .claude/ without Gaia markers (simulating an accidental nested
+        .claude/ that should not shadow the real instance).
+        """
+        # Instance root: .claude/ with hooks/ marker (Gaia-qualified)
+        (tmp_path / ".claude" / "hooks").mkdir(parents=True)
+        # Nested sub-directory: bare .claude/, no Gaia markers
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / ".claude").mkdir()
+        return tmp_path, sub
+
+    def test_resolve_db_path_uses_highest_root(self, tmp_path, monkeypatch):
+        """From a nested cwd, _resolve_db_path must point to the Gaia instance root."""
+        from memory.search_store import _resolve_db_path
+
+        instance_root, sub_dir = self._make_tree(tmp_path)
+
+        # Override HOME so that find_highest_claude_root stops at tmp_path
+        monkeypatch.setenv("HOME", str(instance_root))
+        monkeypatch.delenv("GAIA_SEARCH_DB_PATH", raising=False)
+
+        # Patch Path.home() to return our controlled root
+        import pathlib
+        monkeypatch.setattr(pathlib.Path, "home", staticmethod(lambda: instance_root))
+
+        monkeypatch.chdir(sub_dir)
+
+        db_path = _resolve_db_path()
+
+        assert str(db_path).startswith(str(instance_root)), (
+            f"Expected db_path under instance root {instance_root}, got {db_path}"
+        )
+        assert str(sub_dir) not in str(db_path), (
+            f"db_path must NOT be under nested sub dir {sub_dir}, got {db_path}"
+        )
+
+    def test_resolve_db_path_env_var_overrides_walk(self, tmp_path, monkeypatch):
+        """GAIA_SEARCH_DB_PATH env var must bypass the walk entirely."""
+        from memory.search_store import _resolve_db_path
+
+        custom = str(tmp_path / "custom" / "search.db")
+        monkeypatch.setenv("GAIA_SEARCH_DB_PATH", custom)
+
+        db_path = _resolve_db_path()
+        assert str(db_path) == custom
