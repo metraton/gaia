@@ -1,6 +1,6 @@
-# Contributing to gaia-ops
+# Contributing to Gaia
 
-Thank you for your interest in contributing to gaia-ops. This guide covers how to set up your development environment, run tests, and submit changes.
+Thank you for your interest in contributing to Gaia. This guide covers how to set up your development environment, run tests, and submit changes.
 
 ## Development Setup
 

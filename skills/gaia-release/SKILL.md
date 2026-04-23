@@ -27,13 +27,13 @@ Symlinks point directly to source -- edits are instant, no build step.
 **When:** "test here", "try this out", "put it in live mode"
 
 1. Detect current state: where does `.claude/hooks` point?
-2. Create symlinks from target `.claude/` to `gaia-ops-dev/`: agents, hooks, skills, config, tools, commands
+2. Create symlinks from target `.claude/` to `gaia-dev/`: agents, hooks, skills, config, tools, commands
 3. Verify: `npx gaia-doctor`
 4. Tell user to restart Claude Code
 
 **Default path:** Current project (cwd). If user says "here" -> cwd. If user specifies a project -> that path.
 
-**Revert:** `npm install @jaguilar87/gaia-ops` restores release symlinks.
+**Revert:** `npm install @jaguilar87/gaia` restores release symlinks.
 
 Live mode does not test build output, package contents, or install pipeline. A file present in source but missing from `package.json` files array will work in live and break in dry-run.
 

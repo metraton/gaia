@@ -14,7 +14,7 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
    ```
    mkdir /tmp/gaia-dry-run-YYYYMMDD && cd $_
    npm init -y
-   npm install /path/to/jaguilar87-gaia-ops-X.Y.Z.tgz
+   npm install /path/to/jaguilar87-gaia-X.Y.Z.tgz
    ```
 5. Validate installation:
    ```
@@ -26,9 +26,9 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
    - Default (ops): start `claude`, verify orchestrator, delegation, T3 nonce approval
    - Security: `GAIA_PLUGIN_MODE=security claude`, verify no agents, native T3 dialog
 7. Test plugin channel (if applicable):
-   `claude --plugin-dir /path/to/gaia-ops-dev/dist/gaia-ops`
+   `claude --plugin-dir /path/to/gaia-dev/dist/gaia-ops`
 8. Run test pyramid:
-   - L1: `npm test` (from gaia-ops-dev, not test project)
+   - L1: `npm test` (from gaia-dev, not test project)
    - Routing: `python3 tools/gaia_simulator/cli.py "<test prompt>"`
 
 **Default path:** `/tmp/gaia-dry-run-YYYYMMDD/`.
@@ -49,12 +49,12 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
    ```
    mkdir /tmp/gaia-beta-verify && cd $_
    npm init -y
-   npm install @jaguilar87/gaia-ops@beta
+   npm install @jaguilar87/gaia@beta
    npx gaia-doctor
    npx gaia-status
    ```
 
-**To promote beta to latest:** `npm dist-tag add @jaguilar87/gaia-ops@X.Y.Z latest`
+**To promote beta to latest:** `npm dist-tag add @jaguilar87/gaia@X.Y.Z latest`
 
 ## Release Steps (PIPELINE)
 
@@ -71,7 +71,7 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
    ```
    mkdir /tmp/gaia-release-verify && cd $_
    npm init -y
-   npm install @jaguilar87/gaia-ops@latest
+   npm install @jaguilar87/gaia@latest
    npx gaia-doctor
    npx gaia-status
    ```

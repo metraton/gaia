@@ -1,10 +1,10 @@
 # Architecture
 
-## What is gaia-ops?
+## What is Gaia?
 
-gaia-ops is an orchestration system for Claude Code agents. It turns a single Claude Code session into a coordinated multi-agent system with security enforcement, context injection, surface-based routing, episodic memory, and deterministic response contracts.
+Gaia is an orchestration system for Claude Code agents. It turns a single Claude Code session into a coordinated multi-agent system with security enforcement, context injection, surface-based routing, episodic memory, and deterministic response contracts.
 
-The package is published as `@jaguilar87/gaia-ops` on npm and installed into a project's `.claude/` directory via symlinks.
+The package is published as `@jaguilar87/gaia` on npm and installed into a project's `.claude/` directory via symlinks. Gaia ships two sub-plugins: `gaia-ops` (full orchestrator with all agents) and `gaia-security` (security hooks only).
 
 ## Core Concepts
 
@@ -208,7 +208,7 @@ ClaudeCodeAdapter.format_validation_response() -> Claude Code stdout JSON
 ```
 
 ### Plugin Distribution
-gaia-ops is distributable as a Claude Code plugin via `.claude-plugin/plugin.json`.
+Gaia ships the `gaia-ops` sub-plugin as a Claude Code plugin via `.claude-plugin/plugin.json`.
 The plugin is auto-discovered by Claude Code -- agents, skills, commands, and hooks
 are loaded from their respective directories.
 
@@ -216,7 +216,7 @@ See `.claude-plugin/marketplace.json` for the self-hosted marketplace with sub-p
 
 ## Adapter Coupling Points
 
-The adapter layer connects Claude Code's hook protocol to gaia-ops business logic through 5 coupling points. Each coupling point is a thin entry point that delegates to the adapter for JSON parsing/formatting and to business logic modules for decisions.
+The adapter layer connects Claude Code's hook protocol to Gaia business logic through 5 coupling points. Each coupling point is a thin entry point that delegates to the adapter for JSON parsing/formatting and to business logic modules for decisions.
 
 ### CP-1: `hooks/pre_tool_use.py` -- Command Validation Entry Point
 
@@ -277,7 +277,7 @@ The abstract interface in `hooks/adapters/base.py` defines the adapter contract.
 | `format_validation_response` | `(result: ValidationResult) -> HookResponse` | Format a validation result for the CLI's permission protocol |
 | `format_completion_response` | `(result: CompletionResult) -> HookResponse` | Format a completion result for SubagentStop |
 | `format_context_response` | `(result: ContextResult) -> HookResponse` | Format a context injection result |
-| `detect_channel` | `() -> DistributionChannel` | Detect whether gaia-ops is running as NPM or PLUGIN |
+| `detect_channel` | `() -> DistributionChannel` | Detect whether Gaia is running as NPM or PLUGIN |
 
 Additional abstract methods for P1/P2 events: `adapt_session_start`, `format_bootstrap_response`, `adapt_stop`, `adapt_task_completed`, `adapt_subagent_start`, `format_quality_response`, `format_verification_response`.
 

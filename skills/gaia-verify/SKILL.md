@@ -26,7 +26,7 @@ If the user does not specify a mode, ask: "Which mode -- live, dry-run, beta, or
 
 Tests the current symlinked installation. Source code is live -- no build step.
 
-**When:** After editing source files in `gaia-ops-dev/`
+**When:** After editing source files in `gaia-dev/`
 
 Commands: run `gaia-doctor` then `gaia-status` directly (already installed, no npx needed).
 
@@ -38,7 +38,7 @@ Tests the build pipeline -- does `npm pack` + local install produce a working in
 
 **When:** Before publishing to npm
 
-Step-by-step commands in `reference.md`. Core flow: `npm pack` in `gaia-ops-dev` -> install `.tgz` in `/tmp/gaia-dry-run-{timestamp}` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
+Step-by-step commands in `reference.md`. Core flow: `npm pack` in `gaia-dev` -> install `.tgz` in `/tmp/gaia-dry-run-{timestamp}` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
 
 ## Mode: beta
 
@@ -46,7 +46,7 @@ Tests the published `@beta` tag on the npm registry.
 
 **When:** After publishing a beta release via the pipeline
 
-Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-beta-verify-{timestamp}` -> `npm install @jaguilar87/gaia-ops@beta` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
+Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-beta-verify-{timestamp}` -> `npm install @jaguilar87/gaia@beta` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
 
 ## Mode: release
 
@@ -54,7 +54,7 @@ Tests the published `@latest` tag on the npm registry.
 
 **When:** After publishing a stable release via the pipeline
 
-Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-release-verify-{timestamp}` -> `npm install @jaguilar87/gaia-ops@latest` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
+Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-release-verify-{timestamp}` -> `npm install @jaguilar87/gaia@latest` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
 
 ## All Modes: Reporting
 

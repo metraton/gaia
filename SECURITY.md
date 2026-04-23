@@ -13,7 +13,7 @@
 
 To report a vulnerability, please use one of the following methods:
 
-1. **Email:** Send details to jorge.aguilar87@gmail.com with the subject line `[SECURITY] gaia-ops vulnerability report`.
+1. **Email:** Send details to jorge.aguilar87@gmail.com with the subject line `[SECURITY] gaia vulnerability report`.
 2. **GitHub Private Vulnerability Reporting:** Use the [Security Advisories](https://github.com/metraton/gaia/security/advisories) tab to report privately.
 
 ### What to include
@@ -31,7 +31,7 @@ To report a vulnerability, please use one of the following methods:
 
 ## What Constitutes a Security Issue
 
-The following are considered security vulnerabilities in gaia-ops:
+The following are considered security vulnerabilities in Gaia:
 
 - **Hook bypass:** Any method to execute commands without passing through the pre_tool_use validation hook
 - **Approval flow bypass:** Circumventing the nonce-based approval flow for T3 (state-modifying) operations

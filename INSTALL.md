@@ -1,10 +1,12 @@
-# Gaia-Ops Installation Guide
+# Gaia Installation Guide
 
-This guide will help you install and configure Gaia-Ops in your project. The process is automatic and takes less than 5 minutes.
+This guide will help you install and configure Gaia in your project. The process is automatic and takes less than 5 minutes.
 
-## 🎯 What is Gaia-Ops?
+## 🎯 What is Gaia?
 
-Gaia-Ops is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
+Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
+
+The `gaia-ops` sub-plugin ships the full orchestrator and all agents; `gaia-security` ships security hooks only. Both are distributed via the `@jaguilar87/gaia` npm package.
 
 ---
 
@@ -71,7 +73,7 @@ User runs: npx gaia-scan
          ↓
 Creates .claude/ structure
          ↓
-Creates symlinks to gaia-ops:
+Creates symlinks to gaia package:
   .claude/agents → node_modules/.../agents
   .claude/tools → node_modules/.../tools
   .claude/hooks → node_modules/.../hooks
@@ -121,7 +123,7 @@ Example: Installation in project with GitOps and Terraform
    ↓
 6. Result:
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ✅ Gaia-Ops installed successfully!
+   ✅ Gaia installed successfully!
    
    📚 Documentation available:
    - .claude/agents/README.md
@@ -193,7 +195,7 @@ your-project/
 │   ├── logs/                   ← Audit logs
 │   └── settings.json           ← Security configuration
 └── node_modules/
-    └── @jaguilar87/gaia-ops/   ← npm package
+    └── @jaguilar87/gaia/       ← npm package
 ```
 
 ---
@@ -227,8 +229,8 @@ Once installed, you have access to **complete documentation** in each directory:
 ls -la .claude/
 
 # Should show symlinks:
-# agents -> ../node_modules/@jaguilar87/gaia-ops/agents
-# tools -> ../node_modules/@jaguilar87/gaia-ops/tools
+# agents -> ../node_modules/@jaguilar87/gaia/agents
+# tools -> ../node_modules/@jaguilar87/gaia/tools
 ```
 
 ### 2. Review Generated Configuration
@@ -264,7 +266,7 @@ claude
 
 ### ⚠️ Files That Get Overwritten
 
-When you update `@jaguilar87/gaia-ops`, these files are **regenerated from templates**:
+When you update `@jaguilar87/gaia`, these files are **regenerated from templates**:
 
 | File | Behavior | Recommended Action |
 |------|----------|-------------------|
@@ -279,7 +281,7 @@ Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated vi
 
 ```bash
 # 1. Update package
-npm install @jaguilar87/gaia-ops@latest
+npm install @jaguilar87/gaia@latest
 
 # 2. Postinstall hook automatically:
 #    - Replaces settings.json from template
@@ -292,7 +294,7 @@ npm install @jaguilar87/gaia-ops@latest
 
 ### Avoiding Multiple Installations
 
-Gaia-Ops **automatically detects** if you already have Claude Code installed and **does NOT reinstall it**.
+Gaia **automatically detects** if you already have Claude Code installed and **does NOT reinstall it**.
 
 #### Installation Verification
 
@@ -389,14 +391,14 @@ npx gaia-uninstall --force --remove-all
 rm -rf .claude/
 
 # 2. Uninstall npm package
-npm uninstall @jaguilar87/gaia-ops
+npm uninstall @jaguilar87/gaia
 ```
 
 ---
 
 ## 💡 Design Principles
 
-Gaia-Ops is designed with these principles:
+Gaia is designed with these principles:
 
 ✅ **Minimal** - Only creates what's needed, no duplicates  
 ✅ **Adaptive** - Auto-detects existing installations  
@@ -412,19 +414,19 @@ Gaia-Ops is designed with these principles:
 ### Resources
 
 - **Documentation:** Inside `.claude/*/README.md`
-- **Issues:** https://github.com/metraton/gaia-ops/issues
+- **Issues:** https://github.com/metraton/gaia/issues
 - **Email:** jorge.aguilar87@gmail.com
 
 ### Frequently Asked Questions
 
-**Q: Can I use gaia-ops in multiple projects?**  
+**Q: Can I use Gaia in multiple projects?**  
 A: Yes. Install in each project and each will have its own `project-context.json`.
 
 **Q: Do symlinks work on Windows?**  
 A: Yes, but you need to enable developer mode or run as administrator.
 
 **Q: How do I update only documentation without changing code?**
-A: `npm update @jaguilar87/gaia-ops` - symlinks point to the new version automatically.
+A: `npm update @jaguilar87/gaia` - symlinks point to the new version automatically.
 
 ---
 

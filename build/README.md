@@ -13,7 +13,7 @@ The `version` field in both manifests uses `"from:package.json"` — the build p
 This component does not activate at runtime in the usual sense. The manifests are consumed once — at Claude Code plugin load time — and are not read again during the session.
 
 ```
-npm install @jaguilar87/gaia-ops
+npm install @jaguilar87/gaia
         |
 Claude Code detects plugin in node_modules/
         |

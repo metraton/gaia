@@ -158,12 +158,12 @@ no partial credit, and drift is exact-match compare.
 
 ## How to run
 
-All commands assume the repo root is `/home/jorge/ws/me/gaia-ops-dev`.
+All commands assume the repo root is `/home/jorge/ws/me/gaia-dev`.
 
 **Smoke (default, no LLM tokens, no API key):**
 
 ```
-cd /home/jorge/ws/me/gaia-ops-dev
+cd /home/jorge/ws/me/gaia-dev
 python3 -m pytest tests/evals/ -q
 ```
 
@@ -175,7 +175,7 @@ then skipped by `tests/conftest.py` -- the suite still exits 0.
 **Live (per-case LLM dispatch, -m llm):**
 
 ```
-cd /home/jorge/ws/me/gaia-ops-dev
+cd /home/jorge/ws/me/gaia-dev
 python3 -m pytest tests/evals/ -m llm -q --timeout=180
 ```
 
@@ -189,7 +189,7 @@ on-demand, smoke subset (S4-S7) ~6-10k.
 **Smoke variant for post-deploy sanity (protocol cases only):**
 
 ```
-cd /home/jorge/ws/me/gaia-ops-dev
+cd /home/jorge/ws/me/gaia-dev
 python3 -m pytest tests/evals/test_evals.py -q \
     -k "S4 or S5 or S6 or S7"
 ```
@@ -197,7 +197,7 @@ python3 -m pytest tests/evals/test_evals.py -q \
 **Single case, single grader module (fast iteration):**
 
 ```
-cd /home/jorge/ws/me/gaia-ops-dev
+cd /home/jorge/ws/me/gaia-dev
 python3 -m pytest tests/evals/test_evals.py::test_smoke_case -q -k S3
 python3 -m pytest tests/evals/test_graders_contract.py -q
 ```
@@ -205,7 +205,7 @@ python3 -m pytest tests/evals/test_graders_contract.py -q
 **Guard test ensuring catalog / smoke-map stay in lockstep:**
 
 ```
-cd /home/jorge/ws/me/gaia-ops-dev
+cd /home/jorge/ws/me/gaia-dev
 python3 -m pytest tests/evals/test_evals.py::test_every_catalog_case_has_smoke_envelope -q
 ```
 
@@ -275,7 +275,7 @@ envelope in `_SMOKE_FIXTURES` -- prevents silent `pytest.skip` leaks.
 6. **Run the guard + the case**:
 
    ```
-   cd /home/jorge/ws/me/gaia-ops-dev
+   cd /home/jorge/ws/me/gaia-dev
    python3 -m pytest tests/evals/test_evals.py -q -k S11
    ```
 
@@ -313,7 +313,7 @@ print(drift.has_drift, [e for e in drift.entries if e.drift])
 **Promote the candidate**:
 
 ```
-cd /home/jorge/ws/me/gaia-ops-dev
+cd /home/jorge/ws/me/gaia-dev
 mv tests/evals/results/baseline.candidate.json tests/evals/results/baseline.json
 ```
 

@@ -1,10 +1,10 @@
-# GAIA-Ops
+# Gaia
 
 > **G**eneral **A**gentic **I**ntegration **A**rchitecture
 
-[![npm version](https://badge.fury.io/js/@jaguilar87%2Fgaia-ops.svg)](https://www.npmjs.com/package/@jaguilar87/gaia-ops)
+[![npm version](https://badge.fury.io/js/@jaguilar87%2Fgaia.svg)](https://www.npmjs.com/package/@jaguilar87/gaia)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/node/v/@jaguilar87/gaia-ops.svg)](https://nodejs.org)
+[![Node.js Version](https://img.shields.io/node/v/@jaguilar87/gaia.svg)](https://nodejs.org)
 
 ## Cómo leer este repo
 
@@ -25,7 +25,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 
 ## Overview
 
-**GAIA-Ops** is a multi-agent orchestration system for DevOps automation. It provides security-first command classification, specialized AI agents, and plugin-based distribution. Currently integrates with Claude Code.
+**Gaia** is a multi-agent orchestration system for DevOps automation. It ships two sub-plugins — `gaia-ops` (full orchestrator) and `gaia-security` (security-only) — with security-first command classification, specialized AI agents, and plugin-based distribution. Currently integrates with Claude Code.
 
 ### Features
 
@@ -48,7 +48,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 ### Via Claude Code Plugin (recommended)
 ```bash
 # Add the marketplace
-/plugin marketplace add metraton/gaia-ops
+/plugin marketplace add metraton/gaia
 
 # Install the full system (includes security)
 /plugin install gaia-ops
@@ -59,7 +59,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 
 ### Via npm (advanced setup)
 ```bash
-npm install @jaguilar87/gaia-ops
+npm install @jaguilar87/gaia
 npx gaia-scan
 ```
 
@@ -70,7 +70,7 @@ npx gaia-scan
 npx gaia-scan
 
 # Or install globally
-npm install -g @jaguilar87/gaia-ops
+npm install -g @jaguilar87/gaia
 gaia-scan
 ```
 
@@ -85,7 +85,7 @@ No `CLAUDE.md` is generated -- orchestrator identity lives in `agents/gaia-orche
 
 ### Settings Architecture
 
-Gaia-Ops separates hooks from permissions:
+Gaia separates hooks from permissions:
 
 | File | Content | Strategy |
 |------|---------|----------|
@@ -97,20 +97,20 @@ This ensures your personal customizations (MCP servers, extra permissions) survi
 ### Manual Installation
 
 ```bash
-npm install @jaguilar87/gaia-ops
+npm install @jaguilar87/gaia
 ```
 
 Then create symlinks:
 
 ```bash
 mkdir -p .claude && cd .claude
-ln -s ../node_modules/@jaguilar87/gaia-ops/agents agents
-ln -s ../node_modules/@jaguilar87/gaia-ops/tools tools
-ln -s ../node_modules/@jaguilar87/gaia-ops/hooks hooks
-ln -s ../node_modules/@jaguilar87/gaia-ops/commands commands
-ln -s ../node_modules/@jaguilar87/gaia-ops/config config
-ln -s ../node_modules/@jaguilar87/gaia-ops/templates templates
-ln -s ../node_modules/@jaguilar87/gaia-ops/skills skills
+ln -s ../node_modules/@jaguilar87/gaia/agents agents
+ln -s ../node_modules/@jaguilar87/gaia/tools tools
+ln -s ../node_modules/@jaguilar87/gaia/hooks hooks
+ln -s ../node_modules/@jaguilar87/gaia/commands commands
+ln -s ../node_modules/@jaguilar87/gaia/config config
+ln -s ../node_modules/@jaguilar87/gaia/templates templates
+ln -s ../node_modules/@jaguilar87/gaia/skills skills
 ```
 
 ## Usage
@@ -133,7 +133,7 @@ npx gaia-skills-diagnose --run-tests
 
 ## Security
 
-Gaia-Ops enforces a 6-layer security pipeline:
+Gaia enforces a 6-layer security pipeline:
 
 | Layer | Mechanism | Bypassable? |
 |-------|-----------|-------------|
@@ -151,7 +151,7 @@ For organization-wide enforcement, deploy `templates/managed-settings.template.j
 ## Project Structure
 
 ```
-gaia-ops-dev/
+gaia-dev/
 ├── agents/              # Agent definitions (8 agents) — specialist identities + tool grants
 ├── skills/              # Skill modules (32 skills) — injected procedural knowledge
 ├── hooks/               # Claude Code hooks — the event-driven pipeline
@@ -167,7 +167,7 @@ gaia-ops-dev/
 ## API
 
 ```javascript
-import { getAgentPath, getToolPath, getConfigPath } from '@jaguilar87/gaia-ops';
+import { getAgentPath, getToolPath, getConfigPath } from '@jaguilar87/gaia';
 
 const agentPath = getAgentPath('gitops-operator');
 const toolPath = getToolPath('context_provider.py');
@@ -204,7 +204,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
 ## Project Context Management
 
-Gaia-Ops uses a versioned project context as SSOT:
+Gaia uses a versioned project context as SSOT:
 
 ```bash
 cd .claude
@@ -213,8 +213,8 @@ git clone git@bitbucket.org:yourorg/your-project-context.git project-context
 
 ## Support
 
-- **Issues:** [GitHub Issues](https://github.com/metraton/gaia-ops/issues)
-- **Repository:** [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops)
+- **Issues:** [GitHub Issues](https://github.com/metraton/gaia/issues)
+- **Repository:** [github.com/metraton/gaia](https://github.com/metraton/gaia)
 - **Author:** Jorge Aguilar <jorge.aguilar88@gmail.com>
 
 ## License

@@ -9,14 +9,14 @@ Use this plugin when you want the complete Gaia experience — orchestrator, spe
 **Via Claude Code marketplace:**
 
 ```
-/plugin marketplace add jaguilar87/gaia-ops
+/plugin marketplace add metraton/gaia
 /plugin install gaia-ops
 ```
 
 **Via npm (bundled with the full package):**
 
 ```bash
-npm install @jaguilar87/gaia-ops
+npm install @jaguilar87/gaia
 npx gaia-scan
 ```
 
@@ -74,7 +74,7 @@ Edit and Write tools are open for normal code paths. Writes to `.claude/hooks/` 
 
 ## Links
 
-- Documentation: [github.com/metraton/gaia-ops](https://github.com/metraton/gaia-ops#readme)
-- Install guide: [INSTALL.md](https://github.com/metraton/gaia-ops/blob/main/INSTALL.md)
-- Issues: [github.com/metraton/gaia-ops/issues](https://github.com/metraton/gaia-ops/issues)
+- Documentation: [github.com/metraton/gaia](https://github.com/metraton/gaia#readme)
+- Install guide: [INSTALL.md](https://github.com/metraton/gaia/blob/main/INSTALL.md)
+- Issues: [github.com/metraton/gaia/issues](https://github.com/metraton/gaia/issues)
 - License: MIT
