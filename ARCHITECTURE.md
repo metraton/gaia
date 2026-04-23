@@ -121,7 +121,7 @@ Classifies user tasks into surfaces using signal matching against `config/surfac
 | `gitops_desired_state` | gitops-operator | manifests, Flux, Helm, Kustomize |
 | `terraform_iac` | terraform-architect | Terraform, Terragrunt, IAM, modules |
 | `app_ci_tooling` | developer | CI/CD, Docker, package tooling |
-| `planning_specs` | gaia-planner | briefs, plans, task breakdowns |
+| `planning_specs` | gaia-planner | briefs, plans (materializados cuando una conversación alcanza Cerrar) |
 | `gaia_system` | gaia-system | hooks, skills, agents/, CLAUDE.md |
 | `workspace` | gaia-operator | memory, email, schedules, file transfers |
 
