@@ -413,7 +413,7 @@ Gaia-Ops is designed with these principles:
 
 - **Documentation:** Inside `.claude/*/README.md`
 - **Issues:** https://github.com/metraton/gaia-ops/issues
-- **Email:** jaguilar1897@gmail.com
+- **Email:** jorge.aguilar87@gmail.com
 
 ### Frequently Asked Questions
 

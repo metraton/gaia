@@ -2,7 +2,7 @@
   "name": "gaia-ops-marketplace",
   "owner": {
     "name": "jaguilar87",
-    "email": "jaguilar@aaxis.io"
+    "email": "jorge.aguilar87@gmail.com"
   },
   "plugins": [
     {
@@ -12,7 +12,7 @@
       "category": "devops",
       "author": {
         "name": "jaguilar87",
-        "email": "jaguilar@aaxis.io"
+        "email": "jorge.aguilar87@gmail.com"
       },
       "homepage": "https://github.com/metraton/gaia-ops#readme",
       "source": "./dist/gaia-ops"
@@ -24,7 +24,7 @@
       "category": "security",
       "author": {
         "name": "jaguilar87",
-        "email": "jaguilar@aaxis.io"
+        "email": "jorge.aguilar87@gmail.com"
       },
       "homepage": "https://github.com/metraton/gaia-ops#gaia-security",
       "source": "./dist/gaia-security"

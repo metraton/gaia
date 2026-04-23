@@ -1202,7 +1202,7 @@ enriched_prompt = result["enriched_prompt"]
 
 ## Maintainers
 
-- **Primary:** Jorge Aguilar (jaguilar@aaxis.com)
+- **Primary:** Jorge Aguilar (jorge.aguilar87@gmail.com)
 - **Contributors:** Claude Code Agent Swarm
 
 ---

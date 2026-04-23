@@ -29,7 +29,7 @@
     "orchestration",
     "automation"
   ],
-  "author": "Jorge Aguilar <jaguilar1897@gmail.com>",
+  "author": "Jorge Aguilar <jorge.aguilar87@gmail.com>",
   "license": "MIT",
   "private": false,
   "repository": {
@@ -39,7 +39,7 @@
   "homepage": "https://github.com/metraton/gaia-ops#readme",
   "bugs": {
     "url": "https://github.com/metraton/gaia-ops/issues",
-    "email": "jaguilar1897@gmail.com"
+    "email": "jorge.aguilar87@gmail.com"
   },
   "files": [
     ".claude-plugin/",

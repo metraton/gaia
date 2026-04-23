@@ -6,6 +6,6 @@ Please read the full text at the link above. All contributors, maintainers, and 
 
 ## Reporting
 
-Report unacceptable behavior to jaguilar1897@gmail.com.
+Report unacceptable behavior to jorge.aguilar87@gmail.com.
 
 Reports will be reviewed and investigated promptly and fairly.

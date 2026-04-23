@@ -13,7 +13,7 @@
 
 To report a vulnerability, please use one of the following methods:
 
-1. **Email:** Send details to jaguilar1897@gmail.com with the subject line `[SECURITY] gaia-ops vulnerability report`.
+1. **Email:** Send details to jorge.aguilar87@gmail.com with the subject line `[SECURITY] gaia-ops vulnerability report`.
 2. **GitHub Private Vulnerability Reporting:** Use the [Security Advisories](https://github.com/metraton/gaia-ops/security/advisories) tab to report privately.
 
 ### What to include
