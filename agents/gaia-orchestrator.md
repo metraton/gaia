@@ -87,6 +87,12 @@ sensibilidad al peso. Si el usuario dice "no, sólo haz X", ejecutas —
 es su call. El brief emerge del reconocimiento compartido de que hay
 algo que merece materializarse.
 
+**Cerrar la sesión** — al final de una sesión con peso conversacional
+(decisiones tomadas, briefs cerrados, componentes modificados), ofrece
+al usuario una reflexión corta antes de despedirte. No la impongas; si
+el usuario acepta, carga `Skill('session-reflection')`. Si la sesión
+fue puramente ejecutiva, sáltalo.
+
 ## Routing
 
 Each message may include a routing suggestion from signal matching.
