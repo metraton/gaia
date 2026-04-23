@@ -31,6 +31,18 @@ from modules.session.session_registry import (
     _get_registry_path,
 )
 
+# Optional helpers introduced by Fix A (PID liveness). Imported defensively so
+# the existing test suite keeps working even if this test file is ever lifted
+# ahead of the session_registry refactor.
+try:
+    from modules.session.session_registry import (  # noqa: F401
+        get_pid_create_time,
+        _is_pid_alive,
+    )
+    HAS_PID_HELPERS = True
+except ImportError:
+    HAS_PID_HELPERS = False
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -158,9 +170,13 @@ class TestGetLiveSessions:
         assert get_live_sessions() == set()
 
     def test_returns_all_registered_session_ids(self, isolated_registry):
-        register_session("sid-1", pid=1)
-        register_session("sid-2", pid=2)
-        register_session("sid-3", pid=3)
+        # Use pid=None so entries pass the liveness filter (presence-only
+        # fallback). Using fake integer PIDs would couple this presence
+        # assertion to whichever PIDs happen to exist on the host --
+        # PID liveness is covered end-to-end by TestPidLiveness below.
+        register_session("sid-1")
+        register_session("sid-2")
+        register_session("sid-3")
         assert get_live_sessions() == {"sid-1", "sid-2", "sid-3"}
 
     def test_reflects_unregistration(self, isolated_registry):
@@ -213,8 +229,11 @@ class TestConcurrency:
     """
 
     def test_sequential_registrations_preserve_all(self, isolated_registry):
+        # No pid -> entries pass the liveness filter via the presence-only
+        # branch. This test is about atomic write integrity across 20
+        # sequential registrations, not about PID validation.
         for i in range(20):
-            register_session(f"sid-{i}", pid=i)
+            register_session(f"sid-{i}")
         live = get_live_sessions()
         assert len(live) == 20
         for i in range(20):
@@ -277,3 +296,152 @@ class TestErrors:
         monkeypatch.setattr(session_registry, "_save_registry", _boom)
         with pytest.raises(SessionRegistryError):
             register_session("sid", pid=1)
+
+
+# ---------------------------------------------------------------------------
+# PID liveness (Fix A / AC3): registry must self-clean zombi entries
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    not HAS_PID_HELPERS,
+    reason="PID liveness helpers not yet present on session_registry",
+)
+class TestPidLiveness:
+    """get_live_sessions() must filter stale entries via PID + starttime.
+
+    The bug this guards against: stop_hook used to unregister the session on
+    every turn, emptying the registry between messages. When stop_hook stops
+    touching the registry, the registry needs its own truth source -- the OS
+    process table -- otherwise sessions that crashed without firing
+    SessionEnd stay "alive" forever. AC3 asserts that get_live_sessions()
+    never returns a session whose PID is gone or whose /proc starttime
+    differs from what was persisted (PID recycled under the same number).
+    """
+
+    def test_entry_with_live_pid_and_matching_starttime_is_returned(
+        self, isolated_registry
+    ):
+        """A freshly-registered session (own PID) must stay live."""
+        my_pid = os.getpid()
+        register_session("sid-self", pid=my_pid)
+        assert "sid-self" in get_live_sessions()
+
+    def test_entry_with_dead_pid_is_filtered(self, isolated_registry):
+        """A PID that no longer exists must be filtered out.
+
+        Picks a PID that is extremely unlikely to be alive (2**30-1 is well
+        above /proc/sys/kernel/pid_max on mainstream kernels).
+        """
+        dead_pid = 2 ** 30 - 1
+        register_session("sid-zombie", pid=dead_pid)
+        assert "sid-zombie" not in get_live_sessions()
+
+    def test_entry_with_recycled_pid_starttime_mismatch_is_filtered(
+        self, isolated_registry, monkeypatch
+    ):
+        """Same PID number, different starttime -> treat as zombie.
+
+        This models the recycled-PID case: the original process died, the
+        kernel later assigned the same PID to an unrelated process with a
+        different start time. Without the starttime check, get_live_sessions
+        would incorrectly keep the ghost entry.
+        """
+        my_pid = os.getpid()
+        register_session("sid-recycled", pid=my_pid)
+
+        # Tamper with the persisted starttime so it no longer matches the
+        # real /proc entry. The registry is JSON on disk, so we can rewrite
+        # the field directly and then call get_live_sessions() to verify
+        # the starttime comparison logic kicks in.
+        data = json.loads(isolated_registry.read_text())
+        entry = data["sessions"]["sid-recycled"]
+        if "pid_create_time" not in entry or entry["pid_create_time"] is None:
+            # Fix A must persist pid_create_time for entries registered with
+            # a PID; if it's missing this test is not exercising the drift
+            # path, so fail loudly rather than pass a false green.
+            pytest.fail(
+                "register_session did not persist pid_create_time -- "
+                "AC3 starttime drift cannot be asserted"
+            )
+        entry["pid_create_time"] = "0"  # clearly bogus starttime
+        data["sessions"]["sid-recycled"] = entry
+        isolated_registry.write_text(json.dumps(data))
+
+        assert "sid-recycled" not in get_live_sessions()
+
+    def test_legacy_entry_without_pid_field_is_preserved(
+        self, isolated_registry
+    ):
+        """Back-compat: entries written before Fix A had no pid field.
+
+        Those must continue to be reported as alive. Fix A is additive --
+        an entry with pid=None survives the liveness filter because there
+        is nothing to probe.
+        """
+        # Register the legacy shape by hand so we're not relying on current
+        # register_session() behaviour.
+        isolated_registry.parent.mkdir(parents=True, exist_ok=True)
+        isolated_registry.write_text(
+            json.dumps(
+                {
+                    "sessions": {
+                        "sid-legacy": {
+                            "pid": None,
+                            "started_at": "2026-04-01T00:00:00+00:00",
+                        }
+                    }
+                }
+            )
+        )
+        assert "sid-legacy" in get_live_sessions()
+
+    def test_legacy_entry_with_pid_but_no_create_time_is_preserved_if_alive(
+        self, isolated_registry
+    ):
+        """Entries with a pid but no pid_create_time predate Fix A.
+
+        Strategy: if the PID is alive, keep the entry (we have no stronger
+        signal). If the PID is dead, filter it. This test covers the
+        "alive" branch so back-compat works end-to-end.
+        """
+        my_pid = os.getpid()
+        isolated_registry.parent.mkdir(parents=True, exist_ok=True)
+        isolated_registry.write_text(
+            json.dumps(
+                {
+                    "sessions": {
+                        "sid-legacy-pid": {
+                            "pid": my_pid,
+                            "started_at": "2026-04-01T00:00:00+00:00",
+                        }
+                    }
+                }
+            )
+        )
+        assert "sid-legacy-pid" in get_live_sessions()
+
+
+@pytest.mark.skipif(
+    not HAS_PID_HELPERS,
+    reason="PID liveness helpers not yet present on session_registry",
+)
+class TestGetPidCreateTime:
+    """get_pid_create_time() reads field 22 of /proc/{pid}/stat (stdlib only).
+
+    The function returns a float (see docstring): /proc starttime is an
+    unsigned int expressed in clock ticks since boot, which fits exactly
+    into a float for any realistic uptime. Equality comparison is used to
+    detect PID recycling, and integer-valued floats compare exactly.
+    """
+
+    def test_returns_float_for_live_pid(self):
+        result = session_registry.get_pid_create_time(os.getpid())
+        assert result is not None
+        assert isinstance(result, float)
+        # Starttime must be a non-negative integer value (clock ticks).
+        assert result >= 0
+        assert result == int(result)
+
+    def test_returns_none_for_dead_pid(self):
+        dead_pid = 2 ** 30 - 1
+        assert session_registry.get_pid_create_time(dead_pid) is None

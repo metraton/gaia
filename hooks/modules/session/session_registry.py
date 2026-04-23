@@ -10,10 +10,16 @@ Storage format:
         "sessions": {
             "<session_id>": {
                 "pid": <int or null>,
+                "pid_create_time": <float or null>,
                 "started_at": "<ISO-8601 string or null>"
             }
         }
     }
+
+    pid_create_time is the process creation time (from /proc/<pid>/stat
+    field 22 on Linux) used to disambiguate recycled PIDs during liveness
+    checks. When the OS reuses a PID for a different process, the create
+    time will differ and the session is treated as dead.
 
 Concurrency:
     All writes are atomic via os.rename() after writing to a .tmp file.
@@ -24,6 +30,7 @@ Public API:
     unregister_session(session_id) -> None
     is_session_alive(session_id) -> bool
     get_live_sessions() -> set[str]
+    get_pid_create_time(pid) -> Optional[float]
 
 Errors:
     SessionRegistryError — raised for expected failure modes (e.g., bad path).
@@ -131,6 +138,75 @@ def _save_registry(data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# PID liveness helpers
+# ---------------------------------------------------------------------------
+
+def get_pid_create_time(pid: int) -> Optional[float]:
+    """Return the creation time of a process, or None if unavailable.
+
+    Reads /proc/<pid>/stat field 22 (starttime) on Linux. The value is in
+    clock ticks since boot; the raw number is sufficient for equality
+    comparison to detect PID recycling (we do not need wall-clock time).
+
+    Args:
+        pid: OS process ID to inspect. Non-positive values return None.
+
+    Returns:
+        Starttime as a float, or None when the process does not exist,
+        /proc is not available, or parsing fails.
+    """
+    if not pid or pid <= 0:
+        return None
+    try:
+        stat_path = Path("/proc") / str(pid) / "stat"
+        text = stat_path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    # The comm field (field 2) may contain spaces and parentheses; parse
+    # from the last ')' to avoid splitting on them.
+    try:
+        rparen = text.rindex(")")
+    except ValueError:
+        return None
+    rest = text[rparen + 1 :].split()
+    # After the closing paren the remaining fields are 3..N, so starttime
+    # (field 22) is at index 22 - 3 = 19.
+    if len(rest) < 20:
+        return None
+    try:
+        return float(rest[19])
+    except ValueError:
+        return None
+
+
+def _is_pid_alive(pid: Optional[int], pid_create_time: Optional[float]) -> bool:
+    """Return True when pid names a live process with a matching create time.
+
+    When pid is None we cannot verify liveness and fall back to True
+    (presence-only behaviour — sessions registered without a pid remain
+    live). When pid_create_time is provided we require it to match the
+    current process create time; a mismatch indicates PID recycling and
+    we treat the session as dead.
+
+    Args:
+        pid: Recorded process ID, may be None.
+        pid_create_time: Recorded create time for the pid, may be None.
+
+    Returns:
+        True if the session should be considered alive.
+    """
+    if pid is None:
+        return True
+    current = get_pid_create_time(pid)
+    if current is None:
+        return False
+    if pid_create_time is None:
+        # Legacy entry without create time — trust the pid lookup.
+        return True
+    return current == pid_create_time
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -142,7 +218,9 @@ def register_session(
     """Register a session as active in the user-scoped registry.
 
     Creates or updates the entry for session_id. If started_at is not
-    provided, the current UTC time in ISO-8601 format is used.
+    provided, the current UTC time in ISO-8601 format is used. When pid
+    is provided the process create time is captured alongside so that
+    later liveness checks can detect PID recycling.
 
     Args:
         session_id: The CLAUDE_SESSION_ID for the session to register.
@@ -161,13 +239,23 @@ def register_session(
     if started_at is None:
         started_at = datetime.now(timezone.utc).isoformat()
 
+    pid_create_time: Optional[float] = None
+    if pid is not None:
+        pid_create_time = get_pid_create_time(pid)
+
     data = _load_registry()
     data["sessions"][session_id] = {
         "pid": pid,
+        "pid_create_time": pid_create_time,
         "started_at": started_at,
     }
     _save_registry(data)
-    logger.debug("session_registry: registered session=%s pid=%s", session_id, pid)
+    logger.debug(
+        "session_registry: registered session=%s pid=%s create_time=%s",
+        session_id,
+        pid,
+        pid_create_time,
+    )
 
 
 def unregister_session(session_id: str) -> None:
@@ -222,11 +310,24 @@ def is_session_alive(session_id: str) -> bool:
 
 
 def get_live_sessions() -> set:
-    """Return the set of all session IDs currently in the registry.
+    """Return the set of session IDs whose recorded pid is still alive.
+
+    Entries registered without a pid are kept (presence-only liveness).
+    Entries with a pid are filtered via _is_pid_alive so that PID
+    recycling — OS reusing a PID for a different process — is detected
+    by comparing the recorded create time with the current one.
 
     Returns:
-        set[str] of session IDs. Empty set when the registry is absent or
-        corrupt (after logging a warning).
+        set[str] of session IDs considered live. Empty set when the
+        registry is absent or corrupt (after logging a warning).
     """
     data = _load_registry()
-    return set(data["sessions"].keys())
+    live: set = set()
+    for session_id, entry in data["sessions"].items():
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("pid")
+        pid_create_time = entry.get("pid_create_time")
+        if _is_pid_alive(pid, pid_create_time):
+            live.add(session_id)
+    return live
