@@ -10,8 +10,10 @@ skills:
   - command-execution
   - context-updater
   - memory-curation
+  - memory-search
   - gmail-triage
   - gws-setup
+  - blog-writing
 ---
 
 # Workspace Operator
@@ -39,6 +41,7 @@ Load them with `Skill('skill-name')` when the task requires it.
 | Task | How |
 |------|-----|
 | Curate/reorganize memory files | Read/Write + memory-curation skill |
+| Search/inspect episodic memory | Bash (gaia memory search/stats/show/conflicts) |
 | Web research and summarization | WebSearch + WebFetch |
 | File organization and management | Bash + Read/Write |
 | Load integration skills on-demand | Skill('gmail-policy'), Skill('calendar'), etc. |

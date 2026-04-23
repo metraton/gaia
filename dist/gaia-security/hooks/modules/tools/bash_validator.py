@@ -197,18 +197,29 @@ class BashValidator:
                 # Shell wrappers (bash -c, eval, etc.) hide the real command
                 # in a string — no dedicated scanner exists. Force "ask" so
                 # the user can inspect what will actually run.
-                hook_block = build_hook_permission_response(
-                    "ask",
-                    (
-                        "Indirect execution detected. The command uses a shell "
-                        "wrapper (bash -c, eval, etc.) that can bypass "
-                        "security checks. Please confirm you want to run this."
-                    ),
+                #
+                # Inspect the inner command to identify the mutative verb so
+                # the user sees a more informative message
+                # (e.g. "inner mutative verb 'mv'"). Falls back to generic
+                # message when inner has no mutative verb.
+                reason_msg = "Indirect execution wrapper detected — requires confirmation"
+                if inner:
+                    inner_result = detect_mutative_command(inner)
+                    if inner_result.is_mutative and inner_result.verb:
+                        reason_msg = (
+                            f"Indirect execution detected: inner mutative verb "
+                            f"'{inner_result.verb}' — requires confirmation"
+                        )
+                dialog_msg = (
+                    "Indirect execution detected. The command uses a shell "
+                    "wrapper (bash -c, eval, etc.) that can bypass "
+                    "security checks. Please confirm you want to run this."
                 )
+                hook_block = build_hook_permission_response("ask", dialog_msg)
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T2_DRY_RUN,
-                    reason="Indirect execution wrapper detected — requires confirmation",
+                    reason=reason_msg,
                     block_response=hook_block,
                 )
         return None
@@ -618,7 +629,7 @@ class BashValidator:
                         )
                         reason = (
                             f"[T3_BLOCKED] This command requires user approval.\n"
-                            f"Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.\n"
+                            f"Do NOT retry this command. Report APPROVAL_REQUEST with this approval_id in your json:contract.\n"
                             f"Command: {command}\n"
                             f"Verb: '{result.verb}' ({result.category})\n"
                             f"approval_id: {approval_id}"
@@ -659,7 +670,7 @@ class BashValidator:
                         )
                     reason = (
                         f"[T3_BLOCKED] This command requires user approval.\n"
-                        f"Do NOT retry this command. Report REVIEW with this approval_id in your json:contract.\n"
+                        f"Do NOT retry this command. Report APPROVAL_REQUEST with this approval_id in your json:contract.\n"
                         f"Command: {command}\n"
                         f"Verb: '{result.verb}' ({result.category})\n"
                         f"approval_id: {approval_id}"

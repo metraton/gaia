@@ -83,12 +83,12 @@ See `SKILL.md` for the schema definition and field rules.
 }
 ```
 
-## REVIEW (plan ready for user feedback, no nonce)
+## APPROVAL_REQUEST (hook blocked T3 command or plan ready for user feedback)
 
 ```json:contract
 {
   "agent_status": {
-    "plan_status": "REVIEW",
+    "plan_status": "APPROVAL_REQUEST",
     "agent_id": "ae5c8a3",
     "pending_steps": ["execute terraform apply", "verify state"],
     "next_action": "Awaiting user feedback on terraform apply plan"
@@ -115,12 +115,12 @@ See `SKILL.md` for the schema definition and field rules.
 }
 ```
 
-## REVIEW with approval_id (hook blocked T3 command)
+## APPROVAL_REQUEST with approval_id (hook blocked T3 command)
 
 ```json:contract
 {
   "agent_status": {
-    "plan_status": "REVIEW",
+    "plan_status": "APPROVAL_REQUEST",
     "agent_id": "af1d9b7",
     "pending_steps": ["execute git push", "verify Flux reconciliation"],
     "next_action": "Hook blocked git push -- awaiting user approval"

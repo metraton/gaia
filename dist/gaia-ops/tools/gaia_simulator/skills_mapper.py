@@ -69,10 +69,12 @@ class SkillsMapper:
         self._skills_dir = skills_dir
         self._config_dir = config_dir
 
-        # Load agent frontmatter
+        # Load agent frontmatter -- skip README.md (not an agent definition)
         self._agent_frontmatter: dict[str, dict[str, Any]] = {}
         if agents_dir.is_dir():
             for md_file in sorted(agents_dir.glob("*.md")):
+                if md_file.name.upper() == "README.MD":
+                    continue
                 content = md_file.read_text(encoding="utf-8", errors="replace")
                 fm = _parse_frontmatter(content)
                 name = fm.get("name", md_file.stem)

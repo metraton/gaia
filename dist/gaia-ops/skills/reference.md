@@ -26,7 +26,7 @@ skills:
 **Output:** [What it produces]
 **Tier:** [T0-T2 or T0-T3]
 
-For T3 approval/execution workflows, read `.claude/skills/approval/SKILL.md` and `.claude/skills/execution/SKILL.md`.
+For T3 approval/execution workflows, read `.claude/skills/request-approval/SKILL.md` and `.claude/skills/execution/SKILL.md`.
 
 ---
 

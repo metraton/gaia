@@ -1,7 +1,7 @@
 {
   "plugin_name": "gaia-ops",
   "version": "from:package.json",
-  "description": "Full DevOps orchestration for Claude Code. Six specialized agents handle the complete development lifecycle — analysis, planning, execution, and deployment. Gaia-Ops scans your codebase to understand it and injects the right context into each sub-agent. Every command is classified by risk: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
+  "description": "Full DevOps orchestration for Claude Code. Eight specialized agents handle the complete development lifecycle — analysis, planning, execution, and deployment. Gaia-Ops scans your codebase to understand it and injects the right context into each sub-agent. Every command is classified by risk: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
   "hooks": {
     "entries": [
       "hooks/pre_tool_use.py",

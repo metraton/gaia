@@ -106,7 +106,7 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "attach", "bind", "connect", "mount",
     # Execution
     # NOTE: "run" removed -- safe by elimination (e.g., docker run is common dev workflow)
-    "exec", "execute", "invoke", "trigger", "send",
+    "exec", "execute", "invoke", "trigger", "send", "reply",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
     # NOTE: "commit" removed -- local-only operation, trust system
@@ -343,6 +343,7 @@ MAX_NORMAL_INLINE_LENGTH = 500
 COMMAND_ALIASES: Dict[str, str] = {
     "rm": CATEGORY_MUTATIVE,
     "rmdir": CATEGORY_MUTATIVE,
+    "mkdir": CATEGORY_MUTATIVE,
     "mv": CATEGORY_MUTATIVE,
     "cp": CATEGORY_MUTATIVE,
     "ln": CATEGORY_MUTATIVE,
@@ -366,6 +367,42 @@ SIMULATION_FLAGS: FrozenSet[str] = frozenset({
     "--dry-run=client",
     "--dry-run=server",
 })
+
+
+# ============================================================================
+# --help Exemption Whitelist (T3 -> T0 downgrade for well-known CLIs)
+# ============================================================================
+# Only CLIs listed here get the --help exemption in Step 3.5 of the detection
+# algorithm. Command aliases (rm, mv, dd, etc.) are intentionally excluded:
+# they may process arguments before honoring --help, so keeping them T3
+# preserves safety.
+
+HELP_FLAGS: FrozenSet[str] = frozenset({"--help", "-h", "-?", "--usage"})
+
+# CLI families where `<cli> <verb> --help` is idempotent (exit-and-print).
+# Keys come from CLI_FAMILY_LOOKUP (defined further below in this module).
+HELP_IDEMPOTENT_FAMILIES: FrozenSet[str] = frozenset({
+    "k8s",       # kubectl, helm, flux, kustomize
+    "iac",       # terraform, terragrunt, pulumi
+    "git",       # git subcommands respect --help via man page
+    "docker",    # docker, podman
+    "cloud",     # aws, gcloud, gh, glab, az
+    "package",   # npm, pip, yarn, bun, cargo, brew, apt
+    "build",     # make, cmake, bazel, gradle, mvn
+    "runtime",   # node, python, python3
+    "linter",    # pytest, mypy, ruff, black, flake8
+})
+
+# Explicit base_cmd whitelist (not covered by CLI_FAMILY_LOOKUP).
+HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
+    "gaia",      # project CLI, not in CLI_FAMILY_LOOKUP
+})
+
+# Shell redirect tokens (e.g., "2>&1", ">out", "<in") that shlex produces
+# as non-flag tokens but carry no CLI semantic value. Used by the --help
+# exemption to count only real positional args.
+import re as _re_help
+_SHELL_REDIRECT_RE = _re_help.compile(r"^(\d*[<>]&?\d*|[<>]{1,2}.*)$")
 
 
 # ============================================================================
@@ -622,6 +659,51 @@ def detect_mutative_command(command: str) -> MutativeResult:
             reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
 
+    # --- Step 3.5: --help exemption (whitelist + positional boundary) ---
+    # A --help / -h invocation on a well-known CLI only prints usage text.
+    # Three simultaneous conditions are required so the exemption does not
+    # degrade safety on command-aliases or unknown tools:
+    #   (a) CLI is in the whitelist (family OR base_cmd explicitly trusted)
+    #   (b) a help flag is present in the PARSED flags (ignores strings
+    #       that happen to contain "--help" inside a path or argument value)
+    #   (c) the command invocation is simple (<=2 non-flag positional tokens):
+    #       "gaia update --help" (1), "gaia approvals clean --help" (2) OK;
+    #       "kubectl delete pod mypod --help" (3) stays T3 because the CLI
+    #       may process the mutative args before honoring --help.
+    # Root cause: ghost pendings P-738355ab and P-0b06738b were created by
+    # `gaia update --help` and `gaia approvals clean --help` being
+    # classified as MUTATIVE; this exemption prevents recurrence.
+    if (
+        base_cmd in HELP_IDEMPOTENT_BASE_CMDS
+        or family in HELP_IDEMPOTENT_FAMILIES
+    ):
+        flag_set = set(semantics.flag_tokens)
+        # Count semantic non-flag tokens only. Shell redirect shorthands
+        # like "2>&1", ">file", "<file" appear as non-flag tokens in shlex
+        # output but carry no CLI semantic value -- filtering them keeps
+        # "gaia approvals clean --help 2>&1" at threshold 2 instead of 3.
+        semantic_non_flags = [
+            t for t in semantics.non_flag_tokens
+            if not _SHELL_REDIRECT_RE.match(t)
+        ]
+        if flag_set & HELP_FLAGS and len(semantic_non_flags) <= 2:
+            verb = (
+                semantic_non_flags[0]
+                if semantic_non_flags
+                else "help"
+            )
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb=verb,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"--help on whitelisted CLI '{base_cmd}' "
+                    f"with simple invocation (<=2 non-flag tokens)"
+                ),
+            )
+
     # --- Step 3b: Inline code safety check (python3 -c, node -e, etc.) ---
     # For runtime interpreters with inline code flags, scan the code string
     # using the 3-layer approach instead of verb-matching tokens (which would
@@ -689,11 +771,23 @@ def detect_mutative_command(command: str) -> MutativeResult:
                 reason=f"Compound read-only subcommand '{token}'",
             )
 
+        # Strip leading '+' macro prefix before verb lookup.
+        # Some CLIs (notably `gws`) expose convenience macros with a '+' prefix
+        # that wrap an underlying mutative API call:
+        #   gws gmail +reply   -> sends a reply (equivalent to messages send)
+        #   gws gmail +send    -> sends a new message
+        #   gws gmail +search  -> list/search wrapper (read-only)
+        # Without stripping '+', these tokens miss MUTATIVE_VERBS / READ_ONLY_VERBS
+        # lookups and fall through to "safe by elimination", bypassing T3 approval.
+        # Stripping here resolves the macro to its base verb so the taxonomy below
+        # classifies it correctly.
+        stripped_token = token.lstrip("+")
+
         # Split hyphenated tokens: "delete-stack" -> check "delete"
-        candidate = token.split("-", 1)[0] if "-" in token else token
+        candidate = stripped_token.split("-", 1)[0] if "-" in stripped_token else stripped_token
 
         # Also check full token for exact matches (e.g., "force-delete")
-        full_lower = token
+        full_lower = stripped_token
 
         # Determine confidence from position
         confidence = "high" if semantic_index <= 2 else "medium"

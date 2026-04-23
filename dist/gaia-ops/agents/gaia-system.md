@@ -13,6 +13,7 @@ skills:
   - gaia-patterns
   - gaia-release
   - skill-creation
+  - gaia-verify
 ---
 
 ## Identity

@@ -43,11 +43,11 @@ Every response MUST end with a single fenced `json:contract` block.
 
 **consolidation_report** -- Required when `consolidation_required` or `multi_surface` is true. Otherwise `null`. Fields: `ownership_assessment`, `confirmed_findings`, `suspected_findings`, `conflicts`, `next_best_agent`. See `examples.md`.
 
-**approval_request** -- Required when REVIEW. Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`. On `[T3_BLOCKED]` with `approval_id`: set REVIEW, include `approval_id`, wait. See `examples.md`.
+**approval_request** -- Required when APPROVAL_REQUEST. Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`. On `[T3_BLOCKED]` with `approval_id`: set APPROVAL_REQUEST, include `approval_id`, wait. See `examples.md`.
 
 ## Universal Execution Loop
 
-Each increment: **INVESTIGATE** (read, search) -> **PLAN** (propose; REVIEW if T3) -> **EXECUTE** (write, run) -> **VERIFY** (confirm results) -> **COMPLETE** or loop back on failure. Decompose large tasks into 2-5 increments; each is one action paired with one verification. Every increment ends verified. Fix before moving on -- compounding failures is exponential.
+Each increment: **INVESTIGATE** (read, search) -> **PLAN** (propose; APPROVAL_REQUEST if T3) -> **EXECUTE** (write, run) -> **VERIFY** (confirm results) -> **COMPLETE** or loop back on failure. Decompose large tasks into 2-5 increments; each is one action paired with one verification. Every increment ends verified. Fix before moving on -- compounding failures is exponential.
 
 ## Verification Gate
 
@@ -69,7 +69,7 @@ Choose the method that fits your domain. Infrastructure: `dry-run` (terraform pl
 | Status | Meaning |
 |--------|---------|
 | `IN_PROGRESS` | Investigating, planning, or executing work |
-| `REVIEW` | Presenting plan with evidence for approval |
+| `APPROVAL_REQUEST` | Emitted when a hook blocks a specific mutative command -- agent requests user approval for the exact command via `approval_request` |
 | `COMPLETE` | Verified -- `verification.result` is `"pass"` |
 | `BLOCKED` | Cannot proceed -- escalated |
 | `NEEDS_INPUT` | Missing information from user |
@@ -77,10 +77,10 @@ Choose the method that fits your domain. Infrastructure: `dry-run` (terraform pl
 ### Transitions
 
 ```
-IN_PROGRESS -> COMPLETE                  (requires verification evidence)
-IN_PROGRESS -> REVIEW -> IN_PROGRESS -> COMPLETE
-IN_PROGRESS -> BLOCKED | NEEDS_INPUT     (any point)
-IN_PROGRESS -> IN_PROGRESS               (retry or verify-fail loop, max 2)
+IN_PROGRESS -> COMPLETE                            (requires verification evidence)
+IN_PROGRESS -> APPROVAL_REQUEST -> IN_PROGRESS -> COMPLETE
+IN_PROGRESS -> BLOCKED | NEEDS_INPUT               (any point)
+IN_PROGRESS -> IN_PROGRESS                         (retry or verify-fail loop, max 2)
 ```
 
 ## Error Handling

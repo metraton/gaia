@@ -144,10 +144,14 @@ def _build_pending_context() -> str:
             approvals_dir, session_id=session_id, current_session_id=session_id
         )
 
-        # Cross-session fallback: scan all sessions if current has none
+        # Cross-session fallback: scan all sessions if current has none.
+        # exclude_live_sessions=True prevents pendings from parallel live
+        # sessions from appearing as "[session anterior]" injections.
         if not pendings:
             pendings = scan_pending_approvals(
-                approvals_dir, current_session_id=session_id
+                approvals_dir,
+                current_session_id=session_id,
+                exclude_live_sessions=True,
             )
 
         if not pendings:

@@ -1,6 +1,6 @@
 # Gaia-Ops Patterns -- Reference
 
-Package: `@jaguilar87/gaia-ops` v4.7.2 | Node >=18 | Python >=3.9
+Package: `@jaguilar87/gaia-ops` v5.0.0-rc1 | Node >=18 | Python >=3.9
 
 ---
 

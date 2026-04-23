@@ -81,6 +81,8 @@ skill-name/
 
 **Put elsewhere:** Project-specific config -> CLAUDE.md or agent inline. Single-agent-only behavior -> keep inline. Knowledge the LLM covers well from training -> not needed.
 
+**When creating a new skill:** Also update `skills/README.md` to add the new skill to the index. Load Skill('readme-writing') to do this correctly.
+
 ## Anti-Patterns
 
 - **Description summarizes process** -- agent follows the description and skips reading the skill body.

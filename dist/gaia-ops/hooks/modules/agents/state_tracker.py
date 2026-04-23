@@ -6,12 +6,12 @@ follow the state machine defined in agent-protocol. Uses a JSON file
 in /tmp/ keyed by agent_id.
 
 Legal transitions (from agent-protocol):
-    IN_PROGRESS -> COMPLETE           (T0/T1/T2 only)
-    IN_PROGRESS -> REVIEW             (plan-first or T3)
-    REVIEW -> IN_PROGRESS             (after approval)
-    IN_PROGRESS -> BLOCKED            (any point)
-    IN_PROGRESS -> NEEDS_INPUT        (any point)
-    IN_PROGRESS -> IN_PROGRESS        (retry, max 2)
+    IN_PROGRESS -> COMPLETE                (T0/T1/T2 only)
+    IN_PROGRESS -> APPROVAL_REQUEST        (hook blocks a mutative command)
+    APPROVAL_REQUEST -> IN_PROGRESS        (after approval granted)
+    IN_PROGRESS -> BLOCKED                 (any point)
+    IN_PROGRESS -> NEEDS_INPUT             (any point)
+    IN_PROGRESS -> IN_PROGRESS             (retry, max 2)
 
 Provides:
     - track_transition(): Record a state and validate the transition
@@ -36,8 +36,8 @@ _MAX_IN_PROGRESS_RETRIES = 2
 # Legal transitions: from_status -> set of allowed to_statuses
 # Note: COMPLETE, BLOCKED, NEEDS_INPUT are terminal for a given task cycle.
 _LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
-    "IN_PROGRESS": {"COMPLETE", "REVIEW", "BLOCKED", "NEEDS_INPUT", "IN_PROGRESS"},
-    "REVIEW": {"IN_PROGRESS"},
+    "IN_PROGRESS": {"COMPLETE", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT", "IN_PROGRESS"},
+    "APPROVAL_REQUEST": {"IN_PROGRESS"},
     # Terminal states -- new task cycles can start from scratch
     "COMPLETE": {"IN_PROGRESS"},
     "BLOCKED": {"IN_PROGRESS"},
@@ -210,7 +210,7 @@ def track_transition(
                 error=(
                     f"IN_PROGRESS retry limit exceeded: {in_progress_count} consecutive "
                     f"IN_PROGRESS states (max {_MAX_IN_PROGRESS_RETRIES}). "
-                    f"Agent should transition to REVIEW, COMPLETE, BLOCKED, or NEEDS_INPUT."
+                    f"Agent should transition to APPROVAL_REQUEST, COMPLETE, BLOCKED, or NEEDS_INPUT."
                 ),
                 in_progress_count=in_progress_count,
             )
@@ -220,16 +220,16 @@ def track_transition(
     else:
         in_progress_count = 0
 
-    # Track REVIEW visibility
-    if new_state == "REVIEW":
+    # Track APPROVAL_REQUEST visibility
+    if new_state == "APPROVAL_REQUEST":
         saw_review = True
 
     # Check: IN_PROGRESS -> COMPLETE without REVIEW when review was expected
     if (previous_state, new_state) == _REVIEW_REQUIRED_TRANSITION:
         if has_review_phase and not saw_review:
             warning = (
-                "IN_PROGRESS -> COMPLETE without an intervening REVIEW phase. "
-                "If this task involves T3 operations, a REVIEW step is expected."
+                "IN_PROGRESS -> COMPLETE without an intervening APPROVAL_REQUEST phase. "
+                "If this task involves T3 operations, an APPROVAL_REQUEST step is expected."
             )
 
     # Approaching retry limit

@@ -3,8 +3,10 @@
   "version": "5.0.0-rc1",
   "description": "Keeps you in the loop only when it matters. Gaia Security analyzes every command and classifies it into risk tiers: read-only queries run freely, simulations and validations pass through, and state-changing operations (create, delete, apply, push) pause for your explicit approval before executing. Irreversible commands like dropping databases or deleting cloud infrastructure are permanently blocked.",
   "author": {
-    "name": "jaguilar87"
+    "name": "jaguilar87",
+    "email": "jaguilar@aaxis.io"
   },
+  "homepage": "https://github.com/metraton/gaia-ops#gaia-security",
   "repository": "https://github.com/metraton/gaia-ops",
   "license": "MIT",
   "keywords": [

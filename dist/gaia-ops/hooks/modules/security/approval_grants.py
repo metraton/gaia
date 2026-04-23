@@ -237,7 +237,7 @@ def _rebuild_pending_index(session_id: str) -> None:
         timestamp = data.get("timestamp")
         if not nonce or not isinstance(timestamp, (int, float)):
             continue
-        ttl_minutes = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
+        ttl_minutes = data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
         if _is_ttl_expired(float(timestamp), int(ttl_minutes)):
             continue
 
@@ -624,7 +624,7 @@ def activate_pending_approval(
 
         # Validate not expired
         pending_timestamp = pending_data.get("timestamp", 0)
-        pending_ttl = pending_data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
+        pending_ttl = pending_data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
         if _is_ttl_expired(pending_timestamp, pending_ttl):
             logger.warning(
                 "Pending approval expired for nonce %s: TTL=%d min",
@@ -1182,7 +1182,7 @@ def cleanup_expired_grants() -> int:
                     cleaned += 1
                     continue
                 timestamp = data.get("timestamp", 0)
-                ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
+                ttl = data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
                 if _is_ttl_expired(timestamp, ttl):
                     _cleanup_grant(pending_file)
                     if session_id:
@@ -1233,7 +1233,7 @@ def get_pending_approvals_for_session(
             if _is_rejected(data):
                 continue
             timestamp = data.get("timestamp", 0)
-            ttl = data.get("ttl_minutes", DEFAULT_GRANT_TTL_MINUTES)
+            ttl = data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
             if _is_ttl_expired(float(timestamp), int(ttl)):
                 continue
             results.append(data)

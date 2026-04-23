@@ -118,7 +118,7 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
         plan_status = str(agent_status.get("plan_status", "")).upper()
 
     statuses_requiring_evidence = {
-        "IN_PROGRESS", "REVIEW",
+        "IN_PROGRESS", "APPROVAL_REQUEST",
         "COMPLETE", "BLOCKED", "NEEDS_INPUT",
     }
 
@@ -573,7 +573,7 @@ def validate_verbatim_outputs_consistency(
 # Approval request validation
 # ============================================================================
 
-_APPROVAL_STATUSES = {"REVIEW"}
+_APPROVAL_STATUSES = {"APPROVAL_REQUEST"}
 
 _APPROVAL_REQUIRED_FIELDS = [
     "operation", "exact_content", "scope", "risk_level", "rollback", "verification",

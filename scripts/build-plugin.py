@@ -214,11 +214,25 @@ def generate_plugin_json(manifest: dict) -> dict:
             package_data = json.load(f)
         version = package_data.get("version", "0.0.0")
 
+    plugin_name = manifest["plugin_name"]
+    # Homepage anchor differs per plugin; both point to the same repo README.
+    homepage_anchors = {
+        "gaia-ops": "https://github.com/metraton/gaia-ops#readme",
+        "gaia-security": "https://github.com/metraton/gaia-ops#gaia-security",
+    }
+    homepage = homepage_anchors.get(
+        plugin_name, "https://github.com/metraton/gaia-ops#readme"
+    )
+
     return {
-        "name": manifest["plugin_name"],
+        "name": plugin_name,
         "version": version,
         "description": manifest.get("description", ""),
-        "author": {"name": "jaguilar87"},
+        "author": {
+            "name": "jaguilar87",
+            "email": "jaguilar@aaxis.io",
+        },
+        "homepage": homepage,
         "repository": "https://github.com/metraton/gaia-ops",
         "license": "MIT",
         "keywords": ["security", "devops"],
@@ -300,6 +314,21 @@ def build_plugin(plugin_name: str, output_dir: Path) -> None:
         json.dump(plugin_json, f, indent=2)
         f.write("\n")
     print(f"  Generated: .claude-plugin/plugin.json")
+
+    # Copy per-plugin README.md from build/<plugin>.README.md if present.
+    # This README is user-facing inside the installed plugin tarball.
+    readme_src = REPO_ROOT / "build" / f"{plugin_name}.README.md"
+    if readme_src.exists():
+        readme_dst = output_dir / "README.md"
+        shutil.copy2(readme_src, readme_dst)
+        print(f"  Copied: README.md (from build/{plugin_name}.README.md)")
+
+    # Copy per-plugin icon.svg from build/<plugin>.icon.svg if present.
+    icon_src = REPO_ROOT / "build" / f"{plugin_name}.icon.svg"
+    if icon_src.exists():
+        icon_dst = output_dir / ".claude-plugin" / "icon.svg"
+        shutil.copy2(icon_src, icon_dst)
+        print(f"  Copied: .claude-plugin/icon.svg (from build/{plugin_name}.icon.svg)")
 
     # Validate output
     errors = validate_output(manifest, output_dir)

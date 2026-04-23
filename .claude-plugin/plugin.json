@@ -3,8 +3,10 @@
   "version": "5.0.0-rc1",
   "description": "Security-first orchestrator with specialized agents, hooks, and governance for AI coding",
   "author": {
-    "name": "jaguilar87"
+    "name": "jaguilar87",
+    "email": "jaguilar@aaxis.io"
   },
+  "homepage": "https://github.com/metraton/gaia-ops#readme",
   "repository": "https://github.com/metraton/gaia-ops",
   "license": "MIT",
   "keywords": [
