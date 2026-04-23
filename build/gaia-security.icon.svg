@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- placeholder — replace with designed PNG before public v5.0.0 stable -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="gaia-security">
-  <title>gaia-security</title>
-  <rect width="128" height="128" rx="24" ry="24" fill="#991b1b"/>
-  <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle"
-        font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif"
-        font-weight="700" font-size="56" fill="#ffffff" letter-spacing="-2">GS</text>
-</svg>

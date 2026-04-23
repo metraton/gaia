@@ -323,12 +323,12 @@ def build_plugin(plugin_name: str, output_dir: Path) -> None:
         shutil.copy2(readme_src, readme_dst)
         print(f"  Copied: README.md (from build/{plugin_name}.README.md)")
 
-    # Copy per-plugin icon.svg from build/<plugin>.icon.svg if present.
-    icon_src = REPO_ROOT / "build" / f"{plugin_name}.icon.svg"
-    if icon_src.exists():
-        icon_dst = output_dir / ".claude-plugin" / "icon.svg"
-        shutil.copy2(icon_src, icon_dst)
-        print(f"  Copied: .claude-plugin/icon.svg (from build/{plugin_name}.icon.svg)")
+    # TODO: Re-enable icon copy once Claude Code plugin.json schema documents an 'icon' field (ref: https://code.claude.com/docs/en/plugins-reference)
+    # icon_src = REPO_ROOT / "build" / f"{plugin_name}.icon.svg"
+    # if icon_src.exists():
+    #     icon_dst = output_dir / ".claude-plugin" / "icon.svg"
+    #     shutil.copy2(icon_src, icon_dst)
+    #     print(f"  Copied: .claude-plugin/icon.svg (from build/{plugin_name}.icon.svg)")
 
     # Validate output
     errors = validate_output(manifest, output_dir)
