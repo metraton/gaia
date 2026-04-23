@@ -15,6 +15,7 @@ Tests in this file focus on the liveness axis; the shape/format of
 the [ACTIONABLE] block is covered by test_user_prompt_submit_pending.py.
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -257,3 +258,127 @@ class TestLiveSessionPendingsExcludedFromActionable:
         # bug is a worse failure than showing extras.
         assert "P-" + ("a" * 8) in result
         assert "P-" + ("b" * 8) in result
+
+
+# ---------------------------------------------------------------------------
+# AC4 -- liveness filter works end-to-end with real PID tracking (Fix A)
+# ---------------------------------------------------------------------------
+
+class TestLivenessFilterWithRealPids:
+    """Exercise the liveness filter against a real session_registry backed
+    by real PIDs on disk. These tests lock in the Fix A contract: entries
+    whose process is gone must be treated as dead, which means their
+    pendings should resurface in the current session's [ACTIONABLE] block.
+
+    Without Fix A, the registry would trust ``register_session`` state
+    forever and a crashed session's pendings would stay hidden.
+    """
+
+    def _register_with_real_pid(
+        self,
+        tmp_path,
+        monkeypatch,
+        session_id: str,
+        pid: int,
+    ) -> None:
+        """Seed the user-scoped registry with a specific pid for session_id.
+
+        We redirect the registry file to tmp_path so the test never
+        pollutes ~/.claude/session_registry.json.
+        """
+        from modules.session import session_registry
+
+        registry_file = tmp_path / "session_registry_live.json"
+        monkeypatch.setattr(
+            session_registry,
+            "_get_registry_path",
+            lambda: registry_file,
+        )
+        session_registry.register_session(session_id, pid=pid)
+
+    def test_dead_pid_session_surfaces_its_pendings(
+        self, tmp_path, monkeypatch
+    ):
+        """A session registered with a dead PID must be filtered out of
+        ``get_live_sessions``. Its pending therefore shows up in the
+        current session's [ACTIONABLE] block -- exactly the behavior we
+        want when a sibling CC process crashed without firing SessionEnd.
+        """
+        from modules.session import session_registry
+        import modules.session.pending_scanner as ps
+
+        dead_pid = 2 ** 30 - 1  # see test_session_registry.py rationale
+        self._register_with_real_pid(
+            tmp_path, monkeypatch, "crashed-session", dead_pid
+        )
+
+        pendings_disk = [
+            _make_fake_pending("cr00001a", "crashed-session", cross_session=True),
+        ]
+
+        def wrapped_scan(
+            approvals_dir,
+            session_id=None,
+            current_session_id=None,
+            exclude_live_sessions=False,
+        ):
+            items = list(pendings_disk)
+            if session_id is not None:
+                items = [i for i in items if i["pending_session_id"] == session_id]
+            if exclude_live_sessions:
+                live = session_registry.get_live_sessions()
+                items = [
+                    i for i in items if i["pending_session_id"] not in live
+                ]
+            return items
+
+        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
+
+        result = _build_pending_context()
+        assert "P-cr00001a" in result, (
+            "Pending from a crashed session must be visible -- Fix A "
+            "should filter zombie registry entries so their pendings "
+            "are no longer hidden behind a stale 'alive' flag."
+        )
+
+    def test_live_pid_session_keeps_its_pendings_hidden(
+        self, tmp_path, monkeypatch
+    ):
+        """Mirror assertion: when the PID really is alive (we use the
+        test process's own PID), the sibling session is considered alive
+        and its pending must NOT appear in our [ACTIONABLE] injection.
+        """
+        from modules.session import session_registry
+        import modules.session.pending_scanner as ps
+
+        self._register_with_real_pid(
+            tmp_path, monkeypatch, "alive-sibling", os.getpid()
+        )
+
+        pendings_disk = [
+            _make_fake_pending("liv00001", "alive-sibling", cross_session=True),
+        ]
+
+        def wrapped_scan(
+            approvals_dir,
+            session_id=None,
+            current_session_id=None,
+            exclude_live_sessions=False,
+        ):
+            items = list(pendings_disk)
+            if session_id is not None:
+                items = [i for i in items if i["pending_session_id"] == session_id]
+            if exclude_live_sessions:
+                live = session_registry.get_live_sessions()
+                items = [
+                    i for i in items if i["pending_session_id"] not in live
+                ]
+            return items
+
+        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
+
+        result = _build_pending_context()
+        assert "P-liv00001" not in result, (
+            "Sibling session with a live PID must be treated as alive -- "
+            "its pending must not leak into another session's block."
+        )
