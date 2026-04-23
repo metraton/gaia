@@ -86,6 +86,7 @@ skills/
 ├── schedule-task/         # Dispatch parameter extraction and prompt templates
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
+├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
 ├── terraform-patterns/    # Terraform/Terragrunt patterns
 │   └── reference.md
@@ -119,6 +120,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `pending-approvals` — present and resolve pending approval requests
 - `request-approval` — T3 approval-request workflow
 - `schedule-task` — dispatch parameter templates
+- `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
 
 **Skill types:**
 
