@@ -442,9 +442,64 @@ class PrePublishValidator {
         }
       }
 
+      // Check pyproject.toml [project].version
+      const pyprojectPath = path.join(baseDir, 'pyproject.toml');
+      if (fs.existsSync(pyprojectPath)) {
+        const pyprojectText = fs.readFileSync(pyprojectPath, 'utf-8');
+        // Match the first `version = "..."` after [project] section header.
+        // Simple parser: find [project] block, then the version line within it.
+        const projectSectionMatch = pyprojectText.match(/\[project\]([\s\S]*?)(?:\n\[|$)/);
+        if (projectSectionMatch) {
+          const versionMatch = projectSectionMatch[1].match(/^\s*version\s*=\s*["']([^"']+)["']/m);
+          if (versionMatch) {
+            const pyVersion = versionMatch[1];
+            if (pyVersion !== expectedVersion) {
+              versionMismatches.push(`pyproject.toml: ${pyVersion}`);
+            } else {
+              this.log(`  ✓ pyproject.toml version matches`, 'success');
+            }
+          } else {
+            this.log(`  ⚠️  pyproject.toml [project].version not found — skipping`, 'warning');
+          }
+        } else {
+          this.log(`  ⚠️  pyproject.toml [project] section not found — skipping`, 'warning');
+        }
+      }
+
+      // Check CHANGELOG.md top-most version header
+      const changelogPath = path.join(baseDir, 'CHANGELOG.md');
+      if (fs.existsSync(changelogPath)) {
+        const changelogText = fs.readFileSync(changelogPath, 'utf-8');
+        // Find the first `## [x.y.z...]` header, skipping `## [Unreleased]`.
+        const headerRegex = /^##\s*\[([^\]]+)\]/gm;
+        let match;
+        let topVersion = null;
+        while ((match = headerRegex.exec(changelogText)) !== null) {
+          const header = match[1].trim();
+          if (header.toLowerCase() === 'unreleased') continue;
+          topVersion = header;
+          break;
+        }
+        if (topVersion) {
+          if (topVersion !== expectedVersion) {
+            versionMismatches.push(`CHANGELOG.md top: ${topVersion}`);
+          } else {
+            this.log(`  ✓ CHANGELOG.md top version matches`, 'success');
+          }
+        } else {
+          this.log(`  ⚠️  CHANGELOG.md has no versioned header — skipping`, 'warning');
+        }
+      }
+
       if (versionMismatches.length > 0) {
-        this.log(`✗ Version mismatches found (expected ${expectedVersion}): ${versionMismatches.join(', ')}`, 'error');
-        throw new Error(`Version sync failed: ${versionMismatches.join(', ')}`);
+        const sources = [
+          `package.json=${expectedVersion}`,
+          ...versionMismatches.map(m => m.replace(/: /, '=')),
+        ];
+        this.log(`✗ Version drift detected. Align all sources before publish: ${sources.join(', ')}`, 'error');
+        throw new Error(
+          `Version drift: ${sources.join(', ')} — align all sources (package.json, plugin.json, marketplace.json, sub-plugin manifests, pyproject.toml, CHANGELOG.md top) before publish`
+        );
       }
 
     } catch (error) {
