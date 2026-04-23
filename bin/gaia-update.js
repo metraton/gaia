@@ -454,6 +454,145 @@ async function updateSymlinks() {
 }
 
 // ============================================================================
+// FTS5 Backfill Safety-Net
+// ============================================================================
+//
+// On upgrade paths, a project may already have episodes in
+// `.claude/project-context/episodic-memory/index.json` but an empty FTS5
+// `search.db`. This happens when episodes were produced before FTS5 was wired
+// in, or when `search.db` was deleted for any reason. Fresh installs have
+// zero episodes and will no-op through this check.
+//
+// Opt-out: pass `--no-fts5-backfill` (or set GAIA_SKIP_FTS5_BACKFILL=1).
+
+async function maybeBackfillFts5() {
+  if (process.argv.includes('--no-fts5-backfill')
+      || process.env.GAIA_SKIP_FTS5_BACKFILL === '1') {
+    return;
+  }
+
+  const claudeDir = join(CWD, '.claude');
+  if (!existsSync(claudeDir)) return;
+
+  const memoryDir = join(claudeDir, 'project-context', 'episodic-memory');
+  const indexPath = join(memoryDir, 'index.json');
+  const dbPath = join(memoryDir, 'search.db');
+
+  if (!existsSync(indexPath)) return; // Fresh install — nothing to backfill
+
+  let total = 0;
+  try {
+    const idx = JSON.parse(await fs.readFile(indexPath, 'utf-8'));
+    total = Array.isArray(idx.episodes) ? idx.episodes.length : 0;
+  } catch {
+    return; // Unreadable index — let doctor handle it
+  }
+  if (total === 0) return; // No episodes to index
+
+  if (!existsSync(dbPath)) return; // doctor --fix will create it on first use
+
+  // Query FTS5 count via python3 subprocess (sqlite3 binary may not be on PATH
+  // on Windows; python3 is already a hard requirement for gaia-ops hooks).
+  const pyCmd = findPython();
+  if (!pyCmd) return; // Python missing — the health check will report it
+
+  const spinner = ora('Checking FTS5 backfill status...').start();
+  let indexed;
+  try {
+    const probeScript = join(memoryDir, '.gaia-fts5-probe.py');
+    const probeContent = `
+import sqlite3, sys
+try:
+    con = sqlite3.connect(sys.argv[1])
+    cur = con.execute("SELECT COUNT(*) FROM episodes_fts")
+    print(cur.fetchone()[0])
+except Exception:
+    print(-1)
+`;
+    await fs.writeFile(probeScript, probeContent);
+    try {
+      const { stdout } = await execAsync(
+        `${pyCmd} "${probeScript}" "${dbPath}"`,
+        { timeout: 10000 }
+      );
+      indexed = parseInt(stdout.trim(), 10);
+    } finally {
+      try { await fs.unlink(probeScript); } catch { /* ignore */ }
+    }
+  } catch {
+    spinner.info('FTS5 probe skipped (sqlite3/python issue)');
+    return;
+  }
+
+  if (!Number.isFinite(indexed) || indexed < 0) {
+    spinner.info('FTS5 probe inconclusive (table may not exist yet)');
+    return;
+  }
+
+  // If indexed is already >=90% of total, no backfill needed — matches doctor
+  // threshold exactly so we don't loop users through unnecessary work.
+  if (indexed / total >= 0.9) {
+    spinner.succeed(`FTS5 backfill: ${indexed}/${total} episodes indexed (ok)`);
+    return;
+  }
+
+  spinner.text = `FTS5 backfill: rebuilding ${total} episodes (had ${indexed})...`;
+
+  // Invoke backfill via the gaia CLI doctor --fix. We call `python3 bin/gaia
+  // doctor --fix` from the installed package directory, with CWD set to the
+  // consumer project so doctor locates the right .claude/ tree.
+  const packageDir = join(__dirname, '..');
+  const gaiaEntry = join(packageDir, 'bin', 'gaia');
+
+  if (!existsSync(gaiaEntry)) {
+    spinner.warn('FTS5 backfill skipped (bin/gaia not found)');
+    return;
+  }
+
+  try {
+    const { stdout, stderr } = await execAsync(
+      `${pyCmd} "${gaiaEntry}" doctor --fix`,
+      { timeout: 120000, cwd: CWD }
+    );
+    if (VERBOSE) {
+      if (stdout) console.log(chalk.gray(stdout));
+      if (stderr) console.log(chalk.yellow(stderr));
+    }
+
+    // Re-probe to report outcome.
+    const probeScript = join(memoryDir, '.gaia-fts5-probe.py');
+    const probeContent = `
+import sqlite3, sys
+try:
+    con = sqlite3.connect(sys.argv[1])
+    cur = con.execute("SELECT COUNT(*) FROM episodes_fts")
+    print(cur.fetchone()[0])
+except Exception:
+    print(-1)
+`;
+    await fs.writeFile(probeScript, probeContent);
+    let newIndexed = -1;
+    try {
+      const { stdout: newOut } = await execAsync(
+        `${pyCmd} "${probeScript}" "${dbPath}"`,
+        { timeout: 10000 }
+      );
+      newIndexed = parseInt(newOut.trim(), 10);
+    } finally {
+      try { await fs.unlink(probeScript); } catch { /* ignore */ }
+    }
+
+    if (Number.isFinite(newIndexed) && newIndexed > indexed) {
+      spinner.succeed(`FTS5 backfill: rebuilt ${newIndexed}/${total} episodes`);
+    } else {
+      spinner.warn(`FTS5 backfill completed but index still at ${newIndexed}/${total}`);
+    }
+  } catch (err) {
+    spinner.warn(`FTS5 backfill skipped: ${err.message || 'unknown error'}`);
+  }
+}
+
+// ============================================================================
 // Post-Update Verification
 // ============================================================================
 
@@ -650,6 +789,10 @@ async function main() {
       await fs.writeFile(registryPath, JSON.stringify(registry, null, 2) + '\n');
     }
   } catch { /* non-fatal */ }
+
+  // FTS5 backfill safety-net (no-op on fresh install; only fires when
+  // episodes exist in index.json but search.db is under-indexed)
+  await maybeBackfillFts5();
 
   // Verify (runs for both fresh install and update)
   const { issues, passed, total } = await runVerification();
