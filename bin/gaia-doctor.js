@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Health Check CLI
+ * @jaguilar87/gaia - Health Check CLI
  *
  * Verifies the complete Gaia-Ops installation is healthy.
  * Run after install, update, or when things seem broken.
@@ -67,7 +67,7 @@ async function checkGaiaVersion() {
     const pkg = JSON.parse(await fs.readFile(join(__dirname, '..', 'package.json'), 'utf-8'));
     return result('Gaia-Ops', 'pass', `v${pkg.version}`);
   } catch {
-    return result('Gaia-Ops', 'error', 'Version unknown', 'Reinstall @jaguilar87/gaia-ops');
+    return result('Gaia-Ops', 'error', 'Version unknown', 'Reinstall @jaguilar87/gaia');
   }
 }
 

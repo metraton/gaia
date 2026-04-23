@@ -9,14 +9,14 @@ Install this plugin when you want Gaia's security pipeline without the agent ros
 **Via Claude Code marketplace:**
 
 ```
-/plugin marketplace add jaguilar87/gaia-ops
+/plugin marketplace add metraton/gaia
 /plugin install gaia-security
 ```
 
 **Via npm (standalone dist):**
 
 ```bash
-npm install @jaguilar87/gaia-ops
+npm install @jaguilar87/gaia
 # Then point Claude Code at dist/gaia-security/ in your settings.
 ```
 
@@ -84,7 +84,7 @@ Writes to `.claude/hooks/` and `.claude/settings*.json` are hook-protected — a
 
 ## Links
 
-- Documentation: [github.com/metraton/gaia-ops#gaia-security](https://github.com/metraton/gaia-ops#gaia-security)
-- Security policy: [SECURITY.md](https://github.com/metraton/gaia-ops/blob/main/SECURITY.md)
-- Issues: [github.com/metraton/gaia-ops/issues](https://github.com/metraton/gaia-ops/issues)
+- Documentation: [github.com/metraton/gaia#gaia-security](https://github.com/metraton/gaia#gaia-security)
+- Security policy: [SECURITY.md](https://github.com/metraton/gaia/blob/main/SECURITY.md)
+- Issues: [github.com/metraton/gaia/issues](https://github.com/metraton/gaia/issues)
 - License: MIT

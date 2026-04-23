@@ -67,8 +67,8 @@ def _detect_versions(cwd: Path, pkg_root: Path) -> dict:
         try:
             lock = json.loads(lock_path.read_text(encoding="utf-8"))
             dep = (
-                (lock.get("packages") or {}).get("node_modules/@jaguilar87/gaia-ops")
-                or (lock.get("dependencies") or {}).get("@jaguilar87/gaia-ops")
+                (lock.get("packages") or {}).get("node_modules/@jaguilar87/gaia")
+                or (lock.get("dependencies") or {}).get("@jaguilar87/gaia")
             )
             if dep:
                 previous = dep.get("version")

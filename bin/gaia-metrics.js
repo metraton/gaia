@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Metrics viewer
+ * @jaguilar87/gaia - Metrics viewer
  *
  * Displays system metrics using real fields from audit/metrics logs.
  *

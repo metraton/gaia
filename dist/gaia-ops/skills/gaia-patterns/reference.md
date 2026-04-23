@@ -1,6 +1,6 @@
-# Gaia-Ops Patterns -- Reference
+# Gaia Patterns -- Reference
 
-Package: `@jaguilar87/gaia-ops` v5.0.0-rc1 | Node >=18 | Python >=3.9
+Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 
 ---
 
@@ -135,8 +135,8 @@ Package: `@jaguilar87/gaia-ops` v5.0.0-rc1 | Node >=18 | Python >=3.9
 
 | Mode | Package | What ships |
 |------|---------|-----------|
-| `gaia-ops` | `@jaguilar87/gaia-ops` | All hooks, all modules, all agents, all skills, all commands, all tools, all config |
-| `gaia-security` | `@jaguilar87/gaia-security` | 5 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`), all modules, no agents, no skills, `config/universal-rules.json` only |
+| `gaia-ops` | `@jaguilar87/gaia` (full) | All hooks, all modules, all agents, all skills, all commands, all tools, all config |
+| `gaia-security` | `@jaguilar87/gaia` (security dist) | 5 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`), all modules, no agents, no skills, `config/universal-rules.json` only |
 
 ### Detection Cascade (`hooks/modules/core/plugin_mode.py`)
 
@@ -191,7 +191,7 @@ scripts/build-plugin.py <plugin-name> [--output-dir <path>]
 npm run build:plugins          # builds both gaia-security + gaia-ops to dist/
 npm run pre-publish:validate   # validates dist/ contents
 npm run prepublishOnly         # build + validate (automatic before npm publish)
-npm publish                    # publishes @jaguilar87/gaia-ops
+npm publish                    # publishes @jaguilar87/gaia
 ```
 
 ### Postinstall (`bin/gaia-update.js`, runs on `npm install`)
@@ -215,12 +215,12 @@ npm publish                    # publishes @jaguilar87/gaia-ops
 ### Symlinks Created
 
 ```
-.claude/agents   -> node_modules/@jaguilar87/gaia-ops/agents/
-.claude/hooks    -> node_modules/@jaguilar87/gaia-ops/hooks/
-.claude/skills   -> node_modules/@jaguilar87/gaia-ops/skills/
-.claude/tools    -> node_modules/@jaguilar87/gaia-ops/tools/
-.claude/commands -> node_modules/@jaguilar87/gaia-ops/commands/
-.claude/config   -> node_modules/@jaguilar87/gaia-ops/config/
+.claude/agents   -> node_modules/@jaguilar87/gaia/agents/
+.claude/hooks    -> node_modules/@jaguilar87/gaia/hooks/
+.claude/skills   -> node_modules/@jaguilar87/gaia/skills/
+.claude/tools    -> node_modules/@jaguilar87/gaia/tools/
+.claude/commands -> node_modules/@jaguilar87/gaia/commands/
+.claude/config   -> node_modules/@jaguilar87/gaia/config/
 ```
 
 ---
@@ -310,12 +310,12 @@ npm publish                    # publishes @jaguilar87/gaia-ops
 
 ```bash
 # In any project directory:
-ln -sf /home/jorge/ws/me/gaia-ops-dev/agents   .claude/agents
-ln -sf /home/jorge/ws/me/gaia-ops-dev/hooks    .claude/hooks
-ln -sf /home/jorge/ws/me/gaia-ops-dev/skills   .claude/skills
-ln -sf /home/jorge/ws/me/gaia-ops-dev/tools    .claude/tools
-ln -sf /home/jorge/ws/me/gaia-ops-dev/commands .claude/commands
-ln -sf /home/jorge/ws/me/gaia-ops-dev/config   .claude/config
+ln -sf /home/jorge/ws/me/gaia-dev/agents   .claude/agents
+ln -sf /home/jorge/ws/me/gaia-dev/hooks    .claude/hooks
+ln -sf /home/jorge/ws/me/gaia-dev/skills   .claude/skills
+ln -sf /home/jorge/ws/me/gaia-dev/tools    .claude/tools
+ln -sf /home/jorge/ws/me/gaia-dev/commands .claude/commands
+ln -sf /home/jorge/ws/me/gaia-dev/config   .claude/config
 ```
 
 Changes to source files take effect immediately (no build step).
@@ -323,8 +323,8 @@ Changes to source files take effect immediately (no build step).
 ### Release Mode (npm install)
 
 ```bash
-npm install @jaguilar87/gaia-ops
-# postinstall creates symlinks: .claude/* -> node_modules/@jaguilar87/gaia-ops/*
+npm install @jaguilar87/gaia
+# postinstall creates symlinks: .claude/* -> node_modules/@jaguilar87/gaia/*
 ```
 
 ### Test Isolation
@@ -333,9 +333,9 @@ npm install @jaguilar87/gaia-ops
 cd /tmp
 mkdir test-project && cd test-project
 npm init -y
-npm install ~/ws/me/gaia-ops-dev    # installs from local source
+npm install ~/ws/me/gaia-dev        # installs from local source
 npx gaia-doctor                      # verify installation
-npm test                             # run L1 suite from gaia-ops-dev
+npm test                             # run L1 suite from gaia-dev
 ```
 
 ### Version Bump + Publish

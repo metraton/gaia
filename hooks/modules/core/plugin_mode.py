@@ -34,7 +34,7 @@ def _detect_mode_from_npm_package() -> str | None:
     """Detect plugin mode from the NPM package name.
 
     When installed via npm, this module lives at a path like:
-      .../node_modules/@jaguilar87/gaia-ops/hooks/modules/core/plugin_mode.py
+      .../node_modules/@jaguilar87/gaia/hooks/modules/core/plugin_mode.py
 
     The package directory name (gaia-ops or gaia-security) determines the mode.
     Also checks .claude/ symlinks as a secondary signal for npm installs.

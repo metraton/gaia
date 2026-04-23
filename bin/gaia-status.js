@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - System Status CLI
+ * @jaguilar87/gaia - System Status CLI
  *
  * Quick snapshot of the current gaia-ops system state.
  *

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Skills and Injection Diagnostic CLI
+ * @jaguilar87/gaia - Skills and Injection Diagnostic CLI
  *
  * Validates:
  * 1. Skills catalog integrity (SKILL.md + frontmatter + content quality)

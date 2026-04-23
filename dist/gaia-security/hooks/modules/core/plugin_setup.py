@@ -422,7 +422,7 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
     """Detect plugin name and version from NPM package path.
 
     When installed via npm, this module lives at:
-      .../node_modules/@jaguilar87/gaia-ops/hooks/modules/core/plugin_setup.py
+      .../node_modules/@jaguilar87/gaia/hooks/modules/core/plugin_setup.py
 
     Returns (plugin_name, version) or None.
     """

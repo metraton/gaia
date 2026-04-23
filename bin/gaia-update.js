@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Update script
+ * @jaguilar87/gaia - Update script
  *
  * Runs automatically on npm install/update (postinstall hook).
  * Also available as: npx gaia-update
@@ -24,7 +24,7 @@
  *   6. Report: summary with any issues found
  *
  * Usage:
- *   npm update @jaguilar87/gaia-ops   # Automatic via postinstall
+ *   npm update @jaguilar87/gaia   # Automatic via postinstall
  *   npx gaia-update                   # Manual trigger
  *   npx gaia-update --verbose         # Show all checks
  */
@@ -61,8 +61,8 @@ async function detectVersions() {
     const lockPath = join(CWD, 'package-lock.json');
     if (existsSync(lockPath)) {
       const lock = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
-      const dep = lock.packages?.['node_modules/@jaguilar87/gaia-ops']
-        || lock.dependencies?.['@jaguilar87/gaia-ops'];
+      const dep = lock.packages?.['node_modules/@jaguilar87/gaia']
+        || lock.dependencies?.['@jaguilar87/gaia'];
       if (dep) previous = dep.version;
     }
   } catch { /* ignore */ }

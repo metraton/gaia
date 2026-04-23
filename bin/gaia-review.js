@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Pending Context Updates Review CLI
+ * @jaguilar87/gaia - Pending Context Updates Review CLI
  *
  * Interactive tool for reviewing, approving, and rejecting
  * pending context update suggestions from agents.

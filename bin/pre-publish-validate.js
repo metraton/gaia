@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pre-publish validation script for gaia-ops
+ * Pre-publish validation script for the gaia package
  *
  * Validates that changes work correctly before publishing to npm:
  * 1. Checks for staged changes
@@ -26,56 +26,59 @@ import { findPython } from './python-detect.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Detectar gaia-ops root buscando package.json
-function detectGaiaOpsRoot(startPath) {
+// Detectar gaia root buscando package.json (lee el nombre dinámicamente)
+function detectGaiaRoot(startPath) {
   let currentPath = startPath;
 
   while (currentPath !== path.dirname(currentPath)) { // hasta raíz
     const packageJsonPath = path.join(currentPath, 'package.json');
     if (fs.existsSync(packageJsonPath)) {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      if (pkg.name === '@jaguilar87/gaia-ops') {
-        return currentPath;
+      // Accept any @jaguilar87/* package (decouples validator from exact name)
+      if (pkg.name && pkg.name.startsWith('@jaguilar87/')) {
+        return { root: currentPath, name: pkg.name };
       }
     }
     currentPath = path.dirname(currentPath);
   }
 
-  throw new Error('Could not find gaia-ops package.json');
+  throw new Error('Could not find @jaguilar87/* package.json walking up from ' + startPath);
 }
 
 // Buscar node_modules de múltiples maneras
-function findNodeModulesPath(gaiaOpsRoot) {
+function findNodeModulesPath(gaiaRoot, pkgName) {
+  const [scope, name] = pkgName.split('/');
   const candidates = [
-    path.resolve(gaiaOpsRoot, 'node_modules'),                 // ./node_modules (CI: npm ci in repo root)
-    path.resolve(gaiaOpsRoot, '..', 'node_modules'),           // ../node_modules (monorepo consumer)
-    path.resolve(process.cwd(), 'node_modules'),               // cwd/node_modules
-    path.join(gaiaOpsRoot, '..', '..', 'node_modules'),        // ../../node_modules (deep nesting)
+    path.resolve(gaiaRoot, 'node_modules'),                 // ./node_modules (CI: npm ci in repo root)
+    path.resolve(gaiaRoot, '..', 'node_modules'),           // ../node_modules (monorepo consumer)
+    path.resolve(process.cwd(), 'node_modules'),            // cwd/node_modules
+    path.join(gaiaRoot, '..', '..', 'node_modules'),        // ../../node_modules (deep nesting)
   ];
 
   for (const candidate of candidates) {
-    const gaiaPath = path.join(candidate, '@jaguilar87', 'gaia-ops');
+    const gaiaPath = path.join(candidate, scope, name);
     if (fs.existsSync(gaiaPath)) {
       return candidate;
     }
   }
 
   // In CI, node_modules exists inside the repo root (npm ci) but won't contain
-  // the package itself as a nested dependency. Prefer gaiaOpsRoot/node_modules
+  // the package itself as a nested dependency. Prefer gaiaRoot/node_modules
   // over going up a level (which breaks in CI checkout structures).
-  const localNodeModules = path.resolve(gaiaOpsRoot, 'node_modules');
+  const localNodeModules = path.resolve(gaiaRoot, 'node_modules');
   if (fs.existsSync(localNodeModules)) {
     return localNodeModules;
   }
 
   // Fallback: use __dirname-relative path (repo root) instead of process.cwd()
-  return path.resolve(gaiaOpsRoot, 'node_modules');
+  return path.resolve(gaiaRoot, 'node_modules');
 }
 
-const GAIA_OPS_ROOT = detectGaiaOpsRoot(path.resolve(__dirname, '..'));
-const NODE_MODULES_BASE = findNodeModulesPath(GAIA_OPS_ROOT);
+const { root: GAIA_OPS_ROOT, name: PKG_NAME } = detectGaiaRoot(path.resolve(__dirname, '..'));
+const [PKG_SCOPE, PKG_SHORT] = PKG_NAME.split('/');
+const NODE_MODULES_BASE = findNodeModulesPath(GAIA_OPS_ROOT, PKG_NAME);
 const MONOREPO_ROOT = path.resolve(NODE_MODULES_BASE, '..');
-const NODE_MODULES_INSTALL = path.resolve(NODE_MODULES_BASE, '@jaguilar87', 'gaia-ops');
+const NODE_MODULES_INSTALL = path.resolve(NODE_MODULES_BASE, PKG_SCOPE, PKG_SHORT);
 
 class PrePublishValidator {
   constructor(options = {}) {
@@ -206,7 +209,7 @@ class PrePublishValidator {
     this.log('Step 4: Validating node_modules installation...', 'info');
 
     if (!fs.existsSync(NODE_MODULES_INSTALL)) {
-      this.log('⚠️  gaia-ops not found in node_modules, installing...', 'warning');
+      this.log(`⚠️  ${PKG_NAME} not found in node_modules, installing...`, 'warning');
       this.reinstallNodeModules();
     }
 
@@ -515,7 +518,8 @@ class PrePublishValidator {
 
     console.log(`
   ┌─ Path Detection
-  │  gaia-ops root:   ${GAIA_OPS_ROOT}
+  │  package:         ${PKG_NAME}
+  │  repo root:       ${GAIA_OPS_ROOT}
   │  node_modules:    ${NODE_MODULES_BASE}
   │  monorepo root:   ${MONOREPO_ROOT}
   │  installed path:  ${NODE_MODULES_INSTALL}
@@ -545,7 +549,7 @@ class PrePublishValidator {
   async run() {
     try {
       this.log('Starting pre-publish validation...', 'info');
-      this.log(`Detected paths: gaia-ops=${path.basename(GAIA_OPS_ROOT)}, monorepo=${path.basename(MONOREPO_ROOT)}`, 'info');
+      this.log(`Detected paths: pkg=${PKG_NAME} root=${path.basename(GAIA_OPS_ROOT)}, monorepo=${path.basename(MONOREPO_ROOT)}`, 'info');
       console.log('');
 
       this.validateGitStatus();

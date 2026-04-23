@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Cleanup script
+ * @jaguilar87/gaia - Cleanup script
  *
  * Purpose:
  * - Remove CLAUDE.md
@@ -18,7 +18,7 @@
  *   will NOT execute automatically due to npm's file: protocol behavior.
  *   You must run 'npx gaia-cleanup' manually before uninstalling:
  *
- *   npx gaia-cleanup && npm uninstall @jaguilar87/gaia-ops
+ *   npx gaia-cleanup && npm uninstall @jaguilar87/gaia
  *
  *   When installed from npm registry, cleanup happens automatically on uninstall.
  */
@@ -474,7 +474,7 @@ async function main() {
   const pruneOnly = args.includes('--prune') || args.includes('--retain');
 
   if (pruneOnly) {
-    console.log(chalk.cyan('\n🧹 @jaguilar87/gaia-ops data retention\n'));
+    console.log(chalk.cyan('\n🧹 @jaguilar87/gaia data retention\n'));
     console.log(chalk.gray('Retention policy:'));
     console.log(chalk.gray('  Audit logs:           30 days'));
     console.log(chalk.gray('  Hook logs:            14 days'));
@@ -500,7 +500,7 @@ async function main() {
     return;
   }
 
-  console.log(chalk.cyan('\n🧹 @jaguilar87/gaia-ops cleanup\n'));
+  console.log(chalk.cyan('\n🧹 @jaguilar87/gaia cleanup\n'));
 
   try {
     const claudeRemoved = await removeClaudeMd();

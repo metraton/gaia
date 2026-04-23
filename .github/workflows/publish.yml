@@ -93,10 +93,10 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           TAG="${{ steps.npm-tag.outputs.tag }}"
-          echo "Smoke-installing @jaguilar87/gaia-ops@${VERSION} (tag: ${TAG})"
+          echo "Smoke-installing @jaguilar87/gaia@${VERSION} (tag: ${TAG})"
           # Wait up to ~60s for registry propagation (npm CDN eventual consistency)
           for i in 1 2 3 4 5 6; do
-            if npm view "@jaguilar87/gaia-ops@${VERSION}" version >/dev/null 2>&1; then
+            if npm view "@jaguilar87/gaia@${VERSION}" version >/dev/null 2>&1; then
               echo "Version ${VERSION} visible on registry"
               break
             fi
@@ -106,7 +106,7 @@ jobs:
           mkdir -p /tmp/smoke-install
           cd /tmp/smoke-install
           npm init -y >/dev/null
-          npm install "@jaguilar87/gaia-ops@${VERSION}"
+          npm install "@jaguilar87/gaia@${VERSION}"
           echo "--- gaia --version ---"
           npx --no-install gaia --version || true
           echo "--- gaia doctor (tail) ---"

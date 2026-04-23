@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Uninstall wrapper
+ * @jaguilar87/gaia - Uninstall wrapper
  *
  * Safely uninstalls gaia-ops by:
  * 1. Running gaia-cleanup to remove all generated files
@@ -56,10 +56,10 @@ async function runCleanup() {
  * Run npm uninstall
  */
 function runUninstall() {
-  const spinner = ora('Uninstalling @jaguilar87/gaia-ops...').start();
+  const spinner = ora('Uninstalling @jaguilar87/gaia...').start();
 
   try {
-    execSync('npm uninstall @jaguilar87/gaia-ops', {
+    execSync('npm uninstall @jaguilar87/gaia', {
       cwd: CWD,
       stdio: 'inherit'
     });
@@ -76,7 +76,7 @@ function runUninstall() {
  * Main function
  */
 async function main() {
-  console.log(chalk.cyan('\n🗑️  @jaguilar87/gaia-ops uninstaller\n'));
+  console.log(chalk.cyan('\n🗑️  @jaguilar87/gaia uninstaller\n'));
 
   try {
     // Step 1: Run cleanup
@@ -99,7 +99,7 @@ async function main() {
       console.log(chalk.red('\n❌ Uninstall failed\n'));
       console.log(chalk.yellow('You can try manually:'));
       console.log(chalk.gray('  1. npx gaia-cleanup'));
-      console.log(chalk.gray('  2. npm uninstall @jaguilar87/gaia-ops\n'));
+      console.log(chalk.gray('  2. npm uninstall @jaguilar87/gaia\n'));
       process.exit(1);
     }
   } catch (error) {

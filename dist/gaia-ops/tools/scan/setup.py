@@ -10,7 +10,7 @@ Functions:
 - copy_claude_md: deprecated no-op (identity now via submit hook)
 - copy_settings_json: create minimal settings.json only if missing (non-invasive)
 - install_git_hooks: copy commit-msg hook to all git repos
-- ensure_gaia_ops_package: npm install @jaguilar87/gaia-ops
+- ensure_gaia_ops_package: npm install @jaguilar87/gaia
 - ensure_claude_code: check/install claude CLI
 - generate_project_context: create/merge project-context.json
 """
@@ -56,7 +56,7 @@ def _find_package_root() -> Path:
 
 
 def _find_installed_package_root(project_root: Path) -> Optional[Path]:
-    """Find the installed @jaguilar87/gaia-ops package in node_modules.
+    """Find the installed @jaguilar87/gaia package in node_modules.
 
     Args:
         project_root: Project root directory.
@@ -64,14 +64,14 @@ def _find_installed_package_root(project_root: Path) -> Optional[Path]:
     Returns:
         Path to the package root, or None if not found.
     """
-    pkg_path = project_root / "node_modules" / "@jaguilar87" / "gaia-ops"
+    pkg_path = project_root / "node_modules" / "@jaguilar87" / "gaia"
     if pkg_path.is_dir():
         return pkg_path
     return None
 
 
 def ensure_gaia_ops_package(project_root: Path) -> bool:
-    """Ensure @jaguilar87/gaia-ops is installed as npm dependency.
+    """Ensure @jaguilar87/gaia is installed as npm dependency.
 
     Checks node_modules for the package. If not found, creates package.json
     if needed and runs npm install.
@@ -82,9 +82,9 @@ def ensure_gaia_ops_package(project_root: Path) -> bool:
     Returns:
         True if package is available (already installed or newly installed).
     """
-    pkg_path = project_root / "node_modules" / "@jaguilar87" / "gaia-ops" / "package.json"
+    pkg_path = project_root / "node_modules" / "@jaguilar87" / "gaia" / "package.json"
     if pkg_path.is_file():
-        logger.info("@jaguilar87/gaia-ops already installed")
+        logger.info("@jaguilar87/gaia already installed")
         return True
 
     # Create package.json if missing
@@ -100,17 +100,17 @@ def ensure_gaia_ops_package(project_root: Path) -> bool:
 
     try:
         subprocess.run(
-            ["npm", "install", "@jaguilar87/gaia-ops"],
+            ["npm", "install", "@jaguilar87/gaia"],
             cwd=str(project_root),
             capture_output=True,
             text=True,
             timeout=120,
             check=True,
         )
-        logger.info("@jaguilar87/gaia-ops installed")
+        logger.info("@jaguilar87/gaia installed")
         return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.error("Failed to install @jaguilar87/gaia-ops: %s", exc)
+        logger.error("Failed to install @jaguilar87/gaia: %s", exc)
         return False
 
 

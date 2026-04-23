@@ -78,7 +78,7 @@ def check_gaia_version() -> dict:
     data = _read_json(pkg_path)
     if data and "version" in data:
         return _result("Gaia-Ops", "pass", f"v{data['version']}")
-    return _result("Gaia-Ops", "error", "Version unknown", "Reinstall @jaguilar87/gaia-ops")
+    return _result("Gaia-Ops", "error", "Version unknown", "Reinstall @jaguilar87/gaia")
 
 
 def check_claude_code() -> dict:

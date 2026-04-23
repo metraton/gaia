@@ -13,7 +13,7 @@ The scripts in this directory split into two categories based on how they get tr
 **Category A — npm lifecycle scripts (automatic):**
 
 ```
-User runs: npm install @jaguilar87/gaia-ops
+User runs: npm install @jaguilar87/gaia
         |
 npm fires postinstall lifecycle event
         |
@@ -24,7 +24,7 @@ ensures plugin-registry entry
 ```
 
 ```
-User runs: npm uninstall @jaguilar87/gaia-ops
+User runs: npm uninstall @jaguilar87/gaia
         |
 npm fires preuninstall lifecycle event
         |

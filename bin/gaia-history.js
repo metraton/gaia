@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @jaguilar87/gaia-ops - Agent Session History CLI
+ * @jaguilar87/gaia - Agent Session History CLI
  *
  * Shows recent agent sessions with task descriptions, outcomes, and token usage.
  *

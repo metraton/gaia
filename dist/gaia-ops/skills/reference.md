@@ -91,7 +91,7 @@ When publishing a new version:
 5. Test symlinks work in consuming project:
    ```bash
    # In consuming project
-   ls -la .claude/  # Should point to node_modules/@jaguilar87/gaia-ops/
+   ls -la .claude/  # Should point to node_modules/@jaguilar87/gaia/
    ```
 6. Bump version:
    ```bash
@@ -103,7 +103,7 @@ When publishing a new version:
    ```
 8. Verify:
    ```bash
-   npm info @jaguilar87/gaia-ops version
+   npm info @jaguilar87/gaia version
    ```
 
 ## Documentation Template
