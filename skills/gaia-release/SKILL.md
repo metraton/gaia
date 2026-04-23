@@ -8,7 +8,7 @@ metadata:
 
 # Gaia Release
 
-Each mode tests a different surface. Live tests your code changes. Dry-run tests the install pipeline. Beta and release test the distribution channel. Skipping a layer means discovering its bugs in production -- a broken symlink in live mode does not predict a missing file in `package.json`'s `files` array, and a clean dry-run does not prove npm registry delivery works.
+Each mode tests a different surface. Live tests your code changes in your real workspace. Dry-run tests the install pipeline in an ephemeral sandbox. Beta and release test the distribution channel. Skipping a layer means discovering its bugs in production -- a live install over an existing workspace does not predict a missing file in `package.json`'s `files` array on a clean project, and a clean dry-run does not prove npm registry delivery works.
 
 ## Decision Tree
 
@@ -22,20 +22,22 @@ Each mode tests a different surface. Live tests your code changes. Dry-run tests
 
 ## Mode: live
 
-Symlinks point directly to source -- edits are instant, no build step.
+Fresh tarball install over the current workspace -- packs the working tree and installs it like a real consumer would, but into the user's `.claude/` so restarts pick it up.
 
 **When:** "test here", "try this out", "put it in live mode"
 
-1. Detect current state: where does `.claude/hooks` point?
-2. Create symlinks from target `.claude/` to `gaia-dev/`: agents, hooks, skills, config, tools, commands
-3. Verify: `npx gaia-doctor`
-4. Tell user to restart Claude Code
+1. From the gaia-ops-dev repo root, run: `npm run gaia:install-local`
+   - Runs `npm pack` to build the tarball from the working tree
+   - Invokes `bin/validate-sandbox.sh --target local` which detects the workspace (`$HOME/ws/me/` or the first `.claude/` parent walking up from cwd), installs the tarball there, and runs the 8-check harness (settings-preservation check is skipped -- no pre-snapshot possible for a real workspace).
+2. Tell user: "Gaia fresh-installed locally from dev working tree. Restart Claude Code to activate."
 
-**Default path:** Current project (cwd). If user says "here" -> cwd. If user specifies a project -> that path.
+**Default path:** Detected by the harness. `$HOME/ws/me/` if present, otherwise nearest `.claude/` ancestor.
 
-**Revert:** `npm install @jaguilar87/gaia` restores release symlinks.
+**Revert:** `npm install @jaguilar87/gaia@rc` (or `@latest`) over the same workspace -- the next install wins.
 
-Live mode does not test build output, package contents, or install pipeline. A file present in source but missing from `package.json` files array will work in live and break in dry-run.
+Live mode now uses tarball install (no symlinks) to avoid approval flood when editing hooks/skills during development. Editing a symlinked file under `.claude/hooks/` triggers a per-path approval prompt on every subsequent hook invocation, which compounds rapidly across a session. A fresh tarball install gives a stable working tree for the session; re-run `npm run gaia:install-local` when you want to pick up new edits.
+
+Live mode still does not test build output's consumer path end-to-end in a clean project -- dry-run (`gaia:verify-install:local` -> sandbox in `/tmp/`) does.
 
 ## Mode: dry-run
 
@@ -75,8 +77,9 @@ Triggered by GitHub Release events. Builds plugins, validates artifacts, auto-de
 
 ## Anti-Patterns
 
-- **Live-only testing** -- live bypasses the build and pack pipeline entirely; dry-run catches what live cannot.
+- **Live-only testing** -- live tests the tarball on your actual workspace but with your accumulated state; an ephemeral sandbox (`gaia:verify-install:local`) is still needed to prove a clean-install works.
 - **Local npm publish** -- the pipeline owns publishing; local publish bypasses build verification.
 - **Single-mode testing** -- ops and security load different configurations; one can break independently.
 - **Stale dist/** -- forgetting `npm run build:plugins` before pack means validating old code.
 - **Missing restart** -- the process caches skills at startup; mode switches require restart.
+- **Symlink-based live mode** -- deprecated. Editing a symlinked file under `.claude/hooks/` or `.claude/skills/` triggers per-path approval prompts on every hook invocation. Fresh-install flow avoids this.

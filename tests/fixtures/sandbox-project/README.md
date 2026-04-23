@@ -31,19 +31,38 @@ git so lint/test tools do not accidentally pick them up as live config.
 From the Gaia repo root:
 
 ```
-npm run smoke:sandbox:local     # npm pack + install tarball, full checks
-npm run smoke:sandbox:rc        # install @rc from registry
-npm run smoke:sandbox           # arbitrary version: bash bin/validate-sandbox.sh --version @jaguilar87/gaia@X.Y.Z
+npm run gaia:verify-install:local   # npm pack + install tarball in /tmp/ sandbox, full checks
+npm run gaia:verify-install:rc      # install @rc from registry in /tmp/ sandbox
+npm run gaia:verify-install:latest  # install @latest from registry in /tmp/ sandbox
+npm run gaia:install-local          # OVERWRITE local workspace with current working tree (dev fresh-install)
 ```
+
+Arbitrary version:
+
+```
+bash bin/validate-sandbox.sh --version @jaguilar87/gaia@X.Y.Z --target sandbox
+```
+
+## How to use
+
+| Script | Target | When |
+|--------|--------|------|
+| `npm run gaia:verify-install:local` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Validating a local build before publishing -- packs working tree, full 8-check harness, auto-cleanup |
+| `npm run gaia:verify-install:rc` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Smoke-test the `@rc` dist-tag as a real consumer would |
+| `npm run gaia:verify-install:latest` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Smoke-test the `@latest` dist-tag |
+| `npm run gaia:install-local` | `$HOME/ws/me/` or nearest `.claude/` ancestor | **OVERWRITE** local workspace install with current working tree (development fresh-install; replaces symlink-based live mode) |
+
+`gaia:install-local` is the dev iteration loop: edit code in `gaia-ops-dev/`, run it, restart Claude Code. Same harness runs in both modes -- the only difference is workspace path and that the checksum-preservation check is skipped under `--target local` (no pre-snapshot possible for a real workspace).
 
 Keep the sandbox for debugging:
 
 ```
-bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --stay
+bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target sandbox --stay
 ```
 
 The sandbox dir is printed on exit; inspect `.claude/`, rerun `gaia
-doctor`, etc., then `rm -rf` manually when done.
+doctor`, etc., then `rm -rf` manually when done. `--stay` is ignored
+with `--target local`.
 
 ## Invariants the harness validates
 

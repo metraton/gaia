@@ -101,7 +101,7 @@ jobs:
             echo "Waiting for registry propagation (attempt ${i}/6)..."
             sleep 10
           done
-          bash bin/validate-sandbox.sh --version "@jaguilar87/gaia@${VERSION}"
+          bash bin/validate-sandbox.sh --version "@jaguilar87/gaia@${VERSION}" --target sandbox
 
       - name: Notify success
         if: success()
