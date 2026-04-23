@@ -1,5 +1,5 @@
 {
-  "name": "@jaguilar87/gaia-ops",
+  "name": "@jaguilar87/gaia",
   "version": "5.0.0-rc1",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
@@ -25,7 +25,7 @@
     "terraform",
     "kubernetes",
     "ai-agents",
-    "gaia-ops",
+    "gaia",
     "orchestration",
     "automation"
   ],
@@ -34,11 +34,11 @@
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/metraton/gaia-ops.git"
+    "url": "git+https://github.com/metraton/gaia.git"
   },
-  "homepage": "https://github.com/metraton/gaia-ops#readme",
+  "homepage": "https://github.com/metraton/gaia#readme",
   "bugs": {
-    "url": "https://github.com/metraton/gaia-ops/issues",
+    "url": "https://github.com/metraton/gaia/issues",
     "email": "jorge.aguilar87@gmail.com"
   },
   "files": [

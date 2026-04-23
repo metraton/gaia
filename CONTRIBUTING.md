@@ -14,8 +14,8 @@ Thank you for your interest in contributing to gaia-ops. This guide covers how t
 ### Clone and Install
 
 ```bash
-git clone https://github.com/metraton/gaia-ops.git
-cd gaia-ops
+git clone https://github.com/metraton/gaia.git
+cd gaia
 npm install
 ```
 
@@ -143,4 +143,4 @@ For detailed guidance, see `skills/skill-creation/SKILL.md`.
 
 ## Questions?
 
-Open an issue on [GitHub](https://github.com/metraton/gaia-ops/issues) or contact the maintainer at jorge.aguilar87@gmail.com.
+Open an issue on [GitHub](https://github.com/metraton/gaia/issues) or contact the maintainer at jorge.aguilar87@gmail.com.
