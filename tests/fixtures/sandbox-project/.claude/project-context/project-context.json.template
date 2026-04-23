@@ -1,0 +1,56 @@
+{
+  "metadata": {
+    "version": "2.0",
+    "last_updated": "2026-04-01T00:00:00+00:00",
+    "contract_version": "4.0",
+    "scan_config": {
+      "last_scan": "2026-04-01T00:00:00+00:00",
+      "scanner_version": "TO_BE_REPLACED",
+      "staleness_hours": 24
+    },
+    "created_by": "sandbox-fixture"
+  },
+  "sections": {
+    "project_identity": {
+      "_source": "fixture",
+      "name": "sandbox-project",
+      "type": "single-repo",
+      "description": "Ephemeral consumer project fixture for validate-sandbox.sh",
+      "manifest_file": "package.json",
+      "monorepo": {
+        "detected": false,
+        "tool": null,
+        "workspace_roots": []
+      }
+    },
+    "stack": {
+      "_source": "fixture",
+      "languages": [],
+      "frameworks": [],
+      "runtimes": [],
+      "build_tools": [],
+      "package_managers": []
+    },
+    "git": {
+      "_source": "fixture",
+      "platform": "unknown",
+      "workspace_type": "single-repo",
+      "repos": []
+    },
+    "environment": {
+      "_source": "fixture",
+      "tools": [],
+      "env_files": []
+    },
+    "infrastructure": {
+      "_source": "fixture",
+      "cloud_providers": [],
+      "iac_tools": [],
+      "container_orchestration": []
+    }
+  },
+  "paths": {
+    "project_root": ".",
+    "scan_targets": ["."]
+  }
+}

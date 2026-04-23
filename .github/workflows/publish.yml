@@ -81,20 +81,18 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Smoke install verification
-        # Verifies the freshly published tarball installs cleanly on a bare
-        # runner. GitHub Actions /tmp is not noexec (unlike WSL local), so
-        # postinstall (bin/gaia-update.js) runs end-to-end.
+      - name: Sandbox validation harness
+        # End-to-end consumer-install verification. Installs the freshly
+        # published version into an ephemeral sandbox populated from
+        # tests/fixtures/sandbox-project/ and exercises install-time code
+        # paths (postinstall merge, FTS5 backfill) plus read-side CLI
+        # surface (version, doctor, status, context, memory stats/search,
+        # scan, preservation checksum). 8 pass/fail checks.
         #
-        # We wait briefly for npm registry propagation after publish, then
-        # install by exact version + dist-tag. `npm install` exit code is the
-        # gate: if postinstall throws, the whole install fails and this job
-        # fails (which surfaces as an alert on the release).
+        # Waits briefly for npm registry propagation (eventual consistency)
+        # before handing off to the harness. Harness exit code is the gate.
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          TAG="${{ steps.npm-tag.outputs.tag }}"
-          echo "Smoke-installing @jaguilar87/gaia@${VERSION} (tag: ${TAG})"
-          # Wait up to ~60s for registry propagation (npm CDN eventual consistency)
           for i in 1 2 3 4 5 6; do
             if npm view "@jaguilar87/gaia@${VERSION}" version >/dev/null 2>&1; then
               echo "Version ${VERSION} visible on registry"
@@ -103,14 +101,7 @@ jobs:
             echo "Waiting for registry propagation (attempt ${i}/6)..."
             sleep 10
           done
-          mkdir -p /tmp/smoke-install
-          cd /tmp/smoke-install
-          npm init -y >/dev/null
-          npm install "@jaguilar87/gaia@${VERSION}"
-          echo "--- gaia --version ---"
-          npx --no-install gaia --version || true
-          echo "--- gaia doctor (tail) ---"
-          npx --no-install gaia doctor 2>&1 | tail -20 || true
+          bash bin/validate-sandbox.sh --version "@jaguilar87/gaia@${VERSION}"
 
       - name: Notify success
         if: success()

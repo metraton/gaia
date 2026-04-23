@@ -1,0 +1,10 @@
+{
+  "name": "gaia-sandbox-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Ephemeral consumer project used by validate-sandbox.sh to exercise a freshly-installed Gaia package. Not published.",
+  "scripts": {
+    "postinstall-note": "Gaia ships its own postinstall that merges hooks + permissions. Leave this object alone."
+  },
+  "dependencies": {}
+}

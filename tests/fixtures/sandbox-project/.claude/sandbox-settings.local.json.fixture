@@ -1,0 +1,14 @@
+{
+  "_fixture_note": "Sentinel keys below MUST survive the Gaia postinstall merge. The harness sha256s this file pre- and post-install and flags any drift of user-scoped keys.",
+  "_sandbox_sentinel": "DO_NOT_TOUCH_ME",
+  "permissions": {
+    "allow": [
+      "Read(**/*)",
+      "Bash(ls *)"
+    ],
+    "deny": []
+  },
+  "env": {
+    "SANDBOX_FIXTURE_MARKER": "preserved-across-install"
+  }
+}
