@@ -11,11 +11,13 @@
 #     status, context show, memory stats/search, scan).
 #
 #   --target local:
-#     Installs Gaia directly into the current real workspace (detected as
-#     $HOME/ws/me/ or the first .claude/ parent walking up from the cwd).
-#     NO cleanup -- the install IS the installation. Replaces the deprecated
-#     symlink-based "live" mode with a fresh-install flow to avoid the
-#     approval flood that happens when editing hooks/skills while symlinked.
+#     Installs Gaia directly into a real workspace. If --workspace <path> is
+#     passed, that path is used as-is. Otherwise auto-detection walks up
+#     from cwd looking for a .claude/ with a Gaia instance marker
+#     (.claude/hooks/, .claude/agents/, or node_modules/@jaguilar87/gaia/),
+#     falling back to $HOME/ws/me/ if present. NO cleanup -- the install
+#     IS the installation. A fresh tarball install avoids per-path approval
+#     prompts for edited files during a session.
 #
 # Exit 0 when every check passes; 1 otherwise. `--stay` keeps the sandbox
 # dir for post-mortem inspection (path printed on exit). Only meaningful
@@ -31,12 +33,14 @@ VERSION_SPEC=""
 TARBALL_PATH=""
 STAY=0
 TARGET="sandbox"
+WORKSPACE_OVERRIDE=""
 
 usage() {
   cat <<'EOF'
 Usage:
   bin/validate-sandbox.sh [--version <spec>] [--tarball <path>]
-                          [--target sandbox|local] [--stay]
+                          [--target sandbox|local] [--workspace <path>]
+                          [--stay]
 
 Options:
   --version <spec>    npm version specifier, e.g. "@rc", "@5.0.0-rc1",
@@ -44,10 +48,12 @@ Options:
   --tarball <path>    Install from a local tarball (from `npm pack`).
                       Takes precedence over --version.
   --target <mode>     sandbox (default): ephemeral /tmp/gaia-sandbox-<ts>/.
-                      local: install over the real workspace
-                      ($HOME/ws/me/ or first .claude/ parent from cwd).
+                      local: install over a real workspace (see --workspace
+                      or auto-detect from cwd).
                       Local mode skips the settings-preservation check
                       (no pre-install snapshot of the real workspace).
+  --workspace <path>  Explicit target directory for --target local.
+                      Bypasses auto-detection. Ignored with --target sandbox.
   --stay              Do NOT clean up the sandbox dir on exit. Useful for
                       debugging; sandbox path is printed on exit.
                       Ignored with --target local.
@@ -67,6 +73,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --target)
       TARGET="$2"
+      shift 2
+      ;;
+    --workspace)
+      WORKSPACE_OVERRIDE="$2"
       shift 2
       ;;
     --stay)
@@ -122,22 +132,34 @@ fi
 # Determine working directory based on target
 # ---------------------------------------------------------------------------
 
+is_gaia_instance() {
+  # A directory is a Gaia instance if it has .claude/ with hook or agent
+  # content, or an already-installed Gaia package in node_modules.
+  local dir="$1"
+  [[ -d "${dir}/.claude/hooks" ]] && return 0
+  [[ -d "${dir}/.claude/agents" ]] && return 0
+  [[ -d "${dir}/node_modules/@jaguilar87/gaia" ]] && return 0
+  return 1
+}
+
 detect_local_workspace() {
-  # Priority 1: $HOME/ws/me if it exists and has .claude/
-  if [[ -d "${HOME}/ws/me/.claude" ]]; then
-    echo "${HOME}/ws/me"
-    return 0
-  fi
-  # Priority 2: walk up from cwd looking for .claude/
+  # Priority 1: walk up from cwd looking for .claude/ with a Gaia marker.
+  # Preferring cwd means `cd project-X && npm run gaia:install-local`
+  # installs into project-X, not whatever comes first in $HOME.
   local dir
   dir="$(pwd)"
   while [[ "${dir}" != "/" ]]; do
-    if [[ -d "${dir}/.claude" ]]; then
+    if [[ -d "${dir}/.claude" ]] && is_gaia_instance "${dir}"; then
       echo "${dir}"
       return 0
     fi
     dir="$(dirname "${dir}")"
   done
+  # Priority 2: fallback to $HOME/ws/me if it exists and has .claude/.
+  if [[ -d "${HOME}/ws/me/.claude" ]]; then
+    echo "${HOME}/ws/me"
+    return 0
+  fi
   return 1
 }
 
@@ -145,12 +167,28 @@ if [[ "${TARGET}" == "sandbox" ]]; then
   WORKSPACE="/tmp/gaia-sandbox-$(date +%s)-$$"
   mkdir -p "${WORKSPACE}"
 else
-  if ! WORKSPACE="$(detect_local_workspace)"; then
+  if [[ -n "${WORKSPACE_OVERRIDE}" ]]; then
+    # Explicit override from --workspace flag. Resolve relative paths
+    # against cwd, then verify directory exists.
+    if [[ "${WORKSPACE_OVERRIDE}" != /* ]]; then
+      WORKSPACE_OVERRIDE="$(cd "$(dirname "${WORKSPACE_OVERRIDE}")" 2>/dev/null && pwd)/$(basename "${WORKSPACE_OVERRIDE}")"
+    fi
+    if [[ ! -d "${WORKSPACE_OVERRIDE}" ]]; then
+      echo "FATAL: --workspace path does not exist: ${WORKSPACE_OVERRIDE}" >&2
+      exit 1
+    fi
+    WORKSPACE="${WORKSPACE_OVERRIDE}"
+    echo "[local] target workspace (override): ${WORKSPACE}"
+  elif ! WORKSPACE="$(detect_local_workspace)"; then
     echo "FATAL: --target local could not locate a workspace." >&2
-    echo "       Expected \$HOME/ws/me/.claude/ or a .claude/ dir walking up from cwd." >&2
+    echo "       Walked up from cwd looking for a .claude/ with a Gaia marker" >&2
+    echo "       (hooks/, agents/, or node_modules/@jaguilar87/gaia/)," >&2
+    echo "       fallback \$HOME/ws/me/.claude/ also absent." >&2
+    echo "       Pass --workspace <path> to override." >&2
     exit 1
+  else
+    echo "[local] target workspace: ${WORKSPACE}"
   fi
-  echo "[local] target workspace: ${WORKSPACE}"
 fi
 
 # ---------------------------------------------------------------------------

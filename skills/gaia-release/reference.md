@@ -87,6 +87,6 @@ The `publish.yml` workflow (`.github/workflows/publish.yml`) runs on every GitHu
 
 | User says | Path used |
 |-----------|-----------|
-| "here" / "this session" / "this project" / live mode | `$HOME/ws/me/` (detected by harness) or nearest `.claude/` ancestor from cwd |
-| "in project X" / specific path | That path (run `validate-sandbox.sh` from that project's cwd so the `.claude/` walk-up lands there) |
+| "here" / "this session" / "this project" / live mode | Nearest `.claude/` ancestor of cwd with a Gaia marker, falling back to `$HOME/ws/me/` if present |
+| "in project X" / specific path | Pass `--workspace /absolute/path/to/project` to `bin/validate-sandbox.sh` (bypasses auto-detect) |
 | Nothing specified (dry-run/beta verify) | `/tmp/gaia-sandbox-<unix-ts>-<pid>/` (auto-cleanup unless `--stay`) |

@@ -28,16 +28,17 @@ Fresh tarball install over the current workspace -- packs the working tree and i
 
 1. From the gaia-ops-dev repo root, run: `npm run gaia:install-local`
    - Runs `npm pack` to build the tarball from the working tree
-   - Invokes `bin/validate-sandbox.sh --target local` which detects the workspace (`$HOME/ws/me/` or the first `.claude/` parent walking up from cwd), installs the tarball there, and runs the 8-check harness (settings-preservation check is skipped -- no pre-snapshot possible for a real workspace).
+   - Invokes `bin/validate-sandbox.sh --target local` which detects the workspace (walk-up from cwd for a `.claude/` with a Gaia instance marker, falling back to `$HOME/ws/me/` if present), installs the tarball there, and runs the 8-check harness (settings-preservation check is skipped -- no pre-snapshot possible for a real workspace).
+   - Pass `--workspace <path>` to `bin/validate-sandbox.sh` directly to override auto-detection when you want to install into a specific project.
 2. Tell user: "Gaia fresh-installed locally from dev working tree. Restart Claude Code to activate."
 
-**Default path:** Detected by the harness. `$HOME/ws/me/` if present, otherwise nearest `.claude/` ancestor.
+**Default path:** Detected by the harness. Nearest `.claude/` ancestor of cwd with a Gaia marker, otherwise `$HOME/ws/me/` if present. Override with `--workspace <path>`.
 
 **Revert:** `npm install @jaguilar87/gaia@rc` (or `@latest`) over the same workspace -- the next install wins.
 
-Live mode now uses tarball install (no symlinks) to avoid approval flood when editing hooks/skills during development. Editing a symlinked file under `.claude/hooks/` triggers a per-path approval prompt on every subsequent hook invocation, which compounds rapidly across a session. A fresh tarball install gives a stable working tree for the session; re-run `npm run gaia:install-local` when you want to pick up new edits.
+Re-run `npm run gaia:install-local` whenever you want the workspace to pick up new edits from the working tree.
 
-Live mode still does not test build output's consumer path end-to-end in a clean project -- dry-run (`gaia:verify-install:local` -> sandbox in `/tmp/`) does.
+Live mode does not test build output's consumer path end-to-end in a clean project -- dry-run (`gaia:verify-install:local` -> sandbox in `/tmp/`) does.
 
 ## Mode: dry-run
 
@@ -82,4 +83,3 @@ Triggered by GitHub Release events. Builds plugins, validates artifacts, auto-de
 - **Single-mode testing** -- ops and security load different configurations; one can break independently.
 - **Stale dist/** -- forgetting `npm run build:plugins` before pack means validating old code.
 - **Missing restart** -- the process caches skills at startup; mode switches require restart.
-- **Symlink-based live mode** -- deprecated. Editing a symlinked file under `.claude/hooks/` or `.claude/skills/` triggers per-path approval prompts on every hook invocation. Fresh-install flow avoids this.
