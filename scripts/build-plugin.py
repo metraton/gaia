@@ -187,6 +187,7 @@ def _get_entry_point(event_name: str, entries: list[str]) -> str:
         "SubagentStart": "hooks/subagent_start.py",
         "SubagentStop": "hooks/subagent_stop.py",
         "SessionStart": "hooks/session_start.py",
+        "SessionEnd": "hooks/session_end_hook.py",
         "TaskCompleted": "hooks/task_completed.py",
         "PostCompact": "hooks/post_compact.py",
     }

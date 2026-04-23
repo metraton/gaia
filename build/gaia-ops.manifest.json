@@ -11,6 +11,7 @@
       "hooks/subagent_start.py",
       "hooks/subagent_stop.py",
       "hooks/session_start.py",
+      "hooks/session_end_hook.py",
       "hooks/task_completed.py",
       "hooks/pre_compact.py",
       "hooks/post_compact.py"
@@ -30,6 +31,11 @@
       ],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup"}],
+      "SessionEnd": [
+        {"matcher": "prompt_input_exit"},
+        {"matcher": "logout"},
+        {"matcher": "other"}
+      ],
       "PreCompact": [{}],
       "PostCompact": [{}],
       "Stop": [{}],

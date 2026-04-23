@@ -8,7 +8,8 @@
       "hooks/post_tool_use.py",
       "hooks/stop_hook.py",
       "hooks/user_prompt_submit.py",
-      "hooks/session_start.py"
+      "hooks/session_start.py",
+      "hooks/session_end_hook.py"
     ],
     "matchers": {
       "PreToolUse": [
@@ -22,7 +23,12 @@
       ],
       "Stop": [{}],
       "UserPromptSubmit": [{}],
-      "SessionStart": [{"matcher": "startup"}]
+      "SessionStart": [{"matcher": "startup"}],
+      "SessionEnd": [
+        {"matcher": "prompt_input_exit"},
+        {"matcher": "logout"},
+        {"matcher": "other"}
+      ]
     }
   },
   "modules": [
