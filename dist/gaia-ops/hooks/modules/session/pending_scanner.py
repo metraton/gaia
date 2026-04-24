@@ -1,16 +1,20 @@
 """Scan for deferred pending approvals and format a human-readable summary."""
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import List, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def scan_pending_approvals(
     approvals_dir: Path,
     session_id: Optional[str] = None,
     current_session_id: Optional[str] = None,
+    exclude_live_sessions: bool = False,
 ) -> List[Dict]:
     """Scan approvals directory for pending files.
 
@@ -21,6 +25,14 @@ def scan_pending_approvals(
     If session_id provided, filter to that session. Otherwise return all.
     current_session_id is used to annotate items from prior sessions
     (cross_session=True when pending.session_id != current_session_id).
+
+    If exclude_live_sessions is True, pendings whose owning session_id
+    is currently registered as alive (per session_registry.get_live_sessions)
+    are filtered out. This is used by the [ACTIONABLE] injection path and
+    the `gaia approvals list --orphans-only` CLI flag to avoid showing
+    cross-session pendings that a parallel live session may still resolve.
+    On registry errors the function logs a warning and returns all pendings
+    unfiltered (conservative: better to show extras than lose real pendings).
     """
     results = []
 
@@ -77,6 +89,21 @@ def scan_pending_approvals(
             })
         except Exception:
             continue
+
+    # Optionally exclude pendings whose owning session is currently alive.
+    # Lazy import keeps the registry dependency out of modules that call
+    # scan_pending_approvals() without the flag.
+    if exclude_live_sessions:
+        try:
+            from modules.session.session_registry import get_live_sessions
+            live = get_live_sessions()
+            results = [r for r in results if r["pending_session_id"] not in live]
+        except Exception as exc:  # noqa: BLE001 — deliberate broad catch
+            logger.warning(
+                "scan_pending_approvals: get_live_sessions() failed (%s) "
+                "— returning all pendings unfiltered",
+                exc,
+            )
 
     # Sort by timestamp (oldest first)
     results.sort(key=lambda x: x["timestamp"])
