@@ -30,9 +30,9 @@
  */
 
 import { fileURLToPath } from 'url';
-import { dirname, join, relative } from 'path';
+import { dirname, join, relative, isAbsolute, resolve as resolvePath } from 'path';
 import fs from 'fs/promises';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, readdirSync, readlinkSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import chalk from 'chalk';
@@ -49,20 +49,51 @@ const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v'
 const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
 
 // ============================================================================
+// Dynamic package resolution
+// ============================================================================
+//
+// The gaia package was renamed from `@jaguilar87/gaia-ops` to `@jaguilar87/gaia`
+// in v5. Hardcoding either name breaks the postinstall on the other variant.
+// Resolve dynamically by scanning `node_modules/@jaguilar87/` for the first
+// `gaia*` package installed in the consumer project.
+//
+// Returns the package name (e.g. `gaia` or `gaia-ops`) or `null` when the
+// scope directory is missing / has no gaia package. Callers should fall back
+// or report not-found rather than assume a default.
+
+function resolveGaiaPackageName(cwd = CWD) {
+  const scopeDir = join(cwd, 'node_modules', '@jaguilar87');
+  if (!existsSync(scopeDir)) return null;
+  let entries;
+  try {
+    entries = readdirSync(scopeDir);
+  } catch {
+    return null;
+  }
+  // Prefer exact canonical name when present, else first gaia* match.
+  if (entries.includes('gaia')) return 'gaia';
+  const legacy = entries.find((name) => name.startsWith('gaia'));
+  return legacy || null;
+}
+
+// ============================================================================
 // Version Detection
 // ============================================================================
 
 async function detectVersions() {
   const current = await readPackageVersion(join(__dirname, '..', 'package.json'));
 
-  // Try to find previous version from the installed package.json backup or lock
+  // Try to find previous version from the installed package.json backup or lock.
+  // Use the dynamically-resolved package name so both `@jaguilar87/gaia` (v5+)
+  // and the legacy `@jaguilar87/gaia-ops` are supported on upgrade paths.
   let previous = null;
   try {
     const lockPath = join(CWD, 'package-lock.json');
     if (existsSync(lockPath)) {
       const lock = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
-      const dep = lock.packages?.['node_modules/@jaguilar87/gaia']
-        || lock.dependencies?.['@jaguilar87/gaia'];
+      const pkgName = resolveGaiaPackageName() || 'gaia';
+      const dep = lock.packages?.[`node_modules/@jaguilar87/${pkgName}`]
+        || lock.dependencies?.[`@jaguilar87/${pkgName}`];
       if (dep) previous = dep.version;
     }
   } catch { /* ignore */ }
@@ -388,15 +419,57 @@ async function updateSymlinks() {
       return { updated: false, fixed: 0, total: 0 };
     }
 
-    const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
+    // Resolve the installed package name dynamically so this works for both
+    // `@jaguilar87/gaia` (v5+) and the legacy `@jaguilar87/gaia-ops` when the
+    // consumer happens to have the old name on disk.
+    const pkgName = resolveGaiaPackageName();
+    if (!pkgName) {
+      spinner.fail('Package not found in node_modules/@jaguilar87/');
+      return { updated: false, fixed: 0, total: 0 };
+    }
+    const packagePath = join(CWD, 'node_modules', '@jaguilar87', pkgName);
     if (!existsSync(packagePath)) {
-      spinner.fail('Package not found in node_modules');
+      spinner.fail(`Package not found at ${packagePath}`);
       return { updated: false, fixed: 0, total: 0 };
     }
 
     const relativePath = relative(claudeDir, packagePath);
     const symlinks = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'skills'];
     let fixed = 0;
+
+    // Helpers: detect a stale symlink by reading the raw link target and
+    // checking whether the (absolute-resolved) target exists. Also detect
+    // symlinks that still point at the legacy `gaia-ops` path after the
+    // rename and repair them to the current package path.
+    const isStaleOrLegacy = (link) => {
+      let raw;
+      try {
+        raw = readlinkSync(link);
+      } catch {
+        return { stale: false, reason: null };
+      }
+      const absTarget = isAbsolute(raw) ? raw : resolvePath(dirname(link), raw);
+      if (!existsSync(absTarget)) {
+        return { stale: true, reason: `target missing: ${raw}` };
+      }
+      // Legacy name detection: if the installed package is `gaia` but the
+      // symlink still references `@jaguilar87/gaia-ops`, repair it.
+      if (pkgName === 'gaia' && raw.includes('@jaguilar87/gaia-ops')) {
+        return { stale: true, reason: `legacy target: ${raw}` };
+      }
+      return { stale: false, reason: null };
+    };
+
+    // Detect whether a path exists as a symlink (broken or not). Plain
+    // existsSync returns false for a broken symlink, so we need lstat to
+    // distinguish "no entry" from "entry whose target is missing".
+    const symlinkEntryExists = (p) => {
+      try {
+        return readlinkSync(p) !== undefined;
+      } catch {
+        return false;
+      }
+    };
 
     for (const name of symlinks) {
       const link = join(claudeDir, name);
@@ -405,38 +478,49 @@ async function updateSymlinks() {
         ? join(packagePath, name)
         : join(relativePath, name);
 
-      if (!existsSync(link)) {
+      if (!existsSync(link) && !symlinkEntryExists(link)) {
         try {
           await fs.symlink(target, link, LINK_TYPE);
+          console.log(chalk.gray(`[gaia-update] Created symlink: ${link}`));
           fixed++;
         } catch { /* skip */ }
       } else {
-        // Check if symlink is broken (target doesn't resolve)
-        try {
-          await fs.realpath(link);
-        } catch {
-          // Broken symlink — remove and recreate
+        const { stale, reason } = isStaleOrLegacy(link);
+        if (stale) {
           try {
             await fs.unlink(link);
             await fs.symlink(target, link, LINK_TYPE);
+            console.log(chalk.gray(`[gaia-update] Repaired stale symlink: ${link} (${reason})`));
             fixed++;
           } catch { /* skip */ }
         }
       }
     }
 
-    // CHANGELOG.md
+    // CHANGELOG.md — same stale-detection contract, but file-copy on Windows
     const changelogLink = join(claudeDir, 'CHANGELOG.md');
+    const changelogSrc = join(packagePath, 'CHANGELOG.md');
     if (!existsSync(changelogLink)) {
       try {
         if (process.platform === 'win32') {
           // Junctions only work for directories; copy the file on Windows
-          await fs.copyFile(join(packagePath, 'CHANGELOG.md'), changelogLink);
+          await fs.copyFile(changelogSrc, changelogLink);
         } else {
           await fs.symlink(join(relativePath, 'CHANGELOG.md'), changelogLink);
         }
+        console.log(chalk.gray(`[gaia-update] Created CHANGELOG link: ${changelogLink}`));
         fixed++;
       } catch { /* skip */ }
+    } else if (process.platform !== 'win32') {
+      const { stale, reason } = isStaleOrLegacy(changelogLink);
+      if (stale) {
+        try {
+          await fs.unlink(changelogLink);
+          await fs.symlink(join(relativePath, 'CHANGELOG.md'), changelogLink);
+          console.log(chalk.gray(`[gaia-update] Repaired stale CHANGELOG link (${reason})`));
+          fixed++;
+        } catch { /* skip */ }
+      }
     }
 
     const total = symlinks.length + 1;
@@ -810,7 +894,17 @@ async function main() {
   console.log(chalk.gray(`\n  Health: ${passed}/${total} checks passed\n`));
 }
 
-main().catch(error => {
-  console.error(chalk.red(`\n  Update failed: ${error.message}\n`));
-  process.exit(0); // Never fail npm install
-});
+// Only execute main() when this file is invoked directly (not when imported
+// for testing). This lets unit tests import internal helpers without
+// triggering the postinstall side effects.
+const _invokedDirectly = process.argv[1]
+  && fileURLToPath(import.meta.url) === resolvePath(process.argv[1]);
+
+if (_invokedDirectly) {
+  main().catch(error => {
+    console.error(chalk.red(`\n  Update failed: ${error.message}\n`));
+    process.exit(0); // Never fail npm install
+  });
+}
+
+export { resolveGaiaPackageName };
