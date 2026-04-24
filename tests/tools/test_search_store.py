@@ -133,6 +133,24 @@ class TestCount:
         provider = FTS5Provider()
         assert provider.count() == 0
 
+    def test_count_returns_sentinel_on_connection_failure(self, tmp_path, monkeypatch):
+        """count() returns -1 when the backend cannot be reached.
+
+        Previously a connection error was coerced to 0, which hid drift
+        when `.claude/*` symlinks were broken and the DB path could not
+        be resolved. The sentinel lets the CLI surface an explicit warning
+        instead of pretending the index is empty-but-healthy.
+        """
+        monkeypatch.setenv("GAIA_SEARCH_DB_PATH", str(tmp_path / "x.db"))
+        provider = FTS5Provider()
+
+        def _boom(self):
+            raise sqlite3.OperationalError("simulated path failure")
+
+        monkeypatch.setattr(FTS5Provider, "_get_connection", _boom)
+
+        assert provider.count() == -1
+
 
 # ---------------------------------------------------------------------------
 # Test: search ranking

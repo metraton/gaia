@@ -336,8 +336,8 @@ class TestCmdSearch:
 class TestCmdStats:
     """_cmd_stats via cmd_memory dispatch."""
 
-    def test_stats_returns_four_keys(self, memory_project, monkeypatch, capsys):
-        """Stats output must contain total_episodes, indexed, avg_score, conflicts."""
+    def test_stats_returns_required_keys(self, memory_project, monkeypatch, capsys):
+        """Stats output must contain total_episodes, indexed, avg_score, conflicts, warnings."""
         _make_fake_modules(monkeypatch, count=2, conflicts=[], score=0.4)
 
         monkeypatch.chdir(memory_project)
@@ -354,6 +354,54 @@ class TestCmdStats:
         assert "indexed" in data
         assert "avg_score" in data
         assert "conflicts" in data
+        assert "warnings" in data
+        # Healthy path: no warnings emitted
+        assert data["warnings"] == []
+
+    def test_stats_emits_warning_when_sentinel_returned(self, memory_project, monkeypatch, capsys):
+        """When search_store.count() returns -1, stats surfaces a warning.
+
+        This is the drift-visibility fix: before, a broken FTS5 path produced
+        `indexed=0` silently. Now the sentinel is preserved in the JSON output
+        and a warning string is added so consumers (humans or scripts) know
+        the count is unreliable.
+        """
+        _make_fake_modules(monkeypatch, count=-1, conflicts=[], score=0.4)
+
+        monkeypatch.chdir(memory_project)
+
+        args = SimpleNamespace(
+            json=True,
+            func=memory_mod._cmd_stats,
+        )
+        rc = memory_mod.cmd_memory(args)
+
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["indexed"] == -1, "sentinel must be preserved in JSON output"
+        assert len(data["warnings"]) >= 1, "at least one warning must be emitted"
+        joined = " ".join(data["warnings"]).lower()
+        assert "fts5" in joined and "doctor" in joined, (
+            f"warning should mention FTS5 and point at `gaia doctor`, got: {data['warnings']}"
+        )
+
+    def test_stats_human_output_shows_unknown_on_sentinel(self, memory_project, monkeypatch, capsys):
+        """Human-readable stats prints 'unknown' (not '-1' or '0') when sentinel returned."""
+        _make_fake_modules(monkeypatch, count=-1, conflicts=[], score=0.4)
+
+        monkeypatch.chdir(memory_project)
+
+        args = SimpleNamespace(json=False, func=memory_mod._cmd_stats)
+        rc = memory_mod.cmd_memory(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "unknown" in captured.out, (
+            f"expected 'unknown' in stdout, got: {captured.out!r}"
+        )
+        assert "WARN" in captured.err, (
+            f"expected WARN line on stderr, got: {captured.err!r}"
+        )
 
     def test_stats_episode_count_from_index(self, memory_project, monkeypatch, capsys):
         """total_episodes must reflect the episode count in index.json."""

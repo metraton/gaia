@@ -228,13 +228,27 @@ def _cmd_stats(args) -> int:
     score_memory = _import_scoring()
     detect_conflicts = _import_conflict_detector()
 
-    # Indexed count
-    indexed = 0
+    warnings: list[str] = []
+
+    # Indexed count. The FTS5 backend returns -1 as a sentinel when path
+    # resolution / connection fails (e.g. broken `.claude/*` symlinks).
+    # Previously we silently coerced that to 0, which hid drift: `doctor`
+    # would report 102/102 while `memory stats` reported 0/0 with no
+    # indication anything was wrong. Now we surface it explicitly.
+    indexed: int = 0
     if search_store is not None:
         try:
-            indexed = search_store.count()
+            raw = search_store.count()
         except Exception:
-            indexed = 0
+            raw = -1
+        if isinstance(raw, int) and raw < 0:
+            warnings.append(
+                "FTS5 index path not resolved — symlinks may be broken. "
+                "Run: gaia doctor"
+            )
+            indexed = raw  # keep the sentinel visible in JSON output
+        else:
+            indexed = int(raw) if isinstance(raw, int) else 0
 
     # avg_score from a sample of episodes
     avg_score = 0.0
@@ -269,16 +283,21 @@ def _cmd_stats(args) -> int:
         "indexed": indexed,
         "avg_score": avg_score,
         "conflicts": conflicts_count,
+        "warnings": warnings,
     }
 
     if as_json:
         print(json.dumps(output, indent=2))
     else:
+        indexed_display = "unknown" if indexed < 0 else str(indexed)
         print(f"\n  Memory Stats")
         print(f"  Total episodes : {total_episodes}")
-        print(f"  FTS5 indexed   : {indexed}")
+        print(f"  FTS5 indexed   : {indexed_display}")
         print(f"  Avg score      : {avg_score:.4f}")
-        print(f"  Conflicts      : {conflicts_count}\n")
+        print(f"  Conflicts      : {conflicts_count}")
+        for w in warnings:
+            print(f"  WARN: {w}", file=sys.stderr)
+        print()
 
     return 0
 
