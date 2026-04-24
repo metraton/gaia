@@ -50,7 +50,7 @@ subagent_stop.py  (SubagentStop hook)
     v
 Orchestrator processes json:contract (via agent-response skill)
     |  COMPLETE -> summarize to user
-    |  REVIEW (with approval_id) -> get approval -> resume via SendMessage
+    |  APPROVAL_REQUEST (with approval_id) -> get approval -> resume via SendMessage
     |  NEEDS_INPUT -> ask user -> resume via SendMessage
     |  BLOCKED -> report blocker
 ```
@@ -172,7 +172,7 @@ Nonce-based T3 approval lifecycle:
 3. BashValidator generates 128-bit nonce via generate_nonce()
 4. write_pending_approval() saves pending-{nonce}.json to .claude/cache/approvals/
 5. Hook returns corrective deny (exit 0) with NONCE:{hex} in message
-6. Agent includes NONCE:{hex} in REVIEW status to orchestrator
+6. Agent includes NONCE:{hex} in APPROVAL_REQUEST status to orchestrator
 7. Orchestrator presents plan to user, asks for approval
 8. User approves -> orchestrator resumes agent with "APPROVE:{nonce}"
 9. pre_tool_use.py detects APPROVE: prefix, calls activate_pending_approval()
@@ -184,7 +184,7 @@ Nonce-based T3 approval lifecycle:
 
 Every agent response must end with a `json:contract` block containing `agent_status`. The contract validator (`hooks/modules/agents/contract_validator.py`) enforces:
 
-- **AGENT_STATUS**: PLAN_STATUS (from 5 valid states: COMPLETE, NEEDS_INPUT, REVIEW, BLOCKED, IN_PROGRESS), PENDING_STEPS, NEXT_ACTION, AGENT_ID
+- **AGENT_STATUS**: PLAN_STATUS (from 5 valid states: COMPLETE, NEEDS_INPUT, APPROVAL_REQUEST, BLOCKED, IN_PROGRESS), PENDING_STEPS, NEXT_ACTION, AGENT_ID
 - **EVIDENCE_REPORT**: required for all valid states. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS
 - **CONSOLIDATION_REPORT**: required when multi-surface or cross-check. Fields: OWNERSHIP_ASSESSMENT (enum), CONFIRMED_FINDINGS, SUSPECTED_FINDINGS, CONFLICTS, OPEN_GAPS, NEXT_BEST_AGENT
 

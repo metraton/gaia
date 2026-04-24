@@ -16,15 +16,15 @@ each represents a different kind of decision point for the user.
 
 ```
 Agent returns json:contract
-  |- COMPLETE         -> Summarize key_outputs (3-5 bullets)
-  |- NEEDS_INPUT      -> AskUserQuestion, then SendMessage answer back
-  |- REVIEW           -> Load Skill("orchestrator-approval") if approval_id present,
-  |                      otherwise AskUserQuestion (execute/modify/cancel),
-  |                      then SendMessage to resume the same agent
-  |- BLOCKED          -> Present open_gaps via AskUserQuestion
-  |                      If user provides direction: dispatch new agent addressing the blocker.
-  |                      If user accepts the limitation: close the task as incomplete and move on.
-  +- IN_PROGRESS      -> SendMessage to resume agent
+  |- COMPLETE            -> Summarize key_outputs (3-5 bullets)
+  |- NEEDS_INPUT         -> AskUserQuestion, then SendMessage answer back
+  |- APPROVAL_REQUEST    -> Load Skill("orchestrator-approval") if approval_id present,
+  |                         otherwise AskUserQuestion (execute/modify/cancel),
+  |                         then SendMessage to resume the same agent
+  |- BLOCKED             -> Present open_gaps via AskUserQuestion
+  |                         If user provides direction: dispatch new agent addressing the blocker.
+  |                         If user accepts the limitation: close the task as incomplete and move on.
+  +- IN_PROGRESS         -> SendMessage to resume agent
 ```
 
 ## Mandatory Actions per Status
@@ -33,13 +33,13 @@ Agent returns json:contract
 |---|---|---|
 | `COMPLETE` | Summarize `key_outputs` in 3-5 bullets. Mention `cross_layer_impacts` and `open_gaps` if non-empty. Say "ask for details" if `verbatim_outputs` exists. | Direct response |
 | `NEEDS_INPUT` | Present the agent's question with options | `AskUserQuestion` -> `SendMessage` |
-| `REVIEW` | If `approval_request.approval_id` is present: load `Skill("orchestrator-approval")`. Otherwise: present plan with options execute / modify / cancel. On execute or modify: resume the SAME agent via SendMessage -- it already holds full context from its investigation. | `AskUserQuestion` -> `SendMessage` |
+| `APPROVAL_REQUEST` | If `approval_request.approval_id` is present: load `Skill("orchestrator-approval")`. Otherwise: present plan with options execute / modify / cancel. On execute or modify: resume the SAME agent via SendMessage -- it already holds full context from its investigation. | `AskUserQuestion` -> `SendMessage` |
 | `BLOCKED` | Present alternatives from `open_gaps`. If user provides direction, dispatch a new agent addressing the blocker. If user accepts the limitation, close as incomplete and move on. | `AskUserQuestion` |
 | `IN_PROGRESS` | Agent was interrupted, let it continue | `SendMessage` |
 
-**Why REVIEW splits on approval_id:** Hook-blocked T3 operations carry a pending
+**Why APPROVAL_REQUEST splits on approval_id:** Hook-blocked T3 operations carry a pending
 grant that requires the structured approval flow (exact content, rollback, risk).
-Plan-first REVIEW has no pending grant -- the user just needs to confirm direction.
+Plan-first APPROVAL_REQUEST has no pending grant -- the user just needs to confirm direction.
 Treating both the same either over-formalizes simple plans or under-secures T3 ops.
 
 ## Output Fields

@@ -21,7 +21,7 @@ Route user requests to the correct specialist agent, enforce the security tier c
 ### CAN DO
 - Route requests to specialist agents based on surface intent
 - Dispatch parallel agents when domains are independent
-- Present T3 approval dialogs and relay agent REVIEW responses
+- Present T3 approval dialogs and relay agent APPROVAL_REQUEST responses
 - Track multi-step work with TaskCreate/Update
 - Schedule recurring work with CronCreate
 
@@ -253,7 +253,7 @@ reasoning about raw data.
 ## Response handling
 
 When an agent returns a json:contract, load Skill('agent-response').
-When an agent returns REVIEW with approval_id, load Skill('orchestrator-approval').
+When an agent returns APPROVAL_REQUEST with approval_id, load Skill('orchestrator-approval').
 Skipping this step loses the approval_id and the exact values the user must see --
 the orchestrator then presents a vague summary, the user approves blind, and the
 agent retries without a valid nonce, looping on hook rejections.

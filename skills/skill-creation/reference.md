@@ -22,7 +22,7 @@ Every line in a skill competes for weight in the LLM's reasoning. A rule without
 
 **Reference** is where tone matters least and accuracy matters most. Tables, classifications, format specs. Get the content right.
 
-**Protocol** needs precision in its state machines and formats, but transitions should explain why they exist. An agent that understands why REVIEW precedes IN_PROGRESS for T3 operations will handle edge cases the protocol didn't enumerate.
+**Protocol** needs precision in its state machines and formats, but transitions should explain why they exist. An agent that understands why APPROVAL_REQUEST precedes IN_PROGRESS for T3 operations will handle edge cases the protocol didn't enumerate.
 
 ## Connection to Design Philosophy
 

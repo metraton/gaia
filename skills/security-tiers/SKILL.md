@@ -133,7 +133,7 @@ Regla de selección: si el agente puede descubrir algo inesperado mid-task y nec
 
 ## T3 Workflow
 
-For T3 operations, follow the state flow in `agent-protocol`: IN_PROGRESS -- REVIEW -- IN_PROGRESS -- COMPLETE (plan-first or hook-blocked with approval_id).
+For T3 operations, follow the state flow in `agent-protocol`: IN_PROGRESS -- APPROVAL_REQUEST -- IN_PROGRESS -- COMPLETE (plan-first or hook-blocked with approval_id).
 
 On-demand workflow skills (read from disk when needed):
 - `.claude/skills/request-approval/SKILL.md` -- informed-consent plan quality, approval-request presentation, and the dispatch mode + foreground/background combination table
