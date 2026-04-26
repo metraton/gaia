@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0-rc.2] - 2026-04-26
+
+### Release Candidate 2: Converger Identity, Session Liveness, Install-Gate Hardening
+
+Second release candidate for v5.0.0. Adds the orchestrator's Converger
+("Cerrar") conversational closure identity, real-PID session liveness in the
+registry, the `agent-creation` and `session-reflection` skills, and an
+end-to-end consumer-install validation harness that now actually exercises the
+gate. Three install-time bugs surfaced and were fixed alongside the harness
+that found them.
+
+#### Added
+- **Converger identity for orchestrator** — "Cerrar" conversational closure
+  framing. Brief-spec reframed as closure ritual (Size gate removed),
+  `planning_specs` surface routing narrowed to explicit artifact keywords,
+  architecture docs aligned with closure framing.
+- **session-reflection skill** — conversational session-close ritual. Surfaced
+  by orchestrator at session end; complements `gaia-compact`.
+- **agent-creation skill** — coach skill for designing new agents end-to-end:
+  identity, tool surface, contract, and verification.
+- **SessionEnd hook + PID liveness** — `session_end_hook.py` for clean
+  unregister; session_registry now uses real PID + `/proc` starttime to detect
+  liveness across sessions. `Stop` hook no longer mutates the registry (was
+  causing premature unregister mid-conversation).
+- **validate-sandbox.sh** — end-to-end consumer-install verification harness.
+  Two targets: `--target sandbox` (ephemeral fixture project) and
+  `--target local` (real workspace install with `--workspace` override). Eight
+  pass/fail checks: version, doctor, status, context show, memory stats,
+  memory search, scan, settings preservation. Wired into `publish.yml` so
+  every release smoke-tests the published tarball before notifying success.
+- **`gaia:verify-install:{local,rc,latest}` and `gaia:install-local`** scripts
+  in package.json for manual local validation against tarballs or registry.
+
+#### Changed
+- **REVIEW → APPROVAL_REQUEST** rename across active doctrine (state machine,
+  skills, hooks). Comments and references in `hooks/**` updated. The previous
+  `REVIEW` state caused confusion with the human review activity; the new name
+  reflects what the state actually represents (an agent requesting human
+  approval for a specific T3 operation).
+- **Stop hook decoupled from registry** — Stop event no longer mutates
+  session_registry. SessionEnd handles unregister cleanly; this avoids the
+  Stop-then-resume race where the registry would drop a still-active session.
+- **`publish.yml`** — sandbox harness step added after npm publish; waits for
+  registry propagation, then runs validate-sandbox.sh against the freshly
+  published tarball as a smoke test.
+
+#### Fixed
+- **Sandbox harness on noexec /tmp** — validate-sandbox.sh now detects
+  `noexec` mounts via `findmnt` (with `/proc/mounts` fallback) and falls back
+  to `$TMPDIR` → `/tmp` → `$HOME/.cache/gaia-sandbox`. Previously the harness
+  was unrunnable on WSL/Linux setups with `noexec /tmp` (rc=126 Permission
+  denied on the installed bin shims); the gate appeared to validate but never
+  actually ran.
+- **`gaia scan` harness check** — was invoking bare `gaia-scan --dry-run`,
+  which routes to `gaia-scan.py` whose argparse rejects `--dry-run`. Now uses
+  `gaia context scan --dry-run` (the higher-level CLI subcommand that does
+  accept `--dry-run`); drops the dead fallback.
+- **doctor `<lambda>` check** — `cmd_doctor` wrapped each check in a bare
+  `lambda`, so any exception surfaced as `'<lambda>'` in the JSON output
+  hiding which check actually failed. Replaced with `functools.partial` so
+  `__name__` resolves to the wrapped function (e.g. `check_project_dirs`).
+- **doctor `check_project_dirs` PosixPath/list TypeError** — code did
+  `project_root / dir_path` while iterating `paths.items()`; when a value was
+  a list (e.g. `"scan_targets": ["."]`), `Path / list` raised TypeError.
+  Values are now normalized to a flat sequence of `(label, str)` pairs before
+  joining; list values expand into `label[0]`, `label[1]`, ...
+- **postinstall FTS5 backfill on fresh install** — `maybeBackfillFts5()`
+  returned early when `search.db` was missing with comment "doctor --fix will
+  create it on first use", but nothing in the install flow runs `doctor --fix`
+  automatically. A consumer reinstalling after `gaia uninstall` (which scrubs
+  search.db) would have an empty FTS5 index until manual intervention. The
+  early return is gone; missing search.db now falls through to `doctor --fix`
+  which creates and populates the index.
+- **postinstall dynamic package resolution** — `gaia-update.js` now resolves
+  the gaia package name from `node_modules/@jaguilar87/` instead of
+  hardcoding, supporting both the v5+ `gaia` name and legacy `gaia-ops`. Also
+  detects and repairs symlinks pointing at the legacy path.
+- **memory sentinel return** — sentinel value returned with a surfaced warning
+  instead of a silent failure when memory paths fail to resolve.
+
+#### Internal
+- **Regenerated plugin artifacts** — `dist/gaia-ops/` and `dist/gaia-security/`
+  rebuilt for rc2.
+- **Cross-session liveness test** — real PID isolation in
+  `session_registry` test fixtures.
+
 ## [5.0.0-rc1] - 2026-04-21
 
 ### Release Candidate: Context Evals, Planner M1-M6, Memory CLI, Security Hardening

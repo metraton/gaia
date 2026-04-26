@@ -1,6 +1,6 @@
 [project]
 name = "gaia"
-version = "5.0.0-rc1"
+version = "5.0.0-rc.2"
 description = "Multi-agent orchestration system for Claude Code - DevOps automation toolkit"
 requires-python = ">=3.9"
 license = {text = "MIT"}
