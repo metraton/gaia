@@ -450,23 +450,26 @@ class ClaudeCodeAdapter(HookAdapter):
             # Must run before any other logic.  When enabled, the
             # orchestrator (main session) is restricted to dispatch-only
             # tools.  Subagents are unaffected.
-            from modules.orchestrator.delegate_mode import check_delegate_mode
+            # Only active in ops mode -- security mode has no orchestrator.
+            from modules.core.plugin_mode import is_ops_mode
+            if is_ops_mode():
+                from modules.orchestrator.delegate_mode import check_delegate_mode
 
-            dm_result = check_delegate_mode(tool_name, hook_data)
-            if dm_result.blocked:
-                logger.warning(
-                    "DELEGATE_MODE denied %s for orchestrator", tool_name,
-                )
-                return HookResponse(
-                    output={
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": dm_result.reason,
-                        }
-                    },
-                    exit_code=0,
-                )
+                dm_result = check_delegate_mode(tool_name, hook_data)
+                if dm_result.blocked:
+                    logger.warning(
+                        "DELEGATE_MODE denied %s for orchestrator", tool_name,
+                    )
+                    return HookResponse(
+                        output={
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": dm_result.reason,
+                            }
+                        },
+                        exit_code=0,
+                    )
 
             # Periodic cleanup of expired approval grants
             cleanup_expired_grants()
