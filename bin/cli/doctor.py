@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 
 
@@ -339,15 +340,28 @@ def check_project_dirs(project_root: Path) -> dict:
     sections = data.get("sections") or {}
     paths = sections.get("infrastructure", {}).get("paths") or data.get("paths") or {}
     issues = []
+    verified = 0
 
-    for key, dir_path in paths.items():
-        if dir_path and not (project_root / dir_path).exists():
-            issues.append(f"{key}: {dir_path} not found")
+    # Path values may be a single string (e.g. "project_root": ".") or a list
+    # of strings (e.g. "scan_targets": [".", "src"]). Normalize to a flat list
+    # of (label, str) pairs so `project_root / value` is always Path / str.
+    for key, value in paths.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            entries = [(f"{key}[{i}]", str(v)) for i, v in enumerate(value) if v]
+        else:
+            entries = [(key, str(value))]
+
+        for label, dir_path in entries:
+            verified += 1
+            if not (project_root / dir_path).exists():
+                issues.append(f"{label}: {dir_path} not found")
 
     if issues:
         return _result("Project dirs", "warning", "; ".join(issues), "Create missing directories or update paths")
 
-    return _result("Project dirs", "pass", f"{len(paths)} paths verified")
+    return _result("Project dirs", "pass", f"{verified} paths verified")
 
 
 def check_memory_fts5_db(project_root: Path) -> dict:
@@ -549,29 +563,38 @@ def cmd_doctor(args) -> int:
     """Handler for `gaia doctor`."""
     project_root = _find_project_root()
 
+    # Use functools.partial so each entry's __name__ resolves to the wrapped
+    # check function (e.g. "check_project_dirs"). Bare lambdas would surface
+    # as "<lambda>" in the JSON output, hiding which check actually failed.
     check_fns = [
-        lambda: check_gaia_version(),
-        lambda: check_claude_code(),
-        lambda: check_python(),
-        lambda: check_plugin_mode(project_root),
-        lambda: check_symlinks(project_root),
-        lambda: check_identity(project_root),
-        lambda: check_settings(project_root),
-        lambda: check_hook_files(project_root),
-        lambda: check_project_context(project_root),
-        lambda: check_project_dirs(project_root),
-        lambda: check_memory_dirs(project_root),
-        lambda: check_memory_fts5_db(project_root),
-        lambda: check_memory_fts5_count(project_root),
-        lambda: check_memory_scoring(project_root),
+        check_gaia_version,
+        check_claude_code,
+        check_python,
+        partial(check_plugin_mode, project_root),
+        partial(check_symlinks, project_root),
+        partial(check_identity, project_root),
+        partial(check_settings, project_root),
+        partial(check_hook_files, project_root),
+        partial(check_project_context, project_root),
+        partial(check_project_dirs, project_root),
+        partial(check_memory_dirs, project_root),
+        partial(check_memory_fts5_db, project_root),
+        partial(check_memory_fts5_count, project_root),
+        partial(check_memory_scoring, project_root),
     ]
+
+    def _fn_name(fn):
+        # functools.partial wraps a function in .func; bare functions expose
+        # __name__ directly. Either way, surface a human-readable identifier.
+        target = getattr(fn, "func", fn)
+        return getattr(target, "__name__", repr(fn))
 
     results = []
     for fn in check_fns:
         try:
             results.append(fn())
         except Exception as exc:
-            results.append(_result(fn.__name__, "error", f"Error: {exc}"))
+            results.append(_result(_fn_name(fn), "error", f"Error: {exc}"))
 
     has_errors = any(r["severity"] == "error" for r in results)
     has_warnings = any(r["severity"] == "warning" for r in results)
