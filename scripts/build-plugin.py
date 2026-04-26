@@ -298,13 +298,9 @@ def build_plugin(plugin_name: str, output_dir: Path) -> None:
         f.write("\n")
     print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)")
 
-    # Generate settings.json
-    settings_json = generate_settings_json(manifest)
-    settings_json_path = output_dir / "settings.json"
-    with open(settings_json_path, "w") as f:
-        json.dump(settings_json, f, indent=2)
-        f.write("\n")
-    print(f"  Generated: settings.json")
+    # settings.json removed -- CC plugin spec only supports 'agent' and 'subagentStatusLine' keys;
+    # our 'permissions' block is non-canonical and CC merges it into workspace settings.local.json.
+    # generate_settings_json() is retained above in case a future canonical use case revives it.
 
     # Generate .claude-plugin/plugin.json
     plugin_json = generate_plugin_json(manifest)
@@ -369,9 +365,7 @@ def validate_output(manifest: dict, output_dir: Path) -> list[str]:
     if not (output_dir / "hooks" / "hooks.json").exists():
         errors.append("Missing hooks/hooks.json")
 
-    # Check settings.json exists
-    if not (output_dir / "settings.json").exists():
-        errors.append("Missing settings.json")
+    # settings.json check removed -- file is intentionally not generated (non-canonical per CC plugin spec)
 
     # Check .claude-plugin/plugin.json exists
     if not (output_dir / ".claude-plugin" / "plugin.json").exists():
