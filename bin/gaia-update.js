@@ -573,7 +573,11 @@ async function maybeBackfillFts5() {
   }
   if (total === 0) return; // No episodes to index
 
-  if (!existsSync(dbPath)) return; // doctor --fix will create it on first use
+  // If search.db doesn't exist yet but episodes do, fall through to the
+  // backfill step below. doctor --fix creates the db AND populates it.
+  // (Previously this returned early "doctor --fix will create it on first
+  // use", but nothing in the install flow runs doctor --fix automatically,
+  // so the index would stay empty until the user manually invoked it.)
 
   // Query FTS5 count via python3 subprocess (sqlite3 binary may not be on PATH
   // on Windows; python3 is already a hard requirement for gaia-ops hooks).
@@ -581,10 +585,11 @@ async function maybeBackfillFts5() {
   if (!pyCmd) return; // Python missing — the health check will report it
 
   const spinner = ora('Checking FTS5 backfill status...').start();
-  let indexed;
-  try {
-    const probeScript = join(memoryDir, '.gaia-fts5-probe.py');
-    const probeContent = `
+  let indexed = 0;
+  if (existsSync(dbPath)) {
+    try {
+      const probeScript = join(memoryDir, '.gaia-fts5-probe.py');
+      const probeContent = `
 import sqlite3, sys
 try:
     con = sqlite3.connect(sys.argv[1])
@@ -593,34 +598,38 @@ try:
 except Exception:
     print(-1)
 `;
-    await fs.writeFile(probeScript, probeContent);
-    try {
-      const { stdout } = await execAsync(
-        `${pyCmd} "${probeScript}" "${dbPath}"`,
-        { timeout: 10000 }
-      );
-      indexed = parseInt(stdout.trim(), 10);
-    } finally {
-      try { await fs.unlink(probeScript); } catch { /* ignore */ }
+      await fs.writeFile(probeScript, probeContent);
+      try {
+        const { stdout } = await execAsync(
+          `${pyCmd} "${probeScript}" "${dbPath}"`,
+          { timeout: 10000 }
+        );
+        indexed = parseInt(stdout.trim(), 10);
+      } finally {
+        try { await fs.unlink(probeScript); } catch { /* ignore */ }
+      }
+    } catch {
+      spinner.info('FTS5 probe skipped (sqlite3/python issue)');
+      return;
     }
-  } catch {
-    spinner.info('FTS5 probe skipped (sqlite3/python issue)');
-    return;
-  }
 
-  if (!Number.isFinite(indexed) || indexed < 0) {
-    spinner.info('FTS5 probe inconclusive (table may not exist yet)');
-    return;
-  }
+    if (!Number.isFinite(indexed) || indexed < 0) {
+      // Table doesn't exist yet — treat as zero indexed, fall through to backfill.
+      indexed = 0;
+    }
 
-  // If indexed is already >=90% of total, no backfill needed — matches doctor
-  // threshold exactly so we don't loop users through unnecessary work.
-  if (indexed / total >= 0.9) {
-    spinner.succeed(`FTS5 backfill: ${indexed}/${total} episodes indexed (ok)`);
-    return;
+    // If indexed is already >=90% of total, no backfill needed — matches doctor
+    // threshold exactly so we don't loop users through unnecessary work.
+    if (indexed > 0 && indexed / total >= 0.9) {
+      spinner.succeed(`FTS5 backfill: ${indexed}/${total} episodes indexed (ok)`);
+      return;
+    }
   }
+  // else: search.db missing entirely — doctor --fix will create + backfill.
 
-  spinner.text = `FTS5 backfill: rebuilding ${total} episodes (had ${indexed})...`;
+  spinner.text = existsSync(dbPath)
+    ? `FTS5 backfill: rebuilding ${total} episodes (had ${indexed})...`
+    : `FTS5 backfill: creating index for ${total} episodes...`;
 
   // Invoke backfill via the gaia CLI doctor --fix. We call `python3 bin/gaia
   // doctor --fix` from the installed package directory, with CWD set to the
