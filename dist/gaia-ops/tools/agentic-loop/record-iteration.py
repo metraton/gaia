@@ -25,6 +25,8 @@ then renamed over the original.  Either the full write lands or the original
 is untouched.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
