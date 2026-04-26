@@ -163,8 +163,74 @@ detect_local_workspace() {
   return 1
 }
 
+is_noexec_mount() {
+  # Return 0 (true) if the directory's filesystem is mounted with noexec.
+  # Some WSL/Linux setups mount /tmp as tmpfs with noexec, which makes the
+  # installed bin shims unrunnable (rc=126 Permission denied) even though
+  # the exec bit is set. We detect that and pick a safe fallback.
+  local dir="$1"
+  [[ -d "${dir}" ]] || return 1
+  # findmnt is the most reliable; fall back to parsing /proc/mounts.
+  if command -v findmnt >/dev/null 2>&1; then
+    local opts
+    opts="$(findmnt -no OPTIONS --target "${dir}" 2>/dev/null || true)"
+    [[ "${opts}" == *noexec* ]] && return 0
+    return 1
+  fi
+  # Best-effort fallback: walk /proc/mounts for the longest matching mountpoint.
+  local resolved best_mp="" best_opts=""
+  resolved="$(cd "${dir}" 2>/dev/null && pwd -P)" || resolved="${dir}"
+  while IFS=' ' read -r _src mp _fs opts _rest; do
+    case "${resolved}/" in
+      "${mp}/"*)
+        if [[ ${#mp} -gt ${#best_mp} ]]; then
+          best_mp="${mp}"
+          best_opts="${opts}"
+        fi
+        ;;
+    esac
+  done < /proc/mounts
+  [[ "${best_opts}" == *noexec* ]] && return 0
+  return 1
+}
+
+select_sandbox_prefix() {
+  # Pick a parent directory for the ephemeral sandbox.
+  # Order: $TMPDIR (if set and exec-capable) -> /tmp (if exec-capable) ->
+  # $HOME/.cache/gaia-sandbox. Each candidate is rejected if its filesystem
+  # is mounted noexec, since npm bin shims must be directly executable.
+  local candidate
+  if [[ -n "${TMPDIR:-}" && -d "${TMPDIR}" ]]; then
+    if ! is_noexec_mount "${TMPDIR}"; then
+      echo "${TMPDIR%/}"
+      return 0
+    fi
+    echo "[sandbox] TMPDIR=${TMPDIR} is mounted noexec; falling back" >&2
+  fi
+  if [[ -d /tmp ]] && ! is_noexec_mount /tmp; then
+    echo "/tmp"
+    return 0
+  fi
+  if [[ -d /tmp ]]; then
+    echo "[sandbox] /tmp is mounted noexec; falling back to \$HOME/.cache" >&2
+  fi
+  candidate="${HOME}/.cache/gaia-sandbox"
+  mkdir -p "${candidate}"
+  if is_noexec_mount "${candidate}"; then
+    echo "FATAL: no exec-capable directory available for sandbox." >&2
+    echo "       Tried: \$TMPDIR, /tmp, ${candidate} -- all noexec." >&2
+    echo "       Set TMPDIR to an exec-capable path and retry." >&2
+    return 1
+  fi
+  echo "${candidate}"
+}
+
 if [[ "${TARGET}" == "sandbox" ]]; then
-  WORKSPACE="/tmp/gaia-sandbox-$(date +%s)-$$"
+  if ! SANDBOX_PREFIX="$(select_sandbox_prefix)"; then
+    exit 1
+  fi
+  WORKSPACE="${SANDBOX_PREFIX}/gaia-sandbox-$(date +%s)-$$"
+  echo "[sandbox] prefix: ${SANDBOX_PREFIX}"
   mkdir -p "${WORKSPACE}"
 else
   if [[ -n "${WORKSPACE_OVERRIDE}" ]]; then
@@ -456,10 +522,14 @@ else
 fi
 
 # 7. gaia scan (exit 0)
+# Use `gaia context scan --dry-run` (the higher-level CLI subcommand which
+# supports --dry-run) rather than the bare `gaia-scan` binary, which wraps
+# gaia-scan.py and does NOT accept --dry-run. --dry-run validates freshness
+# without running the scanners or writing project-context.json.
 t0="$(now_ms)"
-if out="$(gaia-scan --dry-run 2>&1 || gaia context scan --dry-run 2>&1)"; then
+if out="$(gaia context scan --dry-run 2>&1)"; then
   ms=$(( $(now_ms) - t0 ))
-  record "gaia scan" "PASS" "scanner ran" "${ms}"
+  record "gaia scan" "PASS" "scanner ran (dry-run)" "${ms}"
 else
   ms=$(( $(now_ms) - t0 ))
   record "gaia scan" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
