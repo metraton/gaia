@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0-rc.3] - 2026-04-26
+
+### Release Candidate 3: Python 3.9 Compatibility Fix
+
+Hotfix for rc.2. The previous release shipped successfully to npm under
+the `@rc` dist-tag but failed its post-publish sandbox harness gate
+because `bin/cli/approvals.py` used PEP 604 union syntax (`X | None`)
+which requires Python 3.10+ at module-import time. The publish.yml
+runner pins Python 3.9, and the `ci.yml` test matrix also includes 3.9.
+The plugin loader caught the resulting `ImportError` and emitted a
+`Warning:` line that leaked into stdout, breaking JSON parsing for
+several `gaia` subcommands on 3.9-only environments.
+
+#### Fixed
+- **Python 3.9 compatibility** — added `from __future__ import annotations`
+  to 7 files that used PEP 604 union syntax without it. With deferred
+  annotation evaluation, the type hints become string literals and no
+  longer execute the `|` operator at definition time. A repo-wide audit
+  of 21 PEP-604 files confirmed 14 were already safe (had `__future__`)
+  and 7 were the actual 3.9 breakers; all 7 are now fixed:
+  - `bin/cli/approvals.py` (the publish.yml-failing one)
+  - `bin/cli/plans.py`
+  - `bin/cli/context.py`
+  - `tests/cli/test_gaia_context.py`
+  - `tests/cli/test_gaia_plans.py`
+  - `tools/scan/tests/conftest.py`
+  - `tools/agentic-loop/record-iteration.py`
+
+The audit also confirmed no PEP 634 `match` statements, no `TypeAlias`,
+no runtime PEP 604 in `isinstance()`, and no runtime parameterized
+stdlib generics, so the `__future__` route is sufficient — no actual
+type-hint rewrites required.
+
+5.0.0-rc.2 is superseded by this release. Users on Python 3.10+ were
+unaffected by the bug; users on Python 3.9 should upgrade to rc.3.
+Failing run for reference:
+https://github.com/metraton/gaia/actions/runs/24951053090
+
 ## [5.0.0-rc.2] - 2026-04-26
 
 ### Release Candidate 2: Converger Identity, Session Liveness, Install-Gate Hardening
