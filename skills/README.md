@@ -49,6 +49,7 @@ Orchestrator-level skills (`agent-response`, `orchestrator-approval`) are always
 
 ```
 skills/
+├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
 ├── agent-protocol/        # Response contract format, state machine, error handling
 ├── agent-response/        # Orchestrator: interpret agent json:contract responses
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
@@ -113,6 +114,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 - `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
 
 Workflow skills (on-demand injection, not in any agent frontmatter):
+- `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system, `user-invocable: false`
 - `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt, `user-invocable: false`
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline
