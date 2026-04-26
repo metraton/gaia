@@ -6,6 +6,8 @@ Subcommands:
   gaia context scan [--dry-run] [--json]            Run project scanner
 """
 
+from __future__ import annotations
+
 import json
 import subprocess
 import sys

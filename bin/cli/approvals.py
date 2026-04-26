@@ -15,6 +15,8 @@ Subcommands:
 All subcommands exit 0 on success, 1 on error.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

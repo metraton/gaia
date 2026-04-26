@@ -2,6 +2,8 @@
 Unit tests for bin/cli/plans.py -- gaia plans subcommand.
 """
 
+from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path
