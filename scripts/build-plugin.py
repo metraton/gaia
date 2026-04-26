@@ -207,7 +207,13 @@ def _get_entry_point(event_name: str, entries: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 def generate_plugin_json(manifest: dict) -> dict:
-    """Generate .claude-plugin/plugin.json from manifest."""
+    """Generate .claude-plugin/plugin.json from manifest.
+
+    Embeds hooks inline under the 'hooks' key so that CC can load them at
+    runtime from the plugin cache, bypassing the install-time path expansion
+    bug where ${CLAUDE_PLUGIN_ROOT} is resolved to $CWD/.claude/ instead of
+    the plugin cache directory.
+    """
     version = manifest.get("version", "0.0.0")
     if version == "from:package.json":
         package_json_path = REPO_ROOT / "package.json"
@@ -225,6 +231,12 @@ def generate_plugin_json(manifest: dict) -> dict:
         plugin_name, "https://github.com/metraton/gaia-ops#readme"
     )
 
+    # Build inline hooks structure from the same logic as generate_hooks_json().
+    # CC docs say plugin.json can declare hooks as a path, array, or inline object.
+    # Inline here avoids install-time path expansion via hooks/hooks.json.
+    hooks_data = generate_hooks_json(manifest)
+    inline_hooks = hooks_data["hooks"]
+
     return {
         "name": plugin_name,
         "version": version,
@@ -239,6 +251,7 @@ def generate_plugin_json(manifest: dict) -> dict:
         "keywords": ["security", "devops"],
         "engines": {"claude-code": ">=2.1.0"},
         "categories": ["devops", "security", "orchestration"],
+        "hooks": inline_hooks,
     }
 
 
