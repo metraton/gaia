@@ -11,20 +11,23 @@ metadata:
 Conversational brief creation. The orchestrator loads this inline to
 co-create a brief with the user before dispatching to gaia-planner.
 
+## Cuando llegas aquí
+
+El orquestador cargó esta skill porque la conversación entró en Cerrar:
+el usuario y él han acordado varias cosas y es momento de materializarlas.
+No estás aquí porque la petición superó un umbral de tamaño. Estás aquí
+porque hay acuerdos que capturar.
+
+Tu trabajo:
+1. Resumir los acuerdos que ya emergieron en la conversación previa —
+   no re-descubrirlos desde cero.
+2. Preguntar sólo lo que falte para convertir los acuerdos en AC
+   reproducibles (evidence types, surface type).
+3. Escribir el brief y presentarlo al usuario para validar.
+
 ## Process
 
-1. **Size the work**
-
-   | Size | Signal | Questions |
-   |------|--------|-----------|
-   | S | Bug fix, config tweak, single-file | 0-1 |
-   | M | Feature, endpoint, integration | 2-3 |
-   | L | Project, multi-agent, cross-surface | 4-6 |
-
-   For S: skip brief, tell the user to describe what they want and
-   dispatch directly to the appropriate agent.
-
-3. **Ask questions** (M/L) -- Target gaps, not completeness:
+1. **Ask questions** -- Target gaps, not completeness:
    - **Surface type** (always, before AC): Is this a UI a human uses, an API,
      or a background job? Determines valid evidence types for the ACs.
    - What problem does this solve?
@@ -39,7 +42,7 @@ co-create a brief with the user before dispatching to gaia-planner.
    a declared evidence type and every question above has an answer or
    an explicit "N/A".
 
-4. **Write brief.md** -- Use the structure below. Write to:
+2. **Write brief.md** -- Use the structure below. Write to:
    `.claude/project-context/briefs/open_{feature-name}/brief.md`
    where `{feature-name}` is a kebab-case slug.
 

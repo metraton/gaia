@@ -1,6 +1,6 @@
 ---
 name: orchestrator-approval
-description: Use when processing REVIEW with approval_id from a subagent -- enforces showing values before asking for user consent
+description: Use when processing APPROVAL_REQUEST with approval_id from a subagent -- enforces showing values before asking for user consent
 metadata:
   user-invocable: false
   type: discipline
@@ -18,7 +18,7 @@ names the specific action. No exceptions. No brevity shortcuts.
 
 The orchestrator sits between the subagent and the user. The user cannot make an informed decision on information they have not seen. A summary, a reference to "the plan above", or an offer to show details on request -- all push the decision without the data needed to decide. When the orchestrator shortens "git push origin main" to "aplicar cambios", the user is approving blind.
 
-**Scope:** This skill applies when a subagent emits `REVIEW` with an `approval_id` in its `approval_request`.
+**Scope:** This skill applies when a subagent emits `APPROVAL_REQUEST` with an `approval_id` in its `approval_request`.
 
 ## Pre-Flight Checklist
 
@@ -58,7 +58,7 @@ The "Approve" option MUST name the specific action. The PostToolUse hook activat
 
 2. **Scope guard -- resume only with the approved command.** The grant is scoped to the exact command that was blocked. When the agent's `approval_request.exact_content` differs in ANY argument from what the orchestrator put in `COMANDO:` -- even one path segment, one flag, one filename -- the grant will miss and the agent will be blocked again. Do NOT send the agent a resume message that instructs it to run a different command. If the operation has genuinely changed, present a new approval.
 
-3. **Fresh presentation every time.** Each hook-blocked REVIEW requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
+3. **Fresh presentation every time.** Each hook-blocked APPROVAL_REQUEST requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
 4. **`mode` does NOT survive a SendMessage resume.** The `mode` parameter is per-dispatch of the Agent tool. If the original dispatch was `mode: bypassPermissions` and the subagent emitted APPROVAL_REQUEST mid-task, resuming via SendMessage drops the mode -- the resume runs in `default`. CC native will intercept the same Edit/Write/Bash that the original mode was meant to satisfy. Concrete failure observed: bypass-dispatched subagent hit Gaia hook, user approved via AskUserQuestion (grant active), resume via SendMessage -- CC native blocked the same `mv .claude/briefs/...` because the mode was gone. See "Re-dispatch instead of resume" below.
 

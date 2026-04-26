@@ -4,35 +4,33 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
 
 ## Dry-Run Steps (LOCAL)
 
+The fastest path is `npm run gaia:verify-install:local` -- it packs, installs into `/tmp/gaia-sandbox-<ts>/`, runs the 8-check harness, and cleans up. Use the manual sequence below only when you need to poke at the sandbox interactively.
+
 1. Build both plugins:
    `npm run build:plugins`
 2. Validate build:
    `npm run pre-publish:validate`
-3. Pack the package:
-   `npm pack` -> creates `.tgz` (uses `files` array from package.json)
-4. Install in clean project:
+3. Run the harness (does pack + install + checks):
+   `npm run gaia:verify-install:local`
+   - Or for a registry version: `npm run gaia:verify-install:rc` / `gaia:verify-install:latest`
+   - Harness uses `$WORKSPACE/node_modules/.bin/gaia` directly via PATH (no `npx` indirection).
+4. For manual inspection, run with `--stay` to keep the sandbox:
    ```
-   mkdir /tmp/gaia-dry-run-YYYYMMDD && cd $_
-   npm init -y
-   npm install /path/to/jaguilar87-gaia-X.Y.Z.tgz
+   npm pack
+   bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target sandbox --stay
    ```
-5. Validate installation:
-   ```
-   npx gaia-doctor
-   npx gaia-status
-   npx gaia-skills-diagnose
-   ```
-6. Test BOTH modes:
+   Sandbox path prints on exit; inspect `.claude/`, rerun checks, then `rm -rf` manually.
+5. Test BOTH modes (requires restarting `claude` in the sandbox dir):
    - Default (ops): start `claude`, verify orchestrator, delegation, T3 nonce approval
    - Security: `GAIA_PLUGIN_MODE=security claude`, verify no agents, native T3 dialog
-7. Test plugin channel (if applicable):
-   `claude --plugin-dir /path/to/gaia-dev/dist/gaia-ops`
-8. Run test pyramid:
-   - L1: `npm test` (from gaia-dev, not test project)
+6. Test plugin channel (if applicable):
+   `claude --plugin-dir /path/to/gaia-ops-dev/dist/gaia-ops`
+7. Run test pyramid:
+   - L1: `npm test` (from gaia-ops-dev, not test project)
    - Routing: `python3 tools/gaia_simulator/cli.py "<test prompt>"`
 
-**Default path:** `/tmp/gaia-dry-run-YYYYMMDD/`.
-**Cleanup:** Delete `/tmp/gaia-dry-run-*/` when done.
+**Default path:** `/tmp/gaia-sandbox-<unix-ts>-<pid>/` (created by harness).
+**Cleanup:** Automatic unless `--stay` is passed.
 
 ## Beta Steps (PIPELINE)
 
@@ -45,13 +43,9 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
    - Title: version number
    - Mark as pre-release
 5. `publish.yml` triggers automatically and publishes with `--tag beta`
-6. Verify from npm:
+6. Verify from npm (harness path -- installs into `/tmp/` sandbox and runs the 8 checks):
    ```
-   mkdir /tmp/gaia-beta-verify && cd $_
-   npm init -y
-   npm install @jaguilar87/gaia@beta
-   npx gaia-doctor
-   npx gaia-status
+   bash bin/validate-sandbox.sh --version "@jaguilar87/gaia@beta" --target sandbox
    ```
 
 **To promote beta to latest:** `npm dist-tag add @jaguilar87/gaia@X.Y.Z latest`
@@ -67,13 +61,9 @@ Detailed commands for dry-run, beta, and release modes. Read on-demand during re
    - Title: version number
    - Generate release notes from commits
 5. `publish.yml` triggers automatically and publishes with `--tag latest`
-6. Verify from npm:
+6. Verify from npm (harness path -- installs into `/tmp/` sandbox and runs the 8 checks):
    ```
-   mkdir /tmp/gaia-release-verify && cd $_
-   npm init -y
-   npm install @jaguilar87/gaia@latest
-   npx gaia-doctor
-   npx gaia-status
+   npm run gaia:verify-install:latest
    ```
 
 ## Pipeline Details
@@ -97,6 +87,6 @@ The `publish.yml` workflow (`.github/workflows/publish.yml`) runs on every GitHu
 
 | User says | Path used |
 |-----------|-----------|
-| "here" / "this session" / "this project" | Current working directory |
-| "in project X" / specific path | That path |
-| Nothing specified (dry-run/beta) | `/tmp/gaia-{mode}-YYYYMMDD/` |
+| "here" / "this session" / "this project" / live mode | Nearest `.claude/` ancestor of cwd with a Gaia marker, falling back to `$HOME/ws/me/` if present |
+| "in project X" / specific path | Pass `--workspace /absolute/path/to/project` to `bin/validate-sandbox.sh` (bypasses auto-detect) |
+| Nothing specified (dry-run/beta verify) | `/tmp/gaia-sandbox-<unix-ts>-<pid>/` (auto-cleanup unless `--stay`) |

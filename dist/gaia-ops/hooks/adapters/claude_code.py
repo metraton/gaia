@@ -1468,7 +1468,7 @@ class ClaudeCodeAdapter(HookAdapter):
             # ----------------------------------------------------------
             # State transition tracking
             # Validates that agent state transitions follow the state
-            # machine (e.g., no IN_PROGRESS -> COMPLETE without REVIEW
+            # machine (e.g., no IN_PROGRESS -> COMPLETE without APPROVAL_REQUEST
             # when T3 is involved). Advisory warnings, hard reject only
             # for illegal transitions.
             # ----------------------------------------------------------

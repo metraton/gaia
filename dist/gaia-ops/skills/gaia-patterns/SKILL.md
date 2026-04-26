@@ -26,7 +26,7 @@ Construction patterns for building Gaia components. Every component type follows
    |
 5. Post-Tool Hook -> audit + metrics
    |
-6. Orchestrator processes plan_status (REVIEW / NEEDS_INPUT / COMPLETE)
+6. Orchestrator processes plan_status (APPROVAL_REQUEST / NEEDS_INPUT / COMPLETE)
 ```
 
 ## Hook Patterns

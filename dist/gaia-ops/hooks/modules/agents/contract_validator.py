@@ -588,7 +588,7 @@ def validate_approval_request(
     contract: dict,
     plan_status: str,
 ) -> Optional[Dict[str, Any]]:
-    """Validate the approval_request block when plan_status is REVIEW.
+    """Validate the approval_request block when plan_status is APPROVAL_REQUEST.
 
     Advisory only -- returns an anomaly dict if validation fails, None if OK
     or if the check does not apply.

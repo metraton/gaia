@@ -158,7 +158,7 @@ def write(
                 outcome = "failed"
                 success = False
             else:
-                # IN_PROGRESS, REVIEW, NEEDS_INPUT -> partial
+                # IN_PROGRESS, APPROVAL_REQUEST, NEEDS_INPUT -> partial
                 outcome = "partial"
                 success = None
         elif exit_code == 0:

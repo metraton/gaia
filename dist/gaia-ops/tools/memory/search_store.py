@@ -205,12 +205,24 @@ class FTS5Provider(SearchProvider):
             return []
 
     def count(self) -> int:
+        """Return the row count in the FTS5 index.
+
+        Returns
+        -------
+        int
+            ``>= 0`` — the live row count when the DB is reachable.
+            ``-1``   — sentinel indicating path resolution / connection
+                       failure. Callers (e.g. ``gaia memory stats``) use
+                       the sentinel to surface a visible warning so that
+                       broken ``.claude/*`` symlinks do not masquerade as
+                       an empty-but-healthy index.
+        """
         try:
             conn = self._get_connection()
             row = conn.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()
             return int(row[0]) if row else 0
         except Exception:  # noqa: BLE001
-            return 0
+            return -1
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +339,10 @@ def count() -> int:
     Returns
     -------
     int
-        Row count, or 0 on any error.
+        Row count on success, or ``-1`` as a sentinel when the backend
+        could not be reached (e.g. broken path resolution, connection
+        failure).  Callers should treat ``-1`` as "unknown" rather than
+        "empty" and surface a warning to the user.
     """
     return _provider.count()
 

@@ -79,6 +79,35 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "prompt_input_exit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "logout",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
+          }
+        ]
+      }
     ]
   }
 }

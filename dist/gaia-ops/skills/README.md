@@ -49,6 +49,7 @@ Orchestrator-level skills (`agent-response`, `orchestrator-approval`) are always
 
 ```
 skills/
+├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
 ├── agent-protocol/        # Response contract format, state machine, error handling
 ├── agent-response/        # Orchestrator: interpret agent json:contract responses
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
@@ -86,6 +87,7 @@ skills/
 ├── schedule-task/         # Dispatch parameter extraction and prompt templates
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
+├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
 ├── terraform-patterns/    # Terraform/Terragrunt patterns
 │   └── reference.md
@@ -112,6 +114,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 - `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
 
 Workflow skills (on-demand injection, not in any agent frontmatter):
+- `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system, `user-invocable: false`
 - `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt, `user-invocable: false`
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline
@@ -119,6 +122,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `pending-approvals` — present and resolve pending approval requests
 - `request-approval` — T3 approval-request workflow
 - `schedule-task` — dispatch parameter templates
+- `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
 
 **Skill types:**
 
