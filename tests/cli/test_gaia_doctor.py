@@ -696,6 +696,81 @@ class TestCmdDoctorFix:
         assert "fixes" in data
         assert data["fixes"] == []
 
+    def test_fix_agent_field_missing(self, tmp_path, monkeypatch, capsys):
+        """--fix should write agent='gaia-orchestrator' when settings.local.json
+        lacks an `agent` top-level field, and re-run check_identity to reflect
+        the post-fix state."""
+        project = self._make_memory_project(tmp_path)
+        monkeypatch.chdir(project)
+
+        # Strip the agent field so check_identity returns "No agent field" error
+        settings_path = project / ".claude" / "settings.local.json"
+        data = json.loads(settings_path.read_text())
+        data.pop("agent", None)
+        settings_path.write_text(json.dumps(data))
+
+        # Avoid spurious FTS5 fix triggering -- pre-create search.db and stub count
+        import types
+        em_dir = project / ".claude" / "project-context" / "episodic-memory"
+        (em_dir / "search.db").write_bytes(b"fake db")
+        fake_ss = types.ModuleType("tools.memory.search_store")
+        fake_ss.count = lambda: 10
+        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
+
+        # Pre-condition: check_identity flags "No agent field"
+        pre_check = doctor_mod.check_identity(project)
+        assert pre_check["severity"] == "error"
+        assert "No agent field" in pre_check["detail"]
+
+        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        doctor_mod.cmd_doctor(args)
+
+        out = json.loads(capsys.readouterr().out)
+        fixes = out.get("fixes", [])
+        agent_fixes = [f for f in fixes if f.get("name") == "agent_field"]
+        assert len(agent_fixes) == 1, f"Expected one agent_field fix, got: {fixes}"
+        assert agent_fixes[0]["status"] == "applied"
+
+        # Verify the file actually has agent=gaia-orchestrator now
+        post = json.loads(settings_path.read_text())
+        assert post["agent"] == "gaia-orchestrator"
+
+        # Verify check_identity post-fix passes (re-ran inside cmd_doctor)
+        identity_result = next(c for c in out["checks"] if c["name"] == "Identity")
+        assert identity_result["severity"] in ("pass", "info")
+
+    def test_fix_agent_field_preserves_other_keys(self, tmp_path, monkeypatch, capsys):
+        """The agent fix must preserve all other top-level keys in settings.local.json."""
+        project = self._make_memory_project(tmp_path)
+        monkeypatch.chdir(project)
+
+        settings_path = project / ".claude" / "settings.local.json"
+        data = json.loads(settings_path.read_text())
+        data.pop("agent", None)
+        # Add custom keys to ensure they survive
+        data["custom_field"] = "preserve_me"
+        data["env"]["EXTRA_VAR"] = "kept"
+        settings_path.write_text(json.dumps(data))
+
+        # Stub FTS5 to avoid noise
+        import types
+        em_dir = project / ".claude" / "project-context" / "episodic-memory"
+        (em_dir / "search.db").write_bytes(b"fake db")
+        fake_ss = types.ModuleType("tools.memory.search_store")
+        fake_ss.count = lambda: 10
+        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
+
+        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        doctor_mod.cmd_doctor(args)
+        capsys.readouterr()  # drain
+
+        post = json.loads(settings_path.read_text())
+        assert post["agent"] == "gaia-orchestrator"
+        assert post["custom_field"] == "preserve_me"
+        assert post["env"]["EXTRA_VAR"] == "kept"
+        assert post["hooks"]  # untouched
+        assert post["permissions"]["deny"]  # untouched
+
     def test_fix_failed_backfill_reported(self, tmp_path, monkeypatch, capsys):
         """If backfill fails (rc != 0), fix status should be 'failed'."""
         project = self._make_memory_project(tmp_path)

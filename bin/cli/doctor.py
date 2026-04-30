@@ -23,8 +23,32 @@ import os
 import shutil
 import subprocess
 import sys
-from functools import partial
 from pathlib import Path
+
+
+# ============================================================================
+# Check Registry
+# ============================================================================
+
+# Global ordered registry of (order, name, fn) tuples populated by
+# @register_check. cmd_doctor iterates this list rather than a hardcoded
+# array. Order values are spaced (10, 20, 30...) to leave room for inserts.
+_CHECKS = []
+
+
+def register_check(name: str, order: int):
+    """Register a check function in the global ordered registry.
+
+    Args:
+        name: Display name for the check (used as identifier for fallbacks).
+        order: Integer priority -- lower runs first. Use multiples of 10 to
+            leave room for future inserts.
+    """
+    def decorator(fn):
+        _CHECKS.append((order, name, fn))
+        _CHECKS.sort(key=lambda x: x[0])
+        return fn
+    return decorator
 
 
 # ============================================================================
@@ -73,6 +97,7 @@ def _package_root() -> Path:
 # Health Checks
 # ============================================================================
 
+@register_check("Gaia-Ops", order=10)
 def check_gaia_version() -> dict:
     """Check that package.json is readable and has a version."""
     pkg_path = _package_root() / "package.json"
@@ -82,6 +107,7 @@ def check_gaia_version() -> dict:
     return _result("Gaia-Ops", "error", "Version unknown", "Reinstall @jaguilar87/gaia")
 
 
+@register_check("Claude Code", order=20)
 def check_claude_code() -> dict:
     """Check if Claude Code CLI is installed."""
     for cmd in ("claude", "claude-code"):
@@ -101,6 +127,7 @@ def check_claude_code() -> dict:
     return _result("Claude Code", "info", "Not installed", "npm install -g @anthropic-ai/claude-code")
 
 
+@register_check("Python", order=30)
 def check_python() -> dict:
     """Check Python version >= 3.9."""
     version = sys.version.split()[0]
@@ -116,6 +143,7 @@ def check_python() -> dict:
     return _result("Python", "pass", f"Python {version}")
 
 
+@register_check("Plugin mode", order=40)
 def check_plugin_mode(project_root: Path) -> dict:
     """Check plugin mode from plugin-registry.json."""
     registry_path = project_root / ".claude" / "plugin-registry.json"
@@ -137,6 +165,7 @@ def check_plugin_mode(project_root: Path) -> dict:
     return _result("Plugin mode", "warning", f"Unknown plugin: {', '.join(installed)}", "Verify installation")
 
 
+@register_check("Symlinks", order=50)
 def check_symlinks(project_root: Path) -> dict:
     """Check .claude/ symlinks resolve to package content."""
     names = ["agents", "tools", "hooks", "commands", "templates", "config", "skills", "CHANGELOG.md"]
@@ -165,6 +194,7 @@ def check_symlinks(project_root: Path) -> dict:
     return _result("Symlinks", severity, f"{valid}/{total} valid", "Run gaia-scan to recreate symlinks")
 
 
+@register_check("Identity", order=60)
 def check_identity(project_root: Path) -> dict:
     """Check orchestrator agent is configured."""
     issues = []
@@ -199,6 +229,7 @@ def check_identity(project_root: Path) -> dict:
     return _result("Identity", "pass", "Orchestrator agent configured")
 
 
+@register_check("Settings", order=70)
 def check_settings(project_root: Path) -> dict:
     """Check settings.local.json for hooks, permissions, deny rules."""
     local_path = project_root / ".claude" / "settings.local.json"
@@ -244,6 +275,7 @@ def check_settings(project_root: Path) -> dict:
     return _result("Settings", "pass", f"{hook_count} hook types, {perm_count} rules")
 
 
+@register_check("Hook files", order=80)
 def check_hook_files(project_root: Path) -> dict:
     """Check all expected hook scripts exist."""
     hooks = [
@@ -285,6 +317,7 @@ def check_hook_files(project_root: Path) -> dict:
     return _result("Hook files", "pass", f"{valid}/{total} found")
 
 
+@register_check("project-context", order=90)
 def check_project_context(project_root: Path) -> dict:
     """Check project-context.json is valid and enriched."""
     path = project_root / ".claude" / "project-context" / "project-context.json"
@@ -327,6 +360,7 @@ def check_project_context(project_root: Path) -> dict:
     return _result("project-context", "pass", f"{section_count} sections")
 
 
+@register_check("Project dirs", order=100)
 def check_project_dirs(project_root: Path) -> dict:
     """Check paths declared in project-context exist on disk."""
     context_path = project_root / ".claude" / "project-context" / "project-context.json"
@@ -364,6 +398,7 @@ def check_project_dirs(project_root: Path) -> dict:
     return _result("Project dirs", "pass", f"{verified} paths verified")
 
 
+@register_check("memory_fts5_db", order=120)
 def check_memory_fts5_db(project_root: Path) -> dict:
     """Check if the FTS5 search.db exists for episodic memory."""
     db_path = project_root / ".claude" / "project-context" / "episodic-memory" / "search.db"
@@ -377,6 +412,7 @@ def check_memory_fts5_db(project_root: Path) -> dict:
     )
 
 
+@register_check("memory_fts5_count", order=130)
 def check_memory_fts5_count(project_root: Path) -> dict:
     """Check FTS5 indexed count against total episode count in index.json."""
     index_path = project_root / ".claude" / "project-context" / "episodic-memory" / "index.json"
@@ -421,6 +457,7 @@ def check_memory_fts5_count(project_root: Path) -> dict:
     return _result("memory_fts5_count", "pass", f"{indexed}/{total} episodes indexed ({pct:.0%})")
 
 
+@register_check("memory_scoring", order=140)
 def check_memory_scoring(project_root: Path) -> dict:
     """Check that tools.memory.scoring is importable (scoring module available)."""
     try:
@@ -438,6 +475,57 @@ def check_memory_scoring(project_root: Path) -> dict:
         )
     except Exception as exc:
         return _result("memory_scoring", "warning", f"Scoring module error: {exc}")
+
+
+def _apply_agent_fix(project_root: Path) -> dict:
+    """Write agent='gaia-orchestrator' to settings.local.json top-level.
+
+    Preserves the rest of the JSON content; uses indent=2 with trailing newline
+    to keep the file format consistent with how gaia-scan writes it.
+    """
+    settings_path = project_root / ".claude" / "settings.local.json"
+    if not settings_path.is_file():
+        return {
+            "name": "agent_field",
+            "status": "failed",
+            "detail": "settings.local.json missing",
+        }
+
+    try:
+        with open(settings_path, "r") as f:
+            data = json.load(f)
+    except Exception as exc:
+        return {
+            "name": "agent_field",
+            "status": "failed",
+            "detail": f"Could not read settings.local.json: {exc}",
+        }
+
+    if data.get("agent") == "gaia-orchestrator":
+        return {
+            "name": "agent_field",
+            "status": "noop",
+            "detail": "agent field already set to gaia-orchestrator",
+        }
+
+    data["agent"] = "gaia-orchestrator"
+
+    try:
+        with open(settings_path, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+    except Exception as exc:
+        return {
+            "name": "agent_field",
+            "status": "failed",
+            "detail": f"Could not write settings.local.json: {exc}",
+        }
+
+    return {
+        "name": "agent_field",
+        "status": "applied",
+        "detail": "Wrote agent=gaia-orchestrator to settings.local.json",
+    }
 
 
 def _apply_fts5_backfill(project_root: Path) -> dict:
@@ -469,6 +557,7 @@ def _apply_fts5_backfill(project_root: Path) -> dict:
         return {"name": "fts5_backfill", "status": "failed", "detail": f"Backfill error: {exc}"}
 
 
+@register_check("Memory dirs", order=110)
 def check_memory_dirs(project_root: Path) -> dict:
     """Check episodic memory directories are present."""
     checks = [
@@ -563,38 +652,26 @@ def cmd_doctor(args) -> int:
     """Handler for `gaia doctor`."""
     project_root = _find_project_root()
 
-    # Use functools.partial so each entry's __name__ resolves to the wrapped
-    # check function (e.g. "check_project_dirs"). Bare lambdas would surface
-    # as "<lambda>" in the JSON output, hiding which check actually failed.
-    check_fns = [
-        check_gaia_version,
-        check_claude_code,
-        check_python,
-        partial(check_plugin_mode, project_root),
-        partial(check_symlinks, project_root),
-        partial(check_identity, project_root),
-        partial(check_settings, project_root),
-        partial(check_hook_files, project_root),
-        partial(check_project_context, project_root),
-        partial(check_project_dirs, project_root),
-        partial(check_memory_dirs, project_root),
-        partial(check_memory_fts5_db, project_root),
-        partial(check_memory_fts5_count, project_root),
-        partial(check_memory_scoring, project_root),
-    ]
+    # Iterate the global check registry populated by @register_check.
+    # Each check function is invoked with project_root if it accepts an
+    # argument, or no args otherwise. The registry is sorted by `order`.
+    import inspect  # noqa: PLC0415
+
+    def _invoke(fn):
+        sig = inspect.signature(fn)
+        if len(sig.parameters) == 0:
+            return fn()
+        return fn(project_root)
 
     def _fn_name(fn):
-        # functools.partial wraps a function in .func; bare functions expose
-        # __name__ directly. Either way, surface a human-readable identifier.
-        target = getattr(fn, "func", fn)
-        return getattr(target, "__name__", repr(fn))
+        return getattr(fn, "__name__", repr(fn))
 
     results = []
-    for fn in check_fns:
+    for _order, name, fn in _CHECKS:
         try:
-            results.append(fn())
+            results.append(_invoke(fn))
         except Exception as exc:
-            results.append(_result(_fn_name(fn), "error", f"Error: {exc}"))
+            results.append(_result(name or _fn_name(fn), "error", f"Error: {exc}"))
 
     has_errors = any(r["severity"] == "error" for r in results)
     has_warnings = any(r["severity"] == "warning" for r in results)
@@ -602,6 +679,24 @@ def cmd_doctor(args) -> int:
     # --fix: run auto-fixers for triggered checks
     fixes = []
     if getattr(args, "fix", False):
+        # ----- Identity: agent field missing in settings.local.json -----
+        # Only auto-fix the "No agent field" case. The "Agent set to X" case
+        # (agent present but wrong value) is intentionally not auto-fixed:
+        # overwriting a user-configured agent requires explicit consent.
+        identity_check = next((r for r in results if r["name"] == "Identity"), None)
+        if (
+            identity_check
+            and identity_check["severity"] == "error"
+            and "No agent field" in identity_check["detail"]
+        ):
+            agent_fix = _apply_agent_fix(project_root)
+            fixes.append(agent_fix)
+            if agent_fix["status"] == "applied":
+                # Re-run check_identity to reflect post-fix state
+                idx = results.index(identity_check)
+                results[idx] = check_identity(project_root)
+
+        # ----- FTS5 backfill -----
         fts5_db_check = next((r for r in results if r["name"] == "memory_fts5_db"), None)
         fts5_count_check = next((r for r in results if r["name"] == "memory_fts5_count"), None)
 
@@ -621,9 +716,10 @@ def cmd_doctor(args) -> int:
                     idx = results.index(fts5_count_check)
                     results[idx] = check_memory_fts5_count(project_root)
 
-                # Recompute summary flags after re-checks
-                has_errors = any(r["severity"] == "error" for r in results)
-                has_warnings = any(r["severity"] == "warning" for r in results)
+        # Recompute summary flags once after all fixes have run.
+        if fixes:
+            has_errors = any(r["severity"] == "error" for r in results)
+            has_warnings = any(r["severity"] == "warning" for r in results)
 
     if getattr(args, "json", False):
         status = "critical" if has_errors else "degraded" if has_warnings else "healthy"

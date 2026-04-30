@@ -34,7 +34,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join, relative } from 'path';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { findPython } from './python-detect.js';
@@ -46,6 +46,37 @@ const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CWD = process.cwd();
+
+// ============================================================================
+// Dynamic package resolution
+// ============================================================================
+//
+// The gaia package was renamed from `@jaguilar87/gaia-ops` to `@jaguilar87/gaia`
+// in v5. Hardcoding either name breaks resolution on the other variant.
+// Resolve dynamically by scanning `node_modules/@jaguilar87/` for the first
+// `gaia*` package installed in the consumer project.
+//
+// Returns the package name (e.g. `gaia` or `gaia-ops`) or `null` when the
+// scope directory is missing / has no gaia package. Callers should fall back
+// or report not-found rather than assume a default.
+//
+// Kept as a local helper (instead of importing from gaia-update.js) to avoid
+// circular dependencies between CLI entry points.
+
+function resolveGaiaPackageName(cwd = CWD) {
+  const scopeDir = join(cwd, 'node_modules', '@jaguilar87');
+  if (!existsSync(scopeDir)) return null;
+  let entries;
+  try {
+    entries = readdirSync(scopeDir);
+  } catch {
+    return null;
+  }
+  // Prefer exact canonical name when present, else first gaia* match.
+  if (entries.includes('gaia')) return 'gaia';
+  const legacy = entries.find((name) => name.startsWith('gaia'));
+  return legacy || null;
+}
 
 // ============================================================================
 // Severity helpers
@@ -468,7 +499,8 @@ async function autoFix() {
   // Fix broken symlinks
   const claudeDir = join(CWD, '.claude');
   if (existsSync(claudeDir)) {
-    const packagePath = join(CWD, 'node_modules', '@jaguilar87', 'gaia-ops');
+    const pkgName = resolveGaiaPackageName(CWD) || 'gaia';
+    const packagePath = join(CWD, 'node_modules', '@jaguilar87', pkgName);
     if (existsSync(packagePath)) {
       const relPath = relative(claudeDir, packagePath);
       const names = ['agents', 'tools', 'hooks', 'commands', 'templates', 'config', 'skills'];
