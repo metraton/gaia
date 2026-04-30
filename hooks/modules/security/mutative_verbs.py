@@ -358,6 +358,48 @@ COMMAND_ALIASES: Dict[str, str] = {
 
 
 # ============================================================================
+# Read-Only Base Commands (fast-path whitelist)
+# ============================================================================
+# Common read-only inspection commands. When the base_cmd matches, short-circuit
+# to safe BEFORE any verb-token or camelCase scanning. This prevents false
+# positives where a quoted argument value (e.g., "SessionStart") gets split
+# into camelCase parts and matches a mutative verb.
+#
+# CRITICAL: Do not include `sed` here. `sed -i` mutates files in-place; `sed`
+# without `-i` is read-only, but distinguishing flags here is fragile and the
+# verb scanner already classifies bare `sed` as safe by elimination.
+#
+# These commands are read-only by design at the syscall level: they open files
+# for reading and write to stdout. Any flag combination that would mutate state
+# (e.g., `find -delete`) is caught by the dangerous-flags scanner via the
+# generic CLI families that use those flags, or by `blocked_commands.py`.
+
+READ_ONLY_BASE_CMDS: FrozenSet[str] = frozenset({
+    "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    "find", "fd", "locate",
+    "ls", "ll", "la", "tree",
+    "cat", "bat", "less", "more",
+    "head", "tail",
+    "awk", "sort", "uniq", "cut", "tr", "wc", "column",
+    "stat", "file", "du", "df",
+    "readlink", "realpath", "dirname", "basename",
+    "which", "whereis", "type", "command",
+    "echo", "printf", "yes", "true", "false",
+    "date", "uptime", "id", "whoami", "groups", "hostname",
+    "ps", "pgrep",
+    "env",
+    "diff", "cmp",
+    "xxd", "od", "hexdump", "strings",
+})
+
+
+# Find -- special handling: `-delete` flag mutates. We scan for it explicitly
+# in the find fast-path so we can keep `find` in the read-only whitelist for
+# the common case while still flagging the destructive flag.
+_FIND_MUTATIVE_FLAGS: FrozenSet[str] = frozenset({"-delete"})
+
+
+# ============================================================================
 # Simulation Flags (--dry-run and equivalents)
 # ============================================================================
 
@@ -635,6 +677,39 @@ def detect_mutative_command(command: str) -> MutativeResult:
             reason=f"Command alias '{base_cmd}' is {alias_category.lower()}",
         )
 
+    # --- Step 1b: Read-only base command fast-path ---
+    # When the base_cmd is a known read-only inspection tool (grep, find, ls,
+    # cat, etc.), short-circuit to safe BEFORE the verb scanner runs. This
+    # prevents quoted argument values from being scanned as verb tokens,
+    # which previously caused false positives such as
+    #   grep -rn "SessionStart" file.json
+    # being flagged as MUTATIVE because camelCase splitting on "SessionStart"
+    # produced "start" (a mutative verb).
+    #
+    # Special-case: `find ... -delete` is destructive — flag it explicitly
+    # before falling into the safe path.
+    if base_cmd in READ_ONLY_BASE_CMDS:
+        if base_cmd == "find" and any(
+            t.lower() in _FIND_MUTATIVE_FLAGS for t in tokens
+        ):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="find",
+                dangerous_flags=("-delete",),
+                cli_family="system",
+                confidence="high",
+                reason="`find -delete` removes matched files",
+            )
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb=base_cmd,
+            cli_family=family if family != "unknown" else "system",
+            confidence="high",
+            reason=f"Read-only base command '{base_cmd}' (whitelist fast-path)",
+        )
+
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
         return MutativeResult(
@@ -857,9 +932,16 @@ def detect_mutative_command(command: str) -> MutativeResult:
         # Use the raw (original-case) token because semantic_head_tokens is
         # lowercased, which destroys the camelCase word boundaries that
         # split_camel_case relies on (regex: [a-z][A-Z]).
+        #
+        # IMPORTANT: only apply camelCase splitting at the subcommand position
+        # (semantic_index == 1). At later positions, tokens are typically
+        # argument values (paths, query strings, identifiers) and splitting
+        # them produces false positives — e.g., the literal "SessionStart"
+        # passed as a grep pattern would split to ["session", "start"] and
+        # incorrectly trigger the mutative verb "start".
         raw_token = semantics.semantic_head_tokens_raw[semantic_index] if semantic_index < len(semantics.semantic_head_tokens_raw) else token
         camel_parts = split_camel_case(raw_token)
-        if len(camel_parts) > 1:
+        if semantic_index == 1 and len(camel_parts) > 1:
             for part in camel_parts:
                 if part in MUTATIVE_VERBS:
                     override_key = (family, part)

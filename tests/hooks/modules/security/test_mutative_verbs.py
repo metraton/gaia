@@ -1003,3 +1003,134 @@ class TestGwsMacroPrefix:
         assert result.is_mutative is True
         assert result.verb == "send"
         assert result.category == "MUTATIVE"
+
+
+class TestT3FalsePositiveFix:
+    """Regression suite for the T3 false-positive fix (READ_ONLY_BASE_CMDS
+    whitelist + camelCase-at-subcommand-position guard).
+
+    Bug: grep -rn "SessionStart" file.json was flagged as MUTATIVE because
+    camelCase splitting on the quoted argument "SessionStart" produced
+    "session" + "start", and "start" is in MUTATIVE_VERBS.
+
+    Fix: (1) READ_ONLY_BASE_CMDS fast-path short-circuits the verb scanner
+    for known read-only inspection tools (grep, find, cat, ls, head, tail,
+    awk, wc, etc.). (2) camelCase splitting only fires at semantic_index == 1
+    (subcommand position), not at later argument positions.
+    """
+
+    # ---- The original failing case (regression anchor) ----
+
+    def test_grep_with_quoted_session_start_is_safe(self):
+        """The exact bug report: grep -rn "SessionStart" file.json."""
+        result = detect_mutative_command('grep -rn "SessionStart" file.json')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "grep"
+
+    # ---- READ_ONLY_BASE_CMDS whitelist ----
+
+    def test_find_with_substring_pattern_is_safe(self):
+        """find . -name "*start*" must not match the mutative verb 'start'."""
+        result = detect_mutative_command('find . -name "*start*"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_cat_with_start_in_filename_is_safe(self):
+        """cat reading a file whose name contains 'start' must be read-only."""
+        result = detect_mutative_command("cat file_with_start_in_name")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_head_is_safe(self):
+        result = detect_mutative_command("head -n 5 file")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "head"
+
+    def test_tail_is_safe(self):
+        result = detect_mutative_command("tail -f log")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "tail"
+
+    def test_awk_is_safe(self):
+        result = detect_mutative_command("awk /pattern/ file")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "awk"
+
+    def test_wc_is_safe(self):
+        result = detect_mutative_command("wc -l file")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "wc"
+
+    # ---- find -delete must still flag (whitelist exception) ----
+
+    def test_find_delete_is_mutative(self):
+        """find . -delete is destructive even though `find` is whitelisted."""
+        result = detect_mutative_command('find . -name "*.tmp" -delete')
+        assert result.is_mutative is True
+        assert result.verb == "find"
+        assert "-delete" in result.dangerous_flags
+
+    # ---- npm start IS mutative (verb scanner still works for non-whitelisted CLIs) ----
+
+    def test_npm_start_is_mutative(self):
+        """npm start runs lifecycle scripts -- must remain T3."""
+        result = detect_mutative_command("npm start")
+        assert result.is_mutative is True
+        assert result.verb == "start"
+        assert result.category == "MUTATIVE"
+
+    # ---- Single unknown token: not at verb position ----
+
+    def test_unknown_base_cmd_with_start_is_safe(self):
+        """`start service` with unknown base_cmd should not flag.
+
+        `start` as a base_cmd is not in COMMAND_ALIASES or READ_ONLY_BASE_CMDS,
+        and the verb scanner only inspects tokens AFTER the base_cmd. So
+        `start` here is the base, `service` is the candidate verb -- neither
+        matches and the command is safe by elimination.
+        """
+        result = detect_mutative_command("start service")
+        assert result.is_mutative is False
+
+    # ---- camelCase at subcommand position: still flags ----
+
+    def test_camelcase_at_subcommand_position_is_mutative(self):
+        """aws batchDelete --table foo: camelCase at subcmd splits to 'delete'."""
+        result = detect_mutative_command("aws batchDelete --table foo")
+        assert result.is_mutative is True
+        assert result.verb == "delete"
+        assert result.category == "MUTATIVE"
+
+    # ---- camelCase at argument position: must NOT flag ----
+
+    def test_camelcase_in_argument_value_is_safe(self):
+        """aws s3api list-buckets --filter "BatchDelete" must not split
+        the argument value 'BatchDelete' into the mutative verb 'delete'.
+
+        The split_camel_case logic only fires at semantic_index == 1
+        (subcommand position) -- this test guards that boundary.
+        """
+        result = detect_mutative_command(
+            'aws s3api list-buckets --filter "BatchDelete"'
+        )
+        assert result.is_mutative is False
+
+    # ---- git commit with SessionStart in message body (regression for
+    # the same camelCase-in-argument false positive, but inside -m) ----
+
+    def test_git_commit_with_session_start_in_message_is_safe(self):
+        """git commit -m "add SessionStart handler" must not flag.
+
+        Both the GIT_LOCAL_SAFE_SUBCOMMANDS guard and the
+        camelCase-only-at-subcommand-position rule defend this case.
+        """
+        result = detect_mutative_command(
+            'git commit -m "add SessionStart handler"'
+        )
+        assert result.is_mutative is False
+        assert result.verb == "commit"
