@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
+ensure_workspace_hooks_link()
 
 from modules.core.stdin import has_stdin_data
 from modules.core.paths import get_logs_dir
