@@ -166,7 +166,7 @@
           "state",
           "module",
           "service account",
-          "workload identity",
+          "workload identity binding",
           "secret manager",
           "vpc",
           "subnet",

@@ -393,3 +393,46 @@ npx gaia-doctor
 ```
 
 Full system health: hook reachability (all 10 entry points), symlink integrity, Python environment, config file presence, settings.json/settings.local.json correctness.
+
+---
+
+## 9. Index, Not Snapshot
+
+Principle: **project-context is index, not snapshot** of cloud state. It captures names, identifiers, relationships, and semi-stable metadata declared in code or config — not real-time runtime values.
+
+### What belongs in the index (keep)
+
+- Project and account IDs (stable identifiers)
+- Cluster names declared in Terraform/Helm
+- Region and environment labels
+- Agent permission matrices
+- Stack, language, and tooling metadata
+
+### What does not belong in the index (retire)
+
+| Category | Examples |
+|----------|---------|
+| Cloud resource runtime status | pod counts, instance status, VPC IDs, subnet lists |
+| API-discovered facts | load balancer DNS names, IP addresses, OIDC IAM bindings |
+| Scanner-produced live data | pubsub topic lists, secret manager enabled flag, monitoring status |
+
+Any field whose scanner requires a live cloud API call (`gcloud`, `aws`, `kubectl`) to produce is live-state — it belongs in scanner output, not the index.
+
+### How to obtain live state
+
+Run the appropriate cloud CLI at the moment the question arises:
+
+```bash
+gcloud compute addresses list                        # static IPs
+aws elbv2 describe-load-balancers                    # load balancers
+kubectl get pods -n <namespace>                      # pod status
+terraform show -json | jq '.values.root_module'      # TF state
+```
+
+Do not cache the result in project-context. A stale live-state field silently misrepresents today's infrastructure.
+
+### Enforcement
+
+- `config/cloud/gcp.json` and `config/cloud/aws.json`: `section_schemas` for live-state fields removed in B6. Scanner-populated fields go through the store API from B2+.
+- `gaia/store/schema.sql`: DDL defines no columns for live-state narratives (`ci_cd_findings`, `cluster_discrepancy`). The schema cannot store what it does not define.
+- `tests/unit/test_surface_routing_live_state.py`: guards that no `signals.keywords` in `surface-routing.json` references a retired live-state field name.

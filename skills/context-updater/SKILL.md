@@ -79,9 +79,48 @@ not investigate solely to populate context.
 
 For concrete examples, read `examples.md` in this directory.
 
+## Index, Not Snapshot
+
+Principle: **project-context is index, not snapshot** of cloud state. It captures what statically exists in the project — identifiers, names, relationships, and semi-stable metadata — not real-time runtime values.
+
+**What counts as live-state (do not write to context):**
+- Cloud resource runtime status (pod counts, instance status, VPC IDs)
+- API-discovered facts that change without a rescan (load balancer DNS, IP addresses, IAM bindings derived from OIDC, pubsub topic lists)
+- Any field whose scanner requires a live cloud API call (gcloud, aws, kubectl) to produce
+
+**How to obtain live state when you need it:** run the appropriate cloud CLI at the moment the question arises — `gcloud`, `aws`, `kubectl`, `terraform show`. Do not cache the result in project-context.
+
+**Why this matters:** stale live-state in context gives agents false confidence. A field written during last week's scan silently misrepresents today's infrastructure. Fields that never change (project IDs, account aliases, cluster names declared in code) are fine to index; ephemeral runtime facts are not.
+
+## Mutative Triggers
+
+Some events change the workspace state and require an immediate context capture — not just investigation-time updates. Mutative triggers differ from investigative triggers: an investigative trigger fires when you *discover* something that already existed; a mutative trigger fires when an action *creates or changes* workspace state.
+
+When you detect any of the following patterns in tool output or agent output, emit a `CONTEXT_UPDATE` block to record the new state before the session ends:
+
+| Pattern | Example output | What to capture |
+|---------|----------------|-----------------|
+| `npm install` | `added 1 package, audited 42 packages` | Package name, version, scope (global vs local) |
+| `pip install` | `Successfully installed acli-1.2.3` | Package name, version |
+| `gaia install` | `gaia installed at /usr/local/bin/gaia` | Package name, install path |
+| `auth configure` | `Credentials saved to ~/.config/gcloud/credentials.json` | Service name, credential path |
+
+Additional patterns that are mutative (not exhaustive):
+- `kubectl apply` — cluster state changed, capture workload/namespace
+- `helm install` / `helm upgrade` — chart name and version
+- `brew install` — formula name and version
+
+**Contrast with investigative triggers** (do NOT emit CONTEXT_UPDATE for these):
+- `kubectl get`, `helm list`, `npm list` — read-only queries; discovery goes through scanners
+- `terraform plan` — simulation, no state change
+- `gcloud describe`, `aws describe-*` — read-only; use scanner APIs for indexing
+
+**Rule:** if the tool output contains language like *"installed"*, *"added"*, *"configured"*, *"applied"*, or *"upgraded"* referencing a named package or service, treat it as mutative and capture the integration row.
+
 ## Anti-Patterns
 
 - Emitting updates without checking writable sections
 - Overwriting user-curated fields with generic values
 - Waiting until task completion to emit (emit as you discover)
 - Skipping P0 fields while enriching lower-priority ones
+- Writing live-state fields (cloud resource status, API-discovered runtime facts) to project-context — these belong in scanner output, not the index
