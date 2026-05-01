@@ -1,0 +1,13 @@
+# workspace: bildwiz
+repos: 3
+  repo name=bildwiz-api role=application language=javascript
+  repo name=bildwiz-gitops role=application language=-
+  repo name=bildwiz-iac role=iac language=hcl
+tf_modules: 1
+  tf_module repo=bildwiz-iac name=vpc
+clusters_defined: 1
+  cluster_defined repo=bildwiz-iac name=primary provider=gke
+releases: 1
+  release repo=bildwiz-gitops name=bildwiz-api
+workloads: 1
+  workload repo=bildwiz-gitops name=bildwiz-api kind=Deployment ns=default

@@ -1,0 +1,9 @@
+# workspace: qxo
+repos: 2
+  repo name=qxo-gitops role=gitops language=-
+  repo name=qxo-monorepo role=monorepo language=javascript
+tf_modules: 0
+clusters_defined: 0
+releases: 0
+workloads: 1
+  workload repo=qxo-gitops name=qxo-app kind=Deployment ns=qxo

@@ -1,0 +1,5 @@
+{
+  "name": "qxo-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"]
+}

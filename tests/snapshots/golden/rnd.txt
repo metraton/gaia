@@ -1,0 +1,9 @@
+# workspace: rnd
+repos: 2
+  repo name=rnd-experiments role=application language=python
+  repo name=rnd-infra role=iac language=hcl
+tf_modules: 1
+  tf_module repo=rnd-infra name=buckets
+clusters_defined: 0
+releases: 0
+workloads: 0
