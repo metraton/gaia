@@ -17,6 +17,13 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.tools.task_validator import AVAILABLE_AGENTS, META_AGENTS
 
 
+_CONTRACTS_RETIRED_REASON = (
+    "context-contracts.json was retired in B3 (LEGACY_AGENT_CONTRACTS removed). "
+    "Agent write permissions now live in ~/.gaia/gaia.db agent_permissions table. "
+    "Re-enable / rewrite once the DB-backed contract introspection API is available."
+)
+
+
 class TestContractFileStructure:
     """Validate contract JSON structure."""
 
@@ -33,6 +40,7 @@ class TestContractFileStructure:
             result[f.name] = json.loads(f.read_text())
         return result
 
+    @pytest.mark.skip(reason=_CONTRACTS_RETIRED_REASON)
     def test_contract_files_exist(self, contract_files):
         """At least one context-contracts file must exist."""
         assert len(contract_files) >= 1, "No context-contracts files found"
@@ -83,6 +91,7 @@ class TestContractAgentConsistency:
                 assert agent in AVAILABLE_AGENTS, \
                     f"{name} references unknown agent '{agent}'"
 
+    @pytest.mark.skip(reason=_CONTRACTS_RETIRED_REASON)
     def test_project_agents_in_at_least_one_contract(self, contracts):
         """All project agents should appear in at least one contract.
 

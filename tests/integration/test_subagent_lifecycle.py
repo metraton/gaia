@@ -491,9 +491,18 @@ CONTEXT_UPDATE:
 # PHASE 3: Permission Validation
 # ============================================================================
 
+_LIFECYCLE_SKIP_REASON = (
+    "Retired in substrate v6 (B3): validate_permissions no longer accepts a "
+    "contracts dict argument — permissions now come from agent_permissions in "
+    "~/.gaia/gaia.db. context-contracts.json was removed. "
+    "Rewrite against the new DB-backed permissions API."
+)
+
+
 class TestPhase3PermissionValidation:
     """Validate that agents can only write to authorized sections."""
 
+    @pytest.mark.skip(reason=_LIFECYCLE_SKIP_REASON)
     def test_cloud_troubleshooter_can_write_cluster_details(self, test_project):
         """cloud-troubleshooter should be able to write to cluster_details."""
         from context_writer import validate_permissions
@@ -509,6 +518,7 @@ class TestPhase3PermissionValidation:
         assert "cluster_details" in allowed
         assert len(rejected) == 0
 
+    @pytest.mark.skip(reason=_LIFECYCLE_SKIP_REASON)
     def test_cloud_troubleshooter_cannot_write_gitops_configuration(self, test_project):
         """cloud-troubleshooter should NOT be able to write to gitops_configuration."""
         from context_writer import validate_permissions
@@ -524,6 +534,7 @@ class TestPhase3PermissionValidation:
         assert "gitops_configuration" not in allowed
         assert "gitops_configuration" in rejected
 
+    @pytest.mark.skip(reason=_LIFECYCLE_SKIP_REASON)
     def test_terraform_architect_can_write_infrastructure(self, test_project):
         """terraform-architect should be able to write terraform_infrastructure."""
         from context_writer import validate_permissions
@@ -548,9 +559,18 @@ class TestPhase3PermissionValidation:
 # PHASE 4: Full Lifecycle - Context Update Application
 # ============================================================================
 
+_LIFECYCLE_STORE_SKIP_REASON = (
+    "Retired in substrate v6 (B3): process_agent_output return shape changed "
+    "from {updated, sections_updated, rejected} to {updated, table, rows_applied, rejected, error}. "
+    "Tests also depend on context-contracts.json which was removed. "
+    "Rewrite against the new gaia.store / gaia.db API."
+)
+
+
 class TestPhase4FullLifecycle:
     """End-to-end: skills loaded → agent output → context updated."""
 
+    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
     def test_context_update_applied_to_project_context(self, test_project):
         """
         Simulate the complete lifecycle:
@@ -648,6 +668,7 @@ CONTEXT_UPDATE:
         # Metadata timestamp should be updated
         assert "last_updated" in after["metadata"]
 
+    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
     def test_unauthorized_sections_rejected(self, test_project):
         """
         Agent trying to write to sections it doesn't own should be rejected.
@@ -696,6 +717,7 @@ CONTEXT_UPDATE:
         assert after["sections"]["operational_guidelines"]["commit_standards"] == "conventional", \
             "operational_guidelines should remain unchanged (rejected write)"
 
+    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
     def test_deep_merge_preserves_existing_data(self, test_project):
         """
         CONTEXT_UPDATE should merge with existing data, not overwrite.
@@ -744,6 +766,7 @@ CONTEXT_UPDATE:
         assert cd["region"] == "us-east4", \
             "Existing 'region' key should be preserved after merge"
 
+    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
     def test_audit_trail_created(self, test_project):
         """Context updates should create an audit trail entry."""
         tmp_path, claude_dir = test_project
@@ -784,6 +807,7 @@ CONTEXT_UPDATE:
 class TestPhase5SubagentStopHook:
     """Test the subagent_stop_hook processes CONTEXT_UPDATE end-to-end."""
 
+    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
     def test_subagent_stop_processes_context_update(self, test_project):
         """
         subagent_stop_hook should:

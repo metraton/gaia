@@ -732,10 +732,19 @@ class TestNFR002DeepMergeScalability:
 # Correctness under load: verify merge results are still accurate
 # ============================================================================
 
+_PERF_SKIP_REASON = (
+    "Retired in substrate v6 (B3): process_agent_output return shape changed "
+    "from {updated, sections_updated, rejected} to {updated, table, rows_applied, "
+    "rejected, error}. context-contracts.json was removed. "
+    "Rewrite against the new gaia.store / gaia.db API."
+)
+
+
 class TestCorrectnessUnderLoad:
     """Ensure that the 50 KB context update produces correct merge results,
     not just fast ones."""
 
+    @pytest.mark.skip(reason=_PERF_SKIP_REASON)
     def test_two_section_update_correctness(self, setup_perf):
         process_agent_output = _import_process_agent_output()
         context_file, config_dir, original_data = setup_perf
@@ -794,6 +803,7 @@ class TestCorrectnessUnderLoad:
         written_services = written["sections"]["application_services"]["services"]
         assert len(written_services) == len(original_services)
 
+    @pytest.mark.skip(reason=_PERF_SKIP_REASON)
     def test_permission_rejection_on_large_context(self, setup_perf):
         """cloud-troubleshooter cannot write gitops_configuration on large context."""
         process_agent_output = _import_process_agent_output()

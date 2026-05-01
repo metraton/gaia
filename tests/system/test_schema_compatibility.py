@@ -116,8 +116,13 @@ class TestSchemaCompatibility:
             )
 
     def test_identity_references_routing(self, identity_content):
-        """Identity must tell orchestrator about routing and agent-response."""
-        assert "routing suggestion" in identity_content
+        """Identity must tell orchestrator about routing and agent-response.
+
+        The routing reference is now "Surface Routing Recommendation" (the
+        injected block name) rather than "routing suggestion" — updated in the
+        substrate v6 refactor to match the actual additionalContext header.
+        """
+        assert "Surface Routing Recommendation" in identity_content
         assert "agent-response" in identity_content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):
