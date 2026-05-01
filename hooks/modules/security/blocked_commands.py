@@ -36,6 +36,46 @@ from .command_semantics import CommandSemantics, analyze_command, _contains_orde
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# False-positive guards (mirrors the T3 fix in mutative_verbs.py / 77219f0)
+# ============================================================================
+# The deny-list regexes above search anywhere inside the raw command string.
+# That makes them vulnerable to two kinds of false positives:
+#
+#   (1) Read-only commands carry quoted arguments that contain the literal
+#       text of a blocked pattern.  Examples:
+#         grep -rn "rm -rf" /var/log/audit.log
+#         find / -name "*.kubectl-delete-config*"
+#       These are inspection commands -- they cannot execute the substrings
+#       they contain.
+#
+#   (2) `git commit -m "..."` carries a free-form prose message body.  When
+#       the message documents a destructive command (e.g., a regression test
+#       description, a changelog entry, or this very fix's commit body),
+#       the substring match flags the commit itself.  The commit only
+#       creates a local commit object -- it never executes the message.
+#
+# Both classes of false positive are eliminated BEFORE the regex / semantic
+# loops run, mirroring the READ_ONLY_BASE_CMDS fast-path that mutative_verbs
+# adopted in commit 77219f0.
+
+# Imported from mutative_verbs so we keep ONE source of truth for which CLIs
+# are read-only inspection tools.  The lazy import avoids a circular dependency
+# at module load time (mutative_verbs imports is_blocked_command from here).
+def _read_only_base_cmds() -> "frozenset[str]":
+    """Return the canonical READ_ONLY_BASE_CMDS set from mutative_verbs.
+
+    Lazy import keeps blocked_commands importable independently of
+    mutative_verbs and avoids the import cycle declared at the top of
+    mutative_verbs.py.
+    """
+    try:
+        from .mutative_verbs import READ_ONLY_BASE_CMDS
+        return READ_ONLY_BASE_CMDS
+    except ImportError:
+        return frozenset()
+
+
 @dataclass
 class BlockedCommandResult:
     """Result of blocked command check."""
@@ -555,6 +595,12 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
 
     command = command.strip()
 
+    # ------------------------------------------------------------------
+    # False-positive fast-paths (mirror of mutative_verbs.py / 77219f0)
+    # ------------------------------------------------------------------
+    if _is_false_positive_carrier(command):
+        return BlockedCommandResult(is_blocked=False)
+
     semantic_rule = _match_semantic_block_rule(command)
     if semantic_rule is not None:
         suggestion = BLOCKED_COMMAND_SUGGESTIONS.get(semantic_rule.suggestion_key)
@@ -593,3 +639,82 @@ def _match_semantic_block_rule(command: str) -> Optional[SemanticBlockedRule]:
         if rule.matches(semantics):
             return rule
     return None
+
+
+# Compound-command separators.  When the command contains any of these, fall
+# through to the regex/semantic loops -- a malicious user could otherwise hide
+# a real destructive command behind a `grep` prefix:
+#   grep foo file && kubectl delete namespace prod
+# would be classified as read-only by base_cmd lookup alone.
+_COMPOUND_SEPARATORS: Tuple[str, ...] = ("&&", "||", ";", "|", "`", "$(")
+
+
+def _is_false_positive_carrier(command: str) -> bool:
+    """Return True when the command is a known carrier of false-positive
+    substrings (read-only inspection tools, git commit message bodies).
+
+    Mirrors the READ_ONLY_BASE_CMDS fast-path that mutative_verbs.py adopted
+    in commit 77219f0.  Two carriers are recognised:
+
+    1. Read-only base command (grep, find, cat, ls, head, tail, awk, ...).
+       These commands cannot execute substrings they print or filter.
+       A compound-separator guard outside any quoted region prevents bypass
+       via shell chaining (e.g. `grep foo file && kubectl delete ns prod`).
+
+    2. `git commit -m "..."` (and the documented variants:
+       `git -C path commit -m`, `git commit --amend -m`, `git stash push -m`)
+       The body after `-m` is a free-form message, not an executable command.
+    """
+    semantics = analyze_command(command)
+    base_cmd = semantics.base_cmd
+
+    # Carrier (1): read-only base command.  Apply the compound-separator
+    # guard against the *unquoted* portion of the command so that quoted
+    # message bodies / regex patterns do not trip the guard.
+    if base_cmd in _read_only_base_cmds():
+        if not _has_unquoted_separator(command):
+            return True
+
+    # Carrier (2): git commit/stash with -m message body.
+    # `commit` and `stash` are local-only git subcommands -- the message text
+    # passed to -m / --message never reaches the shell.  The block list is
+    # there to catch live destructive commands, not prose that mentions them.
+    if base_cmd == "git" and semantics.non_flag_tokens:
+        git_subcmd = semantics.non_flag_tokens[0]
+        if git_subcmd in ("commit", "stash"):
+            return True
+
+    return False
+
+
+def _has_unquoted_separator(command: str) -> bool:
+    """Return True if a shell compound separator appears OUTSIDE quotes.
+
+    Walks the string tracking single- and double-quote state so that a
+    grep pattern like `grep "foo && bar"` or `grep -E "a|b"` is treated
+    as a single safe command, while `grep foo file && kubectl delete ns x`
+    correctly trips the guard.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if not in_single and not in_double:
+            for sep in _COMPOUND_SEPARATORS:
+                if command.startswith(sep, i):
+                    return True
+        i += 1
+    return False

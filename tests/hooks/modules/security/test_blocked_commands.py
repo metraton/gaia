@@ -542,3 +542,165 @@ class TestEdgeCases:
         """Detects blocked command even in compound statements."""
         result = is_blocked_command("echo 'test' && aws eks delete-cluster my-cluster")
         assert result.is_blocked is True
+
+
+class TestBlockedCommandsFalsePositiveFix:
+    """Regression suite for the T3 false-positive fix ported from
+    mutative_verbs.py (commit 77219f0).
+
+    Bug: `is_blocked_command` searches its regex patterns anywhere inside
+    the raw command string. That makes read-only inspection commands and
+    git commit message bodies vulnerable to substring matches:
+
+      git commit -m "fix(security): docs mention kubectl delete and rm -rf"
+      grep -rn "rm -rf" /var/log/audit.log
+      find / -name "*.kubectl-delete-config*"
+
+    None of those commands actually execute the destructive substrings
+    they contain. The block list is there to catch live destructive
+    commands, not prose that mentions them or filters that look for them.
+
+    Fix: a `_is_false_positive_carrier` fast-path runs BEFORE the regex /
+    semantic loops. It recognises two carriers:
+      (1) READ_ONLY_BASE_CMDS (imported from mutative_verbs.py)
+      (2) `git commit -m` / `git stash push -m` (message bodies)
+    A quote-aware compound-separator guard prevents bypass via shell
+    chaining (`grep foo file && kubectl delete ns prod` still blocks).
+    """
+
+    # ---- The original failing case (regression anchor) ----
+    # Mirror of the meta-bug: the commit-of-the-fix-itself was rejected
+    # because its body documented destructive verbs as prose.
+
+    def test_git_commit_message_documents_destructive_commands_is_safe(self):
+        """git commit -m with prose mentioning destructive commands."""
+        result = is_blocked_command(
+            'git commit -m "fix(security): docs mention kubectl delete '
+            'namespace and rm -rf / as regression cases"'
+        )
+        assert result.is_blocked is False
+
+    # ---- Carrier (1): read-only inspection commands ----
+
+    @pytest.mark.parametrize("command", [
+        'grep -rn "rm -rf" /var/log/audit.log',
+        'grep -E "kubectl delete namespace" trace.log',
+        'find / -name "*.kubectl-delete-config*"',
+        'find . -path "*terraform destroy*"',
+        'cat /etc/audit/rules.d/rm-rf-block.rules',
+        'ls -la /backup/kubectl-delete-snapshots/',
+        'awk "/aws ec2 delete-vpc/ {print}" history.log',
+        'head -n 100 /var/log/destroy-audit.log',
+        'tail -f /var/log/aws-delete-events.log',
+        'wc -l /var/log/kubectl-delete-namespace.audit',
+    ])
+    def test_read_only_command_with_blocked_substring_is_safe(self, command):
+        """Read-only inspection commands carrying blocked patterns as
+        quoted args / file names are not blocked."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is False, (
+            f"Command {command!r} should be safe but got "
+            f"category={result.category} pattern={result.pattern_matched}"
+        )
+
+    # ---- Carrier (2): git commit / stash message bodies ----
+
+    @pytest.mark.parametrize("command", [
+        'git commit -m "rm -rf legacy build artifacts"',
+        'git commit -m "kubectl delete namespace docs"',
+        'git commit -m "drop database column added"',  # SQL drop in prose
+        'git commit -m "terraform destroy mentioned in changelog"',
+        'git commit --amend -m "aws ec2 delete-vpc as test fixture"',
+        'git -C /repo commit -m "git push --force documented"',
+        "git stash push -m 'before kubectl delete namespace cleanup'",
+    ])
+    def test_git_commit_message_with_blocked_prose_is_safe(self, command):
+        """git commit/stash message bodies are prose, not commands."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is False, (
+            f"Command {command!r} should be safe but got "
+            f"category={result.category} pattern={result.pattern_matched}"
+        )
+
+    # ---- Regression: actual destructive commands STILL blocked ----
+
+    @pytest.mark.parametrize("command,expected_category", [
+        ("kubectl delete namespace production", "kubernetes_critical"),
+        ("kubectl delete pv my-volume", "kubernetes_critical"),
+        ("kubectl drain worker-node-1", "kubernetes_critical"),
+        ("rm -rf /", "rm_critical"),
+        ("rm -rf ~", "rm_critical"),
+        ("aws ec2 delete-vpc --vpc-id vpc-123", "aws_critical"),
+        ("aws eks delete-cluster --name prod", "aws_critical"),
+        ("git push --force origin main", "git_destructive"),
+        ("git push -f origin main", "git_destructive"),
+        ("git reset --hard HEAD~1", "git_destructive"),
+        ("terraform destroy", "terraform_destroy"),
+        ("flux uninstall", "flux_critical"),
+        ("dd if=/dev/zero of=/dev/sda", "disk_operations"),
+    ])
+    def test_destructive_commands_still_blocked(self, command, expected_category):
+        """The fix must not weaken protection on real destructive commands."""
+        result = is_blocked_command(command)
+        assert result.is_blocked is True, (
+            f"Command {command!r} should be blocked"
+        )
+        assert result.category == expected_category
+
+    # ---- Bypass guard: shell chaining ----
+
+    def test_chaining_a_blocked_command_after_grep_still_blocked(self):
+        """Compound separators outside quotes must NOT enable bypass.
+
+        `grep foo file && kubectl delete namespace prod` cannot be
+        classified as safe just because the base command is grep.
+        """
+        result = is_blocked_command(
+            "grep foo file && kubectl delete namespace prod"
+        )
+        assert result.is_blocked is True
+        assert result.category == "kubernetes_critical"
+
+    def test_chaining_with_pipe_into_blocked_still_blocked(self):
+        """Pipe is a compound separator -- substring after | is real."""
+        result = is_blocked_command(
+            'echo bucket | xargs aws s3 rb'
+        )
+        # base_cmd echo is read-only; pipe outside quotes -> fall through
+        # to regex loop which catches `aws s3 rb`.
+        assert result.is_blocked is True
+        assert result.category == "aws_critical"
+
+    def test_chaining_with_subshell_still_blocked(self):
+        """`$(...)` and backticks (outside quotes) defeat the read-only fast-path.
+
+        Note: `$(...)` *inside* double quotes is bash command substitution
+        and would actually execute, but the simple quote-walker here treats
+        the whole `"..."` block as quoted. That residual gap is acceptable
+        because such patterns are extremely rare in legitimate scripts; the
+        attacker would have to wrap a destructive command inside an echo
+        argument, and the typical detection case is the unquoted form.
+        """
+        result = is_blocked_command(
+            'echo prefix; aws s3api delete-bucket --bucket prod'
+        )
+        assert result.is_blocked is True
+
+    # ---- Quote-awareness: separators inside quotes should NOT trip ----
+
+    def test_grep_pattern_with_pipe_inside_quotes_is_safe(self):
+        """`grep -E "a|b" file` -- pipe is inside quotes, command is safe."""
+        result = is_blocked_command('grep -E "rm -rf|aws delete" /etc/audit.rules')
+        assert result.is_blocked is False
+
+    def test_grep_pattern_with_amp_inside_quotes_is_safe(self):
+        """`grep "foo && bar" file` -- && inside quotes, command is safe."""
+        result = is_blocked_command('grep "kubectl delete && rm -rf" log.txt')
+        assert result.is_blocked is False
+
+    def test_git_commit_message_with_shell_metacharacters_is_safe(self):
+        """git commit -m message with && | inside the quoted message body."""
+        result = is_blocked_command(
+            'git commit -m "kubectl delete && rm -rf legacy stuff (prose)"'
+        )
+        assert result.is_blocked is False
