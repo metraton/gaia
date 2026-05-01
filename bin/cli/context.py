@@ -2,8 +2,11 @@
 gaia context -- Display and refresh project context.
 
 Subcommands:
-  gaia context show [--section SECTION] [--json]   Display project-context.json
-  gaia context scan [--dry-run] [--json]            Run project scanner
+  gaia context show [--section SECTION] [--json]   Display project-context.json (legacy)
+  gaia context scan [--dry-run] [--json]            Run project scanner (legacy)
+  gaia context dump  [--workspace W]                Dump SQLite substrate as JSON (B1+)
+  gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
+  gaia context wipe  --workspace W [--yes]          Delete all rows for a workspace (CASCADE)
 """
 
 from __future__ import annotations
@@ -12,6 +15,12 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+
+# Ensure the gaia package (repo root) is importable regardless of cwd.
+# bin/cli/context.py -> bin/cli/ -> bin/ -> repo_root
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +230,117 @@ def _cmd_scan(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# B1+ SQLite substrate subcommands: dump / query / wipe
+# ---------------------------------------------------------------------------
+
+_SELECT_VERBS = {"select", "with", "explain", "pragma"}
+
+
+def _cmd_dump(args) -> int:
+    """Handle `gaia context dump [--workspace W]`.
+
+    Dumps the SQLite substrate as JSON for the given workspace.
+    Resolves the DB path via gaia.paths.db_path() (respects GAIA_DATA_DIR).
+    """
+    try:
+        from gaia.store.provider import get_context
+        from gaia.project import current as _project_current
+    except Exception as exc:  # pragma: no cover -- import wiring failure
+        print(f"gaia context dump: failed to import store: {exc}", file=sys.stderr)
+        return 1
+
+    workspace = getattr(args, "workspace", None) or _project_current()
+    try:
+        ctx = get_context(workspace)
+    except Exception as exc:
+        print(f"gaia context dump: error reading store: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(ctx, indent=2, default=str))
+    return 0
+
+
+def _cmd_query(args) -> int:
+    """Handle `gaia context query "<SQL>"`.
+
+    Executes a read-only SELECT (or EXPLAIN/PRAGMA/WITH) against the substrate.
+    Other verbs are rejected with a non-zero exit code.
+    """
+    sql = (getattr(args, "sql", "") or "").strip()
+    if not sql:
+        print("gaia context query: SQL string is required", file=sys.stderr)
+        return 2
+
+    head = sql.lstrip("(").lstrip().split(None, 1)[0].lower() if sql.lstrip("(").lstrip() else ""
+    if head not in _SELECT_VERBS:
+        print(
+            f"gaia context query: only read-only verbs allowed ({', '.join(sorted(_SELECT_VERBS))}); got {head!r}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from gaia.store.writer import _connect as _store_connect
+    except Exception as exc:
+        print(f"gaia context query: failed to import store: {exc}", file=sys.stderr)
+        return 1
+
+    con = _store_connect()
+    try:
+        try:
+            cur = con.execute(sql)
+        except Exception as exc:
+            print(f"gaia context query: SQL error: {exc}", file=sys.stderr)
+            return 1
+        rows = cur.fetchall()
+        # Print as JSON list of dicts for machine-readability
+        out = [dict(r) for r in rows]
+        print(json.dumps(out, indent=2, default=str))
+    finally:
+        con.close()
+    return 0
+
+
+def _cmd_wipe(args) -> int:
+    """Handle `gaia context wipe --workspace W [--yes]`.
+
+    Deletes all rows for the workspace (CASCADE removes children).
+    Requires interactive confirmation unless --yes is passed.
+    """
+    workspace = getattr(args, "workspace", None)
+    if not workspace:
+        print("gaia context wipe: --workspace is required", file=sys.stderr)
+        return 2
+
+    if not getattr(args, "yes", False):
+        try:
+            ans = input(
+                f"gaia context wipe: about to delete ALL rows for workspace {workspace!r}.\n"
+                f"Type 'yes' to confirm: "
+            )
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() != "yes":
+            print("Aborted (no confirmation).")
+            return 1
+
+    try:
+        from gaia.store.writer import wipe_project
+    except Exception as exc:
+        print(f"gaia context wipe: failed to import store: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        wipe_project(workspace)
+    except Exception as exc:
+        print(f"gaia context wipe: error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Wiped workspace: {workspace}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Plugin registration
 # ---------------------------------------------------------------------------
 
@@ -264,6 +384,47 @@ def register(subparsers) -> None:
         help="Output as JSON",
     )
 
+    # gaia context dump  (B1+ SQLite substrate)
+    dump_parser = ctx_subparsers.add_parser(
+        "dump",
+        help="Dump the SQLite substrate as JSON for a workspace",
+    )
+    dump_parser.add_argument(
+        "--workspace",
+        metavar="W",
+        default=None,
+        help="Workspace identity (default: gaia.project.current())",
+    )
+
+    # gaia context query "<SQL>"
+    query_parser = ctx_subparsers.add_parser(
+        "query",
+        help="Run a read-only SELECT against the SQLite substrate",
+    )
+    query_parser.add_argument(
+        "sql",
+        metavar="SQL",
+        help="SELECT/EXPLAIN/PRAGMA/WITH statement to execute",
+    )
+
+    # gaia context wipe --workspace W
+    wipe_parser = ctx_subparsers.add_parser(
+        "wipe",
+        help="Delete all rows for a workspace (CASCADE)",
+    )
+    wipe_parser.add_argument(
+        "--workspace",
+        metavar="W",
+        required=True,
+        help="Workspace identity to wipe",
+    )
+    wipe_parser.add_argument(
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Skip interactive confirmation",
+    )
+
 
 def cmd_context(args) -> int:
     """Dispatch handler for `gaia context`."""
@@ -272,6 +433,12 @@ def cmd_context(args) -> int:
         return _cmd_show(args)
     if context_cmd == "scan":
         return _cmd_scan(args)
+    if context_cmd == "dump":
+        return _cmd_dump(args)
+    if context_cmd == "query":
+        return _cmd_query(args)
+    if context_cmd == "wipe":
+        return _cmd_wipe(args)
 
     # No sub-action: print help for the context subcommand
     import argparse
@@ -281,5 +448,10 @@ def cmd_context(args) -> int:
     show_p = tmp_sub.add_parser("show", help="Display project-context.json")
     show_p.add_argument("--section", metavar="SECTION")
     tmp_sub.add_parser("scan", help="Run project scanner").add_argument("--dry-run", action="store_true")
+    tmp_sub.add_parser("dump", help="Dump SQLite substrate").add_argument("--workspace", metavar="W")
+    tmp_sub.add_parser("query", help="Read-only SELECT").add_argument("sql", metavar="SQL")
+    wipe_p = tmp_sub.add_parser("wipe", help="Delete all rows for a workspace")
+    wipe_p.add_argument("--workspace", metavar="W", required=True)
+    wipe_p.add_argument("--yes", action="store_true")
     tmp_parser.print_help()
     return 0
