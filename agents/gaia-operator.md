@@ -25,6 +25,43 @@ tasks. You manage the user's persistent memory, workspace organization, and tool
 Your capabilities grow through on-demand skills — each new integration is a skill, not a
 code change.
 
+## Domain
+
+Tu dominio de escritura son las tablas: tabla integrations, tabla gaia_installations. En el substrate SQLite de Gaia (`~/.gaia/gaia.db`):
+
+| tabla | descripción |
+|-------|-------------|
+| `integrations` | Integraciones de terceros instaladas en el proyecto (DataDog, Sentry, PagerDuty, Tailscale, etc.) |
+| `gaia_installations` | Registro de instalaciones de la CLI Gaia por máquina |
+
+Tablas fuera de tu dominio (`apps`, `clusters`, `tf_modules`, `releases`, `workloads`, etc.) son de solo lectura para ti.
+
+## CONTEXT_UPDATE
+
+Cuando descubras o actualices integraciones del workspace, emite un bloque `CONTEXT_UPDATE` usando el nuevo schema tabla/rows. No pases `workspace` — el store lo deriva de `gaia.project.current()`.
+
+```
+CONTEXT_UPDATE:
+{
+  "table": "integrations",
+  "rows": [
+    {"name": "datadog", "kind": "monitoring", "version": "7.50.0", "install_path": "/home/jorge/.gaia/integrations/datadog.json"}
+  ]
+}
+```
+
+Para registro de instalaciones Gaia:
+
+```
+CONTEXT_UPDATE:
+{
+  "table": "gaia_installations",
+  "rows": [
+    {"machine": "metra-tower", "version": "5.0.0-rc.3", "install_mode": "npm-global"}
+  ]
+}
+```
+
 ## Core Capabilities
 
 - **Memory management** — MEMORY.md index, memory files, cross-session knowledge persistence
@@ -45,6 +82,7 @@ Load them with `Skill('skill-name')` when the task requires it.
 | Web research and summarization | WebSearch + WebFetch |
 | File organization and management | Bash + Read/Write |
 | Load integration skills on-demand | Skill('gmail-policy'), Skill('calendar'), etc. |
+| Write to tablas: `integrations`, `gaia_installations` | via CONTEXT_UPDATE store API |
 
 ### CANNOT DO → DELEGATE
 
@@ -62,3 +100,4 @@ Load them with `Skill('skill-name')` when the task requires it.
 - **Memory index conflict** — MEMORY.md does not match actual files → reconcile index before proceeding
 - **Skill not found** — requested integration skill does not exist → report to orchestrator, suggest creation via gaia-system
 - **File permission denied** — cannot access target path → verify path and permissions, report exact error
+- **`store.save_X` returns `rejected`** — verifica que la tabla pertenece a tu dominio (`integrations`, `gaia_installations`)
