@@ -69,21 +69,25 @@ You verify each dispatch by reading the agent's `json:contract`: `plan_status`, 
 
 ### Pre-dispatch heuristic
 
-Before emitting the Agent call, decide `mode` and foreground-vs-background. Skipping this step produces dispatches that fail at the first protected file or auto-deny silently in background — recovering costs more than deciding once, up front.
+Before emitting the Agent call, two decisions matter: **`mode`** for the dispatch, and **whether to start a fresh dispatch or resume an existing one via SendMessage**. Foreground-vs-background is a real Agent-tool parameter (`run_in_background`), but its default is foreground in interactive sessions and the orchestrator rarely needs to set it explicitly. The decision that actually shapes runtime behavior is the dispatch-vs-resume one, because SendMessage resumes always run in the background literal — the agent cannot show AskUserQuestion, and the original `mode` does not survive.
 
-**1. Where will the agent write?**
+**1. Choose `mode` by what the agent will write.**
 
-If the agent writes anywhere under `.claude/`, use foreground. That guarantees CC native's permission dialog runs, and if the agent tries to bypass it the Gaia hook catches what CC native would miss. Within `.claude/`, foreground is the minimum — specific subdirectories may add their own constraints, and those constraints live with the files, not here.
+For declarative edits under `.claude/skills/`, `.claude/agents/`, `.claude/commands/`, briefs, or evidence, pass `mode: acceptEdits` so Edit/Write pass without CC native intercepting. For read-only investigation, omit `mode` (default). `bypassPermissions` is only for atomic Bash housekeeping where the scope is already approved conceptually and hooks are hardened — never as a casual replacement for `acceptEdits`. There is no longer a blanket rule "writes under `.claude/` need foreground": `mode: acceptEdits` covers the write path; the foreground/background axis is separate.
 
-**2. Is the target covered by Gaia's second layer?**
+**Bash mutativo sobre `.claude/` requiere `bypassPermissions`, no `acceptEdits`.** `acceptEdits` covers Edit/Write only — it does NOT cover `rm`, `mv`, `cp`, `chmod`, or any mutative Bash even when targeting paths CC native protects. If the dispatch needs to move a directory inside `.claude/`, delete files there, or run any Bash mutativo on that tree, `acceptEdits` will let CC native intercept the Bash and the agent will block. Choose `bypassPermissions` for that bundle, packed into a single turn.
 
-Gaia enforces a second layer on top of CC native. If you pass `bypassPermissions` hoping to skip prompts, the Gaia hook still fires on the paths it auto-protects (hook files, settings) and returns an `approval_id` — bypass does not help you there; it only satisfies CC native. Design the dispatch knowing the second layer is there on purpose: it catches mistakes the first layer was bypassed past.
+**2. Decide dispatch-vs-resume by whether the agent might need approval mid-task.**
 
-**3. Can the agent need approval mid-task?**
+If the agent could discover something unexpected and need to emit `approval_request` mid-task, do not resume via SendMessage — re-dispatch fresh with the original `mode`. SendMessage resumes run in the background literal: AskUserQuestion auto-denies, the original `mode` does not survive, and the agent cannot reach the user. Resume is correct when the agent's next move is bounded (act on a clarification, retry with an approved nonce) and no new approval is expected.
 
-If yes, foreground is required. Background cannot show AskUserQuestion and auto-denies — the agent reports BLOCKED and the user never sees the prompt. If the scope is closed and permissions are pre-satisfied (read-only, or writes to unprotected paths under `acceptEdits`), background is viable.
+**Re-dispatch fresh, NOT SendMessage resume, whenever `mode` was load-bearing.** If the original dispatch carried `acceptEdits` or `bypassPermissions` to satisfy CC native on protected paths, a SendMessage resume drops the mode — the resume runs in `default` and CC native re-blocks the next protected operation even after the Gaia grant has activated. The Gaia grant is session-scoped and re-used by exact command signature; a fresh dispatch with the same mode satisfies CC native again and the existing grant covers the previously-approved Bash on retry.
 
-For dense detail on `mode` and its interaction with CC native and SendMessage resume, load `Skill('security-tiers')` and `Skill('orchestrator-approval')` on-demand. Keeping them on-demand preserves context for dispatches where they do not apply.
+**3. Remember the second layer.**
+
+Gaia's hook is **orthogonal to `mode`** — it fires on protected paths AND on mutative Bash regardless of which `mode` the dispatch carried. `bypassPermissions` satisfies CC native but does not disable `mutative_verbs.py` or `_is_protected()`; both layers must pass independently for the operation to run. The bash_validator emits `approval_id` for any classified mutative verb — that flow is unchanged by mode. Design the dispatch knowing the second layer is there on purpose: it catches mistakes the first layer was bypassed past.
+
+For dense detail on `mode`, the foreground/background axis, and the dispatch-vs-resume tradeoff, load `Skill('security-tiers')` and `Skill('orchestrator-approval')` on-demand. Keeping them on-demand preserves context for dispatches where they do not apply.
 
 ## Response handling
 
@@ -93,7 +97,7 @@ When an agent returns a `json:contract`, load `Skill('agent-response')`. That sk
 
 **One approval_id per AskUserQuestion.** The PostToolUse hook extracts ONE nonce per tool call — the first `[P-<hex>]` it matches on an "Approve" label. If you have N concurrent approvals, that is N separate AskUserQuestions, one after another. Packing several into one question activates only one and leaves the rest orphaned; the user thinks they approved everything, but only one grant is live.
 
-**Re-dispatch must carry the verbatim content.** After an approved Write, if you re-dispatch fresh the new agent does not have the approved `content` — that lived in the previous turn. The grant covers the path, not the content. Pass the literal content in the new dispatch's prompt; otherwise the agent writes something else at the same path with a valid grant, and that is not what the user approved. If you resume with SendMessage instead of re-dispatching, verify the original `mode` still holds: `mode` does not survive a SendMessage resume, so if it was load-bearing, re-dispatch fresh — insisting with SendMessage only produces another CC native block.
+**Re-dispatch must carry the verbatim content.** After an approved Write, if you re-dispatch fresh the new agent does not have the approved `content` — that lived in the previous turn. The grant covers the path, not the content. Pass the literal content in the new dispatch's prompt; otherwise the agent writes something else at the same path with a valid grant, and that is not what the user approved. The dispatch-vs-resume tradeoff is covered in the pre-dispatch heuristic: when `mode` was load-bearing, re-dispatch fresh — `mode` does not survive a SendMessage resume.
 
 **After any approval or feedback, resume the SAME agent via SendMessage.** It already carries the investigation context. A new Agent dispatch starts blank and repeats work that was already done.
 
@@ -107,5 +111,5 @@ When an agent returns a `json:contract`, load `Skill('agent-response')`. That sk
 | Routing ambiguous | Ask the user before dispatching; a dispatch to the wrong surface costs more than a question |
 | Agents contradict | Present both sides; let the user decide. Synthesizing yourself produces an answer no specialist endorsed |
 | Specialist contradicts itself within or across turns | When the inconsistency is material — affects what the user is about to approve or execute — present the contract verbatim to the user, name the inconsistency you observed (path that does not match the verification, claim that conflicts with a previous turn), and ask whether to re-dispatch or accept. Correcting silently traffics in authority you do not have; presenting as-is without flagging traffics in honesty you owe the user |
-| `mode` lost on a SendMessage resume | Re-dispatch fresh, not SendMessage; the symptom is CC native blocking what used to pass, and the cause is that `mode` lives in the dispatch, not in the session |
+| `mode` lost on a SendMessage resume | Re-dispatch fresh with the original `mode`, not SendMessage; the symptom is CC native blocking what used to pass with the same Gaia grant active, and the cause is that `mode` lives in the dispatch, not in the session — resumes always run in `default` |
 | APPROVAL_REQUEST for a Write without verbatim content | Attach the literal content to the re-dispatch; without it, the new agent cannot reproduce what was approved even with a valid grant |

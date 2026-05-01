@@ -66,13 +66,20 @@ When approved, will execute:
 **Git changes:**
 - Added: `[terraform_vpc_path]/terragrunt.hcl`
 - Added: `[terraform_vpc_path]/main.tf`
+```
 
-## Approval Required
+The corresponding `approval_request` object inside the agent's `json:contract`:
 
-**Approval Code:** `NONCE:<hex from hook block response>`
-**Operation:** terragrunt apply
-**Environment:** prod
-**Risk Level:** MEDIUM
+```json
+"approval_request": {
+  "operation": "Apply Terraform changes -- production VPC",
+  "exact_content": "terragrunt apply -auto-approve --terragrunt-working-dir \"/abs/path/to/terraform/vpc\"",
+  "scope": "google_compute_network.prod-network + 3 subnetworks in us-east4 (prod project)",
+  "risk_level": "MEDIUM",
+  "rollback": "terragrunt destroy --terragrunt-working-dir \"/abs/path/to/terraform/vpc\"",
+  "verification": "gcloud compute networks describe prod-network -> status: ACTIVE; subnets list -> 3",
+  "approval_id": "<hex from hook deny response, when blocked>"
+}
 ```
 
 ## Example 2: GitOps Deployment
@@ -130,11 +137,71 @@ When approved, will execute:
 
 **Git changes:**
 - Modified: `gitops/clusters/prod-digital-eks/common/graphql-server.yaml`
-
-## Approval Required
-
-**Approval Code:** `NONCE:<hex from hook block response>`
-**Operation:** git push + flux reconcile
-**Environment:** prod
-**Risk Level:** LOW
 ```
+
+The corresponding `approval_request` object inside the agent's `json:contract`:
+
+```json
+"approval_request": {
+  "operation": "Push graphql-server v1.0.180 + Flux reconcile",
+  "exact_content": "git push origin main",
+  "scope": "gitops/clusters/prod-digital-eks/common/graphql-server.yaml -- prod cluster",
+  "risk_level": "LOW",
+  "rollback": "git revert HEAD && git push origin main",
+  "verification": "kubectl get hr graphql-server -n common -- READY=True, revision contains v1.0.180",
+  "approval_id": "<hex from hook deny response, when blocked>"
+}
+```
+
+## Example 3: Batch (verb-family) approval -- many commands, one grant
+
+Use this when one user intent expands into many commands sharing the same base
+CLI and verb. Without `batch_scope`, every command after the first generates a
+fresh nonce and is re-blocked.
+
+```markdown
+## Gmail Archive Batch Plan
+
+### Summary
+- Archive 500 messages currently in INBOX matching label "older-than-90d"
+- Each call modifies one message; the verb is `modify` for all 500
+- No deletion -- messages move to Archive, recoverable via removeLabelIds
+
+### Changes Proposed
+- 500 calls to `gws gmail users messages modify --addLabelIds Archive`
+- Each call differs only by `messageId=<id>`
+
+### Validation Results
+- `gws gmail users messages list --query "label:older-than-90d"` -> 500 message IDs collected
+- Dry-run on first message -> succeeds, label applied
+
+### Risk Assessment
+- Risk level: MEDIUM -- bulk label modification, reversible
+- Rollback: re-run with `--removeLabelIds Archive` over the same 500 IDs
+- Verification: `gws gmail users messages list --labelIds Archive | wc -l` increases by 500
+```
+
+The corresponding `approval_request` object inside the agent's `json:contract`:
+
+```json
+"approval_request": {
+  "operation": "Archive 500 Gmail messages older than 90d -- add Archive label",
+  "exact_content": "gws gmail users messages modify --addLabelIds Archive userId=me messageId=<each of 500>",
+  "scope": "All `gws ... modify` calls for the next 10 minutes (verb-family grant)",
+  "risk_level": "MEDIUM",
+  "rollback": "gws gmail users messages modify --removeLabelIds Archive over the same 500 IDs",
+  "verification": "gws gmail users messages list --labelIds Archive shows +500",
+  "batch_scope": "verb_family",
+  "approval_id": "<hex from hook deny response, when blocked>"
+}
+```
+
+The orchestrator presents this with options including `"Approve batch -- archive
+500 Gmail messages [P-{nonce_prefix8}]"` and `"Approve single -- {first_command}
+[P-{nonce_prefix8}]"`. On batch approval, the runtime creates a multi-use grant
+covering all `gws ... modify` calls for 10 minutes; the agent runs all 500
+without re-blocking.
+
+If the agent later needs a different verb on the same CLI (e.g., `gws ... delete`
+to clean up matching threads), that is a different verb-family and requires its
+own approval -- the modify batch grant does NOT cover it.

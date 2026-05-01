@@ -172,3 +172,73 @@ Grants are matched by **semantic signature**: `base_cmd + verb + normalized argu
 ```
 
 If the correct target has changed since the approval (e.g., the file that was blocked no longer exists and a different file needs to be deleted), present a new approval for the new command -- do not resume with modified instructions.
+
+## Dispatch mode checklist
+
+Before dispatching a subagent, run through this checklist:
+
+**When to pass `mode: acceptEdits`:**
+- Dispatch edits briefs, plans, or evidence files (`.claude/project-context/**`)
+- Dispatch edits skills, agents, or commands (`.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**`)
+- Dispatch writes any file under `.claude/` that is NOT hooks/ or settings files
+
+**When NOT to use `acceptEdits`:**
+- Dispatch requires mutative Bash (acceptEdits does not cover Bash -- Gaia T3 flow still fires; see `security-tiers/SKILL.md` -> R1, R2)
+- Dispatch is exploratory/read-only (use `default` or omit mode)
+- Dispatch touches `.claude/hooks/` or `settings.json` -- Gaia blocks these regardless of mode
+
+**foreground vs background:**
+
+The Agent tool exposes this as the `run_in_background` parameter. **Default is foreground in interactive sessions, and the orchestrator rarely needs to set it explicitly** -- almost every Agent dispatch runs with `run_in_background=None` (foreground). Setting `run_in_background: false` explicitly is defensive, raramente necesario. The decision that actually shapes runtime behavior is dispatch-vs-resume (see "Re-dispatch instead of resume" in SKILL.md), because SendMessage resumes always run in the background literal regardless of how the original was dispatched. See `security-tiers/SKILL.md` -> R3, R4.
+
+- **foreground (default)**: AskUserQuestion can display; the agent can emit `approval_request` mid-task and reach the user.
+- **background**: AskUserQuestion auto-denies; only dispatch background when the scope is bounded and no approval is expected mid-task. In practice this is rare -- the orchestrator's normal pattern is foreground.
+
+**The mode is not inherited.** If you run with `acceptEdits`, your subagents still receive `default` unless you pass `mode: acceptEdits` explicitly in the dispatch. Set it per dispatch, not once per session.
+
+| Dispatch type | mode to pass | session |
+|--------------|-------------|---------|
+| Reads only (investigate, report) | omit (default) | foreground (default) |
+| Edits `.claude/skills/`, briefs, evidence | `acceptEdits` | foreground (default) |
+| T3 where approval may be needed mid-task | `default` or `acceptEdits` | **foreground** |
+| T3 with bounded scope, pre-satisfied permissions | `acceptEdits` or `bypassPermissions` | foreground or background |
+| Edits `.claude/hooks/` or settings | never dispatch directly | n/a -- requires Gaia approval flow |
+
+## Dispatch mode decision -- checklist pre-dispatch
+
+Antes de cada dispatch del Agent tool, recorre este árbol. Si algún paso produce ambigüedad, detente y pregunta al usuario.
+
+**1. ¿El goal es read-only o escribe?**
+- Read-only -> `default` (o `acceptEdits` si necesita escribir evidence)
+- Escribe -> paso 2
+
+**2. ¿Dónde escribe?**
+- Solo archivos declarativos (`.md`, `.yaml`, `.json` bajo `.claude/` o `gaia-ops-dev/`) -> `acceptEdits`
+- Código runtime (`.py` bajo `hooks/`, `bin/`, `agents/`) -> `acceptEdits` + aceptar grants Bash file-scoped esperados
+- Paths protegidos (`.git`, `.vscode`, `.husky`, `.claude/hooks/`, `settings.json`) -> `default` + prompt explícito; nunca bypass
+
+**3. ¿Requiere Bash mutativo (mv, rm, mkdir)?**
+- Atómico, scope enumerado, user-approved conceptualmente, hooks hardened -> `bypassPermissions`
+- Multi-step / multi-file PURO Edit/Write (sin Bash mutativo) -> `acceptEdits` (acepta fricción file-scoped; NO bypass: pierde audit per-file porque background pre-aprueba el bundle entero)
+- Bundle mixto: Bash mutativo (mv/rm) SOBRE `.claude/` + Edits SOBRE `.claude/` -> `bypassPermissions` + foreground + **empaquetar todos los steps en un solo turno** (ver Rule 4 y "Re-dispatch instead of resume" en SKILL.md). `acceptEdits` no alcanza porque no cubre el mv (R1); split en turnos pierde el mode en el SendMessage resume (R3).
+
+**4. ¿Puede emitir `approval_request` mid-task?**
+- Sí (scope puede evolucionar, T3 esperados) -> foreground
+- No (scope cerrado, permisos pre-satisfechos) -> background + mode que pre-satisfaga permisos
+
+**5. ¿El goal enumera el scope concreto?**
+- No -> DETÉN y pregunta al usuario antes del dispatch. No elegir mode sobre scope vago.
+- Sí -> continúa con la combinación decidida.
+
+Cross-reference: para qué hace cada mode y las 4 reglas runtime, ver `security-tiers/SKILL.md` -> "Mode runtime rules" y "permissionMode comparison".
+
+### Ejemplos concretos
+
+| Goal | mode | session | Razón |
+|------|------|---------|-------|
+| Editar brief.md o plan.md | `acceptEdits` | background | Declarativo, scope cerrado, no requiere prompts mid-task |
+| Mover directorio de brief al cerrar (`open_X` -> `closed_X`) | `bypassPermissions` | foreground | Atómico, scope aprobado, hardened bash_validator; foreground porque puede descubrir conflicto de nombre |
+| Split de enum en 3 archivos Python runtime | `acceptEdits` | background | Grants file-scoped esperados per-file -- fricción intencional para audit |
+| Bulk reject de pendings via CLI | `acceptEdits` | foreground | CLI maneja inline; foreground por si requiere confirmación mid-loop |
+| Investigation read-only con evidence write | `default` al leer, `acceptEdits` al escribir evidence | foreground | Dos dispatches distintos con modes distintos; no heredar entre ellos |
+
