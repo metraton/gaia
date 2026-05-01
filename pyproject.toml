@@ -25,6 +25,9 @@ select = ["E", "F", "W", "I"]
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.setuptools.packages.find]
+include = ["gaia*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "tools/scan/tests"]
 markers = [
