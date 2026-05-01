@@ -141,7 +141,7 @@ When a hook blocks a T3 command, it writes a pending approval and returns an `ap
 
 ## Scope Mismatch -- The Common Re-block Trap
 
-Grants are matched by **semantic signature**: `base_cmd + verb + normalized arguments`. Two commands with the same verb but different path arguments are different signatures and do NOT share a grant.
+Grants are matched by **semantic signature** per shell statement: `base_cmd + verb + normalized arguments`, where each statement separated by `;`, `&&`, or `||` is classified independently. Two statements with the same verb but different path arguments — whether across separate Bash calls or chained within a single `exact_content` — are different signatures and do NOT share a grant; for chains of N same-verb statements, `batch_scope: "verb_family"` is the cure.
 
 **Example of the trap:**
 
