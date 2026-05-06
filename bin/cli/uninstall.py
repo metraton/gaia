@@ -7,8 +7,8 @@ Wraps the workspace-level cleanup performed by `gaia cleanup` and adds:
   * dry-run reporting
 
 Default behaviour is CONSERVATIVE: the user database in ~/.gaia/gaia.db is
-preserved unless --purge is passed explicitly. Memory, episodes, notes, and
-any persisted state survive an accidental `npm uninstall`.
+preserved unless --purge is passed explicitly. Memory, episodes, and any
+persisted state survive an accidental `npm uninstall`.
 
 Modes:
   --preuninstall      Tone output for npm preuninstall hook (still exits 0)

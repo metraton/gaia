@@ -42,13 +42,13 @@ run_check() {
 ACTUAL_V1="$(sqlite_count "SELECT COUNT(*) FROM episodes WHERE project='${PROJECT}';")"
 run_check "V1 episodes" "${EXPECTED_V1}" "${ACTUAL_V1}"
 
-# V2: notes count == 28 (archivos .md sin contar MEMORY.md)
-ACTUAL_V2="$(sqlite_count "SELECT COUNT(*) FROM notes WHERE project='${PROJECT}';")"
-run_check "V2 notes" "${EXPECTED_V2}" "${ACTUAL_V2}"
+# V2: memory count == 28 (archivos .md sin contar MEMORY.md)
+ACTUAL_V2="$(sqlite_count "SELECT COUNT(*) FROM memory WHERE project='${PROJECT}';")"
+run_check "V2 memory" "${EXPECTED_V2}" "${ACTUAL_V2}"
 
-# V3: context_sections count == 12
-ACTUAL_V3="$(sqlite_count "SELECT COUNT(*) FROM context_sections WHERE project='${PROJECT}';")"
-run_check "V3 context_sections" "${EXPECTED_V3}" "${ACTUAL_V3}"
+# V3: context_contracts count == 12
+ACTUAL_V3="$(sqlite_count "SELECT COUNT(*) FROM context_contracts WHERE project='${PROJECT}';")"
+run_check "V3 context_contracts" "${EXPECTED_V3}" "${ACTUAL_V3}"
 
 # V4: harness_events count == líneas de events.jsonl
 ACTUAL_V4="$(sqlite_count "SELECT COUNT(*) FROM harness_events WHERE project='${PROJECT}';")"

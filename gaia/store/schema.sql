@@ -506,10 +506,10 @@ END;
 -- ===========================================================================
 -- === Local data migration tables (added 2026-05-05) ===
 -- Tables to absorb local data from the `me` workspace into Gaia substrate:
---   * episodes:        episodic memory (one row per task/turn outcome)
---   * notes:           curated memory (project_*, user_*, feedback_* notes)
---   * context_sections: project-context.json reconstructed as rows
---   * harness_events:  append-only events.jsonl mirror
+--   * episodes:         episodic memory (one row per task/turn outcome)
+--   * memory:           curated memory (project_*, user_*, feedback_* notes)
+--   * context_contracts: project-context.json reconstructed as rows
+--   * harness_events:   append-only events.jsonl mirror
 -- All tables segmented by `project` (FK -> projects.name) following the
 -- workspace-container pattern of the existing schema.
 -- ===========================================================================
@@ -580,10 +580,10 @@ CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
--- notes: curated memory documents (project_*, user_*, feedback_* markdown notes)
+-- memory: curated memory documents (project_*, user_*, feedback_* markdown notes)
 -- agent-owned: written by memory-curation flows; PK (project, name).
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS notes (
+CREATE TABLE IF NOT EXISTS memory (
     project           TEXT NOT NULL,  -- FK -> projects.name
     name              TEXT NOT NULL,  -- e.g. 'project_gaia_v5', 'user_jorge', 'feedback_release_learnings'
     type              TEXT NOT NULL CHECK (type IN ('project', 'user', 'feedback')),
@@ -595,45 +595,45 @@ CREATE TABLE IF NOT EXISTS notes (
     FOREIGN KEY (project) REFERENCES projects(name) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project);
-CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
+CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project);
+CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
 
 -- ---------------------------------------------------------------------------
--- FTS5 mirror for notes (description / body)
--- Notes carry significant curated text and are searched alongside episodes;
--- consistent with the policy of FTS for every text-bearing core table.
+-- FTS5 mirror for memory (description / body)
+-- Memory rows carry significant curated text and are searched alongside
+-- episodes; consistent with the policy of FTS for every text-bearing core table.
 -- ---------------------------------------------------------------------------
-CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     project UNINDEXED,
     name UNINDEXED,
     description,
     body,
-    content='notes',
+    content='memory',
     content_rowid='rowid'
 );
 
-CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-    INSERT INTO notes_fts(rowid, project, name, description, body)
+CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN
+    INSERT INTO memory_fts(rowid, project, name, description, body)
     VALUES (new.rowid, new.project, new.name, new.description, new.body);
 END;
 
-CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, project, name, description, body)
+CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, project, name, description, body)
     VALUES ('delete', old.rowid, old.project, old.name, old.description, old.body);
 END;
 
-CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, project, name, description, body)
+CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, project, name, description, body)
     VALUES ('delete', old.rowid, old.project, old.name, old.description, old.body);
-    INSERT INTO notes_fts(rowid, project, name, description, body)
+    INSERT INTO memory_fts(rowid, project, name, description, body)
     VALUES (new.rowid, new.project, new.name, new.description, new.body);
 END;
 
 -- ---------------------------------------------------------------------------
--- context_sections: project-context.json reconstructed as (project, section) rows
+-- context_contracts: project-context.json reconstructed as (project, section) rows
 -- Each row is one named section payload (e.g. architecture_overview, stack).
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS context_sections (
+CREATE TABLE IF NOT EXISTS context_contracts (
     project      TEXT NOT NULL,  -- FK -> projects.name
     section_name TEXT NOT NULL,  -- e.g. 'architecture_overview', 'operational_guidelines', 'stack'
     payload      TEXT NOT NULL,  -- JSON object as text
@@ -643,7 +643,7 @@ CREATE TABLE IF NOT EXISTS context_sections (
     FOREIGN KEY (project) REFERENCES projects(name) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_context_sections_project ON context_sections(project);
+CREATE INDEX IF NOT EXISTS idx_context_contracts_project ON context_contracts(project);
 
 -- ---------------------------------------------------------------------------
 -- harness_events: append-only mirror of events.jsonl
