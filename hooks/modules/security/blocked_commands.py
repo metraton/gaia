@@ -18,7 +18,6 @@ Categories:
 - Docker bulk prune operations
 - Flux uninstall (removes all Flux components)
 - Git force push operations (not --force-with-lease)
-- Git reset --hard
 - GitHub/GitLab repo delete
 - npm unpublish (entire package)
 - SQL destructive operations (drop database, drop table)
@@ -255,11 +254,15 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"flux\s+uninstall\b", re.IGNORECASE),
     ],
 
-    # Git - Force push (history rewrite, not --force-with-lease) and reset --hard
+    # Git - Force push (history rewrite, not --force-with-lease).
+    # NOTE: ``git reset --hard`` is intentionally NOT in this category.  It is
+    # routed through the T3 approval flow (mutative_verbs.py) so the user can
+    # confirm or decline it interactively.  See the rationale in
+    # ``mutative_verbs.GIT_HARD_RESET_FLAGS`` and the test
+    # ``test_git_reset_hard_is_t3_approvable`` for the contract.
     "git_destructive": [
         re.compile(r"git\s+push\s+.*--force(?!-with-lease)", re.IGNORECASE),
         re.compile(r"git\s+push\s+.*(?<!\w)-f\b", re.IGNORECASE),
-        re.compile(r"git\s+reset\s+.*--hard\b", re.IGNORECASE),
     ],
 
     # GitHub/GitLab - Repo deletion
@@ -385,7 +388,6 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     # Git suggestions
     "git push --force": "[BLOCKED] Force push rewrites history - use git push --force-with-lease",
     "git push -f": "[BLOCKED] Force push rewrites history - use git push --force-with-lease",
-    "git reset --hard": "[BLOCKED] git reset --hard permanently discards uncommitted changes",
 
     # GitHub/GitLab suggestions
     "gh repo delete": "[BLOCKED] Repository deletion is irreversible - destroys all code and history",
@@ -556,9 +558,10 @@ SEMANTIC_BLOCKED_RULES = (
     SemanticBlockedRule("flux_critical", ("flux", "uninstall"), "flux uninstall"),
 
     # Git
+    # NOTE: ``git reset --hard`` is approvable (T3) -- see git_destructive
+    # comment above and ``mutative_verbs.GIT_HARD_RESET_FLAGS``.
     SemanticBlockedRule("git_destructive", ("git", "push"), "git push --force", required_flags=("--force",)),
     SemanticBlockedRule("git_destructive", ("git", "push"), "git push -f", required_flags=("-f",)),
-    SemanticBlockedRule("git_destructive", ("git", "reset"), "git reset --hard", required_flags=("--hard",)),
 
     # GitHub/GitLab
     SemanticBlockedRule("repo_delete", ("gh", "repo", "delete"), "gh repo delete"),

@@ -206,16 +206,41 @@ class TestGitDestructiveBlockedCommands:
         result = is_blocked_command("git push --force-with-lease origin main")
         assert result.is_blocked is False
 
-    def test_git_reset_hard_blocked(self):
-        """Test git reset --hard is blocked."""
+    def test_git_reset_hard_is_t3_approvable(self):
+        """``git reset --hard`` is T3-approvable, NOT permanently blocked.
+
+        Contract change (rediseño bash_validator): destructive but reversible
+        via ``git reflog``, so the user can opt-in via the approval workflow
+        instead of being denied outright.  ``git push --force`` remains
+        permanently blocked because remote history rewrites are not
+        recoverable from the local reflog.
+        """
         result = is_blocked_command("git reset --hard HEAD~1")
-        assert result.is_blocked is True
-        assert result.category == "git_destructive"
+        assert result.is_blocked is False, (
+            "git reset --hard must NOT appear in the permanent blocklist; "
+            "it is approvable via the T3 nonce flow"
+        )
 
     def test_git_reset_soft_not_blocked(self):
         """Test git reset --soft is NOT blocked."""
         result = is_blocked_command("git reset --soft HEAD~1")
         assert result.is_blocked is False
+
+    def test_git_reset_default_not_blocked(self):
+        """Plain ``git reset`` (default --mixed) must not be blocked."""
+        result = is_blocked_command("git reset HEAD~1")
+        assert result.is_blocked is False
+
+    def test_git_reset_mixed_not_blocked(self):
+        """``git reset --mixed`` only resets the index, must not be blocked."""
+        result = is_blocked_command("git reset --mixed HEAD~1")
+        assert result.is_blocked is False
+
+    def test_git_push_force_still_blocked(self):
+        """Sanity check: removing git reset from blocklist did not affect push."""
+        result = is_blocked_command("git push --force origin main")
+        assert result.is_blocked is True
+        assert result.category == "git_destructive"
 
 
 class TestBlockedCommandVariants:
@@ -634,7 +659,6 @@ class TestBlockedCommandsFalsePositiveFix:
         ("aws eks delete-cluster --name prod", "aws_critical"),
         ("git push --force origin main", "git_destructive"),
         ("git push -f origin main", "git_destructive"),
-        ("git reset --hard HEAD~1", "git_destructive"),
         ("terraform destroy", "terraform_destroy"),
         ("flux uninstall", "flux_critical"),
         ("dd if=/dev/zero of=/dev/sda", "disk_operations"),

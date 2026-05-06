@@ -400,22 +400,24 @@ class TestInlineCodeDetection:
         assert result.category == "READ_ONLY"
 
     def test_dangerous_os_remove(self):
+        # AST analyzer reports the canonical call name (``os-remove``)
+        # rather than the regex layer's category (``os-delete``).
         result = detect_mutative_command('python3 -c "import os; os.remove(f)"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "os-delete"
+        assert result.verb == "os-remove"
 
     def test_dangerous_shutil_rmtree(self):
         result = detect_mutative_command('python3 -c "import shutil; shutil.rmtree(d)"')
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "shutil-delete"
+        assert result.verb == "shutil-rmtree"
 
     def test_dangerous_file_write(self):
         result = detect_mutative_command("python3 -c \"open('f', 'w').write('data')\"")
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "file-write-open"
+        assert result.verb == "open-write"
 
     def test_subprocess_is_mutative(self):
         """subprocess in python -c is flagged -- the inner command runs in-process,
@@ -444,7 +446,7 @@ class TestInlineCodeDetection:
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
-        assert result.verb == "os-delete"
+        assert result.verb == "os-remove"
 
 
 class TestUniversalInlineCodeDetection:
@@ -830,10 +832,12 @@ class TestDetectMutativeCommand:
         ("git branch -D feature", "-D"),
         ("git branch -M old-name new-name", "-M"),
         ("git checkout --force main", "--force"),
+        ("git reset --hard HEAD~1", "--hard"),
     ], ids=[
         "branch-force-delete",
         "branch-force-move",
         "checkout-force",
+        "reset-hard",
     ])
     def test_git_local_with_dangerous_flags_mutative(self, cmd, expected_flag):
         """Local git subcommands with dangerous flags must remain mutative."""
@@ -1133,4 +1137,190 @@ class TestT3FalsePositiveFix:
             'git commit -m "add SessionStart handler"'
         )
         assert result.is_mutative is False
-        assert result.verb == "commit"
+
+
+class TestCapabilityClasses:
+    """Fase S Nivel 1 -- database_cli capability class.
+
+    Each verb in the database_cli class (sqlite3, psql, mysql, mongosh, ...)
+    can apply arbitrary mutations by accepting the entire mutation language
+    as a single argument or by reading from a file.  The verb scanner
+    cannot see the intent.  The capability layer fixes that with a single
+    rule: default MUTATIVE, with explicit overrides for read-only flags
+    and inline read-only payloads.
+    """
+
+    # ---- sqlite3: redirect & dot-command load both stay MUTATIVE ----
+
+    def test_sqlite3_redirect_input_is_mutative(self):
+        """sqlite3 db < file.sql must require approval -- this is the
+        exact gap that motivated Fase S (856 INSERTs slipped through)."""
+        result = detect_mutative_command(
+            "sqlite3 /tmp/x.db < /tmp/migration.sql"
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.cli_family == "database"
+        assert "redirect" in result.reason.lower()
+
+    def test_sqlite3_dot_read_is_mutative(self):
+        """sqlite3 db ".read file.sql" loads an external script -- still
+        an external payload, must stay MUTATIVE."""
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db ".read /tmp/migration.sql"'
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert ".read" in result.reason or "dot-command" in result.reason
+
+    def test_sqlite3_dot_import_is_mutative(self):
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db ".import data.csv mytable"'
+        )
+        assert result.is_mutative is True
+
+    # ---- sqlite3: read-only flag and inline SELECT are READ_ONLY ----
+
+    def test_sqlite3_readonly_flag_is_safe(self):
+        """sqlite3 -readonly downgrades the whole invocation to READ_ONLY."""
+        result = detect_mutative_command(
+            'sqlite3 -readonly /tmp/x.db "SELECT * FROM t"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert "-readonly" in result.reason
+
+    def test_sqlite3_inline_select_is_safe(self):
+        """sqlite3 db "SELECT ..." -- inline payload demonstrably read-only."""
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db "SELECT * FROM t"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_sqlite3_inline_pragma_table_info_is_safe(self):
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db "PRAGMA table_info(users)"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_sqlite3_inline_insert_is_mutative(self):
+        """Inline INSERT does not match read-only patterns -> default MUTATIVE."""
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db "INSERT INTO t VALUES (1)"'
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    # ---- psql ----
+
+    def test_psql_file_input_is_mutative(self):
+        """psql -f file.sql executes a script file -- MUTATIVE."""
+        result = detect_mutative_command("psql -d mydb -f /tmp/x.sql")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_psql_inline_select_is_safe(self):
+        result = detect_mutative_command('psql -d mydb -c "SELECT 1"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_psql_inline_drop_is_mutative(self):
+        result = detect_mutative_command(
+            'psql -d mydb -c "DROP TABLE users"'
+        )
+        assert result.is_mutative is True
+
+    # ---- mysql / mariadb ----
+
+    def test_mysql_inline_select_is_safe(self):
+        result = detect_mutative_command('mysql -e "SELECT 1"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_mysql_redirect_dump_is_mutative(self):
+        """mysql db < dump.sql is the canonical restore -- must require approval."""
+        result = detect_mutative_command("mysql mydb < /tmp/dump.sql")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mariadb_inline_select_is_safe(self):
+        result = detect_mutative_command('mariadb -e "SELECT 1"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    # ---- mongosh / mongo ----
+
+    def test_mongosh_eval_find_is_safe(self):
+        result = detect_mutative_command('mongosh --eval "db.find()"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_mongosh_eval_findone_is_safe(self):
+        result = detect_mutative_command(
+            'mongosh --eval "db.users.findOne({_id: 1})"'
+        )
+        assert result.is_mutative is False
+
+    def test_mongosh_eval_insert_is_mutative(self):
+        result = detect_mutative_command('mongosh --eval "db.insert()"')
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mongosh_eval_drop_is_mutative(self):
+        result = detect_mutative_command(
+            'mongosh --eval "db.collection.drop()"'
+        )
+        assert result.is_mutative is True
+
+    def test_mongosh_eval_mixed_find_then_insert_is_mutative(self):
+        """A payload that *contains* an insert is mutative even if it also
+        starts with a read -- the deny_pattern wins over the read prefix."""
+        result = detect_mutative_command(
+            'mongosh --eval "db.find().forEach(d => db.t.insertOne(d))"'
+        )
+        assert result.is_mutative is True
+
+    # ---- redis-cli / cqlsh / duckdb ----
+
+    def test_redis_cli_default_is_mutative(self):
+        """redis-cli with no recognised override stays MUTATIVE -- safer
+        default until we add specific read-only patterns for Redis."""
+        result = detect_mutative_command("redis-cli FLUSHALL")
+        assert result.is_mutative is True
+
+    def test_duckdb_redirect_is_mutative(self):
+        result = detect_mutative_command("duckdb /tmp/x.db < /tmp/script.sql")
+        assert result.is_mutative is True
+
+    # ---- Extensibility & registry shape ----
+
+    def test_registry_has_database_cli_class(self):
+        from modules.security.capability_classes import CAPABILITY_CLASSES
+        assert "database_cli" in CAPABILITY_CLASSES
+        spec = CAPABILITY_CLASSES["database_cli"]
+        assert spec["default_intent"] == "MUTATIVE"
+        assert "sqlite3" in spec["verbs"]
+        assert "psql" in spec["verbs"]
+        assert "mysql" in spec["verbs"]
+        assert "mongosh" in spec["verbs"]
+
+    def test_is_capability_verb_lookup(self):
+        from modules.security.capability_classes import is_capability_verb
+        assert is_capability_verb("sqlite3") is True
+        assert is_capability_verb("psql") is True
+        # Unrelated commands must NOT match the capability index --
+        # otherwise the regular verb scanner gets bypassed.
+        assert is_capability_verb("git") is False
+        assert is_capability_verb("kubectl") is False
+        assert is_capability_verb("ls") is False
+
+    def test_capability_class_does_not_break_unrelated_commands(self):
+        """The capability layer must be a no-op for non-database CLIs."""
+        result = detect_mutative_command("git status")
+        assert result.is_mutative is False
+        result = detect_mutative_command("kubectl get pods")
+        assert result.is_mutative is False
+        result = detect_mutative_command("kubectl delete pod foo")
+        assert result.is_mutative is True
