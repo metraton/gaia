@@ -135,8 +135,8 @@ python3 pre_tool_use.py --test
 # Post-hook (audit)
 python3 post_tool_use.py --test
 
-# Metrics (use the JS CLI instead)
-npx gaia-metrics
+# Metrics
+gaia metrics
 ```
 
 ### Importing Modules

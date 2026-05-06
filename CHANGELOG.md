@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Legacy JS CLI binaries** -- `bin/gaia-doctor.js`, `bin/gaia-status.js`,
+  `bin/gaia-history.js`, `bin/gaia-metrics.js`, `bin/gaia-cleanup.js`,
+  `bin/gaia-update.js`, `bin/gaia-uninstall.js`, `bin/gaia-skills-diagnose.js`,
+  `bin/gaia-review.js`, `bin/gaia-evidence`, `bin/gaia-scan` (Node wrapper),
+  and `bin/gaia-scan.py` are gone. The `bin` field in `package.json` now
+  exposes a single binary: `gaia`. Every subcommand previously available as
+  `npx gaia-X` is now reached through `gaia X` -- subcommands are discovered
+  automatically from `bin/cli/*.py` via the `register()` / `cmd_<name>()`
+  contract. Lifecycle scripts (`postinstall`, `preuninstall`) call
+  `python3 bin/gaia install --postinstall` and `python3 bin/gaia uninstall
+  --preuninstall` directly. `gaia-skills-diagnose`, `gaia-review`, and
+  `gaia-evidence` had no Python successor and are not migrated; for general
+  health checks use `gaia doctor`.
+
+### Changed
+- **`bin/validate-sandbox.sh`** -- harness now drives `gaia` subcommands end
+  to end (no `gaia-X.js` callers remain). The 8-check matrix is unchanged.
+- **CLI docstrings** -- `bin/cli/*.py` modules dropped the
+  "Mirrors gaia-X.js" parity comments now that there is no JS counterpart on
+  disk to mirror.
+
 ## [5.0.0-rc.3] - 2026-04-26
 
 ### Release Candidate 3: Python 3.9 Compatibility Fix
@@ -205,7 +227,7 @@ The unified CLI also provides subcommands that did not exist as standalone JS CL
 | `python3 bin/gaia plans list` | List all feature briefs |
 | `python3 bin/gaia plans show BRIEF_NAME` | Show a brief and plan |
 | `python3 bin/gaia context show` | Display project-context.json summary |
-| `python3 bin/gaia context scan` | Invoke gaia-scan to refresh context |
+| `python3 bin/gaia context scan` | Refresh project-context via the scanner |
 
 #### Deprecation timeline
 

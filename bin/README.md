@@ -1,106 +1,115 @@
 # Bin
 
-The `bin/` directory holds the command-line utilities that surround Gaia — the install helpers, the diagnostics, the status reporters, and the cleanup scripts. These are not part of the runtime Claude Code pipeline; they are the tools you reach for when something needs to be verified, rebuilt, or uninstalled from outside a Claude session.
+The `bin/` directory holds the command-line surface of Gaia. There is one user-facing binary -- `gaia` -- and every operation is reached through a subcommand of it. The subcommands are not separate scripts you maintain individually; they are Python modules in `bin/cli/` that the dispatcher discovers at runtime.
 
-Each script here is registered in `package.json` under the `bin` field, which makes it callable through `npx` (e.g., `npx gaia-doctor`) once the package is installed. Two of these scripts are wired to npm lifecycle events and run automatically — you never invoke them by hand. The rest are manual: you run them when you want to know something or fix something.
-
-The diagnostic model to learn first is `gaia-doctor`. Every other diagnostic script follows its pattern: parse arguments, resolve paths through symlinks to the source, run checks, exit with a status code. Reading `gaia-doctor.js` once will tell you how every other script here works.
+The diagnostic model to learn first is `gaia doctor`. Every subcommand follows the same pattern -- parse args, resolve paths, run checks, exit with a status code -- so reading `bin/cli/doctor.py` once tells you how every other subcommand here works.
 
 ## Cuándo se activa
 
-The scripts in this directory split into two categories based on how they get triggered.
-
-**Category A — npm lifecycle scripts (automatic):**
-
 ```
-User runs: npm install @jaguilar87/gaia
+User runs: gaia <subcommand> [args]
         |
-npm fires postinstall lifecycle event
+bin/gaia (Python entry point) loads the dispatcher
         |
-bin/gaia-update.js runs automatically
+bin/cli/__init__.py imports every module in bin/cli/ that defines register()
         |
-Updates hooks template, merges permissions into settings.local.json,
-ensures plugin-registry entry
+Each module's register(subparsers) attaches its argparse + cmd_<name>() handler
+        |
+Dispatcher routes to the matched handler, which exits with a status code
 ```
 
-```
-User runs: npm uninstall @jaguilar87/gaia
-        |
-npm fires preuninstall lifecycle event
-        |
-bin/gaia-cleanup.js runs automatically
-        |
-Cleans temporary caches, old logs (>30 days), __pycache__ directories
-Preserves project-context.json and .claude/ symlinks
-```
-
-**Category B — manual invocation (on-demand):**
+The npm lifecycle scripts in `package.json` invoke specific subcommands rather than separate binaries:
 
 ```
-User runs: npx gaia-doctor  (or gaia-status, gaia-scan, etc.)
+npm install @jaguilar87/gaia
         |
-npm/npx resolves the bin entry in package.json
+postinstall script -> python3 bin/gaia install --postinstall
         |
-Executes the script
-        |
-Exits with status code
+Bootstraps the database, merges permissions/hooks, recreates symlinks
 ```
 
-No Claude Code session is involved in either category. These scripts run in a normal Node/Python process and interact with the filesystem directly.
+```
+npm uninstall @jaguilar87/gaia
+        |
+preuninstall script -> python3 bin/gaia uninstall --preuninstall
+        |
+Cleans temporary caches, old logs, __pycache__, preserves project-context.json
+```
+
+No Claude Code session is involved in either case. The subcommands run in a normal Python process and interact with the filesystem directly.
 
 ## Qué hay aquí
 
 ```
 bin/
-├── gaia                       # Wrapper for convenience (shell)
-├── gaia-scan                  # Project scanner (Python entry)
-├── gaia-scan.py               # Python implementation of gaia-scan
-├── gaia-update.js             # npm postinstall: updates hooks template, merges permissions
-├── gaia-cleanup.js            # npm preuninstall: cleans caches, old logs, __pycache__
-├── gaia-doctor.js             # System health check — the diagnostic model to learn first
-├── gaia-status.js             # Current system status
-├── gaia-skills-diagnose.js    # Skills injection wiring diagnosis
-├── gaia-metrics.js            # Metrics and usage statistics
-├── gaia-history.js            # Operation history viewer
-├── gaia-review.js             # Review engine interface
-├── gaia-uninstall.js          # Complete uninstall (manual)
-├── pre-publish-validate.js    # Pre-publish validation gate (used by release pipeline)
-├── python-detect.js           # Python runtime detection helper
-└── cli/                       # Shared CLI utilities
+├── gaia                       # Python entry point — dispatches to bin/cli/<name>
+├── pre-publish-validate.js    # Pre-publish gate for the release pipeline
+├── python-detect.js           # Python runtime detection helper for npm lifecycles
+├── validate-sandbox.sh        # End-to-end consumer-install verification harness
+├── README.md
+└── cli/                       # Subcommand modules (one file per subcommand)
+    ├── __init__.py            # Discovery: imports every sibling that defines register()
+    ├── _install_helpers.py    # Shared helpers for install/update (private, leading _)
+    ├── approvals.py           # gaia approvals  — list/show/reject/clean/stats T3 grants
+    ├── brief.py               # gaia brief      — feature briefs / specs lifecycle
+    ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
+    ├── context.py             # gaia context    — show / scan / diff project-context.json
+    ├── doctor.py              # gaia doctor     — system health check (the model to learn)
+    ├── history.py             # gaia history    — recent agent sessions
+    ├── install.py             # gaia install    — postinstall: bootstrap DB, settings, symlinks
+    ├── memory.py              # gaia memory     — episodic memory: stats, search, show
+    ├── metrics.py             # gaia metrics    — usage analytics (tier, agent, anomalies)
+    ├── paths.py               # Shared path resolution helpers
+    ├── plans.py               # gaia plans      — list/show feature plans
+    ├── project.py             # gaia project    — project metadata / registration
+    ├── scan.py                # gaia scan       — project scanner; refreshes project-context.json
+    ├── status.py              # gaia status     — quick installation snapshot
+    ├── uninstall.py           # gaia uninstall  — full or preuninstall removal
+    └── update.py              # gaia update     — re-sync after npm install bumped the version
 ```
 
 ## Convenciones
 
-**Lifecycle binding:** Only `gaia-update.js` (postinstall) and `gaia-cleanup.js` (preuninstall) are wired to npm events via `package.json` `scripts`. Every other script is manual.
+**Subcommand contract:** Every file in `bin/cli/` that exposes a subcommand defines two functions:
 
-**npx-invocable list** (from `package.json` `bin`):
+```python
+def register(subparsers) -> None:
+    """Attach this subcommand's argparse parser. Called once at startup
+    by bin/cli/__init__.py."""
+    p = subparsers.add_parser("<name>", help="...")
+    p.add_argument(...)
+    p.set_defaults(func=cmd_<name>)
+
+def cmd_<name>(args) -> int:
+    """Handler. Receives parsed argparse Namespace, returns exit code."""
+```
+
+Modules whose name starts with `_` (e.g. `_install_helpers.py`) are private helpers, never registered as subcommands. Files like `paths.py` that expose only utilities and no `register()` are also skipped by the dispatcher.
+
+**Lifecycle binding:** Only `gaia install` (postinstall) and `gaia uninstall` (preuninstall) are wired to npm events via `package.json` `scripts`. The lifecycle calls pass `--postinstall` / `--preuninstall` so the subcommand can apply the more conservative install-time policy.
+
+**Path resolution:** Subcommands resolve paths through symlinks to the source package using `Path.resolve()`. The pattern is visible in `cli/doctor.py`.
+
+**Exit codes:** `0` on success, `1` on warnings, `2` on errors. The release pipeline's sandbox harness relies on these -- do not print a success line and exit non-zero, or vice versa.
+
+**Preserved on cleanup:** `project-context.json` and `.claude/` symlinks are never touched by `gaia cleanup`. Anything the user relies on across reinstalls must be on that preservation list, which lives in `cli/cleanup.py`.
+
+**`package.json` `bin` field:**
 
 ```json
 {
   "bin": {
-    "gaia-scan": "bin/gaia-scan",
-    "gaia-doctor": "bin/gaia-doctor.js",
-    "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
-    "gaia-cleanup": "bin/gaia-cleanup.js",
-    "gaia-uninstall": "bin/gaia-uninstall.js",
-    "gaia-metrics": "bin/gaia-metrics.js",
-    "gaia-review": "bin/gaia-review.js",
-    "gaia-status": "bin/gaia-status.js",
-    "gaia-history": "bin/gaia-history.js",
-    "gaia-update": "bin/gaia-update.js"
+    "gaia": "bin/gaia"
   }
 }
 ```
 
-**Path resolution:** Scripts must resolve paths through symlinks to the source package. The pattern is visible in `gaia-doctor.js` — use `fs.realpathSync` on the symlink target before running checks.
-
-**Exit codes:** `0` on success, non-zero on failure. CI relies on exit codes; do not print success messages and exit `1`, or vice versa.
-
-**Preserved on cleanup:** `project-context.json` and `.claude/` symlinks are never touched by `gaia-cleanup.js`. Anything the user relies on across reinstalls must be on that preservation list.
+A single binary; subcommands are discovered, not registered.
 
 ## Ver también
 
-- [`package.json`](../package.json) — `bin` field registers these scripts; `scripts.postinstall` / `scripts.preuninstall` wire the lifecycle scripts
-- [`INSTALL.md`](../INSTALL.md) — installation workflow that calls these scripts
-- [`templates/README.md`](../templates/README.md) — `gaia-update.js` and `gaia-scan.py` consume templates from here
-- [`hooks/README.md`](../hooks/README.md) — `gaia-doctor.js` verifies the hook registrations are valid
+- [`package.json`](../package.json) -- exposes `bin/gaia`; `scripts.postinstall` / `scripts.preuninstall` wire the lifecycle subcommands
+- [`INSTALL.md`](../INSTALL.md) -- installation workflow that calls `gaia scan` and `gaia install`
+- [`templates/README.md`](../templates/README.md) -- `gaia install` and `gaia scan` consume templates from here
+- [`hooks/README.md`](../hooks/README.md) -- `gaia doctor` verifies the hook registrations are valid
+- [`bin/validate-sandbox.sh`](./validate-sandbox.sh) -- end-to-end harness that drives `gaia` subcommands against a fresh tarball install

@@ -17,7 +17,7 @@ The `gaia-ops` sub-plugin ships the full orchestrator and all agents; `gaia-secu
 The easiest way - the installer will guide you step by step:
 
 ```bash
-npx gaia-scan
+gaia scan
 ```
 
 It will ask questions like:
@@ -30,7 +30,7 @@ It will ask questions like:
 For CI/CD scripts or if you already know the values:
 
 ```bash
-npx gaia-scan --non-interactive \
+gaia scan --non-interactive \
   --gitops ./gitops \
   --terraform ./terraform \
   --app-services ./app-services \
@@ -45,7 +45,7 @@ npx gaia-scan --non-interactive \
 ### Installation Flow
 
 ```
-User runs: npx gaia-scan
+User runs: gaia scan
         ↓
 [Detector] scans your project
         ↓
@@ -99,7 +99,7 @@ Ready! You can use: claude
 ```
 Example: Installation in project with GitOps and Terraform
 
-1. User: npx gaia-scan
+1. User: gaia scan
    ↓
 2. Detector finds:
    ✅ ./gitops (52 YAML files detected)
@@ -156,13 +156,13 @@ export CLAUDE_REGION="us-central1"
 export CLAUDE_CLUSTER_NAME="my-gke-cluster"
 
 # Install without questions
-npx gaia-scan --non-interactive
+gaia scan --non-interactive
 ```
 
 ### Complete CLI Options
 
 ```
-gaia-scan [options]
+gaia scan [options]
 
 Options:
   --non-interactive          Skip prompts, use provided values or defaults
@@ -310,7 +310,7 @@ which claude
 
 **Option 1: Automatic Cleanup**
 ```bash
-npx gaia-cleanup
+gaia cleanup
 ```
 
 **Option 2: Manual Cleanup**
@@ -345,7 +345,7 @@ npm install -g @anthropic-ai/claude-code
 **Solution:**
 ```bash
 # Automatic cleanup
-npx gaia-cleanup
+gaia cleanup
 ```
 
 ---
@@ -367,7 +367,7 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 **Solution:**
 ```bash
 # Re-run installation
-npx gaia-scan
+gaia scan
 ```
 
 ---
@@ -378,10 +378,10 @@ npx gaia-scan
 
 ```bash
 # Interactive script (recommended)
-npx gaia-uninstall
+gaia uninstall
 
 # Forced uninstall (no questions)
-npx gaia-uninstall --force --remove-all
+gaia uninstall --force --remove-all
 ```
 
 ### Manual Uninstallation

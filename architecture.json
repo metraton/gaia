@@ -765,7 +765,7 @@
     },
     "modules/scanning/scan_trigger.py": {
       "functions": ["trigger_lightweight_scan"],
-      "description": "Runs lightweight project scan via gaia-scan.py CLI subprocess (<3s target, 10s timeout)",
+      "description": "Runs lightweight project scan in-process via tools.scan (default scanners: tools, environment) to refresh project-context.json on session start (<3s target)",
       "called_by": ["hooks/session_start.py"]
     },
     "modules/validation/commit_validator.py": {

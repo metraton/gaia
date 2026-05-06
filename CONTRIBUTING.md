@@ -67,7 +67,7 @@ See [README.md](./README.md) for the full directory tree. Key areas for contribu
 | `tools/` | Orchestration tools (context provider, memory, validation) |
 | `config/` | Configuration files (contracts, git standards, rules) |
 | `tests/` | Test suite organized by layer |
-| `bin/` | CLI utilities (`gaia-scan`, `gaia-doctor`, etc.) |
+| `bin/` | Unified `gaia` CLI -- subcommands live in `bin/cli/*.py` |
 
 ## Coding Standards
 
@@ -81,7 +81,9 @@ See [README.md](./README.md) for the full directory tree. Key areas for contribu
 ### JavaScript / Node.js
 
 - ES modules (`import`/`export`), not CommonJS.
-- Follow the existing patterns in `bin/` and `index.js`.
+- The CLI surface is now Python (`bin/cli/*.py`); JS lives in `index.js`
+  (programmatic API helpers) and `bin/pre-publish-validate.js` /
+  `bin/python-detect.js` (tooling).
 
 ### Commit Messages
 

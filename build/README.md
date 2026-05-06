@@ -33,7 +33,7 @@ Session begins -- hooks fire based on registered matchers
 If a hook file is listed in `entries` but does not exist on disk:
 - Claude Code skips it silently
 - That event type receives no Gaia processing
-- Diagnosis: run `npx gaia-doctor` to detect missing hook files
+- Diagnosis: run `gaia doctor` to detect missing hook files
 
 ## Qué hay aquí
 
@@ -61,5 +61,5 @@ build/
 
 - [`hooks/README.md`](../hooks/README.md) — hook entry points and pipeline architecture
 - [`agents/README.md`](../agents/README.md) — agent definitions and frontmatter conventions
-- [`bin/gaia-doctor.js`](../bin/gaia-doctor.js) — detects missing hooks and broken registrations
+- [`bin/cli/doctor.py`](../bin/cli/doctor.py) — `gaia doctor` detects missing hooks and broken registrations
 - [`package.json`](../package.json) — version source and `files` array (controls what gets published)

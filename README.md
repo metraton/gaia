@@ -60,18 +60,18 @@ That pipeline is the spine. Everything else in this repo is either a component o
 ### Via npm (advanced setup)
 ```bash
 npm install @jaguilar87/gaia
-npx gaia-scan
+gaia scan
 ```
 
 ### Quick Start (npm)
 
 ```bash
-# Run directly with npx
-npx gaia-scan
+# Scan and bootstrap project-context.json
+gaia scan
 
 # Or install globally
 npm install -g @jaguilar87/gaia
-gaia-scan
+gaia scan
 ```
 
 This will:
@@ -123,12 +123,10 @@ claude
 
 The orchestrator identity is defined in `agents/gaia-orchestrator.md` and activated via `settings.json` agent config. Skills are loaded on-demand.
 
-Skills and injection diagnosis:
+Skill loading and overall installation health are checked via:
 
 ```bash
-npx gaia-skills-diagnose
-# or with test probe:
-npx gaia-skills-diagnose --run-tests
+gaia doctor
 ```
 
 ## Security
@@ -159,7 +157,7 @@ gaia-dev/
 ├── commands/            # Slash commands — /gaia, /scan-project
 ├── build/               # Plugin manifests — hook + agent registration for Claude Code
 ├── templates/           # Installation templates — managed-settings for enterprise
-├── bin/                 # CLI utilities (11 scripts) — gaia-doctor, gaia-scan, etc.
+├── bin/                 # Single `gaia` CLI; subcommands discovered from bin/cli/
 ├── tests/               # Test suite — 3-layer pyramid (pytest, LLM eval, e2e)
 └── tools/               # Context provisioning tools
 ```

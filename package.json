@@ -5,18 +5,7 @@
   "main": "index.js",
   "type": "module",
   "bin": {
-    "gaia": "bin/gaia",
-    "gaia-doctor": "bin/gaia-doctor.js",
-    "gaia-skills-diagnose": "bin/gaia-skills-diagnose.js",
-    "gaia-cleanup": "bin/gaia-cleanup.js",
-    "gaia-uninstall": "bin/gaia-uninstall.js",
-    "gaia-metrics": "bin/gaia-metrics.js",
-    "gaia-review": "bin/gaia-review.js",
-    "gaia-status": "bin/gaia-status.js",
-    "gaia-history": "bin/gaia-history.js",
-    "gaia-update": "bin/gaia-update.js",
-    "gaia-scan": "bin/gaia-scan",
-    "gaia-evidence": "bin/gaia-evidence"
+    "gaia": "bin/gaia"
   },
   "keywords": [
     "claude-code",
@@ -83,8 +72,8 @@
     "gaia:install-local": "npm pack && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target local",
     "prepack": "npm run clean",
     "prepublishOnly": "npm run build:plugins && node bin/pre-publish-validate.js",
-    "postinstall": "node bin/gaia-update.js",
-    "preuninstall": "node bin/gaia-cleanup.js"
+    "postinstall": "python3 bin/gaia install --postinstall",
+    "preuninstall": "python3 bin/gaia uninstall --preuninstall"
   },
   "_postinstall_note": "postinstall: settings.json replaced (hooks only), permissions merged into settings.local.json (union, user config preserved)",
   "dependencies": {

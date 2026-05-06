@@ -31,7 +31,7 @@ The user says things like:
 
 If the intent is to verify the install **pipeline** (npm, dry-run, beta,
 release), that is `gaia-verify`, not this skill. If the intent is to diagnose
-a symlink or path problem at the CLI level, that is `gaia-doctor`.
+a symlink or path problem at the CLI level, that is `gaia doctor`.
 
 ## The 3-step cycle
 

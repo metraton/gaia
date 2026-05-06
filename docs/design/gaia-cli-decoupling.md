@@ -1,8 +1,20 @@
 # Gaia CLI Decoupling -- Design Document
 
-**Status:** DESIGN
+**Status:** CLOSED -- decoupling completed in Phase 5 (2026-05)
 **Date:** 2026-04-13
 **Author:** Cursor
+
+> **Closure note (2026-05):** the JS CLI surface this document references
+> (`bin/gaia-update.js`, `bin/gaia-doctor.js`, `bin/gaia-cleanup.js`,
+> `bin/gaia-status.js`, `bin/gaia-history.js`, `bin/gaia-metrics.js`,
+> `bin/gaia-uninstall.js`, `bin/gaia-skills-diagnose.js`, `bin/gaia-review.js`,
+> `bin/gaia-scan` Node wrapper, `bin/gaia-scan.py`, `bin/gaia-evidence`) has
+> been removed. The single user-facing binary is now `bin/gaia` (Python),
+> with subcommands auto-discovered from `bin/cli/*.py`. npm lifecycle scripts
+> call `python3 bin/gaia install --postinstall` and `python3 bin/gaia
+> uninstall --preuninstall` directly. The runtime adapter work described in
+> Phases 1-3 is independent of this CLI consolidation and is tracked
+> separately.
 
 ---
 

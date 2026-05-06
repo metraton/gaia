@@ -101,22 +101,28 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | validation | `tools/validation/` | `approval_gate`, `validate_skills` |
 | (top-level) | `tools/persist_transcript_analysis.py` | Transcript persistence utility |
 
-### CLI Tools (10 bin commands + 1 wrapper)
+### CLI Tools
 
-| Command | File | Purpose |
-|---------|------|---------|
-| `gaia-doctor` | `bin/gaia-doctor.js` | Health check: hooks, symlinks, Python, config |
-| `gaia-skills-diagnose` | `bin/gaia-skills-diagnose.js` | Skills injection diagnostics |
-| `gaia-cleanup` | `bin/gaia-cleanup.js` | Remove symlinks and settings (preuninstall) |
-| `gaia-uninstall` | `bin/gaia-uninstall.js` | Full uninstall |
-| `gaia-metrics` | `bin/gaia-metrics.js` | Usage metrics and analytics |
-| `gaia-review` | `bin/gaia-review.js` | Code review utility |
-| `gaia-status` | `bin/gaia-status.js` | Installation status report |
-| `gaia-history` | `bin/gaia-history.js` | Session history viewer |
-| `gaia-update` | `bin/gaia-update.js` | Postinstall: symlinks, settings merge, verification |
-| `gaia-scan` | `bin/gaia-scan` | Shell wrapper for `gaia-scan.py` |
-| `gaia-scan.py` | `bin/gaia-scan.py` | Project scanner (Python implementation) |
-| `pre-publish-validate` | `bin/pre-publish-validate.js` | Pre-publish validation (not a bin export) |
+The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Python subcommands discovered under `bin/cli/<name>.py`. Each subcommand is a self-contained module loaded by name.
+
+| Subcommand | File | Purpose |
+|------------|------|---------|
+| `gaia approvals` | `bin/cli/approvals.py` | Approval system v2: list, show, accept, reject pending T3 grants |
+| `gaia brief` | `bin/cli/brief.py` | Brief CRUD against the Gaia DB substrate (new, edit, show, status, close) |
+| `gaia cleanup` | `bin/cli/cleanup.py` | Remove temporary caches, old logs, and `__pycache__`; preserves project-context.json and .claude/ symlinks |
+| `gaia context` | `bin/cli/context.py` | Display, refresh, and inspect project context (legacy JSON + DB-backed sections) |
+| `gaia doctor` | `bin/cli/doctor.py` | System health checks: schema, FTS5 sync, agent_permissions, symlinks, settings.local.json |
+| `gaia history` | `bin/cli/history.py` | Recent agent sessions: list, show, search |
+| `gaia install` | `bin/cli/install.py` | Bootstrap DB + .claude/ structure + symlinks for a fresh install (also npm postinstall entry) |
+| `gaia memory` | `bin/cli/memory.py` | Episodic memory: FTS5 search, show episode, health checks |
+| `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
+| `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
+| `gaia plans` | `bin/cli/plans.py` | List and display briefs/plans with status info |
+| `gaia project` | `bin/cli/project.py` | Workspace identity and consolidate operations |
+| `gaia scan` | `bin/cli/scan.py` | In-process project scan: detect stack, sync to DB and project-context.json |
+| `gaia status` | `bin/cli/status.py` | Quick installation snapshot: version, mode, DB path, registered workspace, last scan |
+| `gaia uninstall` | `bin/cli/uninstall.py` | Disconnect Gaia from the current workspace (wraps cleanup + preuninstall mode) |
+| `gaia update` | `bin/cli/update.py` | Refresh DB schema, .claude/ config, and symlinks after a package upgrade |
 
 ### Config Files
 
@@ -194,11 +200,11 @@ npm run prepublishOnly         # build + validate (automatic before npm publish)
 npm publish                    # publishes @jaguilar87/gaia
 ```
 
-### Postinstall (`bin/gaia-update.js`, runs on `npm install`)
+### Postinstall (`gaia install --postinstall`, invoked by npm scripts on `npm install`)
 
 **First install** (no `.claude/`):
 1. Check Python 3 available
-2. Run `gaia-scan --npm-postinstall` to create `.claude/`, symlinks, settings, project-context
+2. Run `gaia scan --fresh --npm-postinstall` to create `.claude/`, symlinks, settings, project-context
 3. Create `plugin-registry.json`
 4. Merge permissions into `settings.local.json`
 5. Merge hooks into `settings.local.json` -- also writes `defaultMode: acceptEdits` to `settings.local.json` for the parent session
@@ -277,19 +283,25 @@ npm publish                    # publishes @jaguilar87/gaia
 
 ## 5. CLI Tools
 
+After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatcher `gaia` is on PATH. Subcommands are discovered under `bin/cli/`.
+
 | Command | Purpose | When to use |
 |---------|---------|-------------|
-| `npx gaia-doctor` | Health check: hooks reachable, symlinks valid, Python available, config present | After install, after update, debugging |
-| `npx gaia-skills-diagnose` | Skills injection: verifies frontmatter, SKILL.md presence, injection pipeline | Skills not loading, wrong skills in agent |
-| `npx gaia-status` | Installation status: version, mode, symlinks, settings | Quick status check |
-| `npx gaia-metrics` | Usage analytics: hook invocations, tier distribution, approval rates | Performance analysis |
-| `npx gaia-review` | Code review utility | PR review |
-| `npx gaia-history` | Session history viewer | Debugging past sessions |
-| `npx gaia-update` | Re-run postinstall: fix symlinks, merge settings | Manual repair |
-| `npx gaia-cleanup` | Remove symlinks and settings (runs on preuninstall) | Before uninstall |
-| `npx gaia-uninstall` | Full uninstall: cleanup + remove package artifacts | Complete removal |
-| `npx gaia-scan` | Project scanner: detect stack, generate project-context.json | New project setup |
-| `node bin/pre-publish-validate.js` | Validate dist/ before npm publish | Release workflow |
+| `gaia doctor` | Health check: schema, FTS5, symlinks, settings, hook files | After install, after update, debugging |
+| `gaia status` | Installation snapshot: version, mode, DB path, last scan | Quick status check |
+| `gaia metrics` | Usage analytics: tier distribution, agent invocations, anomalies | Performance analysis |
+| `gaia history` | Session history viewer | Debugging past sessions |
+| `gaia memory` | Episodic memory inspect/search | Recall past episodes, memory health |
+| `gaia approvals` | List/accept/reject pending T3 approvals | Approval workflow |
+| `gaia brief` / `gaia plans` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
+| `gaia context` | Display and refresh project context | Audit context state |
+| `gaia paths` | Print resolved storage paths | Path debugging |
+| `gaia project` | Workspace identity and consolidate operations | Multi-workspace setups |
+| `gaia scan` | In-process project scanner | Refresh project-context.json |
+| `gaia install` | Bootstrap DB + workspace (also npm postinstall) | Fresh setup, manual repair |
+| `gaia update` | Re-sync after a package upgrade | After bumping the version |
+| `gaia cleanup` | Remove temp caches, old logs, `__pycache__` | Housekeeping |
+| `gaia uninstall` | Disconnect Gaia from the workspace | Before package removal |
 
 ---
 
@@ -300,7 +312,7 @@ npm publish                    # publishes @jaguilar87/gaia
 | `audit/metrics.py` | Hook invocations, tier distribution, approval rates |
 | `audit/event_detector.py` | Anomalous patterns in agent behavior |
 | `audit/workflow_auditor.py` | Workflow compliance and audit trail |
-| `npx gaia-metrics` | CLI access to collected metrics |
+| `gaia metrics` | CLI access to collected metrics |
 
 ---
 
@@ -334,7 +346,7 @@ cd /tmp
 mkdir test-project && cd test-project
 npm init -y
 npm install ~/ws/me/gaia-dev        # installs from local source
-npx gaia-doctor                      # verify installation
+gaia doctor                          # verify installation
 npm test                             # run L1 suite from gaia-dev
 ```
 
@@ -370,14 +382,6 @@ hooks/modules/agents/transcript_analyzer.py
 
 Analyzes agent transcripts for contract compliance, skill adherence, and behavioral patterns. Used by `subagent_stop.py` to validate agent output. Paired with `transcript_reader.py` for parsing.
 
-### Skills Diagnostics
-
-```bash
-npx gaia-skills-diagnose
-```
-
-Validates the full skills pipeline: frontmatter declarations, SKILL.md file presence, injection chain integrity, on-demand vs injected classification.
-
 ### Approval Gate
 
 ```bash
@@ -389,10 +393,10 @@ Validates T3 approval nonce lifecycle: generation, scope matching, expiry, grant
 ### Doctor
 
 ```bash
-npx gaia-doctor
+gaia doctor
 ```
 
-Full system health: hook reachability (all 10 entry points), symlink integrity, Python environment, config file presence, settings.json/settings.local.json correctness.
+Full system health: schema, FTS5 sync, hook reachability, symlink integrity, agent_permissions seed, Python environment, config file presence, settings.json/settings.local.json correctness.
 
 ---
 

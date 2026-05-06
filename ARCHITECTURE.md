@@ -332,4 +332,4 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `config/surface-routing.json` | Surface signals and routing config |
 | `agents/*.md` | Agent identity definitions |
 | `skills/*/SKILL.md` | Injected procedural knowledge |
-| `bin/*.js` | CLI tools (gaia-scan, gaia-doctor, gaia-status, etc.) |
+| `bin/gaia` + `bin/cli/*.py` | Unified `gaia` CLI; subcommands auto-discovered from `bin/cli/` |

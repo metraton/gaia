@@ -104,5 +104,5 @@ pip install pytest pytest-cov
 
 - [`hooks/README.md`](../hooks/README.md) — code under test in Layer 1
 - [`agents/README.md`](../agents/README.md) — behavior under test in Layer 2
-- [`bin/gaia-doctor.js`](../bin/gaia-doctor.js) — separate health check invoked during Layer 3
+- [`bin/cli/doctor.py`](../bin/cli/doctor.py) — `gaia doctor` health check, invoked during Layer 3
 - [`conftest.py`](./conftest.py) — shared pytest fixtures and markers

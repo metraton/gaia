@@ -522,10 +522,8 @@ else
 fi
 
 # 7. gaia scan (exit 0)
-# Use `gaia context scan --dry-run` (the higher-level CLI subcommand which
-# supports --dry-run) rather than the bare `gaia-scan` binary, which wraps
-# gaia-scan.py and does NOT accept --dry-run. --dry-run validates freshness
-# without running the scanners or writing project-context.json.
+# `gaia context scan --dry-run` validates freshness without running the
+# scanners or writing project-context.json.
 t0="$(now_ms)"
 if out="$(gaia context scan --dry-run 2>&1)"; then
   ms=$(( $(now_ms) - t0 ))

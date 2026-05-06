@@ -29,7 +29,7 @@ and merges new scan data with existing context using section-ownership rules.
 Run the scanner CLI:
 
 ```bash
-python3 bin/gaia-scan.py
+python3 bin/gaia scan
 ```
 
 Optional flags:
