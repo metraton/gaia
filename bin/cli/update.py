@@ -1,23 +1,49 @@
 """
-gaia update -- mirror of gaia-update.js
+gaia update -- Refresh DB schema, .claude/ config, and symlinks after a
+package upgrade.
 
-Checks and updates the gaia installation:
-- Verify settings.json exists (create if missing)
-- Merge permissions into settings.local.json
-- Check symlinks (recreate if missing or broken)
-- Run verification checks (hooks, python, project-context, config, agents)
+Idempotent end-to-end. Where `gaia install` is "first-time setup",
+`gaia update` is "re-sync after npm install bumped the version" -- they
+share helpers but differ in orchestration and phrasing.
+
+Order of operations:
+  1. Bootstrap DB (no-op if schema already current).
+  2. settings.json (create if missing).
+  3. settings.local.json -- merge permissions/env/agent.
+  4. settings.local.json -- merge hooks (npm mode).
+  5. Symlinks under .claude/ (recreate only if broken or stale).
+  6. plugin-registry.json (record current version).
+
+Verification (the `--verify` flag) reuses the existing checks so we don't
+duplicate doctor's logic. For the legacy 6-check report, see the
+`_run_verification` helper preserved here for backward compatibility with
+existing tests.
 
 Flags:
-  --dry-run   Detect what would change without mutating files
-  --verbose   Show all check results (including passing ones)
-  --json      Machine-readable output
+  --dry-run   Detect what would change without mutating files.
+  --verbose   Show all check results (including passing ones).
+  --json      Machine-readable output.
+  --skip-bootstrap  Don't invoke bootstrap.sh (helpful when DB is on a
+                    read-only mount or already known good).
+  --workspace PATH  Override workspace detection.
 """
+
+from __future__ import annotations
 
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+# bin/cli/update.py -> bin/cli -> bin -> gaia/
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.sh"
+
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
+
+from cli import _install_helpers  # type: ignore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +68,8 @@ def _find_project_root() -> Path:
 
 
 def _find_package_root() -> Path:
-    """The gaia-ops package root (where package.json lives)."""
-    return Path(__file__).resolve().parents[2]
+    """The gaia package root (where package.json lives)."""
+    return _PACKAGE_ROOT
 
 
 # ---------------------------------------------------------------------------
@@ -79,93 +105,99 @@ def _detect_versions(cwd: Path, pkg_root: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Update steps
+# Bootstrap helper (best-effort, never fatal in update mode)
 # ---------------------------------------------------------------------------
 
-def _check_settings_json(claude_dir: Path, dry_run: bool) -> dict:
-    """Create settings.json if missing (non-invasive, never overwrites)."""
-    if not claude_dir.exists():
-        return {"status": "skipped", "reason": ".claude/ not found"}
+def _run_bootstrap_idempotent(verbose: bool) -> dict:
+    """Run bootstrap.sh; return result dict with action + details.
 
-    settings_path = claude_dir / "settings.json"
-    if settings_path.exists():
-        return {"status": "ok", "message": "settings.json already exists"}
+    Failures are reported but never abort the update flow -- the user can
+    still benefit from settings/symlink fixes even if the DB is unreachable.
+    """
+    if not _BOOTSTRAP_SCRIPT.is_file():
+        return {"action": "skipped", "details": "bootstrap script missing"}
+    cmd = ["bash", str(_BOOTSTRAP_SCRIPT)]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=not verbose,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"action": "error", "details": f"bootstrap failed: {exc}"}
 
-    if not dry_run:
-        settings_path.write_text("{}\n", encoding="utf-8")
+    if result.returncode == 0:
+        return {"action": "noop", "details": "DB schema up to date"}
+    return {"action": "error", "details": f"bootstrap exited {result.returncode}"}
 
-    return {"status": "created", "dry_run": dry_run}
+
+# ---------------------------------------------------------------------------
+# Backward-compat shims for existing tests (test_gaia_update.py imports these)
+# ---------------------------------------------------------------------------
+
+def _legacy_settings_shape(helper_res: dict, dry_run: bool) -> dict:
+    """Convert a configure_settings_json helper result to legacy status shape."""
+    action = helper_res["action"]
+    if action == "skipped":
+        return {"status": "skipped", "reason": helper_res.get("details", "")}
+    if action == "noop":
+        return {"status": "ok", "message": helper_res.get("details", "")}
+    if action == "created":
+        return {"status": "created", "dry_run": dry_run}
+    return {"status": action, "details": helper_res.get("details", ""), "dry_run": dry_run}
 
 
-def _check_symlinks(claude_dir: Path, pkg_root: Path, dry_run: bool) -> dict:
-    """Check symlinks exist and are not broken; recreate if needed."""
-    if not claude_dir.exists():
-        return {"status": "skipped", "reason": ".claude/ not found"}
-
-    symlink_names = ["agents", "tools", "hooks", "commands", "templates", "config", "skills"]
-    fixed = []
-    valid = []
-    failed = []
-
-    for name in symlink_names:
-        link = claude_dir / name
-        target = pkg_root / name
-
-        if not link.exists() and not link.is_symlink():
-            if not dry_run:
-                try:
-                    link.symlink_to(target)
-                    fixed.append(name)
-                except OSError as exc:
-                    failed.append({"name": name, "error": str(exc)})
-            else:
-                fixed.append(name)
-        else:
-            # Check if broken
-            try:
-                link.resolve(strict=True)
-                valid.append(name)
-            except OSError:
-                if not dry_run:
-                    try:
-                        link.unlink()
-                        link.symlink_to(target)
-                        fixed.append(name)
-                    except OSError as exc:
-                        failed.append({"name": name, "error": str(exc)})
-                else:
-                    fixed.append(name)
-
-    # CHANGELOG.md
-    changelog_link = claude_dir / "CHANGELOG.md"
-    changelog_src = pkg_root / "CHANGELOG.md"
-    if not changelog_link.exists() and not changelog_link.is_symlink():
-        if not dry_run:
-            try:
-                changelog_link.symlink_to(changelog_src)
-                fixed.append("CHANGELOG.md")
-            except OSError as exc:
-                failed.append({"name": "CHANGELOG.md", "error": str(exc)})
-        else:
-            fixed.append("CHANGELOG.md")
-    else:
-        valid.append("CHANGELOG.md")
-
+def _legacy_symlinks_shape(helper_res: dict, dry_run: bool) -> dict:
+    """Convert a manage_symlinks helper result to legacy status shape."""
+    if helper_res["action"] == "skipped":
+        return {"status": "skipped", "reason": helper_res.get("details", "")}
     return {
-        "status": "ok" if not fixed and not failed else "fixed",
-        "fixed": fixed,
-        "valid": valid,
-        "failed": failed,
+        "status": "fixed" if helper_res.get("fixed") or helper_res.get("failed") else "ok",
+        "fixed": helper_res.get("fixed", []),
+        "valid": helper_res.get("valid", []),
+        "failed": helper_res.get("failed", []),
         "dry_run": dry_run,
     }
 
 
+def _check_settings_json(claude_dir: Path, dry_run: bool) -> dict:
+    """Compat shim that delegates to _install_helpers.configure_settings_json.
+
+    Kept for backward compatibility with test_gaia_update.py imports.
+    Internal callers should use _legacy_settings_shape() against the helper
+    result directly to avoid double invocation.
+    """
+    workspace = claude_dir.parent
+    res = _install_helpers.configure_settings_json(workspace, dry_run=dry_run)
+    return _legacy_settings_shape(res, dry_run)
+
+
+def _check_symlinks(claude_dir: Path, pkg_root: Path, dry_run: bool) -> dict:
+    """Compat shim that delegates to _install_helpers.manage_symlinks.
+
+    Kept for backward compatibility with test_gaia_update.py imports.
+    Internal callers should use _legacy_symlinks_shape() against the helper
+    result directly to avoid double invocation.
+    """
+    workspace = claude_dir.parent
+    res = _install_helpers.manage_symlinks(workspace, plugin_root=pkg_root, dry_run=dry_run)
+    return _legacy_symlinks_shape(res, dry_run)
+
+
 # ---------------------------------------------------------------------------
-# Verification checks
+# Verification -- legacy 6-check report
 # ---------------------------------------------------------------------------
 
 def _run_verification(claude_dir: Path) -> dict:
-    """Run installation health checks (mirrors runVerification in gaia-update.js)."""
+    """Run the legacy 6-check health report.
+
+    Note: `gaia doctor` performs a richer set of checks (12 total). This
+    function is preserved for backward compatibility with the existing
+    `--verify` output shape and test_gaia_update.py expectations. New code
+    should call `gaia doctor --json` for the canonical health snapshot.
+    """
     checks = []
     issues = []
 
@@ -214,7 +246,7 @@ def _run_verification(claude_dir: Path) -> dict:
             issues.append("project-context.json is invalid JSON")
     else:
         checks.append({"name": "project-context.json", "ok": False})
-        issues.append("project-context.json not found (run gaia-scan)")
+        issues.append("project-context.json not found (run `gaia scan`)")
 
     # 4. Config files
     config_files = ["git_standards.json", "universal-rules.json", "surface-routing.json"]
@@ -266,12 +298,16 @@ def register(subparsers):
     """Register the 'update' subcommand."""
     p = subparsers.add_parser(
         "update",
-        help="Check and update the gaia installation (settings, symlinks, verification)",
+        help="Sync Gaia after a package upgrade (settings, hooks, symlinks, registry)",
         description=(
-            "Update the gaia installation:\n"
-            "  - Check settings.json (create if missing)\n"
-            "  - Check symlinks (recreate missing/broken)\n"
-            "  - Verify installation health (hooks, python, project-context)\n"
+            "Sync Gaia after a package upgrade. Idempotent: every step is a\n"
+            "no-op when state is already current.\n"
+            "\n"
+            "  - Bootstrap DB (re-applies migrations only if needed)\n"
+            "  - settings.json (create if missing)\n"
+            "  - settings.local.json (merge permissions, env, agent, hooks)\n"
+            "  - .claude/<name> symlinks (recreate broken/stale)\n"
+            "  - plugin-registry.json (record current version)\n"
             "\n"
             "--dry-run: print what would change without modifying files.\n"
         ),
@@ -296,17 +332,36 @@ def register(subparsers):
         default=False,
         help="Output results as JSON",
     )
+    p.add_argument(
+        "--skip-bootstrap",
+        dest="skip_bootstrap",
+        action="store_true",
+        default=False,
+        help="Skip bootstrap.sh invocation (advanced; helpful for ro mounts)",
+    )
+    p.add_argument(
+        "--workspace",
+        dest="workspace",
+        type=str,
+        default=None,
+        help="Override workspace detection (default: walk up from cwd)",
+    )
     return p
 
 
 def cmd_update(args) -> int:
     """Execute the update subcommand."""
-    root = _find_project_root()
+    workspace_arg = getattr(args, "workspace", None)
+    if workspace_arg:
+        root = Path(workspace_arg).expanduser().resolve()
+    else:
+        root = _find_project_root()
     pkg_root = _find_package_root()
     claude_dir = root / ".claude"
     dry_run = getattr(args, "dry_run", False)
     verbose = getattr(args, "verbose", False)
     as_json = getattr(args, "json", False)
+    skip_bootstrap = getattr(args, "skip_bootstrap", False)
 
     versions = _detect_versions(root, pkg_root)
 
@@ -314,22 +369,43 @@ def cmd_update(args) -> int:
         current = versions.get("current", "unknown")
         previous = versions.get("previous")
         if previous and previous != current:
-            print(f"\ngaia-ops update  {previous} -> {current}\n")
+            print(f"\nUpdating Gaia from {previous} to {current}...\n")
         else:
-            print(f"\ngaia-ops update  {current}\n")
+            print(f"\nUpdating Gaia (current: {current})...\n")
         if dry_run:
             print("  (dry-run mode -- no files will be modified)\n")
 
-    settings_result = _check_settings_json(claude_dir, dry_run)
-    symlinks_result = _check_symlinks(claude_dir, pkg_root, dry_run)
+    # Step 1 -- bootstrap DB
+    if skip_bootstrap or dry_run:
+        bootstrap_result = {"action": "skipped", "details": "skipped (flag or dry-run)"}
+    else:
+        bootstrap_result = _run_bootstrap_idempotent(verbose=verbose)
+
+    # Steps 2-6 -- workspace helpers (each idempotent + dry-run aware).
+    # Order matches `gaia install` so install/update share the same sequence.
+    settings_helper = _install_helpers.configure_settings_json(root, dry_run=dry_run)
+    perms_helper = _install_helpers.merge_local_permissions(root, dry_run=dry_run)
+    hooks_helper = _install_helpers.merge_local_hooks(root, plugin_root=pkg_root, dry_run=dry_run)
+    sym_helper = _install_helpers.manage_symlinks(root, plugin_root=pkg_root, dry_run=dry_run)
+    reg_helper = _install_helpers.register_plugin(
+        root, plugin_root=pkg_root, source="cli-update", dry_run=dry_run,
+    )
+
+    # Compat: derive legacy shape from helper results (do NOT re-invoke).
+    settings_result = _legacy_settings_shape(settings_helper, dry_run)
+    symlinks_result = _legacy_symlinks_shape(sym_helper, dry_run)
     verify_result = _run_verification(claude_dir)
 
     result = {
         "root": str(root),
         "versions": versions,
         "dry_run": dry_run,
+        "bootstrap": bootstrap_result,
         "settings_json": settings_result,
+        "permissions": perms_helper,
+        "hooks": hooks_helper,
         "symlinks": symlinks_result,
+        "plugin_registry": reg_helper,
         "verification": verify_result,
     }
 
@@ -337,30 +413,22 @@ def cmd_update(args) -> int:
         print(json.dumps(result, indent=2))
         return 0
 
-    # Settings
-    s = settings_result
-    if s["status"] == "skipped":
-        if verbose:
-            print(f"  settings.json: skipped ({s.get('reason', '')})")
-    elif s["status"] == "ok":
-        if verbose:
-            print("  settings.json: already exists")
-    elif s["status"] == "created":
-        verb = "Would create" if dry_run else "Created"
-        print(f"  settings.json: {verb}")
+    # Human-readable summary
+    def _fmt(name: str, helper_res: dict) -> None:
+        action = helper_res.get("action", "?")
+        details = helper_res.get("details", "")
+        if action == "noop" and not verbose:
+            return
+        icon = {"created": "+", "updated": "~", "noop": "=",
+                "skipped": "-", "error": "!"}.get(action, "?")
+        print(f"  [{icon}] {name}: {details}")
 
-    # Symlinks
-    sl = symlinks_result
-    if sl.get("status") == "skipped":
-        if verbose:
-            print(f"  Symlinks: skipped ({sl.get('reason', '')})")
-    elif sl.get("fixed"):
-        verb = "Would fix" if dry_run else "Fixed"
-        print(f"  Symlinks: {verb} {len(sl['fixed'])} ({', '.join(sl['fixed'])})")
-    else:
-        total = len(sl.get("valid", [])) + len(sl.get("fixed", []))
-        if verbose:
-            print(f"  Symlinks: {total}/{total} valid")
+    _fmt("bootstrap", bootstrap_result)
+    _fmt("settings.json", settings_helper)
+    _fmt("permissions", perms_helper)
+    _fmt("hooks", hooks_helper)
+    _fmt("symlinks", sym_helper)
+    _fmt("plugin-registry", reg_helper)
 
     # Verification
     v = verify_result

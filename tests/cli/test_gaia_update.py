@@ -187,12 +187,15 @@ class TestRegisterSubcommand(unittest.TestCase):
 
 
 class TestCmdUpdate(unittest.TestCase):
-    def _make_args(self, dry_run=False, verbose=False, as_json=False):
+    def _make_args(self, dry_run=False, verbose=False, as_json=False,
+                   skip_bootstrap=True, workspace=None):
         import argparse
         ns = argparse.Namespace()
         ns.dry_run = dry_run
         ns.verbose = verbose
         ns.json = as_json
+        ns.skip_bootstrap = skip_bootstrap  # default skip in tests so we never run bash
+        ns.workspace = workspace
         return ns
 
     def test_dry_run_json_output(self):
@@ -237,6 +240,141 @@ class TestCmdUpdate(unittest.TestCase):
                     with redirect_stdout(io.StringIO()):
                         rc = cmd_update(args)
             self.assertEqual(rc, 0)
+
+
+class TestCmdUpdateOrchestration(unittest.TestCase):
+    """Verify cmd_update invokes every helper in the documented order.
+
+    Parity check: update must invoke each of the 5 workspace helpers in the
+    same order install does, so npm postinstall (which calls install) and
+    `gaia update` (which calls update) end with the same workspace state.
+    """
+
+    def _make_args(self, workspace=None, dry_run=False):
+        import argparse
+        ns = argparse.Namespace()
+        ns.dry_run = dry_run
+        ns.verbose = False
+        ns.json = True  # JSON to silence print
+        ns.skip_bootstrap = True
+        ns.workspace = str(workspace) if workspace else None
+        return ns
+
+    def test_invokes_all_five_helpers_in_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            pkg_root = Path(tmp) / "pkg"
+            pkg_root.mkdir()
+            (pkg_root / "package.json").write_text(json.dumps({"version": "5.0.0"}))
+
+            call_order = []
+
+            def make_tracker(name):
+                def fn(*args, **kwargs):
+                    call_order.append(name)
+                    return {"action": "noop", "path": str(root), "details": "mock"}
+                return fn
+
+            with patch("cli.update._find_package_root", return_value=pkg_root):
+                with patch(
+                    "cli.update._install_helpers.configure_settings_json",
+                    side_effect=make_tracker("settings_json"),
+                ), patch(
+                    "cli.update._install_helpers.merge_local_permissions",
+                    side_effect=make_tracker("permissions"),
+                ), patch(
+                    "cli.update._install_helpers.merge_local_hooks",
+                    side_effect=make_tracker("hooks"),
+                ), patch(
+                    "cli.update._install_helpers.manage_symlinks",
+                    side_effect=make_tracker("symlinks"),
+                ), patch(
+                    "cli.update._install_helpers.register_plugin",
+                    side_effect=make_tracker("registry"),
+                ):
+                    import io
+                    from contextlib import redirect_stdout
+                    with redirect_stdout(io.StringIO()):
+                        rc = cmd_update(self._make_args(workspace=root))
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                call_order,
+                ["settings_json", "permissions", "hooks", "symlinks", "registry"],
+            )
+
+    def test_dry_run_propagates_to_helpers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            pkg_root = Path(tmp) / "pkg"
+            pkg_root.mkdir()
+            (pkg_root / "package.json").write_text(json.dumps({"version": "5.0.0"}))
+
+            captured = {}
+
+            def fake(*args, **kwargs):
+                captured.setdefault("dry_run_seen", []).append(kwargs.get("dry_run"))
+                return {"action": "noop", "path": "x", "details": ""}
+
+            with patch("cli.update._find_package_root", return_value=pkg_root):
+                with patch(
+                    "cli.update._install_helpers.configure_settings_json", side_effect=fake,
+                ), patch(
+                    "cli.update._install_helpers.merge_local_permissions", side_effect=fake,
+                ), patch(
+                    "cli.update._install_helpers.merge_local_hooks", side_effect=fake,
+                ), patch(
+                    "cli.update._install_helpers.manage_symlinks", side_effect=fake,
+                ), patch(
+                    "cli.update._install_helpers.register_plugin", side_effect=fake,
+                ):
+                    import io
+                    from contextlib import redirect_stdout
+                    with redirect_stdout(io.StringIO()):
+                        cmd_update(self._make_args(workspace=root, dry_run=True))
+
+            # Every helper must be called with dry_run=True
+            self.assertTrue(all(d is True for d in captured["dry_run_seen"]))
+
+    def test_uses_cli_update_source_in_registry(self):
+        """registry.source must be 'cli-update' from this command (parity sentinel)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            pkg_root = Path(tmp) / "pkg"
+            pkg_root.mkdir()
+            (pkg_root / "package.json").write_text(json.dumps({"version": "5.0.0"}))
+
+            captured = {}
+
+            def fake_register(workspace, plugin_root=None, source=None, dry_run=False):
+                captured["source"] = source
+                return {"action": "noop", "path": "x", "details": ""}
+
+            with patch("cli.update._find_package_root", return_value=pkg_root):
+                with patch(
+                    "cli.update._install_helpers.register_plugin", side_effect=fake_register,
+                ), patch(
+                    "cli.update._install_helpers.configure_settings_json",
+                    return_value={"action": "noop", "path": "x", "details": ""},
+                ), patch(
+                    "cli.update._install_helpers.merge_local_permissions",
+                    return_value={"action": "noop", "path": "x", "details": ""},
+                ), patch(
+                    "cli.update._install_helpers.merge_local_hooks",
+                    return_value={"action": "noop", "path": "x", "details": ""},
+                ), patch(
+                    "cli.update._install_helpers.manage_symlinks",
+                    return_value={"action": "noop", "path": "x", "details": ""},
+                ):
+                    import io
+                    from contextlib import redirect_stdout
+                    with redirect_stdout(io.StringIO()):
+                        cmd_update(self._make_args(workspace=root))
+
+            self.assertEqual(captured["source"], "cli-update")
 
 
 if __name__ == "__main__":

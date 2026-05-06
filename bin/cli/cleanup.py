@@ -1,5 +1,6 @@
 """
-gaia cleanup -- mirror of gaia-cleanup.js
+gaia cleanup -- Remove temporary caches, old logs, and `__pycache__`;
+preserves project-context.json and .claude/ symlinks.
 
 Modes:
   --prune / --retain  Apply data retention policy only (no symlink/settings removal)
@@ -39,7 +40,7 @@ def _find_project_root() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Retention policy (mirrors RETENTION_POLICY in gaia-cleanup.js)
+# Retention policy -- per-target rules for what gets pruned and when.
 # ---------------------------------------------------------------------------
 
 RETENTION_POLICY = [

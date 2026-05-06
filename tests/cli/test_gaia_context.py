@@ -194,34 +194,21 @@ class TestCmdScan:
             rc = _cmd_scan(args)
         assert rc == 1
 
-    def test_scan_shelled_out(self, tmp_path):
-        """Verify that non-dry-run scan shells out to gaia-scan.py (not imports it)."""
+    def test_scan_delegates_to_cli_scan(self, tmp_path):
+        """Verify that non-dry-run scan delegates in-process to cli.scan.cmd_scan."""
         _write_context(tmp_path)
 
-        # Create a fake gaia-scan.py in bin/ next to context.py's parent
-        fake_scan = _BIN_DIR / "gaia-scan.py"
-        # It exists in the real repo; patch subprocess.run to avoid side effects
         args = _MockArgs(context_cmd="scan", dry_run=False, json=False)
         with patch("cli.context._find_project_root", return_value=tmp_path):
-            with patch("cli.context.subprocess.run") as mock_run:
-                mock_proc = MagicMock()
-                mock_proc.returncode = 0
-                mock_run.return_value = mock_proc
+            with patch("cli.scan.cmd_scan", return_value=0) as mock_cmd_scan:
                 rc = _cmd_scan(args)
 
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        # The command must be a list containing gaia-scan.py, not an import
-        assert any("gaia-scan.py" in str(arg) for arg in call_args)
+        mock_cmd_scan.assert_called_once()
+        scan_args = mock_cmd_scan.call_args[0][0]
+        assert scan_args.workspace == str(tmp_path)
+        assert scan_args.fresh is False
+        assert scan_args.dry_run is False
         assert rc == 0
-
-    def test_scan_missing_scan_script_returns_1(self, tmp_path):
-        _write_context(tmp_path)
-        args = _MockArgs(context_cmd="scan", dry_run=False, json=False)
-        with patch("cli.context._find_project_root", return_value=tmp_path):
-            with patch("pathlib.Path.exists", return_value=False):
-                rc = _cmd_scan(args)
-        assert rc == 1
 
 
 # ---------------------------------------------------------------------------

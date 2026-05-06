@@ -1,5 +1,6 @@
 """
-gaia metrics -- mirror of gaia-metrics.js
+gaia metrics -- Usage analytics: tier classification, agent invocations,
+anomaly counters.
 
 Displays system metrics dashboard:
   - Security tier usage distribution
@@ -965,7 +966,7 @@ def cmd_metrics(args) -> int:
             print(json.dumps({"error": "gaia-ops not installed in this directory"}))
         else:
             print("\nGaia-ops not installed in this directory")
-            print("Run: npx gaia-scan\n")
+            print("Run: gaia scan\n")
         return 1
 
     audit_logs = _read_audit_logs(root)

@@ -11,8 +11,8 @@ Subcommands:
 
 from __future__ import annotations
 
+import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -162,7 +162,12 @@ def _cmd_show(args) -> int:
 
 
 def _cmd_scan(args) -> int:
-    """Handle `gaia context scan [--dry-run] [--json]`."""
+    """Handle `gaia context scan [--dry-run] [--json]`.
+
+    Delegates to `bin/cli/scan.py:cmd_scan` in-process. The legacy
+    standalone scanner subprocess shell-out has been removed in favour of
+    a direct module call -- one process, shared sys.path, no fork overhead.
+    """
     project_root = _find_project_root(Path.cwd())
     if project_root is None:
         msg = "gaia context: could not find project root (.claude/ directory)"
@@ -208,25 +213,19 @@ def _cmd_scan(args) -> int:
             print(f"  would_scan   : {result['would_scan']}")
         return 0
 
-    # Locate gaia-scan.py relative to this script's parent (bin/)
-    # bin/cli/context.py -> bin/ -> package_root
-    script_dir = Path(__file__).resolve().parent.parent  # bin/
-    scan_script = script_dir / "gaia-scan.py"
+    from cli.scan import cmd_scan as _cmd_scan_impl
 
-    if not scan_script.exists():
-        msg = f"gaia-scan.py not found at {scan_script}"
-        if getattr(args, "json", False):
-            print(json.dumps({"error": msg}))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
-        return 1
-
-    cmd = [sys.executable, str(scan_script), "--root", str(project_root)]
-    if getattr(args, "json", False):
-        cmd.append("--json")
-
-    proc = subprocess.run(cmd)
-    return proc.returncode
+    scan_args = argparse.Namespace(
+        workspace=str(project_root),
+        fresh=False,
+        dry_run=False,
+        json=getattr(args, "json", False),
+        scanners=None,
+        check_staleness=False,
+        no_color=False,
+        verbose=False,
+    )
+    return _cmd_scan_impl(scan_args)
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +368,7 @@ def register(subparsers) -> None:
 
     # gaia context scan
     scan_parser = ctx_subparsers.add_parser(
-        "scan", help="Run project scanner (gaia-scan.py)"
+        "scan", help="Run project scanner"
     )
     scan_parser.add_argument(
         "--dry-run",
