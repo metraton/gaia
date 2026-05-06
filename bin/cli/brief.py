@@ -19,6 +19,8 @@ Subcommands:
                                           (DB-only)
     gaia brief deps <name> [--json]       Print dependency graph
     gaia brief search <query> [--limit N] FTS5 search over objective/context/approach
+    gaia brief delete <name> [--yes]      Hard-delete a brief from the DB
+                  [--json]                (cascades to ACs, milestones, deps)
     gaia brief import-from-fs --source PATH [--workspace W]
                                           One-time migration of brief.md files
 """
@@ -373,6 +375,70 @@ def _cmd_search(args) -> int:
     return 0
 
 
+def _cmd_delete(args) -> int:
+    """Hard-delete a brief from the DB (DB-only, no filesystem touch).
+
+    NOTE (initial implementation): This performs a *hard* delete -- the row
+    in ``briefs`` is removed and FK CASCADE wipes acceptance_criteria,
+    milestones, brief_dependencies, plans, plan_tasks, and the FTS5 mirror.
+    The data is unrecoverable from the DB after commit.
+
+    A follow-up brief is planned for *soft delete* (status=archived or a
+    ``deleted_at`` column) so that brief deletion is reversible and audit
+    trails are preserved. Until that brief lands, prefer
+    ``gaia brief set-status <name> archived`` over ``gaia brief delete``
+    when the goal is to retire a brief rather than purge it for testing.
+    """
+    from gaia.briefs import get_brief, delete_brief
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    as_json = getattr(args, "json", False)
+    skip_confirm = getattr(args, "yes", False)
+
+    brief = get_brief(workspace, name)
+    if brief is None:
+        return _err(
+            f"brief '{name}' not found in workspace '{workspace}'",
+            as_json=as_json,
+        )
+
+    if not skip_confirm:
+        status = brief.get("status") or "?"
+        prompt = f"Delete brief '{name}' (status={status})? [y/N] "
+        try:
+            answer = input(prompt)
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            if as_json:
+                print(json.dumps({"deleted": False, "name": name,
+                                  "reason": "aborted by user"}))
+            else:
+                print(f"Aborted; brief '{name}' was not deleted.")
+            return 0
+
+    deleted = delete_brief(workspace, name)
+    if not deleted:
+        # Race-condition guard: the brief existed at the get_brief call but
+        # someone else removed it before our DELETE landed.
+        return _err(
+            f"brief '{name}' could not be deleted (already gone?)",
+            as_json=as_json,
+        )
+
+    if as_json:
+        print(json.dumps({
+            "deleted": True,
+            "name": name,
+            "workspace": workspace,
+            "previous_status": brief.get("status"),
+        }, indent=2, default=str))
+    else:
+        print(f"Deleted brief '{name}' (workspace='{workspace}', "
+              f"previous_status={brief.get('status')!r})")
+    return 0
+
+
 def _cmd_import_from_fs(args) -> int:
     from gaia.briefs import import_from_fs
     workspace = _resolve_workspace(getattr(args, "workspace", None))
@@ -476,6 +542,22 @@ def register(subparsers) -> None:
     search_p.add_argument("--json", action="store_true", default=False)
     search_p.add_argument("--workspace", default=None)
 
+    delete_p = actions.add_parser(
+        "delete",
+        help="Hard-delete a brief from the DB (cascades to ACs, milestones, "
+             "deps; soft-delete pending follow-up brief)",
+    )
+    delete_p.add_argument("name")
+    delete_p.add_argument("--workspace", default=None)
+    delete_p.add_argument(
+        "--yes", action="store_true", default=False,
+        help="Skip the interactive confirmation prompt",
+    )
+    delete_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit the deletion result as JSON",
+    )
+
     import_p = actions.add_parser(
         "import-from-fs",
         help="Migrate brief.md files from a directory tree into the DB",
@@ -497,6 +579,7 @@ def cmd_brief(args) -> int:
         "set-status": _cmd_set_status,
         "deps": _cmd_deps,
         "search": _cmd_search,
+        "delete": _cmd_delete,
         "import-from-fs": _cmd_import_from_fs,
     }
     if action in handlers:
@@ -504,7 +587,8 @@ def cmd_brief(args) -> int:
 
     print(
         "Usage: gaia brief "
-        "<new|edit|show|list|close|set-status|deps|search|import-from-fs>",
+        "<new|edit|show|list|close|set-status|deps|search|delete|"
+        "import-from-fs>",
         file=sys.stderr,
     )
     return 0
