@@ -10,23 +10,23 @@ Reglas:
   - Idempotente: PK = (project, name) -> INSERT OR IGNORE.
   - MEMORY.md (índice) NO se migra.
   - Frontmatter YAML mínimo: name, description, type. Opcional: originSessionId.
-  - El parser de YAML es simple key:value (sin libs externas), suficiente para
-    los archivos actuales que siguen ese patrón estricto.
 
-Salida: /tmp/migrate_02_notes.sql
+CLI args (parametrización cross-workspace):
+  --project   workspace name (default: 'me')
+  --src       directorio con .md files (default: ws/me memory)
+  --out       path al SQL de salida (default: /tmp/migrate_02_notes.sql)
+  --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
 """
 from __future__ import annotations
 
-import os
+import argparse
 import sys
 from pathlib import Path
 
-# --- Config -----------------------------------------------------------------
-
-PROJECT = "me"
-SRC_DIR = Path("/home/jorge/.claude/projects/-home-jorge-ws-me/memory")
-INDEX_FILE = "MEMORY.md"  # explícitamente excluido
-OUT = Path("/tmp/migrate_02_notes.sql")
+DEFAULT_PROJECT = "me"
+DEFAULT_SRC_DIR = Path("/home/jorge/.claude/projects/-home-jorge-ws-me/memory")
+DEFAULT_OUT = Path("/tmp/migrate_02_notes.sql")
+INDEX_FILE = "MEMORY.md"
 VALID_TYPES = {"project", "user", "feedback"}
 
 COLUMNS = [
@@ -48,14 +48,9 @@ def sql_quote(value) -> str:
 
 
 def parse_frontmatter(text: str):
-    """
-    Devuelve (front: dict, body: str).
-    Si no hay frontmatter válido, front={} y body=text completo.
-    """
     if not text.startswith("---"):
         return {}, text
 
-    # Buscar el cierre.
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}, text
@@ -75,37 +70,29 @@ def parse_frontmatter(text: str):
         key, _, val = raw.partition(":")
         key = key.strip()
         val = val.strip()
-        # Quitar comillas envolventes simples o dobles si las hay.
         if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
             val = val[1:-1]
         front[key] = val
 
     body = "\n".join(lines[end_idx + 1 :])
-    # Quitar un único newline de cabecera dejado por la separación.
     if body.startswith("\n"):
         body = body[1:]
     return front, body
 
 
 def file_iso_mtime(p: Path) -> str:
-    """Timestamp ISO8601 UTC del mtime del archivo."""
     import datetime as _dt
 
     ts = p.stat().st_mtime
     return _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def extract_row(md_path: Path):
-    """
-    Lee un .md, parsea frontmatter y devuelve la fila.
-    Si el frontmatter no tiene 'type' válido, devuelve None y el caller decide.
-    """
+def extract_row(md_path: Path, project: str):
     text = md_path.read_text(encoding="utf-8")
     front, body = parse_frontmatter(text)
 
     note_type = (front.get("type") or "").strip().lower()
     if note_type not in VALID_TYPES:
-        # Inferir por prefijo del filename como fallback.
         base = md_path.stem
         if base.startswith("project_"):
             note_type = "project"
@@ -114,14 +101,14 @@ def extract_row(md_path: Path):
         elif base.startswith("feedback_"):
             note_type = "feedback"
         else:
-            return None  # caller registra skip
+            # Fallback final: tratar cualquier .md sin prefijo como 'project' note.
+            # Necesario para workspaces aaxis donde los nombres no siguen prefijo (ej. wsl_mirrored_docker_setup).
+            note_type = "project"
 
-    # `name` se toma del filename (estable, sin espacios) en lugar del campo
-    # frontmatter que a veces es un título humano.
     name = md_path.stem
 
     return {
-        "project": PROJECT,
+        "project": project,
         "name": name,
         "type": note_type,
         "description": front.get("description"),
@@ -136,18 +123,30 @@ def row_values_sql(row: dict) -> str:
 
 
 def main() -> int:
-    if not SRC_DIR.exists():
-        print(f"[migrate_02] ERROR: source dir not found: {SRC_DIR}", file=sys.stderr)
+    parser = argparse.ArgumentParser(description="Generate INSERT SQL for notes table.")
+    parser.add_argument("--project", default=DEFAULT_PROJECT)
+    parser.add_argument("--src", default=str(DEFAULT_SRC_DIR), help="memory dir with .md files")
+    parser.add_argument("--out", default=str(DEFAULT_OUT))
+    parser.add_argument("--fragment", action="store_true")
+    args = parser.parse_args()
+
+    project = args.project
+    src_dir = Path(args.src)
+    out = Path(args.out)
+    fragment = args.fragment
+
+    if not src_dir.exists():
+        print(f"[migrate_02:{project}] ERROR: source dir not found: {src_dir}", file=sys.stderr)
         return 1
 
     rows = []
     skipped = []
-    files = sorted(p for p in SRC_DIR.iterdir() if p.is_file() and p.suffix == ".md")
+    files = sorted(p for p in src_dir.iterdir() if p.is_file() and p.suffix == ".md")
 
     for p in files:
         if p.name == INDEX_FILE:
-            continue  # MEMORY.md es el índice, no se migra.
-        row = extract_row(p)
+            continue
+        row = extract_row(p, project)
         if row is None:
             skipped.append(p.name)
             continue
@@ -156,20 +155,23 @@ def main() -> int:
     cols_csv = ",".join(COLUMNS)
     insert_prefix = f"INSERT OR IGNORE INTO notes ({cols_csv}) VALUES\n"
 
-    with OUT.open("w", encoding="utf-8") as out:
-        out.write("-- Generated by migrate_02_notes.py (idempotent)\n")
-        out.write(f"-- Source dir: {SRC_DIR}\n")
-        out.write(f"-- Files considered: {len(files)} (excluyendo {INDEX_FILE})\n")
-        out.write(f"-- Records to insert: {len(rows)}\n")
-        out.write(f"-- Skipped: {len(skipped)} -> {skipped}\n")
-        out.write("BEGIN TRANSACTION;\n")
+    with out.open("w", encoding="utf-8") as fh:
+        fh.write(f"-- Generated by migrate_02_notes.py (idempotent)\n")
+        fh.write(f"-- Project: {project}\n")
+        fh.write(f"-- Source dir: {src_dir}\n")
+        fh.write(f"-- Files considered: {len(files)} (excluyendo {INDEX_FILE})\n")
+        fh.write(f"-- Records to insert: {len(rows)}\n")
+        fh.write(f"-- Skipped: {len(skipped)} -> {skipped}\n")
+        if not fragment:
+            fh.write("BEGIN TRANSACTION;\n")
         if rows:
-            out.write(insert_prefix)
-            out.write(",\n".join(row_values_sql(r) for r in rows))
-            out.write(";\n")
-        out.write("COMMIT;\n")
+            fh.write(insert_prefix)
+            fh.write(",\n".join(row_values_sql(r) for r in rows))
+            fh.write(";\n")
+        if not fragment:
+            fh.write("COMMIT;\n")
 
-    print(f"[migrate_02] wrote {OUT} ({len(rows)} rows, {len(skipped)} skipped)")
+    print(f"[migrate_02:{project}] wrote {out} ({len(rows)} rows, {len(skipped)} skipped)")
     return 0
 
 
