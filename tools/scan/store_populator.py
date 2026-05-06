@@ -302,6 +302,250 @@ def populate_features(
 
 
 # ---------------------------------------------------------------------------
+# Apps populator (B2 gap fix: scanners-populate-workspace-model)
+# ---------------------------------------------------------------------------
+
+def populate_apps(
+    workspace: str,
+    repo: str,
+    repo_path: Path,
+    agent: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Persist app-unit discoveries for a repo into the ``apps`` table.
+
+    App detection heuristic (in priority order):
+
+    1. **``apps/`` directory** -- any subdirectory directly under
+       ``{repo_path}/apps/`` is treated as a deployable app. This covers the
+       canonical monorepo layout (qxo-monorepo, bildwiz-platform-style).
+       Scanner-owned ``kind`` is inferred from marker files inside the
+       subdirectory (``Dockerfile`` / ``docker-compose*.yml`` -> ``"service"``;
+       fallback ``"app"``).
+    2. **Single-repo deployable** -- if the repo root has a ``package.json``
+       AND the repo role is ``"application"`` AND no ``apps/`` directory was
+       found, the repo itself becomes one app row keyed by the package name
+       (or repo basename as fallback).
+
+    Scanner-owned columns only (``name``, ``kind``, ``scanner_ts``);
+    agent-owned columns (``description``, ``status``) are never touched.
+
+    Returns:
+        Dict with ``apps`` sub-key containing ``upsert`` and ``deleted``
+        counts.
+    """
+    from gaia.store import bulk_upsert
+
+    apps = _scan_apps(repo_path)
+    out: dict = {"apps": {}}
+
+    rows_a = [
+        {
+            "repo": repo,
+            "name": a["name"],
+            "kind": a.get("kind"),
+            "scanner_ts": _now_iso(),
+        }
+        for a in apps
+    ]
+    if rows_a:
+        out["apps"]["upsert"] = bulk_upsert(
+            "apps", workspace, rows_a, agent, db_path=db_path
+        )
+    surviving_a = [(repo, a["name"]) for a in apps]
+    out["apps"]["deleted"] = _safe_delete_missing(
+        "apps", workspace, repo, surviving_a, db_path
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Services populator (B2 gap fix: scanners-populate-workspace-model)
+# ---------------------------------------------------------------------------
+
+def populate_services(
+    workspace: str,
+    repo: str,
+    repo_path: Path,
+    agent: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Persist infrastructure-service discoveries for a repo into ``services``.
+
+    Service detection heuristic (in priority order):
+
+    1. **``services/`` directory** -- any subdirectory directly under
+       ``{repo_path}/services/`` is treated as a service unit.
+    2. **docker-compose top-level services** -- ``docker-compose.yml`` /
+       ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the repo root:
+       parse the top-level ``services:`` mapping and emit one row per service
+       key. ``kind`` is inferred from the image name (``postgres``/``mysql``
+       -> ``"database"``; ``redis``/``memcached`` -> ``"cache"``;
+       ``rabbitmq``/``kafka`` -> ``"queue"``; otherwise ``"api"``).
+
+    Scanner-owned columns only (``name``, ``kind``, ``scanner_ts``);
+    agent-owned columns (``description``, ``status``) are never touched.
+
+    Returns:
+        Dict with ``services`` sub-key containing ``upsert`` and ``deleted``
+        counts.
+    """
+    from gaia.store import bulk_upsert
+
+    services = _scan_services(repo_path)
+    out: dict = {"services": {}}
+
+    rows_s = [
+        {
+            "repo": repo,
+            "name": s["name"],
+            "kind": s.get("kind"),
+            "scanner_ts": _now_iso(),
+        }
+        for s in services
+    ]
+    if rows_s:
+        out["services"]["upsert"] = bulk_upsert(
+            "services", workspace, rows_s, agent, db_path=db_path
+        )
+    surviving_s = [(repo, s["name"]) for s in services]
+    out["services"]["deleted"] = _safe_delete_missing(
+        "services", workspace, repo, surviving_s, db_path
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Libraries populator (B2 gap fix: scanners-populate-workspace-model)
+# ---------------------------------------------------------------------------
+
+def populate_libraries(
+    workspace: str,
+    repo: str,
+    repo_path: Path,
+    agent: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Persist library/package discoveries for a repo into ``libraries``.
+
+    Scope decision: ``libraries`` is interpreted as **workspace-internal
+    shared packages** (NOT external npm/pypi dependencies). This matches the
+    schema -- ``libraries`` shares (project, repo, name) PK with ``apps`` /
+    ``services`` and carries ``version`` + ``language``, which only makes
+    sense for packages owned by the workspace.
+
+    Library detection heuristic (in priority order):
+
+    1. **``packages/`` directory** -- any subdirectory directly under
+       ``{repo_path}/packages/`` is treated as a workspace package
+       (pnpm/yarn/npm workspace convention used by bildwiz-platform).
+       Reads ``package.json`` inside each subdir for ``name`` and ``version``.
+    2. **``libs/`` or ``libraries/`` directory** -- alternative monorepo
+       conventions. Same per-subdir pattern.
+    3. **package.json with workspaces** -- if the repo root has
+       ``package.json`` with a ``"workspaces"`` field, glob each pattern
+       (e.g. ``packages/*``) and emit one row per matched directory's
+       ``package.json`` ``name``.
+
+    Each row records ``name`` (from package.json or dir basename),
+    ``version`` (from package.json), ``language`` (currently always
+    ``"javascript"`` since the heuristic targets JS/TS monorepos --
+    Python/Rust/etc. equivalents can be added in a follow-up).
+
+    Scanner-owned columns only (``name``, ``version``, ``language``,
+    ``scanner_ts``).
+
+    Returns:
+        Dict with ``libraries`` sub-key containing ``upsert`` and ``deleted``
+        counts.
+    """
+    from gaia.store import bulk_upsert
+
+    libraries = _scan_libraries(repo_path)
+    out: dict = {"libraries": {}}
+
+    rows_l = [
+        {
+            "repo": repo,
+            "name": l["name"],
+            "version": l.get("version"),
+            "language": l.get("language"),
+            "scanner_ts": _now_iso(),
+        }
+        for l in libraries
+    ]
+    if rows_l:
+        out["libraries"]["upsert"] = bulk_upsert(
+            "libraries", workspace, rows_l, agent, db_path=db_path
+        )
+    surviving_l = [(repo, l["name"]) for l in libraries]
+    out["libraries"]["deleted"] = _safe_delete_missing(
+        "libraries", workspace, repo, surviving_l, db_path
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Gaia installations populator (B5 gap fix: rescan-real-workspaces-with-backup)
+# ---------------------------------------------------------------------------
+
+def populate_gaia_installations(
+    workspace: str,
+    workspace_root: Path,
+    agent: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Detect Gaia installations in the workspace and persist them.
+
+    PK is (project, machine), so each detection produces ONE row keyed by
+    the local hostname.
+
+    Detection heuristic (in priority order):
+
+    1. **``node_modules/@jaguilar87/gaia/package.json``** -- canonical npm
+       install. Reads the version field. ``install_mode = "npm"``.
+    2. **``.claude/skills/`` + ``.claude/agents/`` present** -- Gaia
+       footprint without a node_modules entry (e.g. dev symlink). Version
+       comes from ``.claude/.gaia-version`` if present, otherwise ``None``.
+       ``install_mode = "dev"`` when a symlink is detected, else
+       ``"unknown"``.
+
+    Note: this populator runs once per workspace (NOT per repo). It is
+    invoked from ``scan_workspace_to_store`` after the repo loop.
+
+    Returns:
+        Dict with ``gaia_installations`` sub-key containing ``upsert`` and
+        ``deleted`` counts (deleted is 0 -- this populator does not prune
+        cross-machine rows).
+    """
+    from gaia.store import bulk_upsert
+
+    installations = _scan_gaia_installations(workspace_root)
+    out: dict = {"gaia_installations": {}}
+
+    rows_g = [
+        {
+            "machine": g["machine"],
+            "version": g.get("version"),
+            "install_mode": g.get("install_mode"),
+            "scanner_ts": _now_iso(),
+        }
+        for g in installations
+    ]
+    if rows_g:
+        out["gaia_installations"]["upsert"] = bulk_upsert(
+            "gaia_installations", workspace, rows_g, agent, db_path=db_path
+        )
+    # Intentional: do NOT prune other machines' rows (PK is per-machine).
+    out["gaia_installations"]["deleted"] = 0
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Workspace scan loop
 # ---------------------------------------------------------------------------
 
@@ -323,7 +567,9 @@ def scan_workspace_to_store(
         db_path: Optional explicit DB path (test override).
 
     Returns:
-        Dict mapping repo names to per-repo result dicts.
+        Dict mapping repo names to per-repo result dicts, plus a
+        ``__workspace__`` key for workspace-scoped populators
+        (``gaia_installations``).
     """
     repos = _list_repos(root)
     results = {}
@@ -339,12 +585,30 @@ def scan_workspace_to_store(
         feat_res = populate_features(
             workspace, repo_name, repo_path, agent, db_path=db_path
         )
+        apps_res = populate_apps(
+            workspace, repo_name, repo_path, agent, db_path=db_path
+        )
+        services_res = populate_services(
+            workspace, repo_name, repo_path, agent, db_path=db_path
+        )
+        libs_res = populate_libraries(
+            workspace, repo_name, repo_path, agent, db_path=db_path
+        )
         results[repo_name] = {
             "repo": repo_res,
             "infrastructure": infra_res,
             "orchestration": orch_res,
             "features": feat_res,
+            "apps": apps_res,
+            "services": services_res,
+            "libraries": libs_res,
         }
+
+    # Workspace-scoped populator: gaia_installations runs once per workspace.
+    gaia_inst_res = populate_gaia_installations(workspace, root, agent, db_path=db_path)
+    results["__workspace__"] = {
+        "gaia_installations": gaia_inst_res,
+    }
     return results
 
 
@@ -720,6 +984,381 @@ def _scan_features(repo_path: Path) -> list[dict]:
                     _add(str(key))
         except (OSError, ValueError):
             pass
+
+    return out
+
+
+def _scan_apps(repo_path: Path) -> list[dict]:
+    """Detect deployable apps in a repo.
+
+    Tier 1: ``apps/`` subdirectory -- each child directory becomes an app
+    row. ``kind`` is inferred from marker files inside (``Dockerfile`` or
+    ``docker-compose*.yml`` -> ``"service"``; otherwise ``"app"``).
+
+    Tier 2: single-repo deployable -- if the repo has ``package.json`` at
+    root AND no ``apps/`` directory was found, the repo itself becomes one
+    app row keyed by package.json ``name`` (or repo basename fallback).
+
+    Returns a de-duplicated list of ``{"name": str, "kind": str|None}`` dicts.
+    """
+    import json
+
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(name: str, kind: str | None) -> None:
+        key = name.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append({"name": name, "kind": kind})
+
+    if not repo_path.is_dir():
+        return out
+
+    # Tier 1: apps/ directory
+    apps_dir = repo_path / "apps"
+    if apps_dir.is_dir():
+        try:
+            for child in sorted(apps_dir.iterdir()):
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                kind = "app"
+                try:
+                    names = {p.name for p in child.iterdir()}
+                except OSError:
+                    names = set()
+                if "Dockerfile" in names or any(
+                    n.startswith("docker-compose") for n in names
+                ):
+                    kind = "service"
+                _add(child.name, kind)
+        except OSError:
+            pass
+        # If we found anything in apps/, do not also emit the single-repo row.
+        if out:
+            return out
+
+    # Tier 2: single-repo deployable
+    pkg = repo_path / "package.json"
+    if pkg.is_file():
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            data = {}
+        # Skip if this is a workspace root (workspaces field present) -- those
+        # are aggregators, not deployable apps. Their packages/apps are picked
+        # up by populate_libraries / Tier 1 of populate_apps.
+        if isinstance(data, dict) and "workspaces" not in data:
+            name = (data.get("name") if isinstance(data.get("name"), str) else None) or repo_path.name
+            kind = "service" if (repo_path / "Dockerfile").is_file() else "app"
+            _add(name, kind)
+
+    return out
+
+
+def _scan_services(repo_path: Path) -> list[dict]:
+    """Detect infrastructure-level services in a repo.
+
+    Tier 1: ``services/`` subdirectory -- each child directory becomes a
+    service row (kind=``"api"`` by default).
+
+    Tier 2: docker-compose top-level services -- ``docker-compose.yml`` /
+    ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the repo root.
+    Parses the top-level ``services:`` mapping. ``kind`` is inferred from
+    the image name when present (``postgres``/``mysql`` -> ``"database"``;
+    ``redis``/``memcached`` -> ``"cache"``; ``rabbitmq``/``kafka`` ->
+    ``"queue"``; otherwise ``"api"``).
+
+    Returns a de-duplicated list of ``{"name": str, "kind": str|None}`` dicts.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(name: str, kind: str | None) -> None:
+        key = name.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append({"name": name, "kind": kind})
+
+    if not repo_path.is_dir():
+        return out
+
+    # Tier 1: services/ directory
+    services_dir = repo_path / "services"
+    if services_dir.is_dir():
+        try:
+            for child in sorted(services_dir.iterdir()):
+                if child.is_dir() and not child.name.startswith("."):
+                    _add(child.name, "api")
+        except OSError:
+            pass
+
+    # Tier 2: docker-compose top-level services
+    compose_files: list[Path] = []
+    try:
+        for child in repo_path.iterdir():
+            if not child.is_file():
+                continue
+            if child.name in ("docker-compose.yml", "docker-compose.yaml"):
+                compose_files.append(child)
+            elif child.name.startswith("docker-compose-") and (
+                child.name.endswith(".yml") or child.name.endswith(".yaml")
+            ):
+                compose_files.append(child)
+    except OSError:
+        pass
+
+    for cf in compose_files:
+        try:
+            content = cf.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for svc_name, image in _parse_compose_services(content):
+            _add(svc_name, _infer_service_kind(image))
+
+    return out
+
+
+def _parse_compose_services(content: str) -> list[tuple[str, str | None]]:
+    """Parse a docker-compose YAML for top-level service names + image strings.
+
+    Returns a list of ``(service_name, image_or_None)`` tuples. Tolerates
+    the absence of PyYAML by doing line-based parsing of the top-level
+    ``services:`` block.
+    """
+    out: list[tuple[str, str | None]] = []
+    lines = content.splitlines()
+
+    in_services = False
+    services_indent = -1
+    current_service: str | None = None
+    current_indent = -1
+    current_image: str | None = None
+
+    def _emit() -> None:
+        nonlocal current_service, current_image, current_indent
+        if current_service:
+            out.append((current_service, current_image))
+        current_service = None
+        current_image = None
+        current_indent = -1
+
+    for raw in lines:
+        # Strip comment-only lines but keep indentation
+        if raw.strip().startswith("#") or not raw.strip():
+            continue
+
+        indent = len(raw) - len(raw.lstrip(" "))
+        stripped = raw.strip()
+
+        # Detect entering services: block
+        if not in_services:
+            if stripped == "services:" and indent == 0:
+                in_services = True
+                services_indent = 0
+            continue
+
+        # Inside services: block. Top-level key (one indent step in) = service name.
+        # Stop when indentation returns to <= services_indent and is a different key.
+        if indent <= services_indent and stripped.endswith(":") and stripped != "services:":
+            _emit()
+            in_services = False
+            continue
+
+        # Service name line: indent > services_indent and ends with ":"
+        if current_service is None and indent > services_indent and stripped.endswith(":"):
+            current_service = stripped[:-1].strip().strip("'\"")
+            current_indent = indent
+            current_image = None
+            continue
+
+        # Image line under current service
+        if current_service is not None and indent > current_indent and stripped.startswith("image:"):
+            val = stripped[len("image:"):].strip().strip("'\"")
+            current_image = val or None
+            continue
+
+        # Next sibling service starts (same indent as current service)
+        if current_service is not None and indent == current_indent and stripped.endswith(":"):
+            _emit()
+            current_service = stripped[:-1].strip().strip("'\"")
+            current_indent = indent
+            current_image = None
+            continue
+
+    _emit()
+    return out
+
+
+def _infer_service_kind(image: str | None) -> str:
+    """Map a docker image name to a service kind."""
+    if not image:
+        return "api"
+    img = image.lower()
+    if any(db in img for db in ("postgres", "mysql", "mariadb", "mongodb", "mongo:")):
+        return "database"
+    if any(c in img for c in ("redis", "memcached")):
+        return "cache"
+    if any(q in img for q in ("rabbitmq", "kafka", "nats")):
+        return "queue"
+    if any(s in img for s in ("minio", "s3")):
+        return "storage"
+    return "api"
+
+
+def _scan_libraries(repo_path: Path) -> list[dict]:
+    """Detect workspace-internal libraries (shared packages) in a repo.
+
+    Tier 1: ``packages/`` subdirectory -- each child dir with a
+    ``package.json`` becomes a library row. ``name`` and ``version`` come
+    from the package.json.
+
+    Tier 2: ``libs/`` and ``libraries/`` subdirectories -- alternative
+    monorepo conventions.
+
+    Tier 3: package.json with ``workspaces`` field -- glob each pattern
+    (e.g. ``packages/*``) and emit one row per matched directory's
+    ``package.json``. Extends Tier 1 to cover non-default workspace layouts.
+
+    Returns a de-duplicated list of
+    ``{"name": str, "version": str|None, "language": str}`` dicts.
+    """
+    import json
+
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(name: str, version: str | None) -> None:
+        key = name.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append({"name": name, "version": version, "language": "javascript"})
+
+    def _read_pkg(pkg_path: Path) -> tuple[str | None, str | None]:
+        try:
+            data = json.loads(pkg_path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            return None, None
+        if not isinstance(data, dict):
+            return None, None
+        n = data.get("name") if isinstance(data.get("name"), str) else None
+        v = data.get("version") if isinstance(data.get("version"), str) else None
+        return n, v
+
+    if not repo_path.is_dir():
+        return out
+
+    # Tier 1+2: packages/, libs/, libraries/ directories
+    for dir_name in ("packages", "libs", "libraries"):
+        d = repo_path / dir_name
+        if not d.is_dir():
+            continue
+        try:
+            for child in sorted(d.iterdir()):
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                pkg = child / "package.json"
+                if pkg.is_file():
+                    n, v = _read_pkg(pkg)
+                    _add(n or child.name, v)
+                else:
+                    # Even without package.json, treat as library by dirname
+                    _add(child.name, None)
+        except OSError:
+            pass
+
+    # Tier 3: package.json with workspaces field
+    root_pkg = repo_path / "package.json"
+    if root_pkg.is_file():
+        try:
+            data = json.loads(root_pkg.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            data = {}
+        workspaces = data.get("workspaces") if isinstance(data, dict) else None
+        # workspaces can be a list or a dict {"packages": [...]}
+        patterns: list[str] = []
+        if isinstance(workspaces, list):
+            patterns = [p for p in workspaces if isinstance(p, str)]
+        elif isinstance(workspaces, dict):
+            inner = workspaces.get("packages")
+            if isinstance(inner, list):
+                patterns = [p for p in inner if isinstance(p, str)]
+
+        for pattern in patterns:
+            try:
+                # Translate trailing /* into a glob over a single directory level
+                for match in repo_path.glob(pattern):
+                    if not match.is_dir():
+                        continue
+                    pkg = match / "package.json"
+                    if pkg.is_file():
+                        n, v = _read_pkg(pkg)
+                        _add(n or match.name, v)
+            except (OSError, ValueError):
+                pass
+
+    return out
+
+
+def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
+    """Detect Gaia installations rooted at a workspace.
+
+    Returns at most one row per machine (current hostname). Looks for:
+
+    * ``node_modules/@jaguilar87/gaia/package.json`` -- canonical npm install.
+    * ``.claude/skills/`` AND ``.claude/agents/`` -- Gaia footprint without
+      a node_modules entry (dev symlink scenario).
+
+    When neither marker is found, returns an empty list.
+    """
+    import json
+    import socket
+
+    out: list[dict] = []
+    if not workspace_root.is_dir():
+        return out
+
+    machine = socket.gethostname() or "unknown"
+
+    # Marker 1: node_modules/@jaguilar87/gaia/package.json
+    npm_pkg = workspace_root / "node_modules" / "@jaguilar87" / "gaia" / "package.json"
+    if npm_pkg.is_file():
+        version: str | None = None
+        try:
+            data = json.loads(npm_pkg.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict) and isinstance(data.get("version"), str):
+                version = data["version"]
+        except (OSError, ValueError):
+            version = None
+        # Detect symlinked dev install: node_modules/@jaguilar87/gaia is a symlink
+        gaia_dir = npm_pkg.parent
+        install_mode = "dev" if gaia_dir.is_symlink() else "npm"
+        out.append({
+            "machine": machine,
+            "version": version,
+            "install_mode": install_mode,
+        })
+        return out
+
+    # Marker 2: .claude/ footprint (skills/ + agents/) without node_modules
+    claude_dir = workspace_root / ".claude"
+    if claude_dir.is_dir():
+        skills_dir = claude_dir / "skills"
+        agents_dir = claude_dir / "agents"
+        if skills_dir.is_dir() and agents_dir.is_dir():
+            version_file = claude_dir / ".gaia-version"
+            version = None
+            if version_file.is_file():
+                try:
+                    version = version_file.read_text(encoding="utf-8", errors="replace").strip() or None
+                except OSError:
+                    version = None
+            install_mode = "dev" if skills_dir.is_symlink() or agents_dir.is_symlink() else "unknown"
+            out.append({
+                "machine": machine,
+                "version": version,
+                "install_mode": install_mode,
+            })
 
     return out
 

@@ -1,5 +1,5 @@
 """
-Health Check / Verification Functions for gaia-scan
+Health Check / Verification Functions for `gaia scan`
 
 Provides post-install verification checks to confirm that the
 gaia-ops installation is healthy. Used after fresh install (Mode 1)
@@ -69,7 +69,7 @@ def check_symlinks(project_root: Path) -> CheckResult:
         name="Symlinks",
         ok=valid == len(names),
         detail=f"{valid}/{len(names)} valid",
-        fix="Run gaia-scan to recreate symlinks" if valid < len(names) else None,
+        fix="Run `gaia scan` to recreate symlinks" if valid < len(names) else None,
     )
 
 
@@ -107,7 +107,7 @@ def check_settings_json(project_root: Path) -> CheckResult:
             name="settings.json",
             ok=False,
             detail="Missing",
-            fix="Run gaia-scan",
+            fix="Run `gaia scan`",
         )
 
     try:
@@ -118,7 +118,7 @@ def check_settings_json(project_root: Path) -> CheckResult:
             name="settings.json",
             ok=False,
             detail="Invalid JSON",
-            fix="Delete and run gaia-scan",
+            fix="Delete and run `gaia scan`",
         )
 
 
@@ -137,7 +137,7 @@ def check_project_context(project_root: Path) -> CheckResult:
             name="project-context",
             ok=False,
             detail="Missing",
-            fix="Run gaia-scan",
+            fix="Run `gaia scan`",
         )
 
     try:
@@ -147,14 +147,14 @@ def check_project_context(project_root: Path) -> CheckResult:
             name="project-context",
             ok=sections >= 3,
             detail=f"{sections} sections",
-            fix="Run gaia-scan to regenerate" if sections < 3 else None,
+            fix="Run `gaia scan` to regenerate" if sections < 3 else None,
         )
     except (json.JSONDecodeError, OSError):
         return CheckResult(
             name="project-context",
             ok=False,
             detail="Invalid JSON",
-            fix="Run gaia-scan to regenerate",
+            fix="Run `gaia scan` to regenerate",
         )
 
 
@@ -206,7 +206,7 @@ def check_hooks(project_root: Path) -> CheckResult:
         name="Hooks",
         ok=False,
         detail="pre_tool_use.py missing",
-        fix="Run gaia-scan to recreate symlinks",
+        fix="Run `gaia scan` to recreate symlinks",
     )
 
 

@@ -1,5 +1,5 @@
 """
-Rail UI for gaia-scan
+Rail UI for `gaia scan`
 
 Clack-style rail output for scan results. Zero prompts. Fully automatic.
 All output goes to stderr. stdout is reserved for JSON only.
@@ -104,7 +104,7 @@ class RailUI:
 
     def start(self) -> None:
         """Print the header: top-left corner + version."""
-        self._write(self._cyan(f"\u250c  gaia-scan v{self.version}"))
+        self._write(self._cyan(f"\u250c  gaia scan v{self.version}"))
         self._write(self._rail())
 
     def scanning(self) -> None:

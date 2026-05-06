@@ -45,8 +45,8 @@ class TestSchemaCompatibility:
 
     @pytest.fixture
     def gaia_scan_content(self, package_root):
-        scan_path = package_root / "bin" / "gaia-scan.py"
-        assert scan_path.exists(), "gaia-scan.py not found"
+        scan_path = package_root / "bin" / "cli" / "scan.py"
+        assert scan_path.exists(), "bin/cli/scan.py not found"
         return scan_path.read_text()
 
     @pytest.fixture

@@ -39,7 +39,13 @@ if str(_GAIA_ROOT) not in sys.path:
 # Agent permission bootstrap
 # ---------------------------------------------------------------------------
 
-_SCANNER_AGENTS = ["developer", "terraform-architect", "gitops-operator", "gaia-system"]
+_SCANNER_AGENTS = [
+    "developer",
+    "terraform-architect",
+    "gitops-operator",
+    "gaia-system",
+    "cloud-troubleshooter",  # B3 M2: read+write declarativo sobre estado observado (clusters, tf_live)
+]
 _SCANNER_TABLES = [
     "repos", "apps", "integrations", "gaia_installations",
     "tf_modules", "tf_live", "releases", "workloads",
@@ -75,7 +81,8 @@ def _grant_scanner_permissions(db_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _SNAPSHOT_TABLES = [
-    "repos", "apps", "integrations", "gaia_installations",
+    "repos", "apps", "services", "libraries", "features",
+    "integrations", "gaia_installations",
     "tf_modules", "tf_live", "releases", "workloads",
     "clusters_defined",
 ]

@@ -502,3 +502,165 @@ CREATE TRIGGER IF NOT EXISTS briefs_au AFTER UPDATE ON briefs BEGIN
     INSERT INTO briefs_fts(rowid, objective, context, approach)
     VALUES (new.id, new.objective, new.context, new.approach);
 END;
+
+-- ===========================================================================
+-- === Local data migration tables (added 2026-05-05) ===
+-- Tables to absorb local data from the `me` workspace into Gaia substrate:
+--   * episodes:        episodic memory (one row per task/turn outcome)
+--   * notes:           curated memory (project_*, user_*, feedback_* notes)
+--   * context_sections: project-context.json reconstructed as rows
+--   * harness_events:  append-only events.jsonl mirror
+-- All tables segmented by `project` (FK -> projects.name) following the
+-- workspace-container pattern of the existing schema.
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- episodes: episodic memory entries (one row per agent turn / task outcome)
+-- agent-owned: written by the orchestrator / harness post-task hook.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS episodes (
+    episode_id            TEXT NOT NULL PRIMARY KEY,  -- stable episode identifier
+    project               TEXT NOT NULL,              -- FK -> projects.name
+    timestamp             TEXT NOT NULL,              -- ISO8601 episode timestamp
+    session_id            TEXT,                       -- harness session id
+    task_id               TEXT,                       -- task / brief task id
+    agent                 TEXT,                       -- agent name that produced the episode
+    type                  TEXT,                       -- episode kind (e.g. 'task', 'turn', 'tool')
+    title                 TEXT,                       -- short human title
+    prompt                TEXT,                       -- raw user prompt
+    enriched_prompt       TEXT,                       -- prompt after enrichment
+    wf_prompt             TEXT,                       -- workflow / dispatch prompt
+    clarifications        TEXT,                       -- JSON array as text
+    keywords              TEXT,                       -- JSON array as text
+    tags                  TEXT,                       -- JSON array as text
+    commands_executed     TEXT,                       -- JSON array as text
+    context_metrics       TEXT,                       -- JSON object as text (~28 fields: input_tokens, cache_read_tokens, skills_injected, etc.)
+    relevance_score       REAL,                       -- scoring output
+    outcome               TEXT,                       -- 'success', 'failure', 'partial', etc.
+    duration_seconds      REAL,                       -- wall-clock duration
+    exit_code             INTEGER,                    -- last command exit code (if applicable)
+    plan_status           TEXT,                       -- agent_status.plan_status value
+    output_length         INTEGER,                    -- length of the agent output (chars)
+    output_tokens_approx  INTEGER,                    -- approx token count of the output
+    FOREIGN KEY (project) REFERENCES projects(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodes_project_timestamp ON episodes(project, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
+
+-- ---------------------------------------------------------------------------
+-- FTS5 mirror for episodes (prompt / enriched_prompt / tags / title)
+-- Used by `gaia memory search` and other episodic lookups.
+-- ---------------------------------------------------------------------------
+CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+    episode_id UNINDEXED,
+    prompt,
+    enriched_prompt,
+    tags,
+    title,
+    content='episodes',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS episodes_ai AFTER INSERT ON episodes BEGIN
+    INSERT INTO episodes_fts(rowid, episode_id, prompt, enriched_prompt, tags, title)
+    VALUES (new.rowid, new.episode_id, new.prompt, new.enriched_prompt, new.tags, new.title);
+END;
+
+CREATE TRIGGER IF NOT EXISTS episodes_ad AFTER DELETE ON episodes BEGIN
+    INSERT INTO episodes_fts(episodes_fts, rowid, episode_id, prompt, enriched_prompt, tags, title)
+    VALUES ('delete', old.rowid, old.episode_id, old.prompt, old.enriched_prompt, old.tags, old.title);
+END;
+
+CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
+    INSERT INTO episodes_fts(episodes_fts, rowid, episode_id, prompt, enriched_prompt, tags, title)
+    VALUES ('delete', old.rowid, old.episode_id, old.prompt, old.enriched_prompt, old.tags, old.title);
+    INSERT INTO episodes_fts(rowid, episode_id, prompt, enriched_prompt, tags, title)
+    VALUES (new.rowid, new.episode_id, new.prompt, new.enriched_prompt, new.tags, new.title);
+END;
+
+-- ---------------------------------------------------------------------------
+-- notes: curated memory documents (project_*, user_*, feedback_* markdown notes)
+-- agent-owned: written by memory-curation flows; PK (project, name).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notes (
+    project           TEXT NOT NULL,  -- FK -> projects.name
+    name              TEXT NOT NULL,  -- e.g. 'project_gaia_v5', 'user_jorge', 'feedback_release_learnings'
+    type              TEXT NOT NULL CHECK (type IN ('project', 'user', 'feedback')),
+    description       TEXT,           -- from frontmatter
+    body              TEXT NOT NULL,  -- markdown body without frontmatter
+    origin_session_id TEXT,           -- session that produced or last touched the note
+    updated_at        TEXT,           -- ISO8601 last-update timestamp
+    PRIMARY KEY (project, name),
+    FOREIGN KEY (project) REFERENCES projects(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project);
+CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
+
+-- ---------------------------------------------------------------------------
+-- FTS5 mirror for notes (description / body)
+-- Notes carry significant curated text and are searched alongside episodes;
+-- consistent with the policy of FTS for every text-bearing core table.
+-- ---------------------------------------------------------------------------
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+    project UNINDEXED,
+    name UNINDEXED,
+    description,
+    body,
+    content='notes',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+    INSERT INTO notes_fts(rowid, project, name, description, body)
+    VALUES (new.rowid, new.project, new.name, new.description, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, project, name, description, body)
+    VALUES ('delete', old.rowid, old.project, old.name, old.description, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, project, name, description, body)
+    VALUES ('delete', old.rowid, old.project, old.name, old.description, old.body);
+    INSERT INTO notes_fts(rowid, project, name, description, body)
+    VALUES (new.rowid, new.project, new.name, new.description, new.body);
+END;
+
+-- ---------------------------------------------------------------------------
+-- context_sections: project-context.json reconstructed as (project, section) rows
+-- Each row is one named section payload (e.g. architecture_overview, stack).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS context_sections (
+    project      TEXT NOT NULL,  -- FK -> projects.name
+    section_name TEXT NOT NULL,  -- e.g. 'architecture_overview', 'operational_guidelines', 'stack'
+    payload      TEXT NOT NULL,  -- JSON object as text
+    metadata     TEXT,           -- JSON: version, contract, scanner_version, etc.
+    updated_at   TEXT,           -- ISO8601 last-update timestamp
+    PRIMARY KEY (project, section_name),
+    FOREIGN KEY (project) REFERENCES projects(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_sections_project ON context_sections(project);
+
+-- ---------------------------------------------------------------------------
+-- harness_events: append-only mirror of events.jsonl
+-- No natural PK -- surrogate AUTOINCREMENT id. `project` may be NULL for
+-- workspace-global events (no FK enforcement to allow pre-registration events).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS harness_events (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    project  TEXT,            -- workspace identity; NULL for global events
+    ts       TEXT NOT NULL,   -- ISO8601 event timestamp
+    type     TEXT NOT NULL,   -- event type (e.g. 'pre_tool_use', 'post_tool_use', 'session_start')
+    source   TEXT,            -- emitter / hook name
+    agent    TEXT,            -- agent involved, if any
+    result   TEXT,            -- 'pass', 'fail', 'blocked', etc.
+    severity TEXT,            -- 'info', 'warn', 'error'
+    payload  TEXT             -- JSON full record (preserves any extra fields)
+);
+
+CREATE INDEX IF NOT EXISTS idx_harness_events_project_ts ON harness_events(project, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_harness_events_type ON harness_events(type);
