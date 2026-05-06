@@ -392,6 +392,111 @@ def test_set_status_invalid_status(tmp_db, tmp_path, monkeypatch, capsys):
     assert get_brief("me", "valid-brief", db_path=tmp_db)["status"] == "draft"
 
 
+def test_delete_with_yes_removes_row(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief delete <name> --yes` removes the row from the DB."""
+    import argparse
+    from cli.brief import _cmd_delete
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "doomed",
+                 {"status": "draft", "title": "Doomed"}, db_path=tmp_db)
+    assert get_brief("me", "doomed", db_path=tmp_db) is not None
+
+    args = argparse.Namespace(
+        name="doomed",
+        workspace="me",
+        yes=True,
+        json=False,
+    )
+    rc = _cmd_delete(args)
+    assert rc == 0, capsys.readouterr()
+
+    # Row is gone
+    assert get_brief("me", "doomed", db_path=tmp_db) is None
+    # Zero filesystem side effects
+    assert not (tmp_path / ".claude").exists()
+    assert list(tmp_path.rglob("doomed")) == []
+
+
+def test_delete_aborts_on_no(tmp_db, tmp_path, monkeypatch, capsys):
+    """Without `--yes`, answering 'n' aborts and the row remains."""
+    import argparse
+    import builtins
+    from cli.brief import _cmd_delete
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "keepme",
+                 {"status": "draft", "title": "KeepMe"}, db_path=tmp_db)
+
+    # Mock input() to answer 'n'
+    monkeypatch.setattr(builtins, "input", lambda *a, **kw: "n")
+
+    args = argparse.Namespace(
+        name="keepme",
+        workspace="me",
+        yes=False,
+        json=False,
+    )
+    rc = _cmd_delete(args)
+    assert rc == 0
+    out = capsys.readouterr().out.lower()
+    assert "abort" in out or "not deleted" in out
+
+    # Row still there
+    assert get_brief("me", "keepme", db_path=tmp_db) is not None
+
+
+def test_delete_brief_not_found(tmp_db, tmp_path, monkeypatch, capsys):
+    """Deleting a non-existent brief returns a clear error and exit 1."""
+    import argparse
+    from cli.brief import _cmd_delete
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        name="ghost",
+        workspace="me",
+        yes=True,
+        json=False,
+    )
+    rc = _cmd_delete(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+
+
+def test_delete_zero_fs_side_effects(tmp_db, tmp_path, monkeypatch, capsys):
+    """Even after a successful delete, no filesystem traces appear."""
+    import argparse
+    from cli.brief import _cmd_delete
+    from gaia.briefs import upsert_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "fs-check",
+                 {"status": "draft", "title": "FS"}, db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="fs-check",
+        workspace="me",
+        yes=True,
+        json=True,
+    )
+    rc = _cmd_delete(args)
+    assert rc == 0
+
+    # No legacy briefs dir, no slug-named path.
+    assert not (tmp_path / ".claude" / "project-context" / "briefs").exists()
+    assert list(tmp_path.rglob("fs-check")) == []
+
+    # JSON output is parseable and reports deletion
+    import json as _json
+    out = capsys.readouterr().out.strip()
+    payload = _json.loads(out)
+    assert payload["deleted"] is True
+    assert payload["name"] == "fs-check"
+
+
 def test_import_from_fs(tmp_db, tmp_path):
     """import_from_fs walks <status>_<name>/brief.md directories."""
     from gaia.briefs import import_from_fs, list_briefs
