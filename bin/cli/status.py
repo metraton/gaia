@@ -1,7 +1,8 @@
 """
-gaia status -- Quick snapshot of the Gaia-Ops system state.
+gaia status -- Quick installation snapshot: version, mode, DB path,
+registered workspace, last scan.
 
-Mirrors the output of gaia-status.js:
+Reports:
 - Last agent session (name, time, status)
 - Pending context updates count
 - Active anomaly signals count
@@ -250,7 +251,7 @@ def _print_human(status: dict) -> None:
     if ctx:
         print(f"  Context:      project-context.json -- updated {_format_time(ctx)}")
     else:
-        print("  Context:      project-context.json missing -- run gaia-scan")
+        print("  Context:      project-context.json missing -- run `gaia scan`")
 
     # Memory
     ep = status["episode_count"]
@@ -285,7 +286,7 @@ def cmd_status(args) -> int:
     claude_dir = project_root / ".claude"
 
     if not claude_dir.is_dir():
-        msg = "gaia-ops not installed in this directory. Run: gaia-scan"
+        msg = "gaia-ops not installed in this directory. Run: gaia scan"
         if getattr(args, "json", False):
             print(json.dumps({"error": msg}))
         else:

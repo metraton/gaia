@@ -25,7 +25,8 @@ import time
 from pathlib import Path
 
 # Ensure hooks/ is on sys.path so approval_grants resolves correctly.
-# This mirrors the pattern used in bin/gaia-scan.py.
+# Walks up from this script to the plugin root to include hooks/ and the
+# plugin root itself, allowing imports like `approval_grants` to resolve.
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _BIN_DIR = _SCRIPT_DIR.parent
 _PLUGIN_ROOT = _BIN_DIR.parent

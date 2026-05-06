@@ -1,5 +1,5 @@
 """
-gaia history -- mirror of gaia-history.js
+gaia history -- Recent agent sessions: list, show, search.
 
 Shows recent agent sessions with task descriptions, outcomes, and token usage.
 
@@ -200,7 +200,7 @@ def cmd_history(args) -> int:
             print(json.dumps({"error": "gaia-ops not installed in this directory"}))
         else:
             print("\n  gaia-ops not installed in this directory")
-            print("  Run: npx gaia-scan\n")
+            print("  Run: gaia scan\n")
         return 1
 
     entries = _read_workflow_metrics(root)

@@ -1,7 +1,7 @@
 """
-gaia doctor -- Health check for Gaia-Ops installation.
+gaia doctor -- System health checks for Gaia-Ops.
 
-Mirrors the checks in gaia-doctor.js:
+Checks:
   1. gaia-version     - package.json readable
   2. claude-code      - CLI installed
   3. python           - Python 3.9+ available
@@ -148,7 +148,7 @@ def check_plugin_mode(project_root: Path) -> dict:
     """Check plugin mode from plugin-registry.json."""
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
-        return _result("Plugin mode", "warning", "No plugin-registry.json", "Run gaia-scan or restart Claude Code")
+        return _result("Plugin mode", "warning", "No plugin-registry.json", "Run `gaia scan` or restart Claude Code")
 
     data = _read_json(registry_path)
     if not data:
@@ -191,7 +191,7 @@ def check_symlinks(project_root: Path) -> dict:
         return _result("Symlinks", "pass", f"{valid}/{total} valid")
 
     severity = "error" if has_critical_missing else "warning"
-    return _result("Symlinks", severity, f"{valid}/{total} valid", "Run gaia-scan to recreate symlinks")
+    return _result("Symlinks", severity, f"{valid}/{total} valid", "Run `gaia scan` to recreate symlinks")
 
 
 @register_check("Identity", order=60)
@@ -223,7 +223,7 @@ def check_identity(project_root: Path) -> dict:
         infos.append("Legacy CLAUDE.md present (no longer used)")
 
     if issues:
-        return _result("Identity", "error", "; ".join(issues), "Run gaia-scan or gaia update")
+        return _result("Identity", "error", "; ".join(issues), "Run `gaia scan` or `gaia update`")
     if infos:
         return _result("Identity", "info", f"Orchestrator configured -- {'; '.join(infos)}")
     return _result("Identity", "pass", "Orchestrator agent configured")
@@ -234,11 +234,11 @@ def check_settings(project_root: Path) -> dict:
     """Check settings.local.json for hooks, permissions, deny rules."""
     local_path = project_root / ".claude" / "settings.local.json"
     if not local_path.is_file():
-        return _result("Settings", "error", "settings.local.json missing", "Run gaia-scan or gaia update")
+        return _result("Settings", "error", "settings.local.json missing", "Run `gaia scan` or `gaia update`")
 
     data = _read_json(local_path)
     if not data:
-        return _result("Settings", "error", "Invalid JSON in settings.local.json", "Delete and run gaia-scan")
+        return _result("Settings", "error", "Invalid JSON in settings.local.json", "Delete and run `gaia scan`")
 
     issues = []
     infos = []
@@ -265,7 +265,7 @@ def check_settings(project_root: Path) -> dict:
         infos.append("AGENT_TEAMS env not set")
 
     if issues:
-        return _result("Settings", "error", "; ".join(issues), "Run gaia-scan or gaia update")
+        return _result("Settings", "error", "; ".join(issues), "Run `gaia scan` or `gaia update`")
 
     hook_count = len(hooks_config) if hooks_config else 0
     perm_count = allow_count + deny_count
@@ -306,13 +306,13 @@ def check_hook_files(project_root: Path) -> dict:
             warnings.append(filename)
 
     if errors:
-        return _result("Hook files", "error", "; ".join(errors), "Recreate symlinks: gaia-scan")
+        return _result("Hook files", "error", "; ".join(errors), "Recreate symlinks: `gaia scan`")
     if warnings:
         return _result(
             "Hook files",
             "warning",
             f"{valid}/{total} found (missing: {', '.join(warnings)})",
-            "Run gaia-scan to recreate symlinks",
+            "Run `gaia scan` to recreate symlinks",
         )
     return _result("Hook files", "pass", f"{valid}/{total} found")
 
@@ -322,11 +322,11 @@ def check_project_context(project_root: Path) -> dict:
     """Check project-context.json is valid and enriched."""
     path = project_root / ".claude" / "project-context" / "project-context.json"
     if not path.is_file():
-        return _result("project-context", "warning", "Missing", "Run gaia-scan")
+        return _result("project-context", "warning", "Missing", "Run `gaia scan`")
 
     data = _read_json(path)
     if not data:
-        return _result("project-context", "warning", "Invalid JSON", "Regenerate with gaia-scan")
+        return _result("project-context", "warning", "Invalid JSON", "Regenerate with `gaia scan`")
 
     warnings = []
     infos = []
@@ -352,7 +352,7 @@ def check_project_context(project_root: Path) -> dict:
 
     if warnings:
         detail = "; ".join(warnings + infos)
-        return _result("project-context", "warning", detail, "Run gaia-scan to enrich")
+        return _result("project-context", "warning", detail, "Run `gaia scan` to enrich")
 
     if infos:
         return _result("project-context", "info", f"{section_count} sections -- {'; '.join(infos)}")
@@ -481,7 +481,7 @@ def _apply_agent_fix(project_root: Path) -> dict:
     """Write agent='gaia-orchestrator' to settings.local.json top-level.
 
     Preserves the rest of the JSON content; uses indent=2 with trailing newline
-    to keep the file format consistent with how gaia-scan writes it.
+    to keep the file format consistent with how `gaia scan` writes it.
     """
     settings_path = project_root / ".claude" / "settings.local.json"
     if not settings_path.is_file():
@@ -565,7 +565,7 @@ def check_memory_dirs(project_root: Path) -> dict:
             project_root / ".claude" / "project-context" / "workflow-episodic-memory",
             "workflow-episodic-memory",
             "warning",
-            "Run gaia-scan to create workflow memory directory",
+            "Run `gaia scan` to create workflow memory directory",
         ),
         (
             project_root / ".claude" / "project-context" / "episodic-memory",
