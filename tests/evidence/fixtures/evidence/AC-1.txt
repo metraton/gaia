@@ -1,5 +1,0 @@
-=== stdout ===
-ok
-=== stderr ===
-
-exit_code: 0
