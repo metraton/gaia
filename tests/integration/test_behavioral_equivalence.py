@@ -292,7 +292,9 @@ CLASSIFICATION_SCENARIOS = [
     ("terragrunt destroy", False, "BLOCKED"),
     ("git push --force origin main", False, "BLOCKED"),
     ("git push -f origin main", False, "BLOCKED"),
-    ("git reset --hard HEAD~1", False, "BLOCKED"),
+    # git reset --hard moved from BLOCKED to T3-approvable in the
+    # bash_validator AST redesign -- it now follows the nonce approval flow.
+    ("git reset --hard HEAD~1", False, "T3"),
     ("aws eks delete-cluster --name my-cluster", False, "BLOCKED"),
     ("gcloud container clusters delete cluster-1", False, "BLOCKED"),
     ("gh repo delete owner/repo", False, "BLOCKED"),

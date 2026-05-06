@@ -249,12 +249,24 @@ class TestBlockedCommandFlow:
         assert bash_result.allowed is False
         assert response.exit_code == 2
 
-    def test_git_reset_hard_blocked(self):
-        """Blocked: git reset --hard -> exit 2."""
+    def test_git_reset_hard_t3_approvable(self):
+        """T3-approvable: git reset --hard -> denied with approval flow (exit 0).
+
+        Contract change: git reset --hard moved from BLOCKED to T3-approvable
+        as part of the bash_validator AST redesign. It now follows the same
+        nonce-based approval flow as other mutative commands.
+        """
         event, bash_result, response = _run_pretool_bash_flow("git reset --hard HEAD~1")
 
         assert bash_result.allowed is False
-        assert response.exit_code == 2
+        assert bash_result.tier == SecurityTier.T3_BLOCKED
+        # T3-approvable commands have a block_response (nonce flow),
+        # unlike permanently blocked commands where block_response is None.
+        assert bash_result.block_response is not None
+        # Exit code 0 with permissionDecision: deny -- NOT exit 2 (reserved
+        # for permanently blocked commands).
+        assert response.exit_code == 0
+        assert response.output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 # ============================================================================

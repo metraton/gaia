@@ -865,15 +865,24 @@ class TestSessionSimulatorEdgeCases:
                 f"stderr: {result['stderr']}"
             )
 
-    def test_git_reset_hard_blocked(self, tmp_path):
-        """git reset --hard should be permanently blocked."""
+    def test_git_reset_hard_t3_approvable(self, tmp_path):
+        """git reset --hard is T3-approvable (denied with approval flow, not exit 2).
+
+        Contract change: git reset --hard moved from BLOCKED to T3-approvable
+        as part of the bash_validator AST redesign. The simulator should see
+        a denial via the nonce flow (exit 0 + [T3_BLOCKED] in stderr), not
+        a permanent block (exit 2).
+        """
         sim = SessionSimulator(tmp_path)
         sim.start_session()
 
         result = sim.execute_bash(_blocked_git_reset())
-        assert result["exit_code"] == 2, (
-            f"Expected exit 2 for git reset --hard, got {result['exit_code']}. "
-            f"stderr: {result['stderr']}"
+        assert result["exit_code"] == 0, (
+            f"Expected exit 0 (T3-approvable deny) for git reset --hard, "
+            f"got {result['exit_code']}. stderr: {result['stderr']}"
+        )
+        assert "[T3_BLOCKED]" in result["stderr"] or "approval" in result["stderr"].lower(), (
+            f"Expected T3 approval flow in stderr, got: {result['stderr']}"
         )
 
     def test_safe_commands_after_blocked(self, tmp_path):

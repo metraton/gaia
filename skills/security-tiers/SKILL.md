@@ -50,6 +50,13 @@ Runtime is the single source of truth for nonce handling, grant scope, and
 approval enforcement. This skill teaches classification and decision-making; it
 does not replace the hook contract.
 
+When a T3 command is denied with an `approval_id`, the agent must report the
+block back to the orchestrator via the response contract defined in
+`agent-protocol/SKILL.md` -- specifically by emitting `plan_status:
+APPROVAL_REQUEST` with the `approval_id` in `approval_request`. See
+`request-approval/SKILL.md` for the full approval request schema and
+`agent-protocol/SKILL.md` for the surrounding response envelope.
+
 Conditional commands like `git branch` are safe for listing but T3 with mutative flags (`-D`, `-d`, `-m`). See `reference.md`.
 
 ### File Write Protection
