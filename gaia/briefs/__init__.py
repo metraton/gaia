@@ -38,6 +38,8 @@ from gaia.briefs.store import (
     search_briefs,
     import_from_fs,
     delete_brief,
+    set_status_brief,
+    VALID_STATUSES,
 )
 
 __all__ = [
@@ -51,4 +53,6 @@ __all__ = [
     "search_briefs",
     "import_from_fs",
     "delete_brief",
+    "set_status_brief",
+    "VALID_STATUSES",
 ]

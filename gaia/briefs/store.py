@@ -377,6 +377,94 @@ def close_brief(
 
 
 # ---------------------------------------------------------------------------
+# set_status_brief (validated transitions for the state machine)
+# ---------------------------------------------------------------------------
+
+# Legal transitions for the brief state machine (Opción A — DB canónica).
+# The full enum is draft|open|in-progress|closed|archived. ``deprecated`` is
+# intentionally NOT yet a valid status; it is reserved for the upcoming
+# state-machines-cli brief.
+_LEGAL_TRANSITIONS: dict[str, set[str]] = {
+    "draft": {"open"},
+    "open": {"in-progress"},
+    "in-progress": {"closed"},
+    "closed": {"archived", "open"},  # archived (normal flow) or reopened
+    "archived": set(),
+}
+
+# Statuses recognized by the enum. set_status_brief rejects anything else.
+VALID_STATUSES: tuple[str, ...] = (
+    "draft", "open", "in-progress", "closed", "archived",
+)
+
+
+def set_status_brief(
+    workspace: str,
+    name: str,
+    new_status: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Transition a brief's ``status`` after validating the move is legal.
+
+    Returns ``{"old_status": str, "new_status": str, "name": str}`` on success.
+
+    Raises:
+        ValueError: when the brief does not exist, ``new_status`` is not in
+            :data:`VALID_STATUSES`, or the transition from current to new is
+            not in :data:`_LEGAL_TRANSITIONS`.
+    """
+    if new_status not in VALID_STATUSES:
+        raise ValueError(
+            f"invalid status '{new_status}'; must be one of {list(VALID_STATUSES)}"
+        )
+
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, status FROM briefs WHERE project = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"brief '{name}' not found in workspace '{workspace}'"
+            )
+
+        old_status = row["status"] or "draft"
+
+        if old_status == new_status:
+            # No-op; treat as legal idempotent transition.
+            return {
+                "name": name,
+                "old_status": old_status,
+                "new_status": new_status,
+                "action": "noop",
+            }
+
+        allowed = _LEGAL_TRANSITIONS.get(old_status, set())
+        if new_status not in allowed:
+            raise ValueError(
+                f"illegal transition '{old_status}' -> '{new_status}' for "
+                f"brief '{name}'; allowed from '{old_status}': "
+                f"{sorted(allowed) or '(none)'}"
+            )
+
+        con.execute(
+            "UPDATE briefs SET status = ?, updated_at = ? WHERE id = ?",
+            (new_status, _now_iso(), row["id"]),
+        )
+        con.commit()
+        return {
+            "name": name,
+            "old_status": old_status,
+            "new_status": new_status,
+            "action": "updated",
+        }
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # delete_brief (used by tests; not exposed via CLI)
 # ---------------------------------------------------------------------------
 

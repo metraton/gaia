@@ -238,6 +238,160 @@ def test_search_uses_fts5(tmp_db):
     assert any(r["name"] == "sample-brief" for r in results)
 
 
+def test_new_headless_creates_db_only_no_fs(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief new --headless --title=...` writes to DB only, no FS side effects."""
+    import argparse
+    from cli.brief import _cmd_new
+    from gaia.briefs import get_brief
+
+    # Pin a CWD that has NO `.claude/project-context/briefs/` so any accidental
+    # filesystem write under a relative path would land in tmp_path and be
+    # detectable. We assert below that no such directory was created.
+    monkeypatch.chdir(tmp_path)
+
+    args = argparse.Namespace(
+        headless=True,
+        name=None,
+        workspace="me",
+        title="Demo Headless Brief",
+        objective="verify the headless flow",
+        context=None,
+        approach=None,
+        out_of_scope=None,
+        status="draft",
+        json=False,
+    )
+    rc = _cmd_new(args)
+    assert rc == 0, capsys.readouterr()
+
+    # Slug derived from title
+    brief = get_brief("me", "demo-headless-brief", db_path=tmp_db)
+    assert brief is not None
+    assert brief["title"] == "Demo Headless Brief"
+    assert brief["status"] == "draft"
+    assert brief["objective"] == "verify the headless flow"
+
+    # NO directory should have been created under the legacy briefs path.
+    legacy = tmp_path / ".claude" / "project-context" / "briefs"
+    assert not legacy.exists(), f"unexpected FS write at {legacy}"
+    # Also the slug name itself should not appear anywhere under tmp_path.
+    found = list(tmp_path.rglob("demo-headless-brief"))
+    assert found == [], f"unexpected slug-named path(s): {found}"
+
+
+def test_new_headless_requires_title(tmp_db, tmp_path, monkeypatch, capsys):
+    """`--headless` without `--title` returns a clear error."""
+    import argparse
+    from cli.brief import _cmd_new
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        headless=True, name=None, workspace="me",
+        title=None, objective=None, context=None, approach=None,
+        out_of_scope=None, status=None, json=False,
+    )
+    rc = _cmd_new(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "title" in captured.err.lower()
+
+
+def test_set_status_db_only_legal_transition(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief set-status` mutates DB without touching FS."""
+    import argparse
+    from cli.brief import _cmd_set_status
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "to-transition",
+                 {"status": "draft", "title": "T"}, db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="to-transition",
+        new_status="open",
+        workspace="me",
+        json=False,
+    )
+    rc = _cmd_set_status(args)
+    assert rc == 0, capsys.readouterr()
+
+    brief = get_brief("me", "to-transition", db_path=tmp_db)
+    assert brief["status"] == "open"
+
+    # No filesystem traces.
+    assert not (tmp_path / ".claude").exists()
+    assert list(tmp_path.rglob("to-transition")) == []
+
+
+def test_set_status_illegal_transition(tmp_db, tmp_path, monkeypatch, capsys):
+    """draft -> closed is NOT a legal one-step transition; reports clear error."""
+    import argparse
+    from cli.brief import _cmd_set_status
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "stuck-draft",
+                 {"status": "draft", "title": "S"}, db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="stuck-draft",
+        new_status="closed",
+        workspace="me",
+        json=False,
+    )
+    rc = _cmd_set_status(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "illegal transition" in captured.err.lower()
+
+    # State unchanged
+    brief = get_brief("me", "stuck-draft", db_path=tmp_db)
+    assert brief["status"] == "draft"
+
+
+def test_set_status_brief_not_found(tmp_db, tmp_path, monkeypatch, capsys):
+    """Missing brief surfaces a clear error and exit code 1."""
+    import argparse
+    from cli.brief import _cmd_set_status
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        name="ghost-brief",
+        new_status="open",
+        workspace="me",
+        json=False,
+    )
+    rc = _cmd_set_status(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+
+
+def test_set_status_invalid_status(tmp_db, tmp_path, monkeypatch, capsys):
+    """An unknown status name is rejected before any DB mutation."""
+    import argparse
+    from cli.brief import _cmd_set_status
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "valid-brief",
+                 {"status": "draft", "title": "V"}, db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="valid-brief",
+        new_status="bogus",
+        workspace="me",
+        json=False,
+    )
+    rc = _cmd_set_status(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "invalid status" in captured.err.lower()
+
+    # State unchanged
+    assert get_brief("me", "valid-brief", db_path=tmp_db)["status"] == "draft"
+
+
 def test_import_from_fs(tmp_db, tmp_path):
     """import_from_fs walks <status>_<name>/brief.md directories."""
     from gaia.briefs import import_from_fs, list_briefs

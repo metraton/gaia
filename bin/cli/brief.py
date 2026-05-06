@@ -1,13 +1,22 @@
 """
 gaia brief -- Manage briefs (and their plans) in the Gaia DB substrate (B8).
 
+Architecture: Opción B (DB canónica). All mutating operations write only to
+``~/.gaia/gaia.db``; nothing under ``.claude/project-context/briefs/`` is ever
+created or modified by this CLI. The filesystem layout there is legacy /
+read-only-for-humans; the database is the single source of truth.
+
 Subcommands:
     gaia brief new <name>                 Create a new brief (opens $EDITOR)
+    gaia brief new --headless --title=... Create a new brief from flags (no EDITOR,
+                                          DB-only)
     gaia brief edit <name>                Edit an existing brief in $EDITOR
     gaia brief show <name> [--json]       Print brief as markdown
     gaia brief list [--status=...]        List briefs in the workspace
                   [--format=table|count|json]
     gaia brief close <name>               Set status -> closed
+    gaia brief set-status <name> <status> Validated state-machine transition
+                                          (DB-only)
     gaia brief deps <name> [--json]       Print dependency graph
     gaia brief search <query> [--limit N] FTS5 search over objective/context/approach
     gaia brief import-from-fs --source PATH [--workspace W]
@@ -75,6 +84,22 @@ acceptance_criteria: []
 """
 
 
+def _slugify(title: str) -> str:
+    """Derive a URL/filename-safe slug from a brief title.
+
+    Lowercases, replaces non-alphanumeric runs with single hyphens, strips
+    leading/trailing hyphens. Empty result raises ValueError so callers fail
+    loudly instead of silently inserting a blank-named row.
+    """
+    import re as _re
+    s = (title or "").strip().lower()
+    s = _re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    if not s:
+        raise ValueError("cannot derive slug from empty/symbolic title")
+    return s
+
+
 def _open_in_editor(initial_text: str) -> str:
     """Write initial_text to a temp .md file, open $EDITOR, return result."""
     editor = os.environ.get("EDITOR") or "vi"
@@ -109,26 +134,106 @@ def _cmd_new(args) -> int:
         parse_brief_markdown,
         upsert_brief,
         get_brief,
+        VALID_STATUSES,
     )
     workspace = _resolve_workspace(getattr(args, "workspace", None))
-    name = args.name
+
+    headless = getattr(args, "headless", False)
+    as_json = getattr(args, "json", False)
+
+    if headless:
+        # DB-only flow: no $EDITOR, no filesystem, slug derived from --title.
+        title = getattr(args, "title", None)
+        if not title:
+            return _err("--title is required with --headless", as_json=as_json)
+        try:
+            name = _slugify(title)
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
+
+        status = getattr(args, "status", None) or "draft"
+        if status not in VALID_STATUSES:
+            return _err(
+                f"invalid status '{status}'; must be one of {list(VALID_STATUSES)}",
+                as_json=as_json,
+            )
+
+        existing = get_brief(workspace, name)
+        if existing is not None:
+            return _err(
+                f"brief '{name}' already exists in workspace '{workspace}'",
+                as_json=as_json,
+            )
+
+        fields = {
+            "title": title,
+            "status": status,
+            "objective": getattr(args, "objective", None),
+            "context": getattr(args, "context", None),
+            "approach": getattr(args, "approach", None),
+            "out_of_scope": getattr(args, "out_of_scope", None),
+        }
+        # Strip None values so DEFAULTs in upsert_brief / NULL columns stay clean.
+        fields = {k: v for k, v in fields.items() if v is not None}
+
+        res = upsert_brief(workspace, name, fields)
+        brief = get_brief(workspace, name)
+
+        if as_json:
+            out = {k: v for k, v in (brief or {}).items() if k != "id"}
+            out["_action"] = "created"
+            print(json.dumps(out, indent=2, default=str))
+        else:
+            print(f"Created brief '{name}' (id={res['brief_id']}, "
+                  f"status={status}, title={title!r})")
+        return 0
+
+    # Interactive flow (legacy): requires positional <name> and opens $EDITOR.
+    name = getattr(args, "name", None)
+    if not name:
+        return _err("name is required (or use --headless --title=...)",
+                    as_json=as_json)
 
     existing = get_brief(workspace, name)
     if existing is not None:
-        return _err(f"brief '{name}' already exists in workspace '{workspace}'")
+        return _err(f"brief '{name}' already exists in workspace '{workspace}'",
+                    as_json=as_json)
 
     template = _BRIEF_TEMPLATE.format(name=name)
     text = _open_in_editor(template)
     if not text.strip():
-        return _err("editor returned empty content; aborted")
+        return _err("editor returned empty content; aborted", as_json=as_json)
     try:
         parsed = parse_brief_markdown(text)
     except Exception as exc:
-        return _err(f"failed to parse brief: {exc}")
+        return _err(f"failed to parse brief: {exc}", as_json=as_json)
 
     res = upsert_brief(workspace, name, parsed)
     print(f"Created brief '{name}' (id={res['brief_id']}, "
           f"acs={res['acs']}, milestones={res['milestones']})")
+    return 0
+
+
+def _cmd_set_status(args) -> int:
+    """Validated state-machine transition. DB-only (no filesystem touch)."""
+    from gaia.briefs import set_status_brief
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    new_status = args.new_status
+    as_json = getattr(args, "json", False)
+
+    try:
+        res = set_status_brief(workspace, name, new_status)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        if res.get("action") == "noop":
+            print(f"Brief '{name}' already at status '{new_status}' (noop)")
+        else:
+            print(f"Brief '{name}': {res['old_status']} -> {res['new_status']}")
     return 0
 
 
@@ -305,9 +410,27 @@ def register(subparsers) -> None:
 
     actions = brief_parser.add_subparsers(dest="brief_action", metavar="<action>")
 
-    new_p = actions.add_parser("new", help="Create a new brief in $EDITOR")
-    new_p.add_argument("name")
+    new_p = actions.add_parser(
+        "new",
+        help="Create a new brief ($EDITOR by default; --headless for flag-driven)",
+    )
+    new_p.add_argument("name", nargs="?", default=None,
+                       help="Brief slug (omitted in --headless mode)")
     new_p.add_argument("--workspace", default=None)
+    new_p.add_argument("--headless", action="store_true", default=False,
+                       help="Skip $EDITOR; build the brief from CLI flags only "
+                            "(DB-only, no filesystem side effects)")
+    new_p.add_argument("--title", default=None,
+                       help="Title (required with --headless; slug is derived from it)")
+    new_p.add_argument("--objective", default=None)
+    new_p.add_argument("--context", default=None)
+    new_p.add_argument("--approach", default=None)
+    new_p.add_argument("--out-of-scope", dest="out_of_scope", default=None)
+    new_p.add_argument("--status", default=None,
+                       choices=("draft", "open", "in-progress", "closed", "archived"),
+                       help="Initial status (default: draft)")
+    new_p.add_argument("--json", action="store_true", default=False,
+                       help="Emit the new brief as JSON")
 
     edit_p = actions.add_parser("edit", help="Edit a brief in $EDITOR")
     edit_p.add_argument("name")
@@ -328,6 +451,19 @@ def register(subparsers) -> None:
     close_p = actions.add_parser("close", help="Set brief status to closed")
     close_p.add_argument("name")
     close_p.add_argument("--workspace", default=None)
+
+    setstatus_p = actions.add_parser(
+        "set-status",
+        help="Validated state-machine transition (DB-only, no filesystem)",
+    )
+    setstatus_p.add_argument("name")
+    setstatus_p.add_argument(
+        "new_status",
+        choices=("draft", "open", "in-progress", "closed", "archived"),
+        help="Target status; the transition is validated against the state machine",
+    )
+    setstatus_p.add_argument("--workspace", default=None)
+    setstatus_p.add_argument("--json", action="store_true", default=False)
 
     deps_p = actions.add_parser("deps", help="Show dependency graph")
     deps_p.add_argument("name")
@@ -358,6 +494,7 @@ def cmd_brief(args) -> int:
         "show": _cmd_show,
         "list": _cmd_list,
         "close": _cmd_close,
+        "set-status": _cmd_set_status,
         "deps": _cmd_deps,
         "search": _cmd_search,
         "import-from-fs": _cmd_import_from_fs,
@@ -366,7 +503,8 @@ def cmd_brief(args) -> int:
         return handlers[action](args)
 
     print(
-        "Usage: gaia brief <new|edit|show|list|close|deps|search|import-from-fs>",
+        "Usage: gaia brief "
+        "<new|edit|show|list|close|set-status|deps|search|import-from-fs>",
         file=sys.stderr,
     )
     return 0
