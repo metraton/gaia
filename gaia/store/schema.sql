@@ -392,11 +392,13 @@ END;
 -- ---------------------------------------------------------------------------
 
 -- briefs: one row per brief (agent-owned, written by `gaia brief` CLI)
+-- Canonical state machine: gaia.state.VALID_BRIEF_STATUSES.
 CREATE TABLE IF NOT EXISTS briefs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     project      TEXT NOT NULL,        -- FK -> projects.name (workspace identity)
     name         TEXT NOT NULL,        -- unique bare name within project (e.g. 'paths-and-identity-foundations')
-    status       TEXT NOT NULL DEFAULT 'draft',  -- 'draft', 'open', 'in-progress', 'closed', 'archived'
+    status       TEXT NOT NULL DEFAULT 'draft'
+                 CHECK (status IN ('draft', 'open', 'in-progress', 'closed', 'archived')),
     surface_type TEXT,                 -- 'cli', 'api', 'infra', etc. (from frontmatter)
     title        TEXT,                 -- human title (# heading)
     objective    TEXT,                 -- ## Objective section
@@ -450,21 +452,25 @@ CREATE TABLE IF NOT EXISTS brief_dependencies (
 );
 
 -- plans: one plan per brief (may be extended in future briefs)
+-- Canonical state machine: gaia.state.VALID_PLAN_LIFECYCLE_STATUSES.
 CREATE TABLE IF NOT EXISTS plans (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     brief_id   INTEGER NOT NULL UNIQUE,  -- FK -> briefs.id (one plan per brief)
-    status     TEXT NOT NULL DEFAULT 'draft',  -- 'draft', 'active', 'closed'
+    status     TEXT NOT NULL DEFAULT 'draft'
+               CHECK (status IN ('draft', 'active', 'closed')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
 
 -- tasks: ordered tasks within a plan
+-- Canonical state machine: gaia.state.VALID_TASK_STATUSES.
 CREATE TABLE IF NOT EXISTS tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     plan_id       INTEGER NOT NULL,   -- FK -> plans.id
     order_num     INTEGER NOT NULL,   -- execution order (1-based)
     goal          TEXT,               -- task goal description
-    status        TEXT NOT NULL DEFAULT 'pending',  -- 'pending', 'done', 'skipped'
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'done', 'skipped')),
     evidence_path TEXT,               -- path to evidence artifact
     FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
 );
@@ -518,6 +524,10 @@ END;
 -- episodes: episodic memory entries (one row per agent turn / task outcome)
 -- agent-owned: written by the orchestrator / harness post-task hook.
 -- ---------------------------------------------------------------------------
+-- Canonical state machine for plan_status: gaia.state.VALID_PLAN_STATUSES.
+-- NULL is permitted to keep historical episodes that predate the
+-- enforcement (and to allow forward-compatible writers that may legitimately
+-- omit a status) representable in the schema.
 CREATE TABLE IF NOT EXISTS episodes (
     episode_id            TEXT NOT NULL PRIMARY KEY,  -- stable episode identifier
     project               TEXT NOT NULL,              -- FK -> projects.name
@@ -542,6 +552,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     plan_status           TEXT,                       -- agent_status.plan_status value
     output_length         INTEGER,                    -- length of the agent output (chars)
     output_tokens_approx  INTEGER,                    -- approx token count of the output
+    CHECK (plan_status IS NULL OR plan_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
     FOREIGN KEY (project) REFERENCES projects(name) ON DELETE CASCADE
 );
 
