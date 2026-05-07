@@ -1,12 +1,31 @@
 """
-gaia memory -- Inspect and query Gaia episodic memory (read-only).
+gaia memory -- Inspect, query, and curate Gaia memory.
 
-Subcommands:
+Read-only subcommands operate on episodic memory (the activity log under
+``.claude/project-context/episodic-memory/``):
+
   search <query> [--limit N] [--json]   FTS5 search with hybrid scoring
   stats [--json]                         Episode count, index count, scores, conflicts
   show <episode_id> [--json]            Full episode with metadata and score
   conflicts [--threshold F] [--json]    Contradiction scan across memory files
+
+Mutating subcommands operate on the curated ``memory`` table in
+``~/.gaia/gaia.db`` (the project-level / user-level / feedback notes):
+
+  add --name=<slug> --type=<project|user|feedback> --body="..."
+      [--description=...] [--workspace=<ws>] [--json]
+                                          DB-only writer; no filesystem side
+                                          effects (no .md under
+                                          ~/.claude/projects/.../memory/).
 """
+
+# Repo-root import bootstrap so ``from gaia.store.writer import ...`` resolves
+# regardless of cwd (the CLI is launched from many places).
+import sys as _sys
+from pathlib import Path as _Path
+_REPO_ROOT = _Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(_REPO_ROOT))
 
 import json
 import sys
@@ -404,6 +423,104 @@ def _cmd_conflicts(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Workspace resolution (shared with curated-memory writer below)
+# ---------------------------------------------------------------------------
+
+def _resolve_workspace(explicit: str | None) -> str:
+    """Return the workspace identity, defaulting to ``gaia.project.current()``.
+
+    Mirrors the resolver in ``bin/cli/brief.py`` so memory and brief subcommands
+    behave identically. Falls back to ``"me"`` when no workspace can be
+    inferred from the cwd.
+    """
+    if explicit:
+        return explicit
+    try:
+        from gaia.project import current as _project_current
+        ws = _project_current()
+        if ws:
+            return ws
+    except Exception:
+        pass
+    return "me"
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handler: add (DB-only writer)
+# ---------------------------------------------------------------------------
+
+def _cmd_add(args) -> int:
+    """Handle ``gaia memory add --name=... --type=... --body=...``.
+
+    DB-only: writes a row to the ``memory`` table in ``~/.gaia/gaia.db``.
+    Does NOT create any file under ``~/.claude/projects/.../memory/`` -- the
+    legacy filesystem layout is being retired and is read-only-for-humans.
+    """
+    as_json = getattr(args, "json", False)
+
+    name = getattr(args, "name", None)
+    mem_type = getattr(args, "type", None)
+    body = getattr(args, "body", None)
+    description = getattr(args, "description", None)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+
+    if not name:
+        return _err("--name is required", as_json)
+    if not mem_type:
+        return _err("--type is required", as_json)
+    if not body:
+        return _err("--body is required", as_json)
+
+    try:
+        from gaia.store.writer import upsert_memory, VALID_MEMORY_TYPES
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    if mem_type not in VALID_MEMORY_TYPES:
+        return _err(
+            f"invalid type '{mem_type}'; must be one of {list(VALID_MEMORY_TYPES)}",
+            as_json,
+        )
+
+    try:
+        res = upsert_memory(
+            workspace,
+            name,
+            type=mem_type,
+            body=body,
+            description=description,
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json)
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"failed to upsert memory: {exc}", as_json)
+
+    snippet = body.strip().replace("\n", " ")
+    if len(snippet) > 80:
+        snippet = snippet[:77] + "..."
+
+    if as_json:
+        out = {
+            "status": res.get("status"),
+            "action": res.get("action"),
+            "name": name,
+            "type": mem_type,
+            "description": description,
+            "workspace": workspace,
+            "body_preview": snippet,
+            "updated_at": res.get("updated_at"),
+        }
+        print(json.dumps(out, indent=2))
+    else:
+        verb = "Updated" if res.get("action") == "updated" else "Created"
+        print(f"{verb} memory '{name}' (type={mem_type}, workspace={workspace})")
+        if description:
+            print(f"  description: {description}")
+        print(f"  body: {snippet}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher + registration
 # ---------------------------------------------------------------------------
 
@@ -467,6 +584,28 @@ def register(subparsers):
         help="Output as JSON",
     )
     show_p.set_defaults(func=_cmd_show)
+
+    # -- add (DB-only writer; curated memory) --------------------------------
+    add_p = actions.add_parser(
+        "add",
+        help="Add (or upsert) a curated memory row in the DB (no filesystem)",
+    )
+    add_p.add_argument("--name", required=True,
+                       help="Memory slug (e.g. project_gaia_v5). Acts as PK with workspace.")
+    add_p.add_argument(
+        "--type", required=True,
+        choices=("project", "user", "feedback"),
+        help="Canonical memory type (matches schema CHECK constraint)",
+    )
+    add_p.add_argument("--body", required=True,
+                       help="Markdown body (without frontmatter)")
+    add_p.add_argument("--description", default=None,
+                       help="Optional one-line summary")
+    add_p.add_argument("--workspace", default=None,
+                       help="Workspace identity (default: gaia.project.current() or 'me')")
+    add_p.add_argument("--json", action="store_true", default=False,
+                       help="Emit the result as JSON")
+    add_p.set_defaults(func=_cmd_add)
 
     # -- conflicts ------------------------------------------------------------
     conflicts_p = actions.add_parser(

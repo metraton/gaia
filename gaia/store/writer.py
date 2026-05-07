@@ -617,6 +617,116 @@ def save_integration(
 
 
 # ---------------------------------------------------------------------------
+# Public API: upsert_memory
+# ---------------------------------------------------------------------------
+
+VALID_MEMORY_TYPES = ("project", "user", "feedback")
+
+
+def upsert_memory(
+    workspace: str,
+    name: str,
+    *,
+    type: str,
+    body: str,
+    description: str | None = None,
+    origin_session_id: str | None = None,
+    db_path: Path | None = None,
+    workspace_path: Path | None = None,
+) -> dict:
+    """Upsert a curated-memory row in the ``memory`` table.
+
+    Memory rows are user-driven (``gaia memory add`` from the user's terminal),
+    not agent-driven mutations -- so the per-agent ``agent_permissions`` gate is
+    intentionally NOT consulted here, matching the design used by briefs (B8).
+
+    On INSERT, ``updated_at`` is set to the current UTC ISO8601 timestamp.
+    On UPDATE (PK = ``(project, name)``), the same timestamp is refreshed and
+    ``description``, ``body``, ``type``, ``origin_session_id`` are overwritten
+    with the supplied values. The FTS5 mirror (``memory_fts``) is kept in sync
+    by the schema-defined triggers (``memory_ai``, ``memory_au``, ``memory_ad``).
+
+    Args:
+        workspace:         Workspace identity (matches projects.name; FK).
+        name:              Memory slug (e.g. ``project_gaia_v5``). PK with
+                           ``workspace``.
+        type:              One of ``"project"``, ``"user"``, ``"feedback"``
+                           (CHECK constraint in the schema).
+        body:              Markdown body (without frontmatter). Required.
+        description:       Optional one-line summary (mirrors the legacy
+                           frontmatter ``description`` field).
+        origin_session_id: Optional session identifier; defaults to
+                           ``$GAIA_SESSION_ID`` when present, else ``NULL``.
+        db_path:           Optional explicit DB path (used by tests).
+        workspace_path:    Directory whose git remote supplies the
+                           ``projects.identity`` value when the project row is
+                           first created. Defaults to cwd.
+
+    Returns:
+        ``{"status": "applied", "action": "inserted" | "updated",
+           "name": str, "updated_at": iso8601}``.
+
+    Raises:
+        ValueError: if ``type`` is not in ``VALID_MEMORY_TYPES`` or ``body``
+                    is empty.
+    """
+    import os
+
+    if type not in VALID_MEMORY_TYPES:
+        raise ValueError(
+            f"invalid memory type {type!r}; must be one of {list(VALID_MEMORY_TYPES)}"
+        )
+    if not body or not body.strip():
+        raise ValueError("memory body cannot be empty")
+    if not name or not name.strip():
+        raise ValueError("memory name cannot be empty")
+
+    if origin_session_id is None:
+        origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            _ensure_project_row(con, workspace, workspace_path)
+
+            existing = con.execute(
+                "SELECT name FROM memory WHERE project = ? AND name = ?",
+                (workspace, name),
+            ).fetchone()
+            action = "updated" if existing is not None else "inserted"
+
+            now = _now_iso()
+            con.execute(
+                """
+                INSERT INTO memory (project, name, type, description, body,
+                                    origin_session_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project, name) DO UPDATE SET
+                    type              = excluded.type,
+                    description       = excluded.description,
+                    body              = excluded.body,
+                    origin_session_id = excluded.origin_session_id,
+                    updated_at        = excluded.updated_at
+                """,
+                (workspace, name, type, description, body,
+                 origin_session_id, now),
+            )
+            con.commit()
+            return {
+                "status": "applied",
+                "action": action,
+                "name": name,
+                "updated_at": now,
+            }
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: wipe_project
 # ---------------------------------------------------------------------------
 
