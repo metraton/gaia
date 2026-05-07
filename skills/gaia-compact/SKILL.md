@@ -40,7 +40,7 @@ The Skill tool cannot invoke `/compact` directly -- built-in slash commands are 
 
 3. **Before invoking /compact, verify persistence-critical work**. If any of the following are in-flight and NOT yet written to disk, surface them to the user and ask whether to persist first:
    - Unsaved changes to `MEMORY.md` or memory documents under `.claude/projects/*/memory/`
-   - Brief or plan files under `.claude/project-context/briefs/` that were drafted but not written
+   - Brief or plan content drafted in the conversation but not yet persisted to the substrate DB via `gaia brief new --headless` / `gaia brief edit`
    - Evidence files (`T{N}.txt`, `AC-N.*`) from a dispatch whose verification has not been persisted
    - Uncommitted git changes the user asked to commit
 

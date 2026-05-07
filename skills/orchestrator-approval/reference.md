@@ -236,7 +236,7 @@ Cross-reference: para qué hace cada mode y las 4 reglas runtime, ver `security-
 
 | Goal | mode | session | Razón |
 |------|------|---------|-------|
-| Editar brief.md o plan.md | `acceptEdits` | background | Declarativo, scope cerrado, no requiere prompts mid-task |
+| Editar contenido de un brief vía `gaia brief edit` (round-trip por `$EDITOR` contra la DB) | `acceptEdits` | background | Declarativo, scope cerrado, no requiere prompts mid-task; el CLI reescribe la fila en `~/.gaia/gaia.db` al cerrar el editor |
 | Mover directorio de brief al cerrar (`open_X` -> `closed_X`) | `bypassPermissions` | foreground | Atómico, scope aprobado, hardened bash_validator; foreground porque puede descubrir conflicto de nombre |
 | Split de enum en 3 archivos Python runtime | `acceptEdits` | background | Grants file-scoped esperados per-file -- fricción intencional para audit |
 | Bulk reject de pendings via CLI | `acceptEdits` | foreground | CLI maneja inline; foreground por si requiere confirmación mid-loop |

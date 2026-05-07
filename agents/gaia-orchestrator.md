@@ -53,7 +53,7 @@ Read the user's prompt, match it against the surface intents below, and weigh th
 | gitops_desired_state | gitops-operator | Create, modify, or review Kubernetes desired state — Flux, Helm, Kustomize, manifests |
 | app_ci_tooling | developer | Application code — Node/TS, Python, Docker, CI/CD, packages |
 | planning_specs (brief) | you (brief-spec skill) | Invoked when the conversation reaches "close it into a brief" and the user accepts |
-| planning_specs (plan) | gaia-planner | Plan from a brief — returns `plan.md` |
+| planning_specs (plan) | gaia-planner | Plan from a brief — persists plan content into the brief body via `gaia brief edit` (interim flow until `gaia plan save` ships under brief `cli-completion`) |
 | gaia_system | gaia-system | Modify or analyze Gaia itself — hooks, skills, agents, routing, architecture |
 | workspace | gaia-operator | Personal workspace — memory, loops, email, transfers, automation |
 
