@@ -240,14 +240,52 @@ def _cmd_set_status(args) -> int:
 
 
 def _cmd_edit(args) -> int:
+    """Edit a brief either interactively ($EDITOR) or via DB-only field patch.
+
+    Headless flow (``--headless --field=... --content="..." [--append]``):
+    skips ``$EDITOR`` and the markdown round-trip; instead, writes a single
+    column on the brief row using
+    :func:`gaia.store.writer.update_brief_field`. The append flag concatenates
+    with ``\\n\\n`` separator when the field already has content.
+
+    Interactive flow: opens the brief markdown in ``$EDITOR``; the caller
+    saves the file and the parsed result is upserted.
+    """
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    as_json = getattr(args, "json", False)
+
+    headless = getattr(args, "headless", False)
+    if headless:
+        from gaia.store.writer import update_brief_field
+
+        field = getattr(args, "field", None)
+        content = getattr(args, "content", None)
+        append = getattr(args, "append", False)
+
+        if not field:
+            return _err("--field is required with --headless", as_json=as_json)
+        if content is None or content == "":
+            return _err("--content is required with --headless", as_json=as_json)
+
+        try:
+            res = update_brief_field(workspace, name, field, content,
+                                     append=append)
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
+
+        if as_json:
+            print(json.dumps(res, indent=2, default=str))
+        else:
+            print(f"Updated brief '{name}' field={field} action={res['action']}")
+        return 0
+
     from gaia.briefs import (
         parse_brief_markdown,
         serialize_brief_to_markdown,
         upsert_brief,
         get_brief,
     )
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
-    name = args.name
 
     brief = get_brief(workspace, name)
     if brief is None:
@@ -498,9 +536,27 @@ def register(subparsers) -> None:
     new_p.add_argument("--json", action="store_true", default=False,
                        help="Emit the new brief as JSON")
 
-    edit_p = actions.add_parser("edit", help="Edit a brief in $EDITOR")
+    edit_p = actions.add_parser(
+        "edit",
+        help="Edit a brief ($EDITOR by default; --headless for flag-driven)",
+    )
     edit_p.add_argument("name")
     edit_p.add_argument("--workspace", default=None)
+    edit_p.add_argument("--headless", action="store_true", default=False,
+                        help="Skip $EDITOR; patch one field via flags "
+                             "(DB-only, no filesystem side effects)")
+    edit_p.add_argument(
+        "--field", default=None,
+        choices=("objective", "context", "approach", "out_of_scope",
+                 "description", "title"),
+        help="Column to patch (required with --headless)",
+    )
+    edit_p.add_argument("--content", default=None,
+                        help="New value for the field (required with --headless)")
+    edit_p.add_argument("--append", action="store_true", default=False,
+                        help="Concatenate with existing field using '\\n\\n' "
+                             "separator instead of overwriting")
+    edit_p.add_argument("--json", action="store_true", default=False)
 
     show_p = actions.add_parser("show", help="Print a brief as markdown")
     show_p.add_argument("name")

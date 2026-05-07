@@ -497,6 +497,162 @@ def test_delete_zero_fs_side_effects(tmp_db, tmp_path, monkeypatch, capsys):
     assert payload["name"] == "fs-check"
 
 
+def test_edit_headless_overwrite(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief edit --headless --field=objective --content=...` overwrites."""
+    import argparse
+    from cli.brief import _cmd_edit
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "patchable",
+                 {"status": "draft", "title": "P", "objective": "old"},
+                 db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="patchable",
+        workspace="me",
+        headless=True,
+        field="objective",
+        content="brand new objective",
+        append=False,
+        json=False,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+
+    brief = get_brief("me", "patchable", db_path=tmp_db)
+    assert brief["objective"] == "brand new objective"
+
+    # No filesystem traces
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_edit_headless_append(tmp_db, tmp_path, monkeypatch, capsys):
+    """`--append` concatenates the new content with `\\n\\n` separator."""
+    import argparse
+    from cli.brief import _cmd_edit
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "appendable",
+                 {"status": "draft", "title": "A", "context": "first paragraph"},
+                 db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="appendable",
+        workspace="me",
+        headless=True,
+        field="context",
+        content="second paragraph",
+        append=True,
+        json=False,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+
+    brief = get_brief("me", "appendable", db_path=tmp_db)
+    assert brief["context"] == "first paragraph\n\nsecond paragraph"
+
+
+def test_edit_headless_append_on_empty_writes_as_is(tmp_db, tmp_path,
+                                                    monkeypatch, capsys):
+    """``--append`` against an empty field acts like overwrite."""
+    import argparse
+    from cli.brief import _cmd_edit
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "empty-field", {"status": "draft", "title": "E"},
+                 db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="empty-field", workspace="me", headless=True,
+        field="approach", content="initial approach", append=True, json=False,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+    brief = get_brief("me", "empty-field", db_path=tmp_db)
+    assert brief["approach"] == "initial approach"
+
+
+def test_edit_headless_invalid_field(tmp_db, tmp_path, monkeypatch, capsys):
+    """An unknown field returns an error, no DB mutation."""
+    import argparse
+    from cli.brief import _cmd_edit
+    from gaia.briefs import upsert_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "guarded", {"status": "draft", "title": "G"},
+                 db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="guarded", workspace="me", headless=True,
+        field="bogus_column", content="x", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "invalid brief field" in captured.err.lower()
+
+
+def test_edit_headless_brief_not_found(tmp_db, tmp_path, monkeypatch, capsys):
+    """Editing a missing brief surfaces a clear error and exit 1."""
+    import argparse
+    from cli.brief import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        name="ghost", workspace="me", headless=True,
+        field="objective", content="x", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+
+
+def test_edit_headless_empty_content(tmp_db, tmp_path, monkeypatch, capsys):
+    """Empty content is rejected before any DB mutation."""
+    import argparse
+    from cli.brief import _cmd_edit
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "intact",
+                 {"status": "draft", "title": "I", "objective": "kept"},
+                 db_path=tmp_db)
+    args = argparse.Namespace(
+        name="intact", workspace="me", headless=True,
+        field="objective", content="", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "content" in captured.err.lower()
+    # Original objective untouched
+    assert get_brief("me", "intact", db_path=tmp_db)["objective"] == "kept"
+
+
+def test_edit_headless_description_alias(tmp_db, tmp_path, monkeypatch, capsys):
+    """`--field=description` is an alias for `objective`."""
+    import argparse
+    from cli.brief import _cmd_edit
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "alias-brief",
+                 {"status": "draft", "title": "A", "objective": "x"},
+                 db_path=tmp_db)
+    args = argparse.Namespace(
+        name="alias-brief", workspace="me", headless=True,
+        field="description", content="aliased value", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+    brief = get_brief("me", "alias-brief", db_path=tmp_db)
+    assert brief["objective"] == "aliased value"
+
+
 def test_import_from_fs(tmp_db, tmp_path):
     """import_from_fs walks <status>_<name>/brief.md directories."""
     from gaia.briefs import import_from_fs, list_briefs

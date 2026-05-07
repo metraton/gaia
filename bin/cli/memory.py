@@ -321,8 +321,15 @@ def _cmd_stats(args) -> int:
     return 0
 
 
-def _cmd_show(args) -> int:
-    """Handle `gaia memory show <episode_id>`."""
+def _cmd_episode_show(args) -> int:
+    """Handle `gaia memory episode-show <episode_id>`.
+
+    Renamed from the legacy ``gaia memory show`` so that ``show`` can route
+    to curated memory (``gaia memory show <name>``). The legacy episode
+    inspector remains available under the explicit ``episode-show`` verb;
+    pre-existing callers that import ``_cmd_show`` see an alias defined
+    below for backward compatibility.
+    """
     as_json = getattr(args, "json", False)
     episode_id = args.episode_id
 
@@ -521,6 +528,265 @@ def _cmd_add(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand handlers: curated memory list / show / delete / edit
+# ---------------------------------------------------------------------------
+
+def _cmd_list(args) -> int:
+    """List curated memory rows (project / user / feedback)."""
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    type_filter = getattr(args, "type", None)
+    fmt = getattr(args, "format", None) or "table"
+    if as_json:
+        fmt = "json"
+
+    try:
+        from gaia.store.writer import list_memory
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    rows = list_memory(workspace, type=type_filter)
+
+    if fmt == "count":
+        print(len(rows))
+        return 0
+    if fmt == "json":
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+
+    if not rows:
+        print("(no curated memory)")
+        return 0
+    name_w = max(4, max(len(r["name"]) for r in rows))
+    type_w = max(4, max(len(r["type"] or "") for r in rows))
+    desc_w = max(
+        11,
+        max(min(len(r.get("description") or ""), 60) for r in rows),
+    )
+    print(f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'DESCRIPTION':<{desc_w}}")
+    print("-" * (name_w + type_w + desc_w + 4))
+    for r in rows:
+        desc = (r.get("description") or "")[:desc_w]
+        print(f"{r['name']:<{name_w}}  {(r['type'] or ''):<{type_w}}  "
+              f"{desc:<{desc_w}}")
+    return 0
+
+
+# Backward-compat alias: existing tests / older callers reference
+# ``memory_mod._cmd_show`` expecting the episode lookup behaviour. Newer
+# CLI registration routes ``show`` to ``_cmd_curated_show`` instead.
+_cmd_show = _cmd_episode_show
+
+
+def _cmd_curated_show(args) -> int:
+    """Print a single curated memory row.
+
+    Distinguishes from the legacy ``episode-show`` flow by looking up the
+    ``memory`` table directly (PK = ``(project, name)``).
+    """
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+
+    try:
+        from gaia.store.writer import get_memory
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    row = get_memory(workspace, name)
+    if row is None:
+        return _err(
+            f"memory '{name}' not found in workspace '{workspace}'",
+            as_json,
+        )
+
+    if as_json:
+        print(json.dumps(row, indent=2, default=str))
+        return 0
+
+    print(f"# {row['name']}  (type={row['type']})")
+    if row.get("description"):
+        print(f"# {row['description']}")
+    print(f"# updated_at: {row.get('updated_at')}")
+    print()
+    print(row["body"])
+    return 0
+
+
+def _cmd_delete(args) -> int:
+    """Hard-delete a curated memory row (FTS5 mirror cleared via trigger)."""
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    skip_confirm = getattr(args, "yes", False)
+
+    try:
+        from gaia.store.writer import get_memory, delete_memory
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    row = get_memory(workspace, name)
+    if row is None:
+        return _err(
+            f"memory '{name}' not found in workspace '{workspace}'",
+            as_json,
+        )
+
+    if not skip_confirm:
+        prompt = f"Delete memory '{name}' (type={row['type']})? [y/N] "
+        try:
+            answer = input(prompt)
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            if as_json:
+                print(json.dumps({"deleted": False, "name": name,
+                                  "reason": "aborted by user"}))
+            else:
+                print(f"Aborted; memory '{name}' was not deleted.")
+            return 0
+
+    deleted = delete_memory(workspace, name)
+    if not deleted:
+        return _err(
+            f"memory '{name}' could not be deleted (already gone?)",
+            as_json,
+        )
+
+    if as_json:
+        print(json.dumps({
+            "deleted": True,
+            "name": name,
+            "workspace": workspace,
+            "previous_type": row["type"],
+        }, indent=2, default=str))
+    else:
+        print(f"Deleted memory '{name}' (workspace={workspace!r}, "
+              f"previous_type={row['type']!r})")
+    return 0
+
+
+def _cmd_edit(args) -> int:
+    """Patch a single column of a curated memory row."""
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = getattr(args, "name", None)
+    field = getattr(args, "field", None)
+    content = getattr(args, "content", None)
+    append = getattr(args, "append", False)
+
+    if not name:
+        return _err("--name is required", as_json)
+    if not field:
+        return _err("--field is required", as_json)
+    if content is None or content == "":
+        return _err("--content is required", as_json)
+
+    try:
+        from gaia.store.writer import update_memory_field
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    try:
+        res = update_memory_field(workspace, name, field, content,
+                                  append=append)
+    except ValueError as exc:
+        return _err(str(exc), as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Updated memory '{name}' field={field} action={res['action']}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Override _cmd_search: add --scope for curated/episodes/both
+# ---------------------------------------------------------------------------
+
+def _cmd_search_scoped(args) -> int:
+    """Wrapper around the legacy ``_cmd_search`` that honours ``--scope``.
+
+    ``--scope=episodes`` (default for backwards compatibility) routes to the
+    legacy episodic FTS5 backend.
+    ``--scope=curated`` runs FTS5 over the ``memory_fts`` mirror in
+    ``~/.gaia/gaia.db``.
+    ``--scope=both`` returns combined results, episodes-first (sorted by
+    rank within each scope).
+    """
+    scope = getattr(args, "scope", None) or "both"
+    as_json = getattr(args, "json", False)
+    query = args.query
+    limit = getattr(args, "limit", 10)
+
+    if scope == "episodes":
+        return _cmd_search(args)
+
+    # Curated path (used by curated-only and both).
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    try:
+        from gaia.store.writer import search_memory_curated
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    curated = search_memory_curated(workspace, query, limit=limit)
+
+    if scope == "curated":
+        if as_json:
+            print(json.dumps({"scope": "curated", "results": curated},
+                             indent=2, default=str))
+        else:
+            if not curated:
+                print("No curated matches.")
+            else:
+                for r in curated:
+                    print(f"[{r['rank']:.4f}] {r['name']}  ({r['type']})")
+                    if r.get("description"):
+                        print(f"   {r['description']}")
+                    if r.get("snippet"):
+                        print(f"   {r['snippet']}")
+        return 0
+
+    # both: run episode search and combine
+    search_store = _import_search_store()
+    EpisodicMemory = _import_episodic()
+    episodes_out: list = []
+    if search_store is not None:
+        raw = search_store.search(query, max_results=limit)
+        for hit in raw:
+            episode_id = hit.get("episode_id", "")
+            episode = None
+            if EpisodicMemory is not None:
+                try:
+                    episode = EpisodicMemory().get_episode(episode_id)
+                except Exception:
+                    episode = None
+            if episode is None:
+                episodes_out.append({"id": episode_id, "title": "",
+                                     "rank": hit.get("rank", 0.0)})
+                continue
+            episodes_out.append({
+                "id": episode_id,
+                "title": episode.get("title") or "",
+                "rank": hit.get("rank", 0.0),
+            })
+
+    if as_json:
+        print(json.dumps(
+            {"scope": "both", "episodes": episodes_out, "curated": curated},
+            indent=2, default=str,
+        ))
+    else:
+        print(f"Episodes ({len(episodes_out)}):")
+        for r in episodes_out:
+            print(f"  [{r['rank']:.4f}] {r['title'] or r['id']}")
+        print(f"Curated ({len(curated)}):")
+        for r in curated:
+            print(f"  [{r['rank']:.4f}] {r['name']}  ({r['type']})")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher + registration
 # ---------------------------------------------------------------------------
 
@@ -556,17 +822,31 @@ def register(subparsers):
     actions = mem_parser.add_subparsers(dest="memory_action", metavar="<action>")
 
     # -- search ---------------------------------------------------------------
-    search_p = actions.add_parser("search", help="FTS5 search with hybrid scoring")
+    search_p = actions.add_parser(
+        "search",
+        help="FTS5 search across episodes and/or curated memory",
+    )
     search_p.add_argument("query", help="Search query")
     search_p.add_argument(
         "--limit", type=int, default=10, metavar="N",
         help="Maximum number of results (default: 10)",
     )
     search_p.add_argument(
+        "--scope", default="both",
+        choices=("curated", "episodes", "both"),
+        help="Where to search: curated memory rows, episodic memory, "
+             "or both (default: both)",
+    )
+    search_p.add_argument(
+        "--workspace", default=None,
+        help="Workspace identity for curated scope "
+             "(default: gaia.project.current() or 'me')",
+    )
+    search_p.add_argument(
         "--json", action="store_true", default=False,
         help="Output as JSON",
     )
-    search_p.set_defaults(func=_cmd_search)
+    search_p.set_defaults(func=_cmd_search_scoped)
 
     # -- stats ----------------------------------------------------------------
     stats_p = actions.add_parser("stats", help="Episode count, index stats, conflict count")
@@ -576,14 +856,89 @@ def register(subparsers):
     )
     stats_p.set_defaults(func=_cmd_stats)
 
-    # -- show -----------------------------------------------------------------
-    show_p = actions.add_parser("show", help="Full episode with metadata and score")
-    show_p.add_argument("episode_id", help="Episode ID to display")
+    # -- show (curated memory by name) ---------------------------------------
+    show_p = actions.add_parser(
+        "show",
+        help="Print a curated memory row by name (use episode-show for episodes)",
+    )
+    show_p.add_argument("name",
+                        help="Curated memory slug (e.g. project_gaia_v5)")
+    show_p.add_argument("--workspace", default=None)
     show_p.add_argument(
         "--json", action="store_true", default=False,
         help="Output as JSON",
     )
-    show_p.set_defaults(func=_cmd_show)
+    show_p.set_defaults(func=_cmd_curated_show)
+
+    # -- episode-show (legacy, renamed from old `show`) ----------------------
+    episode_show_p = actions.add_parser(
+        "episode-show",
+        help="Full episode with metadata and score (legacy episodic memory)",
+    )
+    episode_show_p.add_argument("episode_id", help="Episode ID to display")
+    episode_show_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Output as JSON",
+    )
+    episode_show_p.set_defaults(func=_cmd_episode_show)
+
+    # -- list (curated memory) ------------------------------------------------
+    list_p = actions.add_parser(
+        "list", help="List curated memory rows in the workspace",
+    )
+    list_p.add_argument(
+        "--type", default=None,
+        choices=("project", "user", "feedback"),
+        help="Filter by memory type",
+    )
+    list_p.add_argument("--workspace", default=None)
+    list_p.add_argument(
+        "--format", default="table",
+        choices=("table", "json", "count"),
+    )
+    list_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Alias for --format=json",
+    )
+    list_p.set_defaults(func=_cmd_list)
+
+    # -- delete (curated memory) ---------------------------------------------
+    delete_p = actions.add_parser(
+        "delete",
+        help="Hard-delete a curated memory row (FTS5 mirror cleared via trigger)",
+    )
+    delete_p.add_argument("name", help="Curated memory slug")
+    delete_p.add_argument("--workspace", default=None)
+    delete_p.add_argument(
+        "--yes", action="store_true", default=False,
+        help="Skip the interactive confirmation prompt",
+    )
+    delete_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Output as JSON",
+    )
+    delete_p.set_defaults(func=_cmd_delete)
+
+    # -- edit (curated memory; patch one field) ------------------------------
+    edit_p = actions.add_parser(
+        "edit",
+        help="Patch a curated memory field (description / body) by flags",
+    )
+    edit_p.add_argument("--name", required=True,
+                        help="Curated memory slug to patch")
+    edit_p.add_argument(
+        "--field", required=True,
+        choices=("description", "body"),
+        help="Column to patch (type changes go through delete + add)",
+    )
+    edit_p.add_argument("--content", required=True,
+                        help="New value for the field")
+    edit_p.add_argument("--append", action="store_true", default=False,
+                        help="Concatenate with existing field using '\\n\\n' "
+                             "separator instead of overwriting")
+    edit_p.add_argument("--workspace", default=None)
+    edit_p.add_argument("--json", action="store_true", default=False)
+    edit_p.set_defaults(func=_cmd_edit)
 
     # -- add (DB-only writer; curated memory) --------------------------------
     add_p = actions.add_parser(

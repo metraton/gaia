@@ -213,6 +213,264 @@ def test_add_missing_required_flags(tmp_db, tmp_path, monkeypatch, capsys):
     assert "body" in captured.err.lower()
 
 
+# ---------------------------------------------------------------------------
+# list / show (curated) / delete / edit
+# ---------------------------------------------------------------------------
+
+def _seed_curated(tmp_db, name, type_, body, description=None):
+    from gaia.store.writer import upsert_memory
+    upsert_memory("me", name, type=type_, body=body,
+                  description=description, db_path=tmp_db)
+
+
+def test_list_returns_rows(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_list
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "p1", "project", "body1", description="D1")
+    _seed_curated(tmp_db, "u1", "user", "body2", description="D2")
+
+    args = argparse.Namespace(
+        type=None, workspace="me", format="json", json=False,
+    )
+    rc = _cmd_list(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    names = sorted(r["name"] for r in payload)
+    assert names == ["p1", "u1"]
+
+
+def test_list_filters_by_type(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_list
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "p1", "project", "b")
+    _seed_curated(tmp_db, "f1", "feedback", "b")
+
+    args = argparse.Namespace(
+        type="project", workspace="me", format="count", json=False,
+    )
+    rc = _cmd_list(args)
+    assert rc == 0
+    out = capsys.readouterr().out.strip()
+    assert out == "1"
+
+
+def test_curated_show_prints_body(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_curated_show
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "demo", "project", "the body content",
+                  description="some description")
+
+    args = argparse.Namespace(name="demo", workspace="me", json=True)
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"] == "demo"
+    assert payload["body"] == "the body content"
+    assert payload["description"] == "some description"
+
+
+def test_curated_show_not_found(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_curated_show
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(name="ghost", workspace="me", json=False)
+    rc = _cmd_curated_show(args)
+    assert rc == 1
+    assert "not found" in capsys.readouterr().err.lower()
+
+
+def test_delete_curated_with_yes(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_delete
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "doomed-mem", "project", "body")
+    assert _read_memory_row(tmp_db, "me", "doomed-mem") is not None
+
+    args = argparse.Namespace(name="doomed-mem", workspace="me",
+                              yes=True, json=False)
+    rc = _cmd_delete(args)
+    assert rc == 0, capsys.readouterr()
+    assert _read_memory_row(tmp_db, "me", "doomed-mem") is None
+    # Zero filesystem side effects
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_delete_curated_aborts_on_no(tmp_db, tmp_path, monkeypatch, capsys):
+    import builtins
+    from cli.memory import _cmd_delete
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "keepme", "project", "body")
+    monkeypatch.setattr(builtins, "input", lambda *a, **kw: "n")
+
+    args = argparse.Namespace(name="keepme", workspace="me",
+                              yes=False, json=False)
+    rc = _cmd_delete(args)
+    assert rc == 0
+    out = capsys.readouterr().out.lower()
+    assert "abort" in out or "not deleted" in out
+    assert _read_memory_row(tmp_db, "me", "keepme") is not None
+
+
+def test_delete_curated_not_found(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_delete
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(name="ghost", workspace="me",
+                              yes=True, json=False)
+    rc = _cmd_delete(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+
+
+def test_edit_curated_overwrite_body(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "patchme", "project", "old body")
+
+    args = argparse.Namespace(
+        name="patchme", workspace="me",
+        field="body", content="new body", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+    row = _read_memory_row(tmp_db, "me", "patchme")
+    assert row["body"] == "new body"
+
+
+def test_edit_curated_append_description(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "appendme", "project", "body",
+                  description="first")
+
+    args = argparse.Namespace(
+        name="appendme", workspace="me",
+        field="description", content="second", append=True, json=False,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+    row = _read_memory_row(tmp_db, "me", "appendme")
+    assert row["description"] == "first\n\nsecond"
+
+
+def test_edit_curated_invalid_field(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "guarded", "project", "body")
+
+    args = argparse.Namespace(
+        name="guarded", workspace="me",
+        field="type", content="user", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "invalid memory field" in captured.err.lower()
+
+
+def test_edit_curated_not_found(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        name="ghost", workspace="me",
+        field="body", content="x", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+
+
+def test_edit_curated_empty_content(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "intact", "project", "body")
+
+    args = argparse.Namespace(
+        name="intact", workspace="me",
+        field="body", content="", append=False, json=False,
+    )
+    rc = _cmd_edit(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "content" in captured.err.lower()
+
+
+def test_edit_curated_zero_fs_side_effects(tmp_db, tmp_path,
+                                           monkeypatch, capsys):
+    from cli.memory import _cmd_edit
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "fs-check", "project", "body")
+    args = argparse.Namespace(
+        name="fs-check", workspace="me",
+        field="body", content="updated", append=False, json=True,
+    )
+    rc = _cmd_edit(args)
+    assert rc == 0, capsys.readouterr()
+    assert not (tmp_path / ".claude").exists()
+    assert list(tmp_path.rglob("fs-check")) == []
+
+
+# ---------------------------------------------------------------------------
+# Scoped search
+# ---------------------------------------------------------------------------
+
+def test_search_scope_curated(tmp_db, tmp_path, monkeypatch, capsys):
+    """`--scope=curated` searches the memory_fts mirror only."""
+    from cli.memory import _cmd_search_scoped
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "alpha", "project",
+                  "the zenithal-mooncrest token appears here")
+    _seed_curated(tmp_db, "beta", "project", "unrelated content")
+
+    args = argparse.Namespace(
+        query="zenithal-mooncrest", limit=10, scope="curated",
+        workspace="me", json=True,
+    )
+    rc = _cmd_search_scoped(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"] == "curated"
+    names = [r["name"] for r in payload["results"]]
+    assert "alpha" in names
+    assert "beta" not in names
+
+
+def test_search_scope_both_emits_two_buckets(tmp_db, tmp_path,
+                                             monkeypatch, capsys):
+    """`--scope=both` returns episodes + curated keys in JSON output."""
+    from cli.memory import _cmd_search_scoped
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "alpha", "project",
+                  "another zenithal-mooncrest mention")
+
+    args = argparse.Namespace(
+        query="zenithal-mooncrest", limit=10, scope="both",
+        workspace="me", json=True,
+    )
+    rc = _cmd_search_scoped(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"] == "both"
+    assert "episodes" in payload
+    assert "curated" in payload
+    curated_names = [r["name"] for r in payload["curated"]]
+    assert "alpha" in curated_names
+
+
 def test_add_registers_subcommand_choice():
     """``gaia memory add`` is wired into the argparse tree."""
     import cli.memory as memory_mod
@@ -228,4 +486,6 @@ def test_add_registers_subcommand_choice():
             nested_subs = action
             break
     assert nested_subs is not None
-    assert "add" in nested_subs.choices
+    for verb in ("add", "list", "show", "delete", "edit",
+                 "episode-show", "search"):
+        assert verb in nested_subs.choices, f"missing verb: {verb}"

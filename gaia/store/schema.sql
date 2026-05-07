@@ -453,12 +453,16 @@ CREATE TABLE IF NOT EXISTS brief_dependencies (
 
 -- plans: one plan per brief (may be extended in future briefs)
 -- Canonical state machine: gaia.state.VALID_PLAN_LIFECYCLE_STATUSES.
+-- The `content` column carries the markdown body of the plan; `updated_at`
+-- is bumped on every upsert so consumers can sort by recency.
 CREATE TABLE IF NOT EXISTS plans (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     brief_id   INTEGER NOT NULL UNIQUE,  -- FK -> briefs.id (one plan per brief)
     status     TEXT NOT NULL DEFAULT 'draft'
                CHECK (status IN ('draft', 'active', 'closed')),
+    content    TEXT,                     -- markdown body of the plan (optional)
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
 
