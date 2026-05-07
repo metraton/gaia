@@ -1,6 +1,6 @@
 ---
 name: session-reflection
-description: Use at the end of a session with substantial conversational work -- briefs closed, decisions taken, components modified -- to offer the user a structured reflection before closing.
+description: Use at the end of a session with substantial conversational work to offer the user a structured reflection before closing -- briefs closed, decisions taken, components modified
 metadata:
   user-invocable: false
   type: technique
@@ -8,62 +8,180 @@ metadata:
 
 # Session Reflection
 
-Al final de una sesión con peso conversacional, ayuda al usuario a cerrar
-el arco ofreciéndole una reflexión corta y estructurada. No es un reporte
-técnico -- es una devolución de qué pasó desde el lado de los acuerdos,
-no desde el lado de las acciones.
+Help the user close the conversational arc of a session by offering a short,
+structured reflection. This is **not** a technical log summary, a commit
+recap, or a status report. It is a return of *what was agreed* from the
+user's side, in the language the conversation already produced.
 
-## Cuando llegas aquí
+The orchestrator loaded this skill because the session carried enough
+conversational weight that closing without reflection would lose the arc.
+Your job is to recover that arc -- not re-narrate the actions.
 
-El orquestador te cargó porque detectó que la sesión tuvo trabajo
-conversacional suficiente (no sólo acciones aisladas) y el usuario aceptó
-la oferta de reflexión. Tu trabajo no es resumir comandos ejecutados;
-es devolver el arco desde la perspectiva del usuario, en el lenguaje
-que ya existe en la conversación.
+## When to Activate
 
-## Qué produce
+Activate when the session has at least two of:
 
-Una respuesta corta con tres secciones:
+- 50+ turns or multiple subagent dispatches.
+- One or more decisions where the user said yes/no to a concrete proposal.
+- A brief opened, edited, or closed.
+- A skill, agent, hook, or routing config modified.
+- Multiple follow-ups that surfaced and were either deferred or absorbed.
 
-### Qué acordamos
+Skip when the session was purely executive (commands run, no agreements
+exchanged). Better to honestly say "this session was mostly execution --
+no conversational arc to reflect on" than to inflate three bullets.
 
-2-4 bullets nombrando las decisiones que emergieron en la sesión, en el
-lenguaje que se usó durante la conversación (no técnico-imperativo). Si
-un acuerdo se enunció como "dejemos el planner como está", no lo traduzcas
-a "mantener el estado actual del componente planner".
+## The long-session failure mode (read this first)
 
-### Qué quedó abierto
+In dense sessions (50+ turns, multiple agents, several briefs in flight),
+the orchestrator forgets at scale. Symptoms the user has flagged:
 
-Lo que se mencionó pero no se cerró -- ideas, preguntas diferidas,
-follow-ups que aparecieron y no alcanzaron cierre. No fuerces items si
-no los hay; un "nada significativo quedó abierto" es válido.
+- Mid-session decisions get dropped because later topics overwrote them.
+- Follow-ups get mixed with closures -- "we agreed to defer X" turns into
+  "we closed X".
+- Conclusions get invented to fill the three-section structure when
+  honest sections would have been shorter.
+- The user's plain-language framing gets re-technified ("dejémoslo así"
+  becomes "decided to maintain current state").
 
-### Qué merece cristalizarse
+The Process below is built to defend against this. The recovery pass in
+Step 1 is the antidote -- skipping it produces exactly the failure mode
+above.
 
-Sugerencia opcional de qué decisiones o aprendizajes valdría la pena
-guardar en memoria persistente (MEMORY.md, un brief, un doc). Propone;
-no prescribas. El usuario decide.
+## Process
 
-## Principios
+### Step 1: Recover the arc, not the log
 
-- Usa el vocabulario de la conversación. No inventes términos nuevos ni
-  traduzcas a jerga técnica lo que emergió en español coloquial.
-- No repitas hashes de commits ni outputs técnicos que el usuario ya vio
-  durante la sesión. Esto es devolución de arco, no resumen de log.
-- Si la sesión fue puramente ejecutiva (no hubo acuerdos conversacionales
-  significativos, sólo comandos y acciones), devuelve con honestidad:
-  "esta sesión fue mayormente ejecución -- no hay arco conversacional
-  que reflexionar." Mejor breve y honesto que inflar tres bullets.
-- Máximo 200 palabras de respuesta total.
-- Offer closure, don't force it. La skill no persiste nada automáticamente;
-  el usuario decide qué hacer con la devolución.
+Before drafting any bullet, scan the session transcript for **agreement
+markers** and **deferral markers**. These are the anchors of the real arc.
+
+| Marker type | User phrases (Spanish + English) |
+|-------------|----------------------------------|
+| Agreement | "ok", "exacto", "vayamos por eso", "let's go with that", "confirmado", "dale", "sí", "yes" |
+| Rejection | "no, mejor", "actually no", "esperá", "wait", "cambiemos", "let's change" |
+| Deferral | "eso lo vemos después", "for later", "captura como brief", "leave it open", "ya veremos" |
+| Closure | "dejémoslo", "cerralo", "close it", "listo", "done", "ya está" |
+
+For dense sessions (50+ turns, multiple subagents), walk through these
+checkpoints explicitly before drafting:
+
+1. **Decision verbs**: every user message that contained a verb committing
+   to or rejecting a path. Note both sides -- what was accepted *and* what
+   was rejected.
+2. **"Vayamos con X" / "let's go with X"**: every explicit affirmative the
+   user emitted in response to a proposal. These are the strongest agreement
+   signals; do not lose them.
+3. **Dispatch reactions**: every subagent result the user reacted to. The
+   reaction (approval, rework, deferral) is the agreement, not the result
+   itself.
+4. **Briefs mentioned but not implemented**: deferred work that surfaces
+   under "what stayed open", not under "what we agreed".
+
+This is the antidote to "orchestrator forgets at scale". List these
+mentally (or in a scratch buffer) before writing the first bullet.
+
+### Step 2: Three-section structure with objective criteria
+
+Produce a short response with three sections. Each section has an objective
+admission criterion -- if the criterion is not met, the section is empty.
+
+**What we agreed**
+2-4 bullets naming decisions that emerged. Admission criterion: the user
+responded affirmatively to a concrete proposal. A topic that was discussed
+without affirmative response is *not* an agreement.
+
+**What stayed open**
+What was raised but not closed -- ideas, deferred questions, follow-ups
+that surfaced and did not reach closure. Admission criterion: the topic
+appeared in the session and was *not* concluded. Do not force items;
+"nothing significant stayed open" is valid output.
+
+**What deserves to crystallize**
+Optional suggestion of which decisions or learnings would be worth
+persisting. Propose; do not prescribe. The user decides.
+
+### Step 3: Use the user's own vocabulary
+
+If the user said "DB-canonical", use "DB-canonical". If they said "mover a
+la base de datos", do not translate to "migrate to substrate". If they said
+"dejémoslo como está", do not write "decided to maintain current state".
+
+The continuity of language is what makes the reflection feel like the
+user's session, not the agent's report. Re-technifying plain Spanish (or
+plain English) into jargon breaks that continuity.
+
+User quotes can stay in the original language even when the surrounding
+prose is English. The reflection is for the user; the user's words win.
+
+### Step 4: Verify against pending state
+
+Before closing the reflection, confirm against any objective state in the
+session:
+
+- Briefs in `draft` that the conversation discussed -- still draft, or
+  moved to `open`?
+- Commits not yet pushed -- should they appear under "stayed open"?
+- Subagent dispatches that returned `BLOCKED` or `NEEDS_INPUT` -- those
+  are open, not closed.
+- Approvals requested but not granted -- open.
+
+If your draft reflection contradicts the actual state (e.g. you wrote
+"we closed brief X" but `gaia brief show X` shows `status: open`), align
+the reflection to reality before presenting.
+
+### Step 5: Length budget
+
+The reflection itself is **<= 200 words**. Honest brevity beats padded
+structure. If a section has nothing real to say, omit it or say so.
+
+The skill *instructions* (this file) can be longer; the *output* cannot.
+
+### Step 6: Persistence is opt-in
+
+After presenting the reflection, you may offer to save what is worth
+keeping. If the user accepts, persist via `gaia memory add` UPSERT against
+an entry like `project_session_<YYYY-MM-DD>_<topic>`:
+
+```bash
+gaia memory add \
+  --name="project_session_2026-05-06_<topic>" \
+  --type="project" \
+  --description="<one-line summary of the arc>" \
+  --body="<reflection body, expanded if useful>"
+```
+
+Never persist without explicit user consent. The reflection itself does
+not write anywhere -- it is offered, the user accepts or declines.
+
+See `memory-curation/SKILL.md` for the full schema and UPSERT semantics.
 
 ## Anti-Patterns
 
-- **Resumen de commits** -- repetir lo que el usuario ya leyó no es reflexión.
-- **Jerga técnica nueva** -- traducir "cerrar la idea" a "materializar el
-  requirement" quiebra la continuidad del lenguaje de la sesión.
-- **Forzar tres secciones** -- si no hay nada abierto, dilo. No inventes
-  follow-ups para rellenar estructura.
-- **Persistir sin permiso** -- la sección "qué merece cristalizarse" es
-  sugerencia. Si el usuario no responde, no escribas a MEMORY.md solo.
+- **Re-summarizing commit hashes the user already saw** -- they read the
+  output during the session; repeating it is not reflection, it is noise.
+- **Forcing three sections when nothing is open** -- if no follow-ups
+  surfaced, omit the section. Padding for shape destroys the signal.
+- **Translating user's plain Spanish to technical English** -- "dejémoslo"
+  is not "we will maintain the current state". Keep the user's framing.
+- **Auto-persisting to memory without explicit consent** -- the
+  crystallize section is a proposal. Silence is not approval; ask first.
+- **Inflating bullets to fill structure** -- an honest "nothing
+  significant stayed open" beats four invented follow-ups.
+- **Skipping the recovery pass on dense sessions** -- without Step 1, the
+  reflection drifts to "what I remember from the last few turns" instead
+  of "what we actually agreed across the whole arc".
+- **Mixing follow-ups with closures** -- a deferred topic is open, not
+  agreed. A topic accepted via "vayamos con eso" is agreed, not open.
+  The objective criteria in Step 2 exist to keep these separate.
+
+## Filesystem behavior (DEPRECATED)
+
+Earlier iterations of this skill suggested writing to `MEMORY.md` directly.
+That path is **legacy** -- the curated memory layer is now the `memory`
+table in the Gaia substrate (`~/.gaia/gaia.db`), accessed through
+`gaia memory add`. See `memory-curation/SKILL.md`.
+
+If you find code, docs, or other skills that still describe writing
+reflections to `MEMORY.md` or `~/.claude/projects/.../memory/*.md`, flag
+them in `cross_layer_impacts` -- do not edit them as a side effect of a
+reflection task.
