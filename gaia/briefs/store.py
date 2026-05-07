@@ -393,9 +393,10 @@ _LEGAL_TRANSITIONS: dict[str, set[str]] = {
 }
 
 # Statuses recognized by the enum. set_status_brief rejects anything else.
-VALID_STATUSES: tuple[str, ...] = (
-    "draft", "open", "in-progress", "closed", "archived",
-)
+# Single source of truth: ``gaia.state.VALID_BRIEF_STATUSES``. Re-exported here
+# for backward compatibility; callers that import ``VALID_STATUSES`` from this
+# module continue to work without changes.
+from gaia.state import VALID_BRIEF_STATUSES as VALID_STATUSES  # noqa: E402
 
 
 def set_status_brief(
