@@ -19,6 +19,7 @@ import argparse
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -30,7 +31,13 @@ _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from cli.install import register, cmd_install, _create_path_symlink  # noqa: E402
+from cli.install import (  # noqa: E402
+    register,
+    cmd_install,
+    _install_path_launcher,
+    _create_path_symlink,  # legacy alias retained
+    _LAUNCHER_SCRIPT,
+)
 
 
 class TestRegisterSubcommand(unittest.TestCase):
@@ -283,99 +290,275 @@ class TestCmdInstallOrchestration(unittest.TestCase):
             self.assertEqual(captured.get("ws"), workspace)
 
 
-class TestCreatePathSymlink(unittest.TestCase):
-    """Unit tests for _create_path_symlink."""
+class TestInstallPathLauncher(unittest.TestCase):
+    """Unit tests for _install_path_launcher.
 
-    def test_creates_symlink_when_missing(self):
+    The launcher is workspace-aware: it walks up from cwd looking for a
+    local node_modules/@jaguilar87/gaia install, falling back to GAIA_HOME
+    and ~/.gaia/global. These tests cover file-level behavior (write,
+    idempotency, migration from legacy symlink, fallbacks behavior end to
+    end via the embedded shell script).
+    """
+
+    def test_creates_launcher_when_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_p = Path(tmp)
-            target = tmp_p / "gaia"
-            target.write_text("#!/bin/sh\n")
             link = tmp_p / "bin" / "gaia"
 
-            res = _create_path_symlink(target, link)
+            res = _install_path_launcher(link_path=link)
 
             self.assertEqual(res["action"], "created")
-            self.assertTrue(link.is_symlink())
-            self.assertEqual(Path(os.readlink(link)).resolve(), target.resolve())
+            self.assertTrue(link.is_file())
+            self.assertFalse(link.is_symlink())
+            content = link.read_text()
+            self.assertEqual(content, _LAUNCHER_SCRIPT)
+            # 0755 -- executable bit set
+            self.assertTrue(link.stat().st_mode & 0o100)
 
     def test_creates_parent_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_p = Path(tmp)
-            target = tmp_p / "gaia"
-            target.write_text("#!/bin/sh\n")
-            link = tmp_p / "deep" / "nested" / "bin" / "gaia"
-
-            res = _create_path_symlink(target, link)
-
+            link = Path(tmp) / "deep" / "nested" / "bin" / "gaia"
+            res = _install_path_launcher(link_path=link)
             self.assertEqual(res["action"], "created")
             self.assertTrue(link.parent.is_dir())
 
-    def test_idempotent_when_target_matches(self):
+    def test_idempotent_when_content_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_p = Path(tmp)
-            target = tmp_p / "gaia"
-            target.write_text("#!/bin/sh\n")
-            link = tmp_p / "bin" / "gaia"
-
-            _create_path_symlink(target, link)
-            res2 = _create_path_symlink(target, link)
-
+            link = Path(tmp) / "bin" / "gaia"
+            _install_path_launcher(link_path=link)
+            res2 = _install_path_launcher(link_path=link)
             self.assertEqual(res2["action"], "noop")
-            self.assertTrue(link.is_symlink())
+            self.assertTrue(link.is_file())
 
-    def test_skips_when_pointing_at_other_target_default(self):
+    def test_migrates_legacy_symlink_to_launcher(self):
+        """Legacy installs left a symlink; install must replace it."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_p = Path(tmp)
-            target = tmp_p / "gaia"
+            target = tmp_p / "old-gaia"
             target.write_text("#!/bin/sh\n")
-            other = tmp_p / "other-gaia"
-            other.write_text("#!/bin/sh\n")
             link = tmp_p / "bin" / "gaia"
             link.parent.mkdir(parents=True)
-            link.symlink_to(other)
+            link.symlink_to(target)
 
-            res = _create_path_symlink(target, link)
+            self.assertTrue(link.is_symlink())  # precondition
+
+            res = _install_path_launcher(link_path=link)
+
+            self.assertEqual(res["action"], "migrated")
+            self.assertTrue(link.is_file())
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(link.read_text(), _LAUNCHER_SCRIPT)
+
+    def test_skips_when_regular_file_with_different_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            link.parent.mkdir(parents=True)
+            link.write_text("custom user content")
+
+            res = _install_path_launcher(link_path=link)
 
             self.assertEqual(res["action"], "skipped")
-            # Original symlink preserved
-            self.assertEqual(Path(os.readlink(link)).resolve(), other.resolve())
+            self.assertEqual(link.read_text(), "custom user content")
 
-    def test_overwrite_replaces_existing_symlink(self):
+    def test_overwrite_replaces_drifted_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_p = Path(tmp)
-            target = tmp_p / "gaia"
-            target.write_text("#!/bin/sh\n")
-            other = tmp_p / "other-gaia"
-            other.write_text("#!/bin/sh\n")
-            link = tmp_p / "bin" / "gaia"
+            link = Path(tmp) / "bin" / "gaia"
             link.parent.mkdir(parents=True)
-            link.symlink_to(other)
+            link.write_text("old launcher version")
 
-            res = _create_path_symlink(target, link, overwrite=True)
+            res = _install_path_launcher(link_path=link, overwrite=True)
 
             self.assertEqual(res["action"], "replaced")
-            self.assertEqual(Path(os.readlink(link)).resolve(), target.resolve())
+            self.assertEqual(link.read_text(), _LAUNCHER_SCRIPT)
+            self.assertTrue(link.stat().st_mode & 0o100)
 
-    def test_skips_when_regular_file_in_the_way(self):
+    def test_skips_when_directory_in_the_way(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_p = Path(tmp)
-            target = tmp_p / "gaia"
-            target.write_text("#!/bin/sh\n")
-            link = tmp_p / "bin" / "gaia"
+            link = Path(tmp) / "bin" / "gaia"
             link.parent.mkdir(parents=True)
-            link.write_text("not a symlink")
-
-            res = _create_path_symlink(target, link)
-
+            link.mkdir()
+            res = _install_path_launcher(link_path=link)
             self.assertEqual(res["action"], "skipped")
-            self.assertEqual(link.read_text(), "not a symlink")
+
+    def test_legacy_alias_still_callable(self):
+        """_create_path_symlink must remain importable for back-compat."""
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            res = _create_path_symlink(link_path=link)
+            self.assertEqual(res["action"], "created")
+            self.assertTrue(link.is_file())
 
 
-class TestCmdInstallPathSymlink(unittest.TestCase):
-    """Verify cmd_install creates the PATH symlink unless --no-path is set."""
+class TestLauncherShellBehavior(unittest.TestCase):
+    """Run the launcher script under bash and verify resolution order.
 
-    def _make_args(self, workspace, link_path, **overrides) -> argparse.Namespace:
+    These tests prove the embedded shell logic actually resolves the right
+    Gaia install (walk-up local first, then GAIA_HOME, then ~/.gaia/global,
+    then fail-fast).
+
+    Note: the harness runs on `/tmp` mounted with `noexec`, which makes
+    `[ -x file ]` return false for files there even when chmod 0o755 was
+    applied (the kernel rejects the exec bit semantics under noexec).
+    The launcher's resolution chain depends on `[ -x ]` succeeding for
+    the candidate, so tests stage their fixtures under `$HOME` (which is
+    exec-mounted on this harness) instead of /tmp.
+    """
+
+    def setUp(self):
+        # Stage fixtures under $HOME so they land on an exec-mounted FS.
+        # Without this, `[ -x ]` in the launcher script returns false for
+        # files under /tmp (noexec) and resolution falls through to
+        # fail-fast incorrectly.
+        self._tmp = tempfile.mkdtemp(prefix="gaia-launcher-test-", dir=str(Path.home()))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _write_launcher(self, link: Path) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.write_text(_LAUNCHER_SCRIPT)
+        link.chmod(0o755)
+
+    def _make_fake_gaia(self, dst: Path, label: str) -> None:
+        """Create an executable that prints `label` when run via python3."""
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(
+            "import sys\n"
+            f"print('{label}')\n"
+            "sys.exit(0)\n"
+        )
+        dst.chmod(0o755)
+
+    def _run_launcher(self, launcher: Path, *, cwd: Path, env: dict, args=None):
+        """Invoke launcher via `bash <path>` to bypass any noexec parents."""
+        cmd = ["bash", str(launcher)]
+        if args:
+            cmd.extend(args)
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_walk_up_resolves_workspace_local(self):
+        """Launcher prefers ./node_modules/@jaguilar87/gaia/bin/gaia."""
+        tmp_p = Path(self._tmp)
+        launcher = tmp_p / "bin" / "gaia"
+        self._write_launcher(launcher)
+
+        workspace = tmp_p / "ws" / "deep" / "subdir"
+        workspace.mkdir(parents=True)
+        local_gaia = (
+            tmp_p / "ws" / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "gaia"
+        )
+        self._make_fake_gaia(local_gaia, "LOCAL")
+
+        # Run the launcher from the deep subdir; walk-up should find local_gaia
+        result = self._run_launcher(
+            launcher,
+            cwd=workspace,
+            env={**os.environ, "HOME": str(tmp_p), "GAIA_HOME": ""},
+            args=["arg1"],
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("LOCAL", result.stdout)
+
+    def test_falls_back_to_gaia_home(self):
+        """No node_modules walk-up hit -- falls back to $GAIA_HOME/bin/gaia."""
+        tmp_p = Path(self._tmp)
+        launcher = tmp_p / "bin" / "gaia"
+        self._write_launcher(launcher)
+
+        gaia_home = tmp_p / "gaia-home"
+        self._make_fake_gaia(gaia_home / "bin" / "gaia", "GAIA_HOME")
+
+        workspace = tmp_p / "no-modules"
+        workspace.mkdir()
+
+        result = self._run_launcher(
+            launcher,
+            cwd=workspace,
+            env={**os.environ, "HOME": str(tmp_p), "GAIA_HOME": str(gaia_home)},
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("GAIA_HOME", result.stdout)
+
+    def test_falls_back_to_user_global(self):
+        """No walk-up + no GAIA_HOME -- falls back to ~/.gaia/global/bin/gaia."""
+        tmp_p = Path(self._tmp)
+        launcher = tmp_p / "bin" / "gaia"
+        self._write_launcher(launcher)
+
+        home = tmp_p / "home"
+        self._make_fake_gaia(home / ".gaia" / "global" / "bin" / "gaia", "GLOBAL")
+
+        workspace = tmp_p / "no-modules"
+        workspace.mkdir()
+
+        result = self._run_launcher(
+            launcher,
+            cwd=workspace,
+            env={**os.environ, "HOME": str(home), "GAIA_HOME": ""},
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("GLOBAL", result.stdout)
+
+    def test_fail_fast_with_message(self):
+        """All resolution paths empty -- exit 127 + helpful stderr."""
+        tmp_p = Path(self._tmp)
+        launcher = tmp_p / "bin" / "gaia"
+        self._write_launcher(launcher)
+
+        home = tmp_p / "home"
+        home.mkdir()
+        workspace = tmp_p / "no-modules"
+        workspace.mkdir()
+
+        result = self._run_launcher(
+            launcher,
+            cwd=workspace,
+            env={**os.environ, "HOME": str(home), "GAIA_HOME": ""},
+        )
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("no Gaia installation found", result.stderr)
+        self.assertIn("node_modules/@jaguilar87/gaia", result.stderr)
+        self.assertIn("GAIA_HOME", result.stderr)
+        self.assertIn(".gaia/global", result.stderr)
+
+    def test_propagates_exit_code(self):
+        """Launcher must propagate the underlying process's exit code."""
+        tmp_p = Path(self._tmp)
+        launcher = tmp_p / "bin" / "gaia"
+        self._write_launcher(launcher)
+
+        gaia_home = tmp_p / "gaia-home"
+        target = gaia_home / "bin" / "gaia"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "import sys\n"
+            "sys.exit(42)\n"
+        )
+        target.chmod(0o755)
+
+        workspace = tmp_p / "no-modules"
+        workspace.mkdir()
+
+        result = self._run_launcher(
+            launcher,
+            cwd=workspace,
+            env={**os.environ, "HOME": str(tmp_p), "GAIA_HOME": str(gaia_home)},
+        )
+        self.assertEqual(result.returncode, 42)
+
+
+class TestCmdInstallPathLauncher(unittest.TestCase):
+    """Verify cmd_install installs the launcher unless --no-path is set."""
+
+    def _make_args(self, workspace, **overrides) -> argparse.Namespace:
         ns = argparse.Namespace()
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
@@ -401,7 +584,7 @@ class TestCmdInstallPathSymlink(unittest.TestCase):
                   return_value=noop),
         ]
 
-    def test_default_creates_path_symlink(self):
+    def test_default_installs_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -410,33 +593,32 @@ class TestCmdInstallPathSymlink(unittest.TestCase):
 
             captured = {}
 
-            real_fn = _create_path_symlink
-
-            def fake_create(target, link_path="~/.local/bin/gaia", overwrite=False):
+            def fake_install(link_path="~/.local/bin/gaia", **kwargs):
                 captured["called"] = True
-                captured["target"] = Path(target)
-                # Actually exercise the implementation against tmp link
-                return real_fn(target, link, overwrite=overwrite)
+                # Actually exercise implementation against tmp link
+                return _install_path_launcher(link_path=link, **kwargs)
 
             patches = self._patch_helpers_noop()
             patches.append(patch("cli.install._run_bootstrap", return_value=0))
-            patches.append(patch("cli.install._create_path_symlink",
-                                 side_effect=fake_create))
+            patches.append(patch("cli.install._install_path_launcher",
+                                 side_effect=fake_install))
 
             for p in patches:
                 p.start()
             try:
                 with redirect_stdout(io.StringIO()):
-                    rc = cmd_install(self._make_args(workspace, link))
+                    rc = cmd_install(self._make_args(workspace))
             finally:
                 for p in patches:
                     p.stop()
 
             self.assertEqual(rc, 0)
             self.assertTrue(captured.get("called"))
-            self.assertTrue(link.is_symlink())
+            self.assertTrue(link.is_file())
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(link.read_text(), _LAUNCHER_SCRIPT)
 
-    def test_no_path_flag_skips_symlink(self):
+    def test_no_path_flag_skips_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -444,25 +626,23 @@ class TestCmdInstallPathSymlink(unittest.TestCase):
 
             patches = self._patch_helpers_noop()
             patches.append(patch("cli.install._run_bootstrap", return_value=0))
-            mock_sym = patch("cli.install._create_path_symlink")
-            patches.append(mock_sym)
+            mock_inst = patch("cli.install._install_path_launcher")
+            patches.append(mock_inst)
 
             started = [p.start() for p in patches]
             try:
                 with redirect_stdout(io.StringIO()):
-                    rc = cmd_install(
-                        self._make_args(workspace, None, no_path=True)
-                    )
+                    rc = cmd_install(self._make_args(workspace, no_path=True))
             finally:
                 for p in patches:
                     p.stop()
 
             self.assertEqual(rc, 0)
-            # Last started corresponds to mock_sym
-            mock_create = started[-1]
-            mock_create.assert_not_called()
+            mock_install = started[-1]
+            mock_install.assert_not_called()
 
-    def test_install_path_symlink_idempotent(self):
+    def test_install_launcher_idempotent(self):
+        """Two consecutive installs -- second is noop."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -470,24 +650,23 @@ class TestCmdInstallPathSymlink(unittest.TestCase):
             link = Path(tmp) / "local" / "bin" / "gaia"
 
             results = []
-            real_fn = _create_path_symlink
 
-            def fake_create(target, link_path="~/.local/bin/gaia", overwrite=False):
-                r = real_fn(target, link, overwrite=overwrite)
+            def fake_install(link_path="~/.local/bin/gaia", **kwargs):
+                r = _install_path_launcher(link_path=link, **kwargs)
                 results.append(r)
                 return r
 
             patches = self._patch_helpers_noop()
             patches.append(patch("cli.install._run_bootstrap", return_value=0))
-            patches.append(patch("cli.install._create_path_symlink",
-                                 side_effect=fake_create))
+            patches.append(patch("cli.install._install_path_launcher",
+                                 side_effect=fake_install))
 
             for p in patches:
                 p.start()
             try:
                 with redirect_stdout(io.StringIO()):
-                    cmd_install(self._make_args(workspace, link))
-                    cmd_install(self._make_args(workspace, link))
+                    cmd_install(self._make_args(workspace))
+                    cmd_install(self._make_args(workspace))
             finally:
                 for p in patches:
                     p.stop()
@@ -495,44 +674,46 @@ class TestCmdInstallPathSymlink(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(results[0]["action"], "created")
             self.assertEqual(results[1]["action"], "noop")
-            self.assertTrue(link.is_symlink())
+            self.assertTrue(link.is_file())
 
-    def test_install_skips_when_other_symlink_exists(self):
+    def test_install_migrates_legacy_symlink(self):
+        """Existing legacy symlink at ~/.local/bin/gaia is migrated."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
             (workspace / ".claude").mkdir()
-            other = Path(tmp) / "other-gaia"
-            other.write_text("#!/bin/sh\n")
+            old_target = Path(tmp) / "old-gaia"
+            old_target.write_text("#!/bin/sh\n")
             link = Path(tmp) / "local" / "bin" / "gaia"
             link.parent.mkdir(parents=True)
-            link.symlink_to(other)
+            link.symlink_to(old_target)
+            self.assertTrue(link.is_symlink())
 
             captured = {}
-            real_fn = _create_path_symlink
 
-            def fake_create(target, link_path="~/.local/bin/gaia", overwrite=False):
-                r = real_fn(target, link, overwrite=overwrite)
+            def fake_install(link_path="~/.local/bin/gaia", **kwargs):
+                r = _install_path_launcher(link_path=link, **kwargs)
                 captured["result"] = r
                 return r
 
             patches = self._patch_helpers_noop()
             patches.append(patch("cli.install._run_bootstrap", return_value=0))
-            patches.append(patch("cli.install._create_path_symlink",
-                                 side_effect=fake_create))
+            patches.append(patch("cli.install._install_path_launcher",
+                                 side_effect=fake_install))
 
             for p in patches:
                 p.start()
             try:
                 with redirect_stdout(io.StringIO()):
-                    cmd_install(self._make_args(workspace, link))
+                    cmd_install(self._make_args(workspace))
             finally:
                 for p in patches:
                     p.stop()
 
-            self.assertEqual(captured["result"]["action"], "skipped")
-            # Existing target preserved
-            self.assertEqual(Path(os.readlink(link)).resolve(), other.resolve())
+            self.assertEqual(captured["result"]["action"], "migrated")
+            self.assertTrue(link.is_file())
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(link.read_text(), _LAUNCHER_SCRIPT)
 
 
 if __name__ == "__main__":
