@@ -539,9 +539,37 @@ def register(subparsers) -> None:
     edit_p = actions.add_parser(
         "edit",
         help="Edit a brief ($EDITOR by default; --headless for flag-driven)",
+        description=(
+            "Two modes:\n"
+            "  Interactive: opens the brief markdown in $EDITOR, then "
+            "parses + upserts on save.\n"
+            "  Headless (--headless --field=... --content='...'): patches "
+            "one column on the brief row directly. With --append the "
+            "content is concatenated to the existing field using '\\n\\n' "
+            "as separator instead of overwriting.\n\n"
+            "Both modes are DB-only -- nothing under "
+            ".claude/project-context/briefs/ is created or modified."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  # Interactive: open in $EDITOR, parse + save on close\n"
+            "  gaia brief edit cli-completion\n"
+            "\n"
+            "  # Headless: overwrite the objective\n"
+            "  gaia brief edit cli-completion --headless \\\n"
+            "    --field=objective --content='Close the CLI gap'\n"
+            "\n"
+            "  # Headless: append to the context section\n"
+            "  gaia brief edit cli-completion --headless \\\n"
+            "    --field=context --append \\\n"
+            "    --content='Decision 2026-05-07: rename --scope=memory'\n"
+        ),
     )
-    edit_p.add_argument("name")
-    edit_p.add_argument("--workspace", default=None)
+    edit_p.add_argument("name", help="Brief slug to edit (PK with workspace)")
+    edit_p.add_argument("--workspace", default=None, metavar="W",
+                        help="Workspace identity "
+                             "(default: gaia.project.current() or 'me')")
     edit_p.add_argument("--headless", action="store_true", default=False,
                         help="Skip $EDITOR; patch one field via flags "
                              "(DB-only, no filesystem side effects)")
@@ -556,7 +584,8 @@ def register(subparsers) -> None:
     edit_p.add_argument("--append", action="store_true", default=False,
                         help="Concatenate with existing field using '\\n\\n' "
                              "separator instead of overwriting")
-    edit_p.add_argument("--json", action="store_true", default=False)
+    edit_p.add_argument("--json", action="store_true", default=False,
+                        help="Output the patch result as JSON")
 
     show_p = actions.add_parser("show", help="Print a brief as markdown")
     show_p.add_argument("name")

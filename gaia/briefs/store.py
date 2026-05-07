@@ -385,7 +385,10 @@ def close_brief(
 # intentionally NOT yet a valid status; it is reserved for the upcoming
 # state-machines-cli brief.
 _LEGAL_TRANSITIONS: dict[str, set[str]] = {
-    "draft": {"open"},
+    # draft -> closed/archived: real-world shortcut for briefs implemented
+    # directly without an explicit planning intermediate (i.e. the work
+    # was small enough to skip open/in-progress).
+    "draft": {"open", "closed", "archived"},
     "open": {"in-progress"},
     "in-progress": {"closed"},
     "closed": {"archived", "open"},  # archived (normal flow) or reopened

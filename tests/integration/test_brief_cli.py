@@ -324,18 +324,19 @@ def test_set_status_db_only_legal_transition(tmp_db, tmp_path, monkeypatch, caps
 
 
 def test_set_status_illegal_transition(tmp_db, tmp_path, monkeypatch, capsys):
-    """draft -> closed is NOT a legal one-step transition; reports clear error."""
+    """archived is terminal -> any forward move is illegal; reports clear error."""
     import argparse
     from cli.brief import _cmd_set_status
     from gaia.briefs import upsert_brief, get_brief
 
     monkeypatch.chdir(tmp_path)
-    upsert_brief("me", "stuck-draft",
-                 {"status": "draft", "title": "S"}, db_path=tmp_db)
+    # archived is a terminal state with no legal outgoing transitions.
+    upsert_brief("me", "stuck-archived",
+                 {"status": "archived", "title": "S"}, db_path=tmp_db)
 
     args = argparse.Namespace(
-        name="stuck-draft",
-        new_status="closed",
+        name="stuck-archived",
+        new_status="open",
         workspace="me",
         json=False,
     )
@@ -345,8 +346,31 @@ def test_set_status_illegal_transition(tmp_db, tmp_path, monkeypatch, capsys):
     assert "illegal transition" in captured.err.lower()
 
     # State unchanged
-    brief = get_brief("me", "stuck-draft", db_path=tmp_db)
-    assert brief["status"] == "draft"
+    brief = get_brief("me", "stuck-archived", db_path=tmp_db)
+    assert brief["status"] == "archived"
+
+
+def test_set_status_draft_to_closed_shortcut(tmp_db, tmp_path, monkeypatch, capsys):
+    """draft -> closed is a legal shortcut for briefs implemented directly."""
+    import argparse
+    from cli.brief import _cmd_set_status
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "shortcut-brief",
+                 {"status": "draft", "title": "S"}, db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="shortcut-brief",
+        new_status="closed",
+        workspace="me",
+        json=False,
+    )
+    rc = _cmd_set_status(args)
+    assert rc == 0
+
+    brief = get_brief("me", "shortcut-brief", db_path=tmp_db)
+    assert brief["status"] == "closed"
 
 
 def test_set_status_brief_not_found(tmp_db, tmp_path, monkeypatch, capsys):

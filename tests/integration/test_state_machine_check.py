@@ -356,13 +356,13 @@ def test_source_of_truth_diff_is_empty(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_set_status_brief_rejects_illegal_transition(tmp_path, monkeypatch):
-    """draft -> closed is rejected; the row is unchanged."""
+    """archived is terminal -> any outgoing transition is rejected."""
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     from gaia.briefs import set_status_brief, upsert_brief
     from gaia.paths import db_path as _db_path
     db = _db_path()
 
-    upsert_brief("me", "smoke", {"status": "draft", "title": "S"}, db_path=db)
+    upsert_brief("me", "smoke", {"status": "archived", "title": "S"}, db_path=db)
     with pytest.raises(ValueError) as exc:
-        set_status_brief("me", "smoke", "closed", db_path=db)
+        set_status_brief("me", "smoke", "open", db_path=db)
     assert "illegal transition" in str(exc.value).lower()

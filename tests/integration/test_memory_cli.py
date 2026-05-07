@@ -426,8 +426,8 @@ def test_edit_curated_zero_fs_side_effects(tmp_db, tmp_path,
 # Scoped search
 # ---------------------------------------------------------------------------
 
-def test_search_scope_curated(tmp_db, tmp_path, monkeypatch, capsys):
-    """`--scope=curated` searches the memory_fts mirror only."""
+def test_search_scope_memory(tmp_db, tmp_path, monkeypatch, capsys):
+    """`--scope=memory` (canonical name) searches the memory_fts mirror only."""
     from cli.memory import _cmd_search_scoped
 
     monkeypatch.chdir(tmp_path)
@@ -436,16 +436,39 @@ def test_search_scope_curated(tmp_db, tmp_path, monkeypatch, capsys):
     _seed_curated(tmp_db, "beta", "project", "unrelated content")
 
     args = argparse.Namespace(
-        query="zenithal-mooncrest", limit=10, scope="curated",
+        query="zenithal-mooncrest", limit=10, scope="memory",
         workspace="me", json=True,
     )
     rc = _cmd_search_scoped(args)
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["scope"] == "curated"
+    assert payload["scope"] == "memory"
     names = [r["name"] for r in payload["results"]]
     assert "alpha" in names
     assert "beta" not in names
+
+
+def test_search_scope_curated_alias_warns_and_translates(tmp_db, tmp_path,
+                                                         monkeypatch, capsys):
+    """`--scope=curated` still works as a deprecated alias for `memory`."""
+    from cli.memory import _cmd_search_scoped
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "alpha", "project",
+                  "the zenithal-mooncrest token appears here")
+
+    args = argparse.Namespace(
+        query="zenithal-mooncrest", limit=10, scope="curated",
+        workspace="me", json=True,
+    )
+    rc = _cmd_search_scoped(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    # Output uses the canonical name ('memory') even when invoked with curated.
+    assert payload["scope"] == "memory"
+    # Deprecation warning lands on stderr.
+    assert "deprecated" in captured.err.lower()
 
 
 def test_search_scope_both_emits_two_buckets(tmp_db, tmp_path,

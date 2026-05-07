@@ -707,22 +707,35 @@ def _cmd_edit(args) -> int:
 def _cmd_search_scoped(args) -> int:
     """Wrapper around the legacy ``_cmd_search`` that honours ``--scope``.
 
-    ``--scope=episodes`` (default for backwards compatibility) routes to the
-    legacy episodic FTS5 backend.
-    ``--scope=curated`` runs FTS5 over the ``memory_fts`` mirror in
-    ``~/.gaia/gaia.db``.
-    ``--scope=both`` returns combined results, episodes-first (sorted by
-    rank within each scope).
+    Valid scopes:
+      * ``episodes`` -- FTS5 over the legacy ``episodic-memory`` index.
+      * ``memory``   -- FTS5 over the ``memory_fts`` mirror of the curated
+                        ``memory`` table (preferred name).
+      * ``both``     -- combined episodes + curated memory (default).
+
+    Deprecated alias: ``curated`` is accepted as a synonym for ``memory``;
+    a deprecation warning is emitted to stderr so callers can migrate.
     """
     scope = getattr(args, "scope", None) or "both"
     as_json = getattr(args, "json", False)
     query = args.query
     limit = getattr(args, "limit", 10)
 
+    # Backward-compat: 'curated' was the original name for the curated-memory
+    # scope. Accept it but warn -- the canonical name is 'memory' (mirrors the
+    # surface / table name and aligns with the rest of the CLI).
+    if scope == "curated":
+        print(
+            "Warning: --scope=curated is deprecated; use --scope=memory. "
+            "Translating for this run.",
+            file=sys.stderr,
+        )
+        scope = "memory"
+
     if scope == "episodes":
         return _cmd_search(args)
 
-    # Curated path (used by curated-only and both).
+    # Curated-memory path (used by --scope=memory and --scope=both).
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     try:
         from gaia.store.writer import search_memory_curated
@@ -731,9 +744,9 @@ def _cmd_search_scoped(args) -> int:
 
     curated = search_memory_curated(workspace, query, limit=limit)
 
-    if scope == "curated":
+    if scope == "memory":
         if as_json:
-            print(json.dumps({"scope": "curated", "results": curated},
+            print(json.dumps({"scope": "memory", "results": curated},
                              indent=2, default=str))
         else:
             if not curated:
@@ -805,9 +818,23 @@ def cmd_memory(args) -> int:
 
 def register(subparsers):
     """Register the memory subcommand with nested sub-actions."""
+    import argparse as _argparse
+
     mem_parser = subparsers.add_parser(
         "memory",
-        help="Inspect and query Gaia episodic memory (read-only)",
+        help="Inspect, query, and curate Gaia memory "
+             "(curated rows + episodic log)",
+        description=(
+            "Two surfaces live here:\n"
+            "  * curated memory -- the `memory` table in ~/.gaia/gaia.db,\n"
+            "    written by `add`, `edit`, `delete` (DB-only, no .md files).\n"
+            "  * episodic memory -- the activity log under\n"
+            "    .claude/project-context/episodic-memory/, read by\n"
+            "    `episode-show` and the `--scope=episodes` branch of search.\n"
+            "Use `gaia query` instead when you need to filter across more "
+            "than these two surfaces (e.g. harness_events)."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
     )
     mem_parser.add_argument(
         "--json",
@@ -824,32 +851,73 @@ def register(subparsers):
     # -- search ---------------------------------------------------------------
     search_p = actions.add_parser(
         "search",
-        help="FTS5 search across episodes and/or curated memory",
+        help="FTS5 search across curated memory and/or episodic memory",
+        description=(
+            "Run an FTS5 MATCH query against curated memory rows "
+            "(the `memory` table) and/or episodic memory entries. "
+            "Returns ranked results sorted by bm25 within each scope.\n\n"
+            "Scope choices:\n"
+            "  memory     curated rows only (memory_fts mirror)\n"
+            "  episodes   episodic memory only (legacy backend)\n"
+            "  both       both, episodes-first (default)\n\n"
+            "Note: `curated` is accepted as a deprecated alias for `memory` "
+            "with a warning to stderr."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory search 'release learnings' --scope=memory\n"
+            "  gaia memory search 'tailscale' --scope=both --limit=5\n"
+            "  gaia memory search 'gaia-self-check' --scope=episodes --json\n"
+        ),
     )
-    search_p.add_argument("query", help="Search query")
+    search_p.add_argument("query", help="Free-text query (auto-quoted when "
+                                        "it contains FTS5 syntax)")
     search_p.add_argument(
         "--limit", type=int, default=10, metavar="N",
-        help="Maximum number of results (default: 10)",
+        help="Maximum results per scope (default: 10)",
     )
     search_p.add_argument(
         "--scope", default="both",
-        choices=("curated", "episodes", "both"),
-        help="Where to search: curated memory rows, episodic memory, "
-             "or both (default: both)",
+        # Note: 'curated' is accepted at runtime but not advertised in
+        # choices(); the alias triggers a deprecation warning.
+        choices=("memory", "episodes", "both", "curated"),
+        help="Where to search: curated memory (`memory`), episodes, or both "
+             "(default: both). `curated` is a deprecated alias for `memory`.",
     )
     search_p.add_argument(
-        "--workspace", default=None,
+        "--workspace", default=None, metavar="W",
         help="Workspace identity for curated scope "
              "(default: gaia.project.current() or 'me')",
     )
     search_p.add_argument(
         "--json", action="store_true", default=False,
-        help="Output as JSON",
+        help="Emit results as JSON. Output shape: "
+             "{scope, results} (single-scope) or "
+             "{scope, episodes, curated} (scope=both)",
     )
     search_p.set_defaults(func=_cmd_search_scoped)
 
     # -- stats ----------------------------------------------------------------
-    stats_p = actions.add_parser("stats", help="Episode count, index stats, conflict count")
+    stats_p = actions.add_parser(
+        "stats",
+        help="Episode count, FTS5 index size, conflict count",
+        description=(
+            "Diagnostic snapshot of the episodic memory index. "
+            "Reads .claude/project-context/episodic-memory/index.json for "
+            "total count, the FTS5 backend for indexed count, and the "
+            "conflict-detector module for contradictions across "
+            "memory/*.md files.\n\n"
+            "Output shape: "
+            "{total_episodes, indexed, avg_score, conflicts, warnings}."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory stats\n"
+            "  gaia memory stats --json | jq '.indexed'\n"
+        ),
+    )
     stats_p.add_argument(
         "--json", action="store_true", default=False,
         help="Output as JSON",
@@ -859,42 +927,91 @@ def register(subparsers):
     # -- show (curated memory by name) ---------------------------------------
     show_p = actions.add_parser(
         "show",
-        help="Print a curated memory row by name (use episode-show for episodes)",
+        help="Print a curated memory row by name (DB-only)",
+        description=(
+            "Look up a curated memory row by (project, name) and print "
+            "frontmatter + body. Resolves the workspace via "
+            "gaia.project.current() unless --workspace is given.\n\n"
+            "For episodic memory inspection use `gaia memory episode-show "
+            "<episode_id>` instead."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory show project_gaia_v5\n"
+            "  gaia memory show user_jorge --workspace=me --json\n"
+        ),
     )
     show_p.add_argument("name",
-                        help="Curated memory slug (e.g. project_gaia_v5)")
-    show_p.add_argument("--workspace", default=None)
+                        help="Curated memory slug, e.g. 'project_gaia_v5'. "
+                             "PK with workspace; case-sensitive.")
+    show_p.add_argument("--workspace", default=None, metavar="W",
+                        help="Workspace identity "
+                             "(default: gaia.project.current() or 'me')")
     show_p.add_argument(
         "--json", action="store_true", default=False,
-        help="Output as JSON",
+        help="Emit the row as JSON (preserves all columns)",
     )
     show_p.set_defaults(func=_cmd_curated_show)
 
     # -- episode-show (legacy, renamed from old `show`) ----------------------
     episode_show_p = actions.add_parser(
         "episode-show",
-        help="Full episode with metadata and score (legacy episodic memory)",
+        help="Print a full episode with metadata + hybrid score",
+        description=(
+            "Inspect a single episodic memory entry by its episode_id. "
+            "Resolves the episode through tools.memory.episodic and "
+            "computes the hybrid (recency x retrieval) score. "
+            "Use `gaia memory search --scope=episodes` to find "
+            "episode_ids first."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory episode-show ep_20260420_152233_abc123\n"
+            "  gaia memory episode-show ep_... --json | jq '.score'\n"
+        ),
     )
-    episode_show_p.add_argument("episode_id", help="Episode ID to display")
+    episode_show_p.add_argument("episode_id",
+                                help="Stable episode identifier")
     episode_show_p.add_argument(
         "--json", action="store_true", default=False,
-        help="Output as JSON",
+        help="Emit the episode as JSON",
     )
     episode_show_p.set_defaults(func=_cmd_episode_show)
 
     # -- list (curated memory) ------------------------------------------------
     list_p = actions.add_parser(
-        "list", help="List curated memory rows in the workspace",
+        "list",
+        help="List curated memory rows in the workspace",
+        description=(
+            "Enumerate rows in the curated `memory` table for the given "
+            "workspace, optionally filtered by type. Default output is a "
+            "fixed-width table with NAME / TYPE / DESCRIPTION columns."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory list\n"
+            "  gaia memory list --type=feedback\n"
+            "  gaia memory list --format=count\n"
+            "  gaia memory list --format=json --workspace=me\n"
+        ),
     )
     list_p.add_argument(
         "--type", default=None,
         choices=("project", "user", "feedback"),
-        help="Filter by memory type",
+        help="Filter by memory type. project=info about a repo/feature, "
+             "user=info about the user, feedback=learnings/preferences.",
     )
-    list_p.add_argument("--workspace", default=None)
+    list_p.add_argument("--workspace", default=None, metavar="W",
+                        help="Workspace identity "
+                             "(default: gaia.project.current() or 'me')")
     list_p.add_argument(
         "--format", default="table",
         choices=("table", "json", "count"),
+        help="Output shape (default: table). 'count' emits the integer "
+             "row count only; 'json' emits an array of full rows.",
     )
     list_p.add_argument(
         "--json", action="store_true", default=False,
@@ -905,10 +1022,25 @@ def register(subparsers):
     # -- delete (curated memory) ---------------------------------------------
     delete_p = actions.add_parser(
         "delete",
-        help="Hard-delete a curated memory row (FTS5 mirror cleared via trigger)",
+        help="Hard-delete a curated memory row "
+             "(FTS5 mirror cleared via trigger)",
+        description=(
+            "Permanently remove a curated memory row from "
+            "~/.gaia/gaia.db. The matching memory_fts row is wiped by an "
+            "AFTER DELETE trigger so search results stay consistent. "
+            "Prompts for confirmation unless --yes is passed."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory delete project_old_notes\n"
+            "  gaia memory delete project_old_notes --yes --json\n"
+        ),
     )
-    delete_p.add_argument("name", help="Curated memory slug")
-    delete_p.add_argument("--workspace", default=None)
+    delete_p.add_argument("name", help="Curated memory slug to delete")
+    delete_p.add_argument("--workspace", default=None, metavar="W",
+                          help="Workspace identity "
+                               "(default: gaia.project.current() or 'me')")
     delete_p.add_argument(
         "--yes", action="store_true", default=False,
         help="Skip the interactive confirmation prompt",
@@ -923,9 +1055,23 @@ def register(subparsers):
     edit_p = actions.add_parser(
         "edit",
         help="Patch a curated memory field (description / body) by flags",
+        description=(
+            "Update a single column on a curated memory row without "
+            "round-tripping through markdown. Either overwrites the field "
+            "with --content or appends to it with --append (uses '\\n\\n' "
+            "as separator). Type changes go through delete + add."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory edit --name=project_gaia_v5 --field=description \\\n"
+            "    --content='Gaia v5 architecture notes'\n"
+            "  gaia memory edit --name=project_gaia_v5 --field=body --append \\\n"
+            "    --content='Session 2026-05-07: closed brief X'\n"
+        ),
     )
     edit_p.add_argument("--name", required=True,
-                        help="Curated memory slug to patch")
+                        help="Curated memory slug to patch (PK with workspace)")
     edit_p.add_argument(
         "--field", required=True,
         choices=("description", "body"),
@@ -936,39 +1082,92 @@ def register(subparsers):
     edit_p.add_argument("--append", action="store_true", default=False,
                         help="Concatenate with existing field using '\\n\\n' "
                              "separator instead of overwriting")
-    edit_p.add_argument("--workspace", default=None)
-    edit_p.add_argument("--json", action="store_true", default=False)
+    edit_p.add_argument("--workspace", default=None, metavar="W",
+                        help="Workspace identity "
+                             "(default: gaia.project.current() or 'me')")
+    edit_p.add_argument("--json", action="store_true", default=False,
+                        help="Output as JSON")
     edit_p.set_defaults(func=_cmd_edit)
 
     # -- add (DB-only writer; curated memory) --------------------------------
     add_p = actions.add_parser(
         "add",
         help="Add (or upsert) a curated memory row in the DB (no filesystem)",
+        description=(
+            "Persist a curated memory entry to the DB. The memory is "
+            "identified by (project, name) -- re-running with the same name "
+            "UPDATES the existing row (UPSERT semantics). No filesystem "
+            "files are written.\n\n"
+            "Type categories:\n"
+            "  project   info about a repo / feature / system\n"
+            "  user      info about the user\n"
+            "  feedback  learnings or preferences"
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory add --name=feedback_release_learnings \\\n"
+            "    --type=feedback \\\n"
+            "    --body='Always run gaia:install-local with --force '\\\n"
+            "           'after rebuilds.'\n"
+            "\n"
+            "  gaia memory add --name=project_session_2026-05-07 \\\n"
+            "    --type=project \\\n"
+            "    --description='Session closed: DB-canonical migration.' \\\n"
+            "    --body='...'\n"
+        ),
     )
-    add_p.add_argument("--name", required=True,
-                       help="Memory slug (e.g. project_gaia_v5). Acts as PK with workspace.")
+    add_p.add_argument(
+        "--name", required=True,
+        help="Stable identifier (slug-style). PK with project. "
+             "Re-using the same name UPSERTs the existing row.",
+    )
     add_p.add_argument(
         "--type", required=True,
         choices=("project", "user", "feedback"),
         help="Canonical memory type (matches schema CHECK constraint)",
     )
-    add_p.add_argument("--body", required=True,
-                       help="Markdown body (without frontmatter)")
-    add_p.add_argument("--description", default=None,
-                       help="Optional one-line summary")
-    add_p.add_argument("--workspace", default=None,
-                       help="Workspace identity (default: gaia.project.current() or 'me')")
-    add_p.add_argument("--json", action="store_true", default=False,
-                       help="Emit the result as JSON")
+    add_p.add_argument(
+        "--body", required=True,
+        help="Main text content. Markdown supported (without frontmatter).",
+    )
+    add_p.add_argument(
+        "--description", default=None,
+        help="Optional short summary (1-2 lines). Shown in `gaia memory list`.",
+    )
+    add_p.add_argument(
+        "--workspace", default=None, metavar="W",
+        help="Target workspace "
+             "(default: gaia.project.current() or 'me')",
+    )
+    add_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Output the applied row as JSON "
+             "(includes status, action, updated_at)",
+    )
     add_p.set_defaults(func=_cmd_add)
 
     # -- conflicts ------------------------------------------------------------
     conflicts_p = actions.add_parser(
-        "conflicts", help="Contradiction scan across memory files"
+        "conflicts",
+        help="Contradiction scan across memory files",
+        description=(
+            "Scan the memory/ directory for pairs of files whose content "
+            "appears to contradict each other (jaccard similarity above "
+            "threshold + heuristic reason extraction). Reports each "
+            "candidate pair with a similarity score."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory conflicts\n"
+            "  gaia memory conflicts --threshold=0.5 --json\n"
+        ),
     )
     conflicts_p.add_argument(
         "--threshold", type=float, default=0.3, metavar="F",
-        help="Jaccard similarity threshold (default: 0.3)",
+        help="Jaccard similarity threshold for flagging a pair "
+             "(default: 0.3)",
     )
     conflicts_p.add_argument(
         "--json", action="store_true", default=False,
