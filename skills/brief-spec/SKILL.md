@@ -11,6 +11,18 @@ metadata:
 Conversational brief creation. The orchestrator loads this inline to
 co-create a brief with the user before dispatching to gaia-planner.
 
+## DB is the source of truth (read this first)
+
+Briefs live in the Gaia substrate database (`~/.gaia/gaia.db`). They are
+created and mutated through the `gaia brief` CLI -- never by writing files
+into `.claude/project-context/briefs/`. That filesystem layout is **legacy**
+and is being removed in a follow-up cleanup.
+
+If a previous version of this skill or a stale doc tells you to write
+`brief.md` to a `<status>_<slug>/` directory, ignore it. The migration to
+DB-canonical is in progress (session 2026-05-06, brief `gaia-state-machines`).
+When in doubt: there is no file to write -- there is a CLI command to run.
+
 ## Cuando llegas aquí
 
 El orquestador cargó esta skill porque la conversación entró en Cerrar:
@@ -19,11 +31,12 @@ No estás aquí porque la petición superó un umbral de tamaño. Estás aquí
 porque hay acuerdos que capturar.
 
 Tu trabajo:
-1. Resumir los acuerdos que ya emergieron en la conversación previa —
+1. Resumir los acuerdos que ya emergieron en la conversación previa --
    no re-descubrirlos desde cero.
 2. Preguntar sólo lo que falte para convertir los acuerdos en AC
    reproducibles (evidence types, surface type).
-3. Escribir el brief y presentarlo al usuario para validar.
+3. Materializar el brief en la DB con `gaia brief new --headless` y
+   presentarlo al usuario para validar.
 
 ## Process
 
@@ -42,23 +55,101 @@ Tu trabajo:
    a declared evidence type and every question above has an answer or
    an explicit "N/A".
 
-2. **Write brief.md** -- Use the structure below. Write to:
-   `.claude/project-context/briefs/open_{feature-name}/brief.md`
-   where `{feature-name}` is a kebab-case slug.
+2. **Create the brief in the DB (headless)** -- Run:
 
-   **Directory prefix convention:**
-   - `open_` -- draft or ready, no work started yet (this skill always creates with `open_`)
-   - `in-progress_` -- work has begun
-   - `closed_` -- complete, verified, or done
+   ```bash
+   gaia brief new --headless \
+     --title="<human title>" \
+     --status=draft \
+     --objective="<1-3 sentences>" \
+     --context="<project constraints>" \
+     --approach="<high-level strategy, 3-5 sentences>" \
+     --out-of-scope="<explicit non-goals>"
+   ```
 
-   Transitions between prefixes are done with `gaia plans rename`. This skill
-   only ever creates with `open_`.
+   The slug is derived from `--title` (kebab-case). The CLI writes a row to
+   the `briefs` table and prints the slug back. **Do not write any file in
+   `.claude/project-context/briefs/`.** No directory, no `brief.md`, no
+   frontmatter on disk. The DB row IS the brief.
 
-## Brief Structure
+   `--status=draft` is the canonical entry point. Move it to `open` only when
+   the user is ready to plan against it.
 
-The frontmatter is the executable source of truth (orchestrator parses it
-with `yaml.safe_load`). The body's `## Acceptance Criteria` section mirrors
-it as a human summary.
+3. **Add Acceptance Criteria** -- ACs live in the brief's
+   `acceptance_criteria` field (currently a YAML/markdown block stored in the
+   row body). Until `gaia brief add-ac` ships, capture them in the same
+   round-trip:
+   - If you have all ACs at creation time, include them in the
+     `--approach` or a follow-up `gaia brief edit <slug>` where the editor
+     opens the body for in-place editing.
+   - The body's `## Acceptance Criteria` section uses the format under
+     "Brief Body Structure" below. Frontmatter is the executable source of
+     truth; the human summary mirrors it.
+
+4. **Confirm with the user** -- `gaia brief show <slug>` prints the full row.
+   Read it back and ask: "Does this capture what you want?"
+   When confirmed, suggest dispatching to gaia-planner.
+
+## How to update a brief
+
+Use `gaia brief edit <name>` for the full body in `$EDITOR`. This is the
+current path while finer-grained CLI commands are pending.
+
+When `gaia brief set-field <name> --field=<context|approach|...>
+--content="..."` ships (pending, scope of brief `cli-completion`), prefer it
+for single-field updates -- no editor, scriptable, headless-friendly.
+
+**Do not edit files in `.claude/project-context/briefs/`.** Any directory
+you may see there is legacy and will be deleted; edits there are silently
+ignored by the runtime.
+
+## How to change status
+
+Use `gaia brief set-status <name> <new-status>`. The CLI validates the
+state machine and rejects illegal transitions:
+
+```
+draft -> open -> in-progress -> closed -> {archived, open}
+```
+
+Examples:
+
+```bash
+gaia brief set-status my-feature open          # ready to plan against
+gaia brief set-status my-feature in-progress   # work has begun
+gaia brief set-status my-feature closed        # AC verified
+gaia brief set-status my-feature archived      # closed -> archived
+gaia brief set-status my-feature open          # closed -> reopened
+```
+
+There is no "rename the directory" step. Status is a column.
+
+## How to delete a brief
+
+Use `gaia brief delete <name> --yes`. Hard delete with FK cascade across
+acceptance_criteria, milestones, dependencies, plans, and tasks tied to the
+brief. There is no undo today; soft-delete is on a separate future brief.
+
+Prefer `gaia brief set-status <name> archived` over delete for anything you
+might want to read later.
+
+## How to read briefs
+
+| Need | Command |
+|------|---------|
+| List | `gaia brief list [--status=...] [--workspace=<ws>] [--format=table\|json\|count]` |
+| Show one | `gaia brief show <name> [--workspace=<ws>] [--json]` |
+| FTS5 search | `gaia brief search <query>` |
+
+`--workspace` defaults to the current workspace. Pass it explicitly when
+reading from outside the workspace tree (e.g. cron, batch jobs).
+
+## Brief Body Structure
+
+The brief body (rendered by `gaia brief show`) follows this shape. The
+frontmatter block is the executable source of truth (orchestrator parses
+it with `yaml.safe_load`). The body's `## Acceptance Criteria` section
+mirrors it as a human summary.
 
 ```markdown
 ---
@@ -179,7 +270,37 @@ evidence:
     threshold: "< 200"
 ```
 
+## Filesystem behavior (DEPRECATED)
+
+The directory layout `.claude/project-context/briefs/<status>_<slug>/`
+with a `brief.md` inside it is **legacy**. It will be removed in the
+`legacy-cleanup` brief. Reasons it is being retired:
+
+- Status lived in the directory name -- renaming a directory was the
+  status transition. That made transitions unverifiable, racy across
+  agents, and impossible to query with anything other than `find`.
+- Two writers (filesystem + DB after the substrate refactor) drift apart
+  silently; only one can be the source of truth.
+- Cascade deletes across ACs, milestones, plans, and tasks require FK
+  semantics, which a directory tree cannot provide.
+
+If you find code, docs, or skills that still describe the directory
+convention, flag them in `cross_layer_impacts` -- do not edit them as a
+side effect of a brief task.
+
 ## After Brief
 
-Present the full brief. Ask: "Does this capture what you want?"
-When confirmed, suggest dispatching to gaia-planner to create a plan.
+`gaia brief show <slug>` prints the full brief. Present it. Ask:
+"Does this capture what you want?" When confirmed, suggest dispatching
+to gaia-planner to create a plan.
+
+## Anti-Patterns
+
+- **Writing `brief.md` to disk** -- the DB is the source of truth; any file
+  on disk is either build output or stale legacy that will be deleted.
+- **Renaming directories to change status** -- there are no directories;
+  status is a column. Use `gaia brief set-status`.
+- **Skipping `--status=draft` on creation** -- creating directly in `open`
+  bypasses the review window where the user confirms ACs.
+- **Hard-deleting a brief that has plan history** -- prefer
+  `set-status archived`. Delete is for genuinely abandoned drafts.
