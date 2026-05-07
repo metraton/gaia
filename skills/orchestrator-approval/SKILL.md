@@ -56,7 +56,7 @@ The "Approve" option MUST name the specific action. The PostToolUse hook activat
 
 1. **Grant activates through the PostToolUse hook for AskUserQuestion -- not SendMessage.** Resume the subagent via SendMessage with natural language only. The grant is active before SendMessage is sent -- no delay or verification step is needed.
 
-2. **Scope guard -- resume only with the approved command.** The grant is scoped to the exact command that was blocked. When the agent's `approval_request.exact_content` differs in ANY argument from what the orchestrator put in `COMANDO:` -- even one path segment, one flag, one filename -- the grant will miss and the agent will be blocked again. Do NOT send the agent a resume message that instructs it to run a different command. If the operation has genuinely changed, present a new approval.
+2. **Scope guard -- copy `exact_content` byte-for-byte into the next attempt.** The grant is keyed to the exact statement signature. Anything the orchestrator adds on top -- a redirect, a `cd` prefix, a wrapper, a flag the user did not approve -- creates a different statement that the grant does not cover. Equivalent is not the same: the user approved what was shown, not what would also work. Whether you continue via SendMessage resume OR a fresh Agent re-dispatch, copy `approval_request.exact_content` literally into the next prompt and instruct the subagent to run that exact string. If the operation has genuinely changed, present a new approval -- do not retrofit it through wrapping.
 
 3. **Fresh presentation every time.** Each hook-blocked APPROVAL_REQUEST requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
@@ -88,7 +88,7 @@ Resume via SendMessage is correct when the agent's next move is bounded (act on 
 | "'Approve -- los 3' is clear from context" | Context is not the label -- spell out what "the 3" are |
 | "The command is long, I'll shorten it" | Show it complete -- truncation hides what the user is approving |
 | "Same operation, slightly different path" | Grants match by command signature -- different path = grant miss = immediate re-block |
-| "I'll tell the agent to run a similar rm" | The agent must run the exact command that was approved, or it gets blocked again |
+| "I'll add anything around the approved command -- redirect, cd prefix, flag, wrapper" | The grant matches the statement byte-for-byte; anything added on top is a different statement and a fresh re-block. Equivalent is not the same. |
 | "I'll skip the [P-...] suffix, it's cosmetic" | "The hook extracts the nonce from the label — without it, targeted activation fails" |
 | "Original dispatch had bypassPermissions, resume will too" | `mode` is per-dispatch; resume via SendMessage runs in `default` -- CC native re-blocks. Re-dispatch fresh. |
 | "Subagent blocked mid-task, I'll approve then SendMessage" | If the blocker is CC native on `.claude/` writes, approval alone won't help -- resume loses the mode. Re-dispatch fresh with the needed mode. |

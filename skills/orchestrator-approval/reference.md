@@ -173,6 +173,25 @@ Grants are matched by **semantic signature** per shell statement: `base_cmd + ve
 
 If the correct target has changed since the approval (e.g., the file that was blocked no longer exists and a different file needs to be deleted), present a new approval for the new command -- do not resume with modified instructions.
 
+## Cosmetic drift -- the wrapper trap
+
+Rule 2 says copy `exact_content` byte-for-byte. The class of mistake that breaks this most often is not changing the command itself, but adding **wrapping** that the orchestrator considers harmless. The grant matcher does not know which bytes were "harmless"; it sees a different statement and re-blocks.
+
+The pattern is always the same: the orchestrator approves command X, then re-dispatches with `<wrapper> X`, then is surprised that the grant did not match. Below are concrete examples of wrappers that have caused re-block loops in practice -- not as a checklist, but as illustrations of the principle. The principle applies to **any** addition, including ones not listed here.
+
+| Approved | What the orchestrator typed | Why it missed |
+|---|---|---|
+| `gaia brief set-status X closed` | `gaia brief set-status X closed 2>&1` | Trailing redirect added a token |
+| `rm /path/to/file` | `cd /path && rm to/file` | `cd && ` prefix turned one statement into a chain |
+| `terraform apply` | `bash -c "terraform apply"` | Wrapper turned the verb from `terraform` to `bash` for the matcher |
+| `git push origin main` | `git push origin main --verbose` | Flag added that was not in the approved scope |
+| `npm install` | `time npm install` | Time prefix changed the leading verb |
+| `kubectl apply -f x.yaml` | `kubectl apply -f x.yaml && echo done` | Chained statement -- second statement has no grant |
+
+The mental model: the orchestrator is **not** trying to make the command "better" or "safer" between approval and execution. The user approved a specific command. The orchestrator's job is to put that command, unchanged, in front of the agent. If the orchestrator wants stderr captured, or cwd set, or any other effect, those need to be requested in a fresh approval -- not retrofitted.
+
+This applies symmetrically to SendMessage resume and to fresh Agent re-dispatch. The grant lives in the session, keyed to the statement. Neither delivery mechanism gets latitude.
+
 ## Dispatch mode checklist
 
 Before dispatching a subagent, run through this checklist:
