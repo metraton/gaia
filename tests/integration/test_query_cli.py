@@ -136,6 +136,9 @@ def _make_args(**overrides) -> argparse.Namespace:
         failed=False,
         format="table",
         json=False,
+        group_by=None,
+        count=False,
+        snippets=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -268,6 +271,135 @@ def test_query_since_invalid_format_returns_error(tmp_db, tmp_path,
     assert "could not parse" in err.lower()
 
 
+def test_query_group_by_surface_counts(tmp_db, tmp_path,
+                                       monkeypatch, capsys):
+    """--group-by=surface buckets results across the three surfaces."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_memory(tmp_db, "m1", "project", "body",
+                 updated_at="2026-05-07T01:00:00Z")
+    _seed_episode(tmp_db, "ep_g1", agent="developer",
+                  timestamp="2026-05-07T02:00:00Z")
+    _seed_episode(tmp_db, "ep_g2", agent="orchestrator",
+                  timestamp="2026-05-07T03:00:00Z")
+    _seed_harness_event(tmp_db, type_="command.executed",
+                        ts="2026-05-07T04:00:00Z", result="ok: ls")
+
+    args = _make_args(group_by="surface", format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+
+    out = json.loads(capsys.readouterr().out)
+    by_surface = {r["surface"]: r["count"] for r in out}
+    assert by_surface == {"memory": 1, "episodes": 2, "harness_events": 1}
+
+
+def test_query_count_without_group_by_returns_total(tmp_db, tmp_path,
+                                                    monkeypatch, capsys):
+    """--count alone emits a single integer total across the merged result."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    for i in range(3):
+        _seed_episode(tmp_db, f"ep_c{i}", agent="developer",
+                      timestamp=f"2026-05-07T0{i}:00:00Z")
+
+    args = _make_args(surface="episodes", count=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    assert out == [{"count": 3}]
+
+
+def test_query_group_by_day_truncates_timestamp(tmp_db, tmp_path,
+                                                monkeypatch, capsys):
+    """--group-by=day buckets by YYYY-MM-DD prefix of timestamp."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(tmp_db, "ep_d1", agent="developer",
+                  timestamp="2026-05-07T01:00:00Z")
+    _seed_episode(tmp_db, "ep_d2", agent="developer",
+                  timestamp="2026-05-07T22:00:00Z")
+    _seed_episode(tmp_db, "ep_d3", agent="developer",
+                  timestamp="2026-05-06T22:00:00Z")
+
+    args = _make_args(surface="episodes", group_by="day", format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    by_day = {r["day"]: r["count"] for r in out}
+    assert by_day == {"2026-05-07": 2, "2026-05-06": 1}
+
+
+def test_query_snippets_highlights_command_like(tmp_db, tmp_path,
+                                                monkeypatch, capsys):
+    """--snippets wraps the matched needle with [..] brackets in the summary."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_harness_event(tmp_db, type_="command.executed",
+                        ts="2026-05-07T01:00:00Z",
+                        result=("preface text " * 10
+                                + "ok: git push origin main "
+                                + "trailing context " * 5))
+
+    args = _make_args(surface="harness_events",
+                      command_like="%git push%",
+                      snippets=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    assert "[git push]" in out[0]["summary"]
+
+
+def test_query_snippets_noop_without_textual_filter(tmp_db, tmp_path,
+                                                    monkeypatch, capsys):
+    """--snippets without textual filter leaves the summary intact."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(tmp_db, "ep_plain", agent="developer",
+                  title="plain title",
+                  timestamp="2026-05-07T01:00:00Z")
+
+    args = _make_args(surface="episodes", snippets=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    baseline = json.loads(capsys.readouterr().out)
+
+    # Now run the same query without --snippets
+    args2 = _make_args(surface="episodes", snippets=False, format="json")
+    rc = cmd_query(args2)
+    assert rc == 0
+    plain = json.loads(capsys.readouterr().out)
+
+    # No needle => summary identical to non-snippet rendering
+    assert baseline[0]["summary"] == plain[0]["summary"]
+
+
+def test_query_group_by_agent_buckets(tmp_db, tmp_path, monkeypatch, capsys):
+    """--group-by=agent buckets by agent across surfaces that carry agent."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(tmp_db, "ep_a1", agent="developer",
+                  timestamp="2026-05-07T01:00:00Z")
+    _seed_episode(tmp_db, "ep_a2", agent="developer",
+                  timestamp="2026-05-07T02:00:00Z")
+    _seed_episode(tmp_db, "ep_a3", agent="orchestrator",
+                  timestamp="2026-05-07T03:00:00Z")
+
+    args = _make_args(surface="episodes", group_by="agent", format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    by_agent = {r["agent"]: r["count"] for r in out}
+    assert by_agent == {"developer": 2, "orchestrator": 1}
+
+
 def test_query_registers_subcommand_choice():
     """``gaia query`` is wired into the argparse tree."""
     import cli.query as query_mod
@@ -283,5 +415,8 @@ def test_query_registers_subcommand_choice():
     assert "--since" in help_text
     assert "--command-like" in help_text
     assert "--failed" in help_text
+    assert "--group-by" in help_text
+    assert "--count" in help_text
+    assert "--snippets" in help_text
     # Examples present in epilog
     assert "Examples:" in help_text

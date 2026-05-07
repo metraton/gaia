@@ -276,8 +276,13 @@ def _print_human(status: dict) -> None:
 
 def register(subparsers):
     """Register the status subcommand."""
-    sub = subparsers.add_parser("status", help="Show Gaia system status")
-    sub.add_argument("--json", action="store_true", default=False, help="Output as JSON")
+    sub = subparsers.add_parser(
+        "status",
+        help="Show Gaia system status",
+        description="Print workspace status: agents, hooks, contracts.",
+    )
+    sub.add_argument("--json", action="store_true", default=False,
+                     help="Emit JSON. bool.")
 
 
 def cmd_status(args) -> int:

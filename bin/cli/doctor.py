@@ -643,9 +643,15 @@ def _print_human(results: list, version_detail: str = "") -> None:
 
 def register(subparsers):
     """Register the doctor subcommand."""
-    sub = subparsers.add_parser("doctor", help="Run Gaia-Ops health checks")
-    sub.add_argument("--json", action="store_true", default=False, help="Output as JSON")
-    sub.add_argument("--fix", action="store_true", default=False, help="Attempt auto-fix for common issues")
+    sub = subparsers.add_parser(
+        "doctor",
+        help="Run Gaia-Ops health checks",
+        description="Validate the local installation and report drift.",
+    )
+    sub.add_argument("--json", action="store_true", default=False,
+                     help="Emit JSON. bool.")
+    sub.add_argument("--fix", action="store_true", default=False,
+                     help="Attempt auto-fix for common issues. bool.")
 
 
 def cmd_doctor(args) -> int:

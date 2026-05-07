@@ -234,168 +234,108 @@ def register(subparsers) -> None:
     """Register the `plan` (singular) subcommand with the root parser."""
     plan_parser = subparsers.add_parser(
         "plan",
-        help="Manage plans in the Gaia DB substrate (one per brief)",
+        help="Manage plans (one per brief, DB-canonical)",
         description=(
-            "Each plan is attached to exactly one brief (UNIQUE brief_id). "
-            "All operations are DB-only -- nothing under "
-            ".claude/project-context/briefs/ is touched. "
-            "The legacy `gaia plans` (plural) subcommand still reads "
-            "filesystem plan.md artifacts but is read-only."
+            "Save, show, list, delete, and transition plans attached to "
+            "briefs. One plan per brief."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     plan_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity (default: gaia.project.current() or 'me')",
+        help="Workspace identity. Default: gaia.project.current() or 'me'.",
     )
 
     actions = plan_parser.add_subparsers(dest="plan_action", metavar="<action>")
 
-    # save
+    # -- save ---------------------------------------------------------------
     save_p = actions.add_parser(
         "save",
-        help="Upsert the plan attached to a brief (DB-only)",
-        description=(
-            "Insert or update the single plan row attached to "
-            "(workspace, brief). On insert the default status is 'draft'. "
-            "On update the existing row's content + status are overwritten "
-            "and updated_at is bumped. The parent brief must already exist."
-        ),
+        help="Upsert the plan attached to a brief",
+        description="Insert or update the plan row for (workspace, brief).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  gaia plan save --brief=cli-completion --content='## M1 ...'\n"
-            "  gaia plan save --brief=cli-completion --content='...' \\\n"
-            "    --status=active --workspace=me --json\n"
-        ),
+        epilog="Examples:\n"
+               "  gaia plan save --brief=my-feature --content='...'\n",
     )
     save_p.add_argument("--brief", required=True, metavar="NAME",
-                        help="Brief slug the plan belongs to (must exist)")
+                        help="Parent brief slug. Required.")
     save_p.add_argument("--content", required=True,
-                        help="Markdown body of the plan")
+                        help="Plan markdown body. Required.")
     save_p.add_argument(
         "--status", default=None,
         choices=("draft", "active", "closed"),
-        help="Plan lifecycle status (default: 'draft' on insert; "
-             "preserved on update if omitted)",
+        help="Plan status. Default: draft (insert) / preserved (update).",
     )
     save_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity "
-                             "(default: gaia.project.current() or 'me')")
+                        help="Workspace identity.")
     save_p.add_argument("--json", action="store_true", default=False,
-                        help="Output the upserted plan as JSON "
-                             "(includes plan_id, action, status)")
+                        help="Emit JSON. bool.")
 
-    # show
+    # -- show ---------------------------------------------------------------
     show_p = actions.add_parser(
         "show",
         help="Print the plan attached to a brief",
-        description=(
-            "Resolve and display the single plan attached to the given "
-            "brief. Default output is the markdown content preceded by a "
-            "one-line header (plan_id, status, timestamps); --json emits "
-            "the full row including content."
-        ),
+        description="Print the plan markdown with a one-line header.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  gaia plan show cli-completion\n"
-            "  gaia plan show cli-completion --json --workspace=me\n"
-        ),
+        epilog="Examples:\n  gaia plan show my-feature\n",
     )
-    show_p.add_argument("brief_name", help="Slug of the parent brief")
+    show_p.add_argument("brief_name", help="Parent brief slug.")
     show_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity "
-                             "(default: gaia.project.current() or 'me')")
+                        help="Workspace identity.")
     show_p.add_argument("--json", action="store_true", default=False,
-                        help="Emit the plan row as JSON")
+                        help="Emit JSON. bool.")
 
-    # list
+    # -- list ---------------------------------------------------------------
     list_p = actions.add_parser(
         "list",
         help="List plans in the workspace",
-        description=(
-            "Enumerate plan rows in the workspace, optionally filtered by "
-            "the attached brief slug or by lifecycle status. Default output "
-            "is a fixed-width table with BRIEF / STATUS / UPDATED columns."
-        ),
+        description="List plan rows, optionally filtered by brief or status.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  gaia plan list\n"
-            "  gaia plan list --status=active\n"
-            "  gaia plan list --brief=cli-completion --format=json\n"
-            "  gaia plan list --format=count\n"
-        ),
+        epilog="Examples:\n  gaia plan list --status=active\n",
     )
     list_p.add_argument("--brief", default=None, metavar="NAME",
-                        help="Filter by parent brief slug")
+                        help="Filter by parent brief slug.")
     list_p.add_argument("--status", default=None,
                         choices=("draft", "active", "closed"),
-                        help="Filter by plan lifecycle status")
+                        help="Filter by plan status.")
     list_p.add_argument("--format", default="table",
                         choices=("table", "json", "count"),
-                        help="Output shape (default: table). 'count' emits "
-                             "the integer count only; 'json' emits an "
-                             "array of full rows.")
+                        help="Output shape. Default: table.")
     list_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity "
-                             "(default: gaia.project.current() or 'me')")
+                        help="Workspace identity.")
 
-    # delete
+    # -- delete -------------------------------------------------------------
     delete_p = actions.add_parser(
         "delete",
-        help="Hard-delete the plan attached to a brief (the brief is kept)",
-        description=(
-            "Permanently remove the plan row for (workspace, brief). The "
-            "parent brief is NOT touched -- only the plan and any rows in "
-            "tasks linked to it (FK CASCADE) are dropped. Prompts for "
-            "confirmation unless --yes is passed."
-        ),
+        help="Hard-delete the plan attached to a brief",
+        description="Drop the plan row; parent brief is preserved.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  gaia plan delete cli-completion\n"
-            "  gaia plan delete cli-completion --yes --json\n"
-        ),
+        epilog="Examples:\n  gaia plan delete my-feature --yes\n",
     )
-    delete_p.add_argument("brief_name", help="Slug of the parent brief")
+    delete_p.add_argument("brief_name", help="Parent brief slug.")
     delete_p.add_argument("--yes", action="store_true", default=False,
-                          help="Skip the interactive confirmation prompt")
+                          help="Skip confirm prompt. bool. Default: false.")
     delete_p.add_argument("--workspace", default=None, metavar="W",
-                          help="Workspace identity "
-                               "(default: gaia.project.current() or 'me')")
+                          help="Workspace identity.")
     delete_p.add_argument("--json", action="store_true", default=False,
-                          help="Output the deletion result as JSON")
+                          help="Emit JSON. bool.")
 
-    # set-status
+    # -- set-status ---------------------------------------------------------
     setstatus_p = actions.add_parser(
         "set-status",
-        help="Validated state-machine transition (draft / active / closed)",
-        description=(
-            "Move the plan attached to a brief through the validated state "
-            "machine: draft -> active -> closed. Illegal transitions "
-            "(e.g. closed -> draft) raise an error; same-status calls are "
-            "a noop with action='noop'."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  gaia plan set-status cli-completion active\n"
-            "  gaia plan set-status cli-completion closed --json\n"
-        ),
+        help="Transition plan status",
+        description="State machine: draft -> active -> closed.",
     )
-    setstatus_p.add_argument("brief_name", help="Slug of the parent brief")
+    setstatus_p.add_argument("brief_name", help="Parent brief slug.")
     setstatus_p.add_argument(
         "new_status",
         choices=("draft", "active", "closed"),
-        help="Target status; transition is validated against the state machine",
+        help="Target status.",
     )
     setstatus_p.add_argument("--workspace", default=None, metavar="W",
-                             help="Workspace identity "
-                                  "(default: gaia.project.current() or 'me')")
+                             help="Workspace identity.")
     setstatus_p.add_argument("--json", action="store_true", default=False,
-                             help="Output the transition result as JSON")
+                             help="Emit JSON. bool.")
 
 
 def cmd_plan(args) -> int:

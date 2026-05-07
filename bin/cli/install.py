@@ -44,6 +44,8 @@ Flags:
   --skip-workspace   Bootstrap the DB only; skip workspace configuration.
                      Useful when running install just to refresh the DB
                      schema from a non-Gaia directory.
+  --no-path          Skip creating the ~/.local/bin/gaia symlink. By default
+                     install creates one so `gaia` is callable from any cwd.
 """
 
 from __future__ import annotations
@@ -64,6 +66,117 @@ if str(_PACKAGE_ROOT) not in sys.path:
 # Helpers shared with `gaia update`. Module-relative import works when run
 # via `python bin/gaia install` because bin/ is on sys.path.
 from cli import _install_helpers  # type: ignore  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# PATH symlink (~/.local/bin/gaia -> bin/gaia)
+# ---------------------------------------------------------------------------
+
+def _create_path_symlink(
+    target_path: Path,
+    link_path: Path | str = "~/.local/bin/gaia",
+    overwrite: bool = False,
+) -> dict:
+    """Create a symlink to `target_path` at `link_path`.
+
+    Behavior:
+      - If `link_path` already exists and points to `target_path`: noop.
+      - If `link_path` exists and points elsewhere: replace if `overwrite=True`,
+        otherwise skip with a warning.
+      - If `link_path` does not exist: create the symlink (and parent dir
+        if missing).
+
+    Returns a dict with at least `action`, `path`, and `target`. `action`
+    is one of: created, skipped, replaced, noop, error.
+    """
+    target = Path(target_path).expanduser().resolve()
+    link = Path(link_path).expanduser() if isinstance(link_path, str) else link_path
+    link = Path(link).expanduser()
+
+    parent = link.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {
+            "action": "error",
+            "path": str(link),
+            "target": str(target),
+            "details": f"failed to create parent {parent}: {exc}",
+        }
+
+    if link.is_symlink():
+        try:
+            current_target = Path(os.readlink(link))
+        except OSError as exc:
+            return {
+                "action": "error",
+                "path": str(link),
+                "target": str(target),
+                "details": f"failed to read existing symlink: {exc}",
+            }
+        # Compare resolved paths so absolute and relative targets compare equal
+        try:
+            current_resolved = (link.parent / current_target).resolve()
+        except OSError:
+            current_resolved = current_target
+        if current_resolved == target:
+            return {
+                "action": "noop",
+                "path": str(link),
+                "target": str(target),
+                "details": "symlink already points at target",
+            }
+        if not overwrite:
+            return {
+                "action": "skipped",
+                "path": str(link),
+                "target": str(target),
+                "details": (
+                    f"symlink exists pointing at {current_target}; "
+                    "use --no-path to suppress or remove manually"
+                ),
+            }
+        try:
+            link.unlink()
+            link.symlink_to(target)
+        except OSError as exc:
+            return {
+                "action": "error",
+                "path": str(link),
+                "target": str(target),
+                "details": f"failed to replace symlink: {exc}",
+            }
+        return {
+            "action": "replaced",
+            "path": str(link),
+            "target": str(target),
+            "details": f"replaced previous target {current_target}",
+        }
+
+    if link.exists():
+        # Regular file or directory in the way -- never delete user content
+        return {
+            "action": "skipped",
+            "path": str(link),
+            "target": str(target),
+            "details": "path exists and is not a symlink; refusing to overwrite",
+        }
+
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        return {
+            "action": "error",
+            "path": str(link),
+            "target": str(target),
+            "details": f"failed to create symlink: {exc}",
+        }
+    return {
+        "action": "created",
+        "path": str(link),
+        "target": str(target),
+        "details": "symlink created",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +395,13 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=False,
         help="Skip workspace configuration; only bootstrap the DB",
     )
+    p.add_argument(
+        "--no-path",
+        dest="no_path",
+        action="store_true",
+        default=False,
+        help="Skip creating the ~/.local/bin/gaia symlink",
+    )
     return p
 
 
@@ -292,6 +412,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     verbose = bool(getattr(args, "verbose", False))
     db_path = getattr(args, "db_path", None)
     skip_workspace = bool(getattr(args, "skip_workspace", False))
+    no_path = bool(getattr(args, "no_path", False))
     workspace_arg = getattr(args, "workspace", None)
 
     workspace = (
@@ -343,6 +464,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     registry_source = "npm-postinstall" if postinstall else "cli-install"
     reg_res = _install_helpers.register_plugin(workspace, source=registry_source)
     _report_step(name="plugin-registry", result=reg_res, quiet=quiet, verbose=verbose)
+
+    # Step 6.5 -- PATH symlink (~/.local/bin/gaia) unless --no-path
+    if not no_path:
+        gaia_bin = _PACKAGE_ROOT / "bin" / "gaia"
+        path_res = _create_path_symlink(gaia_bin)
+        _report_step(name="PATH symlink", result=path_res, quiet=quiet, verbose=verbose)
 
     # Step 7 -- optional gaia scan on fresh postinstall
     if postinstall:

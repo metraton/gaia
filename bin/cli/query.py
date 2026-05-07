@@ -3,9 +3,7 @@ gaia query -- cross-surface analytical query.
 
 A single read-only verb that filters across three substrate tables in one
 call: curated ``memory``, ``episodes``, and the append-only
-``harness_events`` mirror. Designed for diagnostic / forensic questions
-that span more than one surface (e.g. "what failed in the last 24h?",
-"which git pushes ran today?", "what did the developer agent emit?").
+``harness_events`` mirror.
 
 Output shape (always the same five columns regardless of surface):
 
@@ -90,19 +88,45 @@ def _render_table(rows: list[dict]) -> None:
         )
 
 
+def _render_grouped_count(rows: list[dict], group_by: str | None) -> None:
+    """Render the output of ``group_and_count`` as a small table."""
+    if not rows:
+        print("(no results)")
+        return
+    if not group_by:
+        # Single total
+        print(rows[0]["count"])
+        return
+    key_w = max(len(group_by.upper()),
+                max(len(str(r.get(group_by) or "")) for r in rows))
+    print(f"{group_by.upper():<{key_w}}  COUNT")
+    print("-" * (key_w + 7))
+    for r in rows:
+        print(f"{(str(r.get(group_by) or '')):<{key_w}}  {r['count']}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def cmd_query(args) -> int:
     """Dispatcher for ``gaia query``."""
-    from gaia.store.reader import cross_surface_query
+    from gaia.store.reader import (
+        cross_surface_query,
+        group_and_count,
+        _extract_text_needle,
+        _highlight_snippet,
+        _row_text_for_snippet,
+    )
 
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     surface = getattr(args, "surface", None) or "all"
     last = getattr(args, "last", 20)
     fmt = getattr(args, "format", None) or "table"
     as_json = getattr(args, "json", False) or fmt == "json"
+    group_by = getattr(args, "group_by", None)
+    do_count = bool(getattr(args, "count", False))
+    do_snippets = bool(getattr(args, "snippets", False))
 
     try:
         rows = cross_surface_query(
@@ -118,6 +142,33 @@ def cmd_query(args) -> int:
         )
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
+
+    # --snippets: rewrite the summary field with highlighted fragments.
+    # Applies only when there is a textual filter (command_like / type / agent).
+    if do_snippets:
+        needle = _extract_text_needle(
+            type_filter=getattr(args, "type", None),
+            agent_filter=getattr(args, "agent", None),
+            command_like=getattr(args, "command_like", None),
+        )
+        if needle:
+            for r in rows:
+                text = _row_text_for_snippet(r)
+                snippet = _highlight_snippet(text, needle)
+                if snippet:
+                    r["summary"] = snippet
+
+    # --count or --group-by: aggregate before rendering.
+    if do_count or group_by:
+        try:
+            grouped = group_and_count(rows, group_by=group_by)
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
+        if as_json or fmt == "json":
+            print(json.dumps(grouped, indent=2, default=str))
+            return 0
+        _render_grouped_count(grouped, group_by)
+        return 0
 
     if fmt == "count":
         print(len(rows))
@@ -136,23 +187,8 @@ def cmd_query(args) -> int:
 
 _QUERY_EPILOG = """\
 Examples:
-  Last 20 events across every surface in the current workspace:
-    gaia query
-
-  Failures in the last 24 hours (episodes blocked / harness errors):
-    gaia query --since=24h --failed
-
-  Every git-push command captured by the harness in the last week:
-    gaia query --surface=harness_events --command-like='%git push%' --since=7d
-
-  Recent activity for the developer agent in the last 7 days:
-    gaia query --since=7d --agent=developer --last=50
-
-  Count rows that match (no row text):
-    gaia query --since=24h --failed --format=count
-
-  Restrict to one surface only:
-    gaia query --surface=episodes --type=task --since=2026-05-01
+  gaia query --since=24h --failed
+  gaia query --since=7d --command-like='%git push%' --group-by=day
 """
 
 
@@ -160,13 +196,11 @@ def register(subparsers) -> None:
     """Register the ``query`` subcommand."""
     p = subparsers.add_parser(
         "query",
-        help="Cross-surface analytical query (memory + episodes + "
-             "harness_events)",
+        help="Cross-surface read-only query (memory, episodes, harness_events)",
         description=(
-            "Run a single read-only query that filters across all three "
-            "Gaia substrate surfaces (curated memory, episodic memory, "
-            "harness events) and merges results into one normalized table. "
-            "Useful for forensic questions that span more than one surface."
+            "Filter and merge rows across the three Gaia substrate surfaces. "
+            "Supports time/agent/type filters, snippet highlighting, and "
+            "group-by aggregation."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_QUERY_EPILOG,
@@ -174,61 +208,60 @@ def register(subparsers) -> None:
     p.add_argument(
         "--surface", default="all",
         choices=("memory", "episodes", "harness_events", "all"),
-        help="Which substrate table(s) to query (default: all)",
+        help="Surface to query. Default: all.",
     )
     p.add_argument(
         "--workspace", default=None,
-        help="Workspace identity to filter by "
-             "(default: gaia.project.current() or 'me')",
+        help="Workspace identity. Default: gaia.project.current() or 'me'.",
     )
     p.add_argument(
-        "--since", default=None, metavar="DURATION_OR_DATE",
-        help="Lower-bound timestamp filter. Accepts a duration "
-             "('24h', '7d', '30m', '2w') interpreted as 'now minus N', "
-             "or an ISO date ('2026-05-01') / datetime "
-             "('2026-05-01T10:00:00')",
+        "--since", default=None, metavar="DUR_OR_DATE",
+        help="Lower bound. Duration ('24h', '7d') or ISO date. Default: none.",
     )
     p.add_argument(
-        "--until", default=None, metavar="DURATION_OR_DATE",
-        help="Upper-bound timestamp filter (same format as --since)",
+        "--until", default=None, metavar="DUR_OR_DATE",
+        help="Upper bound. Same format as --since. Default: none.",
     )
     p.add_argument(
         "--last", type=int, default=20, metavar="N",
-        help="Per-surface row cap (default: 20). Total rows returned "
-             "can be up to N x number of surfaces",
+        help="Per-surface row cap. int. Default: 20.",
     )
     p.add_argument(
         "--agent", default=None, metavar="NAME",
-        help="Filter by agent name (applies to episodes and harness_events; "
-             "memory surface has no agent column)",
+        help="Filter by agent name (episodes, harness_events).",
     )
     p.add_argument(
         "--type", default=None, metavar="VALUE",
-        help="Filter by type column "
-             "(memory.type / episodes.type / harness_events.type)",
+        help="Filter by type column.",
     )
     p.add_argument(
         "--command-like", dest="command_like", default=None, metavar="LIKE",
-        help="SQL LIKE pattern matched against harness_events.result "
-             "(where command.executed events store the command line). "
-             "Use '%%' as wildcard, e.g. \"--command-like='%%git push%%'\". "
-             "Ignored for memory and episodes surfaces",
+        help="SQL LIKE pattern matched against harness_events.result.",
     )
     p.add_argument(
         "--failed", action="store_true", default=False,
-        help="Restrict to failure rows: episodes with plan_status BLOCKED or "
-             "NEEDS_INPUT (or outcome != success), and harness_events with "
-             "severity=error or result starting with fail/error. "
-             "Memory rows have no failure concept and are excluded when set",
+        help="Restrict to failure rows. bool. Default: false.",
+    )
+    p.add_argument(
+        "--group-by", dest="group_by", default=None,
+        choices=("surface", "agent", "type", "day"),
+        help="Aggregate rows. 'day' truncates timestamp to YYYY-MM-DD.",
+    )
+    p.add_argument(
+        "--count", action="store_true", default=False,
+        help="Emit count instead of rows. Combine with --group-by for buckets.",
+    )
+    p.add_argument(
+        "--snippets", action="store_true", default=False,
+        help="Replace summary with [bracketed] fragments around the textual "
+             "filter. No-op without --command-like / --type / --agent.",
     )
     p.add_argument(
         "--format", default="table",
         choices=("table", "json", "count"),
-        help="Output shape (default: table). 'json' emits one array of "
-             "objects with the original row under 'raw'; 'count' emits the "
-             "single integer row count",
+        help="Output shape. Default: table.",
     )
     p.add_argument(
         "--json", action="store_true", default=False,
-        help="Alias for --format=json",
+        help="Alias for --format=json.",
     )

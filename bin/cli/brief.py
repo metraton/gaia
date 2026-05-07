@@ -505,151 +505,198 @@ def register(subparsers) -> None:
     """Register the `brief` subcommand with the root parser."""
     brief_parser = subparsers.add_parser(
         "brief",
-        help="Manage briefs in the Gaia DB substrate (B8)",
+        help="Manage briefs (DB-canonical)",
+        description=(
+            "Create, edit, list, and transition briefs stored in "
+            "~/.gaia/gaia.db. All writes are DB-only."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     brief_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity (default: gaia.project.current() or 'me')",
+        help="Workspace identity. Default: gaia.project.current() or 'me'.",
     )
 
     actions = brief_parser.add_subparsers(dest="brief_action", metavar="<action>")
 
+    # -- new ----------------------------------------------------------------
     new_p = actions.add_parser(
         "new",
-        help="Create a new brief ($EDITOR by default; --headless for flag-driven)",
+        help="Create a brief",
+        description="Create a new brief. Opens $EDITOR unless --headless.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia brief new my-feature\n"
+               "  gaia brief new --headless --title='My Feature' "
+               "--objective='...'\n",
     )
     new_p.add_argument("name", nargs="?", default=None,
-                       help="Brief slug (omitted in --headless mode)")
-    new_p.add_argument("--workspace", default=None)
+                       help="Brief slug. Optional with --headless.")
+    new_p.add_argument("--workspace", default=None,
+                       help="Workspace identity.")
     new_p.add_argument("--headless", action="store_true", default=False,
-                       help="Skip $EDITOR; build the brief from CLI flags only "
-                            "(DB-only, no filesystem side effects)")
+                       help="Build from flags. bool. Default: false.")
     new_p.add_argument("--title", default=None,
-                       help="Title (required with --headless; slug is derived from it)")
-    new_p.add_argument("--objective", default=None)
-    new_p.add_argument("--context", default=None)
-    new_p.add_argument("--approach", default=None)
-    new_p.add_argument("--out-of-scope", dest="out_of_scope", default=None)
+                       help="Title. Required with --headless.")
+    new_p.add_argument("--objective", default=None,
+                       help="Objective section. str.")
+    new_p.add_argument("--context", default=None,
+                       help="Context section. str.")
+    new_p.add_argument("--approach", default=None,
+                       help="Approach section. str.")
+    new_p.add_argument("--out-of-scope", dest="out_of_scope", default=None,
+                       help="Out-of-scope section. str.")
     new_p.add_argument("--status", default=None,
                        choices=("draft", "open", "in-progress", "closed", "archived"),
-                       help="Initial status (default: draft)")
+                       help="Initial status. Default: draft.")
     new_p.add_argument("--json", action="store_true", default=False,
-                       help="Emit the new brief as JSON")
+                       help="Emit JSON. bool.")
 
+    # -- edit ---------------------------------------------------------------
     edit_p = actions.add_parser(
         "edit",
-        help="Edit a brief ($EDITOR by default; --headless for flag-driven)",
+        help="Edit a brief",
         description=(
-            "Two modes:\n"
-            "  Interactive: opens the brief markdown in $EDITOR, then "
-            "parses + upserts on save.\n"
-            "  Headless (--headless --field=... --content='...'): patches "
-            "one column on the brief row directly. With --append the "
-            "content is concatenated to the existing field using '\\n\\n' "
-            "as separator instead of overwriting.\n\n"
-            "Both modes are DB-only -- nothing under "
-            ".claude/project-context/briefs/ is created or modified."
+            "Edit a brief. Opens $EDITOR; with --headless patches a single "
+            "column via --field/--content."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            "  # Interactive: open in $EDITOR, parse + save on close\n"
-            "  gaia brief edit cli-completion\n"
-            "\n"
-            "  # Headless: overwrite the objective\n"
-            "  gaia brief edit cli-completion --headless \\\n"
-            "    --field=objective --content='Close the CLI gap'\n"
-            "\n"
-            "  # Headless: append to the context section\n"
-            "  gaia brief edit cli-completion --headless \\\n"
-            "    --field=context --append \\\n"
-            "    --content='Decision 2026-05-07: rename --scope=memory'\n"
-        ),
+        epilog="Examples:\n"
+               "  gaia brief edit my-feature\n"
+               "  gaia brief edit my-feature --headless --field=objective "
+               "--content='...'\n",
     )
-    edit_p.add_argument("name", help="Brief slug to edit (PK with workspace)")
+    edit_p.add_argument("name", help="Brief slug.")
     edit_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity "
-                             "(default: gaia.project.current() or 'me')")
+                        help="Workspace identity.")
     edit_p.add_argument("--headless", action="store_true", default=False,
-                        help="Skip $EDITOR; patch one field via flags "
-                             "(DB-only, no filesystem side effects)")
+                        help="Patch via flags. bool. Default: false.")
     edit_p.add_argument(
         "--field", default=None,
         choices=("objective", "context", "approach", "out_of_scope",
                  "description", "title"),
-        help="Column to patch (required with --headless)",
+        help="Column to patch. Required with --headless.",
     )
     edit_p.add_argument("--content", default=None,
-                        help="New value for the field (required with --headless)")
+                        help="New value. Required with --headless.")
     edit_p.add_argument("--append", action="store_true", default=False,
-                        help="Concatenate with existing field using '\\n\\n' "
-                             "separator instead of overwriting")
+                        help="Append (separator '\\n\\n') instead of overwrite. "
+                             "bool. Default: false.")
     edit_p.add_argument("--json", action="store_true", default=False,
-                        help="Output the patch result as JSON")
+                        help="Emit JSON. bool.")
 
-    show_p = actions.add_parser("show", help="Print a brief as markdown")
-    show_p.add_argument("name")
-    show_p.add_argument("--json", action="store_true", default=False)
-    show_p.add_argument("--workspace", default=None)
+    # -- show ---------------------------------------------------------------
+    show_p = actions.add_parser(
+        "show",
+        help="Print a brief as markdown",
+        description="Print the brief as markdown.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia brief show my-feature\n",
+    )
+    show_p.add_argument("name", help="Brief slug.")
+    show_p.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON. bool.")
+    show_p.add_argument("--workspace", default=None,
+                        help="Workspace identity.")
 
-    list_p = actions.add_parser("list", help="List briefs in the workspace")
+    # -- list ---------------------------------------------------------------
+    list_p = actions.add_parser(
+        "list",
+        help="List briefs",
+        description="List briefs in the workspace, optionally filtered.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia brief list --status=open\n",
+    )
     list_p.add_argument("--status", default=None,
-                        help="Filter by status (e.g. draft, open, closed)")
+                        help="Filter by status. str.")
     list_p.add_argument("--format", default="table",
-                        choices=("table", "count", "json"))
-    list_p.add_argument("--workspace", default=None)
+                        choices=("table", "count", "json"),
+                        help="Output shape. Default: table.")
+    list_p.add_argument("--workspace", default=None,
+                        help="Workspace identity.")
 
-    close_p = actions.add_parser("close", help="Set brief status to closed")
-    close_p.add_argument("name")
-    close_p.add_argument("--workspace", default=None)
+    # -- close --------------------------------------------------------------
+    close_p = actions.add_parser(
+        "close",
+        help="Set brief status to closed",
+        description="Shortcut for set-status closed.",
+    )
+    close_p.add_argument("name", help="Brief slug.")
+    close_p.add_argument("--workspace", default=None,
+                         help="Workspace identity.")
 
+    # -- set-status ---------------------------------------------------------
     setstatus_p = actions.add_parser(
         "set-status",
-        help="Validated state-machine transition (DB-only, no filesystem)",
+        help="Transition brief status",
+        description="State-machine transition (DB-only).",
     )
-    setstatus_p.add_argument("name")
+    setstatus_p.add_argument("name", help="Brief slug.")
     setstatus_p.add_argument(
         "new_status",
         choices=("draft", "open", "in-progress", "closed", "archived"),
-        help="Target status; the transition is validated against the state machine",
+        help="Target status.",
     )
-    setstatus_p.add_argument("--workspace", default=None)
-    setstatus_p.add_argument("--json", action="store_true", default=False)
+    setstatus_p.add_argument("--workspace", default=None,
+                             help="Workspace identity.")
+    setstatus_p.add_argument("--json", action="store_true", default=False,
+                             help="Emit JSON. bool.")
 
-    deps_p = actions.add_parser("deps", help="Show dependency graph")
-    deps_p.add_argument("name")
-    deps_p.add_argument("--json", action="store_true", default=False)
-    deps_p.add_argument("--workspace", default=None)
+    # -- deps ---------------------------------------------------------------
+    deps_p = actions.add_parser(
+        "deps",
+        help="Show dependency graph",
+        description="Print the brief's dependency graph.",
+    )
+    deps_p.add_argument("name", help="Brief slug.")
+    deps_p.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON. bool.")
+    deps_p.add_argument("--workspace", default=None,
+                        help="Workspace identity.")
 
-    search_p = actions.add_parser("search", help="FTS5 search over briefs")
-    search_p.add_argument("query")
-    search_p.add_argument("--limit", type=int, default=10)
-    search_p.add_argument("--json", action="store_true", default=False)
-    search_p.add_argument("--workspace", default=None)
+    # -- search -------------------------------------------------------------
+    search_p = actions.add_parser(
+        "search",
+        help="FTS5 search over briefs",
+        description="Full-text search over objective/context/approach.",
+    )
+    search_p.add_argument("query", help="FTS5 query string.")
+    search_p.add_argument("--limit", type=int, default=10,
+                          help="Max results. int. Default: 10.")
+    search_p.add_argument("--json", action="store_true", default=False,
+                          help="Emit JSON. bool.")
+    search_p.add_argument("--workspace", default=None,
+                          help="Workspace identity.")
 
+    # -- delete -------------------------------------------------------------
     delete_p = actions.add_parser(
         "delete",
-        help="Hard-delete a brief from the DB (cascades to ACs, milestones, "
-             "deps; soft-delete pending follow-up brief)",
+        help="Hard-delete a brief",
+        description="Hard-delete a brief and its ACs, milestones, deps.",
     )
-    delete_p.add_argument("name")
-    delete_p.add_argument("--workspace", default=None)
+    delete_p.add_argument("name", help="Brief slug.")
+    delete_p.add_argument("--workspace", default=None,
+                          help="Workspace identity.")
     delete_p.add_argument(
         "--yes", action="store_true", default=False,
-        help="Skip the interactive confirmation prompt",
+        help="Skip confirm prompt. bool. Default: false.",
     )
     delete_p.add_argument(
         "--json", action="store_true", default=False,
-        help="Emit the deletion result as JSON",
+        help="Emit JSON. bool.",
     )
 
+    # -- import-from-fs -----------------------------------------------------
     import_p = actions.add_parser(
         "import-from-fs",
-        help="Migrate brief.md files from a directory tree into the DB",
+        help="Migrate brief.md files into the DB",
+        description="One-time import of brief.md files from a directory tree.",
     )
-    import_p.add_argument("--source", required=True)
-    import_p.add_argument("--workspace", default=None)
-    import_p.add_argument("--json", action="store_true", default=False)
+    import_p.add_argument("--source", required=True,
+                          help="Source directory path. Required.")
+    import_p.add_argument("--workspace", default=None,
+                          help="Workspace identity.")
+    import_p.add_argument("--json", action="store_true", default=False,
+                          help="Emit JSON. bool.")
 
 
 def cmd_brief(args) -> int:
