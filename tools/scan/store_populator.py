@@ -696,7 +696,8 @@ def _list_repos(root: Path) -> list[Path]:
                 continue
             if c.name.startswith(".") or c.name in skip:
                 continue
-            children.append(c)
+            if (c / ".git").exists():
+                children.append(c)
     except OSError:
         return []
     return children
