@@ -374,6 +374,19 @@ class EpisodicMemory:
                 _fts5_index(episode_id, prompt, enriched_prompt, ' '.join(tags or []), title)
             except Exception:
                 pass
+        else:
+            # Module-level import failed (e.g. loaded via importlib without tools/ in
+            # sys.path). Attempt a local import using the known path of this file so
+            # that episodes written from hooks are still indexed in FTS5.
+            try:
+                import sys as _sys
+                _tools_dir = str(Path(__file__).parent.parent)
+                if _tools_dir not in _sys.path:
+                    _sys.path.insert(0, _tools_dir)
+                from memory.search_store import index_episode as _fallback_fts5
+                _fallback_fts5(episode_id, prompt, enriched_prompt, ' '.join(tags or []), title)
+            except Exception:
+                pass
 
         return episode_id
 

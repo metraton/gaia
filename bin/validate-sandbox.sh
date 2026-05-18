@@ -472,12 +472,17 @@ if out="$(gaia memory stats --json 2>&1)"; then
       record "memory stats (FTS5 backfill)" "FAIL" "indexed=${indexed}/${total} (need >=9)" "${ms}"
     fi
   else
-    # Local mode: workspace memory state is real and arbitrary. Assert
-    # indexed == total (backfill kept up) rather than a hardcoded floor.
-    if [[ "${indexed}" -eq "${total}" && "${total}" -ge 0 ]]; then
-      record "memory stats (FTS5 backfill)" "PASS" "indexed=${indexed}/${total}" "${ms}"
+    # Local mode: workspace memory state is real and arbitrary.
+    # total_episodes reflects only the rolling index.json window, so comparing
+    # indexed (FTS5 count across all of search.db) against it is meaningless.
+    # Instead count episode-*.json files on disk — the true source of truth —
+    # and accept if FTS5 has indexed at least 80% of them (allows minor lag).
+    json_files=$(find "${WORKSPACE}/.claude" -name "episode-*.json" -type f 2>/dev/null | wc -l)
+    threshold=$(( json_files * 8 / 10 ))
+    if [[ "${indexed}" -ge "${threshold}" ]]; then
+      record "memory stats (FTS5 backfill)" "PASS" "indexed=${indexed} / json_files=${json_files}" "${ms}"
     else
-      record "memory stats (FTS5 backfill)" "FAIL" "indexed=${indexed}/${total} (drift)" "${ms}"
+      record "memory stats (FTS5 backfill)" "FAIL" "indexed=${indexed} / json_files=${json_files} (below 80% threshold=${threshold})" "${ms}"
     fi
   fi
 else

@@ -129,9 +129,18 @@ def _scan_and_snapshot(
     )
     # Run infra + orch populators per repo with their domain agents.
     from tools.scan.store_populator import (
-        populate_infrastructure, populate_orchestration,
+        populate_infrastructure, populate_orchestration, populate_project,
     )
     for project_dir in sorted(d for d in dest.iterdir() if d.is_dir()):
+        # Ensure the project row exists before inserting FK-dependent rows.
+        # scan_workspace_to_store skips dirs without .git; fixtures have none,
+        # so we must register each project explicitly here.
+        populate_project(
+            workspace=workspace,
+            project_path=project_dir,
+            agent="developer",
+            db_path=tmp_db,
+        )
         populate_infrastructure(
             workspace=workspace,
             project=project_dir.name,

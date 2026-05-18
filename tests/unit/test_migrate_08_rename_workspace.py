@@ -386,6 +386,107 @@ def test_cli_fails_on_unrecognised_schema(tmp_path: Path) -> None:
     assert rc == 1
 
 
+def test_migration_handles_preexisting_fts_triggers(tmp_path: Path) -> None:
+    """Regression: migration must not fail when v1 repos_fts triggers exist.
+
+    In production, gaia.db had FTS triggers (`repos_fts_insert`,
+    `repos_fts_delete`, `repos_fts_update`) built over the `repos` table and
+    the `repos_fts` virtual table. When the migration tried
+    `ALTER TABLE repos RENAME TO projects`, SQLite fired those triggers and
+    crashed with "no such table: main.repos_fts" because the FTS table had
+    already been dropped but the triggers were still registered against `repos`.
+
+    The fix (migrate_08_rename_workspace.py line ~183) explicitly drops all
+    `repos_fts*` / `repos*` triggers before the rename.  This test reproduces
+    the original failure condition and verifies that the migration:
+      - exits 0
+      - table `projects` exists post-migration (was v1 `repos`)
+      - old `repos_fts_*` triggers are gone
+      - new `projects_fts_*` triggers exist
+      - row data from v1 `repos` is preserved in v2 `projects`
+    """
+    db = tmp_path / "v1_with_fts.db"
+    con = _build_v1_db(db)
+    try:
+        # Seed workspace + repo rows so triggers would fire on any INSERT.
+        con.execute("INSERT INTO projects (name, identity) VALUES (?, ?)", ("me", "me"))
+        con.execute(
+            "INSERT INTO repos (project, name, role, remote_url, primary_language) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("me", "gaia", "library", "git@github.com:x/y.git", "python"),
+        )
+        con.commit()
+
+        # Create the v1 FTS virtual table + triggers that were present in
+        # production. These are the objects that caused the crash.
+        con.executescript("""
+            CREATE VIRTUAL TABLE repos_fts USING fts5(
+                name,
+                role,
+                primary_language,
+                content='repos',
+                content_rowid='rowid'
+            );
+            CREATE TRIGGER repos_fts_insert AFTER INSERT ON repos BEGIN
+                INSERT INTO repos_fts(rowid, name, role, primary_language)
+                VALUES (new.rowid, new.name, new.role, new.primary_language);
+            END;
+            CREATE TRIGGER repos_fts_delete AFTER DELETE ON repos BEGIN
+                INSERT INTO repos_fts(repos_fts, rowid, name, role, primary_language)
+                VALUES ('delete', old.rowid, old.name, old.role, old.primary_language);
+            END;
+            CREATE TRIGGER repos_fts_update AFTER UPDATE ON repos BEGIN
+                INSERT INTO repos_fts(repos_fts, rowid, name, role, primary_language)
+                VALUES ('delete', old.rowid, old.name, old.role, old.primary_language);
+                INSERT INTO repos_fts(rowid, name, role, primary_language)
+                VALUES (new.rowid, new.name, new.role, new.primary_language);
+            END;
+            INSERT INTO repos_fts(repos_fts) VALUES ('rebuild');
+        """)
+        # Confirm triggers are registered before running the migration.
+        triggers_before = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()}
+        assert "repos_fts_insert" in triggers_before
+        assert "repos_fts_delete" in triggers_before
+        assert "repos_fts_update" in triggers_before
+    finally:
+        con.close()
+
+    # Run via CLI so we exercise the full stack including the connection open.
+    rc = main(["--db", str(db), "--no-backup"])
+    assert rc == 0, "Migration must exit 0 even when v1 repos_fts triggers are present"
+
+    con2 = sqlite3.connect(str(db))
+    try:
+        tables = {row[0] for row in con2.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        triggers = {row[0] for row in con2.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()}
+
+        # Table rename succeeded.
+        assert "projects" in tables, "v2 `projects` table (was v1 `repos`) must exist"
+        assert "repos" not in tables, "v1 `repos` table must be gone"
+
+        # Old triggers dropped.
+        assert "repos_fts_insert" not in triggers, "repos_fts_insert must be removed"
+        assert "repos_fts_delete" not in triggers, "repos_fts_delete must be removed"
+        assert "repos_fts_update" not in triggers, "repos_fts_update must be removed"
+
+        # New triggers created by _recreate_fts().
+        assert "projects_fts_insert" in triggers, "projects_fts_insert must exist"
+        assert "projects_fts_delete" in triggers, "projects_fts_delete must exist"
+        assert "projects_fts_update" in triggers, "projects_fts_update must exist"
+
+        # Data preserved.
+        rows = con2.execute("SELECT workspace, name, role FROM projects").fetchall()
+        assert rows == [("me", "gaia", "library")], "Row data must survive the rename"
+    finally:
+        con2.close()
+
+
 def test_cli_dry_run_does_not_modify_db(tmp_path: Path) -> None:
     db = tmp_path / "v1.db"
     con = _build_v1_db(db)
