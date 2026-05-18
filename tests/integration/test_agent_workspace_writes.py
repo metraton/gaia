@@ -27,18 +27,18 @@ def tmp_db(tmp_path, monkeypatch) -> Path:
     con.execute(
         "INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('apps', 'developer', 1)"
     )
-    # Project + repo + apps + clusters seed
+    # Workspace + project + apps + clusters seed
     con.execute(
-        "INSERT OR IGNORE INTO projects (name, identity, created_at) VALUES ('iso-ws', 'iso-ws', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO workspaces (name, identity, created_at) VALUES ('iso-ws', 'iso-ws', '2026-01-01T00:00:00Z')"
     )
     con.execute(
-        "INSERT OR IGNORE INTO repos (project, name, scanner_ts) VALUES ('iso-ws', 'r1', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO projects (workspace, name, scanner_ts) VALUES ('iso-ws', 'r1', '2026-01-01T00:00:00Z')"
     )
     con.execute(
-        "INSERT OR IGNORE INTO apps (project, repo, name, kind, scanner_ts) VALUES ('iso-ws', 'r1', 'pre-existing', 'service', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO apps (workspace, project, name, kind, scanner_ts) VALUES ('iso-ws', 'r1', 'pre-existing', 'service', '2026-01-01T00:00:00Z')"
     )
     con.execute(
-        "INSERT OR IGNORE INTO clusters (project, name, provider, region, attributes, scanner_ts) VALUES ('iso-ws', 'gke-prod', 'gke', 'us-central1', '{\"node_count\": 3}', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO clusters (workspace, name, provider, region, attributes, scanner_ts) VALUES ('iso-ws', 'gke-prod', 'gke', 'us-central1', '{\"node_count\": 3}', '2026-01-01T00:00:00Z')"
     )
     con.commit()
     con.close()
@@ -48,7 +48,7 @@ def tmp_db(tmp_path, monkeypatch) -> Path:
 def _snapshot_clusters(db: Path) -> list[tuple]:
     con = sqlite3.connect(str(db))
     rows = con.execute(
-        "SELECT project, name, provider, region, attributes, scanner_ts FROM clusters ORDER BY project, name"
+        "SELECT workspace, name, provider, region, attributes, scanner_ts FROM clusters ORDER BY workspace, name"
     ).fetchall()
     con.close()
     return rows
@@ -61,7 +61,7 @@ def test_developer_write_isolates_clusters(tmp_db: Path):
 
     result = upsert_app(
         workspace="iso-ws",
-        repo="r1",
+        project="r1",
         name="new-app-from-dev",
         fields={"kind": "service", "description": "new app", "status": "active"},
         agent="developer",

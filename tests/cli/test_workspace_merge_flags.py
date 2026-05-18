@@ -1,8 +1,8 @@
 """
-Fix 3 regression tests: gaia project merge --dry-run and --report-duplicates.
+Fix 3 regression tests: gaia workspace merge --dry-run and --report-duplicates.
 
 --dry-run  : must NOT move any files to disk; output matches preview mode.
---report-duplicates : must list projects with shared identity; exit 1 if found,
+--report-duplicates : must list workspaces with shared identity; exit 1 if found,
                        exit 0 if all identities are unique.
 """
 
@@ -60,7 +60,7 @@ def tmp_db(tmp_path, monkeypatch):
 class TestDryRun:
     def test_dry_run_does_not_move_files(self, workspaces, capsys):
         """--dry-run must leave source files intact."""
-        from bin.cli.project import _cmd_merge
+        from bin.cli.workspace import _cmd_merge
 
         src = workspaces / "src"
         (src / "data.txt").parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,7 @@ class TestDryRun:
 
     def test_dry_run_output_reports_would_move(self, workspaces, capsys):
         """--dry-run output must mention 'Dry-run' and list the file."""
-        from bin.cli.project import _cmd_merge
+        from bin.cli.workspace import _cmd_merge
 
         src = workspaces / "src"
         src.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ class TestDryRun:
 
     def test_dry_run_no_source_is_no_op(self, workspaces, capsys):
         """--dry-run on a non-existent source must return 0 silently."""
-        from bin.cli.project import _cmd_merge
+        from bin.cli.workspace import _cmd_merge
 
         rc = _cmd_merge(_make_args(from_id="nonexistent", to_id="dst", dry_run=True))
         assert rc == 0
@@ -104,10 +104,10 @@ class TestDryRun:
 # ---------------------------------------------------------------------------
 
 class TestReportDuplicates:
-    def _insert_project(self, con, name: str, identity: str) -> None:
+    def _insert_workspace(self, con, name: str, identity: str) -> None:
         from gaia.store.writer import _now_iso
         con.execute(
-            "INSERT OR REPLACE INTO projects (name, identity, created_at) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
             (name, identity, _now_iso()),
         )
         con.commit()
@@ -115,11 +115,11 @@ class TestReportDuplicates:
     def test_report_duplicates_clean_returns_zero(self, tmp_db, workspaces, capsys):
         """When all identities are unique, exit code is 0."""
         from gaia.store.writer import _connect
-        from bin.cli.project import _cmd_merge
+        from bin.cli.workspace import _cmd_merge
 
         con = _connect(tmp_db)
-        self._insert_project(con, "ws-a", "github.com/owner/repo-a")
-        self._insert_project(con, "ws-b", "github.com/owner/repo-b")
+        self._insert_workspace(con, "ws-a", "github.com/owner/repo-a")
+        self._insert_workspace(con, "ws-b", "github.com/owner/repo-b")
         con.close()
 
         rc = _cmd_merge(_make_args(from_id="ws-a", to_id="ws-b", report_duplicates=True))
@@ -129,14 +129,14 @@ class TestReportDuplicates:
         assert "duplicates=0" in captured.out
 
     def test_report_duplicates_finds_collision(self, tmp_db, workspaces, capsys):
-        """When two projects share the same identity, exit code is 1 and they appear in output."""
+        """When two workspaces share the same identity, exit code is 1 and they appear in output."""
         from gaia.store.writer import _connect
-        from bin.cli.project import _cmd_merge
+        from bin.cli.workspace import _cmd_merge
 
         con = _connect(tmp_db)
         # Both ws-old and ws-new collapsed to "me" due to the bug
-        self._insert_project(con, "ws-old", "me")
-        self._insert_project(con, "ws-new", "me")
+        self._insert_workspace(con, "ws-old", "me")
+        self._insert_workspace(con, "ws-new", "me")
         con.close()
 
         rc = _cmd_merge(_make_args(from_id="ws-old", to_id="ws-new", report_duplicates=True))
@@ -151,15 +151,15 @@ class TestReportDuplicates:
     def test_report_duplicates_skips_merge_logic(self, tmp_db, workspaces, capsys):
         """--report-duplicates must not touch workspace files."""
         from gaia.store.writer import _connect
-        from bin.cli.project import _cmd_merge
+        from bin.cli.workspace import _cmd_merge
 
         src = workspaces / "ws-old"
         src.mkdir(parents=True, exist_ok=True)
         (src / "sentinel.txt").write_text("do not move")
 
         con = _connect(tmp_db)
-        self._insert_project(con, "ws-old", "me")
-        self._insert_project(con, "ws-new", "me")
+        self._insert_workspace(con, "ws-old", "me")
+        self._insert_workspace(con, "ws-new", "me")
         con.close()
 
         _cmd_merge(_make_args(from_id="ws-old", to_id="ws-new", report_duplicates=True))

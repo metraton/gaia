@@ -80,19 +80,19 @@ class TestResolveIdentityWithWorkspacePath:
         assert result  # non-empty
 
 
-class TestPopulateRepoMultiWorkspaceIdentity:
+class TestPopulateProjectMultiWorkspaceIdentity:
     """Integration test: two workspaces scanned in same process get distinct identities."""
 
     def test_two_workspaces_get_distinct_identities(self, tmp_db, tmp_path, monkeypatch):
         """
-        Scanning two repos with different git remotes in the same process must
-        produce two distinct projects.identity values, not both collapsing to cwd.
+        Scanning two projects with different git remotes in the same process must
+        produce two distinct workspaces.identity values, not both collapsing to cwd.
         """
         from gaia.store.writer import _connect
-        from tools.scan.store_populator import populate_repo
+        from tools.scan.store_populator import populate_project
 
         con = _connect(tmp_db)
-        _grant(con, "repos", "developer")
+        _grant(con, "projects", "developer")
         con.close()
 
         repo_me = _make_repo(tmp_path, "me", "git@github.com:metraton/me.git")
@@ -102,8 +102,8 @@ class TestPopulateRepoMultiWorkspaceIdentity:
         # repos would get tmp_path.name as identity.
         monkeypatch.chdir(str(tmp_path))
 
-        res_me = populate_repo("ws-me", repo_me, "developer", db_path=tmp_db)
-        res_bwiz = populate_repo("ws-bwiz", repo_bwiz, "developer", db_path=tmp_db)
+        res_me = populate_project("ws-me", repo_me, "developer", db_path=tmp_db)
+        res_bwiz = populate_project("ws-bwiz", repo_bwiz, "developer", db_path=tmp_db)
 
         assert res_me["applied"] == 1
         assert res_bwiz["applied"] == 1
@@ -111,7 +111,7 @@ class TestPopulateRepoMultiWorkspaceIdentity:
         con = _connect(tmp_db)
         rows = {
             r["name"]: r["identity"]
-            for r in con.execute("SELECT name, identity FROM projects").fetchall()
+            for r in con.execute("SELECT name, identity FROM workspaces").fetchall()
         }
         con.close()
 

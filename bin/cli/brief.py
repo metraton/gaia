@@ -619,6 +619,8 @@ def register(subparsers) -> None:
         "close",
         help="Set brief status to closed",
         description="Shortcut for set-status closed.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia brief close <name>\n  gaia brief close my-feature --workspace=me\n",
     )
     close_p.add_argument("name", help="Brief slug.")
     close_p.add_argument("--workspace", default=None,

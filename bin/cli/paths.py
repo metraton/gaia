@@ -2,9 +2,14 @@
 gaia paths -- Inspect canonical Gaia storage paths.
 
 Subcommands:
-  paths              Print all resolved paths (key=value)
+  paths              Print all resolved paths (key=value):
+                       data, db, snapshot, state, workspaces, logs, events, cache
   paths data         Print only data_dir()
   paths db           Print only db_path()
+
+All other canonical paths (snapshot, state, workspaces, logs, events, cache)
+are printed by `gaia paths` (no subcommand). Per-workspace metadata is
+available via `gaia workspace info`.
 
 ensure_layout() is invoked before printing so that ~/.gaia/ (or the
 GAIA_DATA_DIR override) is materialized on first use with mode 0700.
@@ -78,7 +83,15 @@ def register(subparsers):
     """Register the paths subcommand with nested actions."""
     paths_parser = subparsers.add_parser(
         "paths",
-        help="Inspect canonical Gaia storage paths (data, db, snapshot, etc.)",
+        help="Inspect canonical Gaia storage paths",
+        description=(
+            "Print resolved Gaia storage paths.\n\n"
+            "No subcommand: print all paths (data, db, snapshot, state,\n"
+            "  workspaces, logs, events, cache) as key=value pairs.\n"
+            "data: print data_dir() only.\n"
+            "db:   print db_path() only.\n\n"
+            "Per-workspace metadata: gaia workspace info"
+        ),
     )
     paths_parser.set_defaults(_paths_parser=paths_parser)
 

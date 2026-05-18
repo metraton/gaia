@@ -25,10 +25,10 @@ def tmp_db(tmp_path, monkeypatch) -> Path:
         "INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('apps', 'developer', 1)"
     )
     con.execute(
-        "INSERT OR IGNORE INTO projects (name, identity, created_at) VALUES ('topic-ws', 'topic-ws', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO workspaces (name, identity, created_at) VALUES ('topic-ws', 'topic-ws', '2026-01-01T00:00:00Z')"
     )
     con.execute(
-        "INSERT OR IGNORE INTO repos (project, name, scanner_ts) VALUES ('topic-ws', 'r1', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO projects (workspace, name, scanner_ts) VALUES ('topic-ws', 'r1', '2026-01-01T00:00:00Z')"
     )
     con.commit()
     con.close()
@@ -43,7 +43,7 @@ def test_upsert_with_topic_key_accepted(tmp_db: Path):
 
     agent_output = """
 CONTEXT_UPDATE:
-{"table": "apps", "rows": [{"repo": "r1", "name": "a-topic", "kind": "service", "topic_key": "scope-x"}]}
+{"table": "apps", "rows": [{"project": "r1", "name": "a-topic", "kind": "service", "topic_key": "scope-x"}]}
 """
 
     with patch("hooks.modules.context.context_writer._derive_workspace", return_value="topic-ws"):

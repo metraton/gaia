@@ -1,8 +1,8 @@
 """
-Tests for the projects.identity column population.
+Tests for the workspaces.identity column population.
 
-Verifies that when upsert_repo (or any path that touches _ensure_project_row)
-inserts a fresh project row, the identity column is populated from the git
+Verifies that when upsert_project (or any path that touches _ensure_workspace_row)
+inserts a fresh workspace row, the identity column is populated from the git
 remote (normalized lowercase) when available, with fallback to the workspace
 name when no git remote is detectable.
 """
@@ -19,34 +19,38 @@ def tmp_db(tmp_path, monkeypatch):
     return db_path()
 
 
-def test_identity_populated_from_remote(tmp_db, monkeypatch):
+def test_identity_populated_from_remote(tmp_db, tmp_path, monkeypatch):
     """When gaia.project.current() returns a normalized remote, the identity
     column is populated with that value."""
     # Mock gaia.project.current to return a known canonical form.
-    import gaia.store.writer as writer_mod
     monkeypatch.setattr(
         "gaia.project.current",
         lambda *a, **kw: "github.com/metraton/foo",
     )
-    # Also patch within writer module's namespace -- writer imports lazily,
-    # so module-level patch is enough. Verify by triggering project insert.
 
-    # Allow developer to write to repos for the upsert path
+    # Allow developer to write to projects for the upsert path
     from gaia.store.writer import _connect
     con = _connect(tmp_db)
     con.execute(
-        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('repos', 'developer', 1)"
+        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('projects', 'developer', 1)"
     )
     con.commit()
     con.close()
 
-    from gaia.store import upsert_repo
-    res = upsert_repo("foo", "main-repo", {"role": "primary"}, agent="developer", db_path=tmp_db)
+    # Create a fake workspace root with a .git dir so _resolve_identity
+    # treats it as a git-bearing workspace and calls gaia.project.current.
+    fake_workspace = tmp_path / "foo-workspace"
+    fake_workspace.mkdir()
+    (fake_workspace / ".git").mkdir()
+
+    from gaia.store import upsert_project
+    res = upsert_project("foo", "main-project", {"role": "primary"}, agent="developer",
+                         db_path=tmp_db, workspace_path=fake_workspace)
     assert res["status"] == "applied"
 
     con = _connect(tmp_db)
     row = con.execute(
-        "SELECT name, identity FROM projects WHERE name = ?",
+        "SELECT name, identity FROM workspaces WHERE name = ?",
         ("foo",),
     ).fetchone()
     con.close()
@@ -64,18 +68,18 @@ def test_identity_fallback_to_name(tmp_db, monkeypatch):
     from gaia.store.writer import _connect
     con = _connect(tmp_db)
     con.execute(
-        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('repos', 'developer', 1)"
+        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('projects', 'developer', 1)"
     )
     con.commit()
     con.close()
 
-    from gaia.store import upsert_repo
-    res = upsert_repo("MyWorkspace", "r1", {}, agent="developer", db_path=tmp_db)
+    from gaia.store import upsert_project
+    res = upsert_project("MyWorkspace", "r1", {}, agent="developer", db_path=tmp_db)
     assert res["status"] == "applied"
 
     con = _connect(tmp_db)
     row = con.execute(
-        "SELECT name, identity FROM projects WHERE name = ?",
+        "SELECT name, identity FROM workspaces WHERE name = ?",
         ("MyWorkspace",),
     ).fetchone()
     con.close()

@@ -1,7 +1,7 @@
 """
 Regression tests for FTS5 sync triggers (B1 M1.b).
 
-The schema declares FTS5 mirror tables (repos_fts, apps_fts, services_fts,
+The schema declares FTS5 mirror tables (projects_fts, apps_fts, services_fts,
 briefs_fts) plus AFTER INSERT / DELETE / UPDATE triggers that keep the
 mirrors aligned with their base tables. If a trigger ever drops out of
 schema.sql -- or if the writer's `_connect()` stops applying the schema
@@ -40,22 +40,22 @@ def _count(con: sqlite3.Connection, table: str) -> int:
 
 
 def test_repos_fts_insert_trigger_fires(fresh_db: Path) -> None:
-    """Inserting a row into `repos` propagates to `repos_fts`."""
+    """Inserting a row into `projects` propagates to `projects_fts`."""
     con = sqlite3.connect(str(fresh_db))
     try:
-        # Base row required by FK chain: projects -> repos
-        con.execute("INSERT INTO projects (name) VALUES ('me')")
-        assert _count(con, "repos_fts") == 0  # arrange
+        # Base row required by FK chain: workspaces -> projects
+        con.execute("INSERT INTO workspaces (name) VALUES ('me')")
+        assert _count(con, "projects_fts") == 0  # arrange
 
         con.execute(
-            "INSERT INTO repos (project, name, role, primary_language) "
+            "INSERT INTO projects (workspace, name, role, primary_language) "
             "VALUES ('me', 'gaia', 'infra', 'python')"
         )  # act
         con.commit()
 
-        assert _count(con, "repos_fts") == 1  # assert
+        assert _count(con, "projects_fts") == 1  # assert
         row = con.execute(
-            "SELECT name, role, primary_language FROM repos_fts"
+            "SELECT name, role, primary_language FROM projects_fts"
         ).fetchone()
         assert row == ("gaia", "infra", "python")
     finally:
@@ -63,22 +63,22 @@ def test_repos_fts_insert_trigger_fires(fresh_db: Path) -> None:
 
 
 def test_repos_fts_update_trigger_replaces_row(fresh_db: Path) -> None:
-    """Updating a column in `repos` re-indexes the `repos_fts` row."""
+    """Updating a column in `projects` re-indexes the `projects_fts` row."""
     con = sqlite3.connect(str(fresh_db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES ('me')")
+        con.execute("INSERT INTO workspaces (name) VALUES ('me')")
         con.execute(
-            "INSERT INTO repos (project, name, role) VALUES ('me', 'gaia', 'infra')"
+            "INSERT INTO projects (workspace, name, role) VALUES ('me', 'gaia', 'infra')"
         )
         con.commit()
 
         con.execute(
-            "UPDATE repos SET role = 'tooling' WHERE project = 'me' AND name = 'gaia'"
+            "UPDATE projects SET role = 'tooling' WHERE workspace = 'me' AND name = 'gaia'"
         )  # act
         con.commit()
 
-        assert _count(con, "repos_fts") == 1  # assert
-        role = con.execute("SELECT role FROM repos_fts").fetchone()[0]
+        assert _count(con, "projects_fts") == 1  # assert
+        role = con.execute("SELECT role FROM projects_fts").fetchone()[0]
         assert role == "tooling"
     finally:
         con.close()
@@ -88,12 +88,12 @@ def test_apps_fts_insert_trigger_fires(fresh_db: Path) -> None:
     """Inserting a row into `apps` propagates to `apps_fts`."""
     con = sqlite3.connect(str(fresh_db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES ('me')")
+        con.execute("INSERT INTO workspaces (name) VALUES ('me')")
         con.execute(
-            "INSERT INTO repos (project, name) VALUES ('me', 'gaia')"
+            "INSERT INTO projects (workspace, name) VALUES ('me', 'gaia')"
         )
         con.execute(
-            "INSERT INTO apps (project, repo, name, description, topic_key) "
+            "INSERT INTO apps (workspace, project, name, description, topic_key) "
             "VALUES ('me', 'gaia', 'orchestrator', 'meta-agent', 'core')"
         )  # act
         con.commit()
@@ -111,10 +111,10 @@ def test_services_fts_insert_trigger_fires(fresh_db: Path) -> None:
     """Inserting a row into `services` propagates to `services_fts`."""
     con = sqlite3.connect(str(fresh_db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES ('me')")
-        con.execute("INSERT INTO repos (project, name) VALUES ('me', 'gaia')")
+        con.execute("INSERT INTO workspaces (name) VALUES ('me')")
+        con.execute("INSERT INTO projects (workspace, name) VALUES ('me', 'gaia')")
         con.execute(
-            "INSERT INTO services (project, repo, name, description, topic_key) "
+            "INSERT INTO services (workspace, project, name, description, topic_key) "
             "VALUES ('me', 'gaia', 'pubsub', 'event bus', 'messaging')"
         )  # act
         con.commit()
@@ -131,7 +131,7 @@ def test_services_fts_insert_trigger_fires(fresh_db: Path) -> None:
 def test_all_expected_triggers_present(fresh_db: Path) -> None:
     """The 12 FTS5 triggers declared by schema.sql exist after _connect()."""
     expected = {
-        "repos_fts_insert", "repos_fts_delete", "repos_fts_update",
+        "projects_fts_insert", "projects_fts_delete", "projects_fts_update",
         "apps_fts_insert", "apps_fts_delete", "apps_fts_update",
         "services_fts_insert", "services_fts_delete", "services_fts_update",
         "briefs_ai", "briefs_ad", "briefs_au",

@@ -3,7 +3,7 @@ Tests for gaia.store.provider.get_context.
 
 Verifies that the provider returns the JSON shape that agents expect:
 - top-level keys: identity, stack, environment, git, workspace
-- workspace.repos populated when rows exist
+- workspace.projects populated when rows exist
 """
 
 from __future__ import annotations
@@ -20,19 +20,19 @@ def tmp_db(tmp_path, monkeypatch):
 
 def test_get_context_shape(tmp_db):
     """get_context('me') returns keys identity/stack/environment/git/workspace
-    and workspace.repos is populated when rows exist."""
-    from gaia.store import upsert_repo, get_context
+    and workspace.projects is populated when rows exist."""
+    from gaia.store import upsert_project, get_context
     from gaia.store.writer import _connect
 
-    # Insert permission for 'developer' on 'repos' so upsert_repo applies.
+    # Insert permission for 'developer' on 'projects' so upsert_project applies.
     con = _connect(tmp_db)
     con.execute(
-        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('repos', 'developer', 1)"
+        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('projects', 'developer', 1)"
     )
     con.commit()
     con.close()
 
-    res = upsert_repo(
+    res = upsert_project(
         workspace="me",
         name="gaia",
         fields={
@@ -53,23 +53,48 @@ def test_get_context_shape(tmp_db):
         assert key in ctx, f"missing top-level key: {key}"
 
     assert isinstance(ctx["workspace"], dict)
-    assert "repos" in ctx["workspace"]
-    assert len(ctx["workspace"]["repos"]) == 1
-    repo = ctx["workspace"]["repos"][0]
-    assert repo["name"] == "gaia"
-    assert repo["role"] == "infra"
-    assert repo["primary_language"] == "python"
+    assert "projects" in ctx["workspace"]
+    assert len(ctx["workspace"]["projects"]) == 1
+    project = ctx["workspace"]["projects"][0]
+    assert project["name"] == "gaia"
+    assert project["role"] == "infra"
+    assert project["primary_language"] == "python"
 
 
-def test_get_context_empty_workspace_returns_safe_dict(tmp_db):
-    """A workspace with no rows returns identity == workspace and empty lists."""
+def test_get_context_nonexistent_workspace_returns_none(tmp_db):
+    """A workspace not in workspaces table returns None (Fix #5: caller emits exit 1)."""
     from gaia.store import get_context
     from gaia.store.writer import _connect
 
-    # Materialize schema
+    # Materialize schema without inserting any workspace row
     _connect(tmp_db).close()
 
     ctx = get_context("nonexistent-workspace", db_path=tmp_db)
-    assert ctx["identity"] == "nonexistent-workspace"
-    assert ctx["workspace"]["repos"] == []
-    assert ctx["workspace"]["apps"] == []
+    assert ctx is None
+
+
+def test_get_context_identity_is_workspace_name(tmp_db):
+    """identity field is workspaces.name, not a git remote URL (Fix #4)."""
+    from gaia.store import get_context, upsert_project
+    from gaia.store.writer import _connect
+
+    # Set up permissions and create a project via upsert_project
+    con = _connect(tmp_db)
+    con.execute(
+        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('projects', 'developer', 1)"
+    )
+    con.commit()
+    con.close()
+
+    upsert_project(
+        workspace="my-workspace",
+        name="some-repo",
+        fields={"remote_url": "https://github.com/org/some-repo.git"},
+        agent="developer",
+        db_path=tmp_db,
+    )
+
+    ctx = get_context("my-workspace", db_path=tmp_db)
+    assert ctx is not None
+    # identity must be the workspace name, not the remote URL
+    assert ctx["identity"] == "my-workspace"

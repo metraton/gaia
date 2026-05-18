@@ -33,7 +33,7 @@ def tmp_db(tmp_path, monkeypatch):
 def _grant_all(con, agent: str) -> None:
     """Grant write on the tables a scanner needs to populate."""
     for table in (
-        "repos", "apps", "tf_modules", "tf_live", "releases", "workloads",
+        "projects", "apps", "tf_modules", "tf_live", "releases", "workloads",
         "clusters_defined",
     ):
         con.execute(
@@ -50,7 +50,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
 
     (The brief's literal "notes" maps to apps.description in v1 DDL.)
     """
-    from gaia.store import upsert_repo, upsert_app
+    from gaia.store import upsert_project, upsert_app
     from gaia.store.writer import _connect
 
     workspace = "ws-infra-preserve"
@@ -60,8 +60,8 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
     _grant_all(con, "terraform-architect")
     con.close()
 
-    # Seed: repo + app with agent-owned `description`
-    upsert_repo(
+    # Seed: project + app with agent-owned `description`
+    upsert_project(
         workspace=workspace,
         name="bildwiz-iac",
         fields={"role": "iac"},
@@ -70,7 +70,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
     )
     upsert_app(
         workspace=workspace,
-        repo="bildwiz-iac",
+        project="bildwiz-iac",
         name="orchestrator",
         fields={
             "kind": "service",
@@ -84,13 +84,13 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
     # Snapshot before
     con = _connect(tmp_db)
     before = con.execute(
-        "SELECT description, status FROM apps WHERE project = ? AND repo = ? AND name = ?",
+        "SELECT description, status FROM apps WHERE workspace = ? AND project = ? AND name = ?",
         (workspace, "bildwiz-iac", "orchestrator"),
     ).fetchone()
     con.close()
     assert before["description"] == "hand-written by terraform-architect"
 
-    # Run the infrastructure populator (mock a repo path with a tf file)
+    # Run the infrastructure populator (mock a project path with a tf file)
     repo_path = tmp_path / "bildwiz-iac"
     repo_path.mkdir()
     (repo_path / "main.tf").write_text(
@@ -105,8 +105,8 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
 
     res = populate_infrastructure(
         workspace=workspace,
-        repo="bildwiz-iac",
-        repo_path=repo_path,
+        project="bildwiz-iac",
+        project_path=repo_path,
         agent="terraform-architect",
         db_path=tmp_db,
     )
@@ -114,7 +114,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
     # Snapshot after
     con = _connect(tmp_db)
     after = con.execute(
-        "SELECT description, status FROM apps WHERE project = ? AND repo = ? AND name = ?",
+        "SELECT description, status FROM apps WHERE workspace = ? AND project = ? AND name = ?",
         (workspace, "bildwiz-iac", "orchestrator"),
     ).fetchone()
     con.close()
@@ -128,7 +128,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
     # Sanity: the scanner DID populate tf_modules
     con = _connect(tmp_db)
     tm_count = con.execute(
-        "SELECT COUNT(*) FROM tf_modules WHERE project = ? AND repo = ?",
+        "SELECT COUNT(*) FROM tf_modules WHERE workspace = ? AND project = ?",
         (workspace, "bildwiz-iac"),
     ).fetchone()[0]
     con.close()
@@ -141,7 +141,7 @@ def test_orchestration_preserves_labels(tmp_db, tmp_path, monkeypatch):
 
     (The brief's literal "labels" maps to releases.notes in v1 DDL.)
     """
-    from gaia.store import upsert_repo
+    from gaia.store import upsert_project
     from gaia.store.writer import _connect
 
     workspace = "ws-orch-preserve"
@@ -151,8 +151,8 @@ def test_orchestration_preserves_labels(tmp_db, tmp_path, monkeypatch):
     _grant_all(con, "gitops-operator")
     con.close()
 
-    # Seed: repo + release with agent-owned `notes`
-    upsert_repo(
+    # Seed: project + release with agent-owned `notes`
+    upsert_project(
         workspace=workspace,
         name="bildwiz-gitops",
         fields={"role": "gitops"},
@@ -162,7 +162,7 @@ def test_orchestration_preserves_labels(tmp_db, tmp_path, monkeypatch):
 
     con = _connect(tmp_db)
     con.execute(
-        "INSERT INTO releases (project, repo, name, released_at, notes, scanner_ts) "
+        "INSERT INTO releases (workspace, project, name, released_at, notes, scanner_ts) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (workspace, "bildwiz-gitops", "v1.0.0", "2026-04-01",
          '{"team":"platform","approved_by":"jorge"}',
@@ -174,13 +174,13 @@ def test_orchestration_preserves_labels(tmp_db, tmp_path, monkeypatch):
     # Snapshot before
     con = _connect(tmp_db)
     before = con.execute(
-        "SELECT notes FROM releases WHERE project = ? AND repo = ? AND name = ?",
+        "SELECT notes FROM releases WHERE workspace = ? AND project = ? AND name = ?",
         (workspace, "bildwiz-gitops", "v1.0.0"),
     ).fetchone()
     con.close()
     assert before["notes"] == '{"team":"platform","approved_by":"jorge"}'
 
-    # Build a fake repo with a HelmRelease YAML (so scanner will upsert
+    # Build a fake project with a HelmRelease YAML (so scanner will upsert
     # the same v1.0.0 release)
     repo_path = tmp_path / "bildwiz-gitops"
     repo_path.mkdir()
@@ -199,8 +199,8 @@ def test_orchestration_preserves_labels(tmp_db, tmp_path, monkeypatch):
 
     res = populate_orchestration(
         workspace=workspace,
-        repo="bildwiz-gitops",
-        repo_path=repo_path,
+        project="bildwiz-gitops",
+        project_path=repo_path,
         agent="gitops-operator",
         db_path=tmp_db,
     )
@@ -208,7 +208,7 @@ def test_orchestration_preserves_labels(tmp_db, tmp_path, monkeypatch):
     # Snapshot after
     con = _connect(tmp_db)
     after = con.execute(
-        "SELECT notes FROM releases WHERE project = ? AND repo = ? AND name = ?",
+        "SELECT notes FROM releases WHERE workspace = ? AND project = ? AND name = ?",
         (workspace, "bildwiz-gitops", "v1.0.0"),
     ).fetchone()
     con.close()

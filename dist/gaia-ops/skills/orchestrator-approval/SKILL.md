@@ -56,15 +56,15 @@ The "Approve" option MUST name the specific action. The PostToolUse hook activat
 
 1. **Grant activates through the PostToolUse hook for AskUserQuestion -- not SendMessage.** Resume the subagent via SendMessage with natural language only. The grant is active before SendMessage is sent -- no delay or verification step is needed.
 
-2. **Scope guard -- resume only with the approved command.** The grant is scoped to the exact command that was blocked. When the agent's `approval_request.exact_content` differs in ANY argument from what the orchestrator put in `COMANDO:` -- even one path segment, one flag, one filename -- the grant will miss and the agent will be blocked again. Do NOT send the agent a resume message that instructs it to run a different command. If the operation has genuinely changed, present a new approval.
+2. **Scope guard -- copy `exact_content` byte-for-byte into the next attempt.** The grant is keyed to the exact statement signature. Anything the orchestrator adds on top -- a redirect, a `cd` prefix, a wrapper, a flag the user did not approve -- creates a different statement that the grant does not cover. Equivalent is not the same: the user approved what was shown, not what would also work. Whether you continue via SendMessage resume OR a fresh Agent re-dispatch, copy `approval_request.exact_content` literally into the next prompt and instruct the subagent to run that exact string. If the operation has genuinely changed, present a new approval -- do not retrofit it through wrapping.
 
 3. **Fresh presentation every time.** Each hook-blocked APPROVAL_REQUEST requires its own presentation with all mandatory fields. Prior approvals do not carry forward.
 
-4. **`mode` does NOT survive a SendMessage resume.** The `mode` parameter is per-dispatch of the Agent tool. If the original dispatch was `mode: bypassPermissions` and the subagent emitted APPROVAL_REQUEST mid-task, resuming via SendMessage drops the mode -- the resume runs in `default`. CC native will intercept the same Edit/Write/Bash that the original mode was meant to satisfy. Concrete failure observed: bypass-dispatched subagent hit Gaia hook, user approved via AskUserQuestion (grant active), resume via SendMessage -- CC native blocked the same `mv .claude/briefs/...` because the mode was gone. See "Re-dispatch instead of resume" below.
+4. **`mode` does NOT survive a SendMessage resume.** See `security-tiers/SKILL.md` -> "Mode runtime rules" R3. Operational consequence below: "Re-dispatch instead of resume".
 
 ### Re-dispatch instead of resume (when mode was load-bearing)
 
-When the original dispatch relied on `mode: bypassPermissions` or `mode: acceptEdits` to satisfy CC native on `.claude/` writes, and the subagent blocked mid-task, **do not resume with SendMessage**. Instead:
+The dispatch-vs-resume choice is the decision that actually shapes runtime behavior on protected-path bundles. SendMessage resumes always run in the background literal: AskUserQuestion auto-denies, and the original `mode` does not survive. If the agent's continuation could need approval mid-task, or if the original dispatch relied on `mode: bypassPermissions` or `mode: acceptEdits` to satisfy CC native on `.claude/` writes, **do not resume with SendMessage**. Instead:
 
 1. Kill the blocked subagent (it already reported APPROVAL_REQUEST or BLOCKED).
 2. Present the approval via AskUserQuestion (same mandatory format) so the Gaia grant activates for the exact command signature.
@@ -72,7 +72,9 @@ When the original dispatch relied on `mode: bypassPermissions` or `mode: acceptE
 4. The fresh prompt enumerates ALL remaining steps and instructs the subagent to execute them in a single turn. Tell it explicitly: "If a hook blocks any step, emit BLOCKED and stop -- do NOT emit APPROVAL_REQUEST mid-task, do NOT split across turns."
 5. The Gaia grant (scoped to the specific blocked command) activates on the approved step; the new dispatch's `mode` satisfies CC native for every other step.
 
-This applies specifically to multi-step bundles on protected paths (mv/rm/mkdir on `.claude/` + Edit/Write on `.claude/project-context/**`). Splitting such a bundle across dispatch + SendMessage resume is the failure mode.
+This applies specifically to multi-step bundles on protected paths (mv/rm/mkdir on `.claude/` + Edit/Write on `.claude/project-context/**`). Splitting such a bundle across dispatch + SendMessage resume is the failure mode -- the symptom is CC native blocking what used to pass under the original dispatch.
+
+Resume via SendMessage is correct when the agent's next move is bounded (act on a clarification, retry the exact approved command) and no new approval is expected during the resume.
 
 ## Traps
 
@@ -86,75 +88,10 @@ This applies specifically to multi-step bundles on protected paths (mv/rm/mkdir 
 | "'Approve -- los 3' is clear from context" | Context is not the label -- spell out what "the 3" are |
 | "The command is long, I'll shorten it" | Show it complete -- truncation hides what the user is approving |
 | "Same operation, slightly different path" | Grants match by command signature -- different path = grant miss = immediate re-block |
-| "I'll tell the agent to run a similar rm" | The agent must run the exact command that was approved, or it gets blocked again |
+| "I'll add anything around the approved command -- redirect, cd prefix, flag, wrapper" | The grant matches the statement byte-for-byte; anything added on top is a different statement and a fresh re-block. Equivalent is not the same. |
 | "I'll skip the [P-...] suffix, it's cosmetic" | "The hook extracts the nonce from the label — without it, targeted activation fails" |
 | "Original dispatch had bypassPermissions, resume will too" | `mode` is per-dispatch; resume via SendMessage runs in `default` -- CC native re-blocks. Re-dispatch fresh. |
 | "Subagent blocked mid-task, I'll approve then SendMessage" | If the blocker is CC native on `.claude/` writes, approval alone won't help -- resume loses the mode. Re-dispatch fresh with the needed mode. |
 | "Multi-step mv + Edit can be split: dispatch, approve, resume" | Each turn boundary drops the mode. Pack ALL steps in one fresh dispatch after approval. |
 
-For GOOD vs BAD examples, batch flow, and grant mechanics, see `reference.md`.
-
-## Dispatch mode checklist
-
-Before dispatching a subagent, run through this checklist:
-
-**When to pass `mode: acceptEdits`:**
-- Dispatch edits briefs, plans, or evidence files (`.claude/project-context/**`)
-- Dispatch edits skills, agents, or commands (`.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**`)
-- Dispatch writes any file under `.claude/` that is NOT hooks/ or settings files
-
-**When NOT to use `acceptEdits`:**
-- Dispatch requires mutative Bash (acceptEdits does not cover Bash -- Gaia T3 flow still fires)
-- Dispatch is exploratory/read-only (use `default` or omit mode)
-- Dispatch touches `.claude/hooks/` or `settings.json` -- Gaia blocks these regardless of mode
-
-**foreground vs background:**
-- **foreground**: can call AskUserQuestion; T3 approval flows work end-to-end
-- **background**: AskUserQuestion does not display; T3 operations that require user consent will stall or be auto-denied -- dispatch only read or pre-approved operations to background agents
-
-**The mode is not inherited.** If you run with `acceptEdits`, your subagents still receive `default` unless you pass `mode: acceptEdits` explicitly in the dispatch. Set it per dispatch, not once per session.
-
-| Dispatch type | mode to pass | session |
-|--------------|-------------|---------|
-| Reads only (investigate, report) | omit (default) | foreground or background |
-| Edits `.claude/skills/`, briefs, evidence | `acceptEdits` | foreground or background |
-| T3 requiring user approval | `default` or `acceptEdits` | **foreground only** |
-| Edits `.claude/hooks/` or settings | never dispatch directly | n/a -- requires Gaia approval flow |
-
-## Dispatch mode decision -- checklist pre-dispatch
-
-Antes de cada dispatch del Agent tool, recorre este árbol. Si algún paso produce ambigüedad, detente y pregunta al usuario.
-
-**1. ¿El goal es read-only o escribe?**
-- Read-only → `default` (o `acceptEdits` si necesita escribir evidence)
-- Escribe → paso 2
-
-**2. ¿Dónde escribe?**
-- Solo archivos declarativos (`.md`, `.yaml`, `.json` bajo `.claude/` o `gaia-ops-dev/`) → `acceptEdits`
-- Código runtime (`.py` bajo `hooks/`, `bin/`, `agents/`) → `acceptEdits` + aceptar grants Bash file-scoped esperados
-- Paths protegidos (`.git`, `.vscode`, `.husky`, `.claude/hooks/`, `settings.json`) → `default` + prompt explícito; nunca bypass
-
-**3. ¿Requiere Bash mutativo (mv, rm, mkdir)?**
-- Atómico, scope enumerado, user-approved conceptualmente, hooks hardened → `bypassPermissions`
-- Multi-step / multi-file PURO Edit/Write (sin Bash mutativo) → `acceptEdits` (acepta fricción file-scoped; NO bypass: pierde audit per-file porque background pre-aprueba el bundle entero)
-- Bundle mixto: Bash mutativo (mv/rm) SOBRE `.claude/` + Edits SOBRE `.claude/` → `bypassPermissions` + foreground + **empaquetar todos los steps en un solo turno** (ver Rule 4 y "Re-dispatch instead of resume" arriba). `acceptEdits` no alcanza porque no cubre el mv; split en turnos pierde el mode en el SendMessage resume.
-
-**4. ¿Puede emitir `approval_request` mid-task?**
-- Sí (scope puede evolucionar, T3 esperados) → foreground
-- No (scope cerrado, permisos pre-satisfechos) → background + mode que pre-satisfaga permisos
-
-**5. ¿El goal enumera el scope concreto?**
-- No → DETÉN y pregunta al usuario antes del dispatch. No elegir mode sobre scope vago.
-- Sí → continúa con la combinación decidida.
-
-Cross-reference: para qué hace cada mode, ver `skills/security-tiers/SKILL.md` → "permissionMode comparison" y "Decision tree".
-
-### Ejemplos concretos
-
-| Goal | mode | session | Razón |
-|------|------|---------|-------|
-| Editar brief.md o plan.md | `acceptEdits` | background | Declarativo, scope cerrado, no requiere prompts mid-task |
-| Mover directorio de brief al cerrar (`open_X` → `closed_X`) | `bypassPermissions` | foreground | Atómico, scope aprobado, hardened bash_validator; foreground porque puede descubrir conflicto de nombre |
-| Split de enum en 3 archivos Python runtime | `acceptEdits` | background | Grants file-scoped esperados per-file -- fricción intencional para audit |
-| Bulk reject de pendings via CLI | `acceptEdits` | foreground | CLI maneja inline; foreground por si requiere confirmación mid-loop |
-| Investigation read-only con evidence write | `default` al leer, `acceptEdits` al escribir evidence | foreground | Dos dispatches distintos con modes distintos; no heredar entre ellos |
+For GOOD vs BAD examples, batch flow, grant mechanics, and the dispatch mode checklist, see `reference.md`.

@@ -1304,6 +1304,37 @@ class ClaudeCodeAdapter(HookAdapter):
             commands_executed = extract_commands_from_evidence(agent_output)
             context_update_result = process_context_updates(agent_output, task_info)
 
+            # ----------------------------------------------------------
+            # Auto-capture install events (B4)
+            # Detect npm/pip/gaia install and auth configure patterns in
+            # agent_output; persist to integrations table via store API.
+            # Non-blocking: errors are logged but do not affect the hook.
+            # Lazy imports keep this entirely opt-in -- no module-load
+            # side effects affect tests that do not exercise installs.
+            # ----------------------------------------------------------
+            try:
+                from modules.install_detector import detect, resolve_workspace, build_topic_key
+                _install_match = detect(agent_output)
+                if _install_match.get("matched"):
+                    from gaia.store import save_integration
+                    _ws = resolve_workspace()
+                    _tgt = _install_match["target"]
+                    _kind = _install_match.get("kind", "pkg")
+                    _tk = build_topic_key(_kind, _tgt)
+                    _store_result = save_integration(
+                        workspace=_ws,
+                        name=_tgt,
+                        kind=_kind,
+                        topic_key=_tk,
+                        agent="system",
+                    )
+                    logger.info(
+                        "Install capture: target=%s kind=%s workspace=%s store=%s",
+                        _tgt, _kind, _ws, _store_result.get("status"),
+                    )
+            except Exception as _exc:
+                logger.debug("Install capture failed (non-fatal): %s", _exc)
+
             # Compute context anchor hit tracking
             anchor_hits = None
             try:

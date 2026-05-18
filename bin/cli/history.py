@@ -4,8 +4,9 @@ gaia history -- Recent agent sessions: list, show, search.
 Shows recent agent sessions with task descriptions, outcomes, and token usage.
 
 Reads from:
-  .claude/project-context/episodic-memory/index.json  (primary)
-  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (fallback)
+  ~/.gaia/gaia.db  (substrate SQLite, primary)
+  .claude/project-context/episodic-memory/index.json  (legacy fallback)
+  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (legacy fallback)
 
 Flags:
   --today / -t         Show only today's sessions
@@ -151,8 +152,9 @@ def register(subparsers):
             "Display recent agent sessions with task descriptions, statuses, and token usage.\n"
             "\n"
             "Data sources (in priority order):\n"
-            "  .claude/project-context/episodic-memory/index.json\n"
-            "  .claude/project-context/workflow-episodic-memory/metrics.jsonl\n"
+            "  ~/.gaia/gaia.db  (substrate SQLite)\n"
+            "  .claude/project-context/episodic-memory/index.json  (legacy fallback)\n"
+            "  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (legacy fallback)\n"
         ),
     )
     p.add_argument(

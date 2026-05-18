@@ -94,10 +94,10 @@ gaia paths                      # Print all resolved paths (key=value)
 gaia paths data                 # Print only data_dir()
 gaia paths db                   # Print only db_path()
 
-gaia project current            # Print resolved workspace identity
-gaia project info               # Structured info: identity, cwd, paths
-gaia project merge FROM TO      # Preview a workspace merge
-gaia project merge FROM TO --confirm   # Execute the merge
+gaia workspace current          # Print resolved workspace identity
+gaia workspace info             # Structured info: identity, cwd, paths
+gaia workspace merge FROM TO    # Preview a workspace merge
+gaia workspace merge FROM TO --confirm  # Execute the merge
 ```
 
 `gaia paths` always invokes `ensure_layout()` before printing so that the

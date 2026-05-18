@@ -43,7 +43,7 @@ Every response MUST end with a single fenced `json:contract` block.
 
 **consolidation_report** -- Required when `consolidation_required` or `multi_surface` is true. Otherwise `null`. Fields: `ownership_assessment`, `confirmed_findings`, `suspected_findings`, `conflicts`, `next_best_agent`. See `examples.md`.
 
-**approval_request** -- Required when APPROVAL_REQUEST. Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`. On `[T3_BLOCKED]` with `approval_id`: set APPROVAL_REQUEST, include `approval_id`, wait. See `examples.md`.
+**approval_request** -- Required when APPROVAL_REQUEST. Fields: `operation`, `exact_content`, `scope`, `risk_level`, `rollback`, `verification`. Optional `batch_scope: "verb_family"` when one intent expands into many commands sharing the same base CLI and verb -- requests a multi-use grant instead of N single approvals. On `[T3_BLOCKED]` with `approval_id`: set APPROVAL_REQUEST, include `approval_id`, wait. See `examples.md` and `request-approval/SKILL.md` for the full schema and batch flow.
 
 ## Universal Execution Loop
 

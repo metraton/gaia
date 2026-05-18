@@ -158,45 +158,51 @@ class TestFindProjectRoot:
 # ---------------------------------------------------------------------------
 
 class TestCmdPlansList:
-    def _run_list(self, tmp_path, json_output=False):
-        """Run cmd_plans list with project root patched to tmp_path."""
+    """_cmd_list now reads from the SQLite substrate via gaia.briefs.list_briefs."""
+
+    _SAMPLE_BRIEFS = [
+        {"name": "gaia-cli", "status": "draft", "title": "Gaia CLI"},
+        {"name": "my-feature", "status": "in-progress", "title": "My Feature"},
+    ]
+
+    def _run_list(self, json_output=False, briefs=None):
+        """Run cmd_plans list with substrate mocked."""
         args = _MockArgs(plans_cmd="list", json=json_output)
-        with patch("cli.plans._find_project_root", return_value=tmp_path):
-            with patch("cli.plans._get_briefs_dir", return_value=tmp_path / "briefs"):
+        briefs_val = briefs if briefs is not None else self._SAMPLE_BRIEFS
+        with patch("gaia.project.current", return_value="me"):
+            with patch("gaia.briefs.list_briefs", return_value=briefs_val):
                 return cmd_plans(args)
 
-    def test_list_exits_zero(self, tmp_path):
-        _make_brief(tmp_path, "my-feature")
-        rc = self._run_list(tmp_path)
+    def test_list_exits_zero(self):
+        rc = self._run_list()
         assert rc == 0
 
-    def test_list_json_valid(self, tmp_path, capsys):
-        _make_brief(tmp_path, "my-feature", brief_status="active", plan_status="pending")
-        rc = self._run_list(tmp_path, json_output=True)
+    def test_list_json_valid(self, capsys):
+        rc = self._run_list(json_output=True)
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert "briefs" in data
         assert rc == 0
 
-    def test_list_json_contains_brief(self, tmp_path, capsys):
-        _make_brief(tmp_path, "gaia-cli", brief_status="draft")
-        self._run_list(tmp_path, json_output=True)
+    def test_list_json_contains_brief(self, capsys):
+        self._run_list(json_output=True)
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         names = [b["name"] for b in data["briefs"]]
         assert "gaia-cli" in names
 
-    def test_list_no_briefs(self, tmp_path, capsys):
-        (tmp_path / "briefs").mkdir(parents=True)
-        rc = self._run_list(tmp_path)
+    def test_list_no_briefs(self, capsys):
+        rc = self._run_list(briefs=[])
         captured = capsys.readouterr()
-        assert "No briefs" in captured.out
+        assert "(no briefs)" in captured.out
         assert rc == 0
 
-    def test_list_missing_root_returns_1(self, capsys):
+    def test_list_store_error_returns_1(self, capsys):
+        """When list_briefs raises, exit 1 with error message."""
         args = _MockArgs(plans_cmd="list", json=False)
-        with patch("cli.plans._find_project_root", return_value=None):
-            rc = cmd_plans(args)
+        with patch("gaia.project.current", return_value="me"):
+            with patch("gaia.briefs.list_briefs", side_effect=RuntimeError("db error")):
+                rc = cmd_plans(args)
         assert rc == 1
 
 
@@ -464,8 +470,9 @@ class TestCmdPlansShowPrefixTolerant:
 # ---------------------------------------------------------------------------
 
 class TestIntegration:
-    def test_plans_list_runs(self):
+    def test_plans_list_runs(self, tmp_path):
         """Smoke test: python bin/gaia plans list exits 0."""
+        import os
         import subprocess
 
         bin_gaia = _BIN_DIR / "gaia"
@@ -476,6 +483,7 @@ class TestIntegration:
             capture_output=True,
             text=True,
             cwd=str(gaia_ops_dev),
+            env={**os.environ, "GAIA_DATA_DIR": str(tmp_path)},
         )
         assert result.returncode == 0, (
             f"Expected exit 0, got {result.returncode}\n"

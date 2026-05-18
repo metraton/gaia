@@ -4,11 +4,11 @@ gaia.store -- SQLite substrate for Gaia workspace context.
 Public API::
 
     from gaia.store import (
-        upsert_repo,
+        upsert_project,
         upsert_app,
         delete_missing_in,
         bulk_upsert,
-        wipe_project,
+        wipe_workspace,
     )
     from gaia.store.provider import get_context
 
@@ -21,17 +21,17 @@ from gaia.store.writer import (
     delete_missing_in,
     save_integration,
     upsert_app,
-    upsert_repo,
-    wipe_project,
+    upsert_project,
+    wipe_workspace,
 )
 from gaia.store.provider import get_context
 
 __all__ = [
-    "upsert_repo",
+    "upsert_project",
     "upsert_app",
     "delete_missing_in",
     "bulk_upsert",
-    "wipe_project",
+    "wipe_workspace",
     "save_integration",
     "get_context",
 ]

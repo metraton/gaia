@@ -5,95 +5,98 @@
         "rule": "Your prompt includes a Project Context section with confirmed project knowledge. Extract relevant data from it BEFORE executing commands."
       },
       {
-        "rule": "context_map: The Project Context section is organized into named sections (e.g. project_identity, stack, git, infrastructure). Each section contains data scanned from the project. Reading the wrong section wastes tokens and produces stale assumptions; reading none at all causes commands built on defaults to fail in ways that are hard to trace back to the root cause."
+        "rule": "context_map: Project context is stored in the Gaia SQLite substrate (~/.gaia/gaia.db). Each domain agent writes to its own set of tables via the store API. Reading a table that does not belong to your domain wastes tokens and produces stale assumptions; writing to a foreign table is rejected by the permission enforcement layer."
+      },
+      {
+        "rule": "substrate: The Gaia SQLite substrate (~/.gaia/gaia.db) contains the following domain tables: apps, libraries, services, features (developer), tf_modules, tf_live, clusters (terraform-architect/cloud-troubleshooter), releases, workloads, clusters_defined (gitops-operator), integrations, gaia_installations (gaia-operator). Each agent can read all tables but write only its own domain tables."
+      },
+      {
+        "rule": "cross_repo_refs: When referencing a resource in another repository, use the format 'host/owner/repo:table/name' (e.g. 'github/org/bildwiz-iac:tf_modules/gcp-gke'). This ensures unambiguous cross-workspace identification in multi-repo setups."
+      },
+      {
+        "rule": "context_update_schema: Agents emit CONTEXT_UPDATE blocks using the new table/rows schema: { \"table\": \"<table_name>\", \"rows\": [{...}] }. Agents do NOT pass 'workspace' — the store derives it via gaia.project.current(). The legacy dot-path schema (seccion.subseccion: {...}) is retired."
       }
     ],
     "agent_specific": {
       "cloud-troubleshooter": {
         "rules": [
           {
-            "rule": "monitoring_observability and cluster_details are the primary diagnostic surfaces. A diagnosis that skips these sections will miss the live state of the cluster and produce recommendations that contradict what is already deployed."
+            "rule": "La tabla 'clusters' es tu superficie de escritura primaria: contiene instancias de clusters live con su metadata estático observable (provider, region, attributes). Diagnosticar un cluster sin registrar su estado observado en 'clusters' produce un diagnóstico que no persiste y no beneficia a otros agentes."
           },
           {
-            "rule": "infrastructure_topology describes how services are connected across regions and availability zones. Ignoring it when investigating connectivity or latency issues leads to remediation steps that address symptoms rather than the structural cause."
+            "rule": "Las tablas 'tf_modules' y 'tf_live' describen la infraestructura declarada en código. Comparar estas tablas con el estado live que observas es el mecanismo de detección de drift. Saltearte esta comparación produce recomendaciones que abordan síntomas en vez de la causa estructural."
           },
           {
-            "rule": "operational_guidelines encodes team conventions for runbooks, escalation paths, and SLOs. Bypassing it risks proposing changes that violate on-call agreements or SLA boundaries."
+            "rule": "La tabla 'workloads' describe los workloads de Kubernetes declarados por gitops-operator. Ignorarla al investigar problemas de conectividad o latencia lleva a recomendaciones que contradicen lo que ya está desplegado."
           }
         ]
       },
       "gitops-operator": {
         "rules": [
           {
-            "rule": "gitops_configuration holds the source-of-truth for Flux/ArgoCD sync targets, kustomize overlays, and reconciliation intervals. Writing manifests without reading this section produces changes that the GitOps controller will override or reject on the next sync cycle."
+            "rule": "La tabla 'releases' es la fuente de verdad para el historial de HelmRelease versions y app deploys. Escribir manifests sin leer esta tabla produce cambios que el GitOps controller puede sobrescribir o rechazar en el próximo ciclo de sync."
           },
           {
-            "rule": "cluster_details defines the Kubernetes version, node pools, and namespacing conventions. A manifest targeting the wrong API version or namespace will apply cleanly and then fail at runtime, making the error hard to attribute."
+            "rule": "La tabla 'clusters_defined' define los clusters declarados en el codebase (Terraform, Helm, Kustomize overlays). Un manifest que apunta al namespace o API version incorrecta aplica limpiamente y falla en runtime, haciendo el error difícil de atribuir."
           },
           {
-            "rule": "operational_guidelines specifies change-window and approval policies. Bypassing it risks triggering a sync during a protected window and causing a production incident."
+            "rule": "La tabla 'workloads' es tu superficie primaria de escritura: registra los Deployments, StatefulSets, Jobs y CronJobs declarados por repo. No registrar nuevos workloads aquí rompe la visibilidad cross-agente del estado GitOps."
           }
         ]
       },
       "terraform-architect": {
         "rules": [
           {
-            "rule": "terraform_infrastructure contains existing module versions, backend configuration, and remote state references. Planning without this data generates a diff that replaces instead of updates, and can destroy live resources that were not in scope."
+            "rule": "La tabla 'tf_modules' contiene versiones activas y sus fuentes (módulo, versión, repo origen). Planificar sin leer esta tabla genera un diff que reemplaza en vez de actualizar, y puede destruir recursos live que no estaban en scope."
           },
           {
-            "rule": "infrastructure_topology maps provider accounts, VPCs, and cross-account trust relationships. Missing this context leads to resource definitions that introduce duplicate CIDR blocks or broken IAM trust chains."
+            "rule": "La tabla 'tf_live' contiene configuración de backend y referencias a state remoto. Missing this context leads to resource definitions that introduce duplicate CIDR blocks or broken IAM trust chains."
           },
           {
-            "rule": "operational_guidelines captures cost-center tagging requirements and provider version constraints. Ignoring them produces plans that pass validation but are rejected at code review or fail cost attribution."
+            "rule": "La tabla 'clusters' a nivel declarativo IaC describe los clusters que el código Terraform define. Escribes en 'clusters' solo lo que el código dice, no el estado runtime — ese es responsabilidad de cloud-troubleshooter."
           }
         ]
       },
       "developer": {
         "rules": [
           {
-            "rule": "stack defines the languages, frameworks, and build tools in use. Writing code against a different stack version or framework than what is declared here produces changes that pass local tests and break in CI."
+            "rule": "La tabla 'apps' describe el dominio de aplicación: servicios, jobs, funciones. Cambiar la interfaz de un app sin actualizar esta tabla rompe a los consumidores que no están bajo desarrollo activo."
           },
           {
-            "rule": "application_services describes service boundaries, ports, and inter-service contracts. Changing a service's interface without consulting this section breaks consumers that are not under active development and not visible in the immediate file context."
+            "rule": "Las tablas 'services' y 'libraries' describen los servicios de infraestructura y los paquetes compartidos del workspace. Ignorarlas al investigar dependencias lleva a cambios que duplican capacidad existente o rompen contratos entre equipos."
           },
           {
-            "rule": "operational_guidelines specifies coding standards, test coverage thresholds, and linting rules. Code that meets the functional requirement but ignores these standards will be rejected at the review gate, requiring a rework cycle."
+            "rule": "La tabla 'features' registra feature flags y metadata de feature por repo. Ignorarla al agregar nueva funcionalidad crea riesgo de duplicar flags o de lanzar features sin la gate adecuada."
           }
         ]
       },
       "gaia-planner": {
         "rules": [
           {
-            "rule": "architecture_overview describes the current system design and known constraints. A plan that ignores these constraints will produce tasks that are technically coherent but architecturally incompatible with the existing system, requiring replanning after the first implementation attempt."
+            "rule": "Las tablas 'apps', 'services', 'releases' y 'tf_modules' describen el estado actual del sistema y sus componentes. Un plan que ignora estas tablas producirá tareas que asumen que capacidades están faltando cuando ya existen, o que schedulean trabajo en el orden incorrecto."
           },
           {
-            "rule": "application_services lists live services and their owners. Omitting this context leads to plans that assume capabilities are missing when they already exist, or that schedule work in the wrong order relative to service dependencies."
-          },
-          {
-            "rule": "operational_guidelines records process constraints such as deployment windows and team capacity limits. A plan that ignores them will hit blockers during execution that were predictable at planning time."
+            "rule": "La tabla 'clusters_defined' y 'workloads' registran el desired-state de Kubernetes. Un plan que ignora el estado declarado del cluster programará trabajo que ya fue realizado o que contradice el estado actual."
           }
         ]
       },
       "gaia-operator": {
         "rules": [
           {
-            "rule": "workspace_repos is this agent's primary surface: it lists every repository in the workspace with its path, platform, and role. Operating on a repo that is absent from this list risks working in the wrong directory or missing the canonical remote URL, causing pushes to fail or go to the wrong origin."
+            "rule": "La tabla 'integrations' es la superficie primaria de escritura: lista cada integración de terceros instalada en el workspace (DataDog, Sentry, PagerDuty, Tailscale, etc.) con su path de configuración. Operar sobre una integración que no está en esta tabla arriesga trabajar en el directorio incorrecto o usar el remote URL equivocado."
           },
           {
-            "rule": "git describes the platform, default branch, and branching strategy. Ignoring it produces branch names or merge strategies that conflict with the project's CI configuration and require manual cleanup."
+            "rule": "La tabla 'gaia_installations' registra las instalaciones de la CLI Gaia por máquina. Mantenerla actualizada permite a otros agentes saber qué versión de Gaia está disponible en cada host del workspace."
           }
         ]
       },
       "gaia-system": {
         "rules": [
           {
-            "rule": "architecture_overview is the write target for system-level changes: updates made without first reading the current state overwrite accurate data with stale assumptions, corrupting the context that all other agents depend on."
+            "rule": "Las tablas del substrate SQLite son la fuente de verdad para el estado del workspace. Cambios en el schema (DDL) o en la store API afectan a todos los agentes que dependen de ellas — proponer cambios sin revisar los consumidores activos produce regresiones que son difíciles de atribuir."
           },
           {
-            "rule": "operational_guidelines captures team-agreed constraints on the Gaia system itself. Proposing architectural changes that contradict these guidelines produces recommendations that will be rejected and mislead agents that read the context between now and the rejection."
-          },
-          {
-            "rule": "infrastructure provides the deployment environment for Gaia components. Missing this section leads to skill or hook designs that assume capabilities (e.g. network access, file system layout) that do not exist in the actual runtime environment."
+            "rule": "El archivo de permisos 'agent_permissions' en el DB es la fuente de autorización para todas las escrituras de agentes. Modificar permisos directamente en el DB bypassando la store API viola el modelo de enforcement y debe ser aprobado explícitamente."
           }
         ]
       }

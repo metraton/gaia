@@ -45,7 +45,7 @@ def test_upsert_app_permission_matrix(tmp_db):
     # developer -> applied
     res_dev = upsert_app(
         workspace="me",
-        repo="gaia",
+        project="gaia",
         name="hello",
         fields={"kind": "service", "description": "test", "status": "active"},
         agent="developer",
@@ -56,7 +56,7 @@ def test_upsert_app_permission_matrix(tmp_db):
     # gaia-operator -> rejected, not_authorized
     res_op = upsert_app(
         workspace="me",
-        repo="gaia",
+        project="gaia",
         name="hello",
         fields={"kind": "service"},
         agent="gaia-operator",
@@ -69,7 +69,7 @@ def test_upsert_app_unknown_agent_rejected(tmp_db):
     """An agent with no agent_permissions row at all is rejected."""
     res = upsert_app(
         workspace="me",
-        repo="gaia",
+        project="gaia",
         name="any",
         fields={},
         agent="nonexistent-agent",

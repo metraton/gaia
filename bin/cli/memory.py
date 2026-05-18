@@ -537,6 +537,7 @@ def _cmd_list(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     type_filter = getattr(args, "type", None)
     fmt = getattr(args, "format", None) or "table"
+    limit = getattr(args, "limit", None)
     if as_json:
         fmt = "json"
 
@@ -546,6 +547,8 @@ def _cmd_list(args) -> int:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
     rows = list_memory(workspace, type=type_filter)
+    if limit is not None and limit > 0:
+        rows = rows[:limit]
 
     if fmt == "count":
         print(len(rows))
@@ -923,7 +926,11 @@ def register(subparsers):
         help="List curated memory rows",
         description="Enumerate the curated memory table.",
         formatter_class=_argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia memory list --type=feedback\n",
+        epilog=(
+            "Examples:\n"
+            "  gaia memory list --type=feedback\n"
+            "  gaia memory list --limit=10\n"
+        ),
     )
     list_p.add_argument(
         "--type", default=None,
@@ -932,6 +939,10 @@ def register(subparsers):
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
+    list_p.add_argument(
+        "--limit", type=int, default=None, metavar="N",
+        help="Max rows to return. Default: all.",
+    )
     list_p.add_argument(
         "--format", default="table",
         choices=("table", "json", "count"),

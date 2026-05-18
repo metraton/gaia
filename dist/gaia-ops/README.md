@@ -17,19 +17,19 @@ Use this plugin when you want the complete Gaia experience — orchestrator, spe
 
 ```bash
 npm install @jaguilar87/gaia
-npx gaia-scan
+gaia scan
 ```
 
-The `gaia-scan` command detects your project stack, creates the `.claude/` structure via symlinks, and generates a starter `project-context.json`.
+The `gaia scan` subcommand detects your project stack, creates the `.claude/` structure via symlinks, and generates a starter `project-context.json`.
 
 ## Quick start
 
 ```bash
 # Verify installation
-npx gaia-doctor
+gaia doctor
 
 # Detect stack and seed project-context.json
-npx gaia-scan
+gaia scan
 
 # List queued approvals
 gaia approval list
@@ -57,7 +57,7 @@ Inside Claude Code, you can invoke the orchestrator directly and let it dispatch
 
 **Commands**: `/gaia` — namespaced meta-agent for system architecture, agent design, and orchestration debugging.
 
-**CLI tools** (under `bin/`): `gaia`, `gaia-doctor`, `gaia-scan`, `gaia-status`, `gaia-history`, `gaia-review`, `gaia-metrics`, `gaia-evidence`, `gaia-cleanup`, `gaia-uninstall`.
+**CLI tools** (under `bin/`): a single `gaia` binary with subcommands auto-discovered from `bin/cli/` -- `doctor`, `scan`, `status`, `history`, `metrics`, `cleanup`, `uninstall`, `install`, `update`, `context`, `memory`, `approvals`, `plans`, `brief`, `project`.
 
 ## Permissions
 
@@ -67,10 +67,10 @@ Edit and Write tools are open for normal code paths. Writes to `.claude/hooks/` 
 
 ## Troubleshooting
 
-- **Symlinks missing after install**: `npx gaia-scan` rebuilds them.
-- **Multiple Claude Code installations**: `npx gaia-cleanup` removes duplicates.
-- **Hook not firing**: `npx gaia-doctor` validates every manifest entry against disk.
-- **Full uninstall**: `npx gaia-uninstall --force --remove-all`.
+- **Symlinks missing after install**: `gaia scan` rebuilds them.
+- **Multiple Claude Code installations**: `gaia cleanup` removes duplicates.
+- **Hook not firing**: `gaia doctor` validates every manifest entry against disk.
+- **Full uninstall**: `gaia uninstall --force --remove-all`.
 
 ## Links
 

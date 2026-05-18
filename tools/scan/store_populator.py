@@ -5,22 +5,22 @@ Replaces the legacy "produce JSON sections" path. Each populator function
 inspects a repository directory (or a workspace of repos) and emits CRUD
 operations through the gaia.store API:
 
-    upsert_repo, upsert_app, bulk_upsert, delete_missing_in
+    upsert_project, upsert_app, bulk_upsert, delete_missing_in
 
 The populators NEVER touch agent-owned columns. They only set scanner-owned
 columns; the store API protects agent fields by listing scanner columns
 explicitly in its UPSERT statements.
 
-Identity resolution: for each repo path, identity is resolved via
-``gaia.project.current(repo_path)`` (B0). This means two clones of the same
+Identity resolution: for each project path, identity is resolved via
+``gaia.project.current(project_path)`` (B0). This means two clones of the same
 remote on different machines collapse to the same workspace identity row.
 
 Public API::
 
-    populate_repo(workspace, repo_path, agent, *, db_path=None) -> dict
-    populate_infrastructure(workspace, repo, repo_path, agent, *, db_path=None) -> dict
-    populate_orchestration(workspace, repo, repo_path, agent, *, db_path=None) -> dict
-    populate_features(workspace, repo, repo_path, agent, *, db_path=None) -> dict
+    populate_project(workspace, project_path, agent, *, db_path=None) -> dict
+    populate_infrastructure(workspace, project, project_path, agent, *, db_path=None) -> dict
+    populate_orchestration(workspace, project, project_path, agent, *, db_path=None) -> dict
+    populate_features(workspace, project, project_path, agent, *, db_path=None) -> dict
     scan_workspace_to_store(workspace, root, agent, *, db_path=None) -> dict
 
 Each function returns ``{"applied": int, "rejected": int, "deleted": int,
@@ -43,53 +43,53 @@ from tools.scan.role_detector import detect_role
 # Identity resolution
 # ---------------------------------------------------------------------------
 
-def resolve_identity(repo_path: Path) -> str:
-    """Resolve workspace identity from the git remote of `repo_path` via B0.
+def resolve_identity(project_path: Path) -> str:
+    """Resolve workspace identity from the git remote of `project_path` via B0.
 
     Returns:
         Canonical identity string (host/owner/repo) or the path basename
         when no remote is detected. Never empty, never raises.
     """
     from gaia.project import current
-    return current(cwd=repo_path)
+    return current(cwd=project_path)
 
 
 # ---------------------------------------------------------------------------
 # Repo-level populator
 # ---------------------------------------------------------------------------
 
-def populate_repo(
+def populate_project(
     workspace: str,
-    repo_path: Path,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
-    repo_name: str | None = None,
+    project_name: str | None = None,
 ) -> dict:
-    """Detect role + remote of a repo and persist to the `repos` table.
+    """Detect role + remote of a project and persist to the `projects` table.
 
     Args:
-        workspace: Workspace identity (projects.name).
-        repo_path: Absolute path to the repo root.
+        workspace: Workspace identity (workspaces.name).
+        project_path: Absolute path to the project root.
         agent: Agent name (used by the permission matrix in the store).
         db_path: Optional explicit DB path (test override).
-        repo_name: Override for the repo basename. When None, uses
-            repo_path.name.
+        project_name: Override for the project basename. When None, uses
+            project_path.name.
 
     Returns:
         Dict with keys ``applied`` (1|0), ``rejected`` (1|0), ``role``,
         ``identity``, and ``name``. Never raises.
     """
-    from gaia.store import upsert_repo
+    from gaia.store import upsert_project
 
-    name = repo_name or repo_path.name
-    role = detect_role(repo_path)
-    identity = resolve_identity(repo_path)
-    remote_url = _git_remote_origin(repo_path)
+    name = project_name or project_path.name
+    role = detect_role(project_path)
+    identity = resolve_identity(project_path)
+    remote_url = _git_remote_origin(project_path)
     platform = _platform_from_remote(remote_url)
-    primary_language = _detect_primary_language(repo_path)
+    primary_language = _detect_primary_language(project_path)
 
-    res = upsert_repo(
+    res = upsert_project(
         workspace=workspace,
         name=name,
         fields={
@@ -100,7 +100,7 @@ def populate_repo(
         },
         agent=agent,
         db_path=db_path,
-        workspace_path=repo_path,
+        workspace_path=project_path,
     )
     applied = 1 if res.get("status") == "applied" else 0
     return {
@@ -118,33 +118,33 @@ def populate_repo(
 
 def populate_infrastructure(
     workspace: str,
-    repo: str,
-    repo_path: Path,
+    project: str,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Persist Terraform / cluster discoveries for a repo into the store.
+    """Persist Terraform / cluster discoveries for a project into the store.
 
-    Reads `repo_path` for *.tf, terragrunt.hcl, and live/ directories.
+    Reads `project_path` for *.tf, terragrunt.hcl, and live/ directories.
     Calls ``bulk_upsert('tf_modules', ...)``, ``bulk_upsert('tf_live', ...)``,
     and ``bulk_upsert('clusters_defined', ...)`` for what was found, then
-    calls ``delete_missing_in`` to prune stale rows for this repo.
+    calls ``delete_missing_in`` to prune stale rows for this project.
 
     Returns:
         Dict with applied/rejected/deleted counts per table.
     """
     from gaia.store import bulk_upsert, delete_missing_in
 
-    tf_modules = _scan_tf_modules(repo_path)
-    tf_live = _scan_tf_live(repo_path)
-    clusters_defined = _scan_clusters_defined(repo_path)
+    tf_modules = _scan_tf_modules(project_path)
+    tf_live = _scan_tf_live(project_path)
+    clusters_defined = _scan_clusters_defined(project_path)
 
     out = {"tf_modules": {}, "tf_live": {}, "clusters_defined": {}}
 
     # tf_modules
     rows_tm = [
-        {"repo": repo, "name": m["name"], "source": m.get("source"),
+        {"project": project, "name": m["name"], "source": m.get("source"),
          "version": m.get("version"), "scanner_ts": _now_iso()}
         for m in tf_modules
     ]
@@ -152,14 +152,14 @@ def populate_infrastructure(
         out["tf_modules"]["upsert"] = bulk_upsert(
             "tf_modules", workspace, rows_tm, agent, db_path=db_path
         )
-    surviving_tm = [(repo, m["name"]) for m in tf_modules]
+    surviving_tm = [(project, m["name"]) for m in tf_modules]
     out["tf_modules"]["deleted"] = _safe_delete_missing(
-        "tf_modules", workspace, repo, surviving_tm, db_path
+        "tf_modules", workspace, project, surviving_tm, db_path
     )
 
     # tf_live
     rows_tl = [
-        {"repo": repo, "name": l["name"], "kind": l.get("kind"),
+        {"project": project, "name": l["name"], "kind": l.get("kind"),
          "attributes": l.get("attributes"), "scanner_ts": _now_iso()}
         for l in tf_live
     ]
@@ -167,14 +167,14 @@ def populate_infrastructure(
         out["tf_live"]["upsert"] = bulk_upsert(
             "tf_live", workspace, rows_tl, agent, db_path=db_path
         )
-    surviving_tl = [(repo, l["name"]) for l in tf_live]
+    surviving_tl = [(project, l["name"]) for l in tf_live]
     out["tf_live"]["deleted"] = _safe_delete_missing(
-        "tf_live", workspace, repo, surviving_tl, db_path
+        "tf_live", workspace, project, surviving_tl, db_path
     )
 
     # clusters_defined
     rows_cd = [
-        {"repo": repo, "name": c["name"], "provider": c.get("provider"),
+        {"project": project, "name": c["name"], "provider": c.get("provider"),
          "region": c.get("region"), "scanner_ts": _now_iso()}
         for c in clusters_defined
     ]
@@ -182,9 +182,9 @@ def populate_infrastructure(
         out["clusters_defined"]["upsert"] = bulk_upsert(
             "clusters_defined", workspace, rows_cd, agent, db_path=db_path
         )
-    surviving_cd = [(repo, c["name"]) for c in clusters_defined]
+    surviving_cd = [(project, c["name"]) for c in clusters_defined]
     out["clusters_defined"]["deleted"] = _safe_delete_missing(
-        "clusters_defined", workspace, repo, surviving_cd, db_path
+        "clusters_defined", workspace, project, surviving_cd, db_path
     )
 
     return out
@@ -196,22 +196,22 @@ def populate_infrastructure(
 
 def populate_orchestration(
     workspace: str,
-    repo: str,
-    repo_path: Path,
+    project: str,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Persist GitOps / workload discoveries for a repo into the store."""
+    """Persist GitOps / workload discoveries for a project into the store."""
     from gaia.store import bulk_upsert
 
-    releases = _scan_releases(repo_path)
-    workloads = _scan_workloads(repo_path)
+    releases = _scan_releases(project_path)
+    workloads = _scan_workloads(project_path)
 
     out = {"releases": {}, "workloads": {}}
 
     rows_r = [
-        {"repo": repo, "name": r["name"], "released_at": r.get("released_at"),
+        {"project": project, "name": r["name"], "released_at": r.get("released_at"),
          "scanner_ts": _now_iso()}
         for r in releases
     ]
@@ -219,13 +219,13 @@ def populate_orchestration(
         out["releases"]["upsert"] = bulk_upsert(
             "releases", workspace, rows_r, agent, db_path=db_path
         )
-    surviving_r = [(repo, r["name"]) for r in releases]
+    surviving_r = [(project, r["name"]) for r in releases]
     out["releases"]["deleted"] = _safe_delete_missing(
-        "releases", workspace, repo, surviving_r, db_path
+        "releases", workspace, project, surviving_r, db_path
     )
 
     rows_w = [
-        {"repo": repo, "name": w["name"], "kind": w.get("kind"),
+        {"project": project, "name": w["name"], "kind": w.get("kind"),
          "namespace": w.get("namespace"), "cluster": w.get("cluster"),
          "scanner_ts": _now_iso()}
         for w in workloads
@@ -234,9 +234,9 @@ def populate_orchestration(
         out["workloads"]["upsert"] = bulk_upsert(
             "workloads", workspace, rows_w, agent, db_path=db_path
         )
-    surviving_w = [(repo, w["name"]) for w in workloads]
+    surviving_w = [(project, w["name"]) for w in workloads]
     out["workloads"]["deleted"] = _safe_delete_missing(
-        "workloads", workspace, repo, surviving_w, db_path
+        "workloads", workspace, project, surviving_w, db_path
     )
 
     return out
@@ -248,8 +248,8 @@ def populate_orchestration(
 
 def populate_features(
     workspace: str,
-    repo: str,
-    repo_path: Path,
+    project: str,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
@@ -259,16 +259,16 @@ def populate_features(
     Feature detection heuristic (in priority order):
 
     1. **``features/`` directory** -- any subdirectory directly under
-       ``{repo_path}/features/`` is treated as a feature unit. This covers the
+       ``{project_path}/features/`` is treated as a feature unit. This covers the
        canonical ``qxo-monorepo`` layout where each feature lives in its own
        package directory (e.g. ``features/auth-feature``,
        ``features/orders-feature``).
     2. **Feature descriptor files** -- any ``feature.json`` or
-       ``feature.yaml``/``feature.yml`` file found anywhere under the repo
+       ``feature.yaml``/``feature.yml`` file found anywhere under the project
        (excluding ``node_modules``, ``.git``, ``__pycache__``) is treated as a
        feature descriptor; its parent directory name becomes the feature name.
     3. **LaunchDarkly / OpenFeature flags** -- ``flags.json`` or
-       ``flags.yaml`` at the repo root is parsed for top-level keys, each of
+       ``flags.yaml`` at the project root is parsed for top-level keys, each of
        which becomes a feature row.
 
     Decision rationale: these three heuristics cover the most common
@@ -283,20 +283,20 @@ def populate_features(
     """
     from gaia.store import bulk_upsert, delete_missing_in
 
-    features = _scan_features(repo_path)
+    features = _scan_features(project_path)
     out: dict = {"features": {}}
 
     rows_f = [
-        {"repo": repo, "name": f["name"], "scanner_ts": _now_iso()}
+        {"project": project, "name": f["name"], "scanner_ts": _now_iso()}
         for f in features
     ]
     if rows_f:
         out["features"]["upsert"] = bulk_upsert(
             "features", workspace, rows_f, agent, db_path=db_path
         )
-    surviving_f = [(repo, f["name"]) for f in features]
+    surviving_f = [(project, f["name"]) for f in features]
     out["features"]["deleted"] = _safe_delete_missing(
-        "features", workspace, repo, surviving_f, db_path
+        "features", workspace, project, surviving_f, db_path
     )
     return out
 
@@ -307,26 +307,26 @@ def populate_features(
 
 def populate_apps(
     workspace: str,
-    repo: str,
-    repo_path: Path,
+    project: str,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Persist app-unit discoveries for a repo into the ``apps`` table.
+    """Persist app-unit discoveries for a project into the ``apps`` table.
 
     App detection heuristic (in priority order):
 
     1. **``apps/`` directory** -- any subdirectory directly under
-       ``{repo_path}/apps/`` is treated as a deployable app. This covers the
+       ``{project_path}/apps/`` is treated as a deployable app. This covers the
        canonical monorepo layout (qxo-monorepo, bildwiz-platform-style).
        Scanner-owned ``kind`` is inferred from marker files inside the
        subdirectory (``Dockerfile`` / ``docker-compose*.yml`` -> ``"service"``;
        fallback ``"app"``).
-    2. **Single-repo deployable** -- if the repo root has a ``package.json``
-       AND the repo role is ``"application"`` AND no ``apps/`` directory was
-       found, the repo itself becomes one app row keyed by the package name
-       (or repo basename as fallback).
+    2. **Single-repo deployable** -- if the project root has a ``package.json``
+       AND the project role is ``"application"`` AND no ``apps/`` directory was
+       found, the project itself becomes one app row keyed by the package name
+       (or project basename as fallback).
 
     Scanner-owned columns only (``name``, ``kind``, ``scanner_ts``);
     agent-owned columns (``description``, ``status``) are never touched.
@@ -337,12 +337,12 @@ def populate_apps(
     """
     from gaia.store import bulk_upsert
 
-    apps = _scan_apps(repo_path)
+    apps = _scan_apps(project_path)
     out: dict = {"apps": {}}
 
     rows_a = [
         {
-            "repo": repo,
+            "project": project,
             "name": a["name"],
             "kind": a.get("kind"),
             "scanner_ts": _now_iso(),
@@ -353,9 +353,9 @@ def populate_apps(
         out["apps"]["upsert"] = bulk_upsert(
             "apps", workspace, rows_a, agent, db_path=db_path
         )
-    surviving_a = [(repo, a["name"]) for a in apps]
+    surviving_a = [(project, a["name"]) for a in apps]
     out["apps"]["deleted"] = _safe_delete_missing(
-        "apps", workspace, repo, surviving_a, db_path
+        "apps", workspace, project, surviving_a, db_path
     )
     return out
 
@@ -366,20 +366,20 @@ def populate_apps(
 
 def populate_services(
     workspace: str,
-    repo: str,
-    repo_path: Path,
+    project: str,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Persist infrastructure-service discoveries for a repo into ``services``.
+    """Persist infrastructure-service discoveries for a project into ``services``.
 
     Service detection heuristic (in priority order):
 
     1. **``services/`` directory** -- any subdirectory directly under
-       ``{repo_path}/services/`` is treated as a service unit.
+       ``{project_path}/services/`` is treated as a service unit.
     2. **docker-compose top-level services** -- ``docker-compose.yml`` /
-       ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the repo root:
+       ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the project root:
        parse the top-level ``services:`` mapping and emit one row per service
        key. ``kind`` is inferred from the image name (``postgres``/``mysql``
        -> ``"database"``; ``redis``/``memcached`` -> ``"cache"``;
@@ -394,12 +394,12 @@ def populate_services(
     """
     from gaia.store import bulk_upsert
 
-    services = _scan_services(repo_path)
+    services = _scan_services(project_path)
     out: dict = {"services": {}}
 
     rows_s = [
         {
-            "repo": repo,
+            "project": project,
             "name": s["name"],
             "kind": s.get("kind"),
             "scanner_ts": _now_iso(),
@@ -410,9 +410,9 @@ def populate_services(
         out["services"]["upsert"] = bulk_upsert(
             "services", workspace, rows_s, agent, db_path=db_path
         )
-    surviving_s = [(repo, s["name"]) for s in services]
+    surviving_s = [(project, s["name"]) for s in services]
     out["services"]["deleted"] = _safe_delete_missing(
-        "services", workspace, repo, surviving_s, db_path
+        "services", workspace, project, surviving_s, db_path
     )
     return out
 
@@ -423,29 +423,29 @@ def populate_services(
 
 def populate_libraries(
     workspace: str,
-    repo: str,
-    repo_path: Path,
+    project: str,
+    project_path: Path,
     agent: str,
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Persist library/package discoveries for a repo into ``libraries``.
+    """Persist library/package discoveries for a project into ``libraries``.
 
     Scope decision: ``libraries`` is interpreted as **workspace-internal
     shared packages** (NOT external npm/pypi dependencies). This matches the
-    schema -- ``libraries`` shares (project, repo, name) PK with ``apps`` /
+    schema -- ``libraries`` shares (project, name) PK with ``apps`` /
     ``services`` and carries ``version`` + ``language``, which only makes
     sense for packages owned by the workspace.
 
     Library detection heuristic (in priority order):
 
     1. **``packages/`` directory** -- any subdirectory directly under
-       ``{repo_path}/packages/`` is treated as a workspace package
+       ``{project_path}/packages/`` is treated as a workspace package
        (pnpm/yarn/npm workspace convention used by bildwiz-platform).
        Reads ``package.json`` inside each subdir for ``name`` and ``version``.
     2. **``libs/`` or ``libraries/`` directory** -- alternative monorepo
        conventions. Same per-subdir pattern.
-    3. **package.json with workspaces** -- if the repo root has
+    3. **package.json with workspaces** -- if the project root has
        ``package.json`` with a ``"workspaces"`` field, glob each pattern
        (e.g. ``packages/*``) and emit one row per matched directory's
        ``package.json`` ``name``.
@@ -464,12 +464,12 @@ def populate_libraries(
     """
     from gaia.store import bulk_upsert
 
-    libraries = _scan_libraries(repo_path)
+    libraries = _scan_libraries(project_path)
     out: dict = {"libraries": {}}
 
     rows_l = [
         {
-            "repo": repo,
+            "project": project,
             "name": l["name"],
             "version": l.get("version"),
             "language": l.get("language"),
@@ -481,9 +481,9 @@ def populate_libraries(
         out["libraries"]["upsert"] = bulk_upsert(
             "libraries", workspace, rows_l, agent, db_path=db_path
         )
-    surviving_l = [(repo, l["name"]) for l in libraries]
+    surviving_l = [(project, l["name"]) for l in libraries]
     out["libraries"]["deleted"] = _safe_delete_missing(
-        "libraries", workspace, repo, surviving_l, db_path
+        "libraries", workspace, project, surviving_l, db_path
     )
     return out
 
@@ -571,31 +571,31 @@ def scan_workspace_to_store(
         ``__workspace__`` key for workspace-scoped populators
         (``gaia_installations``).
     """
-    repos = _list_repos(root)
+    project_dirs = _list_repos(root)
     results = {}
-    for repo_path in repos:
-        repo_name = repo_path.name
-        repo_res = populate_repo(workspace, repo_path, agent, db_path=db_path)
+    for project_path in project_dirs:
+        project_name = project_path.name
+        project_res = populate_project(workspace, project_path, agent, db_path=db_path)
         infra_res = populate_infrastructure(
-            workspace, repo_name, repo_path, agent, db_path=db_path
+            workspace, project_name, project_path, agent, db_path=db_path
         )
         orch_res = populate_orchestration(
-            workspace, repo_name, repo_path, agent, db_path=db_path
+            workspace, project_name, project_path, agent, db_path=db_path
         )
         feat_res = populate_features(
-            workspace, repo_name, repo_path, agent, db_path=db_path
+            workspace, project_name, project_path, agent, db_path=db_path
         )
         apps_res = populate_apps(
-            workspace, repo_name, repo_path, agent, db_path=db_path
+            workspace, project_name, project_path, agent, db_path=db_path
         )
         services_res = populate_services(
-            workspace, repo_name, repo_path, agent, db_path=db_path
+            workspace, project_name, project_path, agent, db_path=db_path
         )
         libs_res = populate_libraries(
-            workspace, repo_name, repo_path, agent, db_path=db_path
+            workspace, project_name, project_path, agent, db_path=db_path
         )
-        results[repo_name] = {
-            "repo": repo_res,
+        results[project_name] = {
+            "project": project_res,
             "infrastructure": infra_res,
             "orchestration": orch_res,
             "features": feat_res,
@@ -621,14 +621,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _git_remote_origin(repo_path: Path) -> str | None:
+def _git_remote_origin(project_path: Path) -> str | None:
     import shutil
     import subprocess
     if shutil.which("git") is None:
         return None
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            ["git", "-C", str(project_path), "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=2.0,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -652,11 +652,11 @@ def _platform_from_remote(url: str | None) -> str | None:
     return None
 
 
-def _detect_primary_language(repo_path: Path) -> str | None:
-    if not repo_path.is_dir():
+def _detect_primary_language(project_path: Path) -> str | None:
+    if not project_path.is_dir():
         return None
     try:
-        names = {c.name for c in repo_path.iterdir()}
+        names = {c.name for c in project_path.iterdir()}
     except OSError:
         return None
     if "package.json" in names:
@@ -702,7 +702,7 @@ def _list_repos(root: Path) -> list[Path]:
     return children
 
 
-def _scan_tf_modules(repo_path: Path) -> list[dict]:
+def _scan_tf_modules(project_path: Path) -> list[dict]:
     """Detect Terraform module references in *.tf files.
 
     Returns a list of {name, source, version} dicts, one per `module` block.
@@ -713,10 +713,10 @@ def _scan_tf_modules(repo_path: Path) -> list[dict]:
     pattern = re.compile(r'module\s+"([^"]+)"\s*\{', re.MULTILINE)
     source_re = re.compile(r'\bsource\s*=\s*"([^"]+)"')
     version_re = re.compile(r'\bversion\s*=\s*"([^"]+)"')
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return modules
     try:
-        for tf in repo_path.rglob("*.tf"):
+        for tf in project_path.rglob("*.tf"):
             if any(p in tf.parts for p in (".terraform", "node_modules", ".git")):
                 continue
             try:
@@ -742,16 +742,16 @@ def _scan_tf_modules(repo_path: Path) -> list[dict]:
     return modules
 
 
-def _scan_tf_live(repo_path: Path) -> list[dict]:
+def _scan_tf_live(project_path: Path) -> list[dict]:
     """Detect live Terraform resources from `live/` directories."""
     out = []
     seen = set()
-    live_dir = repo_path / "live"
+    live_dir = project_path / "live"
     if not live_dir.is_dir():
         return out
     try:
         for tg in live_dir.rglob("terragrunt.hcl"):
-            rel = tg.parent.relative_to(repo_path)
+            rel = tg.parent.relative_to(project_path)
             name = str(rel).replace("/", "-")
             if name in seen:
                 continue
@@ -766,7 +766,7 @@ def _scan_tf_live(repo_path: Path) -> list[dict]:
     return out
 
 
-def _scan_clusters_defined(repo_path: Path) -> list[dict]:
+def _scan_clusters_defined(project_path: Path) -> list[dict]:
     """Detect cluster definitions in TF files (google_container_cluster etc.)."""
     import re
     out = []
@@ -774,10 +774,10 @@ def _scan_clusters_defined(repo_path: Path) -> list[dict]:
     cluster_re = re.compile(
         r'resource\s+"(google_container_cluster|aws_eks_cluster|azurerm_kubernetes_cluster)"\s+"([^"]+)"'
     )
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
     try:
-        for tf in repo_path.rglob("*.tf"):
+        for tf in project_path.rglob("*.tf"):
             if any(p in tf.parts for p in (".terraform", "node_modules", ".git")):
                 continue
             try:
@@ -805,14 +805,14 @@ def _scan_clusters_defined(repo_path: Path) -> list[dict]:
     return out
 
 
-def _scan_releases(repo_path: Path) -> list[dict]:
+def _scan_releases(project_path: Path) -> list[dict]:
     """Detect HelmRelease + Kustomization YAMLs as 'releases' rows."""
     out = []
     seen = set()
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
     try:
-        for yml in repo_path.rglob("*.y*ml"):
+        for yml in project_path.rglob("*.y*ml"):
             if any(p in yml.parts for p in ("node_modules", ".git", "__pycache__")):
                 continue
             try:
@@ -834,15 +834,15 @@ def _scan_releases(repo_path: Path) -> list[dict]:
     return out
 
 
-def _scan_workloads(repo_path: Path) -> list[dict]:
+def _scan_workloads(project_path: Path) -> list[dict]:
     """Detect Deployment/StatefulSet/DaemonSet YAMLs."""
     out = []
     seen = set()
     workload_kinds = {"Deployment", "StatefulSet", "DaemonSet"}
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
     try:
-        for yml in repo_path.rglob("*.y*ml"):
+        for yml in project_path.rglob("*.y*ml"):
             if any(p in yml.parts for p in ("node_modules", ".git", "__pycache__")):
                 continue
             try:
@@ -910,17 +910,17 @@ def _yaml_metadata_namespace(content: str) -> str | None:
     return None
 
 
-def _scan_features(repo_path: Path) -> list[dict]:
-    """Detect feature units in a repo using a three-tier heuristic.
+def _scan_features(project_path: Path) -> list[dict]:
+    """Detect feature units in a project using a three-tier heuristic.
 
     Tier 1: ``features/`` subdirectory -- any child dir of
-    ``{repo_path}/features/`` becomes a feature row.
+    ``{project_path}/features/`` becomes a feature row.
 
     Tier 2: ``feature.json`` / ``feature.yaml`` / ``feature.yml`` descriptor
-    files anywhere in the repo tree (excluding noise dirs). The parent
+    files anywhere in the project tree (excluding noise dirs). The parent
     directory name is used as the feature name.
 
-    Tier 3: ``flags.json`` / ``flags.yaml`` at repo root -- top-level keys
+    Tier 3: ``flags.json`` / ``flags.yaml`` at project root -- top-level keys
     become feature rows (LaunchDarkly / OpenFeature style).
 
     Returns a de-duplicated list of ``{"name": str}`` dicts.
@@ -937,11 +937,11 @@ def _scan_features(repo_path: Path) -> list[dict]:
             seen.add(key)
             out.append({"name": name})
 
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
 
     # Tier 1: features/ directory
-    features_dir = repo_path / "features"
+    features_dir = project_path / "features"
     if features_dir.is_dir():
         try:
             for child in sorted(features_dir.iterdir()):
@@ -952,19 +952,19 @@ def _scan_features(repo_path: Path) -> list[dict]:
 
     # Tier 2: feature descriptor files
     try:
-        for desc in repo_path.rglob("feature.json"):
+        for desc in project_path.rglob("feature.json"):
             if any(p in desc.parts for p in _SKIP):
                 continue
             _add(desc.parent.name)
-        for desc in repo_path.rglob("feature.y*ml"):
+        for desc in project_path.rglob("feature.y*ml"):
             if any(p in desc.parts for p in _SKIP):
                 continue
             _add(desc.parent.name)
     except OSError:
         pass
 
-    # Tier 3: flags.json / flags.yaml at repo root
-    for flags_file in (repo_path / "flags.json", repo_path / "flags.yaml", repo_path / "flags.yml"):
+    # Tier 3: flags.json / flags.yaml at project root
+    for flags_file in (project_path / "flags.json", project_path / "flags.yaml", project_path / "flags.yml"):
         if not flags_file.is_file():
             continue
         try:
@@ -988,16 +988,16 @@ def _scan_features(repo_path: Path) -> list[dict]:
     return out
 
 
-def _scan_apps(repo_path: Path) -> list[dict]:
-    """Detect deployable apps in a repo.
+def _scan_apps(project_path: Path) -> list[dict]:
+    """Detect deployable apps in a project.
 
     Tier 1: ``apps/`` subdirectory -- each child directory becomes an app
     row. ``kind`` is inferred from marker files inside (``Dockerfile`` or
     ``docker-compose*.yml`` -> ``"service"``; otherwise ``"app"``).
 
-    Tier 2: single-repo deployable -- if the repo has ``package.json`` at
-    root AND no ``apps/`` directory was found, the repo itself becomes one
-    app row keyed by package.json ``name`` (or repo basename fallback).
+    Tier 2: single-project deployable -- if the project has ``package.json``
+    at root AND no ``apps/`` directory was found, the project itself becomes
+    one app row keyed by package.json ``name`` (or project basename fallback).
 
     Returns a de-duplicated list of ``{"name": str, "kind": str|None}`` dicts.
     """
@@ -1012,11 +1012,11 @@ def _scan_apps(repo_path: Path) -> list[dict]:
             seen.add(key)
             out.append({"name": name, "kind": kind})
 
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
 
     # Tier 1: apps/ directory
-    apps_dir = repo_path / "apps"
+    apps_dir = project_path / "apps"
     if apps_dir.is_dir():
         try:
             for child in sorted(apps_dir.iterdir()):
@@ -1034,12 +1034,12 @@ def _scan_apps(repo_path: Path) -> list[dict]:
                 _add(child.name, kind)
         except OSError:
             pass
-        # If we found anything in apps/, do not also emit the single-repo row.
+        # If we found anything in apps/, do not also emit the single-project row.
         if out:
             return out
 
-    # Tier 2: single-repo deployable
-    pkg = repo_path / "package.json"
+    # Tier 2: single-project deployable
+    pkg = project_path / "package.json"
     if pkg.is_file():
         try:
             data = json.loads(pkg.read_text(encoding="utf-8", errors="replace"))
@@ -1049,21 +1049,21 @@ def _scan_apps(repo_path: Path) -> list[dict]:
         # are aggregators, not deployable apps. Their packages/apps are picked
         # up by populate_libraries / Tier 1 of populate_apps.
         if isinstance(data, dict) and "workspaces" not in data:
-            name = (data.get("name") if isinstance(data.get("name"), str) else None) or repo_path.name
-            kind = "service" if (repo_path / "Dockerfile").is_file() else "app"
+            name = (data.get("name") if isinstance(data.get("name"), str) else None) or project_path.name
+            kind = "service" if (project_path / "Dockerfile").is_file() else "app"
             _add(name, kind)
 
     return out
 
 
-def _scan_services(repo_path: Path) -> list[dict]:
-    """Detect infrastructure-level services in a repo.
+def _scan_services(project_path: Path) -> list[dict]:
+    """Detect infrastructure-level services in a project.
 
     Tier 1: ``services/`` subdirectory -- each child directory becomes a
     service row (kind=``"api"`` by default).
 
     Tier 2: docker-compose top-level services -- ``docker-compose.yml`` /
-    ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the repo root.
+    ``docker-compose.yaml`` / ``docker-compose-*.yml`` at the project root.
     Parses the top-level ``services:`` mapping. ``kind`` is inferred from
     the image name when present (``postgres``/``mysql`` -> ``"database"``;
     ``redis``/``memcached`` -> ``"cache"``; ``rabbitmq``/``kafka`` ->
@@ -1080,11 +1080,11 @@ def _scan_services(repo_path: Path) -> list[dict]:
             seen.add(key)
             out.append({"name": name, "kind": kind})
 
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
 
     # Tier 1: services/ directory
-    services_dir = repo_path / "services"
+    services_dir = project_path / "services"
     if services_dir.is_dir():
         try:
             for child in sorted(services_dir.iterdir()):
@@ -1096,7 +1096,7 @@ def _scan_services(repo_path: Path) -> list[dict]:
     # Tier 2: docker-compose top-level services
     compose_files: list[Path] = []
     try:
-        for child in repo_path.iterdir():
+        for child in project_path.iterdir():
             if not child.is_file():
                 continue
             if child.name in ("docker-compose.yml", "docker-compose.yaml"):
@@ -1206,8 +1206,8 @@ def _infer_service_kind(image: str | None) -> str:
     return "api"
 
 
-def _scan_libraries(repo_path: Path) -> list[dict]:
-    """Detect workspace-internal libraries (shared packages) in a repo.
+def _scan_libraries(project_path: Path) -> list[dict]:
+    """Detect workspace-internal libraries (shared packages) in a project.
 
     Tier 1: ``packages/`` subdirectory -- each child dir with a
     ``package.json`` becomes a library row. ``name`` and ``version`` come
@@ -1245,12 +1245,12 @@ def _scan_libraries(repo_path: Path) -> list[dict]:
         v = data.get("version") if isinstance(data.get("version"), str) else None
         return n, v
 
-    if not repo_path.is_dir():
+    if not project_path.is_dir():
         return out
 
     # Tier 1+2: packages/, libs/, libraries/ directories
     for dir_name in ("packages", "libs", "libraries"):
-        d = repo_path / dir_name
+        d = project_path / dir_name
         if not d.is_dir():
             continue
         try:
@@ -1268,7 +1268,7 @@ def _scan_libraries(repo_path: Path) -> list[dict]:
             pass
 
     # Tier 3: package.json with workspaces field
-    root_pkg = repo_path / "package.json"
+    root_pkg = project_path / "package.json"
     if root_pkg.is_file():
         try:
             data = json.loads(root_pkg.read_text(encoding="utf-8", errors="replace"))
@@ -1287,7 +1287,7 @@ def _scan_libraries(repo_path: Path) -> list[dict]:
         for pattern in patterns:
             try:
                 # Translate trailing /* into a glob over a single directory level
-                for match in repo_path.glob(pattern):
+                for match in project_path.glob(pattern):
                     if not match.is_dir():
                         continue
                     pkg = match / "package.json"
@@ -1366,29 +1366,29 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
 def _safe_delete_missing(
     table: str,
     workspace: str,
-    repo: str,
+    project: str,
     surviving: Iterable[tuple],
     db_path: Path | None,
 ) -> int:
     """Prune rows in `table` for this workspace that no longer survive.
 
     The store's ``delete_missing_in`` deletes by project + PK fragment. For
-    repo-scoped tables (PK = (project, repo, name)), we pass
-    ``[(repo, name), ...]`` directly. We also include the rows for OTHER
-    repos in the same workspace under the same PK shape so we don't delete
-    sibling repos' rows.
+    project-scoped tables (PK = (project, name)), we pass
+    ``[(project, name), ...]`` directly. We also include the rows for OTHER
+    projects in the same workspace under the same PK shape so we don't delete
+    sibling projects' rows.
     """
     from gaia.store import delete_missing_in
     from gaia.store.writer import _connect
 
     surviving = list(surviving)
 
-    # Read ALL rows for this workspace and add foreign-repo PKs to the
-    # surviving set so we only prune the rows belonging to `repo`.
+    # Read ALL rows for this workspace and add foreign-project PKs to the
+    # surviving set so we only prune the rows belonging to `project`.
     con = _connect(db_path)
     try:
         cur = con.execute(
-            f"SELECT repo, name FROM {table} WHERE project = ?",
+            f"SELECT project, name FROM {table} WHERE workspace = ?",
             (workspace,),
         )
         all_rows = [(r[0], r[1]) for r in cur.fetchall()]
@@ -1396,7 +1396,7 @@ def _safe_delete_missing(
         con.close()
 
     surviving_set = set(surviving)
-    foreign = [(r, n) for (r, n) in all_rows if r != repo]
+    foreign = [(p, n) for (p, n) in all_rows if p != project]
     full_surviving = list(surviving_set) + foreign
 
     return delete_missing_in(table, workspace, full_surviving, db_path=db_path)

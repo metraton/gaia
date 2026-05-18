@@ -215,7 +215,7 @@ def check_pending_updates_threshold() -> str:
         return (
             f"\n# Pending Context Updates Warning\n"
             f"There are {pending_count} pending context update suggestions awaiting review. "
-            f"Run `gaia-review` or `python3 tools/review/review_engine.py list` to review them.\n\n"
+            f"Run `python3 tools/review/review_engine.py list` to review them.\n\n"
         )
 
     except Exception as e:

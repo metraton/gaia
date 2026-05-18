@@ -5,8 +5,8 @@ Exact commands for each mode. Copy and run -- no interpretation needed.
 ## Mode: live
 
 ```bash
-gaia-doctor
-gaia-status
+gaia doctor
+gaia status
 ```
 
 No temp directory. No cleanup.
@@ -30,8 +30,8 @@ No temp directory. No cleanup.
    `npm install /home/jorge/ws/me/gaia-dev/jaguilar87-gaia-X.Y.Z.tgz`
 
 6. Verify:
-   `npx gaia-doctor`
-   `npx gaia-status`
+   `gaia doctor`
+   `gaia status`
 
 7. Clean up:
    `rm -rf /tmp/gaia-dry-run-*`
@@ -48,8 +48,8 @@ No temp directory. No cleanup.
    `npm install @jaguilar87/gaia@beta`
 
 4. Verify:
-   `npx gaia-doctor`
-   `npx gaia-status`
+   `gaia doctor`
+   `gaia status`
 
 5. Clean up:
    `rm -rf /tmp/gaia-beta-verify-*`
@@ -66,8 +66,8 @@ No temp directory. No cleanup.
    `npm install @jaguilar87/gaia@latest`
 
 4. Verify:
-   `npx gaia-doctor`
-   `npx gaia-status`
+   `gaia doctor`
+   `gaia status`
 
 5. Clean up:
    `rm -rf /tmp/gaia-release-verify-*`
@@ -77,4 +77,4 @@ No temp directory. No cleanup.
 - Run each command separately and verify exit code before proceeding (command-execution discipline).
 - For dry-run, `npm pack` must be run from `gaia-dev` -- the `.tgz` lands in the current working directory.
 - For beta/release, the install step requires network access to the npm registry. If it fails with `E404`, the version has not published yet -- wait and retry.
-- `npx gaia-doctor` exits non-zero on failure. If it fails, stop and report the error. Do not run `gaia-status`.
+- `gaia doctor` exits non-zero on failure. If it fails, stop and report the error. Do not run `gaia status`.

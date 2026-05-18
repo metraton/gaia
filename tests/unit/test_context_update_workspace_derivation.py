@@ -26,10 +26,10 @@ def tmp_db(tmp_path, monkeypatch) -> Path:
         "INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('apps', 'developer', 1)"
     )
     con.execute(
-        "INSERT OR IGNORE INTO projects (name, identity, created_at) VALUES ('derived-ws', 'derived-ws', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO workspaces (name, identity, created_at) VALUES ('derived-ws', 'derived-ws', '2026-01-01T00:00:00Z')"
     )
     con.execute(
-        "INSERT OR IGNORE INTO repos (project, name, scanner_ts) VALUES ('derived-ws', 'r1', '2026-01-01T00:00:00Z')"
+        "INSERT OR IGNORE INTO projects (workspace, name, scanner_ts) VALUES ('derived-ws', 'r1', '2026-01-01T00:00:00Z')"
     )
     con.commit()
     con.close()
@@ -46,7 +46,7 @@ def test_writer_derives_workspace_from_identity(tmp_db: Path):
 Some preamble here.
 
 CONTEXT_UPDATE:
-{"table": "apps", "rows": [{"repo": "r1", "name": "a1", "kind": "service"}]}
+{"table": "apps", "rows": [{"project": "r1", "name": "a1", "kind": "service"}]}
 """
 
     with patch("hooks.modules.context.context_writer._derive_workspace", return_value="derived-ws"):
@@ -62,7 +62,7 @@ CONTEXT_UPDATE:
     # Verify the row was inserted under workspace="derived-ws"
     con = sqlite3.connect(str(tmp_db))
     rows = con.execute(
-        "SELECT project, repo, name FROM apps WHERE name='a1'"
+        "SELECT workspace, project, name FROM apps WHERE name='a1'"
     ).fetchall()
     con.close()
     assert rows == [("derived-ws", "r1", "a1")]

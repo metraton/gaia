@@ -7,19 +7,22 @@ before touching data. If the (table, agent) pair is missing or has
 ``allow_write=0``, the operation returns ``{"status": "rejected",
 "reason": "not_authorized"}`` without modifying the DB.
 
-Path resolution uses ``gaia.paths.db_path()`` (B0). The schema is created
-on-demand on the first connection if the DB file does not yet exist.
+Vocabulary:
+  * ``workspaces`` table -- organizational containers (e.g. "me", "bildwiz").
+  * ``projects`` table  -- git-bearing source projects within a workspace.
+  * Column ``workspace`` -- FK to workspaces.name.
+  * Column ``project``   -- FK to projects(workspace, name).
 
 Patterns inspired by engram (https://github.com/koaning/engram), MIT License.
 No runtime dependency on engram. See NOTICE.md.
 
 Public API::
 
-    upsert_repo(workspace, name, fields, agent, topic_key=None) -> dict
-    upsert_app(workspace, repo, name, fields, agent, topic_key=None) -> dict
+    upsert_project(workspace, name, fields, agent, topic_key=None) -> dict
+    upsert_app(workspace, project, name, fields, agent, topic_key=None) -> dict
     delete_missing_in(table, workspace, surviving_keys) -> int
     bulk_upsert(table, workspace, rows, agent) -> dict
-    wipe_project(workspace) -> None
+    wipe_workspace(workspace) -> None
 """
 
 from __future__ import annotations
@@ -34,8 +37,8 @@ _SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 # Tables we recognize (whitelist for delete_missing_in / bulk_upsert)
 _KNOWN_TABLES = {
+    "workspaces",
     "projects",
-    "repos",
     "apps",
     "libraries",
     "services",
@@ -119,29 +122,41 @@ def _applied(extra: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Identity normalization (mirror of gaia.project._normalize_remote, but
-# applied at the store layer when populating projects.identity)
+# Identity resolution (workspaces.identity)
 # ---------------------------------------------------------------------------
 
 def _resolve_identity(workspace: str, workspace_path: Path | None = None) -> str:
-    """Resolve workspace identity by inspecting the git remote of *workspace_path*.
+    """Resolve workspace identity.
 
-    When ``workspace_path`` is provided, identity is derived from the git remote
-    of that directory (via ``gaia.project.current(workspace_path)``). This
-    ensures that multiple workspaces ingested in the same Python process each
-    receive the correct identity instead of all collapsing to the cwd identity.
+    Rule (post-fix):
+      * If ``workspace_path`` is provided AND ``workspace_path / .git`` exists
+        (the workspace root is itself a git project), resolve identity from
+        the git remote of that directory via ``gaia.project.current``.
+      * Otherwise (organizational workspace -- no .git at the root), the
+        identity IS the workspace name. We do NOT leak the remote of a child
+        project up to the workspace row.
 
-    Falls back to the workspace string itself (already lowercase by convention)
-    when the path is absent or identity cannot be resolved.
+    This prevents the historical contamination where a workspace like ``me``
+    received the identity of its first scanned child project.
+
+    Falls back to the workspace string itself when path resolution fails.
 
     Args:
-        workspace:      Workspace name used as the fallback.
-        workspace_path: Directory whose git remote supplies the identity.
-                        Defaults to the current working directory when None.
+        workspace:      Workspace name used as the fallback / organizational identity.
+        workspace_path: Directory whose git remote may supply the identity.
+                        Defaults to None (treated as organizational workspace).
     """
+    if workspace_path is None:
+        return workspace.lower()
+
+    # Only resolve a remote-derived identity when the workspace root is itself
+    # a git project. Organizational workspaces (no .git at root) keep their
+    # name as identity.
     try:
+        if not (workspace_path / ".git").is_dir():
+            return workspace.lower()
         from gaia.project import current as _project_current
-        ident = _project_current(cwd=workspace_path) if workspace_path is not None else _project_current()
+        ident = _project_current(cwd=workspace_path)
         if ident and ident != "global":
             return ident
     except Exception:
@@ -149,44 +164,45 @@ def _resolve_identity(workspace: str, workspace_path: Path | None = None) -> str
     return workspace.lower()
 
 
-def _ensure_project_row(
+def _ensure_workspace_row(
     con: sqlite3.Connection,
     workspace: str,
     workspace_path: Path | None = None,
 ) -> None:
-    """Insert (or update) the projects row for a workspace.
+    """Insert (or update) the workspaces row for a workspace.
 
     Identity is resolved from the git remote of ``workspace_path`` at insertion
-    time. On a fresh row the identity is captured; for existing rows the
-    identity is left intact (idempotent).
+    time IFF the workspace root itself is a git project (see
+    :func:`_resolve_identity`). On a fresh row the identity is captured; for
+    existing rows the identity is left intact (idempotent).
 
     Args:
         con:            Open SQLite connection.
-        workspace:      Workspace name (projects.name PK).
-        workspace_path: Directory whose git remote supplies the identity.
-                        When None, falls back to cwd (legacy behaviour).
+        workspace:      Workspace name (workspaces.name PK).
+        workspace_path: Directory whose git remote may supply the identity.
+                        When None, identity defaults to the workspace name.
     """
     existing = con.execute(
-        "SELECT name FROM projects WHERE name = ?",
+        "SELECT name FROM workspaces WHERE name = ?",
         (workspace,),
     ).fetchone()
     if existing is not None:
         return
     identity = _resolve_identity(workspace, workspace_path)
     con.execute(
-        "INSERT INTO projects (name, identity, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
         (workspace, identity, _now_iso()),
     )
 
 
 # ---------------------------------------------------------------------------
-# Public API: upsert_repo
+# Public API: upsert_project
 # ---------------------------------------------------------------------------
 
-_REPO_FIELDS = ("role", "remote_url", "platform", "primary_language")
+_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language")
 
 
-def upsert_repo(
+def upsert_project(
     workspace: str,
     name: str,
     fields: Mapping[str, Any],
@@ -196,41 +212,40 @@ def upsert_repo(
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
-    """Upsert a repos row, enforcing per-agent write permission.
+    """Upsert a projects row, enforcing per-agent write permission.
 
     Args:
-        workspace: Workspace identity (matches projects.name / repos.project).
-        name: Repo name (basename).
+        workspace: Workspace name (matches workspaces.name / projects.workspace).
+        name: Project name (basename).
         fields: Dict of column->value pairs. Recognized keys:
             ``role``, ``remote_url``, ``platform``, ``primary_language``.
-        agent: Agent name. Must have allow_write=1 for table 'repos' in
+        agent: Agent name. Must have allow_write=1 for table 'projects' in
             agent_permissions.
         topic_key: Optional dimension key.
         db_path: Optional explicit DB path (used by tests).
-        workspace_path: Directory whose git remote supplies the projects.identity
-            value. When provided, identity is resolved from this path instead of
-            the process cwd. Pass ``repo_path`` from the scanner for correct
+        workspace_path: Directory whose git remote supplies the workspaces.identity
+            value. Pass ``project_path`` from the scanner for correct
             multi-workspace ingestion.
 
     Returns:
         {"status": "applied"} on success.
         {"status": "rejected", "reason": "not_authorized"} if the agent lacks
-        write permission for the 'repos' table.
+        write permission for the 'projects' table.
     """
     con = _connect(db_path)
     try:
-        if not _is_authorized(con, "repos", agent):
+        if not _is_authorized(con, "projects", agent):
             return _rejected()
         con.execute("BEGIN")
         try:
-            _ensure_project_row(con, workspace, workspace_path)
-            data = {k: fields.get(k) for k in _REPO_FIELDS}
+            _ensure_workspace_row(con, workspace, workspace_path)
+            data = {k: fields.get(k) for k in _PROJECT_FIELDS}
             con.execute(
                 """
-                INSERT INTO repos (project, name, role, remote_url, platform,
-                                   primary_language, scanner_ts, topic_key)
+                INSERT INTO projects (workspace, name, role, remote_url, platform,
+                                      primary_language, scanner_ts, topic_key)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(project, name) DO UPDATE SET
+                ON CONFLICT(workspace, name) DO UPDATE SET
                     role = excluded.role,
                     remote_url = excluded.remote_url,
                     platform = excluded.platform,
@@ -262,7 +277,7 @@ _APP_FIELDS = ("kind", "description", "status")
 
 def upsert_app(
     workspace: str,
-    repo: str,
+    project: str,
     name: str,
     fields: Mapping[str, Any],
     agent: str,
@@ -273,8 +288,9 @@ def upsert_app(
     """Upsert an apps row, enforcing per-agent write permission.
 
     Args:
-        workspace: Workspace identity (matches apps.project).
-        repo: Parent repo name (must reference a row in repos).
+        workspace: Workspace name (matches apps.workspace).
+        project: Parent project name (must reference a row in the
+                 ``projects`` table).
         name: App name.
         fields: Dict with optional keys ``kind``, ``description``, ``status``.
         agent: Agent name. Requires allow_write=1 for table 'apps'.
@@ -291,24 +307,24 @@ def upsert_app(
             return _rejected()
         con.execute("BEGIN")
         try:
-            _ensure_project_row(con, workspace)
-            # Ensure parent repo row exists -- create a minimal stub if missing
-            existing_repo = con.execute(
-                "SELECT name FROM repos WHERE project = ? AND name = ?",
-                (workspace, repo),
+            _ensure_workspace_row(con, workspace)
+            # Ensure parent project row exists -- create a minimal stub if missing
+            existing_project = con.execute(
+                "SELECT name FROM projects WHERE workspace = ? AND name = ?",
+                (workspace, project),
             ).fetchone()
-            if existing_repo is None:
+            if existing_project is None:
                 con.execute(
-                    "INSERT INTO repos (project, name, scanner_ts) VALUES (?, ?, ?)",
-                    (workspace, repo, _now_iso()),
+                    "INSERT INTO projects (workspace, name, scanner_ts) VALUES (?, ?, ?)",
+                    (workspace, project, _now_iso()),
                 )
             data = {k: fields.get(k) for k in _APP_FIELDS}
             con.execute(
                 """
-                INSERT INTO apps (project, repo, name, kind, description, status,
+                INSERT INTO apps (workspace, project, name, kind, description, status,
                                   topic_key, scanner_ts)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(project, repo, name) DO UPDATE SET
+                ON CONFLICT(workspace, project, name) DO UPDATE SET
                     kind = excluded.kind,
                     description = excluded.description,
                     status = excluded.status,
@@ -316,7 +332,7 @@ def upsert_app(
                     scanner_ts = excluded.scanner_ts
                 """,
                 (
-                    workspace, repo, name,
+                    workspace, project, name,
                     data["kind"], data["description"], data["status"],
                     topic_key, _now_iso(),
                 ),
@@ -341,15 +357,15 @@ def delete_missing_in(
     *,
     db_path: Path | None = None,
 ) -> int:
-    """Delete rows from `table` (filtered by project=workspace) whose primary
+    """Delete rows from `table` (filtered by workspace) whose primary
     key is NOT in surviving_keys.
 
     Args:
         table: Target table name (must be in _KNOWN_TABLES).
-        workspace: Workspace identity (project FK value).
+        workspace: Workspace name (workspace FK value).
         surviving_keys: Iterable of tuples representing the PK fragments to
-            keep. For ``repos`` use ``[(name,), ...]``. For ``apps`` use
-            ``[(repo, name), ...]``.
+            keep. For ``projects`` use ``[(name,), ...]``. For ``apps`` use
+            ``[(project, name), ...]``.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
@@ -366,25 +382,18 @@ def delete_missing_in(
     try:
         con.execute("BEGIN")
         try:
-            if table == "repos" or table in {
-                "libraries", "tf_live", "releases", "workloads", "clusters_defined"
-            }:
-                # PK = (project, name) for repos; (project, repo, name) for child tables
-                pass
-            # Simple approach: load all PK rows, compare in Python, delete the diff.
-            # For repos: PK is (project, name). For apps: (project, repo, name). Etc.
             pk_columns = {
+                "workspaces": ("name",),
                 "projects": ("name",),
-                "repos": ("name",),
-                "apps": ("repo", "name"),
-                "libraries": ("repo", "name"),
-                "services": ("repo", "name"),
-                "features": ("repo", "name"),
-                "tf_modules": ("repo", "name"),
-                "tf_live": ("repo", "name"),
-                "releases": ("repo", "name"),
-                "workloads": ("repo", "name"),
-                "clusters_defined": ("repo", "name"),
+                "apps": ("project", "name"),
+                "libraries": ("project", "name"),
+                "services": ("project", "name"),
+                "features": ("project", "name"),
+                "tf_modules": ("project", "name"),
+                "tf_live": ("project", "name"),
+                "releases": ("project", "name"),
+                "workloads": ("project", "name"),
+                "clusters_defined": ("project", "name"),
                 "clusters": ("name",),
                 "integrations": ("name",),
                 "gaia_installations": ("machine",),
@@ -393,7 +402,7 @@ def delete_missing_in(
 
             cols_sql = ", ".join(pk_columns)
             existing = con.execute(
-                f"SELECT {cols_sql} FROM {table} WHERE project = ?",
+                f"SELECT {cols_sql} FROM {table} WHERE workspace = ?",
                 (workspace,),
             ).fetchall()
             existing_set = {tuple(row) for row in existing}
@@ -404,7 +413,7 @@ def delete_missing_in(
             for key in to_delete:
                 placeholders = " AND ".join(f"{c} = ?" for c in pk_columns)
                 con.execute(
-                    f"DELETE FROM {table} WHERE project = ? AND {placeholders}",
+                    f"DELETE FROM {table} WHERE workspace = ? AND {placeholders}",
                     (workspace, *key),
                 )
                 count += 1
@@ -431,19 +440,15 @@ def bulk_upsert(
 ) -> dict:
     """Upsert multiple rows in a single transaction.
 
-    Currently dispatches to upsert_repo / upsert_app for those tables. Other
-    tables fall through to a generic dict-driven path (caller responsibility
-    to provide all required columns).
-
     Returns:
         {"applied": int, "rejected": int}
     """
     rows_list = list(rows)
     applied = 0
     rejected = 0
-    if table == "repos":
+    if table == "projects":
         for r in rows_list:
-            res = upsert_repo(
+            res = upsert_project(
                 workspace,
                 r["name"],
                 r,
@@ -461,7 +466,7 @@ def bulk_upsert(
         for r in rows_list:
             res = upsert_app(
                 workspace,
-                r["repo"],
+                r["project"],
                 r["name"],
                 r,
                 agent,
@@ -475,20 +480,19 @@ def bulk_upsert(
         return {"applied": applied, "rejected": rejected}
 
     # Generic path: enforce permission + ON CONFLICT DO UPDATE that ONLY
-    # updates the columns the caller provided. Columns not in `r.keys()` are
-    # preserved (agent-owned columns survive scanner upserts).
+    # updates the columns the caller provided.
     pk_columns = {
+        "workspaces": ("name",),
         "projects": ("name",),
-        "repos": ("name",),
-        "apps": ("repo", "name"),
-        "libraries": ("repo", "name"),
-        "services": ("repo", "name"),
-        "features": ("repo", "name"),
-        "tf_modules": ("repo", "name"),
-        "tf_live": ("repo", "name"),
-        "releases": ("repo", "name"),
-        "workloads": ("repo", "name"),
-        "clusters_defined": ("repo", "name"),
+        "apps": ("project", "name"),
+        "libraries": ("project", "name"),
+        "services": ("project", "name"),
+        "features": ("project", "name"),
+        "tf_modules": ("project", "name"),
+        "tf_live": ("project", "name"),
+        "releases": ("project", "name"),
+        "workloads": ("project", "name"),
+        "clusters_defined": ("project", "name"),
         "clusters": ("name",),
         "integrations": ("name",),
         "gaia_installations": ("machine",),
@@ -496,7 +500,7 @@ def bulk_upsert(
     }
     if table not in pk_columns:
         raise ValueError(f"unknown table for bulk_upsert: {table!r}")
-    pk = ("project", *pk_columns[table])
+    pk = ("workspace", *pk_columns[table])
 
     con = _connect(db_path)
     try:
@@ -504,14 +508,13 @@ def bulk_upsert(
             return {"applied": 0, "rejected": len(rows_list)}
         con.execute("BEGIN")
         try:
-            _ensure_project_row(con, workspace)
+            _ensure_workspace_row(con, workspace)
             for r in rows_list:
-                cols = ["project"] + list(r.keys())
-                vals = [workspace] + list(r.values())
+                row_data = dict(r)
+                cols = ["workspace"] + list(row_data.keys())
+                vals = [workspace] + list(row_data.values())
                 placeholders = ", ".join(["?"] * len(cols))
-                # Build the ON CONFLICT DO UPDATE clause -- update only the
-                # columns the caller passed, EXCLUDING the PK columns.
-                update_cols = [c for c in r.keys() if c not in pk]
+                update_cols = [c for c in row_data.keys() if c not in pk]
                 pk_sql = ", ".join(pk)
                 if update_cols:
                     set_clause = ", ".join(
@@ -523,7 +526,6 @@ def bulk_upsert(
                         f"ON CONFLICT({pk_sql}) DO UPDATE SET {set_clause}"
                     )
                 else:
-                    # No columns to update -- DO NOTHING preserves the row.
                     sql = (
                         f"INSERT INTO {table} ({', '.join(cols)}) "
                         f"VALUES ({placeholders}) "
@@ -559,44 +561,18 @@ def save_integration(
     db_path: Path | None = None,
 ) -> dict:
     """Upsert an integrations row, bypassing per-agent permission enforcement.
-
-    This function is called exclusively by the subagent_stop hook to auto-
-    capture install events detected in tool output. The hook runs as
-    ``agent='system'`` -- a synthetic identity that is not registered in
-    agent_permissions -- so permission enforcement is intentionally skipped
-    here (the hook layer is the authorization boundary, not the store layer).
-
-    Idempotency: when ``topic_key`` is supplied, a reinstall of the same tool
-    produces the same ``topic_key``, which causes the ON CONFLICT clause to
-    update the existing row instead of inserting a duplicate.
-
-    Args:
-        workspace:    Workspace identity (matches projects.name).
-        name:         Integration name (e.g. "acli", "gcloud").
-        kind:         Optional kind string (e.g. "cli", "pkg").
-        version:      Optional version string.
-        install_path: Optional install path.
-        topic_key:    Optional dimension key for idempotent upserts
-                      (e.g. "cli/atlassian/acli").
-        agent:        Agent identifier (recorded for audit; not checked against
-                      agent_permissions -- hook layer enforces authorization).
-        db_path:      Optional explicit DB path (used by tests).
-
-    Returns:
-        {"status": "applied"} on success.
-        {"status": "error", "reason": <str>} on failure.
     """
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
-            _ensure_project_row(con, workspace)
+            _ensure_workspace_row(con, workspace)
             con.execute(
                 """
-                INSERT INTO integrations (project, name, kind, version,
+                INSERT INTO integrations (workspace, name, kind, version,
                                           install_path, topic_key, scanner_ts)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(project, name) DO UPDATE SET
+                ON CONFLICT(workspace, name) DO UPDATE SET
                     kind         = COALESCE(excluded.kind, kind),
                     version      = COALESCE(excluded.version, version),
                     install_path = COALESCE(excluded.install_path, install_path),
@@ -635,40 +611,6 @@ def upsert_memory(
     workspace_path: Path | None = None,
 ) -> dict:
     """Upsert a curated-memory row in the ``memory`` table.
-
-    Memory rows are user-driven (``gaia memory add`` from the user's terminal),
-    not agent-driven mutations -- so the per-agent ``agent_permissions`` gate is
-    intentionally NOT consulted here, matching the design used by briefs (B8).
-
-    On INSERT, ``updated_at`` is set to the current UTC ISO8601 timestamp.
-    On UPDATE (PK = ``(project, name)``), the same timestamp is refreshed and
-    ``description``, ``body``, ``type``, ``origin_session_id`` are overwritten
-    with the supplied values. The FTS5 mirror (``memory_fts``) is kept in sync
-    by the schema-defined triggers (``memory_ai``, ``memory_au``, ``memory_ad``).
-
-    Args:
-        workspace:         Workspace identity (matches projects.name; FK).
-        name:              Memory slug (e.g. ``project_gaia_v5``). PK with
-                           ``workspace``.
-        type:              One of ``"project"``, ``"user"``, ``"feedback"``
-                           (CHECK constraint in the schema).
-        body:              Markdown body (without frontmatter). Required.
-        description:       Optional one-line summary (mirrors the legacy
-                           frontmatter ``description`` field).
-        origin_session_id: Optional session identifier; defaults to
-                           ``$GAIA_SESSION_ID`` when present, else ``NULL``.
-        db_path:           Optional explicit DB path (used by tests).
-        workspace_path:    Directory whose git remote supplies the
-                           ``projects.identity`` value when the project row is
-                           first created. Defaults to cwd.
-
-    Returns:
-        ``{"status": "applied", "action": "inserted" | "updated",
-           "name": str, "updated_at": iso8601}``.
-
-    Raises:
-        ValueError: if ``type`` is not in ``VALID_MEMORY_TYPES`` or ``body``
-                    is empty.
     """
     import os
 
@@ -688,10 +630,10 @@ def upsert_memory(
     try:
         con.execute("BEGIN")
         try:
-            _ensure_project_row(con, workspace, workspace_path)
+            _ensure_workspace_row(con, workspace, workspace_path)
 
             existing = con.execute(
-                "SELECT name FROM memory WHERE project = ? AND name = ?",
+                "SELECT name FROM memory WHERE workspace = ? AND name = ?",
                 (workspace, name),
             ).fetchone()
             action = "updated" if existing is not None else "inserted"
@@ -699,10 +641,10 @@ def upsert_memory(
             now = _now_iso()
             con.execute(
                 """
-                INSERT INTO memory (project, name, type, description, body,
+                INSERT INTO memory (workspace, name, type, description, body,
                                     origin_session_id, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(project, name) DO UPDATE SET
+                ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
                     body              = excluded.body,
@@ -730,8 +672,6 @@ def upsert_memory(
 # Public API: delete_memory / update_memory_field
 # ---------------------------------------------------------------------------
 
-# Whitelist of memory columns that can be patched via update_memory_field.
-# Mirrors the schema (description, body) -- type changes go through delete+add.
 _MEMORY_PATCHABLE_FIELDS = ("description", "body")
 
 
@@ -741,23 +681,11 @@ def delete_memory(
     *,
     db_path: Path | None = None,
 ) -> bool:
-    """Hard-delete a curated memory row.
-
-    The FTS5 mirror (``memory_fts``) is kept consistent automatically by the
-    schema-defined ``memory_ad`` trigger.
-
-    Args:
-        workspace: Workspace identity (matches projects.name).
-        name:      Memory slug (PK with workspace).
-        db_path:   Optional explicit DB path (used by tests).
-
-    Returns:
-        ``True`` if a row was deleted, ``False`` if no row matched.
-    """
+    """Hard-delete a curated memory row."""
     con = _connect(db_path)
     try:
         cur = con.execute(
-            "DELETE FROM memory WHERE project = ? AND name = ?",
+            "DELETE FROM memory WHERE workspace = ? AND name = ?",
             (workspace, name),
         )
         con.commit()
@@ -775,26 +703,7 @@ def update_memory_field(
     append: bool = False,
     db_path: Path | None = None,
 ) -> dict:
-    """Patch a single column on a curated memory row.
-
-    Args:
-        workspace: Workspace identity.
-        name:      Memory slug (PK with workspace).
-        field:     Whitelisted column name (``description`` or ``body``).
-        content:   New value (or content to append).
-        append:    When True, concatenate with the existing value using a
-                   ``\\n\\n`` separator instead of overwriting. If the existing
-                   value is NULL/empty, the new content is written as-is.
-        db_path:   Optional explicit DB path (used by tests).
-
-    Returns:
-        ``{"status": "applied", "name": str, "field": str, "action":
-        "appended" | "overwritten", "updated_at": iso8601}``.
-
-    Raises:
-        ValueError: when ``field`` is not whitelisted, the row does not
-                    exist, or ``content`` is empty.
-    """
+    """Patch a single column on a curated memory row."""
     if field not in _MEMORY_PATCHABLE_FIELDS:
         raise ValueError(
             f"invalid memory field {field!r}; must be one of "
@@ -806,7 +715,7 @@ def update_memory_field(
     con = _connect(db_path)
     try:
         row = con.execute(
-            f"SELECT {field}, body FROM memory WHERE project = ? AND name = ?",
+            f"SELECT {field}, body FROM memory WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if row is None:
@@ -822,14 +731,13 @@ def update_memory_field(
             new_value = content
             action = "overwritten"
 
-        # body must remain non-empty (NOT NULL constraint in schema)
         if field == "body" and not new_value.strip():
             raise ValueError("memory body cannot be empty")
 
         now = _now_iso()
         con.execute(
             f"UPDATE memory SET {field} = ?, updated_at = ? "
-            "WHERE project = ? AND name = ?",
+            "WHERE workspace = ? AND name = ?",
             (new_value, now, workspace, name),
         )
         con.commit()
@@ -869,19 +777,7 @@ def search_memory_curated(
     limit: int = 10,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
-
-    Filters by ``project = workspace``; ranks by bm25.
-
-    Args:
-        workspace: Workspace identity.
-        query:     Free-text query (auto-quoted when it contains FTS5 syntax).
-        limit:     Maximum result count.
-        db_path:   Optional explicit DB path (used by tests).
-
-    Returns:
-        List of ``{"name", "type", "description", "snippet", "rank"}`` dicts.
-    """
+    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table."""
     fts_q = _prepare_memory_fts_query(query)
     con = _connect(db_path)
     try:
@@ -893,7 +789,7 @@ def search_memory_curated(
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
-              AND m.project = ?
+              AND m.workspace = ?
             ORDER BY rank
             LIMIT ?
             """,
@@ -914,7 +810,7 @@ def search_memory_curated(
 
 
 # ---------------------------------------------------------------------------
-# Public API: memory read helpers (get_memory / list_memory)
+# Public API: memory read helpers
 # ---------------------------------------------------------------------------
 
 def get_memory(
@@ -927,9 +823,9 @@ def get_memory(
     con = _connect(db_path)
     try:
         row = con.execute(
-            "SELECT project, name, type, description, body, "
+            "SELECT workspace, name, type, description, body, "
             "       origin_session_id, updated_at "
-            "FROM memory WHERE project = ? AND name = ?",
+            "FROM memory WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if row is None:
@@ -951,13 +847,13 @@ def list_memory(
         if type is None:
             rows = con.execute(
                 "SELECT name, type, description, updated_at "
-                "FROM memory WHERE project = ? ORDER BY name",
+                "FROM memory WHERE workspace = ? ORDER BY name",
                 (workspace,),
             ).fetchall()
         else:
             rows = con.execute(
                 "SELECT name, type, description, updated_at "
-                "FROM memory WHERE project = ? AND type = ? ORDER BY name",
+                "FROM memory WHERE workspace = ? AND type = ? ORDER BY name",
                 (workspace, type),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -966,17 +862,15 @@ def list_memory(
 
 
 # ---------------------------------------------------------------------------
-# Public API: brief field patch (DB-only; used by `gaia brief edit --headless`)
+# Public API: brief field patch
 # ---------------------------------------------------------------------------
 
-# Whitelist of brief columns that can be patched via update_brief_field.
-# `status` is intentionally excluded -- use set_status_brief for that.
 _BRIEF_PATCHABLE_FIELDS = (
     "objective",
     "context",
     "approach",
     "out_of_scope",
-    "description",   # legacy alias for `objective`; mapped below
+    "description",
     "title",
 )
 
@@ -990,27 +884,6 @@ def update_brief_field(
     append: bool = False,
     db_path: Path | None = None,
 ) -> dict:
-    """Patch a single text column on a brief row.
-
-    Args:
-        workspace: Workspace identity.
-        name:      Brief slug (PK with workspace).
-        field:     One of ``objective``, ``context``, ``approach``,
-                   ``out_of_scope``, ``description`` (alias for objective),
-                   or ``title``.
-        content:   New value (or value to append).
-        append:    When True, concatenate using ``\\n\\n`` separator if the
-                   field already has content; otherwise overwrite.
-        db_path:   Optional explicit DB path (used by tests).
-
-    Returns:
-        ``{"status": "applied", "name": str, "field": str, "action": ...,
-           "updated_at": iso8601}``.
-
-    Raises:
-        ValueError: when ``field`` is not whitelisted, the brief does not
-                    exist, or ``content`` is empty.
-    """
     if field not in _BRIEF_PATCHABLE_FIELDS:
         raise ValueError(
             f"invalid brief field {field!r}; must be one of "
@@ -1019,13 +892,12 @@ def update_brief_field(
     if content is None or content == "":
         raise ValueError("content cannot be empty")
 
-    # `description` is treated as a friendly alias for `objective`.
     column = "objective" if field == "description" else field
 
     con = _connect(db_path)
     try:
         row = con.execute(
-            f"SELECT id, {column} FROM briefs WHERE project = ? AND name = ?",
+            f"SELECT id, {column} FROM briefs WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if row is None:
@@ -1059,7 +931,7 @@ def update_brief_field(
 
 
 # ---------------------------------------------------------------------------
-# Public API: plan CRUD (DB-only; used by `gaia plan ...` CLI)
+# Public API: plan CRUD
 # ---------------------------------------------------------------------------
 
 VALID_PLAN_LIFECYCLE_STATUSES = ("draft", "active", "closed")
@@ -1071,7 +943,7 @@ def _resolve_brief_id(
     brief_name: str,
 ) -> int | None:
     row = con.execute(
-        "SELECT id FROM briefs WHERE project = ? AND name = ?",
+        "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
         (workspace, brief_name),
     ).fetchone()
     return row["id"] if row else None
@@ -1085,30 +957,6 @@ def upsert_plan(
     status: str = "draft",
     db_path: Path | None = None,
 ) -> dict:
-    """Insert or update the plan attached to a brief.
-
-    A plan row is uniquely identified by ``brief_id`` (the FK is UNIQUE in the
-    schema). Calling ``upsert_plan`` with an existing ``(workspace,
-    brief_name)`` updates the row in place; calling it with a new brief
-    creates the row.
-
-    Args:
-        workspace:  Workspace identity.
-        brief_name: Slug of the parent brief (must already exist).
-        content:    Optional markdown body of the plan. ``None`` leaves the
-                    existing content unchanged on update.
-        status:     One of ``draft``, ``active``, ``closed`` (default
-                    ``draft`` on insert, preserved on update if not changed).
-        db_path:    Optional explicit DB path (used by tests).
-
-    Returns:
-        ``{"status": "applied", "action": "inserted" | "updated",
-           "brief_name": str, "plan_id": int, "plan_status": str,
-           "updated_at": iso8601}``.
-
-    Raises:
-        ValueError: brief not found or status invalid.
-    """
     if status not in VALID_PLAN_LIFECYCLE_STATUSES:
         raise ValueError(
             f"invalid plan status {status!r}; must be one of "
@@ -1172,7 +1020,6 @@ def get_plan(
     *,
     db_path: Path | None = None,
 ) -> dict | None:
-    """Return the plan row attached to a brief, or ``None`` when absent."""
     con = _connect(db_path)
     try:
         brief_id = _resolve_brief_id(con, workspace, brief_name)
@@ -1199,7 +1046,6 @@ def list_plans(
     status: str | None = None,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """List plans for a workspace, optionally filtered by brief and/or status."""
     con = _connect(db_path)
     try:
         sql = (
@@ -1207,7 +1053,7 @@ def list_plans(
             "       b.name AS brief_name "
             "FROM plans p "
             "JOIN briefs b ON b.id = p.brief_id "
-            "WHERE b.project = ? "
+            "WHERE b.workspace = ? "
         )
         params: list = [workspace]
         if brief_name is not None:
@@ -1229,7 +1075,6 @@ def delete_plan(
     *,
     db_path: Path | None = None,
 ) -> bool:
-    """Delete the plan attached to a brief (the brief itself is untouched)."""
     con = _connect(db_path)
     try:
         brief_id = _resolve_brief_id(con, workspace, brief_name)
@@ -1249,19 +1094,6 @@ def set_plan_status(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Validated state-machine transition on a plan row.
-
-    Uses :func:`gaia.state.transitions.assert_legal_plan_lifecycle` for the
-    transition rules so the CLI and the substrate share a single source of
-    truth.
-
-    Returns:
-        ``{"name": str, "old_status": str, "new_status": str, "action":
-        "updated" | "noop"}``.
-
-    Raises:
-        ValueError: brief/plan not found, status invalid, or transition illegal.
-    """
     if new_status not in VALID_PLAN_LIFECYCLE_STATUSES:
         raise ValueError(
             f"invalid plan status {new_status!r}; must be one of "
@@ -1314,22 +1146,18 @@ def set_plan_status(
 
 
 # ---------------------------------------------------------------------------
-# Public API: wipe_project
+# Public API: wipe_workspace
 # ---------------------------------------------------------------------------
 
-def wipe_project(workspace: str, *, db_path: Path | None = None) -> None:
-    """Delete the projects row for `workspace`. FK CASCADE removes all
-    child rows (repos, apps, integrations, etc.) automatically.
-
-    Args:
-        workspace: Workspace identity (projects.name value).
-        db_path: Optional explicit DB path (used by tests).
+def wipe_workspace(workspace: str, *, db_path: Path | None = None) -> None:
+    """Delete the workspaces row for `workspace`. FK CASCADE removes all
+    child rows (projects, apps, integrations, etc.) automatically.
     """
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
-            con.execute("DELETE FROM projects WHERE name = ?", (workspace,))
+            con.execute("DELETE FROM workspaces WHERE name = ?", (workspace,))
             con.commit()
         except Exception:
             con.rollback()

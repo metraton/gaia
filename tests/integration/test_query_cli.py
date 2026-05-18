@@ -46,13 +46,13 @@ def tmp_db(tmp_path, monkeypatch):
 # Seeders
 # ---------------------------------------------------------------------------
 
-def _ensure_project(db_path: Path, workspace: str = "me") -> None:
+def _ensure_workspace(db_path: Path, workspace: str = "me") -> None:
     # Use writer._connect which bootstraps schema on first connection.
     from gaia.store.writer import _connect
     con = _connect(db_path)
     try:
         con.execute(
-            "INSERT OR IGNORE INTO projects (name, identity) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
             (workspace, workspace),
         )
         con.commit()
@@ -64,11 +64,11 @@ def _seed_memory(db_path: Path, name: str, type_: str, body: str,
                  description: str | None = None,
                  updated_at: str = "2026-05-07T10:00:00Z",
                  workspace: str = "me") -> None:
-    _ensure_project(db_path, workspace)
+    _ensure_workspace(db_path, workspace)
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
-            "INSERT INTO memory (project, name, type, description, body, "
+            "INSERT INTO memory (workspace, name, type, description, body, "
             "                    updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (workspace, name, type_, description, body, updated_at),
@@ -84,11 +84,11 @@ def _seed_episode(db_path: Path, episode_id: str, *, agent: str,
                   outcome: str = "success",
                   timestamp: str = "2026-05-07T11:00:00Z",
                   workspace: str = "me") -> None:
-    _ensure_project(db_path, workspace)
+    _ensure_workspace(db_path, workspace)
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
-            "INSERT INTO episodes (episode_id, project, timestamp, agent, "
+            "INSERT INTO episodes (episode_id, workspace, timestamp, agent, "
             "                      type, title, plan_status, outcome) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (episode_id, workspace, timestamp, agent, type_, title,
@@ -104,11 +104,11 @@ def _seed_harness_event(db_path: Path, *, type_: str, ts: str,
                         severity: str = "info",
                         payload: str = "{}",
                         workspace: str = "me") -> None:
-    _ensure_project(db_path, workspace)
+    _ensure_workspace(db_path, workspace)
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
-            "INSERT INTO harness_events (project, ts, type, source, agent, "
+            "INSERT INTO harness_events (workspace, ts, type, source, agent, "
             "                            result, severity, payload) "
             "VALUES (?, ?, ?, 'hook', ?, ?, ?, ?)",
             (workspace, ts, type_, agent, result, severity, payload),

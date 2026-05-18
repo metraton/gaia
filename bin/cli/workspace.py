@@ -1,10 +1,10 @@
 """
-gaia project -- Workspace identity and consolidate operations.
+gaia workspace -- Workspace identity and consolidate operations.
 
 Subcommands:
-  project current               Print current workspace identity (resolved from cwd)
-  project info                  Print structured info about the current workspace
-  project merge <from> <to>     Preview/execute workspace merge (--confirm to apply)
+  workspace current               Print current workspace identity (resolved from cwd)
+  workspace info                  Print structured info about the current workspace
+  workspace merge <from> <to>     Preview/execute workspace merge (--confirm to apply)
 
 Patterns inspired by engram (MIT). No runtime dependency on engram.
 """
@@ -19,14 +19,14 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 
 def _cmd_current(args) -> int:
-    """Handle `gaia project current`."""
+    """Handle `gaia workspace current`."""
     from gaia.project import current
     print(current())
     return 0
 
 
 def _cmd_info(args) -> int:
-    """Handle `gaia project info` -- structured info about the current workspace."""
+    """Handle `gaia workspace info` -- structured info about the current workspace."""
     from gaia.paths import (
         cache_dir,
         data_dir,
@@ -57,14 +57,14 @@ def _cmd_info(args) -> int:
 
 
 def _cmd_merge(args) -> int:
-    """Handle `gaia project merge <from> <to> [--confirm] [--dry-run] [--report-duplicates]`.
+    """Handle `gaia workspace merge <from> <to> [--confirm] [--dry-run] [--report-duplicates]`.
 
     --dry-run            Execute the merge logic but do NOT commit any file
                          moves to disk. Reports what would happen identically
                          to preview mode (no --confirm) but the flag is
                          explicit and composable with other flags.
 
-    --report-duplicates  List projects rows that share the same ``identity``
+    --report-duplicates  List workspaces rows that share the same ``identity``
                          value (potential duplicates caused by the pre-fix
                          identity bug). Returns exit code 1 when duplicates
                          are found, 0 when clean.
@@ -118,7 +118,7 @@ def _cmd_merge(args) -> int:
 
 
 def _report_duplicate_identities() -> int:
-    """Query the store and print projects rows with duplicate identity values.
+    """Query the store and print workspaces rows with duplicate identity values.
 
     Returns:
         0 when no duplicates found (clean).
@@ -130,7 +130,7 @@ def _report_duplicate_identities() -> int:
         rows = con.execute(
             """
             SELECT identity, COUNT(*) AS cnt, GROUP_CONCAT(name, ', ') AS names
-            FROM projects
+            FROM workspaces
             WHERE identity IS NOT NULL AND identity != ''
             GROUP BY identity
             HAVING cnt > 1
@@ -143,10 +143,10 @@ def _report_duplicate_identities() -> int:
         return 2
 
     if not rows:
-        print("# duplicates=0: all project identities are unique")
+        print("# duplicates=0: all workspace identities are unique")
         return 0
 
-    print(f"# duplicates={len(rows)}: projects sharing the same identity")
+    print(f"# duplicates={len(rows)}: workspaces sharing the same identity")
     print(f"# {'identity':<50} {'count':>5}  names")
     print(f"# {'-'*50} {'-----':>5}  -----")
     for row in rows:
@@ -157,27 +157,27 @@ def _report_duplicate_identities() -> int:
     return 1
 
 
-def cmd_project(args) -> int:
-    """Top-level dispatcher for `gaia project <action>`."""
+def cmd_workspace(args) -> int:
+    """Top-level dispatcher for `gaia workspace <action>`."""
     func = getattr(args, "func", None)
     if func is None:
-        if hasattr(args, "_project_parser"):
-            args._project_parser.print_help()
+        if hasattr(args, "_workspace_parser"):
+            args._workspace_parser.print_help()
         else:
-            print("Usage: gaia project <current|info|merge>", file=sys.stderr)
+            print("Usage: gaia workspace <current|info|merge>", file=sys.stderr)
         return 0
     return func(args) or 0
 
 
 def register(subparsers):
-    """Register the project subcommand with nested actions."""
-    proj_parser = subparsers.add_parser(
-        "project",
+    """Register the workspace subcommand with nested actions."""
+    ws_parser = subparsers.add_parser(
+        "workspace",
         help="Workspace identity and consolidate operations",
     )
-    proj_parser.set_defaults(_project_parser=proj_parser)
+    ws_parser.set_defaults(_workspace_parser=ws_parser)
 
-    actions = proj_parser.add_subparsers(dest="project_action", metavar="<action>")
+    actions = ws_parser.add_subparsers(dest="workspace_action", metavar="<action>")
 
     current_p = actions.add_parser("current", help="Print current workspace identity")
     current_p.set_defaults(func=_cmd_current)
@@ -206,6 +206,6 @@ def register(subparsers):
         dest="report_duplicates",
         action="store_true",
         default=False,
-        help="List projects with duplicate identity values; exit 1 if any found",
+        help="List workspaces with duplicate identity values; exit 1 if any found",
     )
     merge_p.set_defaults(func=_cmd_merge)

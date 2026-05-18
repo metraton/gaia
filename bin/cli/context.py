@@ -2,11 +2,13 @@
 gaia context -- Display and refresh project context.
 
 Subcommands:
-  gaia context show [--section SECTION] [--json]   Display project-context.json (legacy)
+  gaia context show [--section SECTION] [--json]   Display context from SQLite substrate (tabular)
   gaia context scan [--dry-run] [--json]            Run project scanner (legacy)
-  gaia context dump  [--workspace W]                Dump SQLite substrate as JSON (B1+)
+  gaia context get  [--workspace W] [--section S]   Emit canonical workspace shape from substrate
+                    [--json] [--text]
+  gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
   gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
-  gaia context wipe  --workspace W [--yes]          Delete all rows for a workspace (CASCADE)
+  gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
 """
 
 from __future__ import annotations
@@ -79,30 +81,54 @@ def _get_context_path(project_root: Path) -> Path:
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
+def _render_context_tabular(ctx: dict, section: str | None = None) -> None:
+    """Render the canonical context shape as human-readable text (tabular)."""
+    if section:
+        val = ctx.get(section)
+        if val is None:
+            # Check inside workspace sub-dict
+            val = ctx.get("workspace", {}).get(section)
+        print(json.dumps(val, indent=2, default=str))
+        return
+
+    # Top-level summary
+    print(f"workspace        : {ctx.get('identity', '(unknown)')}")
+    print()
+    workspace = ctx.get("workspace", {})
+    top_keys = [k for k in ctx if k not in ("workspace",)]
+    for key in top_keys:
+        val = ctx[key]
+        if isinstance(val, dict) and val:
+            print(f"{key}:")
+            for k, v in val.items():
+                print(f"  {k:<28}  {v}")
+        elif val:
+            print(f"{key:<30}  {val}")
+    print()
+    print("workspace entities:")
+    for key, rows in workspace.items():
+        count = len(rows) if isinstance(rows, list) else "?"
+        print(f"  {key:<28}  {count} row(s)")
+
+
 def _cmd_show(args) -> int:
-    """Handle `gaia context show [--section SECTION] [--json]`."""
-    project_root = _find_project_root(Path.cwd())
-    if project_root is None:
-        msg = "gaia context: could not find project root (.claude/ directory)"
-        if getattr(args, "json", False):
-            print(json.dumps({"error": msg}))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
-        return 1
+    """Handle `gaia context show [--section SECTION] [--json]`.
 
-    context_path = _get_context_path(project_root)
-    if not context_path.exists():
-        msg = f"project-context.json not found at {context_path}"
-        if getattr(args, "json", False):
-            print(json.dumps({"error": msg}))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
-        return 1
-
+    Reads from the SQLite substrate (single source of truth).
+    Presentation: tabular (human-readable). For raw JSON use `gaia context get`.
+    """
     try:
-        data = json.loads(context_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        msg = f"Failed to parse project-context.json: {exc}"
+        from gaia.store.provider import get_context
+        from gaia.project import current as _project_current
+    except Exception as exc:  # pragma: no cover
+        print(f"gaia context show: failed to import store: {exc}", file=sys.stderr)
+        return 1
+
+    workspace = _project_current()
+    ctx = get_context(workspace)
+
+    if ctx is None:
+        msg = f"workspace '{workspace}' not found in substrate"
         if getattr(args, "json", False):
             print(json.dumps({"error": msg}))
         else:
@@ -112,52 +138,31 @@ def _cmd_show(args) -> int:
     section = getattr(args, "section", None)
 
     if section:
-        sections = data.get("sections", {})
-        if section not in sections:
-            msg = f"Section '{section}' not found. Available: {', '.join(sorted(sections.keys()))}"
+        # Validate section exists
+        top_keys = set(ctx.keys())
+        workspace_keys = set((ctx.get("workspace") or {}).keys())
+        all_keys = top_keys | workspace_keys
+        if section not in all_keys:
+            msg = f"Section '{section}' not found. Available: {', '.join(sorted(all_keys))}"
             if getattr(args, "json", False):
                 print(json.dumps({"error": msg}))
             else:
                 print(f"Error: {msg}", file=sys.stderr)
             return 1
-        section_data = sections[section]
+        val = ctx.get(section)
+        if val is None:
+            val = ctx.get("workspace", {}).get(section)
         if getattr(args, "json", False):
-            print(json.dumps(section_data, indent=2))
+            print(json.dumps(val, indent=2, default=str))
         else:
-            print(json.dumps(section_data, indent=2))
+            print(json.dumps(val, indent=2, default=str))
         return 0
-
-    # No specific section: print summary
-    metadata = data.get("metadata", {})
-    sections = data.get("sections", {})
 
     if getattr(args, "json", False):
-        summary = {
-            "metadata": metadata,
-            "sections": list(sections.keys()),
-        }
-        print(json.dumps(summary, indent=2))
+        print(json.dumps(ctx, indent=2, default=str))
         return 0
 
-    # Human-readable summary
-    version = metadata.get("version", "unknown")
-    last_updated = metadata.get("last_updated", "unknown")
-    scan_info = metadata.get("scan_config", {})
-    last_scan = scan_info.get("last_scan", "unknown")
-    scanner_version = scan_info.get("scanner_version", "unknown")
-
-    print(f"project-context  v{version}")
-    print(f"  last_updated   : {last_updated}")
-    print(f"  last_scan      : {last_scan}")
-    print(f"  scanner        : {scanner_version}")
-    print()
-    print(f"sections ({len(sections)}):")
-    for key in sorted(sections.keys()):
-        src = sections[key].get("_source", "")
-        if src:
-            print(f"  {key:<30}  [{src}]")
-        else:
-            print(f"  {key}")
+    _render_context_tabular(ctx)
     return 0
 
 
@@ -235,28 +240,73 @@ def _cmd_scan(args) -> int:
 _SELECT_VERBS = {"select", "with", "explain", "pragma"}
 
 
-def _cmd_dump(args) -> int:
-    """Handle `gaia context dump [--workspace W]`.
+def _cmd_get(args) -> int:
+    """Handle `gaia context get [--workspace W] [--section S] [--json] [--text]`.
 
-    Dumps the SQLite substrate as JSON for the given workspace.
-    Resolves the DB path via gaia.paths.db_path() (respects GAIA_DATA_DIR).
+    Emits the canonical workspace shape from the SQLite substrate.
+    Defaults to JSON output. Use --text for the same tabular renderer as `show`.
+    Fix #5: exits 1 with message when workspace does not exist in the DB.
     """
     try:
         from gaia.store.provider import get_context
         from gaia.project import current as _project_current
     except Exception as exc:  # pragma: no cover -- import wiring failure
-        print(f"gaia context dump: failed to import store: {exc}", file=sys.stderr)
+        print(f"gaia context get: failed to import store: {exc}", file=sys.stderr)
         return 1
 
     workspace = getattr(args, "workspace", None) or _project_current()
     try:
         ctx = get_context(workspace)
     except Exception as exc:
-        print(f"gaia context dump: error reading store: {exc}", file=sys.stderr)
+        print(f"gaia context get: error reading store: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps(ctx, indent=2, default=str))
+    # Fix #5: workspace not found
+    if ctx is None:
+        print(f"workspace '{workspace}' not found", file=sys.stderr)
+        return 1
+
+    section = getattr(args, "section", None)
+    use_text = getattr(args, "text", False)
+
+    if section:
+        top_keys = set(ctx.keys())
+        workspace_keys = set((ctx.get("workspace") or {}).keys())
+        all_keys = top_keys | workspace_keys
+        if section not in all_keys:
+            print(
+                f"gaia context get: section '{section}' not found. "
+                f"Available: {', '.join(sorted(all_keys))}",
+                file=sys.stderr,
+            )
+            return 1
+        val = ctx.get(section)
+        if val is None:
+            val = ctx.get("workspace", {}).get(section)
+        if use_text:
+            print(json.dumps(val, indent=2, default=str))
+        else:
+            print(json.dumps(val, indent=2, default=str))
+        return 0
+
+    if use_text:
+        _render_context_tabular(ctx, section=section)
+    else:
+        print(json.dumps(ctx, indent=2, default=str))
     return 0
+
+
+def _cmd_dump(args) -> int:
+    """Handle `gaia context dump [--workspace W]`.
+
+    Deprecated: use `gaia context get` instead.
+    Kept as a backwards-compatible alias; emits a deprecation warning to stderr.
+    """
+    print(
+        "Warning: `gaia context dump` is deprecated; use `gaia context get`",
+        file=sys.stderr,
+    )
+    return _cmd_get(args)
 
 
 def _cmd_query(args) -> int:
@@ -324,13 +374,13 @@ def _cmd_wipe(args) -> int:
             return 1
 
     try:
-        from gaia.store.writer import wipe_project
+        from gaia.store.writer import wipe_workspace
     except Exception as exc:
         print(f"gaia context wipe: failed to import store: {exc}", file=sys.stderr)
         return 1
 
     try:
-        wipe_project(workspace)
+        wipe_workspace(workspace)
     except Exception as exc:
         print(f"gaia context wipe: error: {exc}", file=sys.stderr)
         return 1
@@ -351,13 +401,15 @@ def register(subparsers) -> None:
     )
     ctx_subparsers = ctx_parser.add_subparsers(dest="context_cmd", metavar="<action>")
 
-    # gaia context show
-    show_parser = ctx_subparsers.add_parser("show", help="Display project-context.json")
+    # gaia context show  (tabular view from substrate)
+    show_parser = ctx_subparsers.add_parser(
+        "show", help="Display workspace context from substrate (tabular)"
+    )
     show_parser.add_argument(
         "--section",
         metavar="SECTION",
         default=None,
-        help="Show a specific section of project-context.json",
+        help="Show a specific section of the workspace context",
     )
     show_parser.add_argument(
         "--json",
@@ -383,17 +435,45 @@ def register(subparsers) -> None:
         help="Output as JSON",
     )
 
-    # gaia context dump  (B1+ SQLite substrate)
+    # gaia context get  (canonical JSON from substrate)
+    def _add_get_args(p) -> None:
+        p.add_argument(
+            "--workspace",
+            metavar="W",
+            default=None,
+            help="Workspace identity (default: gaia.project.current())",
+        )
+        p.add_argument(
+            "--section",
+            metavar="SECTION",
+            default=None,
+            help="Filter output to a single top-level or workspace section",
+        )
+        p.add_argument(
+            "--json",
+            action="store_true",
+            default=False,
+            help="Emit JSON (default when output is redirected)",
+        )
+        p.add_argument(
+            "--text",
+            action="store_true",
+            default=False,
+            help="Emit human-readable tabular presentation",
+        )
+
+    get_parser = ctx_subparsers.add_parser(
+        "get",
+        help="Emit canonical workspace shape from SQLite substrate as JSON",
+    )
+    _add_get_args(get_parser)
+
+    # gaia context dump  (deprecated alias for get)
     dump_parser = ctx_subparsers.add_parser(
         "dump",
-        help="Dump the SQLite substrate as JSON for a workspace",
+        help="(deprecated) Use `gaia context get` instead",
     )
-    dump_parser.add_argument(
-        "--workspace",
-        metavar="W",
-        default=None,
-        help="Workspace identity (default: gaia.project.current())",
-    )
+    _add_get_args(dump_parser)
 
     # gaia context query "<SQL>"
     query_parser = ctx_subparsers.add_parser(
@@ -409,7 +489,7 @@ def register(subparsers) -> None:
     # gaia context wipe --workspace W
     wipe_parser = ctx_subparsers.add_parser(
         "wipe",
-        help="Delete all rows for a workspace (CASCADE)",
+        help="(DESTRUCTIVE) Delete all rows for a workspace (CASCADE)",
     )
     wipe_parser.add_argument(
         "--workspace",
@@ -432,6 +512,8 @@ def cmd_context(args) -> int:
         return _cmd_show(args)
     if context_cmd == "scan":
         return _cmd_scan(args)
+    if context_cmd == "get":
+        return _cmd_get(args)
     if context_cmd == "dump":
         return _cmd_dump(args)
     if context_cmd == "query":
@@ -444,12 +526,17 @@ def cmd_context(args) -> int:
 
     tmp_parser = argparse.ArgumentParser(prog="gaia context")
     tmp_sub = tmp_parser.add_subparsers(dest="context_cmd", metavar="<action>")
-    show_p = tmp_sub.add_parser("show", help="Display project-context.json")
+    show_p = tmp_sub.add_parser("show", help="Display workspace context (tabular, from substrate)")
     show_p.add_argument("--section", metavar="SECTION")
     tmp_sub.add_parser("scan", help="Run project scanner").add_argument("--dry-run", action="store_true")
-    tmp_sub.add_parser("dump", help="Dump SQLite substrate").add_argument("--workspace", metavar="W")
+    get_p = tmp_sub.add_parser("get", help="Emit canonical workspace shape as JSON (from substrate)")
+    get_p.add_argument("--workspace", metavar="W")
+    get_p.add_argument("--section", metavar="SECTION")
+    get_p.add_argument("--json", action="store_true")
+    get_p.add_argument("--text", action="store_true")
+    tmp_sub.add_parser("dump", help="(deprecated) alias for `get`").add_argument("--workspace", metavar="W")
     tmp_sub.add_parser("query", help="Read-only SELECT").add_argument("sql", metavar="SQL")
-    wipe_p = tmp_sub.add_parser("wipe", help="Delete all rows for a workspace")
+    wipe_p = tmp_sub.add_parser("wipe", help="(DESTRUCTIVE) Delete all rows for a workspace (CASCADE)")
     wipe_p.add_argument("--workspace", metavar="W", required=True)
     wipe_p.add_argument("--yes", action="store_true")
     tmp_parser.print_help()

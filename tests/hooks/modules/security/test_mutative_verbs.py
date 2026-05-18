@@ -1324,3 +1324,103 @@ class TestCapabilityClasses:
         assert result.is_mutative is False
         result = detect_mutative_command("kubectl delete pod foo")
         assert result.is_mutative is True
+
+
+class TestSlugAndFlagFalsePositives:
+    """Regression suite for slug/flag false-positive fix.
+
+    Bug: tokens like "remove-live-state-from-context" were split on the
+    first hyphen, producing "remove" which matched MUTATIVE_VERBS.  This
+    caused false positives on any `gaia X Y <slug-with-verb>` pattern.
+
+    Fix: hyphen-split is now constrained to semantic_index <= 2 (subcommand
+    positions).  At deeper positions (index >= 3) tokens are argument slugs
+    and must be matched only as full tokens, not split fragments.
+    """
+
+    # ---- Cases that MUST now pass (were false-positives before fix) ----
+
+    def test_gaia_brief_deps_remove_slug_passes(self):
+        """gaia brief deps remove-live-state-from-context: 'remove' is inside a slug
+        at argument position -- must NOT be classified as mutative."""
+        result = detect_mutative_command(
+            "gaia brief deps remove-live-state-from-context"
+        )
+        assert result.is_mutative is False, (
+            f"Expected non-mutative but got verb={result.verb!r} "
+            f"reason={result.reason!r}"
+        )
+
+    def test_gaia_workspace_merge_report_flag_passes(self):
+        """gaia workspace merge --report-duplicates: --report-duplicates is a
+        read-only analysis flag -- the simulation flag override must fire."""
+        result = detect_mutative_command(
+            "gaia workspace merge --report-duplicates"
+        )
+        assert result.is_mutative is False, (
+            f"Expected non-mutative but got verb={result.verb!r} "
+            f"reason={result.reason!r}"
+        )
+        assert result.category == "SIMULATION"
+
+    def test_gaia_memory_show_slug_with_delete_passes(self):
+        """gaia memory show some-name-with-delete-in-it: 'delete' is inside a
+        slug at argument position -- must NOT be classified as mutative."""
+        result = detect_mutative_command(
+            "gaia memory show some-name-with-delete-in-it"
+        )
+        assert result.is_mutative is False, (
+            f"Expected non-mutative but got verb={result.verb!r} "
+            f"reason={result.reason!r}"
+        )
+
+    # ---- Cases that MUST still block ----
+
+    def test_rm_still_blocks(self):
+        """rm -rf /tmp/foo: rm is first token -> MUTATIVE via COMMAND_ALIASES."""
+        result = detect_mutative_command("rm -rf /tmp/foo")
+        assert result.is_mutative is True
+        assert result.verb == "rm"
+
+    def test_gaia_brief_delete_still_blocks(self):
+        """gaia brief delete some-brief: 'delete' is the real subcommand at
+        position 2, not inside a hyphenated slug -- must remain MUTATIVE."""
+        result = detect_mutative_command("gaia brief delete some-brief")
+        assert result.is_mutative is True
+        assert result.verb == "delete"
+
+    def test_gaia_memory_delete_still_blocks(self):
+        """gaia memory delete name: 'delete' is the real subcommand at
+        position 2 -- must remain MUTATIVE."""
+        result = detect_mutative_command("gaia memory delete name")
+        assert result.is_mutative is True
+        assert result.verb == "delete"
+
+    def test_compound_rm_still_blocks(self):
+        """cd /tmp && rm foo.txt: rm is first token of the second segment.
+
+        Note: the bash_validator decomposes && chains into separate commands
+        before calling detect_mutative_command on each segment, so this test
+        calls detect_mutative_command on 'rm foo.txt' directly (the segment
+        that would be evaluated for 'rm').
+        """
+        result = detect_mutative_command("rm foo.txt")
+        assert result.is_mutative is True
+        assert result.verb == "rm"
+
+    # ---- Edge cases ----
+
+    def test_echo_with_rm_in_string_is_safe(self):
+        """echo "rm -rf /": 'echo' is in READ_ONLY_BASE_CMDS -- short-circuits
+        before the verb scanner even runs.  String content is never scanned."""
+        result = detect_mutative_command('echo "rm -rf /"')
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_gaia_approvals_reject_not_blocked_by_verb_scanner(self):
+        """gaia approvals reject P-XXXX: 'reject' is not in MUTATIVE_VERBS, so
+        the verb scanner classifies this as safe by elimination.  The approval
+        workflow is enforced by the orchestrator layer, not the verb scanner.
+        This test documents current behavior (not a regression)."""
+        result = detect_mutative_command("gaia approvals reject P-XXXX")
+        assert result.is_mutative is False

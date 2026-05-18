@@ -25,14 +25,23 @@ from ..core.paths import get_session_dir
 from ..core.state import get_session_id
 from .contract_validator import parse_contract
 
-
-VALID_PLAN_STATUSES = {
-    "IN_PROGRESS",
-    "APPROVAL_REQUEST",
-    "COMPLETE",
-    "BLOCKED",
-    "NEEDS_INPUT",
-}
+# Single source of truth: gaia.state.VALID_PLAN_STATUSES (a tuple). Kept as a
+# set here for backward-compatible membership checks (``status in VALID_PLAN_STATUSES``).
+# Any change to the canonical tuple propagates here automatically.
+try:
+    from gaia.state import VALID_PLAN_STATUSES as _CANONICAL_PLAN_STATUSES
+    VALID_PLAN_STATUSES = set(_CANONICAL_PLAN_STATUSES)
+except ImportError:
+    # Fallback for environments where the gaia package is not on sys.path
+    # (e.g. legacy hook execution before gaia/ landed). Kept identical to the
+    # canonical tuple so the runtime contract validator continues to work.
+    VALID_PLAN_STATUSES = {
+        "IN_PROGRESS",
+        "APPROVAL_REQUEST",
+        "COMPLETE",
+        "BLOCKED",
+        "NEEDS_INPUT",
+    }
 
 # Evidence is required for ALL valid states -- no exclusions.
 EVIDENCE_REQUIRED_PLAN_STATUSES = VALID_PLAN_STATUSES

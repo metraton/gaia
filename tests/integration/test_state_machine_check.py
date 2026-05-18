@@ -53,11 +53,11 @@ def _fresh_db(tmp_path: Path) -> Path:
 
 
 def _seed_minimal(con: sqlite3.Connection) -> int:
-    """Insert a project + brief + plan so plans / tasks rows can be
+    """Insert a workspace + brief + plan so plans / tasks rows can be
     constructed under FK constraints. Returns the plan_id."""
-    con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+    con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
     con.execute(
-        "INSERT INTO briefs (project, name, status) VALUES (?, ?, ?)",
+        "INSERT INTO briefs (workspace, name, status) VALUES (?, ?, ?)",
         ("me", "seed-brief", "draft"),
     )
     brief_id = con.execute(
@@ -84,11 +84,11 @@ def test_check_rejects_invalid_episodes_plan_status(tmp_path, invalid_status):
     db = _fresh_db(tmp_path)
     con = sqlite3.connect(str(db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+        con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
         con.commit()
         with pytest.raises(sqlite3.IntegrityError) as exc_info:
             con.execute(
-                "INSERT INTO episodes (episode_id, project, timestamp, plan_status) "
+                "INSERT INTO episodes (episode_id, workspace, timestamp, plan_status) "
                 "VALUES (?, ?, ?, ?)",
                 ("ep_test", "me", "2026-01-01T00:00:00Z", invalid_status),
             )
@@ -102,9 +102,9 @@ def test_episodes_plan_status_allows_null(tmp_path):
     db = _fresh_db(tmp_path)
     con = sqlite3.connect(str(db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+        con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
         con.execute(
-            "INSERT INTO episodes (episode_id, project, timestamp, plan_status) "
+            "INSERT INTO episodes (episode_id, workspace, timestamp, plan_status) "
             "VALUES (?, ?, ?, ?)",
             ("ep_null", "me", "2026-01-01T00:00:00Z", None),
         )
@@ -123,11 +123,11 @@ def test_check_rejects_invalid_briefs_status(tmp_path, invalid_status):
     db = _fresh_db(tmp_path)
     con = sqlite3.connect(str(db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+        con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
         con.commit()
         with pytest.raises(sqlite3.IntegrityError) as exc_info:
             con.execute(
-                "INSERT INTO briefs (project, name, status) VALUES (?, ?, ?)",
+                "INSERT INTO briefs (workspace, name, status) VALUES (?, ?, ?)",
                 ("me", "bad-brief", invalid_status),
             )
         assert "CHECK" in str(exc_info.value).upper()
@@ -141,9 +141,9 @@ def test_check_rejects_invalid_plans_status(tmp_path, invalid_status):
     db = _fresh_db(tmp_path)
     con = sqlite3.connect(str(db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+        con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
         con.execute(
-            "INSERT INTO briefs (project, name, status) VALUES (?, ?, ?)",
+            "INSERT INTO briefs (workspace, name, status) VALUES (?, ?, ?)",
             ("me", "seed-brief", "draft"),
         )
         brief_id = con.execute(
@@ -187,10 +187,10 @@ def test_all_canonical_plan_statuses_accepted(tmp_path):
     db = _fresh_db(tmp_path)
     con = sqlite3.connect(str(db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+        con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
         for i, status in enumerate(VALID_PLAN_STATUSES):
             con.execute(
-                "INSERT INTO episodes (episode_id, project, timestamp, plan_status) "
+                "INSERT INTO episodes (episode_id, workspace, timestamp, plan_status) "
                 "VALUES (?, ?, ?, ?)",
                 (f"ep_{i}", "me", "2026-01-01T00:00:00Z", status),
             )
@@ -206,10 +206,10 @@ def test_all_canonical_brief_statuses_accepted(tmp_path):
     db = _fresh_db(tmp_path)
     con = sqlite3.connect(str(db))
     try:
-        con.execute("INSERT INTO projects (name) VALUES (?)", ("me",))
+        con.execute("INSERT INTO workspaces (name) VALUES (?)", ("me",))
         for i, status in enumerate(VALID_BRIEF_STATUSES):
             con.execute(
-                "INSERT INTO briefs (project, name, status) VALUES (?, ?, ?)",
+                "INSERT INTO briefs (workspace, name, status) VALUES (?, ?, ?)",
                 ("me", f"brief-{i}", status),
             )
         con.commit()

@@ -61,7 +61,7 @@ bin/
     ├── metrics.py             # gaia metrics    — usage analytics (tier, agent, anomalies)
     ├── paths.py               # Shared path resolution helpers
     ├── plans.py               # gaia plans      — list/show feature plans
-    ├── project.py             # gaia project    — project metadata / registration
+    ├── workspace.py           # gaia workspace  — workspace identity / consolidate operations
     ├── scan.py                # gaia scan       — project scanner; refreshes project-context.json
     ├── status.py              # gaia status     — quick installation snapshot
     ├── uninstall.py           # gaia uninstall  — full or preuninstall removal

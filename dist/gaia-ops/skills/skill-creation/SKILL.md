@@ -26,7 +26,7 @@ Type determines structure. Choose before writing anything.
 
 ## Step 2: Apply the type structure
 
-**Discipline:** Iron Law -> Mental Model -> Rules -> Traps -> Anti-patterns. Every trap you leave unnamed is a loophole.
+**Discipline:** Iron Law -> Mental Model -> Rules -> Traps -> Anti-patterns. Each trap and anti-pattern names a *principle of failure* -- one row per failure mode, not one row per concrete instance. If three rows are subcases of the same principle, one row that names the principle teaches more than three rows that enumerate.
 
 **Technique:** Overview (core principle + when to use) -> Process (numbered steps) -> Anti-patterns.
 
@@ -39,6 +39,8 @@ Type determines structure. Choose before writing anything.
 ## Step 3: Write for judgment, not compliance
 
 A rule without context ("ALWAYS do X") carries almost no weight in the LLM's reasoning -- the model has no reason to prioritize it over competing signals. An explanation with consequences carries enough weight to influence decisions even under pressure. Every line competes for attention; earn each one with reasoning the model can use.
+
+The dual test: for each row in a Traps or Anti-patterns table, ask -- is this a separate principle, or is it the same principle as a row already there? If the latter, fold it in. Specificity competes with itself: five rows that share a principle each carry one-fifth the weight of one row that names the principle, because the model spreads attention across them.
 
 The test: for each rule, ask -- if the agent saw enough examples of this going wrong, would it reach the same conclusion? If yes, you are capturing genuine wisdom. If no, it needs more context.
 
@@ -86,7 +88,7 @@ skill-name/
 ## Anti-Patterns
 
 - **Description summarizes process** -- agent follows the description and skips reading the skill body.
-- **Discipline without traps** -- agents rationalize around rules; every unnamed loophole gets used.
-- **Too generic** -- "be careful with commands" teaches nothing; skills need specific, concrete rules.
+- **Discipline without traps OR with too many traps** -- agents rationalize around bare rules; agents also dilute their attention across overlapping traps. A trap row earns its place by capturing a failure mode the existing rows do not. If you can describe a new trap by adjusting the wording of an existing trap, the existing row is what needed strengthening, not a new neighbor.
+- **Generic without consequence** -- "be careful with commands" teaches nothing because it has no consequence attached. The fix is naming what goes wrong when you violate the rule, not enumerating instances of the rule. A principle with one consequence outweighs five examples without one.
 - **Duplicates agent content** -- two sources of truth both become stale; pick one place.
 - **Single responsibility violated** -- if a skill covers two distinct behaviors, split it.

@@ -46,8 +46,8 @@ def _read_memory_row(db_path: Path, workspace: str, name: str) -> dict | None:
     con.row_factory = sqlite3.Row
     try:
         row = con.execute(
-            "SELECT project, name, type, description, body, origin_session_id, "
-            "updated_at FROM memory WHERE project = ? AND name = ?",
+            "SELECT workspace, name, type, description, body, origin_session_id, "
+            "updated_at FROM memory WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         return dict(row) if row is not None else None
@@ -135,7 +135,7 @@ def test_add_duplicate_name_upserts(tmp_db, tmp_path, monkeypatch, capsys):
     con = sqlite3.connect(str(tmp_db))
     try:
         cnt = con.execute(
-            "SELECT COUNT(*) FROM memory WHERE project = ? AND name = ?",
+            "SELECT COUNT(*) FROM memory WHERE workspace = ? AND name = ?",
             ("me", "dup-mem"),
         ).fetchone()[0]
     finally:

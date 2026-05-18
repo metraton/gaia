@@ -118,7 +118,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
 | `gaia plans` | `bin/cli/plans.py` | List and display briefs/plans with status info |
-| `gaia project` | `bin/cli/project.py` | Workspace identity and consolidate operations |
+| `gaia workspace` | `bin/cli/workspace.py` | Workspace identity and consolidate operations |
 | `gaia scan` | `bin/cli/scan.py` | In-process project scan: detect stack, sync to DB and project-context.json |
 | `gaia status` | `bin/cli/status.py` | Quick installation snapshot: version, mode, DB path, registered workspace, last scan |
 | `gaia uninstall` | `bin/cli/uninstall.py` | Disconnect Gaia from the current workspace (wraps cleanup + preuninstall mode) |
@@ -296,7 +296,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia brief` / `gaia plans` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
 | `gaia context` | Display and refresh project context | Audit context state |
 | `gaia paths` | Print resolved storage paths | Path debugging |
-| `gaia project` | Workspace identity and consolidate operations | Multi-workspace setups |
+| `gaia workspace` | Workspace identity and consolidate operations | Multi-workspace setups |
 | `gaia scan` | In-process project scanner | Refresh project-context.json |
 | `gaia install` | Bootstrap DB + workspace (also npm postinstall) | Fresh setup, manual repair |
 | `gaia update` | Re-sync after a package upgrade | After bumping the version |

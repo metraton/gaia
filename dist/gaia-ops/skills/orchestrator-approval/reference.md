@@ -141,7 +141,7 @@ When a hook blocks a T3 command, it writes a pending approval and returns an `ap
 
 ## Scope Mismatch -- The Common Re-block Trap
 
-Grants are matched by **semantic signature**: `base_cmd + verb + normalized arguments`. Two commands with the same verb but different path arguments are different signatures and do NOT share a grant.
+Grants are matched by **semantic signature** per shell statement: `base_cmd + verb + normalized arguments`, where each statement separated by `;`, `&&`, or `||` is classified independently. Two statements with the same verb but different path arguments — whether across separate Bash calls or chained within a single `exact_content` — are different signatures and do NOT share a grant; for chains of N same-verb statements, `batch_scope: "verb_family"` is the cure.
 
 **Example of the trap:**
 
@@ -172,3 +172,92 @@ Grants are matched by **semantic signature**: `base_cmd + verb + normalized argu
 ```
 
 If the correct target has changed since the approval (e.g., the file that was blocked no longer exists and a different file needs to be deleted), present a new approval for the new command -- do not resume with modified instructions.
+
+## Cosmetic drift -- the wrapper trap
+
+Rule 2 says copy `exact_content` byte-for-byte. The class of mistake that breaks this most often is not changing the command itself, but adding **wrapping** that the orchestrator considers harmless. The grant matcher does not know which bytes were "harmless"; it sees a different statement and re-blocks.
+
+The pattern is always the same: the orchestrator approves command X, then re-dispatches with `<wrapper> X`, then is surprised that the grant did not match. Below are concrete examples of wrappers that have caused re-block loops in practice -- not as a checklist, but as illustrations of the principle. The principle applies to **any** addition, including ones not listed here.
+
+| Approved | What the orchestrator typed | Why it missed |
+|---|---|---|
+| `gaia brief set-status X closed` | `gaia brief set-status X closed 2>&1` | Trailing redirect added a token |
+| `rm /path/to/file` | `cd /path && rm to/file` | `cd && ` prefix turned one statement into a chain |
+| `terraform apply` | `bash -c "terraform apply"` | Wrapper turned the verb from `terraform` to `bash` for the matcher |
+| `git push origin main` | `git push origin main --verbose` | Flag added that was not in the approved scope |
+| `npm install` | `time npm install` | Time prefix changed the leading verb |
+| `kubectl apply -f x.yaml` | `kubectl apply -f x.yaml && echo done` | Chained statement -- second statement has no grant |
+
+The mental model: the orchestrator is **not** trying to make the command "better" or "safer" between approval and execution. The user approved a specific command. The orchestrator's job is to put that command, unchanged, in front of the agent. If the orchestrator wants stderr captured, or cwd set, or any other effect, those need to be requested in a fresh approval -- not retrofitted.
+
+This applies symmetrically to SendMessage resume and to fresh Agent re-dispatch. The grant lives in the session, keyed to the statement. Neither delivery mechanism gets latitude.
+
+## Dispatch mode checklist
+
+Before dispatching a subagent, run through this checklist:
+
+**When to pass `mode: acceptEdits`:**
+- Dispatch edits briefs, plans, or evidence files (`.claude/project-context/**`)
+- Dispatch edits skills, agents, or commands (`.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**`)
+- Dispatch writes any file under `.claude/` that is NOT hooks/ or settings files
+
+**When NOT to use `acceptEdits`:**
+- Dispatch requires mutative Bash (acceptEdits does not cover Bash -- Gaia T3 flow still fires; see `security-tiers/SKILL.md` -> R1, R2)
+- Dispatch is exploratory/read-only (use `default` or omit mode)
+- Dispatch touches `.claude/hooks/` or `settings.json` -- Gaia blocks these regardless of mode
+
+**foreground vs background:**
+
+The Agent tool exposes this as the `run_in_background` parameter. **Default is foreground in interactive sessions, and the orchestrator rarely needs to set it explicitly** -- almost every Agent dispatch runs with `run_in_background=None` (foreground). Setting `run_in_background: false` explicitly is defensive, raramente necesario. The decision that actually shapes runtime behavior is dispatch-vs-resume (see "Re-dispatch instead of resume" in SKILL.md), because SendMessage resumes always run in the background literal regardless of how the original was dispatched. See `security-tiers/SKILL.md` -> R3, R4.
+
+- **foreground (default)**: AskUserQuestion can display; the agent can emit `approval_request` mid-task and reach the user.
+- **background**: AskUserQuestion auto-denies; only dispatch background when the scope is bounded and no approval is expected mid-task. In practice this is rare -- the orchestrator's normal pattern is foreground.
+
+**The mode is not inherited.** If you run with `acceptEdits`, your subagents still receive `default` unless you pass `mode: acceptEdits` explicitly in the dispatch. Set it per dispatch, not once per session.
+
+| Dispatch type | mode to pass | session |
+|--------------|-------------|---------|
+| Reads only (investigate, report) | omit (default) | foreground (default) |
+| Edits `.claude/skills/`, briefs, evidence | `acceptEdits` | foreground (default) |
+| T3 where approval may be needed mid-task | `default` or `acceptEdits` | **foreground** |
+| T3 with bounded scope, pre-satisfied permissions | `acceptEdits` or `bypassPermissions` | foreground or background |
+| Edits `.claude/hooks/` or settings | never dispatch directly | n/a -- requires Gaia approval flow |
+
+## Dispatch mode decision -- checklist pre-dispatch
+
+Antes de cada dispatch del Agent tool, recorre este árbol. Si algún paso produce ambigüedad, detente y pregunta al usuario.
+
+**1. ¿El goal es read-only o escribe?**
+- Read-only -> `default` (o `acceptEdits` si necesita escribir evidence)
+- Escribe -> paso 2
+
+**2. ¿Dónde escribe?**
+- Solo archivos declarativos (`.md`, `.yaml`, `.json` bajo `.claude/` o `gaia-ops-dev/`) -> `acceptEdits`
+- Código runtime (`.py` bajo `hooks/`, `bin/`, `agents/`) -> `acceptEdits` + aceptar grants Bash file-scoped esperados
+- Paths protegidos (`.git`, `.vscode`, `.husky`, `.claude/hooks/`, `settings.json`) -> `default` + prompt explícito; nunca bypass
+
+**3. ¿Requiere Bash mutativo (mv, rm, mkdir)?**
+- Atómico, scope enumerado, user-approved conceptualmente, hooks hardened -> `bypassPermissions`
+- Multi-step / multi-file PURO Edit/Write (sin Bash mutativo) -> `acceptEdits` (acepta fricción file-scoped; NO bypass: pierde audit per-file porque background pre-aprueba el bundle entero)
+- Bundle mixto: Bash mutativo (mv/rm) SOBRE `.claude/` + Edits SOBRE `.claude/` -> `bypassPermissions` + foreground + **empaquetar todos los steps en un solo turno** (ver Rule 4 y "Re-dispatch instead of resume" en SKILL.md). `acceptEdits` no alcanza porque no cubre el mv (R1); split en turnos pierde el mode en el SendMessage resume (R3).
+
+**4. ¿Puede emitir `approval_request` mid-task?**
+- Sí (scope puede evolucionar, T3 esperados) -> foreground
+- No (scope cerrado, permisos pre-satisfechos) -> background + mode que pre-satisfaga permisos
+
+**5. ¿El goal enumera el scope concreto?**
+- No -> DETÉN y pregunta al usuario antes del dispatch. No elegir mode sobre scope vago.
+- Sí -> continúa con la combinación decidida.
+
+Cross-reference: para qué hace cada mode y las 4 reglas runtime, ver `security-tiers/SKILL.md` -> "Mode runtime rules" y "permissionMode comparison".
+
+### Ejemplos concretos
+
+| Goal | mode | session | Razón |
+|------|------|---------|-------|
+| Editar contenido de un brief vía `gaia brief edit` (round-trip por `$EDITOR` contra la DB) | `acceptEdits` | background | Declarativo, scope cerrado, no requiere prompts mid-task; el CLI reescribe la fila en `~/.gaia/gaia.db` al cerrar el editor |
+| Mover directorio de brief al cerrar (`open_X` -> `closed_X`) | `bypassPermissions` | foreground | Atómico, scope aprobado, hardened bash_validator; foreground porque puede descubrir conflicto de nombre |
+| Split de enum en 3 archivos Python runtime | `acceptEdits` | background | Grants file-scoped esperados per-file -- fricción intencional para audit |
+| Bulk reject de pendings via CLI | `acceptEdits` | foreground | CLI maneja inline; foreground por si requiere confirmación mid-loop |
+| Investigation read-only con evidence write | `default` al leer, `acceptEdits` al escribir evidence | foreground | Dos dispatches distintos con modes distintos; no heredar entre ellos |
+

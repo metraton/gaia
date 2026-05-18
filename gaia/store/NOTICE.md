@@ -32,7 +32,7 @@ its companion modules `gaia.paths` and `gaia.project`:
 
 4. **Snapshot-export pattern (`<repo>/.gaia/snapshot/`)** —
    Workspace snapshots are exported to `<repo>/.gaia/snapshot/`, keyed by
-   workspace identity. The directory layout and `gaia project merge` flow
+   workspace identity. The directory layout and `gaia workspace merge` flow
    for handling drifted identities are inspired by engram's snapshot
    model. See `gaia.paths.snapshot_dir` and `gaia.project.merge`.
 

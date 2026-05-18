@@ -101,30 +101,30 @@ def tmp_db(tmp_path: Path, monkeypatch) -> Path:
 # Helper: attempt a write on any table via bulk_upsert with a minimal row
 # ---------------------------------------------------------------------------
 _MINIMAL_ROWS: dict[str, list[dict]] = {
-    "apps": [{"repo": "test-repo", "name": "test-app"}],
-    "libraries": [{"repo": "test-repo", "name": "test-lib"}],
-    "services": [{"repo": "test-repo", "name": "test-svc"}],
-    "features": [{"repo": "test-repo", "name": "test-feat"}],
-    "tf_modules": [{"repo": "test-repo", "name": "test-mod"}],
-    "tf_live": [{"repo": "test-repo", "name": "test-live"}],
-    "releases": [{"repo": "test-repo", "name": "v1.0.0"}],
-    "workloads": [{"repo": "test-repo", "name": "test-wl"}],
-    "clusters_defined": [{"repo": "test-repo", "name": "test-cd"}],
+    "apps": [{"project": "test-project", "name": "test-app"}],
+    "libraries": [{"project": "test-project", "name": "test-lib"}],
+    "services": [{"project": "test-project", "name": "test-svc"}],
+    "features": [{"project": "test-project", "name": "test-feat"}],
+    "tf_modules": [{"project": "test-project", "name": "test-mod"}],
+    "tf_live": [{"project": "test-project", "name": "test-live"}],
+    "releases": [{"project": "test-project", "name": "v1.0.0"}],
+    "workloads": [{"project": "test-project", "name": "test-wl"}],
+    "clusters_defined": [{"project": "test-project", "name": "test-cd"}],
     "clusters": [{"name": "test-cluster"}],
     "integrations": [{"name": "test-integration"}],
     "gaia_installations": [{"machine": "test-machine"}],
 }
 
 
-def _ensure_parent_repo(db: Path) -> None:
-    """Ensure a parent repo row exists for FK-dependent tables."""
-    from gaia.store.writer import _connect, _ensure_project_row
+def _ensure_parent_project(db: Path) -> None:
+    """Ensure a parent project row exists for FK-dependent tables."""
+    from gaia.store.writer import _connect, _ensure_workspace_row
     con = _connect(db)
     try:
-        _ensure_project_row(con, "test-ws")
+        _ensure_workspace_row(con, "test-ws")
         con.execute(
-            "INSERT OR IGNORE INTO repos (project, name, scanner_ts) VALUES (?, ?, ?)",
-            ("test-ws", "test-repo", "2026-01-01T00:00:00Z"),
+            "INSERT OR IGNORE INTO projects (workspace, name, scanner_ts) VALUES (?, ?, ?)",
+            ("test-ws", "test-project", "2026-01-01T00:00:00Z"),
         )
         con.commit()
     finally:
@@ -133,7 +133,7 @@ def _ensure_parent_repo(db: Path) -> None:
 
 def _try_write(table: str, agent: str, db: Path) -> str:
     """Returns 'applied' or 'rejected' based on bulk_upsert result."""
-    _ensure_parent_repo(db)
+    _ensure_parent_project(db)
     rows = _MINIMAL_ROWS[table]
     result = bulk_upsert(table=table, workspace="test-ws", rows=rows, agent=agent, db_path=db)
     if result.get("applied", 0) > 0:

@@ -26,6 +26,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+# Canonical valid statuses imported from the SSOT (gaia.state). The
+# transition table below references these by literal name; the import is
+# defensive (legacy hook environments without gaia on sys.path keep
+# working via the local literals).
+try:
+    from gaia.state import VALID_PLAN_STATUSES as _CANONICAL_PLAN_STATUSES  # noqa: F401
+except ImportError:
+    _CANONICAL_PLAN_STATUSES = (
+        "IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
+    )
+
 logger = logging.getLogger(__name__)
 
 _STATE_FILE = Path("/tmp/gaia-agent-states.json")
@@ -35,6 +46,9 @@ _MAX_IN_PROGRESS_RETRIES = 2
 
 # Legal transitions: from_status -> set of allowed to_statuses
 # Note: COMPLETE, BLOCKED, NEEDS_INPUT are terminal for a given task cycle.
+# The keys + values are constrained to ``_CANONICAL_PLAN_STATUSES``; the diff
+# tool ``tools/state/diff_source_of_truth.py`` flags any drift between this
+# table's domain and the SSOT tuple.
 _LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
     "IN_PROGRESS": {"COMPLETE", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT", "IN_PROGRESS"},
     "APPROVAL_REQUEST": {"IN_PROGRESS"},

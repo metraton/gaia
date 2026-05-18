@@ -46,7 +46,7 @@ Validates the full install flow without publishing. Tests exactly what `npm publ
 
 **When:** "test the install", "dry-run", "validate before release"
 
-Core sequence: build plugins -> validate build -> `npm pack` -> install .tgz in clean `/tmp/` project -> run `gaia-doctor` + `gaia-status` -> test both plugin modes (ops and security).
+Core sequence: build plugins -> validate build -> `npm pack` -> install .tgz in clean `/tmp/` project -> run `gaia doctor` + `gaia status` -> test both plugin modes (ops and security).
 
 For step-by-step commands, see `reference.md`.
 

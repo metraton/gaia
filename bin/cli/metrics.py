@@ -15,9 +15,10 @@ Displays system metrics dashboard:
 With --agent NAME shows a detail view for that agent.
 
 Data sources:
-  .claude/logs/audit-*.jsonl
-  .claude/project-context/episodic-memory/index.json
-  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (fallback)
+  ~/.gaia/gaia.db  (substrate SQLite, primary for agent sessions)
+  .claude/logs/audit-*.jsonl  (security tier events)
+  .claude/project-context/episodic-memory/index.json  (legacy fallback)
+  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (legacy fallback)
   .claude/project-context/workflow-episodic-memory/anomalies.jsonl
   .claude/project-context/workflow-episodic-memory/run-snapshots.jsonl
   .claude/project-context/workflow-episodic-memory/agent-skills.jsonl
@@ -723,7 +724,7 @@ def _display_metrics(data: dict):
         print(f"  Error rate:    {error_stats['errors']}/{error_stats['total']} ({error_stats['error_rate']:.1f}%)")
 
     print("\n" + SEP)
-    print("Source: .claude/logs/audit-*.jsonl  |  episodic-memory/index.json  |  workflow-episodic-memory/*.jsonl\n")
+    print("Source: ~/.gaia/gaia.db  |  .claude/logs/audit-*.jsonl  |  episodic-memory/index.json (legacy)\n")
 
 
 def _display_agent_detail(root: Path, agent_name: str, data: dict):
@@ -934,9 +935,10 @@ def register(subparsers):
             "Display Gaia-Ops system metrics dashboard.\n"
             "\n"
             "Data sources:\n"
-            "  .claude/logs/audit-*.jsonl\n"
-            "  .claude/project-context/episodic-memory/index.json\n"
-            "  .claude/project-context/workflow-episodic-memory/\n"
+            "  ~/.gaia/gaia.db  (substrate SQLite, primary for agent sessions)\n"
+            "  .claude/logs/audit-*.jsonl  (security tier events)\n"
+            "  .claude/project-context/episodic-memory/index.json  (legacy fallback)\n"
+            "  .claude/project-context/workflow-episodic-memory/  (legacy fallback)\n"
         ),
     )
     p.add_argument(

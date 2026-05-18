@@ -281,9 +281,9 @@ class TestScanGaiaInstallations:
 class TestPopulateApps:
     def test_apps_table_populated(self, tmp_db, tmp_path):
         from gaia.store.writer import _connect
-        from tools.scan.store_populator import populate_apps, populate_repo
+        from tools.scan.store_populator import populate_apps, populate_project
 
-        _setup_permissions(tmp_db, ["repos", "apps"], agent="developer")
+        _setup_permissions(tmp_db, ["projects", "apps"], agent="developer")
 
         repo_path = tmp_path / "qxo-monorepo"
         _init_repo(repo_path, "https://bitbucket.org/aaxisdigital/qxo.git")
@@ -292,7 +292,7 @@ class TestPopulateApps:
         # nova has Dockerfile -> kind=service
         (repo_path / "apps" / "nova" / "Dockerfile").write_text("FROM node:20\n")
 
-        populate_repo("ws-qxo", repo_path, "developer", db_path=tmp_db)
+        populate_project("ws-qxo", repo_path, "developer", db_path=tmp_db)
         result = populate_apps("ws-qxo", "qxo-monorepo", repo_path, "developer", db_path=tmp_db)
 
         assert "apps" in result
@@ -301,7 +301,7 @@ class TestPopulateApps:
 
         con = _connect(tmp_db)
         rows = con.execute(
-            "SELECT name, kind FROM apps WHERE project = ? AND repo = ?",
+            "SELECT name, kind FROM apps WHERE workspace = ? AND project = ?",
             ("ws-qxo", "qxo-monorepo"),
         ).fetchall()
         con.close()
@@ -318,9 +318,9 @@ class TestPopulateApps:
 class TestPopulateServices:
     def test_services_table_populated_from_compose(self, tmp_db, tmp_path):
         from gaia.store.writer import _connect
-        from tools.scan.store_populator import populate_repo, populate_services
+        from tools.scan.store_populator import populate_project, populate_services
 
-        _setup_permissions(tmp_db, ["repos", "services"], agent="developer")
+        _setup_permissions(tmp_db, ["projects", "services"], agent="developer")
 
         repo_path = tmp_path / "platform"
         _init_repo(repo_path)
@@ -330,12 +330,12 @@ class TestPopulateServices:
             "  api:\n    image: org/api:1.0\n"
         )
 
-        populate_repo("ws-test", repo_path, "developer", db_path=tmp_db)
+        populate_project("ws-test", repo_path, "developer", db_path=tmp_db)
         populate_services("ws-test", "platform", repo_path, "developer", db_path=tmp_db)
 
         con = _connect(tmp_db)
         rows = con.execute(
-            "SELECT name, kind FROM services WHERE project = ? AND repo = ?",
+            "SELECT name, kind FROM services WHERE workspace = ? AND project = ?",
             ("ws-test", "platform"),
         ).fetchall()
         con.close()
@@ -352,9 +352,9 @@ class TestPopulateServices:
 class TestPopulateLibraries:
     def test_libraries_table_populated(self, tmp_db, tmp_path):
         from gaia.store.writer import _connect
-        from tools.scan.store_populator import populate_libraries, populate_repo
+        from tools.scan.store_populator import populate_libraries, populate_project
 
-        _setup_permissions(tmp_db, ["repos", "libraries"], agent="developer")
+        _setup_permissions(tmp_db, ["projects", "libraries"], agent="developer")
 
         repo_path = tmp_path / "platform"
         _init_repo(repo_path)
@@ -364,12 +364,12 @@ class TestPopulateLibraries:
             json.dumps({"name": "@bw/shared", "version": "0.5.0"})
         )
 
-        populate_repo("ws-test", repo_path, "developer", db_path=tmp_db)
+        populate_project("ws-test", repo_path, "developer", db_path=tmp_db)
         populate_libraries("ws-test", "platform", repo_path, "developer", db_path=tmp_db)
 
         con = _connect(tmp_db)
         rows = con.execute(
-            "SELECT name, version, language FROM libraries WHERE project = ? AND repo = ?",
+            "SELECT name, version, language FROM libraries WHERE workspace = ? AND project = ?",
             ("ws-test", "platform"),
         ).fetchall()
         con.close()
@@ -386,14 +386,14 @@ class TestPopulateLibraries:
 
 class TestPopulateGaiaInstallations:
     def test_gaia_installations_table_populated(self, tmp_db, tmp_path):
-        from gaia.store.writer import _connect, _ensure_project_row
+        from gaia.store.writer import _connect, _ensure_workspace_row
         from tools.scan.store_populator import populate_gaia_installations
 
         _setup_permissions(tmp_db, ["gaia_installations"], agent="gaia-system")
 
-        # Pre-seed the project row -- gaia_installations has FK -> projects
+        # Pre-seed the workspace row -- gaia_installations has FK -> workspaces
         con = _connect(tmp_db)
-        _ensure_project_row(con, "ws-test")
+        _ensure_workspace_row(con, "ws-test")
         con.commit()
         con.close()
 
@@ -410,7 +410,7 @@ class TestPopulateGaiaInstallations:
 
         con = _connect(tmp_db)
         rows = con.execute(
-            "SELECT machine, version, install_mode FROM gaia_installations WHERE project = ?",
+            "SELECT machine, version, install_mode FROM gaia_installations WHERE workspace = ?",
             ("ws-test",),
         ).fetchall()
         con.close()
@@ -474,16 +474,16 @@ class TestScanWorkspaceWiring:
         con = _connect(tmp_db)
         try:
             apps_count = con.execute(
-                "SELECT COUNT(*) FROM apps WHERE project = ?", ("ws-test",)
+                "SELECT COUNT(*) FROM apps WHERE workspace = ?", ("ws-test",)
             ).fetchone()[0]
             services_count = con.execute(
-                "SELECT COUNT(*) FROM services WHERE project = ?", ("ws-test",)
+                "SELECT COUNT(*) FROM services WHERE workspace = ?", ("ws-test",)
             ).fetchone()[0]
             libs_count = con.execute(
-                "SELECT COUNT(*) FROM libraries WHERE project = ?", ("ws-test",)
+                "SELECT COUNT(*) FROM libraries WHERE workspace = ?", ("ws-test",)
             ).fetchone()[0]
             gaia_count = con.execute(
-                "SELECT COUNT(*) FROM gaia_installations WHERE project = ?", ("ws-test",)
+                "SELECT COUNT(*) FROM gaia_installations WHERE workspace = ?", ("ws-test",)
             ).fetchone()[0]
         finally:
             con.close()

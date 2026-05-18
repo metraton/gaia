@@ -25,12 +25,38 @@ from .approval_messages import build_t3_approval_instructions
 from .command_semantics import analyze_command
 
 try:
+    from .capability_classes import (
+        CATEGORY_MUTATIVE as _CAP_MUTATIVE,
+        CATEGORY_READ_ONLY as _CAP_READ_ONLY,
+        classify_capability as _classify_capability,
+        is_capability_verb as _is_capability_verb,
+    )
+except ImportError:  # pragma: no cover -- defensive
+    _classify_capability = None
+    _is_capability_verb = None
+    _CAP_MUTATIVE = "MUTATIVE"
+    _CAP_READ_ONLY = "READ_ONLY"
+    logging.getLogger(__name__).warning(
+        "capability_classes not importable; database CLI capability "
+        "classification disabled"
+    )
+
+try:
     from .blocked_commands import is_blocked_command as _is_blocked_command
 except ImportError:
     _is_blocked_command = None
     logging.getLogger(__name__).warning(
         "blocked_commands.is_blocked_command not importable; "
         "inline code Layer 1 (shell extraction) disabled"
+    )
+
+try:
+    from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
+except ImportError:  # pragma: no cover -- defensive
+    _analyze_python_inline = None
+    logging.getLogger(__name__).warning(
+        "inline_ast_analyzer.analyze_python_inline not importable; "
+        "AST-based Python inline analysis disabled (falling back to regex)"
     )
 
 logger = logging.getLogger(__name__)
@@ -259,6 +285,12 @@ _INLINE_CODE_MAP: Dict[str, FrozenSet[str]] = {
 }
 _INLINE_CODE_CLIS: FrozenSet[str] = frozenset(_INLINE_CODE_MAP.keys())
 
+# Python interpreters whose ``-c`` payload is parsed by the AST analyzer.
+_PYTHON_INTERPRETERS: FrozenSet[str] = frozenset({
+    "python", "python3",
+    "python3.10", "python3.11", "python3.12", "python3.13",
+})
+
 # ---------------------------------------------------------------------------
 # Layer 1: Shell command extraction from string literals
 # ---------------------------------------------------------------------------
@@ -358,6 +390,48 @@ COMMAND_ALIASES: Dict[str, str] = {
 
 
 # ============================================================================
+# Read-Only Base Commands (fast-path whitelist)
+# ============================================================================
+# Common read-only inspection commands. When the base_cmd matches, short-circuit
+# to safe BEFORE any verb-token or camelCase scanning. This prevents false
+# positives where a quoted argument value (e.g., "SessionStart") gets split
+# into camelCase parts and matches a mutative verb.
+#
+# CRITICAL: Do not include `sed` here. `sed -i` mutates files in-place; `sed`
+# without `-i` is read-only, but distinguishing flags here is fragile and the
+# verb scanner already classifies bare `sed` as safe by elimination.
+#
+# These commands are read-only by design at the syscall level: they open files
+# for reading and write to stdout. Any flag combination that would mutate state
+# (e.g., `find -delete`) is caught by the dangerous-flags scanner via the
+# generic CLI families that use those flags, or by `blocked_commands.py`.
+
+READ_ONLY_BASE_CMDS: FrozenSet[str] = frozenset({
+    "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    "find", "fd", "locate",
+    "ls", "ll", "la", "tree",
+    "cat", "bat", "less", "more",
+    "head", "tail",
+    "awk", "sort", "uniq", "cut", "tr", "wc", "column",
+    "stat", "file", "du", "df",
+    "readlink", "realpath", "dirname", "basename",
+    "which", "whereis", "type", "command",
+    "echo", "printf", "yes", "true", "false",
+    "date", "uptime", "id", "whoami", "groups", "hostname",
+    "ps", "pgrep",
+    "env",
+    "diff", "cmp",
+    "xxd", "od", "hexdump", "strings",
+})
+
+
+# Find -- special handling: `-delete` flag mutates. We scan for it explicitly
+# in the find fast-path so we can keep `find` in the read-only whitelist for
+# the common case while still flagging the destructive flag.
+_FIND_MUTATIVE_FLAGS: FrozenSet[str] = frozenset({"-delete"})
+
+
+# ============================================================================
 # Simulation Flags (--dry-run and equivalents)
 # ============================================================================
 
@@ -424,9 +498,18 @@ DANGEROUS_FLAGS: Dict[str, str] = {
     "-M": "CONTEXT",
     "--recursive": "CONTEXT",
     "--delete": "CONTEXT",
+    "--hard": "CONTEXT",
     "-rf": "ALWAYS",
     "-fr": "ALWAYS",
 }
+
+# Git-specific flags that promote a normally local-safe subcommand to T3.
+# ``git reset`` and ``git reset --soft`` only adjust the index and HEAD
+# without touching the working tree, but ``git reset --hard`` discards
+# uncommitted changes and is approvable rather than blocked.  Keeping the
+# flag set centralized makes the policy auditable and lets test_blocked_*
+# pin the contract.
+GIT_HARD_RESET_FLAGS: FrozenSet[str] = frozenset({"--hard"})
 
 # CLIs where -f means --force (not --file or --format)
 F_FLAG_MEANS_FORCE: FrozenSet[str] = frozenset({
@@ -453,6 +536,11 @@ M_FLAG_MEANS_FORCE_MOVE: FrozenSet[str] = frozenset({
 # CLIs where --delete is a destructive flag (not a query filter)
 DELETE_FLAG_IS_DESTRUCTIVE: FrozenSet[str] = frozenset({
     "git", "rsync",
+})
+
+# CLIs where --hard discards live state (currently only `git reset --hard`).
+HARD_FLAG_IS_DESTRUCTIVE: FrozenSet[str] = frozenset({
+    "git",
 })
 
 
@@ -545,6 +633,9 @@ def _scan_dangerous_flags(
             elif token == "--recursive":
                 if cli in R_FLAG_MEANS_RECURSIVE_DELETE:
                     found.append(token)
+            elif token == "--hard":
+                if cli in HARD_FLAG_IS_DESTRUCTIVE:
+                    found.append(token)
 
         # Check for compound short flags containing dangerous combos
         # e.g., "-rfi" contains both -r and -f
@@ -634,6 +725,73 @@ def detect_mutative_command(command: str) -> MutativeResult:
             confidence="high",
             reason=f"Command alias '{base_cmd}' is {alias_category.lower()}",
         )
+
+    # --- Step 1b: Read-only base command fast-path ---
+    # When the base_cmd is a known read-only inspection tool (grep, find, ls,
+    # cat, etc.), short-circuit to safe BEFORE the verb scanner runs. This
+    # prevents quoted argument values from being scanned as verb tokens,
+    # which previously caused false positives such as
+    #   grep -rn "SessionStart" file.json
+    # being flagged as MUTATIVE because camelCase splitting on "SessionStart"
+    # produced "start" (a mutative verb).
+    #
+    # Special-case: `find ... -delete` is destructive — flag it explicitly
+    # before falling into the safe path.
+    if base_cmd in READ_ONLY_BASE_CMDS:
+        if base_cmd == "find" and any(
+            t.lower() in _FIND_MUTATIVE_FLAGS for t in tokens
+        ):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="find",
+                dangerous_flags=("-delete",),
+                cli_family="system",
+                confidence="high",
+                reason="`find -delete` removes matched files",
+            )
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb=base_cmd,
+            cli_family=family if family != "unknown" else "system",
+            confidence="high",
+            reason=f"Read-only base command '{base_cmd}' (whitelist fast-path)",
+        )
+
+    # --- Step 1c: Capability-class fast-path ---
+    # Some CLIs (sqlite3, psql, mysql, mongosh, ...) accept the entire
+    # mutation language as an argument string, so the verb scanner cannot
+    # see the intent.  capability_classes.py groups these tools into one
+    # rule set: default MUTATIVE, with explicit overrides for read-only
+    # flags and inline read-only payloads.  Without this layer,
+    # `sqlite3 db < file.sql` slips through as safe-by-elimination and
+    # silently applies whatever the file contains.
+    if _classify_capability is not None and _is_capability_verb is not None:
+        if _is_capability_verb(base_cmd):
+            cap = _classify_capability(semantics)
+            if cap.matched:
+                if cap.intent == _CAP_READ_ONLY:
+                    return MutativeResult(
+                        is_mutative=False,
+                        category=CATEGORY_READ_ONLY,
+                        verb=base_cmd,
+                        cli_family="database",
+                        confidence="high",
+                        reason=cap.reason,
+                    )
+                # MUTATIVE -- still scan dangerous flags so the response
+                # surfaces them in the approval prompt.
+                dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=base_cmd,
+                    dangerous_flags=dangerous_flags,
+                    cli_family="database",
+                    confidence="high",
+                    reason=cap.reason,
+                )
 
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
@@ -857,9 +1015,16 @@ def detect_mutative_command(command: str) -> MutativeResult:
         # Use the raw (original-case) token because semantic_head_tokens is
         # lowercased, which destroys the camelCase word boundaries that
         # split_camel_case relies on (regex: [a-z][A-Z]).
+        #
+        # IMPORTANT: only apply camelCase splitting at the subcommand position
+        # (semantic_index == 1). At later positions, tokens are typically
+        # argument values (paths, query strings, identifiers) and splitting
+        # them produces false positives — e.g., the literal "SessionStart"
+        # passed as a grep pattern would split to ["session", "start"] and
+        # incorrectly trigger the mutative verb "start".
         raw_token = semantics.semantic_head_tokens_raw[semantic_index] if semantic_index < len(semantics.semantic_head_tokens_raw) else token
         camel_parts = split_camel_case(raw_token)
-        if len(camel_parts) > 1:
+        if semantic_index == 1 and len(camel_parts) > 1:
             for part in camel_parts:
                 if part in MUTATIVE_VERBS:
                     override_key = (family, part)
@@ -976,17 +1141,64 @@ def detect_mutative_command(command: str) -> MutativeResult:
 # Helpers
 # ============================================================================
 
+def _extract_python_payload(command: str, base_cmd: str) -> str:
+    """Return the Python source string passed via ``-c "..."`` or ``-`` heredoc.
+
+    The extractor looks for the canonical ``<python> -c <payload>`` shape,
+    accepting single, double, or unquoted payloads.  When the interpreter is
+    invoked with ``-`` (stdin) and a heredoc body, the body between
+    ``<<MARKER`` and ``MARKER`` is returned instead.
+
+    Empty string is returned when extraction fails -- the caller is expected
+    to fall back to its regex layer in that case.
+    """
+    # Heredoc form: python3 - <<'PYEOF' ... PYEOF
+    if "<<" in command:
+        m = _re.search(
+            r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\s*\1\s*$",
+            command, _re.DOTALL,
+        )
+        if m:
+            return m.group(2)
+
+    # Inline -c form, with quoted or unquoted payload.
+    m = _re.search(
+        r"(?:^|\s)" + _re.escape(base_cmd) + r"\b[^-]*?-c\s+(['\"])(.*?)\1",
+        command, _re.DOTALL,
+    )
+    if m:
+        return m.group(2)
+
+    # Fallback: greedy unquoted -c payload up to end of line / chain operator.
+    m = _re.search(r"-c\s+(\S.*)$", command, _re.DOTALL)
+    if m:
+        # Strip a trailing matched quote pair if shlex left them in place.
+        return m.group(1).strip().strip("'\"")
+    return ""
+
+
 def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
-    """Check inline code for dangerous patterns using a 3-layer approach.
+    """Check inline code for dangerous patterns.
+
+    Pipeline:
 
     Layer 1: Extract string literals from inline code and check them against
-             blocked_commands (catches embedded shell commands like 'rm -rf /').
-    Layer 2: Scan for universal dangerous API keywords (language-agnostic).
+             ``blocked_commands`` (catches embedded shell commands like ``rm -rf /``).
+
+    Layer 2 (Python only): Parse the payload with ``ast.parse`` and walk
+             ``Call`` nodes.  ``import subprocess; print('hi')`` is **not**
+             flagged because ``subprocess.run`` is never invoked, while
+             ``subprocess.run([...])`` is.  When parsing fails we degrade to
+             Layer 2b.
+
+    Layer 2b: Universal regex scan for dangerous API keywords (used for non-
+             Python interpreters and as the fallback for un-parseable Python).
+
     Layer 3: Heuristic safety classification (length, sensitive paths, encoding).
 
     Args:
         command: Full raw command string.
-        base_cmd: The interpreter (e.g., "python3", "node", "ruby").
+        base_cmd: The interpreter (e.g., ``python3``, ``node``, ``ruby``).
         family: CLI family hint.
 
     Returns:
@@ -1010,7 +1222,34 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                     ),
                 )
 
-    # ---- Layer 2: Universal dangerous API keyword patterns ----
+    # ---- Layer 2 (Python only): AST-based invocation analysis ----
+    if base_cmd in _PYTHON_INTERPRETERS and _analyze_python_inline is not None:
+        payload = _extract_python_payload(command, base_cmd)
+        if payload:
+            ast_result = _analyze_python_inline(payload)
+            if ast_result.is_dangerous:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=ast_result.label,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Inline Python invokes {ast_result.detail} "
+                        f"({ast_result.category})"
+                    ),
+                )
+            if not ast_result.parse_failed:
+                # AST parsed cleanly and found nothing dangerous: trust it
+                # and skip the regex layer (which would false-positive on
+                # bare ``import subprocess`` or quoted strings).  Fall
+                # through to Layer 3 heuristics for length only.
+                return _layer3_length_check(
+                    command, base_cmd, family, skip_length_check,
+                )
+            # parse_failed=True -> fall through to regex layer 2b below.
+
+    # ---- Layer 2b: Universal dangerous API keyword patterns ----
     for pattern, label, category in _UNIVERSAL_DANGEROUS_PATTERNS:
         if pattern.search(command):
             return MutativeResult(
@@ -1022,7 +1261,19 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                 reason=f"Inline code contains dangerous pattern: {label} ({category})",
             )
 
-    # ---- Layer 3: Heuristic safety classification ----
+    # ---- Layer 3: Heuristic safety classification (suspicious patterns + length) ----
+    return _layer3_full_check(command, base_cmd, family, skip_length_check)
+
+
+def _layer3_full_check(
+    command: str, base_cmd: str, family: str, skip_length_check: bool,
+) -> MutativeResult:
+    """Run heuristic checks (3a suspicious patterns + 3b length).
+
+    Used as the tail for non-Python interpreters and for Python payloads
+    whose AST parse failed -- the regex layer needs the suspicious-pattern
+    fallback to keep network/encoding heuristics live.
+    """
     # 3a: Check for suspicious indicators (sensitive paths, encoding, IPs)
     for pattern, label in _SUSPICIOUS_HEURISTICS:
         if pattern.search(command):
@@ -1035,9 +1286,17 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                 reason=f"Inline code flagged by heuristic: {label}",
             )
 
-    # 3b: Unusually long inline code is suspicious
-    # Extract the code portion after the inline flag for length check.
-    # Use a rough extraction: everything after the first inline flag.
+    return _layer3_length_check(command, base_cmd, family, skip_length_check)
+
+
+def _layer3_length_check(
+    command: str, base_cmd: str, family: str, skip_length_check: bool,
+) -> MutativeResult:
+    """Run only the length heuristic (3b).
+
+    Used when AST analysis cleared a Python payload -- we trust the AST for
+    semantic safety but still flag suspiciously long inline code.
+    """
     code_portion = command
     cli_flag_tokens = _INLINE_CODE_MAP.get(base_cmd, frozenset())
     for flag in cli_flag_tokens:

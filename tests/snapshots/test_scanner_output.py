@@ -28,7 +28,7 @@ GOLDEN_DIR = Path(__file__).parent / "golden"
 
 def _grant_all(con, agent: str) -> None:
     for table in (
-        "repos", "apps", "tf_modules", "tf_live", "releases", "workloads",
+        "projects", "apps", "tf_modules", "tf_live", "releases", "workloads",
         "clusters_defined",
     ):
         con.execute(
@@ -49,39 +49,39 @@ def _build_snapshot(workspace: str, db_path: Path) -> str:
     lines: list[str] = []
     lines.append(f"# workspace: {workspace}")
 
-    repos = sorted(ws["repos"], key=lambda r: r["name"])
-    lines.append(f"repos: {len(repos)}")
-    for r in repos:
+    projects = sorted(ws["projects"], key=lambda r: r["name"])
+    lines.append(f"projects: {len(projects)}")
+    for r in projects:
         lines.append(
-            f"  repo name={r['name']} role={r.get('role') or '-'} "
+            f"  project name={r['name']} role={r.get('role') or '-'} "
             f"language={r.get('primary_language') or '-'}"
         )
 
-    tf_modules = sorted(ws["tf_modules"], key=lambda m: (m["repo"], m["name"]))
+    tf_modules = sorted(ws["tf_modules"], key=lambda m: (m["project"], m["name"]))
     lines.append(f"tf_modules: {len(tf_modules)}")
     for m in tf_modules:
-        lines.append(f"  tf_module repo={m['repo']} name={m['name']}")
+        lines.append(f"  tf_module project={m['project']} name={m['name']}")
 
     clusters_defined = sorted(
-        ws["clusters_defined"], key=lambda c: (c["repo"], c["name"])
+        ws["clusters_defined"], key=lambda c: (c["project"], c["name"])
     )
     lines.append(f"clusters_defined: {len(clusters_defined)}")
     for c in clusters_defined:
         lines.append(
-            f"  cluster_defined repo={c['repo']} name={c['name']} "
+            f"  cluster_defined project={c['project']} name={c['name']} "
             f"provider={c.get('provider') or '-'}"
         )
 
-    releases = sorted(ws["releases"], key=lambda r: (r["repo"], r["name"]))
+    releases = sorted(ws["releases"], key=lambda r: (r["project"], r["name"]))
     lines.append(f"releases: {len(releases)}")
     for r in releases:
-        lines.append(f"  release repo={r['repo']} name={r['name']}")
+        lines.append(f"  release project={r['project']} name={r['name']}")
 
-    workloads = sorted(ws["workloads"], key=lambda w: (w["repo"], w["name"]))
+    workloads = sorted(ws["workloads"], key=lambda w: (w["project"], w["name"]))
     lines.append(f"workloads: {len(workloads)}")
     for w in workloads:
         lines.append(
-            f"  workload repo={w['repo']} name={w['name']} "
+            f"  workload project={w['project']} name={w['name']} "
             f"kind={w.get('kind') or '-'} ns={w.get('namespace') or '-'}"
         )
 
@@ -131,18 +131,18 @@ def _scan_and_snapshot(
     from tools.scan.store_populator import (
         populate_infrastructure, populate_orchestration,
     )
-    for repo_dir in sorted(d for d in dest.iterdir() if d.is_dir()):
+    for project_dir in sorted(d for d in dest.iterdir() if d.is_dir()):
         populate_infrastructure(
             workspace=workspace,
-            repo=repo_dir.name,
-            repo_path=repo_dir,
+            project=project_dir.name,
+            project_path=project_dir,
             agent="terraform-architect",
             db_path=tmp_db,
         )
         populate_orchestration(
             workspace=workspace,
-            repo=repo_dir.name,
-            repo_path=repo_dir,
+            project=project_dir.name,
+            project_path=project_dir,
             agent="gitops-operator",
             db_path=tmp_db,
         )

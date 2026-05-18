@@ -34,7 +34,7 @@ def _grant(con, table, agent):
 def _setup_permissions(db_path):
     from gaia.store.writer import _connect
     con = _connect(db_path)
-    for table in ("repos", "features"):
+    for table in ("projects", "features"):
         _grant(con, table, "developer")
     con.close()
     return con
@@ -148,7 +148,7 @@ class TestPopulateFeatures:
         """Simulates the qxo-monorepo layout: features/ directory with submodules."""
         import subprocess
         from gaia.store.writer import _connect
-        from tools.scan.store_populator import populate_repo, populate_features
+        from tools.scan.store_populator import populate_project, populate_features
 
         _setup_permissions(tmp_db)
 
@@ -165,13 +165,13 @@ class TestPopulateFeatures:
             (features_dir / fname).mkdir(parents=True)
 
         # Ensure the repo row exists first
-        populate_repo("ws-qxo", repo_path, "developer", db_path=tmp_db)
+        populate_project("ws-qxo", repo_path, "developer", db_path=tmp_db)
 
         result = populate_features("ws-qxo", "qxo-monorepo", repo_path, "developer", db_path=tmp_db)
 
         con = _connect(tmp_db)
         rows = con.execute(
-            "SELECT name FROM features WHERE project = ? AND repo = ?",
+            "SELECT name FROM features WHERE workspace = ? AND project = ?",
             ("ws-qxo", "qxo-monorepo"),
         ).fetchall()
         con.close()
@@ -185,7 +185,7 @@ class TestPopulateFeatures:
     def test_populate_features_returns_upsert_counts(self, tmp_db, tmp_path, monkeypatch):
         """populate_features returns a dict with 'features' key containing counts."""
         import subprocess
-        from tools.scan.store_populator import populate_repo, populate_features
+        from tools.scan.store_populator import populate_project, populate_features
 
         _setup_permissions(tmp_db)
 
@@ -195,7 +195,7 @@ class TestPopulateFeatures:
         (repo_path / "features" / "feat-a").mkdir(parents=True)
         (repo_path / "features" / "feat-b").mkdir(parents=True)
 
-        populate_repo("ws-test", repo_path, "developer", db_path=tmp_db)
+        populate_project("ws-test", repo_path, "developer", db_path=tmp_db)
         result = populate_features("ws-test", "test-repo", repo_path, "developer", db_path=tmp_db)
 
         assert "features" in result

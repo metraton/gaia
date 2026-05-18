@@ -118,7 +118,7 @@ def _query_memory(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("project = ?")
+        where.append("workspace = ?")
         params.append(workspace)
     if since_iso:
         where.append("COALESCE(updated_at, '') >= ?")
@@ -131,7 +131,7 @@ def _query_memory(
         params.append(type_filter)
 
     sql = (
-        "SELECT project, name, type, description, body, origin_session_id, "
+        "SELECT workspace, name, type, description, body, origin_session_id, "
         "updated_at "
         "FROM memory"
     )
@@ -178,7 +178,7 @@ def _query_episodes(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("project = ?")
+        where.append("workspace = ?")
         params.append(workspace)
     if since_iso:
         where.append("timestamp >= ?")
@@ -200,7 +200,7 @@ def _query_episodes(
         )
 
     sql = (
-        "SELECT episode_id, project, timestamp, session_id, task_id, agent, "
+        "SELECT episode_id, workspace, timestamp, session_id, task_id, agent, "
         "type, title, plan_status, outcome, exit_code, duration_seconds "
         "FROM episodes"
     )
@@ -250,7 +250,7 @@ def _query_harness_events(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("(project = ? OR project IS NULL)")
+        where.append("(workspace = ? OR workspace IS NULL)")
         params.append(workspace)
     if since_iso:
         where.append("ts >= ?")
@@ -280,7 +280,7 @@ def _query_harness_events(
         )
 
     sql = (
-        "SELECT id, project, ts, type, source, agent, result, severity, payload "
+        "SELECT id, workspace, ts, type, source, agent, result, severity, payload "
         "FROM harness_events"
     )
     if where:

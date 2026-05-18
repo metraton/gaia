@@ -178,6 +178,9 @@ def merge_local_permissions(
     if "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" not in env:
         env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         changed_fields.append("env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
+    if "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in env:
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        changed_fields.append("env.CLAUDE_CODE_DISABLE_AUTO_MEMORY")
 
     # Permissions: authoritative merge
     perms = existing.get("permissions", {})

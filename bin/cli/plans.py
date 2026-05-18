@@ -201,42 +201,42 @@ def _collect_briefs(briefs_dir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _cmd_list(args) -> int:
-    """Handle `gaia plans list`."""
-    project_root = _find_project_root(Path.cwd())
-    if project_root is None:
-        msg = "gaia plans: could not find project root (.claude/ directory)"
+    """Handle `gaia plans list`.
+
+    Delegates to the substrate (SQLite) via gaia.briefs.list_briefs -- same
+    source of truth as `gaia brief list`. The legacy filesystem reader
+    (.claude/project-context/briefs/) is no longer used here.
+    """
+    try:
+        from gaia.briefs import list_briefs
+        from gaia.project import current as _project_current
+        workspace = _project_current()
+        briefs = list_briefs(workspace)
+    except Exception as exc:
+        msg = f"gaia plans list: failed to read store: {exc}"
         if getattr(args, "json", False):
             print(json.dumps({"error": msg}))
         else:
             print(f"Error: {msg}", file=sys.stderr)
         return 1
 
-    briefs_dir = _get_briefs_dir(project_root)
-    briefs = _collect_briefs(briefs_dir)
-
     if getattr(args, "json", False):
-        print(json.dumps({"briefs": briefs}, indent=2))
+        print(json.dumps({"briefs": briefs}, indent=2, default=str))
         return 0
 
     if not briefs:
-        print("No briefs found.")
+        print("(no briefs)")
         return 0
 
-    # Human-readable table
-    col_name = max(len("BRIEF"), max(len(b["name"]) for b in briefs))
-    col_brief = max(len("BRIEF STATUS"), max(len(b["brief_status"]) for b in briefs))
-    col_plan = max(len("PLAN STATUS"), max(len(b["plan_file_status"]) for b in briefs))
-
-    header = (
-        f"{'BRIEF':<{col_name}}  {'BRIEF STATUS':<{col_brief}}  {'PLAN STATUS':<{col_plan}}"
-    )
-    sep = "-" * len(header)
-    print(header)
-    print(sep)
+    # Human-readable table -- matches `gaia brief list` table style
+    name_w = max(4, max(len(b["name"]) for b in briefs))
+    status_w = max(6, max(len((b.get("status") or "")) for b in briefs))
+    title_w = max(5, max(len((b.get("title") or "")) for b in briefs))
+    print(f"{'NAME':<{name_w}}  {'STATUS':<{status_w}}  {'TITLE':<{title_w}}")
+    print("-" * (name_w + status_w + title_w + 4))
     for b in briefs:
-        print(
-            f"{b['name']:<{col_name}}  {b['brief_status']:<{col_brief}}  {b['plan_file_status']:<{col_plan}}"
-        )
+        print(f"{b['name']:<{name_w}}  {(b.get('status') or ''):<{status_w}}  "
+              f"{(b.get('title') or ''):<{title_w}}")
     return 0
 
 

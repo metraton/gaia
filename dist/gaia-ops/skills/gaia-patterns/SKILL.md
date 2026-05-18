@@ -76,7 +76,7 @@ Agents get instantiated as: identity (.md) + skills (injected from frontmatter) 
 
 ## CLI Tool Patterns
 
-CLI tools live in `bin/` and are registered in `package.json` `bin` field. Pattern: parse args, resolve paths (follow symlinks to source), run checks, exit with code. `gaia-doctor` is the diagnostic model -- read it first.
+CLI tools live in `bin/` and are registered in `package.json` `bin` field. Pattern: parse args, resolve paths (follow symlinks to source), run checks, exit with code. `gaia doctor` is the diagnostic model -- read it first.
 
 ## Command Patterns
 

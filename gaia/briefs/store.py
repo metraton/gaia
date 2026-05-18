@@ -8,7 +8,7 @@ substrate; tables `briefs`, `acceptance_criteria`, `milestones`,
 This module does NOT consult ``agent_permissions``: brief authorship is a
 user-driven CLI flow (``gaia brief`` from the user's terminal), not an
 agent-driven mutation. That matches the design in B1 where agent_permissions
-gates *agent-owned* tables (apps, repos) but leaves user-owned interactions
+gates *agent-owned* tables (apps, projects) but leaves user-owned interactions
 free.
 
 Public API::
@@ -36,7 +36,7 @@ from gaia.briefs.serializer import (
     parse_brief_markdown,
     serialize_brief_to_markdown,
 )
-from gaia.store.writer import _connect, _ensure_project_row
+from gaia.store.writer import _connect, _ensure_workspace_row
 
 
 def _now_iso() -> str:
@@ -113,7 +113,7 @@ def upsert_brief(
     """Insert or update a brief row and its child rows (ACs, milestones, deps).
 
     Args:
-        workspace: workspace identity (projects.name).
+        workspace: workspace identity (workspaces.name).
         name: bare brief name (no prefix).
         fields: dict matching the parse_brief_markdown shape; recognized keys:
             ``status``, ``surface_type``, ``topic_key``, ``title``,
@@ -128,10 +128,10 @@ def upsert_brief(
     try:
         con.execute("BEGIN")
         try:
-            _ensure_project_row(con, workspace)
+            _ensure_workspace_row(con, workspace)
 
             existing = con.execute(
-                "SELECT id FROM briefs WHERE project = ? AND name = ?",
+                "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
                 (workspace, name),
             ).fetchone()
 
@@ -144,7 +144,7 @@ def upsert_brief(
             if existing is None:
                 con.execute(
                     """
-                    INSERT INTO briefs (project, name, status, surface_type, title,
+                    INSERT INTO briefs (workspace, name, status, surface_type, title,
                                         objective, context, approach, out_of_scope,
                                         topic_key, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -157,7 +157,7 @@ def upsert_brief(
                     ),
                 )
                 brief_id = con.execute(
-                    "SELECT id FROM briefs WHERE project = ? AND name = ?",
+                    "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
                     (workspace, name),
                 ).fetchone()["id"]
             else:
@@ -225,7 +225,7 @@ def upsert_brief(
             )
             for dep_name in fields.get("dependencies") or []:
                 target = con.execute(
-                    "SELECT id FROM briefs WHERE project = ? AND name = ?",
+                    "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
                     (workspace, dep_name),
                 ).fetchone()
                 if target is None:
@@ -270,13 +270,13 @@ def list_briefs(
         if status is None:
             rows = con.execute(
                 "SELECT id, name, status, surface_type, title, updated_at "
-                "FROM briefs WHERE project = ? ORDER BY name",
+                "FROM briefs WHERE workspace = ? ORDER BY name",
                 (workspace,),
             ).fetchall()
         else:
             rows = con.execute(
                 "SELECT id, name, status, surface_type, title, updated_at "
-                "FROM briefs WHERE project = ? AND status = ? ORDER BY name",
+                "FROM briefs WHERE workspace = ? AND status = ? ORDER BY name",
                 (workspace, status),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -298,14 +298,14 @@ def get_brief(
     con = _connect(db_path)
     try:
         row = con.execute(
-            "SELECT * FROM briefs WHERE project = ? AND name = ?",
+            "SELECT * FROM briefs WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if row is None:
             return None
 
         brief: dict[str, Any] = dict(row)
-        brief.pop("project", None)
+        brief.pop("workspace", None)
 
         ac_rows = con.execute(
             "SELECT ac_id, description, evidence_type, evidence_shape, artifact_path "
@@ -367,7 +367,7 @@ def close_brief(
     try:
         cur = con.execute(
             "UPDATE briefs SET status = 'closed', updated_at = ? "
-            "WHERE project = ? AND name = ?",
+            "WHERE workspace = ? AND name = ?",
             (_now_iso(), workspace, name),
         )
         con.commit()
@@ -426,7 +426,7 @@ def set_status_brief(
     con = _connect(db_path)
     try:
         row = con.execute(
-            "SELECT id, status FROM briefs WHERE project = ? AND name = ?",
+            "SELECT id, status FROM briefs WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if row is None:
@@ -481,7 +481,7 @@ def delete_brief(
     con = _connect(db_path)
     try:
         cur = con.execute(
-            "DELETE FROM briefs WHERE project = ? AND name = ?",
+            "DELETE FROM briefs WHERE workspace = ? AND name = ?",
             (workspace, name),
         )
         con.commit()
@@ -507,7 +507,7 @@ def get_dependencies(
     con = _connect(db_path)
     try:
         root = con.execute(
-            "SELECT id FROM briefs WHERE project = ? AND name = ?",
+            "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if root is None:
@@ -556,7 +556,7 @@ def search_briefs(
 ) -> list[dict]:
     """Run FTS5 MATCH against briefs_fts and join with the briefs table.
 
-    Filters by ``project = workspace``; ranks by bm25.
+    Filters by ``workspace = workspace``; ranks by bm25.
 
     The query is quoted as a single FTS5 phrase iff it contains characters
     FTS5 treats as syntax (hyphen, colon, parens, etc). Multi-word queries
@@ -573,7 +573,7 @@ def search_briefs(
             FROM briefs_fts
             JOIN briefs b ON b.id = briefs_fts.rowid
             WHERE briefs_fts MATCH ?
-              AND b.project = ?
+              AND b.workspace = ?
             ORDER BY rank
             LIMIT ?
             """,
@@ -609,7 +609,7 @@ def import_from_fs(
 
     Args:
         source: directory containing brief subdirectories.
-        workspace: project identity to assign to each imported brief.
+        workspace: workspace identity to assign to each imported brief.
         db_path: optional explicit DB path (tests).
 
     Returns:

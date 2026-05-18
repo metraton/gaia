@@ -28,7 +28,7 @@ Tests the current symlinked installation. Source code is live -- no build step.
 
 **When:** After editing source files in `gaia-dev/`
 
-Commands: run `gaia-doctor` then `gaia-status` directly (already installed, no npx needed).
+Commands: run `gaia doctor` then `gaia status` directly (already installed, no npx needed).
 
 **No temp directory.** No cleanup needed.
 
@@ -38,7 +38,7 @@ Tests the build pipeline -- does `npm pack` + local install produce a working in
 
 **When:** Before publishing to npm
 
-Step-by-step commands in `reference.md`. Core flow: `npm pack` in `gaia-dev` -> install `.tgz` in `/tmp/gaia-dry-run-{timestamp}` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
+Step-by-step commands in `reference.md`. Core flow: `npm pack` in `gaia-dev` -> install `.tgz` in `/tmp/gaia-dry-run-{timestamp}` -> `gaia doctor` + `gaia status` -> clean up.
 
 ## Mode: beta
 
@@ -46,7 +46,7 @@ Tests the published `@beta` tag on the npm registry.
 
 **When:** After publishing a beta release via the pipeline
 
-Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-beta-verify-{timestamp}` -> `npm install @jaguilar87/gaia@beta` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
+Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-beta-verify-{timestamp}` -> `npm install @jaguilar87/gaia@beta` -> `gaia doctor` + `gaia status` -> clean up.
 
 ## Mode: release
 
@@ -54,7 +54,7 @@ Tests the published `@latest` tag on the npm registry.
 
 **When:** After publishing a stable release via the pipeline
 
-Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-release-verify-{timestamp}` -> `npm install @jaguilar87/gaia@latest` -> `npx gaia-doctor` + `npx gaia-status` -> clean up.
+Step-by-step commands in `reference.md`. Core flow: fresh `/tmp/gaia-release-verify-{timestamp}` -> `npm install @jaguilar87/gaia@latest` -> `gaia doctor` + `gaia status` -> clean up.
 
 ## All Modes: Reporting
 
@@ -64,11 +64,11 @@ Every mode ends with a structured result:
 Mode:     <live | dry-run | beta | release>
 Version:  <version string installed, or "symlinked source" for live>
 Doctor:   PASS | FAIL
-Status:   <gaia-status output summary>
+Status:   <`gaia status` output summary>
 Cleanup:  done | n/a (live)
 ```
 
-If `gaia-doctor` fails, report the exact error and stop -- do not continue to `gaia-status`.
+If `gaia doctor` fails, report the exact error and stop -- do not continue to `gaia status`.
 
 ## Anti-Patterns
 

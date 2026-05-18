@@ -148,6 +148,45 @@ See `SKILL.md` for the schema definition and field rules.
 }
 ```
 
+## APPROVAL_REQUEST with batch_scope (sweep over many commands)
+
+Use this shape when one user intent expands into many T3 commands sharing the same
+base CLI and verb. The optional `batch_scope: "verb_family"` field signals to the
+orchestrator that a multi-use grant should be offered (in addition to single-command
+approval). Without it, every command after the first is re-blocked.
+
+```json:contract
+{
+  "agent_status": {
+    "plan_status": "APPROVAL_REQUEST",
+    "agent_id": "ab2e7f4",
+    "pending_steps": ["modify 500 messages", "verify Archive count increased"],
+    "next_action": "Awaiting user approval -- batch or single"
+  },
+  "evidence_report": {
+    "patterns_checked": ["existing Gmail label conventions"],
+    "files_checked": [],
+    "commands_run": ["gws gmail users messages list --query \"label:older-than-90d\" -> 500 IDs"],
+    "key_outputs": ["500 messageIds collected; first modify call blocked by hook"],
+    "verbatim_outputs": ["[T3_BLOCKED] approval_id: c7d2..."],
+    "cross_layer_impacts": [],
+    "open_gaps": [],
+    "verification": null
+  },
+  "consolidation_report": null,
+  "approval_request": {
+    "operation": "Archive 500 Gmail messages older than 90d",
+    "exact_content": "gws gmail users messages modify --addLabelIds Archive userId=me messageId=<each of 500>",
+    "scope": "All gws ... modify calls for the next 10 minutes",
+    "risk_level": "MEDIUM",
+    "rollback": "gws gmail users messages modify --removeLabelIds Archive over the same 500 IDs",
+    "verification": "gws gmail users messages list --labelIds Archive shows +500",
+    "batch_scope": "verb_family",
+    "approval_id": "c7d2a4b1e8f309..."
+  }
+}
+```
+
 ## With Consolidation (multi-surface task)
 
 ```json:contract

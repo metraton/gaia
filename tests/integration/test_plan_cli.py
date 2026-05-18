@@ -50,7 +50,7 @@ def _read_plan_row(db_path: Path, brief_name: str) -> dict | None:
         row = con.execute(
             "SELECT p.id, p.brief_id, p.status, p.content, p.updated_at "
             "FROM plans p JOIN briefs b ON b.id = p.brief_id "
-            "WHERE b.name = ? AND b.project = 'me'",
+            "WHERE b.name = ? AND b.workspace = 'me'",
             (brief_name,),
         ).fetchone()
         return dict(row) if row else None
