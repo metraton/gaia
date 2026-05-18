@@ -6,12 +6,15 @@ Inserts the complete mapping for the 5 domain agents into `agent_permissions`
 in `~/.gaia/gaia.db`. Uses INSERT OR IGNORE (idempotent). Exits non-zero if
 the table does not exist (B1 not applied).
 
-Mapping (B3 M2):
-  developer         -> apps, libraries, services, features
-  terraform-architect -> tf_modules, tf_live, clusters
-  gitops-operator   -> releases, workloads, clusters_defined
-  gaia-operator     -> integrations, gaia_installations
+Mapping (B3 M3 -- agreed state):
+  developer           -> apps, libraries, services, features
+  terraform-architect -> tf_modules, tf_live, releases, clusters
+  gitops-operator     -> workloads, clusters_defined
+  gaia-operator       -> integrations, gaia_installations, machines
   cloud-troubleshooter -> clusters
+
+Total: 14 rows with allow_write=1.
+No permissions for: gaia-planner, gaia-system, gaia-orchestrator (by design).
 
 Usage:
     python3 scripts/seed_agent_permissions.py [--dry-run] [--db-path PATH]
@@ -25,7 +28,7 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Canonical mapping: B3 M1 source of truth
+# Canonical mapping: B3 M3 source of truth (agreed state, 14 rows)
 # ---------------------------------------------------------------------------
 AGENT_TABLE_MAPPING: list[tuple[str, str]] = [
     # developer: application layer (apps, libraries, services, features)
@@ -33,18 +36,19 @@ AGENT_TABLE_MAPPING: list[tuple[str, str]] = [
     ("developer", "libraries"),
     ("developer", "services"),
     ("developer", "features"),
-    # terraform-architect: IaC layer (tf_modules, tf_live, clusters declarative)
+    # terraform-architect: IaC layer + releases lifecycle
     # NOTE: clusters write is declarative (IaC) only, not runtime state.
     ("terraform-architect", "tf_modules"),
     ("terraform-architect", "tf_live"),
+    ("terraform-architect", "releases"),
     ("terraform-architect", "clusters"),
-    # gitops-operator: desired state (releases, workloads, clusters_defined)
-    ("gitops-operator", "releases"),
+    # gitops-operator: desired state (workloads, clusters_defined only)
     ("gitops-operator", "workloads"),
     ("gitops-operator", "clusters_defined"),
-    # gaia-operator: integrations and installation registry
+    # gaia-operator: integrations, installation registry, and machine registry
     ("gaia-operator", "integrations"),
     ("gaia-operator", "gaia_installations"),
+    ("gaia-operator", "machines"),
     # cloud-troubleshooter: observed cluster state (read-heavy, write declarative)
     ("cloud-troubleshooter", "clusters"),
 ]
