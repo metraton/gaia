@@ -534,10 +534,12 @@ class ClaudeCodeAdapter(HookAdapter):
         # the command is running inside a subagent (not the orchestrator).
         is_subagent = bool(hook_data and hook_data.get("agent_id"))
         session_id = (hook_data or {}).get("session_id", "")
+        agent_type = (hook_data or {}).get("agent_type", "")
 
         validator = BashValidator()
         result = validator.validate(
             command, is_subagent=is_subagent, session_id=session_id,
+            agent_type=agent_type,
         )
 
         if not result.allowed:
