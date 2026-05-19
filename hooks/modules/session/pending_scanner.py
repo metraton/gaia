@@ -110,6 +110,19 @@ def scan_pending_approvals(
     return results
 
 
+def _truncate_smart(cmd: str, max_len: int = 100) -> str:
+    """Truncate a command string with head+tail context when it exceeds max_len.
+
+    Preserves the beginning (verb + first args) and the end (last argument or
+    target path) so the summary stays meaningful without occupying a full line.
+    """
+    if len(cmd) <= max_len:
+        return cmd
+    head_len = max_len * 2 // 3
+    tail_len = max_len - head_len - 1
+    return f"{cmd[:head_len]}…{cmd[-tail_len:]}"
+
+
 def format_pending_summary(pendings: List[Dict]) -> str:
     """Format pending approvals as a readable summary for injection."""
     if not pendings:
@@ -123,7 +136,7 @@ def format_pending_summary(pendings: List[Dict]) -> str:
         risk = ctx.get("risk", "unknown")
 
         cross_tag = " [session anterior]" if p.get("cross_session") else ""
-        lines.append(f"**#{i} [P-{p['nonce_short']}]** `{p['command'][:60]}`{cross_tag}")
+        lines.append(f"**#{i} [P-{p['nonce_short']}]** `{_truncate_smart(p['command'])}`{cross_tag}")
         lines.append(f"  Hace: {p['age_human']} | Source: {source} | Risk: {risk}")
         if desc != p["command"]:
             lines.append(f"  {desc}")

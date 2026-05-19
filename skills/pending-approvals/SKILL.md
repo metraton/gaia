@@ -59,6 +59,27 @@ ROLLBACK:  {rollback from context field}
 3. The pending scanner will clean up rejected files on its next sweep
 4. Confirm: "P-XXXX rechazado"
 
+## Bulk cleanup
+
+When to offer `gaia approvals reject-all`:
+- The user says "limpia todos los pendings", "borra los pendientes", or similar
+- The pending list contains entries from closed sessions (all have `cross_session: true`) and the user has not asked to review them individually
+- Session-start injects 5 or more stale pendings and the user has not acted on any of them
+
+How to invoke:
+
+```
+gaia approvals reject-all
+```
+
+After running, report the count of rejections and confirm: "X pendings rechazados." If the command returns 0, report "No había pendings activos."
+
+Difference from individual rejection:
+- `reject-all` marks every active pending as rejected in a single pass — no per-item confirmation is shown to the user
+- Individual rejection (`rechazar P-XXXX`) is used when the user wants to review before discarding
+
+Do NOT offer `reject-all` when there are active same-session pendings the user may still want to approve.
+
 ## Anti-patterns
 
 - Approving without showing the exact command — user needs to see verbatim, not a summary
