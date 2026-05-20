@@ -126,7 +126,7 @@ class TestCmdInstallDispatch(unittest.TestCase):
         return ns
 
     def test_returns_bootstrap_exit_code_on_success(self):
-        with patch("cli.install._run_bootstrap", return_value=0) as mock_bs:
+        with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}) as mock_bs:
             with redirect_stdout(io.StringIO()):
                 rc = cmd_install(self._make_args(quiet=True))
         self.assertEqual(rc, 0)
@@ -134,13 +134,13 @@ class TestCmdInstallDispatch(unittest.TestCase):
 
     def test_postinstall_swallows_failure(self):
         """Postinstall mode never returns non-zero -- npm install must not abort."""
-        with patch("cli.install._run_bootstrap", return_value=1):
+        with patch("cli.install._run_bootstrap", return_value={"rc": 1, "detail": "bootstrap rc=1: simulated"}):
             with redirect_stdout(io.StringIO()):
                 rc = cmd_install(self._make_args(postinstall=True, quiet=True))
         self.assertEqual(rc, 0)
 
     def test_manual_mode_propagates_failure(self):
-        with patch("cli.install._run_bootstrap", return_value=1):
+        with patch("cli.install._run_bootstrap", return_value={"rc": 1, "detail": "bootstrap rc=1: simulated"}):
             with redirect_stdout(io.StringIO()):
                 rc = cmd_install(self._make_args(quiet=True))
         self.assertEqual(rc, 1)
@@ -150,12 +150,196 @@ class TestCmdInstallDispatch(unittest.TestCase):
 
         def fake_bootstrap(db_path, verbose, quiet):
             captured["db_path"] = db_path
-            return 0
+            return {"rc": 0, "detail": ""}
 
         with patch("cli.install._run_bootstrap", side_effect=fake_bootstrap):
             with redirect_stdout(io.StringIO()):
                 cmd_install(self._make_args(quiet=True, db_path="/tmp/x.db"))
         self.assertEqual(captured["db_path"], "/tmp/x.db")
+
+
+class TestCmdInstallBootstrapMarker(unittest.TestCase):
+    """Bootstrap failures under --postinstall MUST write the install-error marker.
+
+    Before Pass 6 the marker was only written for gaia-scan failures (the last
+    step). A bootstrap failure (e.g. sqlite3 parse error in the seed SQL) would
+    return 0 silently, leaving `gaia doctor` without any signal of the real
+    root cause -- it could only report vague "missing file" symptoms downstream.
+    """
+
+    def _make_args(self, workspace, **overrides) -> argparse.Namespace:
+        ns = argparse.Namespace()
+        ns.postinstall = overrides.get("postinstall", True)
+        ns.quiet = overrides.get("quiet", True)
+        ns.verbose = overrides.get("verbose", False)
+        ns.db_path = overrides.get("db_path", None)
+        ns.workspace = str(workspace) if workspace else None
+        ns.skip_workspace = overrides.get("skip_workspace", False)
+        ns.no_path = overrides.get("no_path", True)
+        return ns
+
+    def test_postinstall_bootstrap_failure_writes_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            marker_path = Path(tmp) / "last-install-error.json"
+
+            bootstrap_detail = (
+                "bootstrap rc=1: Parse error near line 1: "
+                "table projects has no column named identity"
+            )
+
+            with patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker_path):
+                with patch(
+                    "cli.install._run_bootstrap",
+                    return_value={"rc": 1, "detail": bootstrap_detail},
+                ):
+                    with redirect_stdout(io.StringIO()):
+                        rc = cmd_install(self._make_args(workspace, postinstall=True))
+
+            # Postinstall must NOT propagate failure to npm.
+            self.assertEqual(rc, 0)
+            # The marker MUST exist with the bootstrap detail.
+            self.assertTrue(
+                marker_path.exists(),
+                "bootstrap failure under --postinstall must write the install-error marker",
+            )
+            payload = json.loads(marker_path.read_text())
+            self.assertEqual(payload["step"], "bootstrap")
+            self.assertIn("Parse error", payload["detail"])
+            self.assertEqual(payload["workspace"], str(workspace))
+
+    def test_manual_bootstrap_failure_does_not_write_marker(self):
+        """Interactive `gaia install` (no --postinstall) propagates rc -- no marker needed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            marker_path = Path(tmp) / "last-install-error.json"
+
+            with patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker_path):
+                with patch(
+                    "cli.install._run_bootstrap",
+                    return_value={"rc": 1, "detail": "bootstrap rc=1: synthetic"},
+                ):
+                    with redirect_stdout(io.StringIO()):
+                        rc = cmd_install(self._make_args(workspace, postinstall=False))
+
+            # Manual mode propagates failure -- the user sees the rc directly.
+            self.assertEqual(rc, 1)
+            self.assertFalse(
+                marker_path.exists(),
+                "manual install must NOT write the marker (user gets rc + stderr directly)",
+            )
+
+
+class TestBootstrapScriptIntegration(unittest.TestCase):
+    """Run the real bootstrap_database.sh against a tmp sqlite DB.
+
+    This is the test that would have caught the rc.4 regression: the seed SQL
+    in Section 4 referenced `projects.identity` (a column dropped in the
+    workspaces/projects rename, commit be9698f). Without an integration test
+    that actually executes the bash script against the schema, drift between
+    bootstrap seed and schema goes undetected until npm install.
+    """
+
+    _BOOTSTRAP_SH = (
+        Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_database.sh"
+    )
+    _SCHEMA_SQL = (
+        Path(__file__).resolve().parents[2] / "gaia" / "store" / "schema.sql"
+    )
+
+    def setUp(self):
+        if not self._BOOTSTRAP_SH.is_file():
+            self.skipTest(f"bootstrap script not found at {self._BOOTSTRAP_SH}")
+        if not self._SCHEMA_SQL.is_file():
+            self.skipTest(f"schema.sql not found at {self._SCHEMA_SQL}")
+
+    def _run_bootstrap_against_tmp_db(self, workspace: Path) -> subprocess.CompletedProcess:
+        """Invoke bootstrap_database.sh with GAIA_DB pointed at a tmp file."""
+        tmp_db = workspace / "tmp_gaia.db"
+        env = os.environ.copy()
+        env["GAIA_DB"] = str(tmp_db)
+        env["WORKSPACE"] = str(workspace)
+        return subprocess.run(
+            ["bash", str(self._BOOTSTRAP_SH)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+
+    def test_bootstrap_runs_cleanly_on_fresh_db(self):
+        """A fresh bootstrap must exit 0 with no sqlite parse errors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            res = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(
+                res.returncode, 0,
+                f"bootstrap exited rc={res.returncode}\n"
+                f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}",
+            )
+            # No sqlite3 "no such" / parse-error lines should appear.
+            combined = (res.stdout + res.stderr).lower()
+            self.assertNotIn(
+                "parse error", combined,
+                f"bootstrap produced a sqlite parse error:\n{res.stdout}\n{res.stderr}",
+            )
+            self.assertNotIn(
+                "no column named", combined,
+                f"bootstrap referenced a column that does not exist in schema:\n"
+                f"{res.stdout}\n{res.stderr}",
+            )
+
+    def test_bootstrap_seeds_workspaces_table(self):
+        """Section 4 must insert into `workspaces`, not the obsolete `projects.identity`."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            res = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(res.returncode, 0, res.stderr)
+
+            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
+            try:
+                rows = con.execute(
+                    "SELECT name, identity FROM workspaces"
+                ).fetchall()
+            finally:
+                con.close()
+
+            self.assertGreaterEqual(
+                len(rows), 1,
+                "bootstrap must seed at least one row in workspaces (the current workspace)",
+            )
+            # identity == name in the bootstrap fallback path.
+            name, identity = rows[0]
+            self.assertEqual(name, identity)
+
+    def test_bootstrap_is_idempotent(self):
+        """Running bootstrap twice on the same DB must not fail or duplicate rows."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            res1 = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(res1.returncode, 0, res1.stderr)
+            res2 = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(res2.returncode, 0, res2.stderr)
+
+            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
+            try:
+                ws_count = con.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0]
+                perm_count = con.execute(
+                    "SELECT COUNT(*) FROM agent_permissions"
+                ).fetchone()[0]
+            finally:
+                con.close()
+
+            self.assertEqual(ws_count, 1, "second run must not duplicate workspaces row")
+            self.assertEqual(
+                perm_count, 13,
+                "agent_permissions count must remain 13 after second run",
+            )
 
 
 class TestCmdInstallOrchestration(unittest.TestCase):
@@ -190,7 +374,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                     return {"action": "noop", "path": str(workspace), "details": "mock"}
                 return fn
 
-            with patch("cli.install._run_bootstrap", return_value=0):
+            with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
                 with patch(
                     "cli.install._install_helpers.configure_settings_json",
                     side_effect=make_tracker("settings_json"),
@@ -226,7 +410,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                 scan_called["hit"] = True
                 return {"action": "created", "details": "scan ran"}
 
-            with patch("cli.install._run_bootstrap", return_value=0):
+            with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
                 with patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan):
                     with redirect_stdout(io.StringIO()):
                         cmd_install(self._make_args(workspace, postinstall=True))
@@ -243,7 +427,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                 calls.append("called")
                 return {"action": "noop", "path": "x", "details": ""}
 
-            with patch("cli.install._run_bootstrap", return_value=0):
+            with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
                 with patch(
                     "cli.install._install_helpers.configure_settings_json",
                     side_effect=tracker,
@@ -269,7 +453,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                 postinstall=False, quiet=True, verbose=False,
                 db_path=None, workspace=None, skip_workspace=False,
             )
-            with patch("cli.install._run_bootstrap", return_value=0):
+            with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
                 with patch.dict("os.environ", {"INIT_CWD": str(workspace)}):
                     with patch(
                         "cli.install._install_helpers.configure_settings_json",
@@ -335,7 +519,7 @@ class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
                     return {"action": "noop", "path": str(ws), "details": ""}
                 return fn
 
-            with patch("cli.install._run_bootstrap", return_value=0):
+            with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
                 with patch(
                     "cli.install._install_helpers.configure_settings_json",
                     side_effect=make_tracker("settings_json"),
@@ -378,7 +562,7 @@ class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
 
             noop = {"action": "noop", "path": "x", "details": ""}
             patches = [
-                patch("cli.install._run_bootstrap", return_value=0),
+                patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}),
                 patch("cli.install._install_helpers.configure_settings_json",
                       return_value=noop),
                 patch("cli.install._install_helpers.merge_local_permissions",
@@ -413,7 +597,7 @@ class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
 
             # Bootstrap returns failure; manual mode (no --postinstall) so
             # cmd_install propagates the failure.
-            with patch("cli.install._run_bootstrap", return_value=1):
+            with patch("cli.install._run_bootstrap", return_value={"rc": 1, "detail": "bootstrap rc=1: simulated"}):
                 with redirect_stdout(io.StringIO()):
                     rc = cmd_install(self._make_args(workspace))
 
@@ -731,7 +915,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
                 return _install_path_launcher(link_path=link, **kwargs)
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             patches.append(patch("cli.install._install_path_launcher",
                                  side_effect=fake_install))
 
@@ -757,7 +941,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             (workspace / ".claude").mkdir()
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             mock_inst = patch("cli.install._install_path_launcher")
             patches.append(mock_inst)
 
@@ -789,7 +973,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
                 return r
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             patches.append(patch("cli.install._install_path_launcher",
                                  side_effect=fake_install))
 
@@ -829,7 +1013,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
                 return r
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             patches.append(patch("cli.install._install_path_launcher",
                                  side_effect=fake_install))
 
@@ -924,7 +1108,7 @@ class TestInstallErrorMarker(unittest.TestCase):
                 return {"action": "error", "details": "scan blew up"}
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             patches.append(patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan))
             patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
 
@@ -958,7 +1142,7 @@ class TestInstallErrorMarker(unittest.TestCase):
                 return {"action": "created", "details": "context seeded"}
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             patches.append(patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan))
             patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
 
@@ -986,7 +1170,7 @@ class TestInstallErrorMarker(unittest.TestCase):
             marker.write_text('{"step": "old failure"}')
 
             patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
             patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
 
             for p in patches:

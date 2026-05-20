@@ -273,14 +273,24 @@ def _detect_plugin_mode() -> str:
 # Bootstrap invocation
 # ---------------------------------------------------------------------------
 
-def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> int:
-    """Invoke bootstrap_database.sh and return its exit code."""
+def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
+    """Invoke bootstrap_database.sh and return a structured result.
+
+    Returns a dict with:
+      - ``rc``: int exit code (0 on success).
+      - ``detail``: str -- short human-readable summary, suitable for the
+        install-error marker. Empty string on success.
+
+    Always captures stdout/stderr so the caller (cmd_install) has the
+    failure detail available for ``_write_install_error_marker`` even
+    under the verbose branch. Output is re-emitted to the parent's
+    streams to preserve the original UX (visible bootstrap progress in
+    verbose mode; failure-only spill in quiet mode).
+    """
     if not _BOOTSTRAP_SCRIPT.is_file():
-        print(
-            f"gaia install: bootstrap script not found at {_BOOTSTRAP_SCRIPT}",
-            file=sys.stderr,
-        )
-        return 1
+        msg = f"bootstrap script not found at {_BOOTSTRAP_SCRIPT}"
+        print(f"gaia install: {msg}", file=sys.stderr)
+        return {"rc": 1, "detail": msg}
 
     env = os.environ.copy()
     if db_path:
@@ -288,15 +298,6 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> int:
 
     cmd = ["bash", str(_BOOTSTRAP_SCRIPT)]
 
-    if verbose or not quiet:
-        try:
-            result = subprocess.run(cmd, env=env, check=False)
-            return result.returncode
-        except OSError as exc:
-            print(f"gaia install: failed to invoke bash -- {exc}", file=sys.stderr)
-            return 1
-
-    # Quiet: capture; only print on failure.
     try:
         result = subprocess.run(
             cmd,
@@ -306,16 +307,81 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> int:
             check=False,
         )
     except OSError as exc:
-        print(f"gaia install: failed to invoke bash -- {exc}", file=sys.stderr)
-        return 1
+        msg = f"failed to invoke bash -- {exc}"
+        print(f"gaia install: {msg}", file=sys.stderr)
+        return {"rc": 1, "detail": msg}
 
-    if result.returncode != 0:
+    # In verbose mode (or not quiet), surface all bootstrap output so the
+    # user sees progress in real-ish time. In quiet mode, only show output
+    # when bootstrap fails -- success stays silent.
+    if verbose or not quiet:
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+    elif result.returncode != 0:
         if result.stdout:
             sys.stdout.write(result.stdout)
         if result.stderr:
             sys.stderr.write(result.stderr)
 
-    return result.returncode
+    if result.returncode == 0:
+        return {"rc": 0, "detail": ""}
+
+    # Build a compact, marker-friendly detail. Prefer the last non-empty
+    # stderr line (where bash + sqlite3 surface the actual error) and fall
+    # back to a generic message keyed to the exit code.
+    detail = _summarize_bootstrap_failure(
+        rc=result.returncode,
+        stdout=result.stdout or "",
+        stderr=result.stderr or "",
+    )
+    return {"rc": result.returncode, "detail": detail}
+
+
+def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
+    """Build a short detail string for the install-error marker.
+
+    The marker file is read by `gaia doctor`, which shows the detail
+    inline. Keep it under ~200 chars and pull the most diagnostic line
+    (typically a sqlite3 'Parse error' or a [bootstrap] check: FAIL line).
+    """
+    candidates: list[str] = []
+    for chunk in (stderr, stdout):
+        for raw in reversed(chunk.splitlines()):
+            line = raw.strip()
+            if not line:
+                continue
+            # Most informative signals: sqlite3 parse errors, FAIL checks,
+            # explicit [bootstrap] ERROR lines.
+            lower = line.lower()
+            if (
+                "error" in lower
+                or "fail" in lower
+                or "parse error" in lower
+                or "no such" in lower
+            ):
+                candidates.append(line)
+                break
+
+    if candidates:
+        summary = candidates[0]
+    elif stderr.strip():
+        # Last resort: first non-empty stderr line.
+        for raw in stderr.splitlines():
+            line = raw.strip()
+            if line:
+                summary = line
+                break
+        else:
+            summary = f"bootstrap exited rc={rc}"
+    else:
+        summary = f"bootstrap exited rc={rc} (no stderr captured)"
+
+    # Cap to keep the marker readable.
+    if len(summary) > 220:
+        summary = summary[:217] + "..."
+    return f"bootstrap rc={rc}: {summary}"
 
 
 # ---------------------------------------------------------------------------
@@ -543,9 +609,21 @@ def cmd_install(args: argparse.Namespace) -> int:
     _print_header(postinstall=postinstall, quiet=quiet, mode=mode, workspace=workspace)
 
     # Step 1 -- bootstrap DB (always)
-    rc = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
+    bootstrap_res = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
+    rc = bootstrap_res["rc"]
     if rc != 0:
         if postinstall:
+            # Persist a marker so `gaia doctor` can surface the real failure.
+            # Without this, the postinstall returns 0 silently and the user
+            # only sees vague "missing file" hints from doctor -- never the
+            # bootstrap stderr that holds the root cause (e.g. a sqlite3
+            # parse error). The marker is best-effort; never blocks.
+            _write_install_error_marker(
+                workspace=workspace,
+                step="bootstrap",
+                detail=bootstrap_res.get("detail")
+                or f"bootstrap exited {rc} (no detail captured)",
+            )
             if not quiet:
                 print(
                     f"\n  gaia install: bootstrap exited {rc} -- run `gaia doctor` "
