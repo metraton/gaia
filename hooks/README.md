@@ -4,16 +4,25 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A prompt enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The event handler hooks (`session_start.py`, `stop_hook.py`, `subagent_start.py`, `task_completed.py`) fire at lifecycle transitions and carry lighter responsibilities.
+The hooks form a pipeline. A session opens at `session_start.py`, which emits a one-shot `additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) for the orchestrator. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`, `elicitation_result.py`) fire at lifecycle transitions and carry lighter responsibilities.
 
 ## Cuándo se activa
 
 ```
+Session opens
+        |
+[session_start.py] <- fires on SessionStart (matcher: startup)
+        |  Registers session in heartbeat-based session_registry
+        |  Sweeps stale registry entries and expired approval files
+        |  Emits one-shot hookSpecificOutput.additionalContext manifest
+        |  (Environment + Active Agentic Loop + [ACTIONABLE] pendings)
+        v
 User sends prompt
         |
 [user_prompt_submit.py] <- fires on UserPromptSubmit event
-        |  Builds orchestrator identity via ops_identity.py
-        |  Injects surface routing recommendation (deterministic, from surface-routing.json)
+        |  Refreshes the session heartbeat (throttled, non-fatal)
+        |  Injects deterministic Surface Routing Recommendation (per-turn signal)
+        |  First-run welcome on the install's first prompt only
         |  Skills loaded on-demand: agent-response
         v
 Orchestrator dispatches agent (Task/Agent tool call)
@@ -61,16 +70,18 @@ To add a new hook entry point: create `hooks/<event_name>.py`, register it in `b
 
 ```
 hooks/
-├── user_prompt_submit.py  # Identity injection (UserPromptSubmit event)
+├── user_prompt_submit.py  # Per-turn routing recommendation + heartbeat refresh
 ├── pre_tool_use.py        # Security gate + context injection (PreToolUse)
 ├── post_tool_use.py       # Audit logging (PostToolUse)
-├── subagent_stop.py       # Contract validation + memory (SubagentStop)
+├── subagent_stop.py       # Contract validation + approval cleanup + memory (SubagentStop)
 ├── subagent_start.py      # Subagent start — additional context injection
-├── session_start.py       # Session start event handler
+├── session_start.py       # Session manifest + registry registration (SessionStart)
+├── session_end_hook.py    # Unregister session from heartbeat registry (SessionEnd)
 ├── stop_hook.py           # Stop event handler
 ├── task_completed.py      # Task completed event handler
 ├── pre_compact.py         # Pre-compaction event handler
 ├── post_compact.py        # Post-compaction event handler
+├── elicitation_result.py  # AskUserQuestion result handler (approval activation)
 ├── hooks.json             # Plugin-channel hook configuration
 ├── adapters/              # Adapter layer — event parsing and module dispatch
 └── modules/               # Module layer — security, context, validation, audit logic
