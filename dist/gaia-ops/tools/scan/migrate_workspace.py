@@ -3,8 +3,8 @@ migrate_workspace.py -- B5 rescan-real-workspaces-with-backup
 
 Migrates a real workspace to ~/.gaia/gaia.db via:
   1. Grant scanner agent permissions (idempotent)
-  2. wipe_project(<identity>)
-  3. scan_workspace_to_store (populate repos + infra + orchestration)
+  2. wipe_workspace(<identity>)
+  3. scan_workspace_to_store (populate projects + infra + orchestration)
   4. Verify row counts
   5. Print diff JSON
 
@@ -13,7 +13,7 @@ Usage:
 
 Options:
     --verify-only   Run scan but do NOT commit (dry-run mode for AC-1 test).
-                    Note: wipe_project is NOT called in verify-only mode.
+                    Note: wipe_workspace is NOT called in verify-only mode.
     --diff-path     Path to write .diff.json (default: <workspace_root>.diff.json)
 
 Exit codes:
@@ -47,7 +47,7 @@ _SCANNER_AGENTS = [
     "cloud-troubleshooter",  # B3 M2: read+write declarativo sobre estado observado (clusters, tf_live)
 ]
 _SCANNER_TABLES = [
-    "repos", "apps", "integrations", "gaia_installations",
+    "workspaces", "projects", "apps", "integrations", "gaia_installations",
     "tf_modules", "tf_live", "releases", "workloads",
     "clusters_defined", "features", "libraries", "services",
     "machines", "clusters",
@@ -81,7 +81,7 @@ def _grant_scanner_permissions(db_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _SNAPSHOT_TABLES = [
-    "repos", "apps", "services", "libraries", "features",
+    "projects", "apps", "services", "libraries", "features",
     "integrations", "gaia_installations",
     "tf_modules", "tf_live", "releases", "workloads",
     "clusters_defined",
@@ -95,7 +95,7 @@ def _snapshot(db_path: Path, workspace: str) -> dict:
         for t in _SNAPSHOT_TABLES:
             try:
                 row = con.execute(
-                    f"SELECT COUNT(*) FROM {t} WHERE project = ?", (workspace,)
+                    f"SELECT COUNT(*) FROM {t} WHERE workspace = ?", (workspace,)
                 ).fetchone()
                 out[t] = row[0] if row else 0
             except Exception:
@@ -127,7 +127,7 @@ def _build_diff(before: dict, after: dict) -> dict:
 
 def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: Path) -> int:
     from gaia.project import current
-    from gaia.store import wipe_project
+    from gaia.store import wipe_workspace
     from tools.scan.store_populator import (
         populate_infrastructure,
         populate_orchestration,
@@ -151,9 +151,9 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
     print(f"[migrate] snapshot before: {before}")
 
     if not verify_only:
-        # Wipe existing project rows (FK CASCADE cleans children)
-        wipe_project(identity, db_path=db_path)
-        print(f"[migrate] wiped project {identity!r}")
+        # Wipe existing workspace rows (FK CASCADE cleans children)
+        wipe_workspace(identity, db_path=db_path)
+        print(f"[migrate] wiped workspace {identity!r}")
 
     # Detect workspace type to enumerate repos
     ws_info = detect_workspace_type(workspace_root)
@@ -180,19 +180,19 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
     # discovered via _list_repos (whose results dict keys are repo names that exist in
     # the `repos` table, satisfying the FK constraint for child tables).
     from tools.scan.store_populator import _list_repos
-    for repo_path in _list_repos(workspace_root):
-        rname = repo_path.name
+    for project_path in _list_repos(workspace_root):
+        project_name = project_path.name
         populate_infrastructure(
             workspace=identity,
-            repo=rname,
-            repo_path=repo_path,
+            project=project_name,
+            project_path=project_path,
             agent="terraform-architect",
             db_path=db_path,
         )
         populate_orchestration(
             workspace=identity,
-            repo=rname,
-            repo_path=repo_path,
+            project=project_name,
+            project_path=project_path,
             agent="gitops-operator",
             db_path=db_path,
         )
@@ -215,13 +215,13 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
     diff_path.write_text(json.dumps(diff, indent=2))
     print(f"[migrate] diff written to {diff_path}")
 
-    # Verify: repos count must be > 0
-    repos_count = after.get("repos", 0)
-    if repos_count > 0:
-        print(f"[migrate] VERIFY OK: repos={repos_count} for workspace {identity!r}")
+    # Verify: projects count must be > 0
+    projects_count = after.get("projects", 0)
+    if projects_count > 0:
+        print(f"[migrate] VERIFY OK: projects={projects_count} for workspace {identity!r}")
         return 0
     else:
-        print(f"[migrate] VERIFY FAIL: repos=0 for workspace {identity!r}", file=sys.stderr)
+        print(f"[migrate] VERIFY FAIL: projects=0 for workspace {identity!r}", file=sys.stderr)
         return 1
 
 

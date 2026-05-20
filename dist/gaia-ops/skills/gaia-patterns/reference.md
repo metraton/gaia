@@ -17,9 +17,12 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | `hooks/subagent_start.py` | SubagentStart | `*` |
 | `hooks/subagent_stop.py` | SubagentStop | `*` |
 | `hooks/session_start.py` | SessionStart | `startup` |
+| `hooks/session_end_hook.py` | SessionEnd | (all) |
 | `hooks/task_completed.py` | TaskCompleted | (all) |
 | `hooks/post_compact.py` | PostCompact | (all) |
-| `hooks/elicitation_result.py` | ElicitationResult | (none registered) |
+| `hooks/elicitation_result.py` | ElicitationResult | (all) |
+
+SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) when running in ops mode. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome.
 
 ### Hook Modules (13 packages)
 
@@ -31,7 +34,7 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_injector`, `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Project-context injection, freshness checks, contract loading |
 | `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | json:contract validation, skill verification, transcript analysis |
-| `session/` | `session_manager`, `session_context_writer`, `session_event_injector` | Session lifecycle, context persistence |
+| `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders, pending-approval scanner |
 | `orchestrator/` | `delegate_mode` | Delegation mode detection |
 | `validation/` | `commit_validator` | Git commit validation |
 | `scanning/` | `scan_trigger` | Auto-scan trigger |
@@ -118,7 +121,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
 | `gaia plans` | `bin/cli/plans.py` | List and display briefs/plans with status info |
-| `gaia project` | `bin/cli/project.py` | Workspace identity and consolidate operations |
+| `gaia workspace` | `bin/cli/workspace.py` | Workspace identity and consolidate operations |
 | `gaia scan` | `bin/cli/scan.py` | In-process project scan: detect stack, sync to DB and project-context.json |
 | `gaia status` | `bin/cli/status.py` | Quick installation snapshot: version, mode, DB path, registered workspace, last scan |
 | `gaia uninstall` | `bin/cli/uninstall.py` | Disconnect Gaia from the current workspace (wraps cleanup + preuninstall mode) |
@@ -142,7 +145,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | Mode | Package | What ships |
 |------|---------|-----------|
 | `gaia-ops` | `@jaguilar87/gaia` (full) | All hooks, all modules, all agents, all skills, all commands, all tools, all config |
-| `gaia-security` | `@jaguilar87/gaia` (security dist) | 5 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`), all modules, no agents, no skills, `config/universal-rules.json` only |
+| `gaia-security` | `@jaguilar87/gaia` (security dist) | 6 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`, `session_end_hook`), all modules, no agents, no skills, `config/universal-rules.json` only |
 
 ### Detection Cascade (`hooks/modules/core/plugin_mode.py`)
 
@@ -296,7 +299,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia brief` / `gaia plans` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
 | `gaia context` | Display and refresh project context | Audit context state |
 | `gaia paths` | Print resolved storage paths | Path debugging |
-| `gaia project` | Workspace identity and consolidate operations | Multi-workspace setups |
+| `gaia workspace` | Workspace identity and consolidate operations | Multi-workspace setups |
 | `gaia scan` | In-process project scanner | Refresh project-context.json |
 | `gaia install` | Bootstrap DB + workspace (also npm postinstall) | Fresh setup, manual repair |
 | `gaia update` | Re-sync after a package upgrade | After bumping the version |

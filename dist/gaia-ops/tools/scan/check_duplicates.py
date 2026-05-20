@@ -1,14 +1,14 @@
 """
 check_duplicates.py -- AC-6 duplicate detection for B5.
 
-Checks that no two rows in the `projects` table share the same `identity`
+Checks that no two rows in the `workspaces` table share the same `identity`
 value (i.e., no duplicate workspace identities after rescan).
 
 Exit codes:
     0  No duplicates found
     1  Duplicates found (prints details)
 
-Note: `gaia project merge --dry-run --report-duplicates` does not exist in the
+Note: `gaia workspace merge --dry-run --report-duplicates` does not exist in the
 CLI (the merge subcommand takes explicit <from_id> <to_id> arguments). This
 script implements the equivalent check directly against the DB.
 """
@@ -31,19 +31,19 @@ def check_duplicates(db_path: Path) -> int:
         rows = con.execute(
             """
             SELECT identity, COUNT(*) as cnt, GROUP_CONCAT(name, ', ') as names
-            FROM projects
+            FROM workspaces
             WHERE identity IS NOT NULL
             GROUP BY identity
             HAVING cnt > 1
             """
         ).fetchall()
 
-        all_projects = con.execute(
-            "SELECT name, identity FROM projects ORDER BY name"
+        all_workspaces = con.execute(
+            "SELECT name, identity FROM workspaces ORDER BY name"
         ).fetchall()
 
-        print(f"Projects in DB ({len(all_projects)}):")
-        for name, identity in all_projects:
+        print(f"Workspaces in DB ({len(all_workspaces)}):")
+        for name, identity in all_workspaces:
             print(f"  name={name!r}  identity={identity!r}")
 
         if not rows:

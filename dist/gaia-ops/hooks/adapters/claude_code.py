@@ -534,10 +534,12 @@ class ClaudeCodeAdapter(HookAdapter):
         # the command is running inside a subagent (not the orchestrator).
         is_subagent = bool(hook_data and hook_data.get("agent_id"))
         session_id = (hook_data or {}).get("session_id", "")
+        agent_type = (hook_data or {}).get("agent_type", "")
 
         validator = BashValidator()
         result = validator.validate(
             command, is_subagent=is_subagent, session_id=session_id,
+            agent_type=agent_type,
         )
 
         if not result.allowed:
@@ -1274,7 +1276,13 @@ class ClaudeCodeAdapter(HookAdapter):
         # Run the main processing chain
         try:
             from datetime import datetime as _dt
-            session_id = get_or_create_session_id()
+            # Prefer the session_id parsed from the stdin event so cleanup
+            # actions (approvals, grants, anchors) target the real session
+            # that owned the subagent. get_or_create_session_id() returns a
+            # synthetic env-derived id when CLAUDE_SESSION_ID isn't set,
+            # which never matches pending records persisted with the real
+            # event.session_id and breaks cleanup (Bug B / P-a11d14e0).
+            session_id = event.session_id or get_or_create_session_id()
             agent_type = task_info.get("agent", "unknown")
 
             parsed_contract = parse_contract(agent_output)
@@ -1286,7 +1294,23 @@ class ClaudeCodeAdapter(HookAdapter):
                     agent_type, contract_result.error_message,
                 )
 
-            cleanup_approval(agent_type)
+            # Preserve pending files that the agent's final contract still
+            # references via APPROVAL_REQUEST. Cleanup must not destroy
+            # approvals the user is being asked to act on.
+            preserved_nonces: set = set()
+            if isinstance(parsed_contract, dict):
+                _agent_status = parsed_contract.get("agent_status") or {}
+                _plan_status = (_agent_status.get("plan_status") or "").upper()
+                _approval_req = parsed_contract.get("approval_request") or {}
+                _nonce = _approval_req.get("approval_id") if isinstance(_approval_req, dict) else None
+                if _plan_status == "APPROVAL_REQUEST" and _nonce:
+                    preserved_nonces.add(_nonce)
+
+            cleanup_approval(
+                agent_type,
+                session_id=session_id,
+                preserve_nonces=preserved_nonces if preserved_nonces else None,
+            )
 
             # Consume all confirmed grants for this session -- the subagent
             # is done, so grants should not survive past its lifetime.

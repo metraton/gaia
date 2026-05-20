@@ -1,36 +1,49 @@
 """
 Session Registry — track active Claude sessions by CLAUDE_SESSION_ID.
 
-Provides a user-scoped JSON registry at ~/.claude/session_registry.json
-that records which sessions are currently alive. This is the base
-infrastructure for liveness filters (T12/T13).
+Provides a user-scoped JSON registry at ~/.claude/session_registry.json that
+records which sessions are currently alive. Liveness is heartbeat-only: hooks
+that run inside a session call ``touch_session()`` to refresh
+``last_heartbeat``; sessions whose heartbeat is stale beyond
+``HEARTBEAT_TTL_SECONDS`` are treated as dead.
+
+Why heartbeat-only:
+    The previous design persisted ``pid`` and ``pid_create_time`` of the hook
+    process. Hook processes are ephemeral — each event spawns a fresh Python
+    interpreter that exits in milliseconds — so the persisted PID was always
+    dead by the time another hook tried to use it for liveness. Claude Code
+    does not expose its own parent PID to hooks (no CLAUDE_PARENT_PID), which
+    rules out PID-based tracking entirely. Heartbeat freshness is the only
+    signal hooks can produce that survives between events.
 
 Storage format:
     {
         "sessions": {
             "<session_id>": {
-                "pid": <int or null>,
-                "pid_create_time": <float or null>,
-                "started_at": "<ISO-8601 string or null>"
+                "started_at": "<ISO-8601 string>",
+                "is_headless": <bool>,
+                "last_heartbeat": <float epoch seconds>
             }
         }
     }
 
-    pid_create_time is the process creation time (from /proc/<pid>/stat
-    field 22 on Linux) used to disambiguate recycled PIDs during liveness
-    checks. When the OS reuses a PID for a different process, the create
-    time will differ and the session is treated as dead.
+    Legacy entries with ``pid`` / ``pid_create_time`` fields are tolerated on
+    read: they have no ``last_heartbeat``, so the freshness check treats them
+    as dead immediately. That is the correct outcome — a registry written by
+    the old code is by definition stale.
 
 Concurrency:
-    All writes are atomic via os.rename() after writing to a .tmp file.
-    Reads are best-effort; a corrupt or absent file returns an empty set.
+    All writes are atomic via os.rename() after writing to a per-call .tmp
+    file. Reads are best-effort; a corrupt or absent file returns an empty
+    set.
 
 Public API:
-    register_session(session_id, pid=None, started_at=None) -> None
+    register_session(session_id, started_at=None, is_headless=False) -> None
     unregister_session(session_id) -> None
     is_session_alive(session_id) -> bool
-    get_live_sessions() -> set[str]
-    get_pid_create_time(pid) -> Optional[float]
+    touch_session(session_id) -> None
+    get_live_sessions(include_headless=True) -> set[str]
+    cleanup_stale_entries(grace_seconds=86400) -> int
 
 Errors:
     SessionRegistryError — raised for expected failure modes (e.g., bad path).
@@ -39,11 +52,27 @@ Errors:
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tunables
+# ---------------------------------------------------------------------------
+
+#: A session whose last_heartbeat is older than this is treated as dead by
+#: get_live_sessions(). 30 minutes is generous enough to absorb a long-running
+#: subagent (no user prompts in flight) while still catching real crashes
+#: within a typical work session.
+HEARTBEAT_TTL_SECONDS = 1800
+
+#: touch_session() rate-limit. Calling on every hook event would thrash the
+#: registry file; 30 seconds is enough resolution for a 30-minute TTL.
+_HEARTBEAT_THROTTLE_SECONDS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -59,11 +88,7 @@ class SessionRegistryError(Exception):
 # ---------------------------------------------------------------------------
 
 def _get_registry_path() -> Path:
-    """Return the path to session_registry.json under ~/.claude/.
-
-    Returns:
-        Path to ~/.claude/session_registry.json
-    """
+    """Return the path to session_registry.json under ~/.claude/."""
     return Path.home() / ".claude" / "session_registry.json"
 
 
@@ -103,13 +128,6 @@ def _save_registry(data: dict) -> None:
 
     Writes to a sibling .tmp file first, then renames to the target path
     so readers never see a partial write.
-
-    Args:
-        data: Registry dict to persist.
-
-    Raises:
-        SessionRegistryError: If the directory cannot be created or the
-            write/rename fails.
     """
     path = _get_registry_path()
     try:
@@ -119,14 +137,13 @@ def _save_registry(data: dict) -> None:
             f"session_registry: cannot create directory {path.parent}: {exc}"
         ) from exc
 
-    # Use a unique tmp suffix per call so concurrent writers don't stomp
-    # on each other's tmp file before rename. os.rename is atomic on POSIX.
+    # Per-call tmp suffix so concurrent writers don't stomp on each other's
+    # tmp file before rename. os.rename is atomic on POSIX.
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}")
     try:
         tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         os.rename(str(tmp_path), str(path))
     except OSError as exc:
-        # Best-effort cleanup of the per-call tmp file
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -138,97 +155,29 @@ def _save_registry(data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PID liveness helpers
-# ---------------------------------------------------------------------------
-
-def get_pid_create_time(pid: int) -> Optional[float]:
-    """Return the creation time of a process, or None if unavailable.
-
-    Reads /proc/<pid>/stat field 22 (starttime) on Linux. The value is in
-    clock ticks since boot; the raw number is sufficient for equality
-    comparison to detect PID recycling (we do not need wall-clock time).
-
-    Args:
-        pid: OS process ID to inspect. Non-positive values return None.
-
-    Returns:
-        Starttime as a float, or None when the process does not exist,
-        /proc is not available, or parsing fails.
-    """
-    if not pid or pid <= 0:
-        return None
-    try:
-        stat_path = Path("/proc") / str(pid) / "stat"
-        text = stat_path.read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        return None
-    # The comm field (field 2) may contain spaces and parentheses; parse
-    # from the last ')' to avoid splitting on them.
-    try:
-        rparen = text.rindex(")")
-    except ValueError:
-        return None
-    rest = text[rparen + 1 :].split()
-    # After the closing paren the remaining fields are 3..N, so starttime
-    # (field 22) is at index 22 - 3 = 19.
-    if len(rest) < 20:
-        return None
-    try:
-        return float(rest[19])
-    except ValueError:
-        return None
-
-
-def _is_pid_alive(pid: Optional[int], pid_create_time: Optional[float]) -> bool:
-    """Return True when pid names a live process with a matching create time.
-
-    When pid is None we cannot verify liveness and fall back to True
-    (presence-only behaviour — sessions registered without a pid remain
-    live). When pid_create_time is provided we require it to match the
-    current process create time; a mismatch indicates PID recycling and
-    we treat the session as dead.
-
-    Args:
-        pid: Recorded process ID, may be None.
-        pid_create_time: Recorded create time for the pid, may be None.
-
-    Returns:
-        True if the session should be considered alive.
-    """
-    if pid is None:
-        return True
-    current = get_pid_create_time(pid)
-    if current is None:
-        return False
-    if pid_create_time is None:
-        # Legacy entry without create time — trust the pid lookup.
-        return True
-    return current == pid_create_time
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def register_session(
     session_id: str,
-    pid: Optional[int] = None,
     started_at: Optional[str] = None,
+    is_headless: bool = False,
 ) -> None:
     """Register a session as active in the user-scoped registry.
 
-    Creates or updates the entry for session_id. If started_at is not
-    provided, the current UTC time in ISO-8601 format is used. When pid
-    is provided the process create time is captured alongside so that
-    later liveness checks can detect PID recycling.
+    Heartbeat-only liveness: PID is not tracked. The new entry's
+    ``last_heartbeat`` is initialised to the current time so the session is
+    immediately considered live by get_live_sessions().
 
     Args:
         session_id: The CLAUDE_SESSION_ID for the session to register.
             Must be a non-empty string.
-        pid: OS process ID of the hook process (optional but recommended
-            for liveness checks in T12/T13).
-        started_at: ISO-8601 timestamp string for when the session started.
-            Defaults to datetime.now(timezone.utc).isoformat() if absent.
+        started_at: ISO-8601 timestamp for session start. Defaults to now
+            (UTC) when not provided.
+        is_headless: True when this session has no live human watching
+            (CI, cron, ``claude --headless``). Headless sessions can be
+            filtered out via ``get_live_sessions(include_headless=False)``
+            so their pending approvals surface to interactive sessions.
 
     Raises:
         SessionRegistryError: If session_id is empty or saving fails.
@@ -239,22 +188,17 @@ def register_session(
     if started_at is None:
         started_at = datetime.now(timezone.utc).isoformat()
 
-    pid_create_time: Optional[float] = None
-    if pid is not None:
-        pid_create_time = get_pid_create_time(pid)
-
     data = _load_registry()
     data["sessions"][session_id] = {
-        "pid": pid,
-        "pid_create_time": pid_create_time,
         "started_at": started_at,
+        "is_headless": bool(is_headless),
+        "last_heartbeat": time.time(),
     }
     _save_registry(data)
     logger.debug(
-        "session_registry: registered session=%s pid=%s create_time=%s",
+        "session_registry: registered session=%s headless=%s",
         session_id,
-        pid,
-        pid_create_time,
+        is_headless,
     )
 
 
@@ -264,13 +208,6 @@ def unregister_session(session_id: str) -> None:
     Silently ignores the case where session_id is not found — this is
     normal during shutdown (hook may fire more than once or the entry
     may already have been cleaned up).
-
-    Args:
-        session_id: The CLAUDE_SESSION_ID to remove. Empty string is a
-            no-op with a warning log.
-
-    Raises:
-        SessionRegistryError: If saving the updated registry fails.
     """
     if not session_id:
         logger.warning("unregister_session: called with empty session_id — no-op")
@@ -292,16 +229,8 @@ def unregister_session(session_id: str) -> None:
 def is_session_alive(session_id: str) -> bool:
     """Return True if session_id is present in the registry.
 
-    This is a presence check only — it does not verify that the recorded
-    PID is actually running. Full liveness probing (kill -0) is implemented
-    in T12/T13.
-
-    Args:
-        session_id: The CLAUDE_SESSION_ID to check. Empty string always
-            returns False.
-
-    Returns:
-        True if the session is in the registry, False otherwise.
+    Presence-only check; does not consult heartbeat freshness. Callers
+    that need liveness should use ``get_live_sessions()``.
     """
     if not session_id:
         return False
@@ -309,25 +238,102 @@ def is_session_alive(session_id: str) -> bool:
     return session_id in data["sessions"]
 
 
-def get_live_sessions() -> set:
-    """Return the set of session IDs whose recorded pid is still alive.
+def touch_session(session_id: str) -> None:
+    """Refresh ``last_heartbeat`` for ``session_id``.
 
-    Entries registered without a pid are kept (presence-only liveness).
-    Entries with a pid are filtered via _is_pid_alive so that PID
-    recycling — OS reusing a PID for a different process — is detected
-    by comparing the recorded create time with the current one.
+    Throttled: a no-op when the heartbeat was refreshed less than
+    ``_HEARTBEAT_THROTTLE_SECONDS`` ago, to avoid thrashing the registry
+    file under bursty hook traffic. Also a no-op when the session is not
+    registered — touch must never create entries (only register_session
+    does), because that would resurrect sessions that should have been
+    cleaned up.
+
+    Args:
+        session_id: The CLAUDE_SESSION_ID to refresh. Empty/missing is a
+            no-op. Failures are swallowed and logged at debug; this is a
+            best-effort liveness signal and must never break the calling
+            hook.
+    """
+    if not session_id:
+        return
+    try:
+        data = _load_registry()
+        entry = data["sessions"].get(session_id)
+        if entry is None or not isinstance(entry, dict):
+            return
+        now = time.time()
+        last = entry.get("last_heartbeat", 0) or 0
+        if now - last < _HEARTBEAT_THROTTLE_SECONDS:
+            return
+        entry["last_heartbeat"] = now
+        _save_registry(data)
+    except Exception as exc:  # noqa: BLE001 — deliberate: never break callers
+        logger.debug("touch_session(%s) failed (non-fatal): %s", session_id, exc)
+
+
+def get_live_sessions(include_headless: bool = True) -> set:
+    """Return session IDs whose ``last_heartbeat`` is within the TTL.
+
+    Args:
+        include_headless: When False, sessions registered with
+            ``is_headless=True`` are excluded from the result. The
+            [ACTIONABLE] pending-approval injection path uses
+            ``include_headless=False`` so headless sessions don't suppress
+            their own pendings — nobody is watching them live, so their
+            pendings must surface to interactive sessions that can act on
+            them.
 
     Returns:
-        set[str] of session IDs considered live. Empty set when the
-        registry is absent or corrupt (after logging a warning).
+        set[str] of session IDs considered live. Entries with no
+        ``last_heartbeat`` (e.g., legacy PID-only entries written by the
+        previous schema) are filtered out by the freshness check.
     """
     data = _load_registry()
+    now = time.time()
     live: set = set()
     for session_id, entry in data["sessions"].items():
         if not isinstance(entry, dict):
             continue
-        pid = entry.get("pid")
-        pid_create_time = entry.get("pid_create_time")
-        if _is_pid_alive(pid, pid_create_time):
+        if not include_headless and entry.get("is_headless"):
+            continue
+        heartbeat = entry.get("last_heartbeat", 0) or 0
+        if heartbeat and (now - heartbeat) < HEARTBEAT_TTL_SECONDS:
             live.add(session_id)
     return live
+
+
+def cleanup_stale_entries(grace_seconds: int = 86400) -> int:
+    """Remove registry entries whose ``last_heartbeat`` is older than ``grace_seconds``.
+
+    Intended to be called opportunistically (e.g., from SessionStart) to
+    keep the registry small. A grace window is used instead of the live-TTL
+    so a session that briefly went inactive — closed laptop, suspended VM —
+    isn't garbage-collected before it has a chance to send another
+    heartbeat. Default of 24h matches the typical "I'm done for the day"
+    boundary; tune as needed.
+
+    Args:
+        grace_seconds: Heartbeat age (seconds) beyond which an entry is
+            removed. Entries with no ``last_heartbeat`` (legacy schema)
+            are removed unconditionally — they cannot be live.
+
+    Returns:
+        Number of entries removed.
+    """
+    data = _load_registry()
+    now = time.time()
+    to_delete = []
+    for session_id, entry in data["sessions"].items():
+        if not isinstance(entry, dict):
+            # Junk entry — sweep it out.
+            to_delete.append(session_id)
+            continue
+        heartbeat = entry.get("last_heartbeat", 0) or 0
+        if heartbeat == 0 or (now - heartbeat) >= grace_seconds:
+            to_delete.append(session_id)
+
+    if to_delete:
+        for session_id in to_delete:
+            del data["sessions"][session_id]
+        _save_registry(data)
+    return len(to_delete)

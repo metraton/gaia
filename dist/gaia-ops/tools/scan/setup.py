@@ -282,10 +282,20 @@ def copy_settings_json(project_root: Path) -> bool:
 def merge_hooks_to_settings_local(project_root: Path) -> bool:
     """Merge hooks from hooks.json into .claude/settings.local.json.
 
-    In npm mode, Claude Code reads hooks from settings files, not hooks.json
-    directly. This reads hooks.json from the installed package, converts
-    ${CLAUDE_PLUGIN_ROOT}/hooks/<script> paths to .claude/hooks/<script>,
-    and merges into settings.local.json with deduplication by command string.
+    Thin wrapper around the canonical implementation in
+    ``cli._install_helpers.merge_local_hooks``. Kept for backward compatibility
+    with existing call sites in ``bin/cli/scan.py``.
+
+    The canonical implementation:
+      - Uses absolute paths (resolved via .claude/hooks) so hooks fire
+        regardless of cwd at execution time.
+      - Migrates legacy relative ``.claude/hooks/...`` paths to absolute on
+        the fly, so workspaces installed with older gaia versions converge
+        automatically.
+      - Returns a structured result dict; this wrapper translates back to the
+        legacy bool API ("True if settings.local.json was modified").
+      - Auto-resolves the plugin root via the installed npm package first,
+        falling back to the source tree.
 
     Args:
         project_root: Project root directory.
@@ -293,96 +303,20 @@ def merge_hooks_to_settings_local(project_root: Path) -> bool:
     Returns:
         True if settings.local.json was modified.
     """
-    import re
+    # Resolve plugin root with the same precedence the old implementation used:
+    # installed npm package first, then source tree.
+    pkg_root = _find_installed_package_root(project_root) or _find_package_root()
 
-    claude_dir = project_root / ".claude"
-    settings_path = claude_dir / "settings.local.json"
+    # Import lazily to avoid circular dependencies with bin/cli at module load.
+    import sys
+    _bin_dir = _find_package_root() / "bin"
+    if str(_bin_dir) not in sys.path:
+        sys.path.insert(0, str(_bin_dir))
+    from cli._install_helpers import merge_local_hooks  # noqa: E402
 
-    # Find hooks.json from the package
-    hooks_json_path = None
-    # Strategy 1: installed npm package
-    pkg_root = _find_installed_package_root(project_root)
-    if pkg_root:
-        candidate = pkg_root / "hooks" / "hooks.json"
-        if candidate.is_file():
-            hooks_json_path = candidate
-    # Strategy 2: running from source (gaia-scan direct)
-    if not hooks_json_path:
-        candidate = _find_package_root() / "hooks" / "hooks.json"
-        if candidate.is_file():
-            hooks_json_path = candidate
-
-    if not hooks_json_path:
-        logger.info("hooks.json not found, skipping hooks merge")
-        return False
-
-    try:
-        hooks_data = json.loads(hooks_json_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        logger.warning("hooks.json is invalid, skipping hooks merge")
-        return False
-
-    # Unwrap outer "hooks" key if present
-    source_hooks = hooks_data.get("hooks", hooks_data)
-
-    # Convert ${CLAUDE_PLUGIN_ROOT}/hooks/<script> to .claude/hooks/<script>
-    def convert_command(cmd: str) -> str:
-        return re.sub(r'\$\{CLAUDE_PLUGIN_ROOT\}/hooks/', '.claude/hooks/', cmd)
-
-    converted_hooks: Dict[str, list] = {}
-    for event, entries in source_hooks.items():
-        converted_hooks[event] = []
-        for entry in entries:
-            new_entry = dict(entry)
-            if "hooks" in new_entry:
-                new_entry["hooks"] = [
-                    {**h, "command": convert_command(h["command"])} if "command" in h else h
-                    for h in new_entry["hooks"]
-                ]
-            converted_hooks[event].append(new_entry)
-
-    # Load existing settings.local.json
-    existing: Dict[str, Any] = {}
-    if settings_path.exists():
-        try:
-            existing = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-
-    # Smart merge: deduplicate by command string
-    existing_hooks = existing.get("hooks", {})
-    changed = False
-
-    for event, new_entries in converted_hooks.items():
-        if event not in existing_hooks:
-            existing_hooks[event] = new_entries
-            changed = True
-            continue
-
-        # Collect existing command strings
-        existing_commands: set = set()
-        for entry in existing_hooks[event]:
-            for h in entry.get("hooks", []):
-                if "command" in h:
-                    existing_commands.add(h["command"])
-
-        # Add entries whose commands are not already present
-        for new_entry in new_entries:
-            new_commands = [h["command"] for h in new_entry.get("hooks", []) if "command" in h]
-            all_present = len(new_commands) > 0 and all(c in existing_commands for c in new_commands)
-            if not all_present:
-                existing_hooks[event].append(new_entry)
-                changed = True
-
-    if not changed:
-        logger.info("settings.local.json hooks already up to date")
-        return False
-
-    existing["hooks"] = existing_hooks
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(existing, indent=2) + "\n")
-    logger.info("Merged hooks into %s", settings_path)
-    return True
+    result = merge_local_hooks(project_root, plugin_root=pkg_root)
+    action = result.get("action") if isinstance(result, dict) else None
+    return action == "updated"
 
 
 def install_git_hooks(project_root: Path) -> int:

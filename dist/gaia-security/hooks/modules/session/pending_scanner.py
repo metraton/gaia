@@ -96,7 +96,10 @@ def scan_pending_approvals(
     if exclude_live_sessions:
         try:
             from modules.session.session_registry import get_live_sessions
-            live = get_live_sessions()
+            # Exclude headless sessions from the live-set: nobody is
+            # watching them interactively, so their pendings must surface
+            # to interactive sessions that can approve/reject them.
+            live = get_live_sessions(include_headless=False)
             results = [r for r in results if r["pending_session_id"] not in live]
         except Exception as exc:  # noqa: BLE001 — deliberate broad catch
             logger.warning(
@@ -108,6 +111,19 @@ def scan_pending_approvals(
     # Sort by timestamp (oldest first)
     results.sort(key=lambda x: x["timestamp"])
     return results
+
+
+def _truncate_smart(cmd: str, max_len: int = 100) -> str:
+    """Truncate a command string with head+tail context when it exceeds max_len.
+
+    Preserves the beginning (verb + first args) and the end (last argument or
+    target path) so the summary stays meaningful without occupying a full line.
+    """
+    if len(cmd) <= max_len:
+        return cmd
+    head_len = max_len * 2 // 3
+    tail_len = max_len - head_len - 1
+    return f"{cmd[:head_len]}…{cmd[-tail_len:]}"
 
 
 def format_pending_summary(pendings: List[Dict]) -> str:
@@ -123,7 +139,7 @@ def format_pending_summary(pendings: List[Dict]) -> str:
         risk = ctx.get("risk", "unknown")
 
         cross_tag = " [session anterior]" if p.get("cross_session") else ""
-        lines.append(f"**#{i} [P-{p['nonce_short']}]** `{p['command'][:60]}`{cross_tag}")
+        lines.append(f"**#{i} [P-{p['nonce_short']}]** `{_truncate_smart(p['command'])}`{cross_tag}")
         lines.append(f"  Hace: {p['age_human']} | Source: {source} | Risk: {risk}")
         if desc != p["command"]:
             lines.append(f"  {desc}")
