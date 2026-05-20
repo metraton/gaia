@@ -293,6 +293,98 @@ class PrePublishValidator {
     }
   }
 
+  /**
+   * Validate that every critical directory the install pipeline expects
+   * is covered by package.json `files` (directly or via a prefix entry).
+   *
+   * Background: a "gaia doctor" failure traced back to scripts/ being
+   * excluded from the published tarball -- the consumer's postinstall
+   * could not locate bootstrap_database.sh. This check enforces a hard
+   * invariant: if a critical directory exists in the repo, it MUST be
+   * declared in `files` so npm pack includes it.
+   *
+   * The list intentionally mirrors install.py's runtime expectations
+   * (scripts/, gaia/, bin/, hooks/, agents/, ...). New critical paths
+   * should be appended here AND added to package.json `files`.
+   */
+  validateFilesCoverage() {
+    this.log('Step 5b: Validating files array covers critical directories...', 'info');
+
+    const packageJsonPath = path.join(GAIA_OPS_ROOT, 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    const filesArray = packageJson.files || [];
+
+    // Normalize entries -- strip trailing slash, lowercase for comparison.
+    const filesEntries = filesArray.map(entry => entry.replace(/\/$/, ''));
+
+    const criticalDirs = [
+      'scripts',
+      'gaia',
+      'bin',
+      'hooks',
+      'agents',
+      'skills',
+      'commands',
+      'config',
+      'templates',
+      'tools',
+      'dist',
+      'git-hooks',
+    ];
+
+    const missing = [];
+    for (const dir of criticalDirs) {
+      const repoPath = path.join(GAIA_OPS_ROOT, dir);
+      if (!fs.existsSync(repoPath)) {
+        // Repo does not have this dir at all -- not a coverage gap, skip.
+        this.log(`  - ${dir}/ not in repo (skipped)`, 'info');
+        continue;
+      }
+
+      // Coverage rules: entry == "dir", entry == "dir/", or entry == "**" (rare).
+      // Wildcard patterns like "dir/**" or "dir/*" also cover.
+      const covered = filesEntries.some(entry => {
+        if (entry === dir) return true;
+        if (entry === '**') return true;
+        // Entry like "dir/sub" doesn't count -- npm files declares roots.
+        // But "dir/**", "dir/*" do cover the directory.
+        if (entry.startsWith(dir + '/') && (entry.endsWith('/**') || entry.endsWith('/*'))) {
+          return true;
+        }
+        return false;
+      });
+
+      if (!covered) {
+        missing.push(dir);
+        this.log(`  ✗ ${dir}/ exists in repo but is NOT in package.json files`, 'error');
+      } else {
+        this.log(`  ✓ ${dir}/`, 'success');
+      }
+    }
+
+    // Bonus check: bootstrap_database.sh specifically must exist.
+    // Presence-only on purpose: bin/cli/install.py:287 invokes the script as
+    // `bash <path>`, so the exec bit is NOT load-bearing. Checking it here
+    // would flake on WSL/Windows checkouts that lose the bit without
+    // preventing any real install failure. The relevant invariant is that
+    // the file ships -- which the files-array check above also enforces.
+    const bootstrapPath = path.join(GAIA_OPS_ROOT, 'scripts', 'bootstrap_database.sh');
+    if (!fs.existsSync(bootstrapPath)) {
+      this.log('  ✗ scripts/bootstrap_database.sh missing from repo', 'error');
+      missing.push('scripts/bootstrap_database.sh');
+    } else {
+      this.log('  ✓ scripts/bootstrap_database.sh exists', 'success');
+    }
+
+    if (missing.length > 0) {
+      throw new Error(
+        `package.json "files" array is missing critical directories or scripts: ${missing.join(', ')}. ` +
+        `Without these, the published tarball will be broken at install time.`
+      );
+    }
+    this.log('✓ All critical directories covered by package.json files', 'success');
+  }
+
   validatePluginManifest() {
     this.log('Step 6: Validating plugin manifest (.claude-plugin/plugin.json)...', 'info');
 
@@ -561,6 +653,7 @@ class PrePublishValidator {
         this.validateNodeModules();
         this.validateFiles();
       }
+      this.validateFilesCoverage();
       this.validatePluginManifest();
       this.runTests();
 

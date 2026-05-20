@@ -299,18 +299,16 @@ def merge_local_hooks(
 
     existing_hooks = existing.get("hooks", {})
 
-    # Migrate any legacy ".claude/hooks/..." paths to absolute
-    migrated = False
-    for entries in existing_hooks.values():
-        for entry in entries:
-            for h in entry.get("hooks", []):
-                cmd = h.get("command", "")
-                if cmd.startswith(".claude/hooks/"):
-                    h["command"] = cmd.replace(".claude/hooks/", f"{hooks_abs}/", 1)
-                    migrated = True
+    # Note: Gaia has no shipped users yet; we assume a clean install or a
+    # workspace that already went through this helper. Auto-migration of
+    # legacy ".claude/hooks/..." relative paths used to live here -- it was
+    # removed in Pass 4 of the install refactor because no production
+    # workspaces ever wrote that flavor (no released version emitted it).
+    # If a future schema migration becomes necessary, add it explicitly with
+    # a versioned migration step rather than re-introducing silent rewrites.
 
     # Smart merge -- gaia owns its event commands (dedupe by command string)
-    changed = migrated
+    changed = False
     for event, new_entries in converted.items():
         if event not in existing_hooks:
             existing_hooks[event] = new_entries

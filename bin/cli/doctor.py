@@ -1,26 +1,51 @@
 """
 gaia doctor -- System health checks for Gaia-Ops.
 
-Checks:
-  1. gaia-version     - package.json readable
-  2. claude-code      - CLI installed
-  3. python           - Python 3.9+ available
-  4. plugin-mode      - ops vs security, registry valid
-  5. symlinks         - .claude/ symlinks resolve
-  6. identity         - orchestrator agent configured
-  7. settings         - hooks registered, permissions, deny rules
-  8. hook-files       - all hook scripts present
-  9. project-context  - project-context.json valid
- 10. project-dirs     - paths declared in context exist
- 11. memory-dirs      - episodic memory dirs present
+Checks (in order):
+   5. package-integrity  - scripts/bootstrap_database.sh shipped + exec
+  10. gaia-version       - package.json readable
+  15. last-install-error - ~/.gaia/last-install-error.json (postinstall failure marker)
+  20. claude-code        - CLI installed
+  30. python             - Python 3.9+ available
+  35. workspace-init     - .claude/, plugin-registry, settings hooks all present
+  40. plugin-mode        - ops vs security, registry valid
+  45. schema-version     - gaia.db schema_version matches CLI expectation
+  50. symlinks           - .claude/ symlinks resolve
+  60. identity           - orchestrator agent configured
+  70. settings           - hooks registered, permissions, deny rules
+  80. hook-files         - all hook scripts present
+  90. project-context    - project-context.json valid
+ 100. project-dirs       - paths declared in context exist
+ 110. memory-dirs        - episodic memory dirs present
+ 120. memory_fts5_db     - FTS5 search.db present
+ 130. memory_fts5_count  - FTS5 index complete
+ 140. memory_scoring     - scoring module importable
 
 Severity: pass / info / warning / error
 Exit codes: 0=healthy, 1=warnings, 2=errors
+
+Design notes (Pass 4 overhaul):
+  - Diagnostic-only. Every failed check carries an actionable `fix` hint
+    that points to a concrete user action ("reinstall", "run gaia install",
+    "upgrade Gaia") -- never to `--fix`. The auto-fix surface (Identity
+    agent field, FTS5 backfill) remains from earlier passes for backward
+    compatibility but no new check opts into it.
+  - Severity is consistent: ERROR = Gaia is broken for the user, WARNING =
+    degraded but usable, INFO = advisory.
+  - The summary line at the end counts checks by severity and tells the
+    user where to look for fixes (inline hints above).
+
+References:
+  - brew doctor: every warning carries an inline remediation; no --fix mode.
+  - npm doctor: 7 well-scoped checks, context-specific hints when one fails.
+  - rustup: package integrity via SHA + manifest; corruption detected at
+    use-time, repair is reinstall.
 """
 
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -93,9 +118,67 @@ def _package_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+# The schema version this CLI build expects to find in gaia.db. When the
+# bootstrap script applies a new schema migration it must bump this constant
+# in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
+# upgrades the CLI past a schema bump but does not re-run `gaia install`,
+# `check_schema_version` raises a warning telling them how to repair.
+EXPECTED_SCHEMA_VERSION = 1
+
+# Locations the doctor reads outside the workspace.
+_INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
+_DEFAULT_DB_PATH = Path("~/.gaia/gaia.db").expanduser()
+
+
 # ============================================================================
 # Health Checks
 # ============================================================================
+
+@register_check("Package integrity", order=5)
+def check_package_integrity() -> dict:
+    """Check that critical files the package SHOULD ship are present.
+
+    The npm `files` array IS our manifest (like rustup's manifest.toml).
+    Past install failures traced back to missing scripts/bootstrap_database.sh
+    inside the published tarball -- this check fails loud at diagnostic time
+    so the user knows their install is broken (vs. silently failing later).
+
+    Presence-only: we deliberately do NOT verify the executable bit on
+    scripts/bootstrap_database.sh. `install.py::_run_bootstrap` invokes
+    the script as `bash <path>` (see bin/cli/install.py:287), so bash
+    reads and interprets the file regardless of the exec bit. Checking
+    it would create cross-platform flakiness (WSL/Windows checkouts
+    routinely lose the exec bit) without preventing any real failure.
+    """
+    pkg_root = _package_root()
+    required = [
+        # The CRITICAL file: install.py shells out to this to bootstrap the DB.
+        "scripts/bootstrap_database.sh",
+        # Top-level package metadata.
+        "package.json",
+        # bin/gaia is the entry point invoked by the launcher.
+        "bin/gaia",
+        # Hook entry points loaded by Claude Code via settings.local.json.
+        "hooks/pre_tool_use.py",
+    ]
+
+    missing = [rel for rel in required if not (pkg_root / rel).is_file()]
+
+    if missing:
+        return _result(
+            "Package integrity",
+            "error",
+            f"missing files: {', '.join(missing)}",
+            "Your Gaia install is incomplete. Reinstall: "
+            "`npm install @jaguilar87/gaia@latest`. If it persists, file a bug.",
+        )
+
+    return _result(
+        "Package integrity",
+        "pass",
+        f"{len(required)}/{len(required)} critical files present",
+    )
+
 
 @register_check("Gaia-Ops", order=10)
 def check_gaia_version() -> dict:
@@ -105,6 +188,41 @@ def check_gaia_version() -> dict:
     if data and "version" in data:
         return _result("Gaia-Ops", "pass", f"v{data['version']}")
     return _result("Gaia-Ops", "error", "Version unknown", "Reinstall @jaguilar87/gaia")
+
+
+@register_check("Last install error", order=15)
+def check_last_install_error() -> dict:
+    """Surface a postinstall failure that left a marker file.
+
+    `gaia install --postinstall` cannot fail loudly (npm aborts the whole
+    transaction on non-zero exit). Instead, when a non-fatal step fails it
+    writes ~/.gaia/last-install-error.json. This check reads that marker
+    and reports it as an ERROR so the user knows the workspace is in a
+    degraded state -- and what to do.
+    """
+    if not _INSTALL_ERROR_MARKER.is_file():
+        return _result("Last install error", "pass", "no recent install errors")
+
+    data = _read_json(_INSTALL_ERROR_MARKER)
+    if not data:
+        return _result(
+            "Last install error",
+            "warning",
+            f"marker present at {_INSTALL_ERROR_MARKER} but unreadable",
+            "Delete the marker manually and re-run `gaia install`.",
+        )
+
+    step = data.get("step", "unknown step")
+    detail = data.get("detail", "no detail")
+    ts = data.get("timestamp", "unknown time")
+    workspace = data.get("workspace", "unknown workspace")
+    return _result(
+        "Last install error",
+        "error",
+        f"postinstall failed at step '{step}' ({ts}) in {workspace}: {detail}",
+        "Re-run `gaia install` in the affected workspace to repair. "
+        "If the same step fails again, file a bug with this marker attached.",
+    )
 
 
 @register_check("Claude Code", order=20)
@@ -143,6 +261,49 @@ def check_python() -> dict:
     return _result("Python", "pass", f"Python {version}")
 
 
+@register_check("Workspace initialized", order=35)
+def check_workspace_initialized(project_root: Path) -> dict:
+    """Meta-check: this workspace is Gaia-aware end-to-end.
+
+    Individual checks (symlinks, settings, identity) test pieces of the
+    workspace state. This one tests the *conjunction* -- a workspace is
+    only useful to Gaia when .claude/, plugin-registry.json, and a
+    settings.local.json with hooks all exist together. Failing any of the
+    three means the workspace is not initialized; the others will surface
+    their own errors, but this check gives the user one actionable hint.
+    """
+    claude_dir = project_root / ".claude"
+    registry = claude_dir / "plugin-registry.json"
+    settings = claude_dir / "settings.local.json"
+
+    missing = []
+    if not claude_dir.is_dir():
+        missing.append(".claude/")
+    if not registry.is_file():
+        missing.append("plugin-registry.json")
+    if not settings.is_file():
+        missing.append("settings.local.json")
+
+    # If all three files exist, also require that settings.local.json
+    # carries a hooks section -- a workspace with no hooks is functionally
+    # uninitialized even if the file is there.
+    has_hooks = False
+    if settings.is_file():
+        data = _read_json(settings)
+        has_hooks = bool(data and data.get("hooks"))
+        if data and not has_hooks:
+            missing.append("hooks in settings.local.json")
+
+    if missing:
+        return _result(
+            "Workspace initialized",
+            "error",
+            f"missing: {', '.join(missing)}",
+            f"Run: `gaia install --workspace {project_root}`",
+        )
+    return _result("Workspace initialized", "pass", "Gaia-aware workspace")
+
+
 @register_check("Plugin mode", order=40)
 def check_plugin_mode(project_root: Path) -> dict:
     """Check plugin mode from plugin-registry.json."""
@@ -163,6 +324,86 @@ def check_plugin_mode(project_root: Path) -> dict:
         return _result("Plugin mode", "pass", f"security (source: {source})")
 
     return _result("Plugin mode", "warning", f"Unknown plugin: {', '.join(installed)}", "Verify installation")
+
+
+@register_check("Schema version", order=45)
+def check_schema_version() -> dict:
+    """Check that gaia.db schema matches the CLI's EXPECTED_SCHEMA_VERSION.
+
+    Bootstrap.sh inserts row (version, applied_at, description) on each
+    install. If a user upgrades the CLI past a schema bump without running
+    `gaia install`, MAX(version) < EXPECTED -- we warn with a concrete hint.
+
+    Skipped cleanly when:
+      - sqlite3 cannot open the DB (fresh machine, no DB yet)
+      - schema_version table missing (legacy DB from before this check)
+    """
+    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
+    db_path = Path(db_path_str).expanduser()
+
+    if not db_path.is_file():
+        return _result(
+            "Schema version",
+            "info",
+            f"no DB at {db_path} (will be created on first `gaia install`)",
+        )
+
+    try:
+        con = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        return _result(
+            "Schema version",
+            "warning",
+            f"could not open {db_path}: {exc}",
+            "Delete the corrupt DB and re-run `gaia install`.",
+        )
+
+    try:
+        cur = con.cursor()
+        # schema_version table introduced in EXPECTED_SCHEMA_VERSION=1.
+        # If the table is missing, the DB predates the migration -- warn.
+        cur.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_version'"
+        )
+        if cur.fetchone() is None:
+            return _result(
+                "Schema version",
+                "warning",
+                "schema_version table missing (legacy DB)",
+                "Run `gaia install` to upgrade the DB schema.",
+            )
+
+        cur.execute("SELECT MAX(version) FROM schema_version")
+        row = cur.fetchone()
+        live = row[0] if row and row[0] is not None else 0
+    except sqlite3.Error as exc:
+        return _result(
+            "Schema version",
+            "warning",
+            f"could not read schema_version: {exc}",
+            "Re-run `gaia install` to repair the DB.",
+        )
+    finally:
+        con.close()
+
+    if live < EXPECTED_SCHEMA_VERSION:
+        return _result(
+            "Schema version",
+            "warning",
+            f"DB schema_version={live}, CLI expects {EXPECTED_SCHEMA_VERSION}",
+            "Run `gaia install` to apply pending schema migrations.",
+        )
+    if live > EXPECTED_SCHEMA_VERSION:
+        # CLI lagging behind the DB -- user has a newer DB written by a
+        # newer Gaia. Different remedy: upgrade the CLI.
+        return _result(
+            "Schema version",
+            "warning",
+            f"DB schema_version={live} > CLI expected {EXPECTED_SCHEMA_VERSION}",
+            "Upgrade Gaia: `npm install @jaguilar87/gaia@latest`.",
+        )
+    return _result("Schema version", "pass", f"v{live} matches CLI expectation")
 
 
 @register_check("Symlinks", order=50)
@@ -614,25 +855,37 @@ _SEVERITY_ICONS = {
 
 
 def _print_human(results: list, version_detail: str = "") -> None:
-    """Print human-readable doctor output."""
+    """Print human-readable doctor output.
+
+    Format follows brew/npm doctor conventions: one line per check,
+    severity tag, inline `Fix:` hint when actionable. Summary line at
+    the end counts checks by severity (errors / warnings / info / pass)
+    so the user can see at a glance whether the install needs attention.
+    """
     version_tag = f" ({version_detail})" if version_detail else ""
     print(f"\n  Gaia-Ops Health Check{version_tag}\n")
 
     for r in results:
         icon = _SEVERITY_ICONS.get(r["severity"], "????")
-        print(f"    [{icon}] {r['name']:<18} {r['detail']}")
+        # Widened from :<18 to :<22 to fit "Workspace initialized" (21 chars).
+        print(f"    [{icon}] {r['name']:<22} {r['detail']}")
         if r["severity"] in ("warning", "error") and r.get("fix"):
-            print(f"           Fix: {r['fix']}")
+            print(f"               Fix: {r['fix']}")
 
     print()
 
-    has_errors = any(r["severity"] == "error" for r in results)
-    has_warnings = any(r["severity"] == "warning" for r in results)
+    errors = sum(1 for r in results if r["severity"] == "error")
+    warnings = sum(1 for r in results if r["severity"] == "warning")
+    infos = sum(1 for r in results if r["severity"] == "info")
+    passes = sum(1 for r in results if r["severity"] == "pass")
 
-    if has_errors:
-        print("  Status: CRITICAL\n")
-    elif has_warnings:
-        print("  Status: ISSUES FOUND\n")
+    counts = f"  Summary: {errors} error(s), {warnings} warning(s), {infos} info, {passes} pass"
+    print(counts)
+
+    if errors:
+        print("  Status: CRITICAL -- Gaia is degraded. See inline Fix: hints above.\n")
+    elif warnings:
+        print("  Status: ISSUES FOUND -- usable but degraded. See inline Fix: hints above.\n")
     else:
         print("  Status: HEALTHY\n")
 

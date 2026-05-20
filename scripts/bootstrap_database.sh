@@ -131,6 +131,23 @@ EOF
 
 echo "[bootstrap] agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)"
 
+# === Section 3b: Seed schema_version (migration ledger) ===
+
+# La tabla schema_version se crea en schema.sql (Section harness_events/below).
+# Aquí insertamos la fila inicial (version=1, 'initial schema'). Idempotente vía
+# INSERT OR IGNORE -- reejecutar el bootstrap no duplica ni reescribe la fila.
+# Futuras migraciones de schema deben agregar su propio INSERT OR IGNORE acá
+# con su número de versión y descripción.
+#
+# `gaia doctor` lee MAX(version) y lo compara contra EXPECTED_SCHEMA_VERSION
+# baked in al CLI. Drift => warning con hint "actualizá Gaia".
+NOW_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+sqlite3 "$GAIA_DB" <<EOF
+INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+VALUES (1, '${NOW_UTC}', 'initial schema');
+EOF
+echo "[bootstrap] schema_version seeded (v1, 'initial schema')"
+
 # === Section 4: Registrar proyecto actual ===
 
 # Detectamos la identity del workspace via git remote get-url origin, igual que
@@ -301,11 +318,15 @@ else
     ALL_OK=0
 fi
 
-# Check 5: schema_version. La schema.sql actual NO define una tabla
-# schema_version. Omitimos el check pero dejamos el TODO explícito para que
-# en una iteración futura se añada CREATE TABLE schema_version + INSERT del
-# valor del schema (e.g. '1.0').
-echo "[bootstrap] check: schema_version table -- SKIPPED (no schema_version table in schema.sql; TODO: add)"
+# Check 5: schema_version. La tabla se crea en schema.sql y la Section 3b
+# inserta la fila (version=1). Verificamos que MAX(version) >= 1.
+SCHEMA_VER="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
+if [ "$SCHEMA_VER" -ge 1 ]; then
+    echo "[bootstrap] check: schema_version >= 1 (got ${SCHEMA_VER}) -- PASS"
+else
+    echo "[bootstrap] check: schema_version >= 1 (got ${SCHEMA_VER}) -- FAIL"
+    ALL_OK=0
+fi
 
 # === Section 7: Resumen ===
 

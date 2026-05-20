@@ -52,10 +52,12 @@ Flags:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # bin/cli/install.py -> bin/cli -> bin -> gaia/
@@ -317,6 +319,47 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Install-error marker (~/.gaia/last-install-error.json)
+# ---------------------------------------------------------------------------
+#
+# `gaia doctor` reads this file to surface install failures that happened
+# under `--postinstall` (where we cannot abort npm). Interactive `gaia install`
+# clears it on success and does not write it on failure (the user sees the
+# error in stderr already).
+
+_INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
+
+
+def _write_install_error_marker(*, workspace: Path, step: str, detail: str) -> None:
+    """Persist a structured install-error marker for `gaia doctor` to pick up.
+
+    Best-effort: failure to write the marker is never fatal (we are already
+    in an error path; raising here would mask the original problem).
+    """
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "step": step,
+        "detail": detail,
+        "workspace": str(workspace),
+    }
+    try:
+        _INSTALL_ERROR_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _INSTALL_ERROR_MARKER.write_text(json.dumps(payload, indent=2) + "\n")
+    except OSError:
+        pass  # marker is advisory; never block the install path on it
+
+
+def _clear_install_error_marker() -> None:
+    """Remove the install-error marker if present (called on a clean install)."""
+    try:
+        _INSTALL_ERROR_MARKER.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+# ---------------------------------------------------------------------------
 # Optional fresh scan (postinstall path only)
 # ---------------------------------------------------------------------------
 
@@ -575,6 +618,32 @@ def cmd_install(args: argparse.Namespace) -> int:
     if postinstall:
         scan_res = _maybe_run_fresh_scan(workspace, verbose=verbose, quiet=quiet)
         _report_step(name="project scan", result=scan_res, quiet=quiet, verbose=verbose)
+
+        # Fail-loud on scan error in postinstall mode: persist a marker so
+        # `gaia doctor` can report the failure. We deliberately keep returning
+        # 0 -- a non-zero exit code from `npm install` postinstall aborts the
+        # whole install transaction, which is worse than a degraded workspace
+        # the user can repair with `gaia install`.
+        if scan_res.get("action") == "error":
+            _write_install_error_marker(
+                workspace=workspace,
+                step="project scan",
+                detail=scan_res.get("details", "unknown error"),
+            )
+            if not quiet:
+                print(
+                    "  [!] project scan failed -- marker written to "
+                    f"{_INSTALL_ERROR_MARKER}; run `gaia doctor` for detail.",
+                    file=sys.stderr,
+                )
+        else:
+            # Clean run -- clear any stale marker from a previous attempt.
+            _clear_install_error_marker()
+    else:
+        # Interactive install never invokes the fresh scan; just clear any
+        # stale marker from a prior postinstall failure (the user is here
+        # repairing things by hand, so the marker is no longer authoritative).
+        _clear_install_error_marker()
 
     _print_next_steps(quiet=quiet, postinstall=postinstall)
     return 0

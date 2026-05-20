@@ -29,6 +29,28 @@ import cli.doctor as doctor_mod
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _isolate_home_globals(tmp_path, monkeypatch):
+    """Isolate doctor checks that read from $HOME.
+
+    Pass 4 added two checks that touch ~/.gaia/: check_schema_version reads
+    ~/.gaia/gaia.db and check_last_install_error reads
+    ~/.gaia/last-install-error.json. Without this fixture, test runs on a
+    real user machine would see the actual install state and flake.
+
+    The fixture redirects both globals at the module level. Tests that need
+    to assert *specific* states (e.g. marker present) override these via
+    their own monkeypatching.
+    """
+    fake_marker = tmp_path / "isolated-last-install-error.json"
+    fake_db = tmp_path / "isolated-gaia.db"
+    monkeypatch.setattr(doctor_mod, "_INSTALL_ERROR_MARKER", fake_marker)
+    monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", fake_db)
+    # GAIA_DB env var is the higher-priority override read by
+    # check_schema_version -- clear it so tests start from a clean slate.
+    monkeypatch.delenv("GAIA_DB", raising=False)
+    yield
+
 @pytest.fixture()
 def healthy_project(tmp_path):
     """Create a fully healthy .claude/ project for doctor checks."""
@@ -288,6 +310,260 @@ class TestCheckMemoryDirs:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Pass 4 -- check_package_integrity
+# ---------------------------------------------------------------------------
+
+class TestCheckPackageIntegrity:
+    """Pass 4: presence-only verification of critical shipped files.
+
+    Exec-bit is deliberately NOT checked (install.py:287 invokes the script
+    via `bash <path>`, so the bit is not load-bearing).
+    """
+
+    def test_all_critical_files_present(self):
+        """In the dev repo, all four critical files exist -> pass."""
+        r = doctor_mod.check_package_integrity()
+        assert r["name"] == "Package integrity"
+        assert r["severity"] == "pass"
+        assert "4/4" in r["detail"]
+
+    def test_missing_critical_file_errors(self, monkeypatch, tmp_path):
+        """If _package_root() points at a stub without scripts/, error with
+        an actionable reinstall hint."""
+        # Stub package root: only package.json present, no scripts/.
+        (tmp_path / "package.json").write_text('{"name": "stub"}')
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: tmp_path)
+
+        r = doctor_mod.check_package_integrity()
+        assert r["severity"] == "error"
+        assert "scripts/bootstrap_database.sh" in r["detail"]
+        assert "npm install" in r.get("fix", ""), "hint must guide reinstall"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pass 4 -- check_workspace_initialized
+# ---------------------------------------------------------------------------
+
+class TestCheckWorkspaceInitialized:
+    """Pass 4: meta-check that the workspace is Gaia-aware end-to-end."""
+
+    def test_healthy_workspace_passes(self, healthy_project):
+        r = doctor_mod.check_workspace_initialized(healthy_project)
+        assert r["severity"] == "pass"
+
+    def test_missing_claude_dir_errors(self, tmp_path):
+        # No .claude/ at all.
+        r = doctor_mod.check_workspace_initialized(tmp_path)
+        assert r["severity"] == "error"
+        assert ".claude/" in r["detail"]
+        assert "gaia install" in r["fix"]
+
+    def test_missing_registry_errors(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "settings.local.json").write_text(
+            json.dumps({"hooks": {"PreToolUse": []}})
+        )
+        # No plugin-registry.json
+        r = doctor_mod.check_workspace_initialized(tmp_path)
+        assert r["severity"] == "error"
+        assert "plugin-registry.json" in r["detail"]
+
+    def test_settings_without_hooks_errors(self, tmp_path):
+        """A settings.local.json that exists but carries no hooks section is
+        functionally an uninitialized workspace -- error."""
+        cd = tmp_path / ".claude"
+        cd.mkdir()
+        (cd / "plugin-registry.json").write_text("{}")
+        (cd / "settings.local.json").write_text('{"agent": "x"}')  # no "hooks" key
+        r = doctor_mod.check_workspace_initialized(tmp_path)
+        assert r["severity"] == "error"
+        assert "hooks" in r["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pass 4 -- check_last_install_error
+# ---------------------------------------------------------------------------
+
+class TestCheckLastInstallError:
+    """Pass 4: surface the postinstall marker that `gaia install
+    --postinstall` writes on scan failure."""
+
+    def test_no_marker_passes(self, monkeypatch, tmp_path):
+        """The autouse fixture already redirects the marker path to a tmp
+        location that does not exist -> pass."""
+        r = doctor_mod.check_last_install_error()
+        assert r["severity"] == "pass"
+        assert "no recent install errors" in r["detail"]
+
+    def test_marker_present_errors_with_detail(self, monkeypatch, tmp_path):
+        """A marker file should be reported as ERROR with the step, detail,
+        timestamp, and workspace lifted verbatim from the JSON payload."""
+        marker = tmp_path / "marker.json"
+        marker.write_text(json.dumps({
+            "timestamp": "2026-05-20T12:00:00+00:00",
+            "step": "project scan",
+            "detail": "context provider crashed",
+            "workspace": "/home/x/proj",
+        }))
+        monkeypatch.setattr(doctor_mod, "_INSTALL_ERROR_MARKER", marker)
+
+        r = doctor_mod.check_last_install_error()
+        assert r["severity"] == "error"
+        assert "project scan" in r["detail"]
+        assert "context provider crashed" in r["detail"]
+        assert "/home/x/proj" in r["detail"]
+        assert "gaia install" in r["fix"]
+
+    def test_unreadable_marker_warns(self, monkeypatch, tmp_path):
+        """Marker exists but is not valid JSON -> warning with a manual-fix
+        hint (delete + reinstall). Distinct from the error case so users can
+        tell parse failure from real install failure."""
+        marker = tmp_path / "marker.json"
+        marker.write_text("{not valid json")
+        monkeypatch.setattr(doctor_mod, "_INSTALL_ERROR_MARKER", marker)
+
+        r = doctor_mod.check_last_install_error()
+        assert r["severity"] == "warning"
+        assert "unreadable" in r["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pass 4 -- check_schema_version
+# ---------------------------------------------------------------------------
+
+class TestCheckSchemaVersion:
+    """Pass 4: verify the schema_version migration ledger matches the CLI's
+    EXPECTED_SCHEMA_VERSION constant."""
+
+    def _make_db(self, path, schema_version_rows=None):
+        """Build a minimal SQLite DB with the schema_version table.
+
+        If schema_version_rows is None, the table is created but empty.
+        If a list of (version, applied_at, description) tuples, insert each.
+        If schema_version_rows is the literal "no_table", omit the table.
+        """
+        import sqlite3
+        con = sqlite3.connect(str(path))
+        cur = con.cursor()
+        if schema_version_rows != "no_table":
+            cur.execute(
+                "CREATE TABLE schema_version "
+                "(version INTEGER PRIMARY KEY, applied_at TEXT, description TEXT)"
+            )
+            for row in (schema_version_rows or []):
+                cur.execute(
+                    "INSERT INTO schema_version VALUES (?, ?, ?)", row
+                )
+        con.commit()
+        con.close()
+
+    def test_no_db_info(self, monkeypatch, tmp_path):
+        """Fresh machine, no gaia.db yet -> info (will be created on install)."""
+        fake = tmp_path / "no-such-gaia.db"
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", fake)
+        r = doctor_mod.check_schema_version()
+        assert r["severity"] == "info"
+        assert "no DB" in r["detail"]
+
+    def test_matching_version_passes(self, monkeypatch, tmp_path):
+        """DB schema_version == EXPECTED_SCHEMA_VERSION -> pass."""
+        db = tmp_path / "gaia.db"
+        self._make_db(db, schema_version_rows=[
+            (doctor_mod.EXPECTED_SCHEMA_VERSION, "2026-05-20T00:00:00Z", "initial"),
+        ])
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        r = doctor_mod.check_schema_version()
+        assert r["severity"] == "pass"
+        assert f"v{doctor_mod.EXPECTED_SCHEMA_VERSION}" in r["detail"]
+
+    def test_db_lower_than_expected_warns(self, monkeypatch, tmp_path):
+        """If the DB schema is older than the CLI expects, warn and tell
+        the user to run `gaia install` to apply migrations."""
+        db = tmp_path / "gaia.db"
+        # Empty schema_version table -> MAX(version) = NULL -> treated as 0
+        self._make_db(db, schema_version_rows=[])
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        monkeypatch.setattr(doctor_mod, "EXPECTED_SCHEMA_VERSION", 5)
+        r = doctor_mod.check_schema_version()
+        assert r["severity"] == "warning"
+        assert "schema_version=0" in r["detail"]
+        assert "expects 5" in r["detail"]
+        assert "gaia install" in r["fix"]
+
+    def test_db_higher_than_expected_warns(self, monkeypatch, tmp_path):
+        """If the DB schema is newer than the CLI expects, warn and tell
+        the user to upgrade Gaia (different remedy than the lower case)."""
+        db = tmp_path / "gaia.db"
+        self._make_db(db, schema_version_rows=[
+            (99, "2026-05-20T00:00:00Z", "future"),
+        ])
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        r = doctor_mod.check_schema_version()
+        assert r["severity"] == "warning"
+        assert "99" in r["detail"]
+        assert "npm install @jaguilar87/gaia@latest" in r["fix"]
+
+    def test_legacy_db_without_table_warns(self, monkeypatch, tmp_path):
+        """A DB that predates the schema_version table -> warn, suggest
+        re-running install to apply migrations."""
+        db = tmp_path / "gaia.db"
+        self._make_db(db, schema_version_rows="no_table")
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        r = doctor_mod.check_schema_version()
+        assert r["severity"] == "warning"
+        assert "schema_version table missing" in r["detail"]
+        assert "gaia install" in r["fix"]
+
+    def test_gaia_db_env_var_takes_precedence(self, monkeypatch, tmp_path):
+        """GAIA_DB env var should override _DEFAULT_DB_PATH so users with
+        custom DB locations are not misdiagnosed."""
+        db_custom = tmp_path / "custom-gaia.db"
+        self._make_db(db_custom, schema_version_rows=[
+            (doctor_mod.EXPECTED_SCHEMA_VERSION, "2026-05-20T00:00:00Z", "initial"),
+        ])
+        # Point _DEFAULT_DB_PATH at a non-existent file to prove the env
+        # var is what is read.
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", tmp_path / "nope.db")
+        monkeypatch.setenv("GAIA_DB", str(db_custom))
+        r = doctor_mod.check_schema_version()
+        assert r["severity"] == "pass"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pass 4 -- summary line carries severity counts
+# ---------------------------------------------------------------------------
+
+class TestSummaryLineFormat:
+    """Pass 4: the human-readable summary line counts checks by severity
+    (brew/npm doctor pattern). Tests the actionable presentation contract."""
+
+    def test_summary_counts_present(self, healthy_project, monkeypatch, capsys):
+        monkeypatch.chdir(healthy_project)
+        # Same isolation pattern as test_json_healthy_status -- the memory
+        # scoring import flakes under pytest sys.path pollution.
+        import types
+        fake_tm = types.ModuleType("tools.memory")
+        fake_scoring = types.ModuleType("tools.memory.scoring")
+        fake_ss = types.ModuleType("tools.memory.search_store")
+        fake_ss.count = lambda: 0
+        fake_tm.scoring = fake_scoring
+        fake_tm.search_store = fake_ss
+        monkeypatch.setitem(sys.modules, "tools.memory", fake_tm)
+        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
+        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
+
+        args = SimpleNamespace(json=False, fix=False, subcommand="doctor")
+        doctor_mod.cmd_doctor(args)
+
+        out = capsys.readouterr().out
+        # Must contain the counts line
+        assert "Summary:" in out
+        assert "error(s)" in out
+        assert "warning(s)" in out
+        assert "pass" in out
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_doctor (human output)
 # ---------------------------------------------------------------------------
 
@@ -337,7 +613,9 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        assert len(data["checks"]) == 14  # 14 checks total (11 base + 3 memory v2)
+        # 18 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # last-install-error, workspace-initialized, schema-version).
+        assert len(data["checks"]) == 18
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
