@@ -86,7 +86,7 @@ class TestUnregistersCurrentSession:
         from modules.session import session_registry
 
         # Pre-populate the registry so we can observe the removal.
-        session_registry.register_session("sid-exit", pid=os.getpid())
+        session_registry.register_session("sid-exit")
         assert "sid-exit" in session_registry.get_live_sessions()
 
         monkeypatch.setenv("CLAUDE_SESSION_ID", "sid-exit")
@@ -114,7 +114,7 @@ class TestUnregistersCurrentSession:
         """All three SessionEnd matchers must trigger the same cleanup."""
         from modules.session import session_registry
 
-        session_registry.register_session(f"sid-{reason}", pid=os.getpid())
+        session_registry.register_session(f"sid-{reason}")
         monkeypatch.setenv("CLAUDE_SESSION_ID", f"sid-{reason}")
         _feed_stdin(
             monkeypatch,

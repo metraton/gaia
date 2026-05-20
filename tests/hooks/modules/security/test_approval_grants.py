@@ -580,6 +580,124 @@ class TestCleanup:
         assert latest is not None
         assert latest["nonce"] == fresh_nonce
 
+    # ------------------------------------------------------------------
+    # Phase 2: force=True bypasses the 60s throttle
+    # ------------------------------------------------------------------
+
+    def test_throttle_blocks_repeat_cleanup_without_force(self, clean_grants_dir):
+        """Within the throttle window, a second non-force call must skip."""
+        import modules.security.approval_grants as ag
+
+        # First call primes the throttle and returns whatever it cleans.
+        cleanup_expired_grants()
+        # Throttle now active; a non-force call within the window is a no-op.
+        result = cleanup_expired_grants()
+        assert result == 0, (
+            "Throttle must short-circuit a repeat call inside the "
+            "_CLEANUP_INTERVAL_SECONDS window when force=False."
+        )
+
+    def test_force_true_bypasses_throttle(self, clean_grants_dir):
+        """force=True must run cleanup even when the throttle is fresh."""
+        import modules.security.approval_grants as ag
+
+        # Simulate a recent cleanup so the throttle would otherwise skip.
+        ag._last_cleanup_time = time.time()
+
+        # Seed an expired grant that cleanup should sweep.
+        _write_active_grant(
+            clean_grants_dir,
+            "git commit",
+            granted_at=time.time() - 700,
+            ttl_minutes=10,
+        )
+
+        cleaned = cleanup_expired_grants(force=True)
+        assert cleaned >= 1, (
+            "force=True must bypass the throttle and run the sweep. "
+            "Without force, a session start that happens <60s after the "
+            "last cleanup would silently skip and leave stale artefacts."
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 2: orphan pending-index files are swept
+    # ------------------------------------------------------------------
+
+    def test_sweep_removes_index_with_no_live_entries(self, clean_grants_dir):
+        """An index referencing only deleted pending files must be removed."""
+        import modules.security.approval_grants as ag
+
+        # Build an index manually, then remove the pending it references so
+        # the entry becomes an orphan. The index sweep must catch this.
+        index_file = clean_grants_dir / "pending-index-test-session-123.json"
+        index_file.write_text(
+            json.dumps(
+                {
+                    "session_id": "test-session-123",
+                    "latest_nonce": "deadbeef" * 4,
+                    "entries": [
+                        {
+                            "nonce": "deadbeef" * 4,
+                            "pending_file": "pending-deadbeef-does-not-exist.json",
+                            "timestamp": time.time(),
+                        }
+                    ],
+                }
+            )
+        )
+        assert index_file.exists()
+
+        ag._last_cleanup_time = 0.0  # ensure not throttled
+        cleaned = cleanup_expired_grants(force=True)
+
+        assert not index_file.exists(), (
+            "An index whose every entry points to a missing pending file is "
+            "an orphan -- the sweep must delete it so the operator does not "
+            "see phantom approvals in `gaia approvals list`."
+        )
+        assert cleaned >= 1
+
+    def test_sweep_removes_corrupt_index(self, clean_grants_dir):
+        """A pending-index-*.json that fails to parse must be removed."""
+        import modules.security.approval_grants as ag
+
+        bad_index = clean_grants_dir / "pending-index-corrupt-session.json"
+        bad_index.write_text("{ not valid json")
+
+        ag._last_cleanup_time = 0.0
+        cleanup_expired_grants(force=True)
+
+        assert not bad_index.exists(), (
+            "A corrupt index file cannot be trusted to enumerate pendings; "
+            "remove it so the next write_pending rebuilds from authoritative "
+            "pending-{nonce}.json files."
+        )
+
+    def test_sweep_preserves_index_with_live_entries(self, clean_grants_dir):
+        """An index that points at a real pending file must be kept."""
+        import modules.security.approval_grants as ag
+
+        # Create a real pending so its index entry is valid.
+        nonce = generate_nonce()
+        pending_file = write_pending_approval(
+            nonce=nonce,
+            command="git commit -m 'feat: keep'",
+            danger_verb="commit",
+            danger_category="MUTATIVE",
+        )
+        assert pending_file is not None
+        index_file = clean_grants_dir / "pending-index-test-session-123.json"
+        assert index_file.exists(), "write_pending must rebuild the index"
+
+        ag._last_cleanup_time = 0.0
+        cleanup_expired_grants(force=True)
+
+        assert pending_file.exists()
+        assert index_file.exists(), (
+            "Index with at least one live entry must survive -- removing it "
+            "would force a rebuild on the next read for no benefit."
+        )
+
 
 class TestNonceEndToEnd:
     """The full nonce flow should still work end-to-end.

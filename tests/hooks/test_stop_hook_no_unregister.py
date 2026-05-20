@@ -64,7 +64,7 @@ class TestStopHookDoesNotMutateRegistry:
         """Running Stop once must not evict the current session."""
         from modules.session import session_registry
 
-        session_registry.register_session("sid-live", pid=os.getpid())
+        session_registry.register_session("sid-live")
         assert "sid-live" in session_registry.get_live_sessions()
 
         monkeypatch.setenv("CLAUDE_SESSION_ID", "sid-live")
@@ -98,7 +98,7 @@ class TestStopHookDoesNotMutateRegistry:
         """Simulate 3 Stop events on the same session -- registry stable."""
         from modules.session import session_registry
 
-        session_registry.register_session("sid-loop", pid=os.getpid())
+        session_registry.register_session("sid-loop")
         monkeypatch.setenv("CLAUDE_SESSION_ID", "sid-loop")
 
         for _ in range(3):

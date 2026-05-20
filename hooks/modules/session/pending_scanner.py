@@ -96,7 +96,10 @@ def scan_pending_approvals(
     if exclude_live_sessions:
         try:
             from modules.session.session_registry import get_live_sessions
-            live = get_live_sessions()
+            # Exclude headless sessions from the live-set: nobody is
+            # watching them interactively, so their pendings must surface
+            # to interactive sessions that can approve/reject them.
+            live = get_live_sessions(include_headless=False)
             results = [r for r in results if r["pending_session_id"] not in live]
         except Exception as exc:  # noqa: BLE001 — deliberate broad catch
             logger.warning(

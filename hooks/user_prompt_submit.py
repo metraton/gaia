@@ -123,46 +123,23 @@ def _build_welcome(mode: str) -> str:
 
 
 def _build_pending_context() -> str:
-    """Scan for pending approvals and format as actionable context.
+    """Back-compat shim that delegates to ``session_manifest`` (Phase 4).
 
-    Returns an [ACTIONABLE]-framed summary if pending approvals exist,
-    or empty string if none found.  Includes cross-session fallback:
-    scans current session first, then all sessions if empty.
+    Pending-approval injection moved to SessionStart in Phase 4 so the
+    [ACTIONABLE] block surfaces once per session rather than re-rendering
+    on every prompt. UserPromptSubmit no longer invokes this helper from
+    ``__main__`` -- the runtime path is SessionStart -> session_manifest.
 
-    Fully fail-safe — never raises exceptions.
+    The function is kept so existing tests that import and monkey-patch
+    ``pending_scanner.scan_pending_approvals`` keep validating the
+    behaviour: ``build_pending_approvals_block()`` is the same logic in
+    its new home and reacts to the same patches.
+
+    Fully fail-safe -- never raises.
     """
     try:
-        from modules.session.pending_scanner import scan_pending_approvals, format_pending_summary
-        from modules.core.paths import get_plugin_data_dir
-        from modules.core.state import get_session_id
-
-        approvals_dir = get_plugin_data_dir() / "cache" / "approvals"
-        session_id = get_session_id()
-
-        # Current session first
-        pendings = scan_pending_approvals(
-            approvals_dir, session_id=session_id, current_session_id=session_id
-        )
-
-        # Cross-session fallback: scan all sessions if current has none.
-        # exclude_live_sessions=True prevents pendings from parallel live
-        # sessions from appearing as "[session anterior]" injections.
-        if not pendings:
-            pendings = scan_pending_approvals(
-                approvals_dir,
-                current_session_id=session_id,
-                exclude_live_sessions=True,
-            )
-
-        if not pendings:
-            return ""
-
-        summary = format_pending_summary(pendings)
-        logger.info("Pending context: %d approvals found", len(pendings))
-        return (
-            "[ACTIONABLE] Pending approvals require your attention before "
-            "routing this request.\n\n" + summary
-        )
+        from modules.session.session_manifest import build_pending_approvals_block
+        return build_pending_approvals_block()
     except Exception as e:
         logger.debug("Pending context scan skipped (non-fatal): %s", e)
         return ""
@@ -175,6 +152,16 @@ if __name__ == "__main__":
     try:
         raw_input = sys.stdin.read()
 
+        # Refresh liveness heartbeat for this session. Throttled inside
+        # touch_session(), fully non-fatal. This is the only place the
+        # session can prove it is alive between SessionStart and SessionEnd.
+        try:
+            from modules.session.session_registry import touch_session
+            from modules.core.state import get_session_id
+            touch_session(get_session_id())
+        except Exception as _hb_exc:
+            logger.debug("touch_session failed (non-fatal): %s", _hb_exc)
+
         # Check first-run BEFORE setup (SessionStart does setup with
         # mark_done=False so the marker doesn't exist yet on first run).
         from modules.core.plugin_setup import is_first_run, mark_initialized
@@ -184,8 +171,12 @@ if __name__ == "__main__":
         setup_msg = run_first_time_setup(mark_done=False)
         mode = get_plugin_mode()
 
-        # Build additionalContext: welcome + agentic-loop + routing.
+        # Build additionalContext: welcome + routing.
         # Identity now lives in agents/gaia-orchestrator.md (agent definition).
+        # Agentic-loop resume and pending approvals moved to SessionStart
+        # via session_manifest (Phase 4) -- they are session-scoped, not
+        # turn-scoped, so re-evaluating on every prompt added noise without
+        # changing the answer.
         context_parts = []
 
         # First-time welcome: the marker does not exist yet because
@@ -195,25 +186,6 @@ if __name__ == "__main__":
             context_parts.append(welcome)
             mark_initialized()  # Mark AFTER building the welcome
             logger.info("First-run welcome prepended for %s mode", mode)
-
-        # Detect active agentic-loop and inject resume context (ops mode only).
-        # Lightweight: checks file existence + small JSON read, fully fail-safe.
-        if mode == "ops":
-            try:
-                from modules.context.agentic_loop_detector import build_resume_context
-                loop_context = build_resume_context()
-                if loop_context:
-                    context_parts.append(loop_context)
-                    logger.info("Agentic loop resume context injected")
-            except Exception as e:
-                logger.debug("Agentic loop detection skipped (non-fatal): %s", e)
-
-        # Inject pending approval context (ops mode only, before routing).
-        if mode == "ops":
-            pending_block = _build_pending_context()
-            if pending_block:
-                context_parts.append(pending_block)
-                logger.info("Pending approval context injected")
 
         # Append deterministic surface routing recommendation (ops mode only)
         if mode == "ops":
