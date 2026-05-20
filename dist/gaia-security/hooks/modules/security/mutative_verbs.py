@@ -440,6 +440,10 @@ SIMULATION_FLAGS: FrozenSet[str] = frozenset({
     "--dryrun",
     "--dry-run=client",
     "--dry-run=server",
+    # Workspace analysis flags that generate a report without mutating state.
+    # "gaia workspace merge --report-duplicates" reads and analyses context;
+    # the flag explicitly signals a read-only report operation.
+    "--report-duplicates",
 })
 
 
@@ -942,7 +946,17 @@ def detect_mutative_command(command: str) -> MutativeResult:
         stripped_token = token.lstrip("+")
 
         # Split hyphenated tokens: "delete-stack" -> check "delete"
-        candidate = stripped_token.split("-", 1)[0] if "-" in stripped_token else stripped_token
+        # IMPORTANT: only apply hyphen-split at subcommand positions
+        # (semantic_index <= 2).  At deeper positions (index >= 3), tokens are
+        # typically argument values or slugs like "remove-live-state-from-context"
+        # or "some-name-with-delete-in-it".  Splitting those produces false
+        # positives -- the first fragment matches a mutative verb even though
+        # the token is not a CLI subcommand.  The camelCase guard already applies
+        # the same constraint (semantic_index == 1).
+        if semantic_index <= 2 and "-" in stripped_token:
+            candidate = stripped_token.split("-", 1)[0]
+        else:
+            candidate = stripped_token
 
         # Also check full token for exact matches (e.g., "force-delete")
         full_lower = stripped_token

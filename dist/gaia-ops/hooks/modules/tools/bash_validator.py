@@ -351,6 +351,7 @@ class BashValidator:
         command: str,
         is_subagent: bool = False,
         session_id: str = "",
+        agent_type: str = "",
     ) -> BashValidationResult:
         """
         Validate a Bash command through the 5-phase pipeline.
@@ -366,6 +367,7 @@ class BashValidator:
             command: Command string to validate
             is_subagent: True when running in subagent context
             session_id: Session ID for approval scoping
+            agent_type: Name of the originating agent (for pending approval context)
 
         Returns:
             BashValidationResult with validation details
@@ -520,14 +522,17 @@ class BashValidator:
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -553,6 +558,7 @@ class BashValidator:
         command: str,
         is_subagent: bool = False,
         session_id: str = "",
+        agent_type: str = "",
     ) -> BashValidationResult:
         """Validate a single command (no operators).
 
@@ -567,6 +573,7 @@ class BashValidator:
             is_subagent: True when running in subagent context (generates
                 approval_id + deny). False for orchestrator (returns ask).
             session_id: Session ID for pending approval scoping.
+            agent_type: Name of the originating agent (for pending approval context).
 
         Note: is_blocked_command() is NOT called here because validate()
         already checks the full command AND each compound component against
@@ -652,6 +659,7 @@ class BashValidator:
                         danger_category=result.category,
                         session_id=session_id or None,
                         cwd=os.getcwd(),
+                        context={"source": agent_type} if agent_type else None,
                     )
                     if pending_path is None:
                         # Persistence failure — fall back to ask
@@ -761,6 +769,7 @@ class BashValidator:
         components: List[str],
         is_subagent: bool = False,
         session_id: str = "",
+        agent_type: str = "",
     ) -> BashValidationResult:
         """Validate a compound command (multiple components)."""
         logger.info(f"Compound command detected with {len(components)} components")
@@ -769,6 +778,7 @@ class BashValidator:
         for i, component in enumerate(components, 1):
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type,
             )
 
             if not result.allowed:
@@ -992,6 +1002,7 @@ def validate_bash_command(
     command: str,
     is_subagent: bool = False,
     session_id: str = "",
+    agent_type: str = "",
 ) -> BashValidationResult:
     """
     Validate a Bash command (convenience function).
@@ -1000,9 +1011,12 @@ def validate_bash_command(
         command: Command to validate
         is_subagent: True when running in subagent context
         session_id: Session ID for approval scoping
+        agent_type: Name of the originating agent (for pending approval context)
 
     Returns:
         BashValidationResult
     """
     validator = BashValidator()
-    return validator.validate(command, is_subagent=is_subagent, session_id=session_id)
+    return validator.validate(
+        command, is_subagent=is_subagent, session_id=session_id, agent_type=agent_type,
+    )

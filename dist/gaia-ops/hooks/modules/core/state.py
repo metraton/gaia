@@ -23,7 +23,35 @@ STATE_FILE_NAME = ".hooks_state.json"
 
 
 def get_session_id() -> str:
-    """Return the current Claude session ID, defaulting to 'default'."""
+    """Return the current Claude session ID, defaulting to 'default'.
+
+    Reads only CLAUDE_SESSION_ID. Hook entry points that have the parsed
+    stdin event in hand should prefer ``resolve_session_id(event_data)``
+    because Claude Code does not always set CLAUDE_SESSION_ID in the hook
+    subprocess; it does, however, always include ``session_id`` in the
+    JSON event piped to stdin.
+    """
+    return os.environ.get("CLAUDE_SESSION_ID", "default")
+
+
+def resolve_session_id(event_data: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the session id with stdin-event precedence.
+
+    Order:
+      1. ``event_data["session_id"]`` when present and non-empty.
+      2. ``CLAUDE_SESSION_ID`` environment variable.
+      3. Literal ``"default"`` (matches ``get_session_id()`` for back-compat).
+
+    Hook entry points should call this immediately after parsing stdin so
+    downstream calls (``register_session``, ``touch_session``,
+    ``unregister_session``) reach the registry with the real id.
+    ``CLAUDE_SESSION_ID`` is not guaranteed to be exported into the hook
+    subprocess; the stdin event always carries ``session_id``.
+    """
+    if isinstance(event_data, dict):
+        candidate = event_data.get("session_id")
+        if isinstance(candidate, str) and candidate:
+            return candidate
     return os.environ.get("CLAUDE_SESSION_ID", "default")
 
 
