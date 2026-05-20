@@ -148,20 +148,24 @@ VALUES (1, '${NOW_UTC}', 'initial schema');
 EOF
 echo "[bootstrap] schema_version seeded (v1, 'initial schema')"
 
-# === Section 4: Registrar proyecto actual ===
+# === Section 4: Registrar workspace actual ===
+#
+# El schema v2.0 (commit be9698f) renombró:
+#   - projects (organizational container) -> workspaces
+#   - repos (git-bearing) -> projects
+# El seed aquí inserta una fila inicial en `workspaces` (el contenedor
+# organizacional, no la tabla de repos git). El scanner luego puebla
+# `projects` cuando descubre repos git dentro del workspace.
 
 # Detectamos la identity del workspace via git remote get-url origin, igual que
-# gaia.project.current(). La normalización (lowercase, strip protocolo, strip
-# .git, ssh form) la hacemos en SQL/bash puro -- no llamamos a Python.
+# gaia.store.writer._resolve_identity(). La normalización (lowercase, strip
+# protocolo, strip .git, ssh form) la hacemos en SQL/bash puro -- no llamamos
+# a Python.
 #
 # Fallback: si no hay remote, usamos el basename del workspace en lowercase.
 # Si tampoco eso, usamos 'global'.
-#
-# TODO: Esta lógica es una réplica simplificada de gaia/project.py::current().
-# Si en el futuro existe un CLI verb 'gaia project register', preferirlo aquí
-# para no duplicar la lógica de normalización. Por ahora INSERT directo.
 
-PROJECT_IDENTITY=""
+WORKSPACE_IDENTITY=""
 RAW_REMOTE=""
 
 # Capturamos el remote sin pipes; si git falla, RAW_REMOTE queda vacío.
@@ -185,33 +189,35 @@ if [ -n "$RAW_REMOTE" ]; then
     fi
     s="${s%.git}"
     s="${s%/}"
-    PROJECT_IDENTITY="$s"
+    WORKSPACE_IDENTITY="$s"
 fi
 
-if [ -z "$PROJECT_IDENTITY" ]; then
+if [ -z "$WORKSPACE_IDENTITY" ]; then
     # Fallback nivel 2: basename del workspace en lowercase.
     base="$(basename "$(cd "$WORKSPACE" && pwd)")"
-    PROJECT_IDENTITY="${base,,}"
+    WORKSPACE_IDENTITY="${base,,}"
 fi
 
-if [ -z "$PROJECT_IDENTITY" ]; then
+if [ -z "$WORKSPACE_IDENTITY" ]; then
     # Fallback nivel 3: literal 'global'.
-    PROJECT_IDENTITY="global"
+    WORKSPACE_IDENTITY="global"
 fi
 
 # El name (PK) y la identity son el mismo string en este flujo bootstrap.
 # El scanner puede actualizar identity más adelante; aquí sólo garantizamos
-# que existe una fila para el workspace actual.
+# que existe una fila en `workspaces` para el workspace actual.
 sqlite3 "$GAIA_DB" <<EOF
-INSERT OR IGNORE INTO projects (name, identity) VALUES ('${PROJECT_IDENTITY}', '${PROJECT_IDENTITY}');
+INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('${WORKSPACE_IDENTITY}', '${WORKSPACE_IDENTITY}');
 EOF
 
-echo "[bootstrap] Project registered (identity=${PROJECT_IDENTITY})"
+echo "[bootstrap] Workspace registered (identity=${WORKSPACE_IDENTITY})"
 
 # === Section 5: FTS5 backfill ===
 
 # Backfill idempotente de los 4 FTS5 mirrors definidos en schema.sql:
-#   repos_fts, apps_fts, services_fts, briefs_fts.
+#   projects_fts, apps_fts, services_fts, briefs_fts.
+# (Antes del rename schema v2.0 era repos_fts; ahora projects_fts mirrorea
+#  la tabla `projects` -- el repo git-bearing.)
 #
 # Estrategia: para cada mirror, insertamos sólo los rowids que no están ya
 # presentes en el mirror. Los triggers AFTER INSERT mantienen los nuevos rows
@@ -223,11 +229,11 @@ echo "[bootstrap] Project registered (identity=${PROJECT_IDENTITY})"
 # expresión `rowid` en el SELECT.
 
 sqlite3 "$GAIA_DB" <<'EOF'
--- repos_fts: name, role, primary_language
-INSERT INTO repos_fts(rowid, name, role, primary_language)
+-- projects_fts: name, role, primary_language (mirror of `projects`)
+INSERT INTO projects_fts(rowid, name, role, primary_language)
 SELECT rowid, name, role, primary_language
-FROM repos
-WHERE rowid NOT IN (SELECT rowid FROM repos_fts);
+FROM projects
+WHERE rowid NOT IN (SELECT rowid FROM projects_fts);
 
 -- apps_fts: name, description, topic_key
 INSERT INTO apps_fts(rowid, name, description, topic_key)
@@ -254,7 +260,7 @@ EOF
 # divergen; en ese caso la consulta de delta sigue siendo más fiable que la
 # raw count, pero documentamos la discrepancia).
 FTS_OK=1
-for pair in "repos:repos_fts" "apps:apps_fts" "services:services_fts" "briefs:briefs_fts"; do
+for pair in "projects:projects_fts" "apps:apps_fts" "services:services_fts" "briefs:briefs_fts"; do
     base="${pair%%:*}"
     mirror="${pair##*:}"
     base_count="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM ${base};")"
@@ -298,12 +304,14 @@ else
     ALL_OK=0
 fi
 
-# Check 3: al menos 1 proyecto registrado (el actual).
-PROJECT_COUNT="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM projects;")"
-if [ "$PROJECT_COUNT" -ge 1 ]; then
-    echo "[bootstrap] check: projects rows >= 1 (got ${PROJECT_COUNT}) -- PASS"
+# Check 3: al menos 1 workspace registrado (el actual). El bootstrap seedea
+# `workspaces`, no `projects`; el scanner es quien crea filas en `projects`
+# cuando descubre repos git dentro del workspace.
+WORKSPACE_COUNT="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM workspaces;")"
+if [ "$WORKSPACE_COUNT" -ge 1 ]; then
+    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- PASS"
 else
-    echo "[bootstrap] check: projects rows >= 1 (got ${PROJECT_COUNT}) -- FAIL"
+    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- FAIL"
     ALL_OK=0
 fi
 
