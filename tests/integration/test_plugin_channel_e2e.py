@@ -174,13 +174,18 @@ class TestPluginHooksJsonPaths:
             for entry in entries:
                 for hook in entry["hooks"]:
                     command = hook["command"]
-                    assert command.startswith("${CLAUDE_PLUGIN_ROOT}/"), (
-                        f"Command in {event_name} does not use "
-                        f"${{CLAUDE_PLUGIN_ROOT}} prefix: {command}"
+                    # Commands are invoked as `python3 ${CLAUDE_PLUGIN_ROOT}/...`
+                    # to avoid depending on the script's exec bit (tarball install
+                    # mode is not always preserved). Strip the invoker prefix to
+                    # validate the path token.
+                    assert "${CLAUDE_PLUGIN_ROOT}/" in command, (
+                        f"Command in {event_name} does not reference "
+                        f"${{CLAUDE_PLUGIN_ROOT}}: {command}"
                     )
+                    path_part = command.split()[-1]
 
                     # Resolve the path: replace ${CLAUDE_PLUGIN_ROOT} with repo root
-                    resolved = command.replace("${CLAUDE_PLUGIN_ROOT}", str(repo_root))
+                    resolved = path_part.replace("${CLAUDE_PLUGIN_ROOT}", str(repo_root))
                     resolved_path = Path(resolved)
                     if not resolved_path.exists():
                         missing.append(f"{event_name}: {command} -> {resolved_path}")
@@ -200,7 +205,9 @@ class TestPluginHooksJsonPaths:
             for entry in entries:
                 for hook in entry["hooks"]:
                     command = hook["command"]
-                    resolved = command.replace("${CLAUDE_PLUGIN_ROOT}", str(repo_root))
+                    # Strip the `python3 ` invoker prefix to reach the path token.
+                    path_part = command.split()[-1]
+                    resolved = path_part.replace("${CLAUDE_PLUGIN_ROOT}", str(repo_root))
                     resolved_path = Path(resolved)
                     assert resolved_path.suffix == ".py", (
                         f"Hook script in {event_name} is not a .py file: {resolved_path}"

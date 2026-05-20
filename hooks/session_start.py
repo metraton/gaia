@@ -7,10 +7,89 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
 ensure_workspace_hooks_link()
+
+
+# ---------------------------------------------------------------------------
+# Headless detection
+# ---------------------------------------------------------------------------
+
+def _detect_headless(proc_root: Optional[Path] = None) -> bool:
+    """Best-effort detection of headless / non-interactive sessions.
+
+    Returns True when this Claude Code session is running without an
+    interactive TUI. Sources, in order of confidence:
+
+      1. Explicit env: CLAUDE_HEADLESS=1, CI=true, NONINTERACTIVE=1.
+         These are the most reliable signals and the only ones the user
+         can opt into deliberately.
+      2. SDK CLI invocation: the parent process is `claude` invoked with
+         a print/output flag (`-p`, `--print`, `--output-format json`).
+         The SDK CLI does NOT set CLAUDE_HEADLESS, so without this fallback
+         every `claude -p ...` call would register as interactive and
+         pollute liveness tracking.
+      3. Stdout is not a TTY. This is the weakest signal -- pipes happen
+         in interactive sessions too -- so it is only used as a tertiary
+         tiebreaker, never as a primary trigger.
+
+    The /proc/<pid>/cmdline read is Linux-only. On other platforms the
+    function silently falls through to the TTY check. Any unexpected error
+    in the parent-cmdline probe is swallowed -- this hook must never block
+    session start.
+
+    Args:
+        proc_root: Override for /proc (test injection). Defaults to /proc.
+    """
+    # (1) Explicit env signals.
+    if os.environ.get("CLAUDE_HEADLESS") == "1":
+        return True
+    if os.environ.get("CI", "").lower() == "true":
+        return True
+    if os.environ.get("NONINTERACTIVE") == "1":
+        return True
+
+    # (2) Parent-process probe for SDK CLI invocations.
+    if proc_root is None:
+        proc_root = Path("/proc")
+    try:
+        if proc_root.exists():
+            ppid = os.getppid()
+            cmdline_path = proc_root / str(ppid) / "cmdline"
+            if cmdline_path.exists():
+                # /proc/<pid>/cmdline is NUL-separated, with a trailing NUL.
+                raw = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+                argv = [a for a in raw.split("\x00") if a]
+                if argv:
+                    exe = Path(argv[0]).name.lower()
+                    # Match the claude SDK CLI -- not the interactive TUI.
+                    # Interactive `claude` has no -p/--print flag.
+                    if "claude" in exe:
+                        for arg in argv[1:]:
+                            if arg in ("-p", "--print"):
+                                return True
+                            if arg.startswith("--output-format"):
+                                return True
+    except (OSError, ValueError, UnicodeDecodeError):
+        # /proc missing (non-Linux), cmdline gone (race), or unparseable.
+        # All non-fatal: fall through to TTY check.
+        pass
+
+    # (3) Tertiary: stdout not a TTY. Weak signal -- only return True if
+    # explicitly non-tty AND the process likely lacks a controlling
+    # terminal. We do NOT use this alone because piping stdout in an
+    # interactive session is common.
+    try:
+        if not sys.stdout.isatty() and not sys.stdin.isatty():
+            # Both pipes closed: very likely a headless invocation.
+            return True
+    except (AttributeError, ValueError):
+        pass
+
+    return False
 
 from modules.core.stdin import has_stdin_data
 from modules.core.paths import get_logs_dir
@@ -54,10 +133,7 @@ if __name__ == "__main__":
         # registry entry must never block session start.
         try:
             if _sid and _sid != "default":
-                _is_headless = (
-                    os.environ.get("CLAUDE_HEADLESS") == "1"
-                    or os.environ.get("CI") == "true"
-                )
+                _is_headless = _detect_headless()
                 register_session(session_id=_sid, is_headless=_is_headless)
         except SessionRegistryError as _reg_exc:
             logger.warning("session_registry register failed (non-fatal): %s", _reg_exc)

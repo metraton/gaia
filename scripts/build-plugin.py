@@ -164,10 +164,16 @@ def generate_hooks_json(manifest: dict) -> dict:
             entry: dict = {}
             if "matcher" in matcher_config:
                 entry["matcher"] = matcher_config["matcher"]
+            # Invoke via `python3` rather than relying on the script's exec bit.
+            # The tarball install path (`npm install <tgz>`) preserves file mode
+            # from the working tree; if a hook ships without 0755 the SessionEnd
+            # event raises "Permission denied" on every invocation. Using
+            # `python3 <path>` removes that dependency entirely -- the kernel
+            # never needs +x on the .py file because exec is on /usr/bin/python3.
             entry["hooks"] = [
                 {
                     "type": "command",
-                    "command": f"${{CLAUDE_PLUGIN_ROOT}}/{entry_point}",
+                    "command": f"python3 ${{CLAUDE_PLUGIN_ROOT}}/{entry_point}",
                 }
             ]
             entries.append(entry)
