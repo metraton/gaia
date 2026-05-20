@@ -131,6 +131,24 @@ EOF
 
 echo "[bootstrap] agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)"
 
+# === Section 3a: Cleanup legacy agent_permissions rows ===
+#
+# Section 3 (above) inserts the canonical "gaia-system" name. A previous
+# version of this bootstrap (or the legacy scripts/seed_agent_permissions.py)
+# inserted rows under the old name "gaia-operator" -- see the rename note in
+# Section 3 above (line 83-86). Those legacy rows persist across upgrades
+# because INSERT OR IGNORE never removes anything. Without cleanup, the
+# distinct-agents check below sees 6 agents on upgraded DBs instead of 5,
+# and the strict equality variant of the check (pre-fix) used to fail.
+#
+# DELETE is safe here: the legacy "gaia-operator" rows have no live consumer
+# in the current model -- the gaia-system agent owns its own table_name set
+# (gaia_installations, integrations) which never collided with the legacy
+# row's table_name. We are pruning orphan data, not migrating it.
+sqlite3 "$GAIA_DB" <<'EOF'
+DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator';
+EOF
+
 # === Section 3b: Seed schema_version (migration ledger) ===
 
 # La tabla schema_version se crea en schema.sql (Section harness_events/below).
@@ -294,13 +312,20 @@ else
     ALL_OK=0
 fi
 
-# Check 2: 5 agentes distintos (developer, terraform-architect, gitops-operator,
-# gaia-operator, cloud-troubleshooter).
+# Check 2: at least 5 distinct agents (developer, terraform-architect,
+# gitops-operator, gaia-system, cloud-troubleshooter). Uses -ge for the same
+# reason Checks 1, 3, 5 do: the seed is INSERT OR IGNORE (idempotent), so a
+# DB carrying rows from prior Gaia versions may legitimately have additional
+# distinct agent_name values (e.g. the legacy "gaia-operator" before the
+# rename to "gaia-system" documented in Section 3 above). Strict equality
+# breaks every install on machines where ~/.gaia/gaia.db survived a Gaia
+# upgrade -- contradicts the "idempotent over many runs" principle declared
+# at line 12 of this script.
 AGENT_COUNT="$(sqlite3 "$GAIA_DB" "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions;")"
-if [ "$AGENT_COUNT" = "5" ]; then
-    echo "[bootstrap] check: distinct agents == 5 (got ${AGENT_COUNT}) -- PASS"
+if [ "$AGENT_COUNT" -ge "5" ]; then
+    echo "[bootstrap] check: distinct agents >= 5 (got ${AGENT_COUNT}) -- PASS"
 else
-    echo "[bootstrap] check: distinct agents == 5 (got ${AGENT_COUNT}) -- FAIL"
+    echo "[bootstrap] check: distinct agents >= 5 (got ${AGENT_COUNT}) -- FAIL"
     ALL_OK=0
 fi
 
