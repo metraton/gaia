@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Tests for user_prompt_submit session-liveness filter (T13).
+"""Tests for the pending-approval session-liveness filter (T13).
 
-Validates that ``_build_pending_context()`` passes
-``exclude_live_sessions=True`` to the cross-session fallback scan, so
-pendings from parallel live sessions do NOT appear in the
+Validates that ``build_pending_approvals_block()`` (the SessionStart
+manifest builder, formerly the UserPromptSubmit ``_build_pending_context``
+shim) passes ``exclude_live_sessions=True`` to the cross-session fallback
+scan, so pendings from parallel live sessions do NOT appear in the
 [ACTIONABLE] injection of another session.
 
 This closes the root bug that motivated the approvals-drift-fix brief:
-pendings created in session X were being injected into session Y
-under the "[session anterior]" label even though session X was still
-alive and would resolve them on its next turn.
+pendings created in session X were being injected into session Y under
+the "[session anterior]" label even though session X was still alive and
+would resolve them on its next turn.
 
-Tests in this file focus on the liveness axis; the shape/format of
-the [ACTIONABLE] block is covered by test_user_prompt_submit_pending.py.
+Tests in this file focus on the liveness axis; the shape/format of the
+[ACTIONABLE] block is covered by
+``tests/hooks/modules/session/test_session_manifest.py``.
 """
 
 import os
@@ -27,7 +29,12 @@ import pytest
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-from user_prompt_submit import _build_pending_context
+# Pending-approval block lives in session_manifest after Phase 4. The
+# legacy _build_pending_context() shim was removed once the runtime stopped
+# calling it; these tests now exercise the canonical home directly.
+from modules.session.session_manifest import (
+    build_pending_approvals_block as _build_pending_context,
+)
 from modules.core.paths import clear_path_cache
 
 

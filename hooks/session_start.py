@@ -33,15 +33,27 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        sys.stdin.read()
+        # Parse the stdin event so we can recover session_id from it.
+        # Claude Code always includes session_id in the JSON event piped
+        # to the hook; CLAUDE_SESSION_ID is *not* guaranteed in the hook
+        # subprocess env. Reading from the event is the reliable source.
+        _raw_stdin = sys.stdin.read()
+        try:
+            event_data = json.loads(_raw_stdin) if _raw_stdin else {}
+            if not isinstance(event_data, dict):
+                event_data = {}
+        except (json.JSONDecodeError, TypeError):
+            event_data = {}
+
+        from modules.core.state import resolve_session_id
+        _sid = resolve_session_id(event_data)
 
         # Register this session in the user-scoped session registry.
         # Heartbeat-only liveness: PID isn't tracked because the hook
         # process is ephemeral. Failures are non-fatal — a missing
         # registry entry must never block session start.
         try:
-            _sid = os.environ.get("CLAUDE_SESSION_ID")
-            if _sid:
+            if _sid and _sid != "default":
                 _is_headless = (
                     os.environ.get("CLAUDE_HEADLESS") == "1"
                     or os.environ.get("CI") == "true"

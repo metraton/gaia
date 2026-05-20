@@ -145,3 +145,57 @@ class TestSessionStartManifest:
         )
         # Sanity: session_type still produced.
         assert result.get("session_type") == "startup"
+
+    def test_session_registers_using_stdin_session_id_without_env(
+        self, isolated_workspace, monkeypatch
+    ):
+        """Regression: Claude Code does not always export CLAUDE_SESSION_ID
+        into the hook subprocess, but the stdin event ALWAYS carries
+        session_id. The hook must register the session using the event id,
+        not silently no-op because the env is missing.
+        """
+        cwd, _ = isolated_workspace
+
+        # Strip CLAUDE_SESSION_ID from the env so the test mirrors the
+        # observed production gap: only the stdin event provides session_id.
+        env = os.environ.copy()
+        env.pop("CLAUDE_SESSION_ID", None)
+        env["CLAUDE_PLUGIN_DATA"] = os.environ["CLAUDE_PLUGIN_DATA"]
+        env["HOME"] = os.environ["HOME"]
+        env["GAIA_PLUGIN_MODE"] = "ops"
+
+        payload = json.dumps(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": "sess-from-stdin-only",
+                "matcher": "startup",
+            }
+        )
+        proc = subprocess.run(
+            [sys.executable, str(HOOK_PATH)],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(cwd),
+            timeout=30,
+        )
+        assert proc.returncode == 0, (
+            f"session_start.py exited non-zero: stderr={proc.stderr!r}"
+        )
+
+        # The registry lives under $HOME/.claude/session_registry.json
+        # (HOME was redirected by the fixture to a tmp path).
+        registry_path = Path(env["HOME"]) / ".claude" / "session_registry.json"
+        assert registry_path.exists(), (
+            "session_registry.json must be created when SessionStart fires. "
+            "If this fails, register_session() silently no-op'd because the "
+            "hook did not extract session_id from the stdin event."
+        )
+        data = json.loads(registry_path.read_text())
+        assert "sess-from-stdin-only" in data.get("sessions", {}), (
+            "The session id from the stdin event must reach the registry. "
+            "If the entry is missing, the hook is still depending on "
+            "CLAUDE_SESSION_ID env and Claude Code's behaviour of not "
+            "exporting it makes the registry permanently empty."
+        )

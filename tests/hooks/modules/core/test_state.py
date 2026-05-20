@@ -28,6 +28,8 @@ from modules.core.state import (
     get_hook_state,
     clear_hook_state,
     create_pre_hook_state,
+    get_session_id,
+    resolve_session_id,
     STATE_FILE_NAME,
     _get_state_file_path,
 )
@@ -330,3 +332,51 @@ class TestErrorHandling:
         result = get_hook_state()
         # Should return None on error
         assert result is None
+
+
+class TestResolveSessionId:
+    """resolve_session_id() must prefer the stdin event over env state.
+
+    Claude Code's hook subprocess does not always inherit CLAUDE_SESSION_ID,
+    but the JSON event piped to stdin always carries session_id. The
+    resolver exists so hook entry points can recover the id without
+    depending on env propagation.
+    """
+
+    def test_event_session_id_takes_precedence_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "env-id")
+        result = resolve_session_id({"session_id": "event-id"})
+        assert result == "event-id", (
+            "The stdin event is the authoritative source. When both env "
+            "and event carry an id, the event wins because Claude Code "
+            "guarantees the stdin payload but not the env var."
+        )
+
+    def test_falls_back_to_env_when_event_missing_session_id(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "env-id")
+        assert resolve_session_id({}) == "env-id"
+
+    def test_falls_back_to_env_when_event_session_id_is_empty(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "env-id")
+        assert resolve_session_id({"session_id": ""}) == "env-id"
+
+    def test_returns_default_when_event_and_env_both_missing(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        assert resolve_session_id({}) == "default"
+        assert resolve_session_id(None) == "default"
+
+    def test_ignores_non_string_session_id_in_event(self, monkeypatch):
+        """A non-string session_id in the event must NOT be propagated --
+        downstream registry calls assume a string and would break."""
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "env-id")
+        assert resolve_session_id({"session_id": 12345}) == "env-id"
+        assert resolve_session_id({"session_id": None}) == "env-id"
+
+    def test_get_session_id_remains_env_only(self, monkeypatch):
+        """get_session_id() is back-compat and reads only the env var.
+        Callers that need the stdin event must use resolve_session_id().
+        """
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "env-id")
+        assert get_session_id() == "env-id"
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        assert get_session_id() == "default"
