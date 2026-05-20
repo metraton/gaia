@@ -169,17 +169,19 @@ class TestHooksJson:
                     )
 
     def test_hooks_json_has_all_required_events(self):
-        """hooks.json must have all 11 required hook event types.
+        """hooks.json must have all 12 required hook event types.
 
         hooks.json is the single source of truth for GAIA hooks
-        (auto-discovered via the .claude/hooks symlink).
+        (auto-discovered via the .claude/hooks symlink). SessionEnd
+        was added in Phase 1 of the context-injection redesign so
+        heartbeat-based liveness gets a deterministic teardown signal.
         """
         hooks_data = json.loads(self.hooks_path.read_text())
         hooks_events = set(hooks_data["hooks"].keys())
 
         required_events = {
             "PreToolUse", "PostToolUse", "SubagentStop",
-            "SessionStart", "UserPromptSubmit", "Stop",
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop",
             "TaskCompleted", "SubagentStart", "PostCompact",
             "PreCompact", "ElicitationResult",
         }

@@ -1122,18 +1122,26 @@ def confirm_grant(command: str, session_id: str = None) -> bool:
     return False
 
 
-def cleanup_expired_grants() -> int:
-    """Remove expired grant and pending files.
+def cleanup_expired_grants(force: bool = False) -> int:
+    """Remove expired grant, pending, and stale pending-index files.
 
     Called periodically (e.g., at hook startup) to prevent accumulation.
-    Throttled to run at most once every _CLEANUP_INTERVAL_SECONDS.
+    Throttled to run at most once every ``_CLEANUP_INTERVAL_SECONDS`` --
+    callers that need to bypass the throttle (e.g., SessionStart, manual
+    CLI flush) can pass ``force=True``.
+
+    Args:
+        force: When True, run cleanup regardless of the throttle. The
+            throttle exists to keep pre_tool_use cheap on bursty traffic;
+            session-lifecycle callers should bypass it so users do not
+            wait up to 60s for the first sweep of the session.
 
     Returns:
-        Number of files cleaned up.
+        Number of files cleaned up (grants + pending + index files).
     """
     global _last_cleanup_time
     now = time.time()
-    if now - _last_cleanup_time < _CLEANUP_INTERVAL_SECONDS:
+    if not force and now - _last_cleanup_time < _CLEANUP_INTERVAL_SECONDS:
         return 0
     _last_cleanup_time = now
 
@@ -1195,6 +1203,44 @@ def cleanup_expired_grants() -> int:
                     sessions_to_rebuild.add(data["session_id"])
                 _cleanup_grant(pending_file)
                 cleaned += 1
+
+        # Sweep orphan pending-index files. An index entry is orphan when
+        # its pending_file no longer exists on disk; an index file is orphan
+        # when none of its entries point to live pending files. Corrupt /
+        # unreadable index files are also removed -- the next write_pending
+        # call rebuilds the index from authoritative pending-{nonce}.json
+        # files, so there is no data loss risk.
+        for index_file in grants_dir.glob("pending-index-*.json"):
+            try:
+                data = _read_json_file(index_file)
+                if not data:
+                    index_file.unlink(missing_ok=True)
+                    cleaned += 1
+                    logger.info(
+                        "cleanup_expired: removed corrupt index %s",
+                        index_file.name,
+                    )
+                    continue
+                entries = data.get("entries") or []
+                valid_entries = [
+                    e for e in entries
+                    if isinstance(e, dict)
+                    and (grants_dir / e.get("pending_file", "")).exists()
+                ]
+                if not valid_entries:
+                    index_file.unlink(missing_ok=True)
+                    cleaned += 1
+                    logger.info(
+                        "cleanup_expired: removed orphan index %s "
+                        "(0/%d entries point to live pendings)",
+                        index_file.name,
+                        len(entries),
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Index sweep failed for %s (non-fatal): %s",
+                    index_file.name, exc,
+                )
 
     except Exception as e:
         logger.error("Error during grant cleanup: %s", e)

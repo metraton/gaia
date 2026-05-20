@@ -261,31 +261,35 @@ class TestLiveSessionPendingsExcludedFromActionable:
 
 
 # ---------------------------------------------------------------------------
-# AC4 -- liveness filter works end-to-end with real PID tracking (Fix A)
+# AC4 -- liveness filter works end-to-end with heartbeat tracking
 # ---------------------------------------------------------------------------
 
-class TestLivenessFilterWithRealPids:
-    """Exercise the liveness filter against a real session_registry backed
-    by real PIDs on disk. These tests lock in the Fix A contract: entries
-    whose process is gone must be treated as dead, which means their
-    pendings should resurface in the current session's [ACTIONABLE] block.
+class TestLivenessFilterByHeartbeat:
+    """Exercise the liveness filter end-to-end against a real session_registry.
 
-    Without Fix A, the registry would trust ``register_session`` state
-    forever and a crashed session's pendings would stay hidden.
+    Heartbeat-only model: a session is live if its ``last_heartbeat`` is
+    within ``HEARTBEAT_TTL_SECONDS``. When a sibling Claude Code process
+    crashes without firing SessionEnd its heartbeat goes stale, the
+    registry entry stops being live, and the pending surfaces in any
+    interactive session that scans.
     """
 
-    def _register_with_real_pid(
+    def _register_with_heartbeat(
         self,
         tmp_path,
         monkeypatch,
         session_id: str,
-        pid: int,
+        heartbeat_age_seconds: float,
+        is_headless: bool = False,
     ) -> None:
-        """Seed the user-scoped registry with a specific pid for session_id.
+        """Seed the user-scoped registry with a controlled heartbeat age.
 
-        We redirect the registry file to tmp_path so the test never
-        pollutes ~/.claude/session_registry.json.
+        Positive age = heartbeat is N seconds in the past (older = more
+        stale). The registry file is redirected to tmp_path so the test
+        never pollutes ~/.claude/session_registry.json.
         """
+        import json
+        import time
         from modules.session import session_registry
 
         registry_file = tmp_path / "session_registry_live.json"
@@ -294,22 +298,28 @@ class TestLivenessFilterWithRealPids:
             "_get_registry_path",
             lambda: registry_file,
         )
-        session_registry.register_session(session_id, pid=pid)
+        session_registry.register_session(session_id, is_headless=is_headless)
 
-    def test_dead_pid_session_surfaces_its_pendings(
+        # Backdate the heartbeat we just wrote so this test can simulate
+        # "session crashed N seconds ago without firing SessionEnd".
+        data = json.loads(registry_file.read_text())
+        data["sessions"][session_id]["last_heartbeat"] = (
+            time.time() - heartbeat_age_seconds
+        )
+        registry_file.write_text(json.dumps(data))
+
+    def test_stale_heartbeat_session_surfaces_its_pendings(
         self, tmp_path, monkeypatch
     ):
-        """A session registered with a dead PID must be filtered out of
-        ``get_live_sessions``. Its pending therefore shows up in the
-        current session's [ACTIONABLE] block -- exactly the behavior we
-        want when a sibling CC process crashed without firing SessionEnd.
+        """Crashed session (heartbeat >> TTL) must drop out of the live-set
+        so its pending shows up in the current session's [ACTIONABLE] block.
         """
         from modules.session import session_registry
         import modules.session.pending_scanner as ps
 
-        dead_pid = 2 ** 30 - 1  # see test_session_registry.py rationale
-        self._register_with_real_pid(
-            tmp_path, monkeypatch, "crashed-session", dead_pid
+        # 1 hour stale: well past the 30-minute HEARTBEAT_TTL_SECONDS.
+        self._register_with_heartbeat(
+            tmp_path, monkeypatch, "crashed-session", heartbeat_age_seconds=3600
         )
 
         pendings_disk = [
@@ -326,7 +336,7 @@ class TestLivenessFilterWithRealPids:
             if session_id is not None:
                 items = [i for i in items if i["pending_session_id"] == session_id]
             if exclude_live_sessions:
-                live = session_registry.get_live_sessions()
+                live = session_registry.get_live_sessions(include_headless=False)
                 items = [
                     i for i in items if i["pending_session_id"] not in live
                 ]
@@ -336,23 +346,25 @@ class TestLivenessFilterWithRealPids:
 
         result = _build_pending_context()
         assert "P-cr00001a" in result, (
-            "Pending from a crashed session must be visible -- Fix A "
-            "should filter zombie registry entries so their pendings "
-            "are no longer hidden behind a stale 'alive' flag."
+            "Pending from a session with stale heartbeat must be visible — "
+            "the liveness filter must drop registry entries whose heartbeat "
+            "is older than HEARTBEAT_TTL_SECONDS so their pendings are no "
+            "longer hidden behind a stale 'alive' flag."
         )
 
-    def test_live_pid_session_keeps_its_pendings_hidden(
+    def test_fresh_heartbeat_session_keeps_its_pendings_hidden(
         self, tmp_path, monkeypatch
     ):
-        """Mirror assertion: when the PID really is alive (we use the
-        test process's own PID), the sibling session is considered alive
-        and its pending must NOT appear in our [ACTIONABLE] injection.
+        """Mirror assertion: when the sibling session has a fresh heartbeat
+        (within the TTL) it is considered alive and its pending must NOT
+        appear in the current session's [ACTIONABLE] injection.
         """
         from modules.session import session_registry
         import modules.session.pending_scanner as ps
 
-        self._register_with_real_pid(
-            tmp_path, monkeypatch, "alive-sibling", os.getpid()
+        # 30 seconds stale: well within the 30-minute TTL.
+        self._register_with_heartbeat(
+            tmp_path, monkeypatch, "alive-sibling", heartbeat_age_seconds=30
         )
 
         pendings_disk = [
@@ -369,7 +381,7 @@ class TestLivenessFilterWithRealPids:
             if session_id is not None:
                 items = [i for i in items if i["pending_session_id"] == session_id]
             if exclude_live_sessions:
-                live = session_registry.get_live_sessions()
+                live = session_registry.get_live_sessions(include_headless=False)
                 items = [
                     i for i in items if i["pending_session_id"] not in live
                 ]
@@ -379,6 +391,53 @@ class TestLivenessFilterWithRealPids:
 
         result = _build_pending_context()
         assert "P-liv00001" not in result, (
-            "Sibling session with a live PID must be treated as alive -- "
-            "its pending must not leak into another session's block."
+            "Sibling session with a fresh heartbeat must be treated as "
+            "alive — its pending must not leak into another session's block."
+        )
+
+    def test_headless_session_with_fresh_heartbeat_surfaces_its_pendings(
+        self, tmp_path, monkeypatch
+    ):
+        """Headless sessions have no live human watching. Even if their
+        heartbeat is fresh, their pendings must surface to interactive
+        sessions because nobody can act on them in the headless run.
+        """
+        from modules.session import session_registry
+        import modules.session.pending_scanner as ps
+
+        self._register_with_heartbeat(
+            tmp_path,
+            monkeypatch,
+            "headless-sibling",
+            heartbeat_age_seconds=30,
+            is_headless=True,
+        )
+
+        pendings_disk = [
+            _make_fake_pending("hl000001", "headless-sibling", cross_session=True),
+        ]
+
+        def wrapped_scan(
+            approvals_dir,
+            session_id=None,
+            current_session_id=None,
+            exclude_live_sessions=False,
+        ):
+            items = list(pendings_disk)
+            if session_id is not None:
+                items = [i for i in items if i["pending_session_id"] == session_id]
+            if exclude_live_sessions:
+                live = session_registry.get_live_sessions(include_headless=False)
+                items = [
+                    i for i in items if i["pending_session_id"] not in live
+                ]
+            return items
+
+        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
+
+        result = _build_pending_context()
+        assert "P-hl000001" in result, (
+            "Headless session pending must surface to interactive sessions "
+            "regardless of heartbeat freshness — include_headless=False "
+            "excludes it from the live-set so it does not suppress itself."
         )

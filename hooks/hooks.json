@@ -44,6 +44,11 @@
         "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"}]
       }
     ],
+    "SessionEnd": [
+      {
+        "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"}]
+      }
+    ],
     "Stop": [
       {
         "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop_hook.py"}]

@@ -362,6 +362,392 @@ class TestParseAgentCompletion:
 
 
 # ============================================================================
+# Bug B: adapt_subagent_stop must use event.session_id, not the synthetic
+# env-derived id from get_or_create_session_id()
+# ============================================================================
+
+
+class TestAdaptSubagentStopSessionId:
+    """Regression test for Bug B / P-a11d14e0.
+
+    The old code called ``session_id = get_or_create_session_id()`` which
+    falls back to an env-var-derived synthetic id when CLAUDE_SESSION_ID is
+    not set. Pending approval records are persisted with the real
+    ``event.session_id`` from the stdin event, so the synthetic id never
+    matched and ``cleanup_approval`` / ``consume_session_grants`` never ran
+    for the right session. The fix is to prefer ``event.session_id`` and
+    only fall back to the synthetic id when the event carries none.
+    """
+
+    def test_session_id_resolution_prefers_event(
+        self, adapter, subagent_stop_payload, monkeypatch
+    ):
+        """Even when CLAUDE_SESSION_ID env points at a different (synthetic)
+        session, the adapter must use the session_id from the parsed event.
+        """
+        from adapters.types import DistributionChannel, HookEvent, HookEventType
+
+        # Point the env-derived synthetic id at a value that does NOT match
+        # the event's session_id. The old buggy code would pick this one.
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "synthetic-mismatch")
+
+        event = HookEvent(
+            event_type=HookEventType.SUBAGENT_STOP,
+            session_id=subagent_stop_payload["session_id"],  # "sess-ghi789"
+            payload=subagent_stop_payload,
+            channel=DistributionChannel.NPM,
+        )
+
+        # Stub the modules adapt_subagent_stop pulls in. We only care about
+        # which session_id reaches cleanup_approval / consume_session_grants.
+        captured = {}
+
+        def _fake_cleanup_approval(agent_type, session_id=None, preserve_nonces=None):
+            captured["cleanup_agent_type"] = agent_type
+            captured["cleanup_session_id"] = session_id
+            captured["cleanup_preserve_nonces"] = preserve_nonces
+
+        def _fake_consume_session_grants(session_id):
+            captured["consumed_session_id"] = session_id
+            return 0
+
+        # Patch every module the adapter imports lazily so the test isolates
+        # the session_id resolution path. Each lambda is intentionally
+        # cheap — the goal is to let adapt_subagent_stop walk past every
+        # side-effect call without doing anything that could mask the bug
+        # under test.
+        import sys as _sys
+        import types as _types
+
+        def _install_stub(module_name, attrs):
+            module = _types.ModuleType(module_name)
+            for k, v in attrs.items():
+                setattr(module, k, v)
+            monkeypatch.setitem(_sys.modules, module_name, module)
+
+        _install_stub(
+            "modules.agents.contract_validator",
+            {
+                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "parse_contract": lambda *_a, **_k: None,
+                "requires_consolidation_report": lambda *_a, **_k: False,
+                "validate": lambda *_a, **_k: _types.SimpleNamespace(
+                    is_valid=True, error_message=""
+                ),
+                "validate_approval_request": lambda *_a, **_k: None,
+                "validate_verbatim_outputs_consistency": lambda *_a, **_k: None,
+            },
+        )
+        _install_stub(
+            "modules.agents.response_contract",
+            {
+                "save_validation_result": lambda *_a, **_k: None,
+                "validate_response_contract": lambda *_a, **_k: _types.SimpleNamespace(
+                    valid=True, errors=[], warnings=[]
+                ),
+                "resolve_agent_id": lambda *_a, **_k: "agent-id",
+            },
+        )
+        _install_stub(
+            "modules.agents.task_info_builder",
+            {
+                "build_task_info_from_hook_data": lambda hook_data, _agent_output: {
+                    "agent": hook_data.get("agent_type", "unknown"),
+                    "agent_id": hook_data.get("agent_id", "unknown"),
+                    "task_id": "task-id",
+                    "agent_transcript_path": hook_data.get(
+                        "agent_transcript_path", ""
+                    ),
+                },
+            },
+        )
+        _install_stub(
+            "modules.agents.transcript_reader",
+            {"read_transcript": lambda *_a, **_k: ""},
+        )
+        _install_stub(
+            "modules.audit.workflow_auditor",
+            {
+                "audit": lambda *_a, **_k: None,
+                "signal_gaia_analysis": lambda *_a, **_k: None,
+            },
+        )
+        _install_stub(
+            "modules.audit.workflow_recorder",
+            {"record": lambda *_a, **_k: None},
+        )
+        _install_stub(
+            "modules.context.context_writer",
+            {"process_context_updates": lambda *_a, **_k: None},
+        )
+        _install_stub(
+            "modules.memory.episode_writer", {"write": lambda *_a, **_k: None}
+        )
+        _install_stub(
+            "modules.security.approval_cleanup",
+            {"cleanup": _fake_cleanup_approval},
+        )
+        _install_stub(
+            "modules.security.approval_grants",
+            {"consume_session_grants": _fake_consume_session_grants},
+        )
+
+        # Synthetic id (the buggy fallback) — confirm it differs from the
+        # event id so the assertion below has teeth.
+        from modules.session.session_manager import get_or_create_session_id
+
+        synthetic = get_or_create_session_id()
+        assert synthetic == "synthetic-mismatch", (
+            "Test scaffolding broken: env-derived synthetic id should "
+            "reflect the monkeypatched CLAUDE_SESSION_ID."
+        )
+        assert event.session_id != synthetic
+
+        # Make the gaia-agents check pass so adapt_subagent_stop reaches
+        # the cleanup branch instead of bailing on the native-agent path.
+        monkeypatch.setattr(
+            adapter,
+            "_get_gaia_agent_names",
+            lambda: [subagent_stop_payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(event)
+
+        assert captured.get("consumed_session_id") == event.session_id, (
+            "adapt_subagent_stop must consume grants for the session_id "
+            "carried by the stdin event (Bug B). Falling back to the "
+            "env-derived synthetic id breaks cleanup for the real "
+            "session that owned the pending approval."
+        )
+
+
+# ============================================================================
+# Phase 2: adapt_subagent_stop must preserve pending nonces still referenced
+# by the agent's final APPROVAL_REQUEST contract
+# ============================================================================
+
+
+class TestAdaptSubagentStopPreservesApprovalRequest:
+    """adapt_subagent_stop must not delete pending files that the agent's
+    final contract still references via plan_status=APPROVAL_REQUEST.
+
+    The user needs those files to act on the [ACTIONABLE] block; cleaning
+    them up at SubagentStop would silently void the approval request and
+    leave the agent stuck in a loop on the next dispatch (regenerating a
+    new nonce instead of resuming the one the user already saw).
+    """
+
+    def _install_module_stubs(self, monkeypatch, captured, parsed_contract):
+        """Install the same module stubs as the Bug-B test, but let the
+        adapter receive a synthesised parsed_contract value so we can drive
+        the APPROVAL_REQUEST branch under test.
+        """
+        import sys as _sys
+        import types as _types
+
+        def _fake_cleanup_approval(agent_type, session_id=None, preserve_nonces=None):
+            captured["cleanup_agent_type"] = agent_type
+            captured["cleanup_session_id"] = session_id
+            captured["cleanup_preserve_nonces"] = preserve_nonces
+
+        def _fake_consume_session_grants(session_id):
+            captured["consumed_session_id"] = session_id
+            return 0
+
+        def _install_stub(module_name, attrs):
+            module = _types.ModuleType(module_name)
+            for k, v in attrs.items():
+                setattr(module, k, v)
+            monkeypatch.setitem(_sys.modules, module_name, module)
+
+        _install_stub(
+            "modules.agents.contract_validator",
+            {
+                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                # The single behavioural difference vs the Bug-B test: we
+                # return the synthesised contract instead of None so the
+                # APPROVAL_REQUEST extraction branch executes.
+                "parse_contract": lambda *_a, **_k: parsed_contract,
+                "requires_consolidation_report": lambda *_a, **_k: False,
+                "validate": lambda *_a, **_k: _types.SimpleNamespace(
+                    is_valid=True, error_message=""
+                ),
+                "validate_approval_request": lambda *_a, **_k: None,
+                "validate_verbatim_outputs_consistency": lambda *_a, **_k: None,
+            },
+        )
+        _install_stub(
+            "modules.agents.response_contract",
+            {
+                "save_validation_result": lambda *_a, **_k: None,
+                "validate_response_contract": lambda *_a, **_k: _types.SimpleNamespace(
+                    valid=True, errors=[], warnings=[]
+                ),
+                "resolve_agent_id": lambda *_a, **_k: "agent-id",
+            },
+        )
+        _install_stub(
+            "modules.agents.task_info_builder",
+            {
+                "build_task_info_from_hook_data": lambda hook_data, _agent_output: {
+                    "agent": hook_data.get("agent_type", "unknown"),
+                    "agent_id": hook_data.get("agent_id", "unknown"),
+                    "task_id": "task-id",
+                    "agent_transcript_path": hook_data.get(
+                        "agent_transcript_path", ""
+                    ),
+                },
+            },
+        )
+        _install_stub(
+            "modules.agents.transcript_reader",
+            {"read_transcript": lambda *_a, **_k: ""},
+        )
+        _install_stub(
+            "modules.audit.workflow_auditor",
+            {
+                "audit": lambda *_a, **_k: None,
+                "signal_gaia_analysis": lambda *_a, **_k: None,
+            },
+        )
+        _install_stub(
+            "modules.audit.workflow_recorder",
+            {"record": lambda *_a, **_k: None},
+        )
+        _install_stub(
+            "modules.context.context_writer",
+            {"process_context_updates": lambda *_a, **_k: None},
+        )
+        _install_stub(
+            "modules.memory.episode_writer", {"write": lambda *_a, **_k: None}
+        )
+        _install_stub(
+            "modules.security.approval_cleanup",
+            {"cleanup": _fake_cleanup_approval},
+        )
+        _install_stub(
+            "modules.security.approval_grants",
+            {"consume_session_grants": _fake_consume_session_grants},
+        )
+
+    def _build_event(self, subagent_stop_payload):
+        from adapters.types import DistributionChannel, HookEvent, HookEventType
+        return HookEvent(
+            event_type=HookEventType.SUBAGENT_STOP,
+            session_id=subagent_stop_payload["session_id"],
+            payload=subagent_stop_payload,
+            channel=DistributionChannel.NPM,
+        )
+
+    def test_approval_request_contract_preserves_its_nonce(
+        self, adapter, subagent_stop_payload, monkeypatch
+    ):
+        """A contract with plan_status=APPROVAL_REQUEST and an approval_id
+        must produce preserve_nonces={approval_id} in the cleanup call.
+        """
+        captured = {}
+        parsed_contract = {
+            "agent_status": {
+                "plan_status": "APPROVAL_REQUEST",
+                "agent_id": "a12345abc",
+            },
+            "approval_request": {
+                "approval_id": "preserved-nonce-deadbeef",
+                "operation": "Bash",
+                "exact_content": "kubectl apply -f manifest.yaml",
+            },
+        }
+
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-ghi789")
+        monkeypatch.setattr(
+            adapter,
+            "_get_gaia_agent_names",
+            lambda: [subagent_stop_payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(subagent_stop_payload))
+
+        assert captured.get("cleanup_preserve_nonces") == {"preserved-nonce-deadbeef"}, (
+            "adapt_subagent_stop must extract approval_id from an "
+            "APPROVAL_REQUEST contract and pass it as preserve_nonces to "
+            "cleanup. Without this, the pending file is destroyed at "
+            "SubagentStop and the user can no longer approve it."
+        )
+        assert captured.get("cleanup_session_id") == "sess-ghi789", (
+            "Cleanup must also receive the session_id from the event "
+            "(Phase 1 contract). Preserve-nonces alone is insufficient; "
+            "the cleanup scan still needs to match the session."
+        )
+
+    def test_complete_contract_passes_no_preserve_nonces(
+        self, adapter, subagent_stop_payload, monkeypatch
+    ):
+        """A normal COMPLETE contract carries no approval_id; cleanup must
+        receive preserve_nonces=None so the legacy delete-all behaviour
+        applies. This proves the preserve path is opt-in, not default.
+        """
+        captured = {}
+        parsed_contract = {
+            "agent_status": {
+                "plan_status": "COMPLETE",
+                "agent_id": "a99999abc",
+            },
+            "approval_request": None,
+        }
+
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-ghi789")
+        monkeypatch.setattr(
+            adapter,
+            "_get_gaia_agent_names",
+            lambda: [subagent_stop_payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(subagent_stop_payload))
+
+        assert captured.get("cleanup_preserve_nonces") in (None, set()), (
+            "A non-APPROVAL_REQUEST contract must not preserve any nonce. "
+            "Passing an empty set or None is acceptable; passing a "
+            "populated set would leak pendings across cleanup cycles."
+        )
+
+    def test_approval_request_without_approval_id_does_not_preserve(
+        self, adapter, subagent_stop_payload, monkeypatch
+    ):
+        """A malformed APPROVAL_REQUEST contract (missing approval_id) must
+        not propagate a falsy value as a preserved nonce. Better to clean
+        than to keep junk that nobody can reference.
+        """
+        captured = {}
+        parsed_contract = {
+            "agent_status": {
+                "plan_status": "APPROVAL_REQUEST",
+                "agent_id": "amalformed",
+            },
+            # approval_request present but no approval_id field
+            "approval_request": {"operation": "Bash"},
+        }
+
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-ghi789")
+        monkeypatch.setattr(
+            adapter,
+            "_get_gaia_agent_names",
+            lambda: [subagent_stop_payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(subagent_stop_payload))
+
+        assert captured.get("cleanup_preserve_nonces") in (None, set()), (
+            "Missing approval_id must NOT result in preserving '' or "
+            "another falsy placeholder -- the cleanup-skip predicate uses "
+            "set membership and a junk nonce would silently shield "
+            "unrelated pendings."
+        )
+
+
+# ============================================================================
 # T004: format_validation_response tests
 # ============================================================================
 
