@@ -34,13 +34,14 @@ TARBALL_PATH=""
 STAY=0
 TARGET="sandbox"
 WORKSPACE_OVERRIDE=""
+FRESH=0
 
 usage() {
   cat <<'EOF'
 Usage:
   bin/validate-sandbox.sh [--version <spec>] [--tarball <path>]
                           [--target sandbox|local] [--workspace <path>]
-                          [--stay]
+                          [--fresh] [--stay]
 
 Options:
   --version <spec>    npm version specifier, e.g. "@rc", "@5.0.0-rc1",
@@ -54,6 +55,11 @@ Options:
                       (no pre-install snapshot of the real workspace).
   --workspace <path>  Explicit target directory for --target local.
                       Bypasses auto-detection. Ignored with --target sandbox.
+  --fresh             Before `npm install`, wipe node_modules/, package.json,
+                      and package-lock.json from the workspace. Forces a
+                      clean install — useful when a prior install left
+                      conflicting metadata in package.json. NO effect on
+                      --target sandbox (sandbox dirs are always pristine).
   --stay              Do NOT clean up the sandbox dir on exit. Useful for
                       debugging; sandbox path is printed on exit.
                       Ignored with --target local.
@@ -78,6 +84,10 @@ while [[ $# -gt 0 ]]; do
     --workspace)
       WORKSPACE_OVERRIDE="$2"
       shift 2
+      ;;
+    --fresh)
+      FRESH=1
+      shift
       ;;
     --stay)
       STAY=1
@@ -334,6 +344,19 @@ prepare_sandbox() {
 
 install_package() {
   cd "${WORKSPACE}"
+
+  # --fresh: wipe install metadata before npm install. Only meaningful in
+  # local mode (sandbox dirs are always pristine by construction). Removes
+  # node_modules/, package.json, and package-lock.json so npm starts from
+  # a clean slate -- avoids stale `dependencies` entries from prior installs
+  # (e.g. self-referencing `file:*.tgz` artefacts).
+  if [[ "${FRESH}" -eq 1 && "${TARGET}" == "local" ]]; then
+    echo "[install] --fresh: wiping node_modules/, package.json, package-lock.json"
+    rm -rf \
+      "${WORKSPACE}/node_modules" \
+      "${WORKSPACE}/package.json" \
+      "${WORKSPACE}/package-lock.json"
+  fi
 
   if [[ "${TARGET}" == "sandbox" && ! -f package.json ]]; then
     echo "FATAL: package.json missing after prepare" >&2

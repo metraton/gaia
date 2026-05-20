@@ -79,11 +79,7 @@
   },
   "_postinstall_note": "postinstall: settings.json replaced (hooks only), permissions merged into settings.local.json (union, user config preserved)",
   "dependencies": {
-    "@jaguilar87/gaia": "file:jaguilar87-gaia-5.0.0-rc.4.tgz",
-    "chalk": "^5.3.0",
-    "ora": "^7.0.1",
-    "prompts": "^2.4.2",
-    "yargs": "^17.7.2"
+    "chalk": "^5.3.0"
   },
   "devDependencies": {
     "eslint": "^8.50.0"
