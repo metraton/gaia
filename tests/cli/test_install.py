@@ -37,7 +37,10 @@ from cli.install import (  # noqa: E402
     _install_path_launcher,
     _create_path_symlink,  # legacy alias retained
     _LAUNCHER_SCRIPT,
+    _write_install_error_marker,
+    _clear_install_error_marker,
 )
+import cli.install as install_mod  # noqa: E402  # for monkeypatching the marker path
 
 
 class TestRegisterSubcommand(unittest.TestCase):
@@ -843,6 +846,161 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             self.assertTrue(link.is_file())
             self.assertFalse(link.is_symlink())
             self.assertEqual(link.read_text(), _LAUNCHER_SCRIPT)
+
+
+class TestInstallErrorMarker(unittest.TestCase):
+    """Pass 4 Fix 2.1: postinstall scan failures must persist a marker file
+    so `gaia doctor` can surface the degradation.
+
+    Contract:
+      - postinstall mode + scan error -> marker written, exit 0 (npm can't
+        be aborted), stderr explains the marker location
+      - postinstall mode + scan success -> marker cleared if stale
+      - interactive mode -> marker cleared on every successful install
+    """
+
+    def _make_args(self, workspace, **overrides):
+        ns = argparse.Namespace()
+        ns.postinstall = overrides.get("postinstall", False)
+        ns.quiet = overrides.get("quiet", True)
+        ns.verbose = overrides.get("verbose", False)
+        ns.db_path = None
+        ns.workspace = str(workspace)
+        ns.skip_workspace = False
+        ns.no_path = True  # skip launcher install in marker tests
+        return ns
+
+    def _patch_helpers_noop(self):
+        noop = {"action": "noop", "path": "x", "details": ""}
+        return [
+            patch("cli.install._install_helpers.configure_settings_json", return_value=noop),
+            patch("cli.install._install_helpers.merge_local_permissions", return_value=noop),
+            patch("cli.install._install_helpers.merge_local_hooks", return_value=noop),
+            patch("cli.install._install_helpers.manage_symlinks", return_value=noop),
+            patch("cli.install._install_helpers.register_plugin", return_value=noop),
+        ]
+
+    def test_write_marker_helper_persists_payload(self):
+        """_write_install_error_marker writes a JSON file with the expected
+        keys. Direct test of the helper, isolated from cmd_install."""
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            with patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker):
+                _write_install_error_marker(
+                    workspace=Path("/tmp/fakews"),
+                    step="project scan",
+                    detail="boom",
+                )
+            self.assertTrue(marker.is_file())
+            data = json.loads(marker.read_text())
+            self.assertEqual(data["step"], "project scan")
+            self.assertEqual(data["detail"], "boom")
+            self.assertEqual(data["workspace"], "/tmp/fakews")
+            self.assertIn("timestamp", data)  # ISO8601 string
+
+    def test_clear_marker_helper_removes_file(self):
+        """_clear_install_error_marker removes the marker if present and
+        is a no-op when the marker does not exist."""
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            marker.write_text('{"existing": true}')
+            with patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker):
+                _clear_install_error_marker()
+                self.assertFalse(marker.exists())
+                # Idempotent -- second call must not raise.
+                _clear_install_error_marker()
+
+    def test_postinstall_scan_error_writes_marker(self):
+        """When `gaia scan` fails under --postinstall, cmd_install must
+        return 0 (so npm install does not abort) and write a marker file
+        that `gaia doctor` can pick up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            (workspace / ".claude").mkdir()
+            marker = Path(tmp) / "marker.json"
+
+            def fake_scan(workspace, verbose, quiet):
+                return {"action": "error", "details": "scan blew up"}
+
+            patches = self._patch_helpers_noop()
+            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan))
+            patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
+
+            for p in patches:
+                p.start()
+            try:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(self._make_args(workspace, postinstall=True))
+            finally:
+                for p in patches:
+                    p.stop()
+
+            self.assertEqual(rc, 0, "postinstall must never return non-zero")
+            self.assertTrue(marker.is_file(), "scan error should have written a marker")
+            payload = json.loads(marker.read_text())
+            self.assertEqual(payload["step"], "project scan")
+            self.assertIn("scan blew up", payload["detail"])
+
+    def test_postinstall_scan_success_clears_stale_marker(self):
+        """If a previous postinstall left a marker but the current run
+        succeeds, the marker must be cleared."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            (workspace / ".claude").mkdir()
+            marker = Path(tmp) / "marker.json"
+            # Seed stale marker
+            marker.write_text('{"step": "previous failure"}')
+
+            def fake_scan(workspace, verbose, quiet):
+                return {"action": "created", "details": "context seeded"}
+
+            patches = self._patch_helpers_noop()
+            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan))
+            patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
+
+            for p in patches:
+                p.start()
+            try:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(self._make_args(workspace, postinstall=True))
+            finally:
+                for p in patches:
+                    p.stop()
+
+            self.assertEqual(rc, 0)
+            self.assertFalse(marker.exists(), "stale marker should have been cleared")
+
+    def test_interactive_install_clears_stale_marker(self):
+        """Interactive `gaia install` (no --postinstall) means the user is
+        repairing things by hand; any prior postinstall marker is no longer
+        authoritative and must be cleared."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            (workspace / ".claude").mkdir()
+            marker = Path(tmp) / "marker.json"
+            marker.write_text('{"step": "old failure"}')
+
+            patches = self._patch_helpers_noop()
+            patches.append(patch("cli.install._run_bootstrap", return_value=0))
+            patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
+
+            for p in patches:
+                p.start()
+            try:
+                with redirect_stdout(io.StringIO()):
+                    # postinstall=False is the interactive path
+                    rc = cmd_install(self._make_args(workspace, postinstall=False))
+            finally:
+                for p in patches:
+                    p.stop()
+
+            self.assertEqual(rc, 0)
+            self.assertFalse(marker.exists(), "interactive install must clear stale marker")
 
 
 if __name__ == "__main__":

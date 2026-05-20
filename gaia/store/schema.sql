@@ -635,3 +635,17 @@ CREATE TABLE IF NOT EXISTS harness_events (
 
 CREATE INDEX IF NOT EXISTS idx_harness_events_workspace_ts ON harness_events(workspace, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_harness_events_type ON harness_events(type);
+
+-- ---------------------------------------------------------------------------
+-- schema_version: migration ledger.
+-- One row per applied schema migration; the highest version is the current
+-- live schema. `gaia doctor` reads MAX(version) and compares against the
+-- EXPECTED_SCHEMA_VERSION constant baked into the CLI for the running build.
+-- Bootstrap inserts row (1, ..., 'initial schema') -- future schema bumps
+-- must add their own INSERT OR IGNORE in bootstrap_database.sh.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS schema_version (
+    version     INTEGER PRIMARY KEY,
+    applied_at  TEXT NOT NULL,
+    description TEXT
+);
