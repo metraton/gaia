@@ -30,6 +30,36 @@ Security properties:
 - Nonces are 128-bit random hex (cannot be guessed)
 - Pending files are session-scoped (cannot be activated from another session)
 - A nonce can only be activated ONCE (pending file deleted on activation)
+
+=============================================================================
+Grant lifetime and the "same intent, new approval_id" pattern
+=============================================================================
+Operators frequently observe that two attempts of "the same command" produce
+two different approval_id values.  This is **by design**, not a bug:
+
+1.  A single-use SCOPE_SEMANTIC_SIGNATURE grant is bound to one sub-agent
+    invocation. It is created (confirmed=True) when the user approves a
+    pending file, matched once by check_approval_grant() during the
+    sub-agent's lifetime, marked ``used=True`` by consume_session_grants()
+    at SubagentStop, and never re-issued.
+
+2.  A SendMessage resume of an agent that already returned (e.g. because it
+    emitted APPROVAL_REQUEST and ended its turn) is effectively a fresh
+    sub-agent invocation: the previous SubagentStop already consumed any
+    confirmed grants from that session. The retried command must therefore
+    produce a fresh approval_id -- there is nothing left to reuse.
+
+3.  Each fresh approval_id provides a fresh audit trail entry tying one
+    consent action to one execution. Persisting grants across sub-agent
+    boundaries would weaken that link: a stolen / leaked grant could be
+    reused beyond the intent the user actually approved.
+
+Operators who want one consent to cover a batch of related commands should
+emit ``approval_request.batch_scope = "verb_family"``. This creates a
+SCOPE_VERB_FAMILY grant with ``multi_use=True`` that survives multiple
+matches until its TTL expires or the sub-agent stops. See
+``create_verb_family_grant()`` for the implementation and
+``orchestrator-approval/SKILL.md`` for the user-facing protocol.
 """
 
 import json
