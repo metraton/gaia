@@ -290,6 +290,135 @@ class TestCmdInstallOrchestration(unittest.TestCase):
             self.assertEqual(captured.get("ws"), workspace)
 
 
+class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
+    """Fix 2 regression coverage.
+
+    Before this fix, cmd_install invoked the four early-helpers
+    (configure_settings_json, merge_local_permissions, merge_local_hooks,
+    manage_symlinks) before any code path created `.claude/`. Each helper
+    early-returned "skipped" on a fresh workspace; only register_plugin
+    (the fifth helper) mkdir'd .claude/ -- too late. cmd_install must now
+    create .claude/ between bootstrap and the helpers so each helper sees a
+    real directory to write into.
+    """
+
+    def _make_args(self, workspace, **overrides) -> argparse.Namespace:
+        ns = argparse.Namespace()
+        ns.postinstall = overrides.get("postinstall", False)
+        ns.quiet = overrides.get("quiet", True)
+        ns.verbose = overrides.get("verbose", False)
+        ns.db_path = overrides.get("db_path", None)
+        ns.workspace = str(workspace) if workspace else None
+        ns.skip_workspace = overrides.get("skip_workspace", False)
+        ns.no_path = overrides.get("no_path", True)  # default: don't write PATH
+        return ns
+
+    def test_creates_claude_dir_before_helpers_run(self):
+        """When workspace has no .claude/, cmd_install creates it BEFORE any
+        helper is called -- so each helper sees the directory it needs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "fresh-ws"
+            workspace.mkdir()
+            # NOTE: no `.claude` directory created. This is the precondition.
+            self.assertFalse((workspace / ".claude").exists())
+
+            claude_seen = []
+
+            def make_tracker(name):
+                def fn(ws, *args, **kwargs):
+                    # Record whether .claude/ exists at the moment this
+                    # helper is invoked.
+                    claude_seen.append((name, (ws / ".claude").exists()))
+                    return {"action": "noop", "path": str(ws), "details": ""}
+                return fn
+
+            with patch("cli.install._run_bootstrap", return_value=0):
+                with patch(
+                    "cli.install._install_helpers.configure_settings_json",
+                    side_effect=make_tracker("settings_json"),
+                ), patch(
+                    "cli.install._install_helpers.merge_local_permissions",
+                    side_effect=make_tracker("permissions"),
+                ), patch(
+                    "cli.install._install_helpers.merge_local_hooks",
+                    side_effect=make_tracker("hooks"),
+                ), patch(
+                    "cli.install._install_helpers.manage_symlinks",
+                    side_effect=make_tracker("symlinks"),
+                ), patch(
+                    "cli.install._install_helpers.register_plugin",
+                    side_effect=make_tracker("registry"),
+                ):
+                    with redirect_stdout(io.StringIO()):
+                        rc = cmd_install(self._make_args(workspace))
+
+            self.assertEqual(rc, 0)
+            # All five helpers must have seen .claude/ already present.
+            self.assertEqual(len(claude_seen), 5)
+            for name, present in claude_seen:
+                self.assertTrue(
+                    present,
+                    msg=f"helper {name} ran with .claude/ missing -- regression of fix 2",
+                )
+            # And the directory must persist after cmd_install returns.
+            self.assertTrue((workspace / ".claude").exists())
+            self.assertTrue((workspace / ".claude").is_dir())
+
+    def test_claude_dir_creation_is_idempotent(self):
+        """Pre-existing .claude/ must not be disturbed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "existing-ws"
+            workspace.mkdir()
+            (workspace / ".claude").mkdir()
+            sentinel = workspace / ".claude" / "sentinel.txt"
+            sentinel.write_text("pre-existing user content\n")
+
+            noop = {"action": "noop", "path": "x", "details": ""}
+            patches = [
+                patch("cli.install._run_bootstrap", return_value=0),
+                patch("cli.install._install_helpers.configure_settings_json",
+                      return_value=noop),
+                patch("cli.install._install_helpers.merge_local_permissions",
+                      return_value=noop),
+                patch("cli.install._install_helpers.merge_local_hooks",
+                      return_value=noop),
+                patch("cli.install._install_helpers.manage_symlinks",
+                      return_value=noop),
+                patch("cli.install._install_helpers.register_plugin",
+                      return_value=noop),
+            ]
+            for p in patches:
+                p.start()
+            try:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(self._make_args(workspace))
+            finally:
+                for p in patches:
+                    p.stop()
+
+            self.assertEqual(rc, 0)
+            # Pre-existing content untouched.
+            self.assertTrue(sentinel.exists())
+            self.assertEqual(sentinel.read_text(), "pre-existing user content\n")
+
+    def test_claude_dir_creation_runs_after_bootstrap(self):
+        """If bootstrap fails (non-zero), .claude/ must not be created --
+        partial wire-up is a worse outcome than no wire-up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "fresh-ws"
+            workspace.mkdir()
+
+            # Bootstrap returns failure; manual mode (no --postinstall) so
+            # cmd_install propagates the failure.
+            with patch("cli.install._run_bootstrap", return_value=1):
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(self._make_args(workspace))
+
+            self.assertEqual(rc, 1)
+            # .claude/ must not have been created when bootstrap failed.
+            self.assertFalse((workspace / ".claude").exists())
+
+
 class TestInstallPathLauncher(unittest.TestCase):
     """Unit tests for _install_path_launcher.
 

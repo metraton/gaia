@@ -522,6 +522,32 @@ def cmd_install(args: argparse.Namespace) -> int:
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
         return 0
 
+    # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
+    # The first four helpers (configure_settings_json, merge_local_permissions,
+    # merge_local_hooks, manage_symlinks) early-return "skipped" when .claude/
+    # is missing. Only register_plugin used to mkdir it -- too late. Doing it
+    # here makes all five helpers see a real directory and apply their work.
+    # Placed AFTER bootstrap so a bootstrap failure does not leave behind a
+    # partially-initialized workspace; placed BEFORE the helpers so they can
+    # write into the directory.
+    claude_dir = workspace / ".claude"
+    if not claude_dir.exists():
+        try:
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            if not quiet:
+                print(f"  [+] workspace: created {claude_dir}")
+        except OSError as exc:
+            if not quiet:
+                print(
+                    f"  [!] workspace: failed to create {claude_dir}: {exc}",
+                    file=sys.stderr,
+                )
+            # Non-fatal under postinstall (parity with bootstrap behavior);
+            # surface error in manual mode.
+            if not postinstall:
+                return 1
+            return 0
+
     settings_res = _install_helpers.configure_settings_json(workspace)
     _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
 
