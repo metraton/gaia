@@ -57,9 +57,13 @@ class TestAgentStructure:
                 "## What I Do",
                 "## Responsibilities",
                 "## Core Responsibilities",
-                "## Knowledge Domain",  # Used by gaia.md
-                "## Your approach",     # Used by gaia.md
-                "## Scope",             # Used by gaia.md
+                "## Knowledge Domain",   # Used by gaia.md
+                "## Your approach",      # Used by gaia.md
+                "## Scope",              # Used by gaia.md
+                "## Routing",            # Used by gaia-orchestrator.md -- the
+                                         # Routing table IS the scope statement
+                                         # for the orchestrator (delegation
+                                         # surfaces it can dispatch to).
                 "capabilities",
                 "can do",
                 "will handle"
