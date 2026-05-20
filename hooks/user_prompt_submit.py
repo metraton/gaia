@@ -122,29 +122,6 @@ def _build_welcome(mode: str) -> str:
     )
 
 
-def _build_pending_context() -> str:
-    """Back-compat shim that delegates to ``session_manifest`` (Phase 4).
-
-    Pending-approval injection moved to SessionStart in Phase 4 so the
-    [ACTIONABLE] block surfaces once per session rather than re-rendering
-    on every prompt. UserPromptSubmit no longer invokes this helper from
-    ``__main__`` -- the runtime path is SessionStart -> session_manifest.
-
-    The function is kept so existing tests that import and monkey-patch
-    ``pending_scanner.scan_pending_approvals`` keep validating the
-    behaviour: ``build_pending_approvals_block()`` is the same logic in
-    its new home and reacts to the same patches.
-
-    Fully fail-safe -- never raises.
-    """
-    try:
-        from modules.session.session_manifest import build_pending_approvals_block
-        return build_pending_approvals_block()
-    except Exception as e:
-        logger.debug("Pending context scan skipped (non-fatal): %s", e)
-        return ""
-
-
 if __name__ == "__main__":
     if not has_stdin_data():
         sys.exit(0)
@@ -152,13 +129,24 @@ if __name__ == "__main__":
     try:
         raw_input = sys.stdin.read()
 
+        # Parse the event JSON once so subsequent helpers can read fields
+        # (session_id, prompt). Defensive: an unreadable payload becomes
+        # an empty dict so the rest of the hook still runs.
+        try:
+            event_data = json.loads(raw_input) if raw_input else {}
+            if not isinstance(event_data, dict):
+                event_data = {}
+        except (json.JSONDecodeError, TypeError):
+            event_data = {}
+
         # Refresh liveness heartbeat for this session. Throttled inside
-        # touch_session(), fully non-fatal. This is the only place the
-        # session can prove it is alive between SessionStart and SessionEnd.
+        # touch_session(), fully non-fatal. The session_id must come from
+        # the stdin event because CLAUDE_SESSION_ID is not guaranteed to
+        # be exported into the hook subprocess.
         try:
             from modules.session.session_registry import touch_session
-            from modules.core.state import get_session_id
-            touch_session(get_session_id())
+            from modules.core.state import resolve_session_id
+            touch_session(resolve_session_id(event_data))
         except Exception as _hb_exc:
             logger.debug("touch_session failed (non-fatal): %s", _hb_exc)
 
