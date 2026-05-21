@@ -76,7 +76,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `gmail-triage/` | Technique | Injected (gaia-operator) |
 | `gws-setup/` | Technique | On-demand |
 | `investigation/` | Technique | Injected |
-| `memory-curation/` | Reference | Injected (orchestrator) |
+| `memory/` | Technique | Injected (gaia-operator) |
 | `orchestrator-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |

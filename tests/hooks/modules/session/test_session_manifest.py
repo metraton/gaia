@@ -23,6 +23,7 @@ from modules.session.session_manifest import (
     build_environment_block,
     build_pending_approvals_block,
     build_session_context,
+    build_workspace_memory_block,
 )
 
 
@@ -237,11 +238,14 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_pending_approvals_block", lambda: "PEND"
         )
+        monkeypatch.setattr(
+            session_manifest, "build_workspace_memory_block", lambda: "MEM"
+        )
 
         assert build_session_context("security") == ""
         assert build_session_context("") == ""
 
-    def test_assembles_three_blocks_with_blank_line_separator(self, monkeypatch):
+    def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
         monkeypatch.setattr(
             session_manifest, "build_environment_block", lambda: "ENV BLOCK"
         )
@@ -251,9 +255,12 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_pending_approvals_block", lambda: "PEND BLOCK"
         )
+        monkeypatch.setattr(
+            session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
+        )
 
         result = build_session_context("ops")
-        assert result == "ENV BLOCK\n\nLOOP BLOCK\n\nPEND BLOCK", (
+        assert result == "ENV BLOCK\n\nLOOP BLOCK\n\nPEND BLOCK\n\nMEM BLOCK", (
             "Blocks must be joined with exactly one blank line separator -- "
             "markdown convention; agents render this as paragraph breaks."
         )
@@ -268,6 +275,9 @@ class TestBuildSessionContext:
         )
         monkeypatch.setattr(
             session_manifest, "build_pending_approvals_block", lambda: "PEND BLOCK"
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_workspace_memory_block", lambda: ""
         )
 
         result = build_session_context("ops")
@@ -286,6 +296,9 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_pending_approvals_block", lambda: ""
         )
+        monkeypatch.setattr(
+            session_manifest, "build_workspace_memory_block", lambda: ""
+        )
 
         assert build_session_context("ops") == ""
 
@@ -303,9 +316,92 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_pending_approvals_block", lambda: "PEND"
         )
+        monkeypatch.setattr(
+            session_manifest, "build_workspace_memory_block", lambda: ""
+        )
 
         # Either the assembler swallows the exception entirely (returning "")
         # or it catches around the whole pipeline and returns "". Both are
         # acceptable; what is not acceptable is propagating the exception.
         result = build_session_context("ops")
         assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# build_workspace_memory_block
+# ---------------------------------------------------------------------------
+
+class TestBuildWorkspaceMemoryBlock:
+    """The block shells out to `gaia memory get-relevant`. Tests stub the
+    subprocess result to keep the unit isolated from the substrate DB."""
+
+    def test_returns_block_when_cli_emits_content(self, monkeypatch):
+        """CLI succeeds with text -> builder returns it verbatim (stripped)."""
+        import subprocess
+
+        sentinel = "## Workspace Memory (qxo)\n\nAtoms:\n- atom_x: y"
+
+        def _fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args=args[0] if args else [],
+                returncode=0,
+                stdout=sentinel + "\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        # Pin the workspace so the helper doesn't try to read project-context.
+        result = build_workspace_memory_block(workspace="qxo")
+        assert result == sentinel
+
+    def test_returns_empty_when_no_workspace(self, monkeypatch):
+        """No workspace identity -> empty block, no subprocess call."""
+        monkeypatch.setattr(
+            session_manifest, "_read_workspace_identity", lambda: None
+        )
+        # If subprocess is touched, the test should still not raise.
+        result = build_workspace_memory_block()
+        assert result == ""
+
+    def test_returns_empty_when_cli_nonzero_exit(self, monkeypatch):
+        """CLI exits non-zero -> empty block (fail-safe)."""
+        import subprocess
+
+        def _fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args=args[0] if args else [],
+                returncode=2,
+                stdout="",
+                stderr="oops",
+            )
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        result = build_workspace_memory_block(workspace="qxo")
+        assert result == ""
+
+    def test_returns_empty_when_cli_raises(self, monkeypatch):
+        """Subprocess raises (timeout, FileNotFoundError) -> empty block."""
+        import subprocess
+
+        def _fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="gaia", timeout=5)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        result = build_workspace_memory_block(workspace="qxo")
+        assert result == ""
+
+    def test_returns_empty_when_cli_emits_only_whitespace(self, monkeypatch):
+        """CLI exits 0 but with empty stdout -> empty block."""
+        import subprocess
+
+        def _fake_run(*args, **kwargs):
+            return subprocess.CompletedProcess(
+                args=args[0] if args else [],
+                returncode=0,
+                stdout="   \n  \n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        result = build_workspace_memory_block(workspace="qxo")
+        assert result == ""

@@ -182,6 +182,64 @@ def build_agentic_loop_block() -> str:
         return ""
 
 
+def build_workspace_memory_block(workspace: Optional[str] = None) -> str:
+    """Top relevant curated memory for the workspace, bounded.
+
+    Calls ``gaia memory get-relevant --workspace <X> --max-chars 800`` and
+    captures stdout. Returns markdown to inject in SessionStart
+    additionalContext, or "" when there are no curated rows for the
+    workspace, when the workspace cannot be inferred, or when the
+    subprocess fails for any reason.
+
+    Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
+    empty output) returns "". SessionStart must not block on memory.
+    """
+    import subprocess
+
+    try:
+        ws = workspace or _read_workspace_identity()
+        if not ws:
+            # Without a workspace we cannot scope the query; skip the block.
+            return ""
+
+        # Resolve the CLI: prefer the in-repo bin/gaia when present so the
+        # hook works from any cwd, fall back to PATH lookup otherwise.
+        cli_args: list[str]
+        try:
+            from ..core.paths import find_claude_dir
+            claude_dir = find_claude_dir()
+            # In-repo / symlinked layout: .claude/tools/gaia or PATH.
+            cli_args = ["gaia"]
+            _ = claude_dir  # documented dependency, future-proofing
+        except Exception:
+            cli_args = ["gaia"]
+
+        result = subprocess.run(
+            cli_args + [
+                "memory", "get-relevant",
+                "--workspace", ws,
+                "--max-chars", "800",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "build_workspace_memory_block: CLI exit=%d stderr=%s",
+                result.returncode, (result.stderr or "")[:200],
+            )
+            return ""
+        block = (result.stdout or "").strip()
+        return block
+    except Exception as exc:
+        logger.debug(
+            "build_workspace_memory_block failed (non-fatal): %s", exc
+        )
+        return ""
+
+
 def build_pending_approvals_block() -> str:
     """Build the [ACTIONABLE] pending-approvals block, if any exist.
 
@@ -257,6 +315,10 @@ def build_session_context(mode: str) -> str:
             build_environment_block(),
             build_agentic_loop_block(),
             build_pending_approvals_block(),
+            # Workspace Memory is injected last so the orchestrator sees the
+            # operational state (environment, loop, pendings) before the
+            # curated knowledge it should anchor against.
+            build_workspace_memory_block(),
         ]
         non_empty = [b for b in blocks if b]
         if not non_empty:
