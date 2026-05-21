@@ -448,7 +448,7 @@ A: `npm update @jaguilar87/gaia` - symlinks point to the new version automatical
 
 ---
 
-**Version:** 5.0.0-rc.4
-**Last updated:** 2026-05-20
+**Version:** 5.0.0-rc.5
+**Last updated:** 2026-05-21
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
 
