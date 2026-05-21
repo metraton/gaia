@@ -9,6 +9,7 @@ Subcommands:
   show APPROVAL_ID [--json]              -- show full detail of one approval
   reject NONCE [--reason REASON]         -- reject a pending approval
   reject --all [--reason REASON]         -- reject ALL pending approvals in one call
+  reject-all [--dry-run] [--workspace W] -- reject all pending approvals (subcommand alias)
   clean [--dry-run]                      -- remove expired/stale approvals
   stats [--json]                         -- approval system statistics
 
@@ -423,6 +424,102 @@ def _cmd_reject_all(args, reason: str | None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: reject-all
+# ---------------------------------------------------------------------------
+
+def _grants_dir_for_workspace(workspace: str | None):
+    """Resolve the approvals grants directory for the given workspace path.
+
+    When ``workspace`` is provided, returns
+    ``<workspace>/.claude/cache/approvals/`` directly, bypassing the
+    CLAUDE_PLUGIN_DATA / CWD-walk resolution used by ``_import_grants_dir``.
+    When ``workspace`` is None, delegates to ``_import_grants_dir``.
+    """
+    if workspace is not None:
+        return Path(workspace).resolve() / ".claude" / "cache" / "approvals"
+    return _import_grants_dir()
+
+
+def cmd_reject_all(args) -> int:
+    """Reject all active pending approvals in one pass.
+
+    Scans the approval cache for every non-expired, non-rejected pending
+    approval and calls ``reject_pending()`` on each nonce.  This is the
+    canonical subcommand surface documented in the pending-approvals skill.
+
+    Flags:
+      --dry-run     Preview what would be rejected without writing changes.
+      --workspace   Operate on a different workspace's approval cache.
+    """
+    dry_run: bool = getattr(args, "dry_run", False)
+    workspace: str | None = getattr(args, "workspace", None)
+
+    # Resolve grants directory, honoring --workspace if provided.
+    try:
+        grants_dir = _grants_dir_for_workspace(workspace)
+    except Exception as exc:
+        _print_error(f"Cannot resolve approvals directory: {exc}", args)
+        return 1
+
+    # Scan pending approvals using the resolved directory.
+    try:
+        from modules.session.pending_scanner import scan_pending_approvals
+        scanned = scan_pending_approvals(grants_dir, exclude_live_sessions=False)
+        raw: list = []
+        for s in scanned:
+            raw.append({
+                "nonce": s.get("nonce_full") or s.get("nonce_short", ""),
+                "command": s.get("command", ""),
+            })
+    except Exception as exc:
+        _print_error(f"Failed to load approvals: {exc}", args)
+        return 1
+
+    if not raw:
+        print("No active pendings -- nothing to reject.")
+        return 0
+
+    if dry_run:
+        print("[dry-run] would reject:")
+        for item in raw:
+            nonce_prefix = _nonce_short(item["nonce"])
+            cmd_preview = item["command"][:60]
+            print(f"  P-{nonce_prefix}  {cmd_preview}")
+        print(f"\n{len(raw)} pending(s) would be rejected.")
+        return 0
+
+    # Live rejection via the canonical reject_pending() path.
+    try:
+        ag = _import_approval_grants()
+        reject_fn = ag["reject_pending"]
+    except Exception as exc:
+        _print_error(f"Failed to load approval module: {exc}", args)
+        return 1
+
+    rejected_ids = []
+    failed_ids = []
+    for item in raw:
+        nonce = item["nonce"]
+        nonce_prefix = _nonce_short(nonce)
+        try:
+            ok = reject_fn(nonce_prefix)
+            if ok:
+                rejected_ids.append(f"P-{nonce_prefix}")
+            else:
+                failed_ids.append(f"P-{nonce_prefix}")
+        except Exception:
+            failed_ids.append(f"P-{nonce_prefix}")
+
+    n = len(rejected_ids)
+    if n > 0:
+        print(f"{n} pending(s) rejected: {', '.join(rejected_ids)}")
+    if failed_ids:
+        _print_error(f"Failed to reject: {', '.join(failed_ids)}", args)
+
+    return 0 if not failed_ids else 1
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: clean
 # ---------------------------------------------------------------------------
 
@@ -656,6 +753,32 @@ def register(subparsers) -> None:
     p_reject.add_argument("--json", action="store_true", help="JSON output")
     p_reject.set_defaults(func=cmd_reject)
 
+    # reject-all
+    p_reject_all = sub.add_parser(
+        "reject-all",
+        help="Reject all active pending approvals in one pass",
+        description=(
+            "Mark every active (non-expired, non-rejected) pending approval as rejected.\n\n"
+            "Functionally equivalent to 'reject --all' but exposed as a first-class\n"
+            "subcommand matching the pending-approvals skill's documented interface.\n\n"
+            "Use --dry-run to preview what would be rejected without writing changes.\n"
+            "Use --workspace to operate on a different workspace's approval cache."
+        ),
+    )
+    p_reject_all.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Preview rejections without writing changes",
+    )
+    p_reject_all.add_argument(
+        "--workspace",
+        metavar="PATH",
+        default=None,
+        help="Operate on a different workspace's approval cache",
+    )
+    p_reject_all.set_defaults(func=cmd_reject_all)
+
     # clean
     p_clean = sub.add_parser("clean", help="Remove expired/stale approvals")
     p_clean.add_argument("--dry-run", action="store_true", dest="dry_run",
@@ -686,8 +809,9 @@ def cmd_approvals(args) -> int:
 
 def _approvals_default(args) -> int:
     """Default handler when no sub-subcommand is given."""
-    print("Usage: gaia approvals {list,show,reject,clean,stats} [options]")
-    print("       gaia approvals reject --all [--reason TEXT]  # bulk reject")
+    print("Usage: gaia approvals {list,show,reject,reject-all,clean,stats} [options]")
+    print("       gaia approvals reject --all [--reason TEXT]   # bulk reject (flag form)")
+    print("       gaia approvals reject-all [--dry-run] [--workspace PATH]  # bulk reject (subcommand)")
     print("Run 'gaia approvals --help' for more information.")
     return 0
 
@@ -724,6 +848,11 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_reject.add_argument("--reason", metavar="REASON")
     p_reject.add_argument("--json", action="store_true")
     p_reject.set_defaults(func=cmd_reject)
+
+    p_reject_all = subparsers.add_parser("reject-all", help="Reject all active pending approvals")
+    p_reject_all.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_reject_all.add_argument("--workspace", metavar="PATH", default=None)
+    p_reject_all.set_defaults(func=cmd_reject_all)
 
     p_clean = subparsers.add_parser("clean", help="Remove expired approvals")
     p_clean.add_argument("--dry-run", action="store_true", dest="dry_run")
