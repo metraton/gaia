@@ -230,7 +230,13 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
         # (fresh install where schema.sql ran with the new DDL) or still
         # at the source state (existing DB where CREATE TABLE IF NOT EXISTS
         # short-circuited).
+        #
+        # A guard probe can also OVERRIDE which .sql file to run when the
+        # entry state is mutative but distinct from the canonical source.
+        # See v2->v3 below for the "both tables present" case, which needs
+        # the merge variant rather than the rename variant.
         ALREADY_AT_TARGET=0
+        OVERRIDE_MIG_FILE=""
         case "$N" in
             2)
                 # v1 -> v2: widen memory.type CHECK. Target state contains 'atom'.
@@ -238,6 +244,33 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 if [[ "$MEMORY_DDL" == *"'atom'"* ]]; then
                     ALREADY_AT_TARGET=1
                 fi
+                ;;
+            3)
+                # v2 -> v3: rename context_contracts -> project_context_contracts
+                # and add agent_contract_permissions. Three entry states:
+                #   state 1 (only old): rename via v2_to_v3.sql (the default file).
+                #   state 2 (only new + perms exist): "at target", stamp ledger.
+                #   state 3 (both tables): copy rows + drop old via v2_to_v3_merge.sql.
+                #
+                # The detection order is deliberate: we check for the legacy
+                # table first because its presence is the disqualifying signal
+                # for "already at target", regardless of what else exists.
+                HAS_OLD="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='context_contracts';")"
+                HAS_NEW="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='project_context_contracts';")"
+                HAS_PERMS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_contract_permissions';")"
+
+                if [ -z "$HAS_OLD" ] && [ "$HAS_NEW" = "project_context_contracts" ] && [ "$HAS_PERMS" = "agent_contract_permissions" ]; then
+                    # State 2: only new tables exist, fully migrated.
+                    ALREADY_AT_TARGET=1
+                elif [ "$HAS_OLD" = "context_contracts" ] && [ "$HAS_NEW" = "project_context_contracts" ]; then
+                    # State 3: both tables exist -- run the merge variant.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v2_to_v3_merge.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: state-3 merge script missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: state 1 (only old) -- fall through to default rename script.
                 ;;
             *)
                 # Future migrations: each new N must add a case here with a
@@ -248,6 +281,9 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 ;;
         esac
 
+        # Resolve which file actually runs: per-state override or default.
+        EFFECTIVE_MIG_FILE="${OVERRIDE_MIG_FILE:-$MIG_FILE}"
+
         if [ "$ALREADY_AT_TARGET" = "1" ]; then
             echo "[bootstrap] migration v${PREV}->v${N}: live DDL already at target (fresh install), stamping ledger only"
             sqlite3 "$GAIA_DB" <<EOF
@@ -255,11 +291,11 @@ INSERT OR IGNORE INTO schema_version (version, applied_at, description)
 VALUES (${N}, '${NOW_UTC}', 'auto-stamped: schema.sql created table at v${N} state');
 EOF
         else
-            echo "[bootstrap] migration v${PREV}->v${N}: applying ${MIG_FILE}"
+            echo "[bootstrap] migration v${PREV}->v${N}: applying ${EFFECTIVE_MIG_FILE}"
             # Wrap the migration in an explicit transaction. The migration SQL
             # itself does NOT contain BEGIN/COMMIT so we control atomicity here.
             # Errors abort the script via set -e + sqlite3 exit code.
-            MIG_SQL="$(cat "$MIG_FILE")"
+            MIG_SQL="$(cat "$EFFECTIVE_MIG_FILE")"
             if ! sqlite3 "$GAIA_DB" <<EOF
 BEGIN;
 ${MIG_SQL}
@@ -271,9 +307,10 @@ EOF
                 exit 1
             fi
             echo "[bootstrap] migration v${PREV}->v${N}: applied successfully"
+            MIG_DESC="applied migration $(basename "$EFFECTIVE_MIG_FILE")"
             sqlite3 "$GAIA_DB" <<EOF
 INSERT OR IGNORE INTO schema_version (version, applied_at, description)
-VALUES (${N}, '${NOW_UTC}', 'applied migration v${PREV}_to_v${N}.sql');
+VALUES (${N}, '${NOW_UTC}', '${MIG_DESC}');
 EOF
         fi
     done

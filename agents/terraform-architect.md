@@ -6,6 +6,9 @@ model: inherit
 maxTurns: 40
 permissionMode: acceptEdits
 disallowedTools: [NotebookEdit]
+project_context_contracts:
+  read: [project_identity, stack, infrastructure, infrastructure_topology, environment]
+  write: [infrastructure, infrastructure_topology]
 skills:
   - agent-protocol
   - security-tiers

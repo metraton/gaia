@@ -4,6 +4,9 @@ description: Workspace operator — extensible agent for personal workspace task
 tools: Read, Edit, Write, Glob, Grep, Bash, Task, Skill, WebSearch, WebFetch
 model: sonnet
 permissionMode: acceptEdits
+project_context_contracts:
+  read: [project_identity, workspace_repos, stack, git]
+  write: [workspace_repos, project_identity]
 skills:
   - agent-protocol
   - security-tiers

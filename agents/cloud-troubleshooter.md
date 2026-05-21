@@ -5,6 +5,9 @@ tools: Read, Glob, Grep, Bash, Task, Skill
 model: inherit
 maxTurns: 40
 disallowedTools: [Write, Edit, NotebookEdit]
+project_context_contracts:
+  read: [project_identity, infrastructure, cluster_details, application_services, environment, infrastructure_topology, gitops_configuration]
+  write: []
 skills:
   - agent-protocol
   - security-tiers
