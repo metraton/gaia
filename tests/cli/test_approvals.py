@@ -597,6 +597,302 @@ class TestCmdRejectAll:
 
 
 # ---------------------------------------------------------------------------
+# Tests: cmd_reject_all (reject-all subcommand)
+# ---------------------------------------------------------------------------
+
+class TestCmdRejectAllSubcommand:
+    """Tests for the ``reject-all`` subcommand (cmd_reject_all).
+
+    This is the first-class subcommand surface documented in the
+    pending-approvals skill.  Functionality mirrors ``reject --all`` but with
+    additional ``--dry-run`` and ``--workspace`` flags.
+    """
+
+    def _make_args(self, dry_run=False, workspace=None):
+        return SimpleNamespace(dry_run=dry_run, workspace=workspace)
+
+    # ------------------------------------------------------------------
+    # 0 pendings
+    # ------------------------------------------------------------------
+
+    def test_reject_all_empty_queue_prints_nothing_to_reject(self, capsys, tmp_path):
+        """With no active pendings, exit 0 and print the 'nothing to reject' message."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            rc = approvals_mod.cmd_reject_all(self._make_args())
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No active pendings" in captured.out
+
+    # ------------------------------------------------------------------
+    # 3 pendings -- all rejected
+    # ------------------------------------------------------------------
+
+    def test_reject_all_rejects_three_pendings(self, capsys, tmp_path):
+        """With 3 pending approvals, all 3 are marked rejected, count is 3."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        nonces = [
+            "aaaa1111bbbb2222aaaa1111bbbb2222",
+            "cccc3333dddd4444cccc3333dddd4444",
+            "eeee5555ffff6666eeee5555ffff6666",
+        ]
+        for nonce in nonces:
+            p = _make_pending(nonce=nonce, command=f"cmd-{nonce[:4]}")
+            (grants_dir / f"pending-{nonce}.json").write_text(json.dumps(p))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(return_value=True),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject_all(self._make_args())
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "3 pending(s) rejected" in captured.out
+        # Verify individual IDs appear
+        assert "P-aaaa1111" in captured.out
+        assert "P-cccc3333" in captured.out
+        assert "P-eeee5555" in captured.out
+
+    def test_reject_all_does_not_delete_files(self, tmp_path):
+        """reject-all must NOT delete files -- it only calls reject_pending()."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        pending_file = grants_dir / f"pending-{p['nonce']}.json"
+        pending_file.write_text(json.dumps(p))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": MagicMock(return_value=True),
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                approvals_mod.cmd_reject_all(self._make_args())
+
+        # File still exists -- reject_pending() mutates status, does not delete
+        assert pending_file.exists(), (
+            "reject-all must not delete pending files; "
+            "it delegates to reject_pending() which does a status mutation."
+        )
+
+    def test_reject_all_does_not_touch_grant_files(self, tmp_path):
+        """Grant files (grant-*.json) must not be touched by reject-all."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        # Write one pending and one grant file
+        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        pending_file = grants_dir / f"pending-{p['nonce']}.json"
+        pending_file.write_text(json.dumps(p))
+
+        grant_data = {"nonce": "zzzz9999", "granted_at": time.time(), "ttl_minutes": 5}
+        grant_file = grants_dir / "grant-zzzz9999.json"
+        grant_file.write_text(json.dumps(grant_data))
+
+        reject_calls = []
+
+        def _mock_reject(nonce_prefix):
+            reject_calls.append(nonce_prefix)
+            return True
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": _mock_reject,
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                approvals_mod.cmd_reject_all(self._make_args())
+
+        # reject_pending should only be called for the pending, not the grant
+        for call_arg in reject_calls:
+            assert "zzzz" not in call_arg, (
+                "reject-all called reject_pending on a grant file nonce -- it must not."
+            )
+
+    def test_reject_all_does_not_touch_already_rejected(self, capsys, tmp_path):
+        """Already-rejected pendings should not be included in the reject-all count."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        # Write one already-rejected and one active pending
+        rejected = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
+        rejected["status"] = "rejected"
+        (grants_dir / f"pending-{rejected['nonce']}.json").write_text(json.dumps(rejected))
+
+        active = _make_pending(nonce="cccc3333dddd4444cccc3333dddd4444")
+        (grants_dir / f"pending-{active['nonce']}.json").write_text(json.dumps(active))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                reject_mock = MagicMock(return_value=True)
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": reject_mock,
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject_all(self._make_args())
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # Only 1 pending was active -- only 1 rejection should be counted
+        assert "1 pending(s) rejected" in captured.out
+        # The already-rejected one must not have been fed to reject_pending again
+        call_args = [c[0][0] for c in reject_mock.call_args_list]
+        assert not any("aaaa1111" in arg for arg in call_args), (
+            "reject-all must not call reject_pending on an already-rejected pending."
+        )
+
+    # ------------------------------------------------------------------
+    # --dry-run
+    # ------------------------------------------------------------------
+
+    def test_reject_all_dry_run_no_state_changes(self, tmp_path):
+        """--dry-run must not invoke reject_pending or write any files."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222", command="git push origin main")
+        pending_file = grants_dir / f"pending-{p['nonce']}.json"
+        original_content = json.dumps(p)
+        pending_file.write_text(original_content)
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                reject_mock = MagicMock(return_value=True)
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": reject_mock,
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
+
+        assert rc == 0
+        # reject_pending was NOT called
+        reject_mock.assert_not_called()
+        # File content unchanged
+        assert pending_file.read_text() == original_content
+
+    def test_reject_all_dry_run_prints_list(self, capsys, tmp_path):
+        """--dry-run output shows '[dry-run] would reject:' and each P-id + command."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+
+        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222", command="git push origin main")
+        (grants_dir / f"pending-{p['nonce']}.json").write_text(json.dumps(p))
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "[dry-run] would reject:" in captured.out
+        assert "P-aaaa1111" in captured.out
+        assert "git push origin main" in captured.out
+
+    def test_reject_all_dry_run_zero_pendings(self, capsys, tmp_path):
+        """--dry-run with empty queue still prints 'nothing to reject'."""
+        grants_dir = tmp_path / "approvals"
+        grants_dir.mkdir()
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
+            rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "No active pendings" in captured.out
+
+    # ------------------------------------------------------------------
+    # --workspace
+    # ------------------------------------------------------------------
+
+    def test_reject_all_workspace_uses_target_grants_dir(self, tmp_path):
+        """--workspace <path> must operate on <path>/.claude/cache/approvals/."""
+        # Create a fake "other workspace"
+        other_ws = tmp_path / "other-project"
+        other_grants = other_ws / ".claude" / "cache" / "approvals"
+        other_grants.mkdir(parents=True)
+
+        p = _make_pending(nonce="bbbb2222cccc3333bbbb2222cccc3333", command="terraform apply")
+        (other_grants / f"pending-{p['nonce']}.json").write_text(json.dumps(p))
+
+        # The "current" grants dir is empty -- the pending lives in other_ws
+        current_grants = tmp_path / "current-approvals"
+        current_grants.mkdir()
+
+        with patch.object(approvals_mod, "_import_grants_dir", return_value=current_grants):
+            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
+                reject_mock = MagicMock(return_value=True)
+                mock_ag.return_value = {
+                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
+                    "load_pending_by_nonce_prefix": MagicMock(),
+                    "reject_pending": reject_mock,
+                    "cleanup_expired_grants": MagicMock(),
+                }
+                rc = approvals_mod.cmd_reject_all(
+                    self._make_args(workspace=str(other_ws))
+                )
+
+        assert rc == 0
+        # reject_pending was called with the pending from other_ws, not current_grants
+        reject_mock.assert_called_once()
+        call_arg = reject_mock.call_args[0][0]
+        assert "bbbb2222" in call_arg
+
+    # ------------------------------------------------------------------
+    # Subcommand parser registration
+    # ------------------------------------------------------------------
+
+    def test_reject_all_registered_in_parser(self):
+        """'reject-all' must be parseable as a subcommand of 'gaia approvals'."""
+        import argparse
+        root = argparse.ArgumentParser()
+        subparsers = root.add_subparsers(dest="command")
+        approvals_mod.register(subparsers)
+        args = root.parse_args(["approvals", "reject-all"])
+        assert args.func == approvals_mod.cmd_reject_all
+        assert args.dry_run is False
+        assert args.workspace is None
+
+    def test_reject_all_dry_run_flag_parses(self):
+        """--dry-run flag must parse correctly from the subcommand."""
+        import argparse
+        root = argparse.ArgumentParser()
+        subparsers = root.add_subparsers(dest="command")
+        approvals_mod.register(subparsers)
+        args = root.parse_args(["approvals", "reject-all", "--dry-run"])
+        assert args.dry_run is True
+
+    def test_reject_all_workspace_flag_parses(self):
+        """--workspace flag must parse correctly from the subcommand."""
+        import argparse
+        root = argparse.ArgumentParser()
+        subparsers = root.add_subparsers(dest="command")
+        approvals_mod.register(subparsers)
+        args = root.parse_args(["approvals", "reject-all", "--workspace", "/some/path"])
+        assert args.workspace == "/some/path"
+
+    def test_reject_all_standalone_parser(self):
+        """reject-all must be parseable via the standalone parser as well."""
+        parser = approvals_mod._build_standalone_parser()
+        args = parser.parse_args(["reject-all", "--dry-run"])
+        assert args.dry_run is True
+        assert args.func == approvals_mod.cmd_reject_all
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_clean
 # ---------------------------------------------------------------------------
 
