@@ -565,7 +565,7 @@ END;
 CREATE TABLE IF NOT EXISTS memory (
     workspace         TEXT NOT NULL,  -- FK -> workspaces.name
     name              TEXT NOT NULL,
-    type              TEXT NOT NULL CHECK (type IN ('project', 'user', 'feedback')),
+    type              TEXT NOT NULL CHECK (type IN ('project', 'user', 'feedback', 'atom', 'decision', 'negative')),
     description       TEXT,
     body              TEXT NOT NULL,
     origin_session_id TEXT,

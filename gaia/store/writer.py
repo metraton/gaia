@@ -596,7 +596,32 @@ def save_integration(
 # Public API: upsert_memory
 # ---------------------------------------------------------------------------
 
-VALID_MEMORY_TYPES = ("project", "user", "feedback")
+VALID_MEMORY_TYPES = ("project", "user", "feedback", "atom", "decision", "negative")
+
+# Curated slug taxonomy: when the type is one of the new curated types
+# (atom / decision / negative), the `name` must start with the matching prefix
+# and use snake_case slug discipline. The legacy types (project / user /
+# feedback) keep their historical naming freedom.
+import re as _re_for_slug
+_CURATED_SLUG_TYPES = ("atom", "decision", "negative")
+_CURATED_SLUG_PATTERN = _re_for_slug.compile(
+    r"^(atom|decision|negative)_[a-z0-9_]+$"
+)
+
+
+def _validate_curated_slug(name: str, type: str) -> None:
+    """Raise ValueError if name does not match the curated slug convention.
+
+    Only enforced for the three new curated types. Legacy types skip the
+    check to preserve back-compat with existing rows.
+    """
+    if type not in _CURATED_SLUG_TYPES:
+        return
+    if not _CURATED_SLUG_PATTERN.match(name):
+        raise ValueError(
+            f"invalid slug {name!r} for type={type!r}: must match "
+            f"'^{type}_[a-z0-9_]+$' (e.g. '{type}_my_topic')"
+        )
 
 
 def upsert_memory(
@@ -622,6 +647,7 @@ def upsert_memory(
         raise ValueError("memory body cannot be empty")
     if not name or not name.strip():
         raise ValueError("memory name cannot be empty")
+    _validate_curated_slug(name, type)
 
     if origin_session_id is None:
         origin_session_id = os.environ.get("GAIA_SESSION_ID") or None

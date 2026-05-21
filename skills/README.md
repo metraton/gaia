@@ -76,8 +76,7 @@ skills/
 ├── gmail-triage/          # Interactive Gmail inbox triage
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
 ├── investigation/         # Diagnosis methodology and pattern analysis
-├── memory-curation/       # Curate MEMORY.md index and topic files
-├── memory-search/         # Query episodic memory via `gaia memory` CLI
+├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
 ├── orchestrator-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
 ├── readme-writing/        # How to write READMEs for Gaia component folders
@@ -106,7 +105,7 @@ skills/
 | developer | agent-protocol, security-tiers, investigation, command-execution, developer-patterns | context-updater, fast-queries |
 | gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, gaia-release, skill-creation | gaia-verify |
 | gaia-planner | agent-protocol, security-tiers | gaia-planner |
-| gaia-operator | agent-protocol, security-tiers, command-execution, context-updater, memory-curation, memory-search, gmail-triage, gws-setup | blog-writing |
+| gaia-operator | agent-protocol, security-tiers, command-execution, context-updater, memory, gmail-triage, gws-setup | blog-writing |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation

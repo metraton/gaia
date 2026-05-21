@@ -163,8 +163,10 @@ NOW_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 sqlite3 "$GAIA_DB" <<EOF
 INSERT OR IGNORE INTO schema_version (version, applied_at, description)
 VALUES (1, '${NOW_UTC}', 'initial schema');
+INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+VALUES (2, '${NOW_UTC}', 'memory: widen type CHECK to allow atom/decision/negative (curated taxonomy)');
 EOF
-echo "[bootstrap] schema_version seeded (v1, 'initial schema')"
+echo "[bootstrap] schema_version seeded (v1, v2)"
 
 # === Section 4: Registrar workspace actual ===
 #

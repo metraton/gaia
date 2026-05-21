@@ -153,7 +153,7 @@ gaia memory add \
 Never persist without explicit user consent. The reflection itself does
 not write anywhere -- it is offered, the user accepts or declines.
 
-See `memory-curation/SKILL.md` for the full schema and UPSERT semantics.
+See `memory/SKILL.md` for the full schema and UPSERT semantics.
 
 ## Anti-Patterns
 
@@ -179,7 +179,7 @@ See `memory-curation/SKILL.md` for the full schema and UPSERT semantics.
 Earlier iterations of this skill suggested writing to `MEMORY.md` directly.
 That path is **legacy** -- the curated memory layer is now the `memory`
 table in the Gaia substrate (`~/.gaia/gaia.db`), accessed through
-`gaia memory add`. See `memory-curation/SKILL.md`.
+`gaia memory add`. See `memory/SKILL.md`.
 
 If you find code, docs, or other skills that still describe writing
 reflections to `MEMORY.md` or `~/.claude/projects/.../memory/*.md`, flag

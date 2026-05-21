@@ -581,6 +581,197 @@ def _cmd_list(args) -> int:
 _cmd_show = _cmd_episode_show
 
 
+# ---------------------------------------------------------------------------
+# Subcommand handler: get-relevant (curated memory for SessionStart injection)
+# ---------------------------------------------------------------------------
+
+# Default mix for the injected SessionStart block:
+#   3 atoms + 3 decisions + 2 negatives = 8 items, bounded to ~800 chars.
+# Tuned for orchestrator attention budget: each item is one short line, so
+# eight lines is enough to anchor the session without dominating the prompt.
+_RELEVANT_DEFAULT_LIMIT = 8
+_RELEVANT_DEFAULT_MAX_CHARS = 800
+_RELEVANT_DEFAULT_TYPES = ("atom", "decision", "negative")
+_RELEVANT_PER_TYPE_QUOTA = {
+    "atom": 3,
+    "decision": 3,
+    "negative": 2,
+}
+
+
+def _cmd_get_relevant(args) -> int:
+    """Emit a compact Workspace Memory block for SessionStart injection.
+
+    Reads the curated ``memory`` table, filters by workspace and the
+    requested type set (default: atom/decision/negative), orders by
+    ``updated_at DESC``, applies a per-type quota, and renders a Markdown
+    block bounded by ``--max-chars``. Prints empty string when there are
+    no curated rows for the workspace -- the hook then drops the block.
+
+    Output is NEVER raised: a database error simply produces an empty
+    payload so the SessionStart hook stays a no-op.
+    """
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    limit = int(getattr(args, "limit", None) or _RELEVANT_DEFAULT_LIMIT)
+    max_chars = int(getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS)
+    types_arg = getattr(args, "types", None)
+    if types_arg:
+        types_list = tuple(
+            t.strip() for t in types_arg.split(",") if t.strip()
+        )
+    else:
+        types_list = _RELEVANT_DEFAULT_TYPES
+
+    try:
+        from gaia.store.writer import list_memory, get_memory
+    except ImportError:
+        # Surface module not available -> empty block. The caller drops it.
+        if as_json:
+            print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
+        return 0
+
+    # Pull rows by type. ``list_memory`` returns them ordered by name, so we
+    # sort by updated_at descending ourselves. We hydrate body via get_memory
+    # for the items we actually keep -- avoids a full body fetch per row.
+    grouped: dict[str, list[dict]] = {t: [] for t in types_list}
+    for t in types_list:
+        try:
+            rows = list_memory(workspace, type=t)
+        except Exception:
+            rows = []
+        # Order by updated_at DESC; None sorts last.
+        rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+        grouped[t] = rows
+
+    # Apply per-type quota; fall back to even-share when caller passed a
+    # different mix or a larger --limit than the default quota covers.
+    per_type_quota = dict(_RELEVANT_PER_TYPE_QUOTA)
+    # If the caller's types don't match the canonical 3 we evenly split.
+    if set(types_list) != set(_RELEVANT_DEFAULT_TYPES):
+        even = max(1, limit // max(1, len(types_list)))
+        per_type_quota = {t: even for t in types_list}
+
+    selected_per_type: dict[str, list[dict]] = {}
+    total = 0
+    remainder = 0
+    for t in types_list:
+        quota = per_type_quota.get(t, 0)
+        take = grouped[t][:quota]
+        selected_per_type[t] = take
+        total += len(take)
+        remainder += max(0, quota - len(take))
+
+    # Fill remainder from leftover rows across types if quota underfilled
+    # but global limit still has room.
+    if total < limit:
+        slack = limit - total
+        leftovers: list[tuple[str, dict]] = []
+        for t in types_list:
+            quota = per_type_quota.get(t, 0)
+            leftovers.extend((t, r) for r in grouped[t][quota:])
+        leftovers.sort(key=lambda pair: pair[1].get("updated_at") or "",
+                       reverse=True)
+        for t, r in leftovers[:slack]:
+            selected_per_type.setdefault(t, []).append(r)
+            total += 1
+
+    # Render Markdown block. Each item is `- {name}: {desc-or-body-preview}`.
+    if total == 0:
+        if as_json:
+            print(json.dumps({
+                "workspace": workspace, "items": [], "block": "",
+            }))
+        return 0
+
+    type_label = {
+        "atom": "Atoms",
+        "decision": "Decisions",
+        "negative": "Negative",
+        "project": "Project",
+        "user": "User",
+        "feedback": "Feedback",
+    }
+
+    lines = [f"## Workspace Memory ({workspace})", ""]
+    items_flat: list[dict] = []
+    overflow_count = 0
+    for t in types_list:
+        sub = selected_per_type.get(t, [])
+        if not sub:
+            continue
+        lines.append(f"{type_label.get(t, t.title())}:")
+        for r in sub:
+            name = r.get("name") or ""
+            # Description preferred for the one-liner; fall back to body
+            # preview (first 60 chars, single line).
+            desc = (r.get("description") or "").strip()
+            if not desc:
+                full = get_memory(workspace, name) or {}
+                body = (full.get("body") or "").strip().replace("\n", " ")
+                desc = body[:60] + ("..." if len(body) > 60 else "")
+            line = f"- {name}: {desc}" if desc else f"- {name}"
+            lines.append(line)
+            items_flat.append({
+                "name": name, "type": t, "description": desc,
+            })
+        lines.append("")  # blank line between groups
+
+    # Drop trailing blank line if present.
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    block = "\n".join(lines)
+
+    # Enforce the max-chars budget by trimming whole items from the tail
+    # until the rendered block fits, then attaching a footer that names
+    # how many items were dropped.
+    if len(block) > max_chars:
+        # Trim from the end: drop one item line at a time. Keep group
+        # headers as long as at least one item under them survives.
+        rendered_items = sum(1 for ln in lines if ln.startswith("- "))
+        kept = rendered_items
+        while len(block) > max_chars and kept > 1:
+            # Remove the last "- " line and any trailing blank line + header
+            # that became orphaned.
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].startswith("- "):
+                    lines.pop(i)
+                    overflow_count += 1
+                    kept -= 1
+                    # Drop an orphaned header (label line with no items after).
+                    # A header is orphaned if the next non-blank line is
+                    # another header or end-of-list.
+                    if (i - 1 >= 0
+                            and lines[i - 1].endswith(":")
+                            and (i >= len(lines)
+                                 or not lines[i].startswith("- "))):
+                        lines.pop(i - 1)
+                    break
+            while lines and lines[-1] == "":
+                lines.pop()
+            block = "\n".join(lines)
+        if overflow_count > 0:
+            footer = (
+                f"\n... ({overflow_count} more items, use "
+                f"'gaia memory search' to query)"
+            )
+            # Only attach footer if it still fits, otherwise truncate hard.
+            if len(block) + len(footer) <= max_chars:
+                block = block + footer
+
+    if as_json:
+        print(json.dumps({
+            "workspace": workspace,
+            "items": items_flat,
+            "block": block,
+            "overflow": overflow_count,
+        }, indent=2, default=str))
+    else:
+        print(block)
+    return 0
+
+
 def _cmd_curated_show(args) -> int:
     """Print a single curated memory row.
 
@@ -934,7 +1125,7 @@ def register(subparsers):
     )
     list_p.add_argument(
         "--type", default=None,
-        choices=("project", "user", "feedback"),
+        choices=("project", "user", "feedback", "atom", "decision", "negative"),
         help="Filter by type.",
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
@@ -1015,8 +1206,9 @@ def register(subparsers):
                        help="Slug. PK with project.")
     add_p.add_argument(
         "--type", required=True,
-        choices=("project", "user", "feedback"),
-        help="Memory type.",
+        choices=("project", "user", "feedback", "atom", "decision", "negative"),
+        help="Memory type. Curated taxonomy (atom/decision/negative) "
+             "requires slug prefix matching the type, e.g. 'atom_node_20'.",
     )
     add_p.add_argument("--body", required=True,
                        help="Markdown body. Required.")
@@ -1027,6 +1219,45 @@ def register(subparsers):
     add_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON. bool.")
     add_p.set_defaults(func=_cmd_add)
+
+    # -- get-relevant -------------------------------------------------------
+    rel_p = actions.add_parser(
+        "get-relevant",
+        help="Compact Workspace Memory block for SessionStart injection",
+        description=(
+            "Emit the top curated atoms/decisions/negatives for a workspace "
+            "as a Markdown block, bounded by --max-chars. Designed to be "
+            "consumed by the SessionStart hook; prints empty when there is "
+            "nothing curated."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n"
+               "  gaia memory get-relevant --workspace=qxo\n"
+               "  gaia memory get-relevant --types=atom,decision --limit=6\n",
+    )
+    rel_p.add_argument(
+        "--workspace", default=None, metavar="W",
+        help="Workspace identity. Defaults to cwd-inferred.",
+    )
+    rel_p.add_argument(
+        "--limit", type=int, default=_RELEVANT_DEFAULT_LIMIT, metavar="N",
+        help=f"Max items across all types. int. Default: {_RELEVANT_DEFAULT_LIMIT}.",
+    )
+    rel_p.add_argument(
+        "--max-chars", dest="max_chars", type=int,
+        default=_RELEVANT_DEFAULT_MAX_CHARS, metavar="C",
+        help=f"Hard cap on rendered block length. int. Default: {_RELEVANT_DEFAULT_MAX_CHARS}.",
+    )
+    rel_p.add_argument(
+        "--types", default=None, metavar="LIST",
+        help="Comma-separated type filter (e.g. 'atom,decision'). "
+             "Default: atom,decision,negative.",
+    )
+    rel_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit JSON (with items list + block string). bool.",
+    )
+    rel_p.set_defaults(func=_cmd_get_relevant)
 
     # -- conflicts ----------------------------------------------------------
     conflicts_p = actions.add_parser(
