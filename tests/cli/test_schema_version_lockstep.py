@@ -1,17 +1,29 @@
 """Lockstep test: `EXPECTED_SCHEMA_VERSION` in doctor.py must equal the
-maximum `INSERT INTO schema_version` version seeded by bootstrap_database.sh.
+highest migration version available in scripts/migrations/.
 
 Why this exists
 ---------------
 `gaia doctor` warns when the live DB schema_version drifts from the CLI's
-baked-in expectation. The bootstrap script seeds the initial row. If a
-migration bumps one but not the other, every fresh install warns about
-phantom drift -- or worse, real drift goes unnoticed because the doctor
-already thinks the DB is "old".
+baked-in expectation. After the migration-framework rewrite (Section 3c of
+bootstrap_database.sh), the bootstrap script no longer hard-codes a row
+per advertised version. Instead it:
 
-This test is the only mechanical guarantee that the two stay in sync.
-Adding a new migration row to bootstrap_database.sh without bumping
-`EXPECTED_SCHEMA_VERSION` (or vice versa) fails here.
+  1. Seeds the baseline `(version=1, ...)` row literally.
+  2. Reads `EXPECTED_SCHEMA_VERSION` from doctor.py.
+  3. Loops from current+1 through EXPECTED, applying scripts/migrations/
+     v{N-1}_to_v{N}.sql and stamping the ledger only on success.
+
+The drift modes this test still defends against are:
+
+  * `EXPECTED_SCHEMA_VERSION` bumped in doctor.py without shipping the
+    corresponding migration file -- bootstrap would abort on every fresh
+    install with "missing migration file".
+  * A migration file added but `EXPECTED_SCHEMA_VERSION` never bumped --
+    doctor would never request the migration, and live DDL silently lags.
+
+Both modes are caught by checking that `EXPECTED_SCHEMA_VERSION` equals
+`max(N for v{N-1}_to_v{N}.sql in scripts/migrations/) + 1` (or just 1 if
+no migrations exist yet).
 """
 
 from __future__ import annotations
@@ -30,6 +42,10 @@ if str(_BIN_DIR) not in sys.path:
 
 _DOCTOR_PATH = _BIN_DIR / "cli" / "doctor.py"
 _BOOTSTRAP_PATH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+_MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
+
+# Matches the canonical filename pattern v{PREV}_to_v{N}.sql; captures N.
+_MIGRATION_FILENAME = re.compile(r"^v(\d+)_to_v(\d+)\.sql$")
 
 
 def _read_doctor_expected_version() -> int:
@@ -47,76 +63,97 @@ def _read_doctor_expected_version() -> int:
     return int(m.group(1))
 
 
-def _read_bootstrap_max_version() -> int:
-    """Parse the maximum version seeded by `INSERT ... INTO schema_version`.
+def _read_migrations_max_target() -> int:
+    """Return the highest target version N across all v{PREV}_to_v{N}.sql files.
 
-    Matches both single-line and multi-line forms:
-        INSERT OR IGNORE INTO schema_version (version, applied_at, description)
-        VALUES (1, '...', 'initial schema');
+    Returns 1 when no migration files exist -- that is the baseline state
+    where the only schema_version row is the literal v1 seeded by bootstrap.
+    """
+    if not _MIGRATIONS_DIR.is_dir():
+        return 1
 
-    Scans the file for every `INSERT ... INTO schema_version` statement,
-    extracts the integer immediately following the first `VALUES (`, and
-    returns the maximum. Empty result is an error -- the bootstrap MUST
-    seed at least one version row.
+    targets: list[int] = []
+    for entry in _MIGRATIONS_DIR.iterdir():
+        m = _MIGRATION_FILENAME.match(entry.name)
+        if m is None:
+            continue
+        prev, target = int(m.group(1)), int(m.group(2))
+        # Sanity check: each file must be a single-step migration v(N-1)->v(N).
+        assert target == prev + 1, (
+            f"Migration file {entry.name} is not a single-step migration "
+            f"(v{prev} -> v{target}). Use one v(N-1)_to_v(N).sql per step."
+        )
+        targets.append(target)
+
+    if not targets:
+        return 1
+    return max(targets)
+
+
+def _read_bootstrap_baseline_version() -> int:
+    """Return the literal version stamped in bootstrap.sh Section 3b.
+
+    Section 3b is the only place a literal `VALUES (N, ...)` exists in
+    bootstrap.sh -- everything else is parameterised by Section 3c. We
+    keep this check because the baseline MUST be 1; otherwise the loop
+    in Section 3c would never have a starting point on a brand-new DB.
     """
     assert _BOOTSTRAP_PATH.exists(), (
         f"bootstrap_database.sh not found at {_BOOTSTRAP_PATH}"
     )
     text = _BOOTSTRAP_PATH.read_text()
 
-    # Find every INSERT into schema_version, capture the version number
-    # from the first VALUES(...) tuple that follows.
-    versions: list[int] = []
     pattern = re.compile(
         r"INSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO\s+schema_version[^;]*?VALUES\s*\(\s*(\d+)\s*,",
         re.IGNORECASE | re.DOTALL,
     )
-    for match in pattern.finditer(text):
-        versions.append(int(match.group(1)))
-
-    assert versions, (
-        f"No `INSERT ... INTO schema_version VALUES (N, ...)` statements found "
-        f"in {_BOOTSTRAP_PATH}. The bootstrap must seed at least version 1."
+    literal_versions = [
+        int(m.group(1)) for m in pattern.finditer(text)
+        # Skip parameterised inserts (e.g. VALUES (${N}, ...)) which the
+        # regex above does not match anyway, but be defensive about it.
+    ]
+    assert literal_versions, (
+        f"No literal `INSERT ... INTO schema_version VALUES (N, ...)` found "
+        f"in {_BOOTSTRAP_PATH}. The baseline v1 seed must remain literal."
     )
-    return max(versions)
+    return min(literal_versions)
 
 
-def test_schema_version_lockstep_between_doctor_and_bootstrap() -> None:
-    """The DB version seeded at bootstrap must match the CLI's expectation.
+def test_expected_version_matches_migrations_dir() -> None:
+    """`EXPECTED_SCHEMA_VERSION` must equal the highest migration target.
 
-    If this fails, you either:
-      - Bumped `EXPECTED_SCHEMA_VERSION` in doctor.py without adding a
-        corresponding `INSERT OR IGNORE INTO schema_version` row in
-        bootstrap_database.sh (fresh installs will warn forever), or
-      - Added a new schema_version row in bootstrap_database.sh without
-        bumping `EXPECTED_SCHEMA_VERSION` (doctor will silently treat
-        the new schema as "ahead of expected").
+    If this fails you either:
+      - Bumped `EXPECTED_SCHEMA_VERSION` in doctor.py without dropping a
+        new scripts/migrations/v{N-1}_to_v{N}.sql file -- every fresh
+        install will abort with "missing migration file".
+      - Added a migration file without bumping `EXPECTED_SCHEMA_VERSION`
+        -- the loop in bootstrap.sh Section 3c will never request it.
 
-    Fix: update both numbers in the same commit.
+    Fix: update both in the same commit (the doctor constant and the file).
     """
     expected = _read_doctor_expected_version()
-    bootstrap_max = _read_bootstrap_max_version()
+    max_migration = _read_migrations_max_target()
 
-    assert expected == bootstrap_max, (
-        f"Schema version drift detected:\n"
+    assert expected == max_migration, (
+        f"Schema version / migration drift detected:\n"
         f"  bin/cli/doctor.py EXPECTED_SCHEMA_VERSION = {expected}\n"
-        f"  scripts/bootstrap_database.sh max schema_version row = {bootstrap_max}\n"
-        f"These must be equal. Update both in the same commit when adding a "
-        f"new migration."
+        f"  scripts/migrations/ max target            = {max_migration}\n"
+        f"These must be equal. Update both in the same commit when "
+        f"introducing a new migration."
     )
 
 
-def test_bootstrap_seeds_at_least_one_version() -> None:
-    """Sanity: bootstrap must always seed at least version 1.
+def test_bootstrap_baseline_is_v1() -> None:
+    """Bootstrap's literal seed MUST be (version=1, ...).
 
-    A bootstrap with zero `INSERT INTO schema_version` rows would create
-    a DB whose `MAX(version)` is NULL/0, making doctor's drift detection
-    fire on every fresh install.
+    The migration loop in Section 3c iterates from MAX(version)+1; if the
+    baseline ever drifted away from 1 the loop would skip the first
+    migration on every fresh install.
     """
-    bootstrap_max = _read_bootstrap_max_version()
-    assert bootstrap_max >= 1, (
-        f"bootstrap_database.sh must seed at least version 1; got "
-        f"max={bootstrap_max}."
+    baseline = _read_bootstrap_baseline_version()
+    assert baseline == 1, (
+        f"bootstrap_database.sh Section 3b must seed version=1 as the "
+        f"baseline; got {baseline}."
     )
 
 

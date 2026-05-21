@@ -10,6 +10,7 @@ Checks (in order):
   35. workspace-init     - .claude/, plugin-registry, settings hooks all present
   40. plugin-mode        - ops vs security, registry valid
   45. schema-version     - gaia.db schema_version matches CLI expectation
+  47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
   50. symlinks           - .claude/ symlinks resolve
   60. identity           - orchestrator agent configured
   70. settings           - hooks registered, permissions, deny rules
@@ -404,6 +405,162 @@ def check_schema_version() -> dict:
             "Upgrade Gaia: `npm install @jaguilar87/gaia@latest`.",
         )
     return _result("Schema version", "pass", f"v{live} matches CLI expectation")
+
+
+@register_check("Schema DDL consistency", order=47)
+def check_schema_ddl_consistency() -> dict:
+    """Compare live CHECK constraints in gaia.db against gaia/store/schema.sql.
+
+    This check is the complement of `check_schema_version`. That check catches
+    "doctor.py and bootstrap.sh disagree about which version is current". This
+    one catches "the ledger says vN but the live DDL was never actually
+    migrated" -- the failure mode introduced when bootstrap used to stamp the
+    schema_version row unconditionally while CREATE TABLE IF NOT EXISTS in
+    schema.sql short-circuited on existing DBs.
+
+    Mechanism:
+      1. SELECT sql FROM sqlite_master for each critical table.
+      2. Parse the CHECK constraint's allowed-value list with a regex.
+      3. Parse the corresponding CHECK from gaia/store/schema.sql.
+      4. Compare as sets; report drift.
+
+    Critical tables monitored: `memory.type` (widening in v2 was the bug that
+    motivated this check). When future migrations widen other CHECKs, add a
+    row to `_DDL_TARGETS`.
+
+    Skipped cleanly when the DB does not exist or the table is missing -- a
+    fresh install with no DB is not "drift", just "not initialised yet".
+    """
+    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
+    db_path = Path(db_path_str).expanduser()
+    schema_path = _package_root() / "gaia" / "store" / "schema.sql"
+
+    if not db_path.is_file():
+        return _result(
+            "Schema DDL consistency",
+            "info",
+            f"no DB at {db_path} (nothing to compare)",
+        )
+    if not schema_path.is_file():
+        return _result(
+            "Schema DDL consistency",
+            "warning",
+            f"schema.sql not shipped at {schema_path}",
+            "Your Gaia install is incomplete. Reinstall.",
+        )
+
+    # (table_name, column_name) pairs to verify. Add new tuples here when
+    # future migrations widen or narrow a CHECK constraint that needs guarding.
+    _DDL_TARGETS = [("memory", "type")]
+
+    try:
+        schema_text = schema_path.read_text()
+    except OSError as exc:
+        return _result(
+            "Schema DDL consistency",
+            "warning",
+            f"could not read schema.sql: {exc}",
+            "Reinstall Gaia.",
+        )
+
+    try:
+        con = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        return _result(
+            "Schema DDL consistency",
+            "warning",
+            f"could not open {db_path}: {exc}",
+            "Delete the corrupt DB and re-run `gaia install`.",
+        )
+
+    drifts: list[str] = []
+    try:
+        cur = con.cursor()
+        for table, column in _DDL_TARGETS:
+            cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            )
+            row = cur.fetchone()
+            if row is None or not row[0]:
+                # Table missing in live DB: not a CHECK drift, skip silently.
+                # The schema-version / workspace-initialised checks will
+                # surface the real problem.
+                continue
+            live_values = _extract_check_values(row[0], column)
+            source_values = _extract_check_values(schema_text, column)
+
+            if live_values is None or source_values is None:
+                # Could not parse one side -- treat as inconclusive rather
+                # than false-positive. This keeps the check honest: it only
+                # fires when we can actually prove drift.
+                continue
+
+            if live_values != source_values:
+                missing = source_values - live_values
+                extra = live_values - source_values
+                parts = [f"{table}.{column} drift"]
+                parts.append(f"live=({', '.join(sorted(live_values))})")
+                parts.append(f"source=({', '.join(sorted(source_values))})")
+                if missing:
+                    parts.append(f"missing in live: {sorted(missing)}")
+                if extra:
+                    parts.append(f"extra in live: {sorted(extra)}")
+                drifts.append(" | ".join(parts))
+    except sqlite3.Error as exc:
+        return _result(
+            "Schema DDL consistency",
+            "warning",
+            f"could not read sqlite_master: {exc}",
+            "Re-run `gaia install` to repair the DB.",
+        )
+    finally:
+        con.close()
+
+    if drifts:
+        return _result(
+            "Schema DDL consistency",
+            "error",
+            "; ".join(drifts),
+            "Live DDL is behind schema.sql -- the schema_version ledger is "
+            "lying. Re-run `gaia install` to apply pending migrations.",
+        )
+
+    return _result(
+        "Schema DDL consistency",
+        "pass",
+        f"{len(_DDL_TARGETS)}/{len(_DDL_TARGETS)} CHECK constraints in sync",
+    )
+
+
+def _extract_check_values(sql_text: str, column: str) -> "set[str] | None":
+    """Extract the allowed-value set from a `CHECK (<column> IN (...))` clause.
+
+    Returns the parsed set of literal values (without surrounding quotes),
+    or None if the column / CHECK clause cannot be located.
+
+    Used by `check_schema_ddl_consistency` to compare live DDL against
+    schema.sql. Kept module-level (not nested) so tests can exercise the
+    parser independently.
+    """
+    import re  # noqa: PLC0415
+
+    # Pattern: <column> ... CHECK (... <column> IN ('a', 'b', ...))
+    # Tolerates whitespace, newlines, and extra parens around the IN clause.
+    pattern = re.compile(
+        r"CHECK\s*\(\s*" + re.escape(column) + r"\s+IN\s*\(([^)]+)\)\s*\)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(sql_text)
+    if not match:
+        return None
+
+    raw = match.group(1)
+    # Extract each single-quoted literal -- robust against commas and spaces.
+    literals = re.findall(r"'([^']*)'", raw)
+    if not literals:
+        return None
+    return set(literals)
 
 
 @register_check("Symlinks", order=50)

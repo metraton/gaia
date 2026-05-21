@@ -149,24 +149,137 @@ sqlite3 "$GAIA_DB" <<'EOF'
 DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator';
 EOF
 
-# === Section 3b: Seed schema_version (migration ledger) ===
-
-# La tabla schema_version se crea en schema.sql (Section harness_events/below).
-# Aquí insertamos la fila inicial (version=1, 'initial schema'). Idempotente vía
-# INSERT OR IGNORE -- reejecutar el bootstrap no duplica ni reescribe la fila.
-# Futuras migraciones de schema deben agregar su propio INSERT OR IGNORE acá
-# con su número de versión y descripción.
+# === Section 3b: Seed schema_version baseline (v1) ===
+#
+# La tabla schema_version se crea en schema.sql. Aquí insertamos SOLO la fila
+# v1 ("initial schema") como baseline del ledger. Idempotente vía INSERT OR
+# IGNORE -- reejecutar el bootstrap no duplica ni reescribe la fila.
+#
+# Las versiones >= 2 NO se insertan aquí. Section 3c (abajo) aplica migraciones
+# en orden y emite la fila schema_version correspondiente sólo si la migración
+# concreta tuvo éxito. Diseño elegido para evitar el bug histórico de "ledger
+# miente": v2 era stampada incondicionalmente aunque CREATE TABLE IF NOT EXISTS
+# short-circuiteaba la DDL nueva sobre DBs preexistentes.
 #
 # `gaia doctor` lee MAX(version) y lo compara contra EXPECTED_SCHEMA_VERSION
-# baked in al CLI. Drift => warning con hint "actualizá Gaia".
+# baked in al CLI. Adicionalmente, check_schema_ddl_consistency compara el CHECK
+# constraint vivo contra el de schema.sql para cazar drift de ledger.
 NOW_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 sqlite3 "$GAIA_DB" <<EOF
 INSERT OR IGNORE INTO schema_version (version, applied_at, description)
 VALUES (1, '${NOW_UTC}', 'initial schema');
-INSERT OR IGNORE INTO schema_version (version, applied_at, description)
-VALUES (2, '${NOW_UTC}', 'memory: widen type CHECK to allow atom/decision/negative (curated taxonomy)');
 EOF
-echo "[bootstrap] schema_version seeded (v1, v2)"
+echo "[bootstrap] schema_version baseline seeded (v1)"
+
+# === Section 3c: Apply pending schema migrations ===
+#
+# Itera desde MAX(version)+1 hasta EXPECTED_SCHEMA_VERSION (extraído de
+# bin/cli/doctor.py vía grep) y aplica scripts/migrations/v{N-1}_to_v{N}.sql
+# cuando son necesarios. Cada migración se aplica en su propia transacción
+# BEGIN/COMMIT con guard de pre-condición para soportar fresh installs donde
+# schema.sql ya creó la tabla en estado target.
+#
+# Lógica por versión N:
+#   1. ¿Existe el archivo de migración? Si no, abort.
+#   2. Guard probe: ¿la live DB ya está en estado target? Si sí, sólo stampa
+#      el row del ledger y continúa (caso fresh install).
+#   3. Si no, ejecuta la migración dentro de BEGIN/COMMIT. Si la transacción
+#      falla, abort -- el ledger NO se actualiza, el próximo bootstrap retry
+#      ve la misma migración pendiente.
+#   4. Tras éxito, INSERT OR IGNORE en schema_version (version=N, ...).
+#
+# EXPECTED_SCHEMA_VERSION se lee dinámicamente de doctor.py para mantener una
+# sola fuente de verdad. test_schema_version_lockstep garantiza que el número
+# en doctor.py concuerda con las migraciones disponibles.
+
+DOCTOR_PY="${SCRIPT_DIR}/../bin/cli/doctor.py"
+if [ ! -f "$DOCTOR_PY" ]; then
+    echo "[bootstrap] ERROR: doctor.py no encontrado en $DOCTOR_PY (no puedo leer EXPECTED_SCHEMA_VERSION)" >&2
+    exit 1
+fi
+
+# Extract EXPECTED_SCHEMA_VERSION = N literal. grep + awk; no pipes per
+# command-execution skill -- two commands, one variable.
+EXPECTED_LINE="$(grep -E '^EXPECTED_SCHEMA_VERSION\s*=\s*[0-9]+' "$DOCTOR_PY")"
+EXPECTED_VERSION="${EXPECTED_LINE##*= }"
+EXPECTED_VERSION="${EXPECTED_VERSION// /}"
+
+if ! [[ "$EXPECTED_VERSION" =~ ^[0-9]+$ ]]; then
+    echo "[bootstrap] ERROR: no pude parsear EXPECTED_SCHEMA_VERSION desde $DOCTOR_PY (got: '${EXPECTED_VERSION}')" >&2
+    exit 1
+fi
+
+CURRENT_VERSION="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
+echo "[bootstrap] schema_version: current=${CURRENT_VERSION}, expected=${EXPECTED_VERSION}"
+
+MIG_DIR="${SCRIPT_DIR}/migrations"
+
+if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
+    for N in $(seq $((CURRENT_VERSION + 1)) "$EXPECTED_VERSION"); do
+        PREV=$((N - 1))
+        MIG_FILE="${MIG_DIR}/v${PREV}_to_v${N}.sql"
+
+        if [ ! -f "$MIG_FILE" ]; then
+            echo "[bootstrap] ERROR: missing migration file ${MIG_FILE}" >&2
+            echo "[bootstrap] Cannot advance from v${PREV} to v${N}. The ledger will remain at v${CURRENT_VERSION}." >&2
+            exit 1
+        fi
+
+        # Per-version guard probe. Each migration has a fingerprint that
+        # tells us whether the live DDL is already at the target state
+        # (fresh install where schema.sql ran with the new DDL) or still
+        # at the source state (existing DB where CREATE TABLE IF NOT EXISTS
+        # short-circuited).
+        ALREADY_AT_TARGET=0
+        case "$N" in
+            2)
+                # v1 -> v2: widen memory.type CHECK. Target state contains 'atom'.
+                MEMORY_DDL="$(sqlite3 "$GAIA_DB" "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory';")"
+                if [[ "$MEMORY_DDL" == *"'atom'"* ]]; then
+                    ALREADY_AT_TARGET=1
+                fi
+                ;;
+            *)
+                # Future migrations: each new N must add a case here with a
+                # fingerprint of the post-migration state.
+                echo "[bootstrap] ERROR: no guard probe registered for v${PREV}->v${N}." >&2
+                echo "[bootstrap] Add a case to Section 3c when introducing migration v${N}." >&2
+                exit 1
+                ;;
+        esac
+
+        if [ "$ALREADY_AT_TARGET" = "1" ]; then
+            echo "[bootstrap] migration v${PREV}->v${N}: live DDL already at target (fresh install), stamping ledger only"
+            sqlite3 "$GAIA_DB" <<EOF
+INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+VALUES (${N}, '${NOW_UTC}', 'auto-stamped: schema.sql created table at v${N} state');
+EOF
+        else
+            echo "[bootstrap] migration v${PREV}->v${N}: applying ${MIG_FILE}"
+            # Wrap the migration in an explicit transaction. The migration SQL
+            # itself does NOT contain BEGIN/COMMIT so we control atomicity here.
+            # Errors abort the script via set -e + sqlite3 exit code.
+            MIG_SQL="$(cat "$MIG_FILE")"
+            if ! sqlite3 "$GAIA_DB" <<EOF
+BEGIN;
+${MIG_SQL}
+COMMIT;
+EOF
+            then
+                echo "[bootstrap] ERROR: migration v${PREV}->v${N} failed. Transaction rolled back." >&2
+                echo "[bootstrap] schema_version ledger remains at v${CURRENT_VERSION} -- not stamping v${N}." >&2
+                exit 1
+            fi
+            echo "[bootstrap] migration v${PREV}->v${N}: applied successfully"
+            sqlite3 "$GAIA_DB" <<EOF
+INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+VALUES (${N}, '${NOW_UTC}', 'applied migration v${PREV}_to_v${N}.sql');
+EOF
+        fi
+    done
+else
+    echo "[bootstrap] schema_version up-to-date (no migrations pending)"
+fi
 
 # === Section 4: Registrar workspace actual ===
 #
