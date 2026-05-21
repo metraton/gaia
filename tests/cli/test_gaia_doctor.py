@@ -538,7 +538,6 @@ class TestSummaryLineFormat:
     (brew/npm doctor pattern). Tests the actionable presentation contract."""
 
     def test_summary_counts_present(self, healthy_project, monkeypatch, capsys):
-        monkeypatch.chdir(healthy_project)
         # Same isolation pattern as test_json_healthy_status -- the memory
         # scoring import flakes under pytest sys.path pollution.
         import types
@@ -552,7 +551,7 @@ class TestSummaryLineFormat:
         monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
         monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
 
-        args = SimpleNamespace(json=False, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
         out = capsys.readouterr().out
@@ -572,8 +571,7 @@ class TestCmdDoctorHuman:
 
     def test_prints_checks(self, healthy_project, monkeypatch, capsys):
         """Human output should contain check names and status."""
-        monkeypatch.chdir(healthy_project)
-        args = SimpleNamespace(json=False, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
 
         out = capsys.readouterr().out
@@ -583,8 +581,7 @@ class TestCmdDoctorHuman:
 
     def test_broken_project_errors(self, broken_project, monkeypatch, capsys):
         """Should return exit code 2 when errors found."""
-        monkeypatch.chdir(broken_project)
-        args = SimpleNamespace(json=False, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=False, fix=False, workspace=str(broken_project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
 
         # Broken project has missing hooks, settings, etc -- should be error (2)
@@ -602,8 +599,7 @@ class TestCmdDoctorJson:
 
     def test_json_output_valid(self, healthy_project, monkeypatch, capsys):
         """--json should produce valid JSON with expected structure."""
-        monkeypatch.chdir(healthy_project)
-        args = SimpleNamespace(json=True, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=False, workspace=str(healthy_project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
 
         out = capsys.readouterr().out
@@ -627,8 +623,6 @@ class TestCmdDoctorJson:
 
     def test_json_healthy_status(self, healthy_project, monkeypatch, capsys):
         """Healthy project should report status=healthy."""
-        monkeypatch.chdir(healthy_project)
-
         # Isolate from sys.path pollution: other tests (e.g. layer1_prompt_regression)
         # insert tests/ into sys.path, which makes 'import tools.memory.scoring'
         # resolve to tests/tools/ (a package without memory/), yielding ImportError
@@ -645,7 +639,7 @@ class TestCmdDoctorJson:
         monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
         monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
 
-        args = SimpleNamespace(json=True, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=False, workspace=str(healthy_project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
         data = json.loads(capsys.readouterr().out)
@@ -654,8 +648,7 @@ class TestCmdDoctorJson:
 
     def test_json_broken_project(self, broken_project, monkeypatch, capsys):
         """Broken project should report status=critical."""
-        monkeypatch.chdir(broken_project)
-        args = SimpleNamespace(json=True, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=False, workspace=str(broken_project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
 
         assert rc == 2
@@ -673,8 +666,7 @@ class TestExitCodes:
 
     def test_exit_0_healthy(self, healthy_project, monkeypatch, capsys):
         """Healthy project should exit 0."""
-        monkeypatch.chdir(healthy_project)
-        args = SimpleNamespace(json=False, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
         # May be 0 or 1 depending on claude-code being installed
         # but should not be 2 for a healthy project
@@ -682,8 +674,7 @@ class TestExitCodes:
 
     def test_exit_2_errors(self, broken_project, monkeypatch, capsys):
         """Broken project should exit 2."""
-        monkeypatch.chdir(broken_project)
-        args = SimpleNamespace(json=False, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=False, fix=False, workspace=str(broken_project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
         assert rc == 2
 
@@ -706,15 +697,110 @@ class TestRegister:
         assert args.subcommand == "doctor"
 
     def test_register_flags(self):
-        """register() should add --json and --fix flags."""
+        """register() should add --json, --fix, and --workspace flags."""
         import argparse
         parser = argparse.ArgumentParser()
         subs = parser.add_subparsers(dest="subcommand")
         doctor_mod.register(subs)
 
-        args = parser.parse_args(["doctor", "--json", "--fix"])
+        args = parser.parse_args(["doctor", "--json", "--fix", "--workspace", "/tmp/ws"])
         assert args.json is True
         assert args.fix is True
+        assert args.workspace == "/tmp/ws"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _derive_workspace -- workspace discovery from __file__ realpath
+# ---------------------------------------------------------------------------
+
+class TestDeriveWorkspace:
+    """Unit tests for _derive_workspace() -- the replacement for _find_project_root().
+
+    Each test mocks doctor_mod.__file__ to simulate different install scenarios
+    without needing to actually install the package.
+    """
+
+    def test_workspace_override_valid(self, tmp_path):
+        """--workspace flag with a valid .claude/ dir returns that path directly."""
+        (tmp_path / ".claude").mkdir()
+        result = doctor_mod._derive_workspace(override=str(tmp_path))
+        assert result == tmp_path.resolve()
+
+    def test_workspace_override_missing_claude_exits(self, tmp_path, capsys):
+        """--workspace pointing at a dir without .claude/ should exit with code 2."""
+        with pytest.raises(SystemExit) as exc:
+            doctor_mod._derive_workspace(override=str(tmp_path))
+        assert exc.value.code == 2
+
+    def test_standard_consumer_install(self, tmp_path, monkeypatch):
+        """Script inside <workspace>/node_modules/@jaguilar87/gaia/bin/cli/doctor.py
+        should derive workspace = <workspace>."""
+        # Build a fake install tree
+        pkg_dir = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        script_path = pkg_dir / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+
+        # The workspace is NOT the gaia source (no package.json with gaia name)
+        (tmp_path / "package.json").write_text('{"name": "my-app", "version": "1.0.0"}')
+
+        # Mock __file__ in the module
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+
+        result = doctor_mod._derive_workspace()
+        assert result == tmp_path.resolve()
+
+    def test_source_repo_self_install_walks_to_consumer(self, tmp_path, monkeypatch):
+        """When the script lives in the gaia source repo's own node_modules self-install,
+        _derive_workspace should walk up one level to the real consumer workspace."""
+        # Build: consumer/<source_repo>/node_modules/@jaguilar87/gaia/...
+        consumer = tmp_path / "consumer"
+        consumer.mkdir()
+        source_repo = consumer / "gaia"
+        source_repo.mkdir()
+
+        # Source repo package.json -- this IS the gaia package
+        (source_repo / "package.json").write_text('{"name": "@jaguilar87/gaia", "version": "1.0.0"}')
+
+        # Source repo's self-install (dev pattern)
+        pkg_dir = source_repo / "node_modules" / "@jaguilar87" / "gaia"
+        script_path = pkg_dir / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+
+        # Consumer also has gaia installed (the real workspace install)
+        consumer_nm = consumer / "node_modules" / "@jaguilar87" / "gaia"
+        consumer_nm.mkdir(parents=True)
+
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+
+        result = doctor_mod._derive_workspace()
+        assert result == consumer.resolve()
+
+    def test_global_install_exits_with_error(self, tmp_path, monkeypatch, capsys):
+        """Script NOT inside any node_modules/@jaguilar87/gaia/ tree should
+        exit with the explicit error message -- no silent cwd fallback."""
+        # A path that has no node_modules/@jaguilar87/gaia/ ancestor
+        script_path = tmp_path / "usr" / "local" / "lib" / "gaia" / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+
+        with pytest.raises(SystemExit) as exc:
+            doctor_mod._derive_workspace()
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "global or symlinked install detected" in err
+        assert "--workspace" in err
+
+    def test_workspace_printed_in_human_output(self, healthy_project, capsys):
+        """Human output should include the workspace path being checked."""
+        args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")
+        doctor_mod.cmd_doctor(args)
+        out = capsys.readouterr().out
+        assert "Workspace:" in out
+        assert str(healthy_project) in out
 
 
 # ---------------------------------------------------------------------------
@@ -900,7 +986,6 @@ class TestCmdDoctorFix:
     def test_fix_applies_backfill_when_count_warning(self, tmp_path, monkeypatch, capsys):
         """--fix should call backfill when fts5_count is warning, and fixes list is non-empty."""
         project = self._make_memory_project(tmp_path)
-        monkeypatch.chdir(project)
 
         import types
 
@@ -923,7 +1008,7 @@ class TestCmdDoctorFix:
         if "tools.memory" not in sys.modules:
             monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
 
-        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         rc = doctor_mod.cmd_doctor(args)
 
         data = json.loads(capsys.readouterr().out)
@@ -935,7 +1020,6 @@ class TestCmdDoctorFix:
     def test_fix_noop_when_already_indexed(self, tmp_path, monkeypatch, capsys):
         """--fix should be a no-op (fixes=[]) when FTS5 index is at 100%."""
         project = self._make_memory_project(tmp_path)
-        monkeypatch.chdir(project)
 
         import types
 
@@ -952,7 +1036,7 @@ class TestCmdDoctorFix:
         # Ensure no stale backfill_fts5 mock from a previous test affects this run
         monkeypatch.delitem(sys.modules, "tools.memory.backfill_fts5", raising=False)
 
-        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
         data = json.loads(capsys.readouterr().out)
@@ -961,14 +1045,13 @@ class TestCmdDoctorFix:
     def test_fix_json_includes_fixes_key_without_fix_flag(self, tmp_path, monkeypatch, capsys):
         """--json without --fix should still include fixes: [] in output."""
         project = self._make_memory_project(tmp_path)
-        monkeypatch.chdir(project)
 
         import types
         fake_ss = types.ModuleType("tools.memory.search_store")
         fake_ss.count = lambda: 10
         monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
 
-        args = SimpleNamespace(json=True, fix=False, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=False, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
         data = json.loads(capsys.readouterr().out)
@@ -980,7 +1063,6 @@ class TestCmdDoctorFix:
         lacks an `agent` top-level field, and re-run check_identity to reflect
         the post-fix state."""
         project = self._make_memory_project(tmp_path)
-        monkeypatch.chdir(project)
 
         # Strip the agent field so check_identity returns "No agent field" error
         settings_path = project / ".claude" / "settings.local.json"
@@ -1001,7 +1083,7 @@ class TestCmdDoctorFix:
         assert pre_check["severity"] == "error"
         assert "No agent field" in pre_check["detail"]
 
-        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
         out = json.loads(capsys.readouterr().out)
@@ -1021,7 +1103,6 @@ class TestCmdDoctorFix:
     def test_fix_agent_field_preserves_other_keys(self, tmp_path, monkeypatch, capsys):
         """The agent fix must preserve all other top-level keys in settings.local.json."""
         project = self._make_memory_project(tmp_path)
-        monkeypatch.chdir(project)
 
         settings_path = project / ".claude" / "settings.local.json"
         data = json.loads(settings_path.read_text())
@@ -1039,7 +1120,7 @@ class TestCmdDoctorFix:
         fake_ss.count = lambda: 10
         monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
 
-        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
         capsys.readouterr()  # drain
 
@@ -1053,7 +1134,6 @@ class TestCmdDoctorFix:
     def test_fix_failed_backfill_reported(self, tmp_path, monkeypatch, capsys):
         """If backfill fails (rc != 0), fix status should be 'failed'."""
         project = self._make_memory_project(tmp_path)
-        monkeypatch.chdir(project)
 
         import types
 
@@ -1065,7 +1145,7 @@ class TestCmdDoctorFix:
         fake_bf.main = lambda: 1  # simulate failure
         monkeypatch.setitem(sys.modules, "tools.memory.backfill_fts5", fake_bf)
 
-        args = SimpleNamespace(json=True, fix=True, subcommand="doctor")
+        args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
         data = json.loads(capsys.readouterr().out)

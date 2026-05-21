@@ -90,20 +90,81 @@ def _result(name: str, severity: str, detail: str, fix: str = None) -> dict:
     return r
 
 
-def _find_project_root() -> Path:
-    """Walk up from cwd until .claude/ is found."""
-    init_cwd = os.environ.get("INIT_CWD")
-    if init_cwd and (Path(init_cwd) / ".claude").is_dir():
-        return Path(init_cwd)
+def _derive_workspace(override: str = None) -> Path:
+    """Derive the consumer workspace from the running script's install path.
 
-    current = Path.cwd()
-    root = Path(current.anchor)
-    while current != root:
-        if (current / ".claude").is_dir():
-            return current
-        current = current.parent
+    Algorithm
+    ---------
+    1. If *override* is given (from --workspace), validate it has .claude/
+       and return it directly.
+    2. Resolve Path(__file__) to its realpath and search its parts for the
+       pattern ``<workspace>/node_modules/@jaguilar87/gaia/``.
+    3. If the derived workspace IS the Gaia source package itself (its
+       package.json has name "@jaguilar87/gaia"), treat the workspace as a
+       dev self-install and look one directory up for the real consumer
+       workspace (which should also have node_modules/@jaguilar87/gaia/).
+    4. If the script is NOT inside any node_modules/@jaguilar87/gaia/ tree
+       (global install, PATH symlink, etc.) exit with a clear error -- no
+       silent cwd fallback.
 
-    return Path(init_cwd) if init_cwd else Path.cwd()
+    This replaces the old ``_find_project_root()`` walk-up-from-cwd logic
+    that caused false-positive HEALTHY reports when the user was cd'd into
+    the Gaia source repo (which has its own healthy .claude/).
+    """
+    # --- Explicit override via --workspace flag ---
+    if override:
+        ws = Path(override).resolve()
+        if not (ws / ".claude").is_dir():
+            print(
+                f"gaia doctor: --workspace path has no .claude/ directory: {ws}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return ws
+
+    # --- Derive from __file__ realpath ---
+    script_path = Path(__file__).resolve()
+    parts = script_path.parts
+
+    for i, part in enumerate(parts):
+        if (
+            part == "node_modules"
+            and i + 2 < len(parts)
+            and parts[i + 1] == "@jaguilar87"
+            and parts[i + 2] == "gaia"
+        ):
+            # Reconstruct the workspace path from the parts before node_modules/.
+            # On POSIX, parts[0] == '/', so Path(*parts[:i]) builds correctly.
+            # Guard i==0 (should never happen in practice) just in case.
+            workspace = Path(parts[0]).joinpath(*parts[1:i]) if i > 0 else Path("/")
+
+            # Check whether this workspace is itself the Gaia source package.
+            # When a developer installs Gaia into the source repo (common dev
+            # workflow), the resulting path is:
+            #   <source_repo>/node_modules/@jaguilar87/gaia/bin/cli/doctor.py
+            # We detect this by checking package.json name.
+            pkg_json = workspace / "package.json"
+            data = _read_json(pkg_json)
+            if data and data.get("name") == "@jaguilar87/gaia":
+                # This is a self-install inside the Gaia source repo.
+                # Walk one level up to find the real consumer workspace.
+                parent = workspace.parent
+                parent_nm = parent / "node_modules" / "@jaguilar87" / "gaia"
+                if parent_nm.is_dir():
+                    return parent
+                # No consumer found above the source repo -- fall through to error.
+                break
+
+            return workspace
+
+    # --- No inferable consumer workspace ---
+    print(
+        "gaia doctor: global or symlinked install detected; "
+        "no consumer workspace inferable. "
+        "Specify --workspace <path> to choose one.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def _read_json(path: Path):
@@ -1011,7 +1072,7 @@ _SEVERITY_ICONS = {
 }
 
 
-def _print_human(results: list, version_detail: str = "") -> None:
+def _print_human(results: list, version_detail: str = "", workspace: Path = None) -> None:
     """Print human-readable doctor output.
 
     Format follows brew/npm doctor conventions: one line per check,
@@ -1021,6 +1082,8 @@ def _print_human(results: list, version_detail: str = "") -> None:
     """
     version_tag = f" ({version_detail})" if version_detail else ""
     print(f"\n  Gaia-Ops Health Check{version_tag}\n")
+    if workspace:
+        print(f"  Workspace: {workspace}\n")
 
     for r in results:
         icon = _SEVERITY_ICONS.get(r["severity"], "????")
@@ -1062,11 +1125,15 @@ def register(subparsers):
                      help="Emit JSON. bool.")
     sub.add_argument("--fix", action="store_true", default=False,
                      help="Attempt auto-fix for common issues. bool.")
+    sub.add_argument("--workspace", metavar="PATH", default=None,
+                     help="Check this workspace's .claude/ instead of auto-deriving. "
+                          "Skips realpath derivation entirely.")
 
 
 def cmd_doctor(args) -> int:
     """Handler for `gaia doctor`."""
-    project_root = _find_project_root()
+    workspace_override = getattr(args, "workspace", None)
+    project_root = _derive_workspace(override=workspace_override)
 
     # Iterate the global check registry populated by @register_check.
     # Each check function is invoked with project_root if it accepts an
@@ -1149,7 +1216,7 @@ def cmd_doctor(args) -> int:
     else:
         gaia_check = next((r for r in results if r["name"] == "Gaia-Ops"), None)
         version_detail = gaia_check["detail"] if gaia_check and gaia_check["severity"] == "pass" else ""
-        _print_human(results, version_detail)
+        _print_human(results, version_detail, workspace=project_root)
         if fixes:
             print("  Fixes applied:")
             for fix in fixes:
