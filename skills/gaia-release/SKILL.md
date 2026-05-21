@@ -1,6 +1,6 @@
 ---
 name: gaia-release
-description: Use when testing, validating, or publishing Gaia releases (live testing, dry-run, beta, stable)
+description: Use when testing, validating, or publishing Gaia releases -- live install, dry-run, RC, or stable
 metadata:
   user-invocable: false
   type: technique
@@ -8,78 +8,52 @@ metadata:
 
 # Gaia Release
 
-Each mode tests a different surface. Live tests your code changes in your real workspace. Dry-run tests the install pipeline in an ephemeral sandbox. Beta and release test the distribution channel. Skipping a layer means discovering its bugs in production -- a live install over an existing workspace does not predict a missing file in `package.json`'s `files` array on a clean project, and a clean dry-run does not prove npm registry delivery works.
+Single source of truth for install modes. Each mode exercises a different surface: live tests the working tree against a real workspace, dry-run tests the full install pipeline in an ephemeral sandbox, and the published channels (rc / latest) test npm registry delivery. Skipping a layer means discovering its bugs in production -- a clean dry-run does not prove that a freshly published tarball is what consumers actually receive, and a live install over an existing workspace does not predict a missing file on a clean project.
 
-## Decision Tree
+## Install Modes
 
-```
-"I want to test Gaia"
-├─ Quick iteration on code? -> live (LOCAL)
-├─ Validate before publishing? -> dry-run (LOCAL)
-├─ Share pre-release with testers? -> beta (PIPELINE)
-└─ Ship to all users? -> release (PIPELINE)
-```
+| Mode | Command | When to use |
+|------|---------|-------------|
+| **live self** | `cd /path/to/gaia && npm run gaia:install-local` | Re-install Gaia in the same workspace where Claude Code is running (e.g. `me/`). Validates working-tree changes against your dev environment. |
+| **live external** | `cd /path/to/gaia && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target local --workspace /path/to/target` | Install the working tree into a different workspace (e.g. `qxo/`). Validates consumer-real conditions without touching your dev environment. |
+| **live fresh** | Add `--fresh` to either of the above | Wipes `node_modules/`, `package.json`, and `package-lock.json` from the target before install. Forces a clean postinstall run. |
+| **dry-run** | `npm run gaia:verify-install:local` | Pack + install into `/tmp/gaia-sandbox-<ts>/` + run the 8-check harness. Validates exactly what `npm publish` would ship. |
+| **RC** | Version bump to `X.Y.Z-rc.N` + GitHub Release | Pipeline publishes to npm with `--tag rc`. Consumers opt-in: `npm install @jaguilar87/gaia@rc`. |
+| **stable** | Version bump to `X.Y.Z` + GitHub Release | Pipeline publishes to npm with `--tag latest`. Default install: `npm install @jaguilar87/gaia`. |
 
-## Mode: live
+For step-by-step commands per mode (including version-bump syntax, `--stay` for interactive inspection, and how to test both `ops` and `security` plugin modes), see `reference.md` -> "Mode runbooks".
 
-Fresh tarball install over the current workspace -- packs the working tree and installs it like a real consumer would, but into the user's `.claude/` so restarts pick it up.
+## Wire-up Verification Checklist
 
-**When:** "test here", "try this out", "put it in live mode"
+After any install (live, dry-run, RC, stable), the same checklist applies. If any check fails, jump to `reference.md` -> "Diagnostic guide".
 
-1. From the gaia-ops-dev repo root, run: `npm run gaia:install-local`
-   - Runs `npm pack` to build the tarball from the working tree
-   - Invokes `bin/validate-sandbox.sh --target local` which detects the workspace (walk-up from cwd for a `.claude/` with a Gaia instance marker, falling back to `$HOME/ws/me/` if present), installs the tarball there, and runs the 8-check harness (settings-preservation check is skipped -- no pre-snapshot possible for a real workspace).
-   - Pass `--workspace <path>` to `bin/validate-sandbox.sh` directly to override auto-detection when you want to install into a specific project.
-2. Tell user: "Gaia fresh-installed locally from dev working tree. Restart Claude Code to activate."
+1. `ls -la <workspace>/.claude/` -- 7 symlinks (agents, hooks, skills, commands, config, templates, tools) + `project-context/`, `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`.
+2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` includes `gaia-ops` (or `gaia-security`) at the expected version.
+3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- 12 hook events registered.
+4. `ls <workspace>/.claude/project-context/` -- `project-context.json` present.
+5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist (postinstall completed cleanly; the marker is written on any bootstrap or wire-up failure).
+6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, 17+ checks pass, 0 errors.
 
-**Default path:** Detected by the harness. Nearest `.claude/` ancestor of cwd with a Gaia marker, otherwise `$HOME/ws/me/` if present. Override with `--workspace <path>`.
+These six checks are not redundant with `gaia doctor`. Steps 1-5 catch what doctor cannot reach when the wire-up is so broken that doctor itself walks up to the user `.claude/` instead of the workspace.
 
-**Revert:** `npm install @jaguilar87/gaia@rc` (or `@latest`) over the same workspace -- the next install wins.
+## Release Checklist
 
-Re-run `npm run gaia:install-local` whenever you want the workspace to pick up new edits from the working tree.
+Pre-publish, publish, and post-publish steps -- plus the schema migration protocol when `EXPECTED_SCHEMA_VERSION` changes -- live in `reference.md` -> "Release checklist" and "Schema migration protocol". Both are read on-demand from the SKILL when actually doing a release; they are not in this file because they would dominate the line budget without informing the day-to-day mode decision.
 
-Live mode does not test build output's consumer path end-to-end in a clean project -- dry-run (`gaia:verify-install:local` -> sandbox in `/tmp/`) does.
+## CI/CD
 
-## Mode: dry-run
+| Workflow | File | Triggers |
+|----------|------|----------|
+| CI | `.github/workflows/ci.yml` | Push / PR -- runs pytest (Python 3.9/3.11/3.12), Node tests, and plugin build verification |
+| Publish | `.github/workflows/publish.yml` | GitHub Release event -- builds plugins, validates artifacts, auto-detects npm tag from version (`-rc.` -> rc, `-beta.` -> beta, else -> latest), and publishes |
 
-Validates the full install flow without publishing. Tests exactly what `npm publish` would ship.
-
-**When:** "test the install", "dry-run", "validate before release"
-
-Core sequence: build plugins -> validate build -> `npm pack` -> install .tgz in clean `/tmp/` project -> run `gaia doctor` + `gaia status` -> test both plugin modes (ops and security).
-
-For step-by-step commands, see `reference.md`.
-
-Test both modes: default (ops) validates orchestration and delegation. Security mode (`GAIA_PLUGIN_MODE=security`) validates the stripped-down path with no agents and native T3 dialog. A change that works in one mode can break the other because they load different skill sets and hook configurations.
-
-## Mode: beta
-
-Pre-release published to npm via GitHub Actions. Install with `@beta` tag.
-
-**When:** "publish beta", "beta release", "pre-release"
-
-Dry-run must pass first. Then: bump version with beta pre-release tag -> merge PR to `main` -> create GitHub Release with beta version tag -> `publish.yml` triggers automatically.
-
-For version bump details and verification steps, see `reference.md`.
-
-## Mode: release
-
-Stable release published to npm via GitHub Actions. Install with `@latest` tag.
-
-**When:** "publish release", "stable release", "ship it"
-
-Same flow as beta with a stable version bump. The pipeline owns publishing -- `NPM_TOKEN` is in GitHub Secrets.
-
-For step-by-step commands, see `reference.md`.
-
-## Pipeline: publish.yml
-
-Triggered by GitHub Release events. Builds plugins, validates artifacts, auto-detects npm tag from version string (`-beta.` -> beta, `-rc.` -> rc, else -> latest), and publishes. Details in `reference.md`.
+`NPM_TOKEN` lives in GitHub Secrets; local `npm publish` bypasses build verification and is not the supported path.
 
 ## Anti-Patterns
 
-- **Live-only testing** -- live tests the tarball on your actual workspace but with your accumulated state; an ephemeral sandbox (`gaia:verify-install:local`) is still needed to prove a clean-install works.
-- **Local npm publish** -- the pipeline owns publishing; local publish bypasses build verification.
-- **Single-mode testing** -- ops and security load different configurations; one can break independently.
+- **Live-only testing** -- live install runs against your accumulated workspace state; only dry-run proves a clean-install works.
+- **Local npm publish** -- bypasses the pipeline's build verification step.
+- **Single-mode testing** -- `ops` and `security` load different skill sets and hook configurations; one can break while the other passes.
 - **Stale dist/** -- forgetting `npm run build:plugins` before pack means validating old code.
-- **Missing restart** -- the process caches skills at startup; mode switches require restart.
+- **Missing restart** -- the process caches skills, hooks, and agents at startup; mode switches and fresh installs require restarting `claude`.
+- **Ignoring `~/.gaia/last-install-error.json`** -- when postinstall fails silently, this is the marker that says so. Treat its presence as a hard failure regardless of what `gaia doctor` reports.

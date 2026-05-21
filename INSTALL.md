@@ -12,22 +12,25 @@ The `gaia-ops` sub-plugin ships the full orchestrator and all agents; `gaia-secu
 
 ## 🚀 Quick Installation (Recommended)
 
-### Option 1: Interactive Installation
+### Option 1: npm install (standard)
 
-The easiest way - the installer will guide you step by step:
+The npm `postinstall` hook does everything automatically -- bootstraps the DB, creates `.claude/`, writes symlinks, registers the plugin, and merges hook config:
+
+```bash
+npm install @jaguilar87/gaia
+```
+
+After install, `gaia doctor` verifies the result. If postinstall fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
+
+### Option 2: Project Scanner (project-context)
+
+To detect or refresh your project context (stack, GitOps directory, Terraform layout, GCP project, etc.) -- this is **not** the installer, it populates `project-context.json`:
 
 ```bash
 gaia scan
 ```
 
-It will ask questions like:
-- Where are your GitOps files?
-- Where is your Terraform code?
-- What is your GCP project?
-
-### Option 2: Non-Interactive Installation
-
-For CI/CD scripts or if you already know the values:
+Or non-interactive:
 
 ```bash
 gaia scan --non-interactive \
@@ -37,6 +40,8 @@ gaia scan --non-interactive \
   --project-id my-gcp-project \
   --cluster my-gke-cluster
 ```
+
+Pass `--fresh` to wipe `.claude/` first and re-run a clean install + scan.
 
 ---
 
@@ -117,9 +122,10 @@ Example: Installation in project with GitOps and Terraform
    ↓
 5. Creates structure:
    ✅ .claude/ created
-   ✅ 8 symlinks created
+   ✅ 7 symlinks created (agents, tools, hooks, commands, templates, config, skills)
    ✅ project-context.json created
-   ✅ settings.json created
+   ✅ settings.local.json merged
+   ✅ plugin-registry.json written
    ↓
 6. Result:
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -183,20 +189,24 @@ Options:
 
 ```
 your-project/
-├── .claude/                    ← New directory
-│   ├── agents/ (symlink)       → Agent definitions
-│   ├── skills/ (symlink)       → Skill modules
-│   ├── tools/ (symlink)        → Orchestration tools
-│   ├── hooks/ (symlink)        → Security validations
-│   ├── commands/ (symlink)     → Slash commands
-│   ├── config/ (symlink)       → Configuration (contracts, rules)
-│   ├── templates/ (symlink)    → Installation templates
-│   ├── project-context/        ← Your project context (SSOT)
-│   ├── logs/                   ← Audit logs
-│   └── settings.json           ← Security configuration
+├── .claude/                       ← Created by postinstall
+│   ├── agents/ (symlink)          → Agent definitions
+│   ├── skills/ (symlink)          → Skill modules
+│   ├── tools/ (symlink)           → Orchestration tools
+│   ├── hooks/ (symlink)           → Security validations
+│   ├── commands/ (symlink)        → Slash commands
+│   ├── config/ (symlink)          → Configuration (contracts, rules)
+│   ├── templates/ (symlink)       → Installation templates
+│   ├── project-context/           ← Your project context (SSOT)
+│   ├── logs/                      ← Audit logs
+│   ├── approvals/                 ← Pending T3 approval files
+│   ├── plugin-registry.json       ← installed[].name = "gaia-ops"
+│   └── settings.local.json        ← Merged hooks + permissions + env
 └── node_modules/
-    └── @jaguilar87/gaia/       ← npm package
+    └── @jaguilar87/gaia/          ← npm package
 ```
+
+**Wire-up verification:** after install, the same checklist applies to every install mode (live, dry-run, RC, stable). See `skills/gaia-release/SKILL.md` -> "Wire-up Verification Checklist".
 
 ---
 
@@ -366,9 +376,17 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 
 **Solution:**
 ```bash
-# Re-run installation
-gaia scan
+# Check the diagnostic marker first
+cat ~/.gaia/last-install-error.json
+
+# Re-run install (postinstall is re-entrant)
+npm install @jaguilar87/gaia
+
+# Or repair without a fresh tarball
+gaia install
 ```
+
+For the full symptom -> cause -> fix table, see `skills/gaia-release/reference.md` -> "Diagnostic Guide".
 
 ---
 
@@ -430,7 +448,7 @@ A: `npm update @jaguilar87/gaia` - symlinks point to the new version automatical
 
 ---
 
-**Version:** 5.0.0-rc1
-**Last updated:** 2026-04-21
+**Version:** 5.0.0-rc.4
+**Last updated:** 2026-05-20
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
 
