@@ -1,27 +1,22 @@
 """
-ContextWriter module for gaia-ops progressive context enrichment.
+ContextWriter: validates and persists CONTEXT_UPDATE blocks from agent output.
 
-Parses CONTEXT_UPDATE blocks from agent output, validates write permissions
-against agent_permissions in ~/.gaia/gaia.db (B3 M5), and applies updates
-to the SQLite substrate via the gaia.store library.
+Parses CONTEXT_UPDATE blocks, enforces write permissions via
+agent_contract_permissions in ~/.gaia/gaia.db, and upserts to
+project_context_contracts.
 
-New CONTEXT_UPDATE schema (B3 M5.b):
+CONTEXT_UPDATE format::
+
     CONTEXT_UPDATE:
     {
-      "table": "<table_name>",
-      "rows": [{...}, ...]
+      "contract": "<contract_name>",
+      "payload": { ... }
     }
-
-The workspace is derived automatically from gaia.project.current() — agents
-do NOT pass it in the CONTEXT_UPDATE block.
-
-topic_key is accepted as an optional field within each row dict when the
-target table supports it.
 
 Public API:
     - parse_context_update(agent_output) -> Optional[dict]
-    - validate_permissions(update, agent_type) -> (dict, list)
-    - apply_update(update, agent_type) -> dict
+    - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
+    - apply_update(update, agent_name, workspace, db_path) -> dict
     - process_agent_output(agent_output, task_info) -> dict
     - process_context_updates(agent_output, task_info, find_claude_dir_fn=None) -> Optional[dict]
 """
@@ -31,15 +26,16 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Module-level cache (cleared between tests via monkeypatch / reload)
+# Module-level permissions cache (cleared between tests via .clear())
+# Keyed by (agent_name, cloud_scope, db_path_str)
 # ---------------------------------------------------------------------------
-_permissions_cache: Dict[str, set] = {}
+_permissions_cache: dict = {}
 
 
 # ============================================================================
@@ -49,21 +45,16 @@ _permissions_cache: Dict[str, set] = {}
 def parse_context_update(agent_output: str) -> Optional[dict]:
     """Extract and parse a CONTEXT_UPDATE block from agent output.
 
-    Accepts both the new table/rows schema and the legacy section-dict schema
-    for backward compatibility during migration. New schema is preferred:
+    Accepts the contract/payload schema only::
 
-    New schema::
         CONTEXT_UPDATE:
-        { "table": "apps", "rows": [{...}] }
-
-    Legacy schema (deprecated, still accepted for backward compat)::
-        CONTEXT_UPDATE:
-        { "section_name": {...} }
+        { "contract": "application_services", "payload": { ... } }
 
     Returns None when:
     - No marker is found
     - The JSON is malformed
     - The parsed value is not a dict
+    - Required keys ``contract`` and ``payload`` are absent
     """
     marker = "CONTEXT_UPDATE:"
     lines = agent_output.split("\n")
@@ -78,20 +69,10 @@ def parse_context_update(agent_output: str) -> Optional[dict]:
         return None
 
     remaining = "\n".join(lines[marker_idx + 1:]).strip()
-
     if not remaining:
         return None
 
-    # Strip markdown code fences
-    if remaining.startswith("```"):
-        fence_lines = remaining.split("\n")
-        fence_lines.pop(0)
-        for i in range(len(fence_lines) - 1, -1, -1):
-            if fence_lines[i].strip() == "```":
-                fence_lines.pop(i)
-                break
-        remaining = "\n".join(fence_lines).strip()
-
+    remaining = _strip_code_fence(remaining)
     if not remaining:
         return None
 
@@ -105,15 +86,35 @@ def parse_context_update(agent_output: str) -> Optional[dict]:
     if not isinstance(parsed, dict):
         return None
 
+    if "contract" not in parsed or "payload" not in parsed:
+        logger.warning(
+            "CONTEXT_UPDATE block missing required keys 'contract' and 'payload'. "
+            "Got keys: %s",
+            list(parsed.keys()),
+        )
+        return None
+
     return parsed
 
 
+def _strip_code_fence(text: str) -> str:
+    """Remove leading/trailing markdown code fences (``` or ```json)."""
+    if not text.startswith("```"):
+        return text
+    fence_lines = text.split("\n")
+    fence_lines.pop(0)  # opening ```[lang]
+    for i in range(len(fence_lines) - 1, -1, -1):
+        if fence_lines[i].strip() == "```":
+            fence_lines.pop(i)
+            break
+    return "\n".join(fence_lines).strip()
+
+
 # ============================================================================
-# 2. validate_permissions -- queries agent_permissions in ~/.gaia/gaia.db
+# 2. validate_permission
 # ============================================================================
 
 def _get_db_path() -> Optional[Path]:
-    """Resolve gaia.db path. Returns None on import error."""
     try:
         from gaia.paths import db_path
         return db_path()
@@ -121,83 +122,95 @@ def _get_db_path() -> Optional[Path]:
         return None
 
 
-def _load_agent_tables(agent_type: str, db_path: Optional[Path] = None) -> set:
-    """Return the set of tables the agent is allowed to write.
+def _load_writable_contracts(
+    agent_name: str,
+    cloud_scope: Optional[str],
+    db_path: Optional[Path],
+) -> set:
+    """Return the contracts agent_name may write under the given cloud scope.
 
-    Queries agent_permissions WHERE agent_name=? AND allow_write=1.
-    Returns empty set if DB unavailable or agent has no permissions.
+    Query::
+
+        SELECT contract_name FROM agent_contract_permissions
+        WHERE agent_name = ? AND can_write = 1
+          AND (cloud_scope IS NULL OR cloud_scope = ?);
+
+    A NULL ``cloud_scope`` on the permission row means "all providers". A
+    non-NULL value only matches when the caller's cloud_scope equals it.
     """
-    cache_key = agent_type
+    cache_key = (agent_name, cloud_scope, str(db_path) if db_path else None)
     if cache_key in _permissions_cache:
         return _permissions_cache[cache_key]
 
     resolved = db_path or _get_db_path()
     if resolved is None or not resolved.exists():
-        logger.debug("gaia.db not found for permissions check of '%s'", agent_type)
+        logger.debug("gaia.db not found; no write grants for '%s'", agent_name)
         _permissions_cache[cache_key] = set()
         return set()
 
     try:
         con = sqlite3.connect(str(resolved))
         rows = con.execute(
-            "SELECT table_name FROM agent_permissions WHERE agent_name = ? AND allow_write = 1",
-            (agent_type,),
+            """
+            SELECT contract_name FROM agent_contract_permissions
+            WHERE agent_name = ? AND can_write = 1
+              AND (cloud_scope IS NULL OR cloud_scope = ?)
+            """,
+            (agent_name, cloud_scope),
         ).fetchall()
         con.close()
-        tables = {row[0] for row in rows}
-        _permissions_cache[cache_key] = tables
-        return tables
+        contracts = {row[0] for row in rows}
+        _permissions_cache[cache_key] = contracts
+        return contracts
     except sqlite3.Error as exc:
-        logger.warning("Error loading agent_permissions for '%s': %s", agent_type, exc)
+        logger.warning(
+            "Error loading agent_contract_permissions for '%s': %s",
+            agent_name, exc,
+        )
         _permissions_cache[cache_key] = set()
         return set()
 
 
-def validate_permissions(
-    update: dict,
-    agent_type: str,
-    _db_path: Optional[Path] = None,
-) -> tuple:
-    """Validate which tables the agent is allowed to write.
+def _format_rejection_message(
+    agent_name: str,
+    contract_name: str,
+    writable: set,
+) -> str:
+    allowed_list = ", ".join(sorted(writable)) if writable else "(none)"
+    return (
+        f"CONTEXT_UPDATE rejected: agent '{agent_name}' has no write permission "
+        f"for contract '{contract_name}'. "
+        f"Writable contracts for this agent: {allowed_list}."
+    )
 
-    Supports both new schema (update has 'table' key) and legacy section-dict schema.
+
+def validate_permission(
+    update: dict,
+    agent_name: str,
+    cloud_scope: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> Tuple[bool, str]:
+    """Check whether agent_name may write the contract in update.
 
     Returns:
-        (allowed_update, rejected_items) where:
-        - allowed_update: the original update dict if table is allowed, else {}
-        - rejected_items: list of rejected table names or section names
+        (True, "")           -- allowed
+        (False, message)     -- blocked; message is deterministic and names
+                                agent_name, contract_name, and writable contracts
     """
-    allowed_tables = _load_agent_tables(agent_type, _db_path)
+    contract_name = update.get("contract", "")
+    writable = _load_writable_contracts(agent_name, cloud_scope, db_path)
 
-    # New schema: { "table": "apps", "rows": [...] }
-    if "table" in update and "rows" in update:
-        table = update["table"]
-        if table in allowed_tables:
-            return update, []
-        else:
-            return {}, [table]
+    if contract_name in writable:
+        return True, ""
 
-    # Legacy schema: { "section_name": {...}, ... } — kept for backward compat
-    # In legacy mode, we cannot enforce per-table permissions (no DB mapping to
-    # legacy section names). Accept everything to avoid blocking existing flows.
-    # This path will be removed once all agents migrate to the new schema.
-    logger.debug(
-        "Agent '%s' emitted legacy CONTEXT_UPDATE schema. "
-        "Migrate to {table, rows} schema for per-table enforcement.",
-        agent_type,
-    )
-    return update, []
+    return False, _format_rejection_message(agent_name, contract_name, writable)
 
 
 # ============================================================================
-# 3. apply_update -- dispatches to gaia.store via bulk_upsert
+# 3. apply_update
 # ============================================================================
 
 def _derive_workspace() -> str:
-    """Derive workspace identity via gaia.project.current().
-
-    Falls back to 'global' if the project module is unavailable.
-    """
     try:
         from gaia.project import current as _project_current
         identity = _project_current()
@@ -208,78 +221,80 @@ def _derive_workspace() -> str:
 
 def apply_update(
     update: dict,
-    agent_type: str,
-    *,
+    agent_name: str,
+    workspace: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> dict:
-    """Apply a validated CONTEXT_UPDATE to the SQLite substrate via gaia.store.
+    """Upsert a validated CONTEXT_UPDATE into project_context_contracts.
 
-    New schema: dispatches to bulk_upsert(table, workspace, rows, agent).
-    Workspace is derived from gaia.project.current() — never from the update.
+    ``workspace`` defaults to gaia.project.current() when not provided.
 
-    Returns an audit entry dict with success/error status.
+    Returns an audit dict: ``{timestamp, agent, contract, workspace, success, error}``.
     """
-    timestamp = datetime.now(timezone.utc).isoformat()
-    audit_entry = {
-        "timestamp": timestamp,
-        "agent": agent_type,
+    contract_name = update["contract"]
+    payload = update["payload"]
+    ws = workspace or _derive_workspace()
+    now = datetime.now(timezone.utc).isoformat()
+
+    audit = {
+        "timestamp": now,
+        "agent": agent_name,
+        "contract": contract_name,
+        "workspace": ws,
         "success": False,
         "error": None,
     }
 
-    # New schema: { "table": "apps", "rows": [...] }
-    if "table" in update and "rows" in update:
-        table = update["table"]
-        rows = update.get("rows", [])
-        workspace = _derive_workspace()
+    resolved = db_path or _get_db_path()
+    if resolved is None or not resolved.exists():
+        audit["error"] = f"gaia.db not found (path={resolved})"
+        logger.error("apply_update: gaia.db unavailable: %s", resolved)
+        return audit
 
-        try:
-            from gaia.store import bulk_upsert
+    try:
+        payload_json = json.dumps(payload)
+    except (TypeError, ValueError) as exc:
+        audit["error"] = f"payload is not JSON-serializable: {exc}"
+        return audit
 
-            kwargs = {}
-            if db_path is not None:
-                kwargs["db_path"] = db_path
+    try:
+        con = sqlite3.connect(str(resolved))
+        con.execute("PRAGMA foreign_keys = ON")
 
-            result = bulk_upsert(
-                table=table,
-                workspace=workspace,
-                rows=rows,
-                agent=agent_type,
-                **kwargs,
-            )
-            applied = result.get("applied", 0)
-            rejected = result.get("rejected", 0)
-            audit_entry["success"] = True
-            audit_entry["table"] = table
-            audit_entry["rows_applied"] = applied
-            audit_entry["rows_rejected"] = rejected
-            if applied == 0 and rejected > 0:
-                audit_entry["success"] = False
-                audit_entry["error"] = f"All {rejected} rows rejected (permission denied for table '{table}')"
-            logger.info(
-                "Context updated by %s: table=%s applied=%d rejected=%d",
-                agent_type, table, applied, rejected,
-            )
-            return audit_entry
+        # Ensure workspace row exists so the FK on project_context_contracts holds.
+        con.execute(
+            "INSERT OR IGNORE INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
+            (ws, ws, now),
+        )
 
-        except ImportError as exc:
-            audit_entry["error"] = f"gaia.store not available: {exc}"
-            logger.error("gaia.store import failed: %s", exc)
-            return audit_entry
-        except Exception as exc:
-            audit_entry["error"] = str(exc)
-            logger.error("Failed to apply context update via store: %s", exc)
-            return audit_entry
+        con.execute(
+            """
+            INSERT INTO project_context_contracts
+                (workspace, contract_name, payload, metadata, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(workspace, contract_name) DO UPDATE SET
+                payload    = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (ws, contract_name, payload_json, None, now),
+        )
+        con.commit()
+        con.close()
 
-    # Legacy schema fallback: log and skip (cannot route to store without table name)
-    logger.debug(
-        "Legacy CONTEXT_UPDATE from '%s' — skipping store write (no table/rows keys). "
-        "Migrate to {\"table\": \"...\", \"rows\": [...]} schema.",
-        agent_type,
-    )
-    audit_entry["success"] = False
-    audit_entry["error"] = "Legacy schema not persisted: missing 'table' and 'rows' keys"
-    return audit_entry
+        audit["success"] = True
+        logger.info(
+            "Context updated by %s: workspace=%s contract=%s",
+            agent_name, ws, contract_name,
+        )
+        return audit
+
+    except sqlite3.Error as exc:
+        audit["error"] = str(exc)
+        logger.error(
+            "Failed to upsert contract '%s' for agent '%s': %s",
+            contract_name, agent_name, exc,
+        )
+        return audit
 
 
 # ============================================================================
@@ -287,61 +302,57 @@ def apply_update(
 # ============================================================================
 
 def process_agent_output(agent_output: str, task_info: dict) -> dict:
-    """Orchestrate the full context-update flow.
-
-    Steps: parse -> validate -> apply.
+    """Orchestrate parse -> validate -> apply for one agent output string.
 
     Parameters
     ----------
     agent_output : str
-        Full agent output string.
+        Full output text from the agent.
     task_info : dict
-        Must contain: ``agent_type``.
-        Optional: ``db_path`` (Path, for tests).
+        Required: ``agent_type`` (str).
+        Optional: ``db_path`` (Path), ``cloud_scope`` (str), ``workspace`` (str).
 
     Returns
     -------
     dict
-        ``{updated, table, rows_applied, rejected, error}``
+        ``{updated, contract, rejected, error}``
     """
     result = {
         "updated": False,
-        "table": None,
-        "rows_applied": 0,
+        "contract": None,
         "rejected": [],
         "error": None,
     }
 
-    # 1. Parse CONTEXT_UPDATE
     update = parse_context_update(agent_output)
     if update is None:
         return result
 
-    agent_type = task_info.get("agent_type", "unknown")
-    db_path = task_info.get("db_path")  # Optional[Path], for tests
+    agent_name = task_info.get("agent_type", "unknown")
+    db_path = task_info.get("db_path")
+    cloud_scope = task_info.get("cloud_scope")
+    workspace = task_info.get("workspace")
 
-    # 2. Validate permissions
-    allowed, rejected = validate_permissions(update, agent_type, db_path)
-    result["rejected"] = rejected
-
+    allowed, rejection_msg = validate_permission(update, agent_name, cloud_scope, db_path)
     if not allowed:
+        result["rejected"] = [update.get("contract", "")]
+        result["error"] = rejection_msg
+        logger.warning(rejection_msg)
         return result
 
-    # 3. Apply update
-    audit = apply_update(allowed, agent_type, db_path=db_path)
+    audit = apply_update(update, agent_name, workspace=workspace, db_path=db_path)
 
-    if audit.get("success"):
+    if audit["success"]:
         result["updated"] = True
-        result["table"] = audit.get("table")
-        result["rows_applied"] = audit.get("rows_applied", 0)
+        result["contract"] = audit["contract"]
     else:
-        result["error"] = audit.get("error")
+        result["error"] = audit["error"]
 
     return result
 
 
 # ============================================================================
-# 5. process_context_updates (thin wrapper for subagent_stop integration)
+# 5. process_context_updates (thin adapter for subagent_stop integration)
 # ============================================================================
 
 def process_context_updates(
@@ -349,47 +360,45 @@ def process_context_updates(
     task_info: dict,
     find_claude_dir_fn=None,
 ) -> Optional[dict]:
-    """
-    Process CONTEXT_UPDATE blocks from agent output via context_writer.
+    """Process CONTEXT_UPDATE blocks from agent output.
 
-    Validates permissions against agent_permissions in ~/.gaia/gaia.db and
-    writes to the SQLite substrate via gaia.store.bulk_upsert.
+    Validates write permission via agent_contract_permissions and writes to
+    project_context_contracts in ~/.gaia/gaia.db.
 
-    This function MUST NOT break the existing hook flow -- all errors are caught
-    and logged, returning None on failure.
+    All errors are caught and logged; returns None on unexpected failure so
+    the hook flow is never interrupted.
 
     Args:
-        agent_output: Complete output from agent execution
-        task_info: Task metadata (agent, description, task_id)
-        find_claude_dir_fn: Unused (kept for API compatibility). Workspace is
-            derived from gaia.project.current(), not from .claude directory.
-
-    Returns:
-        Result dict from process_agent_output, or None on error
+        agent_output: Complete output from agent execution.
+        task_info: Task metadata (agent, description, task_id).
+        find_claude_dir_fn: Unused -- kept for API compatibility.
     """
     try:
-        agent_type = task_info.get("agent", "unknown")
-        task_info_for_writer = {
-            "agent_type": agent_type,
+        agent_name = task_info.get("agent", "unknown")
+        writer_task_info = {
+            "agent_type": agent_name,
+            "db_path": task_info.get("db_path"),
+            "cloud_scope": task_info.get("cloud_scope"),
+            "workspace": task_info.get("workspace"),
         }
 
-        result = process_agent_output(agent_output, task_info_for_writer)
+        result = process_agent_output(agent_output, writer_task_info)
 
-        if result and result.get("updated"):
+        if result.get("updated"):
             logger.info(
-                "Context updated by %s: table=%s rows_applied=%d",
-                agent_type,
-                result.get("table"),
-                result.get("rows_applied", 0),
+                "Context updated by %s: contract=%s",
+                agent_name,
+                result.get("contract"),
             )
-        if result and result.get("rejected"):
-            logger.debug(
-                "Context tables rejected for %s: %s",
-                agent_type, result.get("rejected", []),
+        if result.get("rejected"):
+            logger.warning(
+                "Context write rejected for %s: %s",
+                agent_name,
+                result.get("error", ""),
             )
 
         return result
 
-    except Exception as e:
-        logger.debug("Context update processing failed (non-fatal): %s", e)
+    except Exception as exc:
+        logger.debug("Context update processing failed (non-fatal): %s", exc)
         return None

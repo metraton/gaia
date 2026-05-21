@@ -1,632 +1,444 @@
-#!/usr/bin/env python3
 """
-Tests for ContextWriter module.
+Tests for hooks.modules.context.context_writer.
 
-TDD tests - the implementation does NOT exist yet. Tests are written to FAIL.
-
-Validates:
-1. CONTEXT_UPDATE block parsing from agent output
-2. Write permission validation via contracts
-3. Atomic apply with deep merge and audit trail
-4. Contract file loading with caching and legacy fallback
-5. Full orchestration flow (process_agent_output)
+Validates the contract-based CONTEXT_UPDATE flow:
+  1. Parse: extracts {contract, payload} blocks from agent output
+  2. Validate: enforces agent_contract_permissions (contract-scoped, per cloud_scope)
+  3. Apply: upserts to project_context_contracts in ~/.gaia/gaia.db
 """
 
-import sys
+from __future__ import annotations
+
 import json
-import pytest
+import sqlite3
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-# Add hooks and tools to path
-HOOKS_DIR = Path(__file__).resolve().parents[4] / "hooks"
-TOOLS_DIR = Path(__file__).resolve().parents[4] / "tools"
-sys.path.insert(0, str(HOOKS_DIR))
-sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
-sys.path.insert(0, str(TOOLS_DIR))
-sys.path.insert(0, str(TOOLS_DIR / "context"))
+import pytest
 
-# TDD: Import will fail until context_writer.py is implemented.
-# We import lazily so pytest can still COLLECT the tests.
-try:
-    from modules.context.context_writer import (
-        parse_context_update,
-        validate_permissions,
-        apply_update,
-        load_contracts,
-        process_agent_output,
-    )
-    _MODULE_AVAILABLE = True
-except ImportError:
-    _MODULE_AVAILABLE = False
-
-    # Provide stubs so test bodies can reference the names at collection time
-    def parse_context_update(*a, **kw):
-        raise NotImplementedError
-
-    def validate_permissions(*a, **kw):
-        raise NotImplementedError
-
-    def apply_update(*a, **kw):
-        raise NotImplementedError
-
-    def load_contracts(*a, **kw):
-        raise NotImplementedError
-
-    def process_agent_output(*a, **kw):
-        raise NotImplementedError
-
-# Auto-applied marker: every test fails fast when module is missing
-pytestmark = pytest.mark.skipif(
-    not _MODULE_AVAILABLE,
-    reason="context_writer module not yet implemented",
+from hooks.modules.context.context_writer import (
+    _permissions_cache,
+    apply_update,
+    parse_context_update,
+    process_agent_output,
+    validate_permission,
 )
 
 
-# ============================================================================
-# Shared Test Data
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Schema bootstrap helper
+# ---------------------------------------------------------------------------
 
-MOCK_CONTRACTS = {
-    "version": "3.0",
-    "provider": "gcp",
-    "agents": {
-        "cloud-troubleshooter": {
-            "read": [
-                "project_identity", "stack", "git", "environment", "infrastructure",
-                "cluster_details", "infrastructure_topology",
-                "terraform_infrastructure", "gitops_configuration",
-                "application_services", "monitoring_observability",
-            ],
-            "write": ["cluster_details", "infrastructure_topology"],
-        },
-        "gitops-operator": {
-            "read": [
-                "project_identity", "stack", "git", "environment", "infrastructure",
-                "gitops_configuration", "cluster_details",
-                "operational_guidelines",
-            ],
-            "write": ["gitops_configuration", "cluster_details"],
-        },
-        "terraform-architect": {
-            "read": [
-                "project_identity", "stack", "git", "environment", "infrastructure",
-                "terraform_infrastructure",
-                "infrastructure_topology", "operational_guidelines",
-            ],
-            "write": ["terraform_infrastructure", "infrastructure_topology"],
-        },
-        "developer": {
-            "read": [
-                "project_identity", "stack", "git", "environment", "infrastructure",
-                "application_services",
-                "operational_guidelines",
-            ],
-            "write": ["application_services"],
-        },
-    },
-}
+def _bootstrap_schema(db_path: Path) -> None:
+    """Create the minimal schema this module reads/writes against."""
+    con = sqlite3.connect(str(db_path))
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS workspaces (
+            name        TEXT PRIMARY KEY,
+            identity    TEXT NOT NULL,
+            created_at  TEXT NOT NULL
+        );
 
-LEGACY_CONTRACTS = {
-    "terraform-architect": [
-        "project_identity", "stack", "git", "environment", "infrastructure",
-        "terraform_infrastructure", "infrastructure_topology", "operational_guidelines",
-    ],
-    "gitops-operator": [
-        "project_identity", "stack", "git", "environment", "infrastructure",
-        "gitops_configuration", "infrastructure_topology",
-        "cluster_details", "operational_guidelines",
-    ],
-    "cloud-troubleshooter": [
-        "project_identity", "stack", "git", "environment", "infrastructure",
-        "infrastructure_topology", "terraform_infrastructure",
-        "gitops_configuration", "application_services", "monitoring_observability",
-        "cluster_details",
-    ],
-    "developer": [
-        "project_identity", "stack", "git", "environment", "infrastructure",
-        "application_services",
-        "operational_guidelines",
-    ],
-}
+        CREATE TABLE IF NOT EXISTS project_context_contracts (
+            workspace     TEXT NOT NULL,
+            contract_name TEXT NOT NULL,
+            payload       TEXT NOT NULL,
+            metadata      TEXT,
+            updated_at    TEXT,
+            PRIMARY KEY (workspace, contract_name),
+            FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_contract_permissions (
+            agent_name    TEXT NOT NULL,
+            contract_name TEXT NOT NULL,
+            can_read      INTEGER NOT NULL DEFAULT 0,
+            can_write     INTEGER NOT NULL DEFAULT 0,
+            cloud_scope   TEXT,
+            PRIMARY KEY (agent_name, contract_name, cloud_scope)
+        );
+        """
+    )
+    con.commit()
+    con.close()
 
 
-# ============================================================================
+def _seed_permission(
+    db_path: Path,
+    agent_name: str,
+    contract_name: str,
+    can_write: int,
+    cloud_scope: str | None = None,
+) -> None:
+    con = sqlite3.connect(str(db_path))
+    con.execute(
+        """
+        INSERT OR REPLACE INTO agent_contract_permissions
+            (agent_name, contract_name, can_read, can_write, cloud_scope)
+        VALUES (?, ?, 1, ?, ?)
+        """,
+        (agent_name, contract_name, can_write, cloud_scope),
+    )
+    con.commit()
+    con.close()
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
-# ============================================================================
+# ---------------------------------------------------------------------------
 
-@pytest.fixture
-def mock_context_file(tmp_path):
-    """Create a temporary project-context.json for isolated testing."""
-    context_dir = tmp_path / ".claude" / "project-context"
-    context_dir.mkdir(parents=True)
-    context_file = context_dir / "project-context.json"
-    context_file.write_text(json.dumps({
-        "metadata": {
-            "version": "1.0",
-            "last_updated": "2025-01-01T00:00:00Z",
-            "cloud_provider": "GCP",
-        },
-        "sections": {
-            "cluster_details": {},
-            "infrastructure_topology": {},
-            "application_services": {},
-        },
-    }))
-    return context_file
+@pytest.fixture()
+def tmp_db(tmp_path: Path) -> Path:
+    """Provide a fresh DB with the contract tables bootstrapped."""
+    db = tmp_path / "gaia.db"
+    _bootstrap_schema(db)
+    return db
 
 
-@pytest.fixture
-def contracts_file(tmp_path):
-    """Create a temporary contracts JSON file."""
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True)
-    contracts_path = config_dir / "context-contracts.json"
-    contracts_path.write_text(json.dumps(MOCK_CONTRACTS))
-    return contracts_path
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    """Permissions cache must not leak between tests."""
+    _permissions_cache.clear()
+    yield
+    _permissions_cache.clear()
 
 
-# ============================================================================
-# 1. parse_context_update tests (6)
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 1. parse_context_update
+# ---------------------------------------------------------------------------
 
 class TestParseContextUpdate:
-    """Test extraction of CONTEXT_UPDATE JSON blocks from agent output."""
-
-    def test_parse_valid_block(self):
-        """CONTEXT_UPDATE marker followed by valid JSON dict returns parsed dict."""
+    def test_valid_block(self):
         agent_output = (
             "Investigation complete.\n"
             "CONTEXT_UPDATE:\n"
-            '{"cluster_details": {"node_count": 3, "version": "1.28"}}'
+            '{"contract": "application_services", "payload": {"name": "api"}}'
+        )
+        result = parse_context_update(agent_output)
+        assert result == {
+            "contract": "application_services",
+            "payload": {"name": "api"},
+        }
+
+    def test_no_marker(self):
+        assert parse_context_update("No marker here.") is None
+
+    def test_malformed_json(self):
+        agent_output = "CONTEXT_UPDATE:\n{not valid json"
+        assert parse_context_update(agent_output) is None
+
+    def test_non_dict_root(self):
+        agent_output = "CONTEXT_UPDATE:\n[1, 2, 3]"
+        assert parse_context_update(agent_output) is None
+
+    def test_missing_contract_key(self):
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            '{"payload": {"foo": "bar"}}'
+        )
+        assert parse_context_update(agent_output) is None
+
+    def test_missing_payload_key(self):
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            '{"contract": "stack"}'
+        )
+        assert parse_context_update(agent_output) is None
+
+    def test_json_fenced(self):
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            "```json\n"
+            '{"contract": "stack", "payload": {"languages": ["python"]}}\n'
+            "```"
         )
         result = parse_context_update(agent_output)
         assert result is not None
-        assert "cluster_details" in result
-        assert result["cluster_details"]["node_count"] == 3
+        assert result["contract"] == "stack"
+        assert result["payload"]["languages"] == ["python"]
 
-    def test_parse_no_marker(self):
-        """Agent output without CONTEXT_UPDATE marker returns None."""
-        agent_output = (
-            "Everything looks fine. No changes needed.\n"
-            "Cluster is healthy with 3 nodes."
-        )
-        result = parse_context_update(agent_output)
-        assert result is None
-
-    def test_parse_malformed_json(self):
-        """CONTEXT_UPDATE marker with invalid JSON returns None."""
+    def test_plain_fenced(self):
         agent_output = (
             "CONTEXT_UPDATE:\n"
-            '{"cluster_details": {node_count: INVALID}'
-        )
-        result = parse_context_update(agent_output)
-        assert result is None
-
-    def test_parse_non_dict_json(self):
-        """CONTEXT_UPDATE marker with non-dict JSON (e.g. array) returns None."""
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            "[1, 2, 3]"
-        )
-        result = parse_context_update(agent_output)
-        assert result is None
-
-    def test_parse_marker_case_sensitive(self):
-        """Lowercase context_update marker is not recognized, returns None."""
-        agent_output = (
-            "context_update:\n"
-            '{"cluster_details": {"node_count": 3}}'
-        )
-        result = parse_context_update(agent_output)
-        assert result is None
-
-    def test_parse_with_surrounding_output(self):
-        """CONTEXT_UPDATE in the middle of long agent output is correctly extracted."""
-        agent_output = (
-            "Starting investigation...\n"
-            "Checked 5 namespaces, 12 pods, 3 services.\n"
-            "Found cluster version mismatch.\n"
-            "\n"
-            "CONTEXT_UPDATE:\n"
-            '{"cluster_details": {"version": "1.29", "node_pool": "default-pool"}}\n'
-            "\n"
-            "Summary: Updated cluster version info.\n"
-            "AGENT_STATUS: COMPLETE\n"
+            "```\n"
+            '{"contract": "stack", "payload": {"languages": []}}\n'
+            "```"
         )
         result = parse_context_update(agent_output)
         assert result is not None
-        assert result["cluster_details"]["version"] == "1.29"
-        assert result["cluster_details"]["node_pool"] == "default-pool"
+        assert result["contract"] == "stack"
 
-    def test_parse_markdown_json_fenced(self):
-        """LLMs often wrap CONTEXT_UPDATE JSON in ```json code fences."""
-        agent_output = (
-            "## Investigation Complete\n"
-            "\n"
-            "CONTEXT_UPDATE:\n"
-            "```json\n"
-            "{\n"
-            '  "cluster_details": {\n'
-            '    "node_count": 3,\n'
-            '    "status": "RUNNING"\n'
-            "  }\n"
-            "}\n"
-            "```\n"
-            "\n"
-            "```json:contract\n"
-            "{\n"
-            '  "agent_status": {\n'
-            '    "plan_status": "COMPLETE",\n'
-            '    "agent_id": "test-agent",\n'
-            '    "pending_steps": [],\n'
-            '    "next_action": "done"\n'
-            "  },\n"
-            '  "evidence_report": {\n'
-            '    "patterns_checked": [],\n'
-            '    "files_checked": [],\n'
-            '    "commands_run": [],\n'
-            '    "key_outputs": [],\n'
-            '    "verbatim_outputs": [],\n'
-            '    "cross_layer_impacts": [],\n'
-            '    "open_gaps": []\n'
-            "  },\n"
-            '  "consolidation_report": null\n'
-            "}\n"
-            "```\n"
+
+# ---------------------------------------------------------------------------
+# 2. validate_permission
+# ---------------------------------------------------------------------------
+
+class TestValidatePermission:
+    def test_allowed_when_can_write(self, tmp_db: Path):
+        """Agent with can_write=1 for the contract is allowed."""
+        _seed_permission(tmp_db, "developer", "application_services", can_write=1)
+
+        allowed, msg = validate_permission(
+            {"contract": "application_services", "payload": {}},
+            "developer",
+            db_path=tmp_db,
         )
-        result = parse_context_update(agent_output)
-        assert result is not None, (
-            "Parser must handle ```json fenced code blocks — "
-            "this is the format LLMs actually produce"
+        assert allowed is True
+        assert msg == ""
+
+    def test_blocked_when_can_write_zero(self, tmp_db: Path):
+        """Agent with can_write=0 is blocked with a deterministic message."""
+        _seed_permission(tmp_db, "cloud-troubleshooter", "application_services", can_write=0)
+        _seed_permission(tmp_db, "cloud-troubleshooter", "cluster_details", can_write=0)
+
+        allowed, msg = validate_permission(
+            {"contract": "application_services", "payload": {}},
+            "cloud-troubleshooter",
+            db_path=tmp_db,
         )
-        assert result["cluster_details"]["node_count"] == 3
-        assert result["cluster_details"]["status"] == "RUNNING"
+        assert allowed is False
+        assert "cloud-troubleshooter" in msg
+        assert "application_services" in msg
+        # When the agent has no can_write=1 rows, the writable list is empty.
+        assert "(none)" in msg
 
-    def test_parse_markdown_plain_fenced(self):
-        """LLMs may also use plain ``` fences without language specifier."""
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            "```\n"
-            '{"cluster_details": {"version": "1.28"}}\n'
-            "```\n"
+    def test_blocked_when_agent_unknown(self, tmp_db: Path):
+        """Agent with no row at all gets the same rejection treatment."""
+        allowed, msg = validate_permission(
+            {"contract": "stack", "payload": {}},
+            "nonexistent-agent",
+            db_path=tmp_db,
         )
-        result = parse_context_update(agent_output)
-        assert result is not None, (
-            "Parser must handle plain ``` fenced code blocks"
+        assert allowed is False
+        assert "nonexistent-agent" in msg
+        assert "stack" in msg
+
+    def test_blocked_when_contract_unknown_for_agent(self, tmp_db: Path):
+        """An agent writing to a contract it has no row for is rejected, and
+        the message lists the contracts it CAN write."""
+        _seed_permission(tmp_db, "developer", "application_services", can_write=1)
+
+        allowed, msg = validate_permission(
+            {"contract": "infrastructure", "payload": {}},
+            "developer",
+            db_path=tmp_db,
         )
-        assert result["cluster_details"]["version"] == "1.28"
+        assert allowed is False
+        assert "developer" in msg
+        assert "infrastructure" in msg
+        assert "application_services" in msg  # listed as writable
 
-    def test_parse_markdown_fenced_multiline_with_agent_status(self):
-        """Realistic LLM output: markdown table + fenced JSON + AGENT_STATUS."""
-        agent_output = (
-            "**Cluster:** oci-pos-dev-cluster-01\n"
-            "**Namespace:** test\n"
-            "\n"
-            "| Pod Name | Ready | Status |\n"
-            "|----------|-------|--------|\n"
-            "| nginx-6fbb6bcf74-8g9gn | 2/2 | Running |\n"
-            "\n"
-            "CONTEXT_UPDATE:\n"
-            "```json\n"
-            "{\n"
-            '  "cluster_details": {\n'
-            '    "cluster_name": "oci-pos-dev-cluster-01",\n'
-            '    "namespaces_inspected": {\n'
-            '      "test": {\n'
-            '        "pod_count": 1\n'
-            "      }\n"
-            "    }\n"
-            "  }\n"
-            "}\n"
-            "```\n"
-            "\n"
-            "```json:contract\n"
-            "{\n"
-            '  "agent_status": {\n'
-            '    "plan_status": "COMPLETE",\n'
-            '    "agent_id": "cloud-troubleshooter",\n'
-            '    "pending_steps": [],\n'
-            '    "next_action": "done"\n'
-            "  },\n"
-            '  "evidence_report": {\n'
-            '    "patterns_checked": [],\n'
-            '    "files_checked": [],\n'
-            '    "commands_run": [],\n'
-            '    "key_outputs": [],\n'
-            '    "verbatim_outputs": [],\n'
-            '    "cross_layer_impacts": [],\n'
-            '    "open_gaps": []\n'
-            "  },\n"
-            '  "consolidation_report": null\n'
-            "}\n"
-            "```\n"
+    def test_cloud_scope_null_is_permissive(self, tmp_db: Path):
+        """A permission row with cloud_scope=NULL matches every caller scope."""
+        _seed_permission(
+            tmp_db, "developer", "application_services",
+            can_write=1, cloud_scope=None,
         )
-        result = parse_context_update(agent_output)
-        assert result is not None, (
-            "Parser must handle realistic LLM output with markdown "
-            "tables, ```json fences, and json:contract blocks"
+
+        for scope in (None, "gcp", "aws"):
+            allowed, msg = validate_permission(
+                {"contract": "application_services", "payload": {}},
+                "developer",
+                cloud_scope=scope,
+                db_path=tmp_db,
+            )
+            assert allowed is True, f"NULL scope should match {scope!r}; got msg={msg}"
+
+    def test_cloud_scope_specific_is_enforced(self, tmp_db: Path):
+        """A permission row with cloud_scope='gcp' must NOT match cloud_scope='aws'."""
+        _seed_permission(
+            tmp_db, "developer", "application_services",
+            can_write=1, cloud_scope="gcp",
         )
-        assert result["cluster_details"]["cluster_name"] == "oci-pos-dev-cluster-01"
-        assert result["cluster_details"]["namespaces_inspected"]["test"]["pod_count"] == 1
 
-
-# ============================================================================
-# 2. validate_permissions tests (5)
-# ============================================================================
-
-class TestValidatePermissions:
-    """Test write permission validation against agent contracts."""
-
-    def test_validate_allowed_section(self):
-        """cloud-troubleshooter writing to cluster_details is allowed."""
-        update = {"cluster_details": {"version": "1.29"}}
-        allowed, rejected = validate_permissions(
-            update, "cloud-troubleshooter", MOCK_CONTRACTS
+        # Same scope: allowed.
+        allowed_gcp, _ = validate_permission(
+            {"contract": "application_services", "payload": {}},
+            "developer",
+            cloud_scope="gcp",
+            db_path=tmp_db,
         )
-        assert "cluster_details" in allowed
-        assert len(rejected) == 0
+        assert allowed_gcp is True
 
-    def test_validate_rejected_section(self):
-        """cloud-troubleshooter writing to application_services is rejected."""
-        update = {"application_services": {"new_service": "test"}}
-        allowed, rejected = validate_permissions(
-            update, "cloud-troubleshooter", MOCK_CONTRACTS
+        # Mismatched scope: rejected.
+        allowed_aws, msg = validate_permission(
+            {"contract": "application_services", "payload": {}},
+            "developer",
+            cloud_scope="aws",
+            db_path=tmp_db,
         )
-        assert len(allowed) == 0
-        assert "application_services" in rejected
-
-    def test_validate_mixed_sections(self):
-        """Mixed update: allowed sections pass, rejected sections filtered out."""
-        update = {
-            "cluster_details": {"version": "1.29"},
-            "application_services": {"new_service": "test"},
-            "infrastructure_topology": {"vpc": "updated"},
-        }
-        allowed, rejected = validate_permissions(
-            update, "cloud-troubleshooter", MOCK_CONTRACTS
-        )
-        # cluster_details and infrastructure_topology are writable
-        assert "cluster_details" in allowed
-        assert "infrastructure_topology" in allowed
-        # application_services is NOT writable for cloud-troubleshooter
-        assert "application_services" in rejected
-        assert len(allowed) == 2
-        assert len(rejected) == 1
-
-    def test_validate_legacy_fallback(self):
-        """Agent not in contracts file but in LEGACY falls back to legacy (write=read)."""
-        # Use contracts that don't include this agent
-        contracts_without_agent = {
-            "version": "1.0",
-            "provider": "gcp",
-            "agents": {},
-        }
-        # Legacy: cloud-troubleshooter can read (and therefore write) infrastructure_topology
-        update = {"infrastructure_topology": {"vpc": "updated"}}
-        allowed, rejected = validate_permissions(
-            update, "cloud-troubleshooter", contracts_without_agent
-        )
-        assert "infrastructure_topology" in allowed
-        assert len(rejected) == 0
-
-    def test_validate_unknown_agent(self):
-        """Completely unknown agent (not in contracts or legacy) gets all rejected."""
-        update = {
-            "cluster_details": {"version": "1.29"},
-            "application_services": {"new_service": "test"},
-        }
-        allowed, rejected = validate_permissions(
-            update, "nonexistent-agent", MOCK_CONTRACTS
-        )
-        assert len(allowed) == 0
-        assert "cluster_details" in rejected
-        assert "application_services" in rejected
+        assert allowed_aws is False
+        assert "application_services" in msg
 
 
-# ============================================================================
-# 3. apply_update tests (6)
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 3. apply_update
+# ---------------------------------------------------------------------------
 
 class TestApplyUpdate:
-    """Test applying validated updates to project-context.json."""
+    def test_inserts_new_row(self, tmp_db: Path):
+        update = {"contract": "stack", "payload": {"languages": ["python"]}}
+        audit = apply_update(update, "developer", workspace="me", db_path=tmp_db)
 
-    def test_apply_writes_to_file(self, mock_context_file):
-        """Validated update is persisted to project-context.json."""
-        update = {"cluster_details": {"version": "1.29"}}
-        apply_update(mock_context_file, update, "cloud-troubleshooter")
+        assert audit["success"] is True
+        assert audit["contract"] == "stack"
+        assert audit["workspace"] == "me"
 
-        written = json.loads(mock_context_file.read_text())
-        assert written["sections"]["cluster_details"]["version"] == "1.29"
+        con = sqlite3.connect(str(tmp_db))
+        row = con.execute(
+            "SELECT workspace, contract_name, payload FROM project_context_contracts "
+            "WHERE workspace='me' AND contract_name='stack'"
+        ).fetchone()
+        con.close()
+        assert row is not None
+        assert row[0] == "me"
+        assert row[1] == "stack"
+        assert json.loads(row[2]) == {"languages": ["python"]}
 
-    def test_apply_deep_merges(self, mock_context_file):
-        """Update deep-merges into existing sections, not replaces them."""
-        # First, write initial data
-        initial = json.loads(mock_context_file.read_text())
-        initial["sections"]["cluster_details"] = {
-            "name": "prod-cluster",
-            "region": "us-central1",
-        }
-        mock_context_file.write_text(json.dumps(initial))
+    def test_upsert_is_idempotent(self, tmp_db: Path):
+        """A second apply for (workspace, contract) updates payload, no duplicate row."""
+        first = {"contract": "stack", "payload": {"languages": ["python"]}}
+        second = {"contract": "stack", "payload": {"languages": ["python", "node"]}}
 
-        # Apply update that adds a field
-        update = {"cluster_details": {"version": "1.29"}}
-        apply_update(mock_context_file, update, "cloud-troubleshooter")
+        apply_update(first, "developer", workspace="me", db_path=tmp_db)
+        apply_update(second, "developer", workspace="me", db_path=tmp_db)
 
-        written = json.loads(mock_context_file.read_text())
-        # Original fields preserved
-        assert written["sections"]["cluster_details"]["name"] == "prod-cluster"
-        assert written["sections"]["cluster_details"]["region"] == "us-central1"
-        # New field added
-        assert written["sections"]["cluster_details"]["version"] == "1.29"
+        con = sqlite3.connect(str(tmp_db))
+        rows = con.execute(
+            "SELECT payload FROM project_context_contracts "
+            "WHERE workspace='me' AND contract_name='stack'"
+        ).fetchall()
+        con.close()
+        assert len(rows) == 1, "upsert must not create duplicate rows"
+        assert json.loads(rows[0][0]) == {"languages": ["python", "node"]}
 
-    def test_apply_updates_metadata_timestamp(self, mock_context_file):
-        """metadata.last_updated is refreshed after apply."""
-        update = {"cluster_details": {"version": "1.29"}}
-        apply_update(mock_context_file, update, "cloud-troubleshooter")
-
-        written = json.loads(mock_context_file.read_text())
-        assert written["metadata"]["last_updated"] != "2025-01-01T00:00:00Z"
-
-    def test_apply_atomic_write(self, mock_context_file):
-        """Write uses a temporary file then renames for atomicity."""
-        update = {"cluster_details": {"version": "1.29"}}
-
-        original_rename = Path.rename
-
-        rename_calls = []
-
-        def tracking_rename(self_path, target):
-            rename_calls.append((str(self_path), str(target)))
-            return original_rename(self_path, target)
-
-        with patch.object(Path, "rename", tracking_rename):
-            apply_update(mock_context_file, update, "cloud-troubleshooter")
-
-        # Should have renamed from .tmp to final path
-        assert len(rename_calls) >= 1
-        src, dst = rename_calls[0]
-        assert ".tmp" in src or "tmp" in src.lower()
-        assert str(mock_context_file) == dst
-
-    def test_apply_creates_audit_entry(self, mock_context_file):
-        """context-audit.jsonl receives an entry after successful apply."""
-        update = {"cluster_details": {"version": "1.29"}}
-        apply_update(mock_context_file, update, "cloud-troubleshooter")
-
-        audit_file = mock_context_file.parent / "context-audit.jsonl"
-        assert audit_file.exists()
-
-        lines = audit_file.read_text().strip().split("\n")
-        assert len(lines) >= 1
-
-        entry = json.loads(lines[-1])
-        assert entry["agent"] == "cloud-troubleshooter"
-        assert "cluster_details" in entry.get(
-            "sections", entry.get("sections_updated", [])
+    def test_db_missing_returns_error(self, tmp_path: Path):
+        missing_db = tmp_path / "does-not-exist.db"
+        audit = apply_update(
+            {"contract": "stack", "payload": {}},
+            "developer",
+            workspace="me",
+            db_path=missing_db,
         )
-
-    def test_apply_file_error(self, tmp_path):
-        """Missing context file produces a failed result and does not raise."""
-        missing_file = tmp_path / "nonexistent" / "project-context.json"
-        update = {"cluster_details": {"version": "1.29"}}
-
-        # Should not raise an exception
-        result = apply_update(missing_file, update, "cloud-troubleshooter")
-
-        # Result should indicate failure
-        assert result.get("success") is False or result.get("error") is not None
+        assert audit["success"] is False
+        assert "gaia.db not found" in audit["error"]
 
 
-# ============================================================================
-# 4. load_contracts tests (3)
-# ============================================================================
-
-class TestLoadContracts:
-    """Test contract file loading with caching and legacy fallback."""
-
-    def test_load_gcp_contracts(self, contracts_file):
-        """Loads context-contracts.json from config directory."""
-        config_dir = contracts_file.parent
-        result = load_contracts("gcp", config_dir)
-
-        assert result["version"] == "3.0"
-        assert result["provider"] == "gcp"
-        assert "cloud-troubleshooter" in result["agents"]
-        assert "write" in result["agents"]["cloud-troubleshooter"]
-
-    def test_load_missing_file_fallback(self, tmp_path):
-        """Missing contract file returns legacy fallback dict."""
-        config_dir = tmp_path / "empty_config"
-        config_dir.mkdir()
-
-        result = load_contracts("gcp", config_dir)
-
-        # Should return a usable fallback structure
-        assert "agents" in result or "terraform-architect" in result
-        # Fallback should contain known agents
-        agents = result.get("agents", result)
-        assert any(
-            agent in agents
-            for agent in [
-                "terraform-architect", "gitops-operator", "cloud-troubleshooter",
-            ]
-        )
-
-    def test_load_caches_result(self, contracts_file):
-        """Second call with same provider returns cached (identical) object."""
-        config_dir = contracts_file.parent
-
-        # Clear any module-level cache before test
-        if hasattr(load_contracts, "cache_clear"):
-            load_contracts.cache_clear()
-
-        result1 = load_contracts("gcp", config_dir)
-        result2 = load_contracts("gcp", config_dir)
-
-        # Same object reference means caching is active
-        assert result1 is result2
-
-
-# ============================================================================
-# 5. process_agent_output tests (3)
-# ============================================================================
+# ---------------------------------------------------------------------------
+# 4. process_agent_output -- end-to-end
+# ---------------------------------------------------------------------------
 
 class TestProcessAgentOutput:
-    """Test full orchestration flow: parse -> validate -> apply."""
+    def test_happy_path_allowed_agent_writes(self, tmp_db: Path):
+        """developer with can_write=1 on application_services -> row in DB."""
+        _seed_permission(tmp_db, "developer", "application_services", can_write=1)
 
-    def test_process_full_flow(self, mock_context_file):
-        """Happy path: agent output with CONTEXT_UPDATE is parsed, validated, applied."""
         agent_output = (
             "Investigation complete.\n"
             "CONTEXT_UPDATE:\n"
-            '{"cluster_details": {"version": "1.29", "node_count": 5}}'
+            '{"contract": "application_services", "payload": '
+            '{"services": [{"name": "api", "kind": "service"}]}}'
         )
-        task_info = {
-            "agent_type": "cloud-troubleshooter",
-            "context_path": str(mock_context_file),
-            "config_dir": str(mock_context_file.parent.parent.parent),
-        }
-
-        result = process_agent_output(agent_output, task_info)
+        result = process_agent_output(
+            agent_output,
+            {"agent_type": "developer", "db_path": tmp_db, "workspace": "me"},
+        )
 
         assert result["updated"] is True
-        assert "cluster_details" in result.get(
-            "sections_updated", result.get("sections", [])
-        )
+        assert result["contract"] == "application_services"
+        assert result["rejected"] == []
+        assert result["error"] is None
 
-        # Verify file was actually updated
-        written = json.loads(mock_context_file.read_text())
-        assert written["sections"]["cluster_details"]["version"] == "1.29"
+        con = sqlite3.connect(str(tmp_db))
+        row = con.execute(
+            "SELECT payload FROM project_context_contracts "
+            "WHERE workspace='me' AND contract_name='application_services'"
+        ).fetchone()
+        con.close()
+        assert row is not None
+        assert json.loads(row[0])["services"][0]["name"] == "api"
 
-    def test_process_no_update(self, mock_context_file):
-        """No CONTEXT_UPDATE marker returns {updated: false}."""
-        agent_output = "Everything looks fine. No changes needed."
-        task_info = {
-            "agent_type": "cloud-troubleshooter",
-            "context_path": str(mock_context_file),
-            "config_dir": str(mock_context_file.parent.parent.parent),
-        }
+    def test_unauthorized_agent_rejected_with_clear_message(self, tmp_db: Path):
+        """cloud-troubleshooter with no can_write=1 rows -> blocked, no DB row."""
+        # Seed only read permissions (can_write=0) so writable set is empty.
+        _seed_permission(tmp_db, "cloud-troubleshooter", "cluster_details", can_write=0)
+        _seed_permission(tmp_db, "cloud-troubleshooter", "infrastructure", can_write=0)
 
-        result = process_agent_output(agent_output, task_info)
-
-        assert result["updated"] is False
-
-    def test_process_all_rejected(self, mock_context_file):
-        """All sections rejected returns {updated: false, rejected: [...]}."""
         agent_output = (
             "CONTEXT_UPDATE:\n"
-            '{"application_services": {"new_svc": "test"}, '
-            '"monitoring_observability": {"alerts": true}}'
+            '{"contract": "application_services", "payload": {"x": 1}}'
         )
-        task_info = {
-            "agent_type": "developer",
-            "context_path": str(mock_context_file),
-            "config_dir": str(mock_context_file.parent.parent.parent),
+        result = process_agent_output(
+            agent_output,
+            {"agent_type": "cloud-troubleshooter", "db_path": tmp_db, "workspace": "me"},
+        )
+
+        assert result["updated"] is False
+        assert result["rejected"] == ["application_services"]
+        assert result["error"] is not None
+        assert "cloud-troubleshooter" in result["error"]
+        assert "application_services" in result["error"]
+        assert "(none)" in result["error"]
+
+        # Confirm nothing was written.
+        con = sqlite3.connect(str(tmp_db))
+        count = con.execute(
+            "SELECT COUNT(*) FROM project_context_contracts"
+        ).fetchone()[0]
+        con.close()
+        assert count == 0
+
+    def test_malformed_block_is_silent_noop(self, tmp_db: Path):
+        """A block missing 'contract' or 'payload' parses to None -> no-op."""
+        _seed_permission(tmp_db, "developer", "stack", can_write=1)
+
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            '{"section_name": {"foo": "bar"}}'  # legacy schema, no longer accepted
+        )
+        result = process_agent_output(
+            agent_output,
+            {"agent_type": "developer", "db_path": tmp_db, "workspace": "me"},
+        )
+
+        assert result["updated"] is False
+        assert result["rejected"] == []
+        assert result["error"] is None
+
+    def test_no_marker_is_silent_noop(self, tmp_db: Path):
+        result = process_agent_output(
+            "Investigation summary, no updates emitted.",
+            {"agent_type": "developer", "db_path": tmp_db, "workspace": "me"},
+        )
+        assert result == {
+            "updated": False,
+            "contract": None,
+            "rejected": [],
+            "error": None,
         }
 
-        result = process_agent_output(agent_output, task_info)
+    def test_workspace_defaults_to_derive_when_absent(self, tmp_db: Path):
+        """When task_info has no 'workspace', _derive_workspace() is used."""
+        _seed_permission(tmp_db, "developer", "stack", can_write=1)
 
-        # developer can write application_services but NOT monitoring_observability
-        # monitoring_observability should be rejected
-        assert "monitoring_observability" in result.get("rejected", [])
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            '{"contract": "stack", "payload": {"languages": ["go"]}}'
+        )
+        with patch(
+            "hooks.modules.context.context_writer._derive_workspace",
+            return_value="derived-ws",
+        ):
+            result = process_agent_output(
+                agent_output,
+                {"agent_type": "developer", "db_path": tmp_db},  # no workspace
+            )
+
+        assert result["updated"] is True
+        con = sqlite3.connect(str(tmp_db))
+        row = con.execute(
+            "SELECT workspace FROM project_context_contracts WHERE contract_name='stack'"
+        ).fetchone()
+        con.close()
+        assert row[0] == "derived-ws"
