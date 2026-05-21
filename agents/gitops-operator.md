@@ -6,6 +6,9 @@ model: inherit
 maxTurns: 40
 permissionMode: acceptEdits
 disallowedTools: [NotebookEdit]
+project_context_contracts:
+  read: [project_identity, gitops_configuration, cluster_details, infrastructure_topology, environment, application_services]
+  write: [gitops_configuration, cluster_details]
 skills:
   - agent-protocol
   - security-tiers

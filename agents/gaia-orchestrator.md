@@ -5,6 +5,9 @@ tools: Agent, SendMessage, AskUserQuestion, Skill, TaskCreate, TaskUpdate, TaskL
 disallowedTools: [Read, Glob, Grep, Bash, Edit, Write, NotebookEdit, EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree]
 model: inherit
 maxTurns: 200
+project_context_contracts:
+  read: [project_identity]
+  write: []
 skills:
   - agent-protocol
   - security-tiers

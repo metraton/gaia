@@ -71,6 +71,8 @@ if str(_PACKAGE_ROOT) not in sys.path:
 # via `python bin/gaia install` because bin/ is on sys.path.
 from cli import _install_helpers  # type: ignore  # noqa: E402
 
+_SEED_CONTRACT_PERMS = _PACKAGE_ROOT / "tools" / "scan" / "seed_contract_permissions.py"
+
 
 # ---------------------------------------------------------------------------
 # PATH launcher (~/.local/bin/gaia -- workspace-bound bash launcher)
@@ -335,6 +337,48 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
         stderr=result.stderr or "",
     )
     return {"rc": result.returncode, "detail": detail}
+
+
+def _seed_contract_permissions(db_path: str | None, quiet: bool) -> dict:
+    """Invoke seed_contract_permissions to populate agent_contract_permissions.
+
+    Returns a step-result dict compatible with ``_report_step``.  Never raises
+    -- seeding failures are logged and reported as action='error' so the install
+    continues rather than being aborted for a non-critical step.
+    """
+    if not _SEED_CONTRACT_PERMS.is_file():
+        return {
+            "action": "skipped",
+            "details": f"seeder not found at {_SEED_CONTRACT_PERMS}",
+        }
+
+    env = os.environ.copy()
+    resolved_db = (
+        str(Path(db_path).expanduser()) if db_path else str(Path("~/.gaia/gaia.db").expanduser())
+    )
+    cmd = [sys.executable, str(_SEED_CONTRACT_PERMS), "--db-path", resolved_db]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"action": "error", "details": f"seeder invocation failed: {exc}"}
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()[:200]
+        if not quiet:
+            sys.stderr.write(f"  [!] contract-permissions seeder: {detail}\n")
+        return {"action": "error", "details": detail}
+
+    # Extract summary line from stdout for the step report.
+    summary = (result.stdout or "").strip().split("\n")[-1]
+    return {"action": "created", "details": summary}
 
 
 def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
@@ -609,6 +653,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Step 1 -- bootstrap DB (always)
     bootstrap_res = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
     rc = bootstrap_res["rc"]
+    if rc == 0:
+        # Step 1a -- seed agent_contract_permissions from agent frontmatters.
+        # Runs after bootstrap so the table is guaranteed to exist (v3 migration).
+        # Non-fatal: a seeding failure should not abort an otherwise clean install.
+        seed_res = _seed_contract_permissions(db_path=db_path, quiet=quiet)
+        _report_step(name="contract-permissions", result=seed_res, quiet=quiet, verbose=verbose)
     if rc != 0:
         if postinstall:
             # Persist a marker so `gaia doctor` can surface the real failure.

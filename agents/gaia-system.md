@@ -6,6 +6,9 @@ model: inherit
 maxTurns: 50
 effort: high
 permissionMode: acceptEdits
+project_context_contracts:
+  read: [project_identity, stack]
+  write: []
 skills:
   - agent-protocol
   - security-tiers

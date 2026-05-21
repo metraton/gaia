@@ -604,19 +604,33 @@ CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
--- context_contracts: project-context.json reconstructed as (workspace, section) rows
+-- project_context_contracts: project-context.json reconstructed as (workspace, contract) rows
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS context_contracts (
-    workspace    TEXT NOT NULL,  -- FK -> workspaces.name
-    section_name TEXT NOT NULL,
-    payload      TEXT NOT NULL,
-    metadata     TEXT,
-    updated_at   TEXT,
-    PRIMARY KEY (workspace, section_name),
+CREATE TABLE IF NOT EXISTS project_context_contracts (
+    workspace     TEXT NOT NULL,  -- FK -> workspaces.name
+    contract_name TEXT NOT NULL,
+    payload       TEXT NOT NULL,
+    metadata      TEXT,
+    updated_at    TEXT,
+    PRIMARY KEY (workspace, contract_name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_context_contracts_workspace ON context_contracts(workspace);
+CREATE INDEX IF NOT EXISTS idx_project_context_contracts_workspace ON project_context_contracts(workspace);
+
+-- ---------------------------------------------------------------------------
+-- agent_contract_permissions: per-contract per-agent read/write authorization
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_contract_permissions (
+    agent_name    TEXT NOT NULL,
+    contract_name TEXT NOT NULL,
+    can_read      INTEGER NOT NULL DEFAULT 0,
+    can_write     INTEGER NOT NULL DEFAULT 0,
+    cloud_scope   TEXT,             -- NULL = all providers; 'gcp', 'aws', etc. for overlays
+    PRIMARY KEY (agent_name, contract_name, cloud_scope)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_contract_perms_agent ON agent_contract_permissions(agent_name);
 
 -- ---------------------------------------------------------------------------
 -- harness_events: append-only mirror of events.jsonl
