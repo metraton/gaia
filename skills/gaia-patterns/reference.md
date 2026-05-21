@@ -206,30 +206,38 @@ npm publish                    # publishes @jaguilar87/gaia
 ### Postinstall (`gaia install --postinstall`, invoked by npm scripts on `npm install`)
 
 **First install** (no `.claude/`):
-1. Check Python 3 available
-2. Run `gaia scan --fresh --npm-postinstall` to create `.claude/`, symlinks, settings, project-context
-3. Create `plugin-registry.json`
-4. Merge permissions into `settings.local.json`
-5. Merge hooks into `settings.local.json` -- also writes `defaultMode: acceptEdits` to `settings.local.json` for the parent session
-6. Verification
+1. Check Python 3 available.
+2. Create `.claude/` if missing (created early so subsequent steps can write into it).
+3. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
+4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
+5. Merge hooks from `hooks.json` into `settings.local.json` via the consolidated `merge_hooks` step.
+6. Create `.claude/{agents, tools, hooks, commands, templates, config, skills}` symlinks (7) plus `CHANGELOG.md` file link.
+7. Write `plugin-registry.json` with `installed[].name == "gaia-ops"` (or `gaia-security`).
+8. Write `project-context.json`.
+9. Verification.
 
 **Update** (`.claude/` exists):
-1. Show version transition
-2. `settings.json`: create only if missing (non-invasive)
-3. Merge permissions, env vars, agent key into `settings.local.json` (union, preserves user config)
-4. Merge hooks from `hooks.json` into `settings.local.json`
-5. Recreate/fix broken symlinks
-6. Verify hooks, Python, project-context, config
+1. Show version transition.
+2. `settings.json`: create only if missing (non-invasive).
+3. Merge permissions, env vars, agent key into `settings.local.json` (union, preserves user config).
+4. Merge hooks from `hooks.json` into `settings.local.json`.
+5. Recreate/fix broken symlinks.
+6. Run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`.
+7. Verify hooks, Python, project-context, config.
+
+The hook invoker is `python3 <script>` rather than executing the script directly, so missing exec bits on cross-platform checkouts do not break the install.
 
 ### Symlinks Created
 
 ```
-.claude/agents   -> node_modules/@jaguilar87/gaia/agents/
-.claude/hooks    -> node_modules/@jaguilar87/gaia/hooks/
-.claude/skills   -> node_modules/@jaguilar87/gaia/skills/
-.claude/tools    -> node_modules/@jaguilar87/gaia/tools/
-.claude/commands -> node_modules/@jaguilar87/gaia/commands/
-.claude/config   -> node_modules/@jaguilar87/gaia/config/
+.claude/agents    -> node_modules/@jaguilar87/gaia/agents/
+.claude/tools     -> node_modules/@jaguilar87/gaia/tools/
+.claude/hooks     -> node_modules/@jaguilar87/gaia/hooks/
+.claude/commands  -> node_modules/@jaguilar87/gaia/commands/
+.claude/templates -> node_modules/@jaguilar87/gaia/templates/
+.claude/config    -> node_modules/@jaguilar87/gaia/config/
+.claude/skills    -> node_modules/@jaguilar87/gaia/skills/
+.claude/CHANGELOG.md (file link) -> node_modules/@jaguilar87/gaia/CHANGELOG.md
 ```
 
 ---
