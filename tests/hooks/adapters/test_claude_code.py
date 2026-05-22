@@ -1058,3 +1058,116 @@ class TestEdgeCases:
             })
             event = adapter.parse_event(stdin_data)
             assert event.event_type.value == event_name
+
+
+# ============================================================================
+# Workspace Memory injection for subagent dispatch
+# ============================================================================
+#
+# Task #4 of the Project Context refactor: subagents must receive the same
+# ## Workspace Memory block the orchestrator gets at SessionStart. Injection
+# happens inside _adapt_task via _append_workspace_memory, which reuses
+# session_manifest.build_workspace_memory_block as the single source of truth.
+# ============================================================================
+
+
+class TestAppendWorkspaceMemory:
+    """Tests for _append_workspace_memory helper -- the module-level
+    function called by _adapt_task to inject curated workspace memory
+    into the subagent's additionalContext.
+    """
+
+    def test_appends_block_when_memory_present(self, monkeypatch):
+        """When build_workspace_memory_block returns content, it is appended
+        to the original context with a blank-line separator and the
+        ## Workspace Memory header survives intact.
+        """
+        from adapters import claude_code as cc
+
+        sentinel = (
+            "## Workspace Memory (me)\n\n"
+            "Atoms:\n- atom_x: curated knowledge"
+        )
+
+        import modules.session.session_manifest as sm
+        monkeypatch.setattr(
+            sm, "build_workspace_memory_block", lambda *a, **kw: sentinel
+        )
+
+        base_context = "# Project Context\n\nfoo: bar"
+        result = cc._append_workspace_memory(base_context)
+
+        assert "## Workspace Memory" in result, (
+            "Header must survive intact so subagents anchor on the same "
+            "marker the orchestrator does"
+        )
+        assert "atom_x: curated knowledge" in result
+        assert result.startswith(base_context), (
+            "Original context must be preserved at the start"
+        )
+        assert "\n\n## Workspace Memory" in result, (
+            "Blocks must be separated by exactly one blank line to keep "
+            "markdown structure clean"
+        )
+
+    def test_empty_block_leaves_context_unchanged(self, monkeypatch):
+        """When the workspace has no curated memory (CLI emits empty
+        string), the original context is returned verbatim -- no header
+        with placeholder, no dangling newlines."""
+        from adapters import claude_code as cc
+        import modules.session.session_manifest as sm
+        monkeypatch.setattr(
+            sm, "build_workspace_memory_block", lambda *a, **kw: ""
+        )
+
+        base_context = "# Project Context\n\nfoo: bar"
+        result = cc._append_workspace_memory(base_context)
+
+        assert result == base_context, (
+            "Empty memory must not pollute the context with separators or "
+            "headers -- absence is the correct signal"
+        )
+        assert "## Workspace Memory" not in result
+
+    def test_cli_failure_is_silent_and_safe(self, monkeypatch):
+        """When build_workspace_memory_block raises (subprocess timeout,
+        DB error, anything), the dispatch must continue and return the
+        original context. A subagent must never fail to launch because
+        memory injection misbehaved.
+        """
+        from adapters import claude_code as cc
+        import modules.session.session_manifest as sm
+
+        def _boom(*a, **kw):
+            raise RuntimeError("simulated CLI failure")
+
+        monkeypatch.setattr(sm, "build_workspace_memory_block", _boom)
+
+        base_context = "# Project Context\n\nfoo: bar"
+        # Must not raise
+        result = cc._append_workspace_memory(base_context)
+        assert result == base_context, (
+            "On CLI failure the helper must degrade gracefully -- the "
+            "fail-safe contract is the whole point of the wrapper"
+        )
+
+    def test_empty_input_with_memory_returns_only_memory(self, monkeypatch):
+        """When the caller passes an empty context but memory exists,
+        the memory block is returned alone (no leading blank line).
+        Guards against the dispatch path where build_project_context
+        returned None and fallback extraction found nothing -- memory
+        should still surface.
+        """
+        from adapters import claude_code as cc
+        import modules.session.session_manifest as sm
+
+        sentinel = "## Workspace Memory (me)\n\nAtoms:\n- a: b"
+        monkeypatch.setattr(
+            sm, "build_workspace_memory_block", lambda *a, **kw: sentinel
+        )
+
+        result = cc._append_workspace_memory("")
+        assert result == sentinel, (
+            "Empty input must not leave a leading \\n\\n separator -- the "
+            "block stands on its own"
+        )
