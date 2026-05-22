@@ -2,7 +2,6 @@
 
 Handles:
 - build_project_context: builds context string for additionalContext injection
-- check_pending_updates_threshold: warns when pending updates accumulate
 - check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
 - consume_anomaly_flag: reads and deletes anomaly signal flags
 """
@@ -184,40 +183,6 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
             "writable_sections_count": len(writable_sections),
         }),
     })
-
-
-def check_pending_updates_threshold() -> str:
-    """
-    Check if pending updates count exceeds threshold and return warning text.
-
-    Returns warning string to inject into prompt, or empty string if below threshold.
-    Must NEVER block or slow down context injection (target: <50ms).
-    """
-    try:
-        threshold = int(os.environ.get("PENDING_UPDATE_THRESHOLD", "10"))
-
-        # Fast path: try to read index directly (no module import)
-        index_path = Path(".claude/project-context/pending-updates/pending-index.json")
-        if not index_path.exists():
-            return ""
-
-        with open(index_path, 'r') as f:
-            index_data = json.load(f)
-
-        pending_count = index_data.get("pending_count", 0)
-        if pending_count < threshold:
-            return ""
-
-        logger.info(f"Pending updates threshold reached: {pending_count} >= {threshold}")
-        return (
-            f"\n# Pending Context Updates Warning\n"
-            f"There are {pending_count} pending context update suggestions awaiting review. "
-            f"Run `python3 tools/review/review_engine.py list` to review them.\n\n"
-        )
-
-    except Exception as e:
-        logger.debug(f"Pending updates check failed (non-fatal): {e}")
-        return ""
 
 
 def check_recent_critical_anomalies() -> str:
@@ -404,9 +369,6 @@ def build_project_context(
         except Exception as exc:
             logger.debug("Anchor extraction failed (non-fatal): %s", exc)
 
-        # Check pending update count (non-blocking, fast path)
-        pending_warning = check_pending_updates_threshold()
-
         # Build context update reminder for empty writable sections
         update_reminder = build_context_update_reminder(
             subagent_type, project_agents, hooks_dir
@@ -489,7 +451,7 @@ def build_project_context(
 # Permissions
 
 {write_perms_mkv}
-{memory_index_section}{pending_warning}{update_reminder}{metadata_section}{historical_section}"""
+{memory_index_section}{update_reminder}{metadata_section}{historical_section}"""
 
         # Append anomaly signal flag (consume once)
         context_string = consume_anomaly_flag(context_string)

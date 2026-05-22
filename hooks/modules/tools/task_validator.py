@@ -46,9 +46,10 @@ AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia-ops:{a}" for a in _BASE_AGENTS]
 NATIVE_AGENTS = ["Explore", "Plan", "general-purpose", "claude-code-guide"]
 
 # Meta-agents that don't require context_provider.
-# gaia-system was removed: it now receives context injection (has a contract
-# in context-contracts.json) so it can see project state when working on
-# Gaia internals.
+# gaia-system is NOT a meta-agent: it has project_context_contracts rows
+# seeded into ~/.gaia/gaia.db from its frontmatter (task #1) with
+# readable_sections = [project_identity, stack], so it receives normal
+# context injection when working on Gaia internals.
 META_AGENTS = list(NATIVE_AGENTS)
 
 # T3_KEYWORDS is test-only: used by tests and cross-layer consistency checks
