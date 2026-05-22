@@ -10,8 +10,6 @@ Handles:
 import json
 import logging
 import os
-import shutil
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +20,19 @@ from .anchor_tracker import extract_anchors, save_anchors
 from .contracts_loader import build_context_update_reminder
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_context_provider_importable(hooks_dir: Path) -> None:
+    """Make tools.context.context_provider importable from in-process callers.
+
+    The hooks live under hooks/; the gaia-ops tools package sits as a sibling
+    at the same level. We add the package root (hooks_dir.parent) to sys.path
+    so ``from tools.context.context_provider import ...`` resolves regardless
+    of cwd.
+    """
+    pkg_root = str(hooks_dir.parent)
+    if pkg_root not in sys.path:
+        sys.path.insert(0, pkg_root)
 
 # Inline explanations for every field the investigation brief can contain.
 # Appended as YAML comments when the brief is rendered via _dict_to_yaml_annotated().
@@ -77,20 +88,6 @@ def _dict_to_yaml_annotated(d: dict, descriptions: dict[str, str], indent: int =
         else:
             lines.append(f"{prefix}{key}: {value}{comment}")
     return "\n".join(lines)
-
-
-def _find_python() -> str:
-    """Return the Python 3 command name for this platform.
-
-    Tries ``python3`` first (Linux/macOS), then ``python`` (Windows).
-    Falls back to ``sys.executable`` (the current interpreter) as a
-    last resort -- this always works since hooks are already running
-    under Python.
-    """
-    for cmd in ("python3", "python"):
-        if shutil.which(cmd):
-            return cmd
-    return sys.executable
 
 
 def _dict_to_yaml(d, indent: int = 0) -> str:
@@ -374,41 +371,25 @@ def build_project_context(
         return None, {}
 
     try:
-        # Find context_provider.py
-        context_provider_paths = [
-            hooks_dir.parent / "tools" / "context" / "context_provider.py",  # plugin root (works in both modes)
-            Path(".claude/tools/context/context_provider.py"),                # npm symlink fallback
-        ]
-
-        context_provider = None
-        for path in context_provider_paths:
-            if path.exists():
-                context_provider = path
-                break
-
-        if not context_provider:
-            logger.warning("context_provider.py not found, skipping context injection")
-            return None, {}
-
-        # Execute context_provider.py to get filtered context
-        logger.info(f"Building context for {subagent_type}...")
-        result = subprocess.run(
-            [_find_python(), str(context_provider), subagent_type, prompt],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=os.getcwd()
-        )
-
-        if result.returncode != 0:
-            logger.error(f"context_provider.py failed: {result.stderr}")
-            return None, {}
-
-        # Parse context JSON
+        # Build context payload in-process. context_provider lives at
+        # <pkg_root>/tools/context/context_provider.py and is invoked directly
+        # rather than as a subprocess, saving ~100-200ms per dispatch and
+        # removing the stdout/stderr parsing path.
+        _ensure_context_provider_importable(hooks_dir)
         try:
-            context_payload = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse context JSON: {e}")
+            from tools.context.context_provider import build_context_payload
+        except ImportError as exc:
+            logger.warning("context_provider import failed, skipping context injection: %s", exc)
+            return None, {}
+
+        logger.info(f"Building context for {subagent_type}...")
+        try:
+            context_payload = build_context_payload(
+                agent_name=subagent_type,
+                user_task=prompt,
+            )
+        except Exception as exc:
+            logger.error("build_context_payload failed: %s", exc, exc_info=True)
             return None, {}
 
         # Extract and save context anchors for hit tracking
@@ -548,9 +529,6 @@ def build_project_context(
 
         return context_string, telemetry
 
-    except subprocess.TimeoutExpired:
-        logger.error("context_provider.py timed out (15s)")
-        return None, {}
     except Exception as e:
         logger.error(f"Error building context: {e}", exc_info=True)
         return None, {}
