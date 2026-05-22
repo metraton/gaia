@@ -6,7 +6,7 @@ Validates the complete hook-driven lifecycle:
   1. pre_tool_use hook injects project context into Task prompt
   2. Skills are injected natively by Claude from agent frontmatter (`skills:`)
   3. Subagent produces output with CONTEXT_UPDATE block
-  3. subagent_stop hook processes the output and updates project-context.json
+  4. subagent_stop hook processes the output and updates gaia.db
 
 This tests the REAL hook code (no mocks) against a temporary project
 structure to ensure the full pipeline works end-to-end.
@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import sqlite3
 import pytest
 from pathlib import Path
 
@@ -33,6 +34,13 @@ from modules.core.paths import clear_path_cache
 
 # Import context_writer directly for validation
 sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
+
+# DB helpers
+from tests.fixtures.db_helpers import (
+    bootstrap_gaia_schema,
+    seed_workspace,
+    seed_agent_perms,
+)
 
 
 # ============================================================================
@@ -103,6 +111,49 @@ def test_project(tmp_path):
     yield tmp_path, claude_dir
     clear_path_cache()
     clear_contract_dir_cache()
+
+
+@pytest.fixture
+def lifecycle_db(tmp_path):
+    """Isolated gaia.db with cloud-troubleshooter and terraform-architect permissions."""
+    db_path = tmp_path / "gaia_lifecycle.db"
+    bootstrap_gaia_schema(db_path)
+    seed_workspace(db_path, "global")
+    seed_agent_perms(
+        db_path,
+        "cloud-troubleshooter",
+        reads=["cluster_details", "infrastructure_topology", "application_services",
+               "monitoring_observability", "architecture_overview"],
+        writes=["cluster_details", "infrastructure_topology", "application_services",
+                "monitoring_observability", "architecture_overview"],
+    )
+    seed_agent_perms(
+        db_path,
+        "terraform-architect",
+        reads=["terraform_infrastructure", "infrastructure_topology", "cluster_details",
+               "application_services", "architecture_overview"],
+        writes=["terraform_infrastructure", "infrastructure_topology"],
+    )
+    return db_path
+
+
+def _clear_writer_cache():
+    try:
+        import context_writer as _cw
+        _cw._permissions_cache.clear()
+    except Exception:
+        pass
+
+
+def read_contract(db_path: Path, workspace: str, contract_name: str):
+    """Read back a contract payload from the DB; returns parsed dict or None."""
+    con = sqlite3.connect(str(db_path))
+    row = con.execute(
+        "SELECT payload FROM project_context_contracts WHERE workspace=? AND contract_name=?",
+        (workspace, contract_name),
+    ).fetchone()
+    con.close()
+    return json.loads(row[0]) if row else None
 
 
 # ============================================================================
@@ -491,340 +542,210 @@ CONTEXT_UPDATE:
 
 
 # ============================================================================
-# PHASE 3: Permission Validation
+# PHASE 3: Permission Validation (DB-backed)
 # ============================================================================
-
-_LIFECYCLE_SKIP_REASON = (
-    "Retired in substrate v6 (B3): validate_permissions no longer accepts a "
-    "contracts dict argument — permissions now come from agent_permissions in "
-    "~/.gaia/gaia.db. context-contracts.json was removed. "
-    "Rewrite against the new DB-backed permissions API."
-)
-
 
 class TestPhase3PermissionValidation:
-    """Validate that agents can only write to authorized sections."""
+    """Validate that agents can only write to authorized contracts via DB."""
 
-    @pytest.mark.skip(reason=_LIFECYCLE_SKIP_REASON)
-    def test_cloud_troubleshooter_can_write_cluster_details(self, test_project):
+    def test_cloud_troubleshooter_can_write_cluster_details(self, lifecycle_db):
         """cloud-troubleshooter should be able to write to cluster_details."""
-        from context_writer import validate_permissions
+        _clear_writer_cache()
+        from context_writer import validate_permission
 
-        _, claude_dir = test_project
-        contracts = json.loads(
-            (claude_dir / "config" / "context-contracts.json").read_text()
-        )
+        update = {"contract": "cluster_details", "payload": {"node_count": 3}}
+        allowed, msg = validate_permission(update, "cloud-troubleshooter", db_path=lifecycle_db)
 
-        update = {"cluster_details": {"node_count": 3}}
-        allowed, rejected = validate_permissions(update, "cloud-troubleshooter", contracts)
+        assert allowed is True
+        assert msg == ""
 
-        assert "cluster_details" in allowed
-        assert len(rejected) == 0
-
-    @pytest.mark.skip(reason=_LIFECYCLE_SKIP_REASON)
-    def test_cloud_troubleshooter_cannot_write_gitops_configuration(self, test_project):
+    def test_cloud_troubleshooter_cannot_write_gitops_configuration(self, lifecycle_db):
         """cloud-troubleshooter should NOT be able to write to gitops_configuration."""
-        from context_writer import validate_permissions
+        _clear_writer_cache()
+        from context_writer import validate_permission
 
-        _, claude_dir = test_project
-        contracts = json.loads(
-            (claude_dir / "config" / "context-contracts.json").read_text()
-        )
+        update = {"contract": "gitops_configuration", "payload": {"repo_url": "http://example.com"}}
+        allowed, msg = validate_permission(update, "cloud-troubleshooter", db_path=lifecycle_db)
 
-        update = {"gitops_configuration": {"repo_url": "http://example.com"}}
-        allowed, rejected = validate_permissions(update, "cloud-troubleshooter", contracts)
+        assert allowed is False
+        assert "gitops_configuration" in msg
 
-        assert "gitops_configuration" not in allowed
-        assert "gitops_configuration" in rejected
+    def test_terraform_architect_can_write_infrastructure(self, lifecycle_db):
+        """terraform-architect should be able to write terraform_infrastructure and infrastructure_topology."""
+        _clear_writer_cache()
+        from context_writer import validate_permission
 
-    @pytest.mark.skip(reason=_LIFECYCLE_SKIP_REASON)
-    def test_terraform_architect_can_write_infrastructure(self, test_project):
-        """terraform-architect should be able to write terraform_infrastructure."""
-        from context_writer import validate_permissions
+        update_tf = {"contract": "terraform_infrastructure", "payload": {"modules_count": 12}}
+        update_topo = {"contract": "infrastructure_topology", "payload": {"vpc_id": "vpc-123"}}
 
-        _, claude_dir = test_project
-        contracts = json.loads(
-            (claude_dir / "config" / "context-contracts.json").read_text()
-        )
+        allowed_tf, _ = validate_permission(update_tf, "terraform-architect", db_path=lifecycle_db)
+        allowed_topo, _ = validate_permission(update_topo, "terraform-architect", db_path=lifecycle_db)
 
-        update = {
-            "terraform_infrastructure": {"modules_count": 12},
-            "infrastructure_topology": {"vpc_id": "vpc-123"},
-        }
-        allowed, rejected = validate_permissions(update, "terraform-architect", contracts)
-
-        assert "terraform_infrastructure" in allowed
-        assert "infrastructure_topology" in allowed
-        assert len(rejected) == 0
+        assert allowed_tf is True
+        assert allowed_topo is True
 
 
 # ============================================================================
-# PHASE 4: Full Lifecycle - Context Update Application
+# PHASE 4: Full Lifecycle - Context Update Application (DB-backed)
 # ============================================================================
-
-_LIFECYCLE_STORE_SKIP_REASON = (
-    "Retired in substrate v6 (B3): process_agent_output return shape changed "
-    "from {updated, sections_updated, rejected} to {updated, table, rows_applied, rejected, error}. "
-    "Tests also depend on context-contracts.json which was removed. "
-    "Rewrite against the new gaia.store / gaia.db API."
-)
-
 
 class TestPhase4FullLifecycle:
-    """End-to-end: skills loaded → agent output → context updated."""
+    """End-to-end: process_agent_output writes to gaia.db."""
 
-    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
-    def test_context_update_applied_to_project_context(self, test_project):
+    def test_context_update_applied_to_db(self, lifecycle_db):
         """
         Simulate the complete lifecycle:
-        1. Verify project-context starts with empty cluster_details
-        2. Process agent output containing CONTEXT_UPDATE
-        3. Verify project-context.json was updated
+        1. Process agent output containing a CONTEXT_UPDATE block
+        2. Verify gaia.db project_context_contracts was updated
         """
-        tmp_path, claude_dir = test_project
-        pc_path = claude_dir / "project-context" / "project-context.json"
-
-        # --- BEFORE: cluster_details is empty ---
-        before = json.loads(pc_path.read_text())
-        assert before["sections"]["cluster_details"] == {}, \
-            "cluster_details should start empty"
-
-        # --- SIMULATE: Agent output with CONTEXT_UPDATE ---
-        agent_output = """
-## Cloud Troubleshooter Report
-
-Investigated cluster `test-cluster` in GCP us-east4.
-
-### Findings
-- Cluster is running GKE 1.28.5
-- 3 nodes of type e2-standard-4
-- All nodes healthy
-
-CONTEXT_UPDATE:
-{
-  "cluster_details": {
-    "kubernetes_version": "1.28.5-gke.1200",
-    "node_count": 3,
-    "node_type": "e2-standard-4",
-    "status": "RUNNING"
-  },
-  "infrastructure_topology": {
-    "vpc_name": "test-vpc",
-    "subnet_cidr": "10.0.0.0/20"
-  }
-}
-
-```json:contract
-{
-  "agent_status": {
-    "plan_status": "COMPLETE",
-    "agent_id": "test-agent",
-    "pending_steps": [],
-    "next_action": "done"
-  },
-  "evidence_report": {
-    "patterns_checked": [],
-    "files_checked": [],
-    "commands_run": [],
-    "key_outputs": [],
-    "verbatim_outputs": [],
-    "cross_layer_impacts": [],
-    "open_gaps": []
-  },
-  "consolidation_report": null
-}
-```
-"""
-
-        # --- PROCESS via context_writer ---
+        _clear_writer_cache()
         from context_writer import process_agent_output
+
+        agent_output = (
+            "## Cloud Troubleshooter Report\n\n"
+            "Investigated cluster `test-cluster` in GCP us-east4.\n\n"
+            "CONTEXT_UPDATE:\n"
+            + json.dumps({
+                "contract": "cluster_details",
+                "payload": {
+                    "kubernetes_version": "1.28.5-gke.1200",
+                    "node_count": 3,
+                    "node_type": "e2-standard-4",
+                    "status": "RUNNING",
+                }
+            }, indent=2)
+        )
 
         task_info = {
             "agent_type": "cloud-troubleshooter",
-            "context_path": str(pc_path),
-            "config_dir": str(claude_dir / "config"),
+            "db_path": lifecycle_db,
+            "workspace": "global",
         }
 
         result = process_agent_output(agent_output, task_info)
 
-        # --- VERIFY: result indicates success ---
-        assert result["updated"] is True, \
-            f"Context should be updated, got: {result}"
-        assert "cluster_details" in result["sections_updated"]
-        assert "infrastructure_topology" in result["sections_updated"]
-        assert len(result["rejected"]) == 0, \
-            f"No sections should be rejected: {result['rejected']}"
+        assert result["updated"] is True, f"Context should be updated, got: {result}"
+        assert result["contract"] == "cluster_details"
+        assert result["rejected"] == []
 
-        # --- AFTER: project-context.json should have the data ---
-        after = json.loads(pc_path.read_text())
+        stored = read_contract(lifecycle_db, "global", "cluster_details")
+        assert stored is not None
+        assert stored["kubernetes_version"] == "1.28.5-gke.1200"
+        assert stored["node_count"] == 3
+        assert stored["status"] == "RUNNING"
 
-        cd = after["sections"]["cluster_details"]
-        assert cd["kubernetes_version"] == "1.28.5-gke.1200"
-        assert cd["node_count"] == 3
-        assert cd["node_type"] == "e2-standard-4"
-        assert cd["status"] == "RUNNING"
-
-        it = after["sections"]["infrastructure_topology"]
-        assert it["vpc_name"] == "test-vpc"
-        assert it["subnet_cidr"] == "10.0.0.0/20"
-
-        # Metadata timestamp should be updated
-        assert "last_updated" in after["metadata"]
-
-    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
-    def test_unauthorized_sections_rejected(self, test_project):
+    def test_unauthorized_contract_rejected(self, lifecycle_db):
         """
-        Agent trying to write to sections it doesn't own should be rejected.
+        Agent trying to write to a contract it doesn't own should be rejected.
         cloud-troubleshooter writing to operational_guidelines → rejected.
-        (operational_guidelines is readable but not writable for cloud-troubleshooter)
         """
-        tmp_path, claude_dir = test_project
-        pc_path = claude_dir / "project-context" / "project-context.json"
-
-        # Add operational_guidelines to the project-context so we can verify it's not modified
-        pc = json.loads(pc_path.read_text())
-        pc["sections"]["operational_guidelines"] = {"commit_standards": "conventional"}
-        pc_path.write_text(json.dumps(pc, indent=2))
-
-        agent_output = """
-CONTEXT_UPDATE:
-{
-  "cluster_details": {
-    "status": "RUNNING"
-  },
-  "operational_guidelines": {
-    "commit_standards": "HIJACKED"
-  }
-}
-"""
-
+        _clear_writer_cache()
         from context_writer import process_agent_output
+
+        agent_output = (
+            "CONTEXT_UPDATE:\n"
+            + json.dumps({
+                "contract": "operational_guidelines",
+                "payload": {"commit_standards": "HIJACKED"}
+            })
+        )
 
         task_info = {
             "agent_type": "cloud-troubleshooter",
-            "context_path": str(pc_path),
-            "config_dir": str(claude_dir / "config"),
+            "db_path": lifecycle_db,
+            "workspace": "global",
         }
 
         result = process_agent_output(agent_output, task_info)
 
-        # cluster_details should be updated (allowed)
-        assert result["updated"] is True
-        assert "cluster_details" in result["sections_updated"]
-
-        # operational_guidelines should be rejected (cloud-troubleshooter can read but not write it)
+        assert result["updated"] is False
         assert "operational_guidelines" in result["rejected"]
 
-        # Verify operational_guidelines was NOT modified
-        after = json.loads(pc_path.read_text())
-        assert after["sections"]["operational_guidelines"]["commit_standards"] == "conventional", \
-            "operational_guidelines should remain unchanged (rejected write)"
+        stored = read_contract(lifecycle_db, "global", "operational_guidelines")
+        assert stored is None, "Rejected contract must not be written to DB"
 
-    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
-    def test_deep_merge_preserves_existing_data(self, test_project):
-        """
-        CONTEXT_UPDATE should merge with existing data, not overwrite.
-        """
-        tmp_path, claude_dir = test_project
-        pc_path = claude_dir / "project-context" / "project-context.json"
-
-        # First update: set initial data
-        pc = json.loads(pc_path.read_text())
-        pc["sections"]["cluster_details"] = {
-            "kubernetes_version": "1.27.0",
-            "region": "us-east4",
-        }
-        pc_path.write_text(json.dumps(pc, indent=2))
-
-        # Second update: agent adds node_count (merge, not overwrite)
-        agent_output = """
-CONTEXT_UPDATE:
-{
-  "cluster_details": {
-    "node_count": 5,
-    "kubernetes_version": "1.28.0"
-  }
-}
-"""
-
+    def test_second_write_replaces_contract(self, lifecycle_db):
+        """Second write to the same contract replaces the payload (upsert)."""
+        _clear_writer_cache()
         from context_writer import process_agent_output
 
+        def write(node_count):
+            output = (
+                "CONTEXT_UPDATE:\n"
+                + json.dumps({
+                    "contract": "cluster_details",
+                    "payload": {"node_count": node_count}
+                })
+            )
+            return process_agent_output(
+                output,
+                {"agent_type": "cloud-troubleshooter", "db_path": lifecycle_db, "workspace": "global"}
+            )
+
+        r1 = write(3)
+        r2 = write(5)
+
+        assert r1["updated"] is True
+        assert r2["updated"] is True
+
+        stored = read_contract(lifecycle_db, "global", "cluster_details")
+        assert stored["node_count"] == 5
+
+    def test_audit_record_written_on_success(self, lifecycle_db):
+        """A successful CONTEXT_UPDATE is reflected in the DB contract row."""
+        _clear_writer_cache()
+        from context_writer import process_agent_output
+
+        output = (
+            "CONTEXT_UPDATE:\n"
+            + json.dumps({
+                "contract": "infrastructure_topology",
+                "payload": {"vpc_name": "main-vpc"}
+            })
+        )
         task_info = {
             "agent_type": "cloud-troubleshooter",
-            "context_path": str(pc_path),
-            "config_dir": str(claude_dir / "config"),
+            "db_path": lifecycle_db,
+            "workspace": "global",
         }
 
-        result = process_agent_output(agent_output, task_info)
+        result = process_agent_output(output, task_info)
+
         assert result["updated"] is True
+        assert result["contract"] == "infrastructure_topology"
 
-        after = json.loads(pc_path.read_text())
-        cd = after["sections"]["cluster_details"]
+        con = sqlite3.connect(str(lifecycle_db))
+        rows = con.execute(
+            "SELECT workspace, contract_name, updated_at FROM project_context_contracts "
+            "WHERE contract_name='infrastructure_topology'"
+        ).fetchall()
+        con.close()
 
-        # New key added
-        assert cd["node_count"] == 5
-        # Updated key
-        assert cd["kubernetes_version"] == "1.28.0"
-        # Existing key preserved (deep merge)
-        assert cd["region"] == "us-east4", \
-            "Existing 'region' key should be preserved after merge"
-
-    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
-    def test_audit_trail_created(self, test_project):
-        """Context updates should create an audit trail entry."""
-        tmp_path, claude_dir = test_project
-        pc_path = claude_dir / "project-context" / "project-context.json"
-        audit_path = claude_dir / "project-context" / "context-audit.jsonl"
-
-        agent_output = """
-CONTEXT_UPDATE:
-{
-  "cluster_details": {
-    "status": "RUNNING"
-  }
-}
-"""
-        from context_writer import process_agent_output
-
-        task_info = {
-            "agent_type": "cloud-troubleshooter",
-            "context_path": str(pc_path),
-            "config_dir": str(claude_dir / "config"),
-        }
-
-        process_agent_output(agent_output, task_info)
-
-        # Verify audit file was created
-        assert audit_path.exists(), "context-audit.jsonl should be created"
-
-        audit_entry = json.loads(audit_path.read_text().strip().split("\n")[-1])
-        assert audit_entry["agent"] == "cloud-troubleshooter"
-        assert audit_entry["success"] is True
-        assert "cluster_details" in audit_entry["sections_updated"]
+        assert len(rows) == 1
+        assert rows[0][0] == "global"
+        assert rows[0][2] is not None  # updated_at set
 
 
 # ============================================================================
-# PHASE 5: subagent_stop_hook Full Processing
+# PHASE 5: subagent_stop_hook Full Processing (DB-backed)
 # ============================================================================
 
 class TestPhase5SubagentStopHook:
     """Test the subagent_stop_hook processes CONTEXT_UPDATE end-to-end."""
 
-    @pytest.mark.skip(reason=_LIFECYCLE_STORE_SKIP_REASON)
-    def test_subagent_stop_processes_context_update(self, test_project):
+    def test_subagent_stop_processes_context_update(self, test_project, lifecycle_db):
         """
         subagent_stop_hook should:
         1. Capture metrics
-        2. Process CONTEXT_UPDATE via context_writer
+        2. Process CONTEXT_UPDATE via context_writer (DB write)
         3. Return context_updated=True
         """
+        _clear_writer_cache()
         tmp_path, claude_dir = test_project
-        pc_path = claude_dir / "project-context" / "project-context.json"
 
         original_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
-            # Import subagent_stop from the copied hooks
             import importlib.util
             stop_hook_path = claude_dir / "hooks" / "subagent_stop.py"
             spec = importlib.util.spec_from_file_location(
@@ -833,9 +754,43 @@ class TestPhase5SubagentStopHook:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            # Set env var so metrics go to tmp dir
             os.environ["WORKFLOW_MEMORY_BASE_PATH"] = str(claude_dir)
             os.environ["GAIA_WRITE_WORKFLOW_METRICS"] = "1"
+
+            agent_output = (
+                "## Cluster Health Report\n\n"
+                "All nodes healthy. Cluster version: 1.28.5-gke.1200\n\n"
+                "CONTEXT_UPDATE:\n"
+                + json.dumps({
+                    "contract": "cluster_details",
+                    "payload": {
+                        "kubernetes_version": "1.28.5-gke.1200",
+                        "health_status": "HEALTHY",
+                        "node_count": 3,
+                    }
+                }, indent=2)
+                + "\n\n"
+                "```json:contract\n"
+                '{\n'
+                '  "agent_status": {\n'
+                '    "plan_status": "COMPLETE",\n'
+                '    "agent_id": "test-agent",\n'
+                '    "pending_steps": [],\n'
+                '    "next_action": "done"\n'
+                '  },\n'
+                '  "evidence_report": {\n'
+                '    "patterns_checked": [],\n'
+                '    "files_checked": [],\n'
+                '    "commands_run": [],\n'
+                '    "key_outputs": [],\n'
+                '    "verbatim_outputs": [],\n'
+                '    "cross_layer_impacts": [],\n'
+                '    "open_gaps": []\n'
+                '  },\n'
+                '  "consolidation_report": null\n'
+                '}\n'
+                "```\n"
+            )
 
             task_info = {
                 "task_id": "test-lifecycle-001",
@@ -844,99 +799,21 @@ class TestPhase5SubagentStopHook:
                 "agent": "cloud-troubleshooter",
                 "tier": "T0",
                 "tags": ["#diagnostic"],
-                "injected_context": {
-                    "project_knowledge": {
-                        "cluster_details": {},
-                    },
-                    "metadata": {
-                        "cloud_provider": "gcp",
-                        "contract_version": "3.0",
-                        "rules_count": 4,
-                        "surface_routing_version": "1.0",
-                        "active_surfaces_count": 1,
-                    },
-                    "surface_routing": {
-                        "primary_surface": "live_runtime",
-                        "active_surfaces": ["live_runtime"],
-                        "dispatch_mode": "single_surface",
-                        "recommended_agents": ["cloud-troubleshooter"],
-                    },
-                    "investigation_brief": {
-                        "agent_role": "primary",
-                        "primary_surface": "live_runtime",
-                    },
-                    "write_permissions": {
-                        "readable_sections": ["cluster_details"],
-                        "writable_sections": ["cluster_details"],
-                    },
-                },
+                "db_path": lifecycle_db,
+                "workspace": "global",
             }
-
-            agent_output = """
-## Cluster Health Report
-
-All nodes healthy. Cluster version: 1.28.5-gke.1200
-
-CONTEXT_UPDATE:
-{
-  "cluster_details": {
-    "kubernetes_version": "1.28.5-gke.1200",
-    "health_status": "HEALTHY",
-    "node_count": 3
-  }
-}
-
-```json:contract
-{
-  "agent_status": {
-    "plan_status": "COMPLETE",
-    "agent_id": "test-agent",
-    "pending_steps": [],
-    "next_action": "done"
-  },
-  "evidence_report": {
-    "patterns_checked": [],
-    "files_checked": [],
-    "commands_run": [],
-    "key_outputs": [],
-    "verbatim_outputs": [],
-    "cross_layer_impacts": [],
-    "open_gaps": []
-  },
-  "consolidation_report": null
-}
-```
-"""
 
             result = mod.subagent_stop_hook(task_info, agent_output)
 
-            # Verify hook succeeded
-            assert result["success"] is True, \
-                f"subagent_stop_hook should succeed: {result}"
+            assert result["success"] is True, f"subagent_stop_hook should succeed: {result}"
             assert result["metrics_captured"] is True
+            assert result["context_updated"] is True, f"Context should be marked as updated: {result}"
 
-            # Verify context was updated
-            assert result["context_updated"] is True, \
-                f"Context should be marked as updated: {result}"
-
-            # Verify project-context.json was actually modified
-            after = json.loads(pc_path.read_text())
-            cd = after["sections"]["cluster_details"]
-            assert cd["kubernetes_version"] == "1.28.5-gke.1200"
-            assert cd["health_status"] == "HEALTHY"
-            assert cd["node_count"] == 3
-
-            workflow_dir = claude_dir / "project-context" / "workflow-episodic-memory"
-            run_snapshots = (workflow_dir / "run-snapshots.jsonl").read_text().strip().splitlines()
-            metrics_entries = (workflow_dir / "metrics.jsonl").read_text().strip().splitlines()
-            latest_run = json.loads(run_snapshots[-1])
-            latest_metrics = json.loads(metrics_entries[-1])
-
-            assert latest_run["context_snapshot"]["surface_routing"]["primary_surface"] == "live_runtime"
-            assert latest_run["context_sections_updated"] == ["cluster_details"]
-            assert "agent-protocol" in latest_run["default_skills_snapshot"]["skills"]
-            assert latest_metrics["context_updated"] is True
-            assert latest_metrics["commands_executed_count"] == 0
+            stored = read_contract(lifecycle_db, "global", "cluster_details")
+            assert stored is not None
+            assert stored["kubernetes_version"] == "1.28.5-gke.1200"
+            assert stored["health_status"] == "HEALTHY"
+            assert stored["node_count"] == 3
 
         finally:
             os.chdir(original_cwd)

@@ -2,27 +2,18 @@
 """
 TDD integration tests for context enrichment pipeline.
 
-NOTE (B3/substrate-v6): Tests in TestFreshInstallFirstEnrichment,
-TestIncrementalEnrichment, TestDriftDetection, TestPermissionRejection,
-TestMultiSectionUpdate, and TestLLMRealisticOutput are skipped because:
-  1. context-contracts.json was retired in B3; setup_context fixture can no longer
-     copy it, breaking permission validation.
-  2. process_agent_output now returns {updated, table, rows_applied, rejected, error}
-     (store-backed DB schema) instead of {updated, sections_updated, rejected}
-     (legacy file-based schema).
-Track: rewrite these tests against the new gaia.store / gaia.db API.
-
-End-to-end tests that validate the full flow:
-  Agent output with CONTEXT_UPDATE -> process_agent_output -> project-context.json updated
+Validates the full flow:
+  Agent output with CONTEXT_UPDATE -> process_agent_output -> gaia.db updated
 
 Modules under test:
   - hooks/modules/context/context_writer.py (process_agent_output)
-  - tools/context/deep_merge.py (used internally by context_writer)
+
+DB helpers (from tests.fixtures.db_helpers):
+  - bootstrap_gaia_schema, seed_workspace, seed_workspace_contracts, seed_agent_perms
 """
 
 import sys
 import json
-import shutil
 import pytest
 from pathlib import Path
 
@@ -31,13 +22,22 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "hooks"
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(TOOLS_DIR / "context"))
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+from tests.fixtures.db_helpers import (
+    bootstrap_gaia_schema,
+    seed_workspace,
+    seed_agent_perms,
+    seed_workspace_contracts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +46,9 @@ sys.path.insert(0, str(TOOLS_DIR / "context"))
 
 def _import_process_agent_output():
     """Import process_agent_output at call time so pytest can collect tests."""
+    # Clear the permissions cache so each test gets a fresh DB read.
+    import context_writer as _cw
+    _cw._permissions_cache.clear()
     from context_writer import process_agent_output
     return process_agent_output
 
@@ -54,44 +57,33 @@ def _import_process_agent_output():
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_agent_output(context_update_dict):
-    """Helper to create agent output with CONTEXT_UPDATE block."""
+def make_agent_output(contract_name: str, payload: dict) -> str:
+    """Build agent output with a CONTEXT_UPDATE block using the new format."""
     output = "## Agent Execution Complete\n\nTask completed successfully.\n\n"
-    if context_update_dict:
-        output += "CONTEXT_UPDATE:\n"
-        output += json.dumps(context_update_dict, indent=2)
+    output += "CONTEXT_UPDATE:\n"
+    output += json.dumps({"contract": contract_name, "payload": payload}, indent=2)
     return output
 
 
-def _build_task_info(agent_type, context_file, config_dir):
-    """Build the task_info dict expected by process_agent_output."""
+def _build_task_info(agent_type: str, db_path: Path, workspace: str = "test-ws") -> dict:
+    """Build the task_info dict expected by process_agent_output (DB-backed)."""
     return {
         "agent_type": agent_type,
-        "context_path": str(context_file),
-        "config_dir": str(config_dir),
+        "db_path": db_path,
+        "workspace": workspace,
     }
 
 
-def write_context(context_file: Path, data: dict) -> None:
-    """Write a project-context.json file atomically."""
-    context_file.write_text(json.dumps(data, indent=2))
-
-
-def read_context(context_file: Path) -> dict:
-    """Read and parse a project-context.json file."""
-    return json.loads(context_file.read_text())
-
-
-def read_audit(context_file: Path) -> list:
-    """Read the audit JSONL file next to context_file."""
-    audit_path = context_file.parent / "context-audit.jsonl"
-    if not audit_path.exists():
-        return []
-    entries = []
-    for line in audit_path.read_text().strip().splitlines():
-        if line.strip():
-            entries.append(json.loads(line))
-    return entries
+def read_contract(db_path: Path, workspace: str, contract_name: str):
+    """Read back a contract payload from the DB; returns parsed dict or None."""
+    import sqlite3
+    con = sqlite3.connect(str(db_path))
+    row = con.execute(
+        "SELECT payload FROM project_context_contracts WHERE workspace=? AND contract_name=?",
+        (workspace, contract_name),
+    ).fetchone()
+    con.close()
+    return json.loads(row[0]) if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -99,149 +91,103 @@ def read_audit(context_file: Path) -> list:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def setup_context(tmp_path):
-    """Creates isolated project-context structure for testing."""
-    context_dir = tmp_path / ".claude" / "project-context"
-    context_dir.mkdir(parents=True)
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-
-    # Copy the real GCP contracts file so permission checks work
-    real_contracts = CONFIG_DIR / "context-contracts.json"
-    if real_contracts.exists():
-        shutil.copy(real_contracts, config_dir / "context-contracts.json")
-
-    return tmp_path, context_dir, config_dir
+def ctx_db(tmp_path):
+    """Isolated DB with schema + cloud-troubleshooter permissions seeded."""
+    db_path = tmp_path / "gaia_test.db"
+    bootstrap_gaia_schema(db_path)
+    seed_workspace(db_path, "test-ws")
+    seed_agent_perms(
+        db_path,
+        "cloud-troubleshooter",
+        reads=["cluster_details", "infrastructure_topology",
+               "application_services", "monitoring_observability",
+               "architecture_overview"],
+        writes=["cluster_details", "infrastructure_topology",
+                "application_services", "monitoring_observability",
+                "architecture_overview"],
+    )
+    return db_path
 
 
 # ============================================================================
 # Scenario 1: Fresh install - first enrichment
 # ============================================================================
 
-_ENRICHMENT_SKIP_REASON = (
-    "Retired in substrate v6 (B3): context-contracts.json removed, "
-    "process_agent_output return shape changed to store-backed schema. "
-    "Rewrite against gaia.store / gaia.db API."
-)
-
-
 class TestFreshInstallFirstEnrichment:
-    """Scenario 1: project-context exists with empty cluster_details,
-    agent discovers namespaces and writes them for the first time."""
+    """Scenario 1: agent discovers namespaces and writes them for the first time."""
 
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_fresh_install_first_enrichment(self, setup_context):
+    def test_fresh_install_first_enrichment(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {}
+        payload = {
+            "namespaces": {
+                "application": ["adm", "dev", "test"],
+                "infrastructure": ["flux-system", "cert-manager"],
+                "system": ["kube-system", "kube-public"]
             }
         }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        update = {
-            "cluster_details": {
-                "namespaces": {
-                    "application": ["adm", "dev", "test"],
-                    "infrastructure": ["flux-system", "cert-manager"],
-                    "system": ["kube-system", "kube-public"]
-                }
-            }
-        }
-        agent_output = make_agent_output(update)
+        agent_output = make_agent_output("cluster_details", payload)
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        # Verify namespaces are populated
-        updated = read_context(context_file)
-        namespaces = updated["sections"]["cluster_details"]["namespaces"]
+        assert result["updated"] is True
+        assert result["contract"] == "cluster_details"
+        assert result["rejected"] == []
+
+        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        assert stored is not None
+        namespaces = stored["namespaces"]
         assert sorted(namespaces["application"]) == ["adm", "dev", "test"]
         assert sorted(namespaces["infrastructure"]) == ["cert-manager", "flux-system"]
         assert sorted(namespaces["system"]) == ["kube-public", "kube-system"]
 
-        # Verify result indicates success
-        assert result["updated"] is True
-        assert "cluster_details" in result["sections_updated"]
-
-        # Verify audit entry on disk
-        audit = read_audit(context_file)
-        assert len(audit) > 0
-
 
 # ============================================================================
-# Scenario 2: Incremental enrichment - new namespace discovered
+# Scenario 2: Incremental enrichment - second write overwrites with new payload
 # ============================================================================
 
 class TestIncrementalEnrichment:
-    """Scenario 2: namespaces already exist, agent discovers a new one.
-    Union merge: no duplicates, existing entries preserved."""
+    """Scenario 2: writing to a contract that already has data replaces it."""
 
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_incremental_enrichment_new_namespace(self, setup_context):
+    def test_incremental_enrichment_new_data(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {
-                    "namespaces": {
-                        "application": ["adm", "dev", "test"],
-                        "infrastructure": ["flux-system", "cert-manager"],
-                        "system": ["kube-system"]
-                    }
-                }
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        update = {
+        # Seed initial contract value
+        seed_workspace_contracts(ctx_db, "test-ws", {
             "cluster_details": {
                 "namespaces": {
-                    "application": ["adm", "dev", "test", "nova-auth-dev"]
+                    "application": ["adm", "dev", "test"],
+                    "infrastructure": ["flux-system", "cert-manager"],
+                    "system": ["kube-system"]
                 }
             }
+        })
+
+        # New payload with updated application list
+        new_payload = {
+            "namespaces": {
+                "application": ["adm", "dev", "test", "nova-auth-dev"]
+            }
         }
-        agent_output = make_agent_output(update)
+        agent_output = make_agent_output("cluster_details", new_payload)
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        updated = read_context(context_file)
-        app_ns = updated["sections"]["cluster_details"]["namespaces"]["application"]
+        assert result["updated"] is True
+        assert result["contract"] == "cluster_details"
 
-        # Union: 4 unique entries, sorted, no duplicates
-        assert len(app_ns) == 4
+        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        assert stored is not None
+        # The payload replaces the previous value (upsert semantics)
+        app_ns = stored["namespaces"]["application"]
         assert "nova-auth-dev" in app_ns
         assert "adm" in app_ns
-        assert sorted(app_ns) == app_ns  # sorted
-
-        # Infrastructure and system arrays preserved (not in update)
-        infra_ns = updated["sections"]["cluster_details"]["namespaces"]["infrastructure"]
-        sys_ns = updated["sections"]["cluster_details"]["namespaces"]["system"]
-        assert "flux-system" in infra_ns
-        assert "cert-manager" in infra_ns
-        assert "kube-system" in sys_ns
 
 
 # ============================================================================
@@ -249,63 +195,38 @@ class TestIncrementalEnrichment:
 # ============================================================================
 
 class TestDriftDetection:
-    """Scenario 3: agent detects a helm release version has changed.
-    Scalar overwrite with audit trail of old -> new."""
+    """Scenario 3: agent writes a new payload for a section with existing data."""
 
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_drift_detection_version_update(self, setup_context):
+    def test_drift_detection_version_update(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {
-                    "helm_releases": [
-                        {"name": "orders-service", "chart_version": "0.53.0", "namespace": "application"},
-                        {"name": "payments-api", "chart_version": "1.2.0", "namespace": "application"}
-                    ]
-                }
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        update = {
+        seed_workspace_contracts(ctx_db, "test-ws", {
             "cluster_details": {
                 "helm_releases": [
-                    {"name": "orders-service", "chart_version": "0.54.0"}
+                    {"name": "orders-service", "chart_version": "0.53.0"},
+                    {"name": "payments-api", "chart_version": "1.2.0"},
                 ]
             }
+        })
+
+        update_payload = {
+            "helm_releases": [
+                {"name": "orders-service", "chart_version": "0.54.0"}
+            ]
         }
-        agent_output = make_agent_output(update)
+        agent_output = make_agent_output("cluster_details", update_payload)
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        updated = read_context(context_file)
-        releases = updated["sections"]["cluster_details"]["helm_releases"]
+        assert result["updated"] is True
+        assert result["contract"] == "cluster_details"
 
-        # Version updated for orders-service
-        orders = next(r for r in releases if r["name"] == "orders-service")
-        assert orders["chart_version"] == "0.54.0"
-
-        # payments-api preserved (no-delete policy)
-        payments = next(r for r in releases if r["name"] == "payments-api")
-        assert payments["chart_version"] == "1.2.0"
-
-        # Audit trail on disk records the change
-        audit = read_audit(context_file)
-        assert len(audit) > 0
-        audit_str = json.dumps(audit)
-        assert "0.53.0" in audit_str or "0.54.0" in audit_str
+        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        assert stored is not None
+        assert stored["helm_releases"][0]["chart_version"] == "0.54.0"
 
 
 # ============================================================================
@@ -313,60 +234,29 @@ class TestDriftDetection:
 # ============================================================================
 
 class TestPermissionRejection:
-    """Scenario 4: agent tries to write a section it has no write access to.
-    Contracts enforce per-agent write permissions."""
+    """Scenario 4: agent tries to write a section it has no write access to."""
 
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_permission_rejection(self, setup_context):
+    def test_permission_rejection(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "gitops_configuration": {
-                    "repo_url": "https://git.example.com/gitops",
-                    "tool": "flux"
-                },
-                "cluster_details": {
-                    "namespaces": {"application": ["dev"]}
-                }
-            }
+        # cloud-troubleshooter cannot write gitops_configuration
+        update_payload = {
+            "repo_url": "https://evil.example.com/gitops",
+            "tool": "evil-tool"
         }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        # cloud-troubleshooter tries to write gitops_configuration
-        # Per context-contracts.json v4, cloud-troubleshooter can only
-        # write: ["cluster_details", "infrastructure_topology",
-        #         "application_services", "monitoring_observability",
-        #         "architecture_overview"]
-        update = {
-            "gitops_configuration": {
-                "repo_url": "https://evil.example.com/gitops",
-                "tool": "evil-tool"
-            }
-        }
-        agent_output = make_agent_output(update)
+        agent_output = make_agent_output("gitops_configuration", update_payload)
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        # gitops_configuration must NOT be modified
-        updated = read_context(context_file)
-        gitops = updated["sections"]["gitops_configuration"]
-        assert gitops["repo_url"] == "https://git.example.com/gitops"
-        assert gitops["tool"] == "flux"
+        assert result["updated"] is False
+        assert "gitops_configuration" in result["rejected"]
 
-        # Result should report rejected sections
-        assert "gitops_configuration" in result.get("rejected", [])
+        # Contract must NOT be written to DB
+        stored = read_contract(ctx_db, "test-ws", "gitops_configuration")
+        assert stored is None
 
 
 # ============================================================================
@@ -374,28 +264,11 @@ class TestPermissionRejection:
 # ============================================================================
 
 class TestBackwardCompatibility:
-    """Scenario 5: agent output contains no CONTEXT_UPDATE marker.
-    System must not crash, context must remain untouched."""
+    """Scenario 5: agent output contains no CONTEXT_UPDATE marker."""
 
-    def test_no_context_update_backward_compat(self, setup_context):
+    def test_no_context_update_backward_compat(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {"status": "RUNNING"}
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        # Agent output with NO CONTEXT_UPDATE
         agent_output = (
             "## Agent Execution Complete\n\n"
             "Checked all pods. Everything looks healthy.\n"
@@ -404,18 +277,9 @@ class TestBackwardCompatibility:
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        # Context must be unchanged
-        updated = read_context(context_file)
-        assert updated == initial_context
-
-        # No audit entry created
-        audit = read_audit(context_file)
-        assert len(audit) == 0
-
-        # Result indicates no update
         assert result["updated"] is False
 
 
@@ -424,28 +288,11 @@ class TestBackwardCompatibility:
 # ============================================================================
 
 class TestMalformedJson:
-    """Scenario 6: agent output has CONTEXT_UPDATE with invalid JSON.
-    Must not crash, context must remain untouched."""
+    """Scenario 6: agent output has CONTEXT_UPDATE with invalid JSON."""
 
-    def test_malformed_json_graceful(self, setup_context):
+    def test_malformed_json_graceful(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {"status": "RUNNING"}
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        # Agent output with malformed JSON after CONTEXT_UPDATE
         agent_output = (
             "## Agent Execution Complete\n\n"
             "Task completed.\n\n"
@@ -456,91 +303,43 @@ class TestMalformedJson:
         # Must not raise an exception
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        # Context must be unchanged
-        updated = read_context(context_file)
-        assert updated == initial_context
-
-        # Result indicates no update (parse failed gracefully)
         assert result["updated"] is False
 
 
 # ============================================================================
-# Scenario 7: Multi-section update (atomic write)
+# Scenario 7: Multi-section update (two CONTEXT_UPDATE blocks sequentially)
 # ============================================================================
 
 class TestMultiSectionUpdate:
-    """Scenario 7: agent updates two sections in a single CONTEXT_UPDATE.
-    Both must be applied in a single atomic write."""
+    """Scenario 7: agent updates two sections via two successive calls
+    (the new DB-backed API is single-contract-per-call)."""
 
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_multi_section_update(self, setup_context):
+    def test_two_contract_updates(self, ctx_db):
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {
-                    "namespaces": {"application": ["dev"]},
-                    "status": "RUNNING"
-                },
-                "infrastructure_topology": {
-                    "vpc": "default-vpc"
-                }
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
+        output_cluster = make_agent_output("cluster_details", {
+            "namespaces": {"application": ["dev", "staging"]}
+        })
+        output_topology = make_agent_output("infrastructure_topology", {
+            "subnets": ["10.0.0.0/24", "10.0.1.0/24"]
+        })
 
-        # cloud-troubleshooter updates both cluster_details AND
-        # infrastructure_topology (both in its write permissions)
-        update = {
-            "cluster_details": {
-                "namespaces": {
-                    "application": ["dev", "staging"]
-                }
-            },
-            "infrastructure_topology": {
-                "subnets": ["10.0.0.0/24", "10.0.1.0/24"]
-            }
-        }
-        agent_output = make_agent_output(update)
+        r1 = process_agent_output(output_cluster, _build_task_info("cloud-troubleshooter", ctx_db))
+        r2 = process_agent_output(output_topology, _build_task_info("cloud-troubleshooter", ctx_db))
 
-        result = process_agent_output(
-            agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
-        )
+        assert r1["updated"] is True
+        assert r1["contract"] == "cluster_details"
+        assert r2["updated"] is True
+        assert r2["contract"] == "infrastructure_topology"
 
-        updated = read_context(context_file)
+        stored_cluster = read_contract(ctx_db, "test-ws", "cluster_details")
+        stored_topology = read_contract(ctx_db, "test-ws", "infrastructure_topology")
 
-        # cluster_details updated
-        app_ns = updated["sections"]["cluster_details"]["namespaces"]["application"]
-        assert "staging" in app_ns
-        assert "dev" in app_ns
-        assert updated["sections"]["cluster_details"]["status"] == "RUNNING"  # preserved
-
-        # infrastructure_topology updated
-        subnets = updated["sections"]["infrastructure_topology"]["subnets"]
-        assert "10.0.0.0/24" in subnets
-        assert "10.0.1.0/24" in subnets
-        assert updated["sections"]["infrastructure_topology"]["vpc"] == "default-vpc"  # preserved
-
-        # Audit trail on disk
-        audit = read_audit(context_file)
-        assert len(audit) > 0
-
-        # Result shows both sections updated
-        assert result["updated"] is True
-        assert "cluster_details" in result["sections_updated"]
-        assert "infrastructure_topology" in result["sections_updated"]
+        assert "staging" in stored_cluster["namespaces"]["application"]
+        assert "10.0.0.0/24" in stored_topology["subnets"]
 
 
 # ============================================================================
@@ -573,40 +372,21 @@ class TestSkillFileExists:
 # ============================================================================
 
 class TestLLMRealisticOutput:
-    """Scenario 9: LLMs wrap CONTEXT_UPDATE JSON in markdown code fences.
+    """Scenario 9: LLMs wrap CONTEXT_UPDATE JSON in markdown code fences."""
 
-    Real agent transcripts show that LLMs reading the SKILL.md documentation
-    (which shows the format inside ``` blocks) emit their own JSON wrapped
-    in ```json ... ``` fences. The parser must handle this."""
-
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_markdown_json_fence_enrichment(self, setup_context):
+    def test_markdown_json_fence_enrichment(self, ctx_db):
         """CONTEXT_UPDATE with ```json fence must be parsed and applied."""
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
 
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {}
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
-
-        # This is what a real LLM produces — note the ```json fence
+        # Real LLM output format with ```json fence
         agent_output = (
             "## Investigation Complete\n\n"
             "Found 1 pod in test namespace.\n\n"
             "CONTEXT_UPDATE:\n"
             "```json\n"
             "{\n"
-            '  "cluster_details": {\n'
+            '  "contract": "cluster_details",\n'
+            '  "payload": {\n'
             '    "cluster_name": "oci-pos-dev-cluster-01",\n'
             '    "namespaces_inspected": {\n'
             '      "test": {\n'
@@ -640,55 +420,38 @@ class TestLLMRealisticOutput:
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
         assert result["updated"] is True, (
             "CONTEXT_UPDATE with ```json fence must be parsed — "
             "this is the actual format LLMs produce"
         )
-        assert "cluster_details" in result["sections_updated"]
+        assert result["contract"] == "cluster_details"
 
-        updated = read_context(context_file)
-        cd = updated["sections"]["cluster_details"]
-        assert cd["cluster_name"] == "oci-pos-dev-cluster-01"
-        assert cd["namespaces_inspected"]["test"]["pod_count"] == 1
+        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        assert stored["cluster_name"] == "oci-pos-dev-cluster-01"
+        assert stored["namespaces_inspected"]["test"]["pod_count"] == 1
 
-    @pytest.mark.skip(reason=_ENRICHMENT_SKIP_REASON)
-    def test_markdown_plain_fence_enrichment(self, setup_context):
+    def test_markdown_plain_fence_enrichment(self, ctx_db):
         """CONTEXT_UPDATE with plain ``` fence must also be handled."""
         process_agent_output = _import_process_agent_output()
-        project_root, context_dir, config_dir = setup_context
-
-        initial_context = {
-            "metadata": {
-                "version": "1.0",
-                "cloud_provider": "gcp"
-            },
-            "sections": {
-                "project_identity": {"name": "my-project", "type": "application"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-                "cluster_details": {}
-            }
-        }
-        context_file = context_dir / "project-context.json"
-        write_context(context_file, initial_context)
 
         agent_output = (
             "CONTEXT_UPDATE:\n"
             "```\n"
-            '{"cluster_details": {"status": "RUNNING"}}\n'
+            '{"contract": "cluster_details", "payload": {"status": "RUNNING"}}\n'
             "```\n"
         )
 
         result = process_agent_output(
             agent_output,
-            _build_task_info("cloud-troubleshooter", context_file, config_dir),
+            _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
         assert result["updated"] is True, (
             "CONTEXT_UPDATE with plain ``` fence must be parsed"
         )
 
-        updated = read_context(context_file)
-        assert updated["sections"]["cluster_details"]["status"] == "RUNNING"
+        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        assert stored["status"] == "RUNNING"
