@@ -105,78 +105,6 @@ def _use_color(args: argparse.Namespace) -> bool:
     return True
 
 
-def _extract_config_from_scan(output, project_root: Path) -> Dict[str, Any]:
-    """Extract a config dict from scan output for setup functions.
-
-    Used on --fresh to seed `project-context.json` with the same shape the
-    rest of the system expects.
-    """
-    ctx = output.context
-    paths = ctx.get("paths", {})
-    sections = ctx.get("sections", {})
-    meta = ctx.get("metadata", {})
-
-    infrastructure = sections.get("infrastructure", {})
-    cloud_providers = infrastructure.get("cloud_providers", [])
-    primary_cloud = (
-        cloud_providers[0]
-        if isinstance(cloud_providers, list) and cloud_providers
-        else {}
-    )
-    ci_cd = infrastructure.get("ci_cd", [])
-    primary_ci = ci_cd[0] if isinstance(ci_cd, list) and ci_cd else {}
-
-    git_section = sections.get("git", {})
-    project_identity = sections.get("project_identity", {})
-
-    detected_cloud = (
-        primary_cloud.get("name") or meta.get("cloud_provider") or "gcp"
-    )
-    detected_project_id = (
-        primary_cloud.get("project_id")
-        or primary_cloud.get("account_id")
-        or meta.get("project_id")
-        or ""
-    )
-    detected_region = primary_cloud.get("region") or meta.get("primary_region") or ""
-
-    return {
-        "gitops": (
-            os.environ.get("CLAUDE_GITOPS_DIR")
-            or paths.get("gitops")
-            or infrastructure.get("paths", {}).get("gitops")
-            or ""
-        ),
-        "terraform": (
-            os.environ.get("CLAUDE_TERRAFORM_DIR")
-            or paths.get("terraform")
-            or infrastructure.get("paths", {}).get("terraform")
-            or ""
-        ),
-        "app_services": (
-            os.environ.get("CLAUDE_APP_SERVICES_DIR")
-            or paths.get("app_services")
-            or infrastructure.get("paths", {}).get("app_services")
-            or ""
-        ),
-        "cloud_provider": detected_cloud,
-        "project_id": (
-            os.environ.get("CLAUDE_PROJECT_ID") or detected_project_id
-        ),
-        "region": (os.environ.get("CLAUDE_REGION") or detected_region),
-        "cluster_name": (os.environ.get("CLAUDE_CLUSTER_NAME") or ""),
-        "project_name": (
-            project_identity.get("name")
-            or meta.get("project_name")
-            or project_root.name
-        ),
-        "git_platform": git_section.get("platform"),
-        "ci_platform": (
-            primary_ci.get("platform") if isinstance(primary_ci, dict) else None
-        ),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Mode implementations -- in-process imports of tools.scan
 # ---------------------------------------------------------------------------
@@ -246,7 +174,6 @@ def _mode_fresh(project_root: Path, scan_config, args: argparse.Namespace,
         create_claude_directory,
         ensure_claude_code,
         ensure_gaia_ops_package,
-        generate_project_context,
         install_git_hooks,
         merge_hooks_to_settings_local,
     )
@@ -272,8 +199,6 @@ def _mode_fresh(project_root: Path, scan_config, args: argparse.Namespace,
     if warnings:
         ui.warning(len(warnings), warnings)
 
-    config = _extract_config_from_scan(output, project_root)
-
     skip_claude = getattr(args, "skip_claude_install", False)
     npm_postinstall = getattr(args, "npm_postinstall", False)
     ensure_claude_code(skip_install=skip_claude)
@@ -284,7 +209,6 @@ def _mode_fresh(project_root: Path, scan_config, args: argparse.Namespace,
     copy_settings_json(project_root)
     merge_hooks_to_settings_local(project_root)
     install_git_hooks(project_root)
-    generate_project_context(project_root, config, scan_context=output.context)
 
     run_verification(project_root)
 
@@ -378,7 +302,7 @@ def _mode_scan_only(project_root: Path, scan_config, args: argparse.Namespace,
     duration_s = output.duration_ms / 1000
     sections_count = len(output.sections_updated)
     ui.done(duration_s, suffix=f"{sections_count} sections updated")
-    ui.footer("project-context.json updated")
+    ui.footer("gaia.db updated")
 
     summary = _build_summary(output, scanner_version)
     summary["status"] = "error" if output.errors else "success"
