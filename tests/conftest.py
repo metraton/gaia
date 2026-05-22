@@ -6,6 +6,8 @@ Provides:
 - Session fixtures: package_root, agents_dir, skills_dir, config_dir, hooks_dir
 - Frontmatter parser (manual, no PyYAML dependency)
 - Default plugin mode: ops (existing tests assume ops-mode blocking behavior)
+- DB fixture helpers: temp_gaia_db, seed_workspace, seed_workspace_contracts,
+  seed_agent_perms (shared across integration/unit/performance tests)
 """
 
 import os
@@ -147,6 +149,39 @@ def all_agent_files(agents_dir):
 def all_skill_dirs(skills_dir):
     """All skill directories that contain a SKILL.md."""
     return [d for d in skills_dir.iterdir() if d.is_dir() and (d / "SKILL.md").exists()]
+
+
+# ============================================================================
+# DB FIXTURE HELPERS
+#
+# Canonical implementation lives in tests/fixtures/db_helpers.py. This conftest
+# imports those helpers and wraps the schema bootstrap in a pytest fixture for
+# tests that prefer the fixture-injection style.
+#
+# Test modules in any subdirectory should import the helper functions from
+# tests.fixtures.db_helpers directly. The temp_gaia_db fixture is consumed via
+# the normal pytest fixture mechanism.
+# ============================================================================
+
+from tests.fixtures.db_helpers import (  # noqa: E402,F401
+    bootstrap_gaia_schema,
+    seed_agent_perms,
+    seed_workspace,
+    seed_workspace_contracts,
+)
+
+
+@pytest.fixture()
+def temp_gaia_db(tmp_path):
+    """Isolated SQLite DB with the v3 schema (workspaces + context tables).
+
+    Scope: function (each test gets a fresh DB).
+    Returns the Path to the created DB file.
+    The file is cleaned up automatically when tmp_path is torn down.
+    """
+    db_path = tmp_path / "gaia_test.db"
+    bootstrap_gaia_schema(db_path)
+    return db_path
 
 
 # ============================================================================
