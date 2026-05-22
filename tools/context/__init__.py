@@ -13,7 +13,6 @@ Main functions:
 """
 
 from . import context_provider
-from .context_section_reader import ContextSectionReader
 
 # Re-export key functions for convenience
 from .context_provider import (
@@ -30,7 +29,6 @@ from .surface_router import (
 
 __all__ = [
     "context_provider",  # module
-    "ContextSectionReader",
     # Main functions
     "load_project_context",
     "get_contract_context",

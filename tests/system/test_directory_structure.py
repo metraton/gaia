@@ -101,7 +101,6 @@ class TestToolsDirectory:
         critical_tools = {
             "context/context_provider.py",
             "context/surface_router.py",
-            "context/context_section_reader.py",
             "validation/approval_gate.py",
             "memory/episodic.py"
             # Note: commit_validator.py moved to hooks/modules/validation/
