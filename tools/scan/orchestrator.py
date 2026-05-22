@@ -134,7 +134,6 @@ class ScanOrchestrator:
     def run(
         self,
         project_root: Optional[Path] = None,
-        write_output: bool = True,
     ) -> ScanOutput:
         """Run all registered scanners and return aggregated output.
 
@@ -147,9 +146,6 @@ class ScanOrchestrator:
 
         Args:
             project_root: Project root path. Falls back to config.project_root.
-            write_output: Ignored -- retained for API compatibility with callers
-                that pass write_output=False for dry-run flows. No JSON is
-                written regardless of this flag.
 
         Returns:
             ScanOutput with merged sections, warnings, errors, and timing.

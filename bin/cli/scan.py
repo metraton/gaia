@@ -1,5 +1,5 @@
 """
-gaia scan -- Sync workspace state into Gaia DB / project-context.json.
+gaia scan -- Sync workspace state into Gaia DB.
 
 Imports `tools.scan` directly instead of spawning a subprocess, so callers
 (CLI, hooks, tests) share a single process and a single import path.
@@ -320,9 +320,9 @@ def register(subparsers) -> argparse.ArgumentParser:
     """Register the `scan` subcommand with the root parser."""
     p = subparsers.add_parser(
         "scan",
-        help="Sync workspace state into the Gaia DB / project-context",
+        help="Sync workspace state into the Gaia DB",
         description=(
-            "Scan the current workspace and refresh project-context.json. "
+            "Scan the current workspace and sync state into Gaia DB. "
             "With --fresh, bootstraps .claude/, hooks, and settings for a new "
             "workspace. Without flags, re-syncs an existing workspace."
         ),
