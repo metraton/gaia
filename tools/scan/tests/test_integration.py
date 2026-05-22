@@ -194,11 +194,11 @@ def _make_orchestrator(
     output_path: Path,
     parallel: bool = False,
 ) -> ScanOrchestrator:
-    """Build a ScanOrchestrator with an explicit output path.
+    """Build a ScanOrchestrator for the given project root.
 
     Args:
         project_root: Project root directory.
-        output_path: Path for project-context.json.
+        output_path: Unused -- retained for call-site compatibility.
         parallel: Whether to run scanners in parallel.
 
     Returns:
@@ -206,7 +206,6 @@ def _make_orchestrator(
     """
     config = ScanConfig(
         project_root=project_root,
-        output_path=output_path,
         parallel=parallel,
     )
     registry = ScannerRegistry()
@@ -751,7 +750,6 @@ class TestScannerFailureIsolation:
         """Build an orchestrator with the stack scanner replaced by a failing one."""
         config = ScanConfig(
             project_root=project_root,
-            output_path=output_path,
             parallel=False,
         )
         registry = ScannerRegistry()

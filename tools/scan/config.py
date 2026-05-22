@@ -63,7 +63,6 @@ class ScanConfig:
         timeout_per_scanner: Timeout in seconds per scanner (default 10).
         parallel: Whether to run scanners in parallel (default True).
         verbose: Print detailed output (default False).
-        output_path: Path to write project-context.json (None = default location).
         staleness_hours: Hours before a scan is considered stale (default 24).
     """
 
@@ -72,7 +71,6 @@ class ScanConfig:
     timeout_per_scanner: int = 10
     parallel: bool = True
     verbose: bool = False
-    output_path: Optional[Path] = None
     staleness_hours: int = 24
 
     def __post_init__(self) -> None:
