@@ -1,6 +1,6 @@
 ---
 name: context-updater
-description: Use when investigation reveals data that is missing from or differs from project-context.json
+description: Use when investigation reveals data that is missing from or differs from project-context contracts in gaia.db
 metadata:
   user-invocable: false
   type: technique
@@ -8,9 +8,10 @@ metadata:
 
 # Context Updater
 
-project-context.json is shared memory across agents. When you discover something
-about the project that other agents would need, you are the only one who saw it.
-If you do not write it, the next agent starts from zero on that question.
+The project_context_contracts table in gaia.db is shared memory across agents.
+When you discover something about the project that other agents would need, you
+are the only one who saw it. If you do not write it, the next agent starts from
+zero on that question.
 
 ## When to Emit CONTEXT_UPDATE
 
@@ -30,28 +31,34 @@ create noise in the audit trail without adding information.
 
 Do **not** memorize a static table from this skill. Your write permissions are
 shown in the injected context under **Your Write Permissions**. The
-`writable_sections` list there is the source of truth.
+`writable_sections` list there is the source of truth -- it is sourced from
+`agent_contract_permissions` in `~/.gaia/gaia.db` and lists the exact contract
+names you may write.
 
-If `write_permissions` is absent, fall back to your agent contract in
-`config/context-contracts.json`. Do not invent section names. Writing to a
-section you do not own will be rejected by the hook. `gaia-system` and `gaia-planner` do not write to project-context -- they
-manage gaia-ops internals and planning respectively.
+If `write_permissions` is absent from the injected context, do not guess. Do
+not invent contract names. Writing to a contract you do not own will be
+rejected by the hook. `gaia-system` and `gaia-planner` do not write to
+project-context -- they manage gaia-ops internals and planning respectively.
 
 **Step 2: Build the CONTEXT_UPDATE block**
 
-Place this block after analysis and before the `json:contract` block:
+Place this block after analysis and before the `json:contract` block. The
+required shape is `{contract, payload}` -- one contract per block:
 
 ```
 CONTEXT_UPDATE:
 {
-  "section_name": {
+  "contract": "<contract_name>",
+  "payload": {
     "key": "value"
   }
 }
 ```
 
-Rules: valid JSON, section names must match writable sections, one block per
-response (combine all updates), include only keys to add or update.
+Rules: valid JSON; `contract` must match a name in your writable list; `payload`
+is the dict written under that contract; one block per response (combine all
+deltas for a single contract into the same payload); include only keys to add
+or update.
 
 **Step 3: Apply merge semantics**
 

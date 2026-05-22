@@ -316,7 +316,7 @@ class TestPhase2ContextUpdateParsing:
     """Validate that context_writer correctly parses CONTEXT_UPDATE blocks."""
 
     def test_parse_valid_context_update(self):
-        """A well-formed CONTEXT_UPDATE block should be parsed correctly."""
+        """A well-formed CONTEXT_UPDATE block (contract/payload) should be parsed."""
         from context_writer import parse_context_update
 
         agent_output = """
@@ -326,7 +326,8 @@ Found the cluster details.
 
 CONTEXT_UPDATE:
 {
-  "cluster_details": {
+  "contract": "cluster_details",
+  "payload": {
     "node_count": 3,
     "node_type": "e2-standard-4",
     "kubernetes_version": "1.28.5-gke.1200"
@@ -357,9 +358,9 @@ CONTEXT_UPDATE:
         result = parse_context_update(agent_output)
 
         assert result is not None, "Should parse CONTEXT_UPDATE block"
-        assert "cluster_details" in result
-        assert result["cluster_details"]["node_count"] == 3
-        assert result["cluster_details"]["kubernetes_version"] == "1.28.5-gke.1200"
+        assert result["contract"] == "cluster_details"
+        assert result["payload"]["node_count"] == 3
+        assert result["payload"]["kubernetes_version"] == "1.28.5-gke.1200"
 
     def test_parse_no_context_update(self):
         """Output without CONTEXT_UPDATE should return None."""
@@ -415,7 +416,7 @@ CONTEXT_UPDATE:
         """
         from context_writer import parse_context_update
 
-        # Exact format from real transcript (agent-af097c4.jsonl)
+        # Format from a real transcript, now wrapped in {contract, payload}.
         agent_output = (
             "INVESTIGATION COMPLETE\n"
             "\n"
@@ -434,7 +435,8 @@ CONTEXT_UPDATE:
             "CONTEXT_UPDATE:\n"
             "```json\n"
             "{\n"
-            '  "cluster_details": {\n'
+            '  "contract": "cluster_details",\n'
+            '  "payload": {\n'
             '    "cluster_name": "oci-pos-dev-cluster-01",\n'
             '    "namespaces_inspected": {\n'
             '      "test": {\n'
@@ -481,8 +483,9 @@ CONTEXT_UPDATE:
             "parse_context_update must handle ```json fenced code blocks — "
             "this is the exact format from a real cloud-troubleshooter transcript"
         )
-        assert result["cluster_details"]["cluster_name"] == "oci-pos-dev-cluster-01"
-        pods = result["cluster_details"]["namespaces_inspected"]["test"]["pods"]
+        assert result["contract"] == "cluster_details"
+        assert result["payload"]["cluster_name"] == "oci-pos-dev-cluster-01"
+        pods = result["payload"]["namespaces_inspected"]["test"]["pods"]
         assert len(pods) == 1
         assert pods[0]["name"] == "nginx-deployment-6fbb6bcf74-8g9gn"
 

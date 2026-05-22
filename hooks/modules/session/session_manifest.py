@@ -68,24 +68,49 @@ def _read_gaia_version() -> Optional[str]:
 
 
 def _read_workspace_identity() -> Optional[str]:
-    """Read the workspace name from project-context.json, if available.
+    """Read the workspace name from the project_context_contracts table.
 
-    Returns the value at ``sections.project_identity.name`` or None when
-    the file does not exist, is unreadable, or the field is absent. Never
-    raises.
+    Resolves the current workspace via ``gaia.project.current()`` then queries
+    ``project_context_contracts`` for the ``project_identity`` contract's
+    ``$.name`` payload field. Falls back to the matching ``workspaces.name``
+    row when the payload lacks a name. Returns None when neither yields a
+    usable identity. Never raises.
     """
-    try:
-        from ..core.paths import find_claude_dir
+    import sqlite3
 
-        ctx_file = find_claude_dir() / "project-context" / "project-context.json"
-        if not ctx_file.is_file():
+    try:
+        from gaia.project import current as _project_current
+        from gaia.paths import db_path as _db_path
+
+        workspace = _project_current()
+        if not workspace:
             return None
-        data = json.loads(ctx_file.read_text(encoding="utf-8"))
-        identity = (
-            data.get("sections", {}).get("project_identity", {}).get("name")
-        )
-        if isinstance(identity, str) and identity:
-            return identity
+
+        db_file = _db_path()
+        if not db_file or not db_file.exists():
+            return None
+
+        con = sqlite3.connect(str(db_file))
+        try:
+            row = con.execute(
+                """
+                SELECT json_extract(payload, '$.name')
+                FROM project_context_contracts
+                WHERE workspace = ? AND contract_name = 'project_identity'
+                """,
+                (workspace,),
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+
+            row = con.execute(
+                "SELECT name FROM workspaces WHERE name = ?",
+                (workspace,),
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+        finally:
+            con.close()
     except Exception as exc:
         logger.debug("workspace identity read failed (non-fatal): %s", exc)
     return None
