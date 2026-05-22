@@ -41,6 +41,28 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _append_workspace_memory(context: str) -> str:
+    """Append the curated workspace memory block to a subagent context string.
+
+    Calls the same primitive the orchestrator uses at SessionStart --
+    ``session_manifest.build_workspace_memory_block`` -- so subagents see the
+    identical ``## Workspace Memory`` section. Joins with a blank-line
+    separator when context is non-empty. Returns the original context
+    unchanged on any error (fail-safe: dispatch must never fail because
+    memory injection misbehaved).
+    """
+    try:
+        from modules.session.session_manifest import build_workspace_memory_block
+        block = build_workspace_memory_block()
+        if not block:
+            return context
+        separator = "\n\n" if context else ""
+        return context + separator + block
+    except Exception as exc:
+        logger.debug("_append_workspace_memory failed (non-fatal): %s", exc)
+        return context
+
+
 class ClaudeCodeAdapter(HookAdapter):
     """Concrete adapter for Claude Code v2.1+ hook protocol.
 
@@ -668,6 +690,12 @@ class ClaudeCodeAdapter(HookAdapter):
                     "(len=%d, agent=%s)",
                     len(additional), result.agent_name,
                 )
+
+        # Append curated workspace memory (atoms, decisions, negatives) so
+        # subagents receive the same ## Workspace Memory block the orchestrator
+        # gets at SessionStart. Reuses session_manifest.build_workspace_memory_block
+        # as the single source of truth for the primitive. Fail-safe.
+        additional = _append_workspace_memory(additional)
 
         if additional:
             effective_session_id = session_id or "unknown"
