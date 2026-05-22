@@ -22,7 +22,7 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | `hooks/post_compact.py` | PostCompact | (all) |
 | `hooks/elicitation_result.py` | ElicitationResult | (all) |
 
-SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) when running in ops mode. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome.
+SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) when running in ops mode. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome. SubagentStart injects two memory blocks into every dispatched agent: `## Memory Index` (episodic atoms ranked by relevance to the task) and `## Workspace Memory` (curated persistent memory atoms — user preferences, key decisions, project facts — stored in `~/.gaia/gaia.db` and scoped to the workspace).
 
 ### Hook Modules (13 packages)
 
@@ -95,11 +95,11 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 
 | Subsystem | Location | Purpose |
 |-----------|----------|---------|
-| context | `tools/context/` | `context_provider`, `context_section_reader`, `deep_merge`, `pending_updates`, `surface_router` |
+| context | `tools/context/` | `context_provider`, `deep_merge`, `surface_router` |
 | fast-queries | `tools/fast-queries/` | Triage scripts for cloud/gitops/terraform/appservices |
 | gaia_simulator | `tools/gaia_simulator/` | Routing simulator: `cli`, `extractor`, `reporter`, `routing_simulator`, `runner`, `skills_mapper` |
 | memory | `tools/memory/` | `episodic` -- episodic memory store |
-| review | `tools/review/` | `review_engine` -- code review engine |
+| review | `tools/review/` | (deprecated; `review_engine` removed -- review logic lives in skills/code-review) |
 | scan | `tools/scan/` | Project scanner: `orchestrator`, `registry`, `scanners/`, `config`, `merge`, `verify`, `walk`, `workspace`, `ui` |
 | validation | `tools/validation/` | `approval_gate`, `validate_skills` |
 | (top-level) | `tools/persist_transcript_analysis.py` | Transcript persistence utility |
@@ -132,7 +132,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | File | Purpose |
 |------|---------|
 | `config/universal-rules.json` | Rules shared by both plugin modes |
-| `config/context-contracts.json` | Context injection contracts per agent |
+| `config/context-contracts.json` | Seeding source for per-agent context contracts (applied to gaia.db on install; runtime SSOT is DB) |
 | `config/surface-routing.json` | Surface routing table (intent to agent mapping) |
 | `config/git_standards.json` | Git commit and branch standards |
 | `config/cloud/aws.json` | AWS service patterns and commands |

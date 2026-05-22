@@ -29,7 +29,7 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |
 [pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage, Write, Edit
         |  Bash calls: security gate (blocked_commands, mutative_verbs, cloud_pipe_validator)
-        |  Task/Agent calls: context injection from context-contracts.json
+        |  Task/Agent calls: context injection via DB-backed contracts (project_context_contracts)
         |  Write/Edit calls: protected path validation (_is_protected())
         v
     ALLOWED / BLOCKED / ask dialog (T3)
@@ -107,5 +107,5 @@ hooks/
 
 - [`build/gaia-ops.manifest.json`](../build/gaia-ops.manifest.json) — hook registration and matchers
 - [`config/surface-routing.json`](../config/surface-routing.json) — read by `user_prompt_submit.py`
-- [`config/context-contracts.json`](../config/context-contracts.json) — read by `pre_tool_use.py` for context injection
+- [`config/context-contracts.json`](../config/context-contracts.json) — seeding source for context contracts; runtime SSOT is `~/.gaia/gaia.db` (`project_context_contracts` table)
 - [`skills/security-tiers/SKILL.md`](../skills/security-tiers/SKILL.md) — tier classification that agents use; hook enforces the same tiers
