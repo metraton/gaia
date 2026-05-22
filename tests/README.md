@@ -57,7 +57,7 @@ tests/
 ├── layer3_e2e/                      # Layer 3: end-to-end with real Claude Code session (pre-release)
 ├── performance/                     # Performance benchmarks
 ├── system/                          # Layer 1: structure, permissions, agents, configuration, schema
-├── tools/                           # Layer 1: context_provider, episodic, pending_updates tests
+├── tools/                           # Layer 1: context_provider, episodic tests
 ├── cli/                             # CLI tool tests
 ├── bin/                             # bin/ script tests
 ├── e2e/                             # E2E installation and lifecycle tests

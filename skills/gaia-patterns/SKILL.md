@@ -65,7 +65,7 @@ skills:
 
 **Identity** (1-2 paragraphs): domain, output format. **Scope**: CAN DO / CANNOT DO -> DELEGATE table. **Domain Errors**: agent-specific errors only.
 
-Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + project-context (filtered by context-contracts.json) + orchestrator request.
+Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + project-context (filtered by DB-backed contracts from `project_context_contracts`) + orchestrator request.
 
 ## Routing Patterns
 
