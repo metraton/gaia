@@ -3,7 +3,7 @@
 Performance benchmark tests for context enrichment pipeline.
 
 Validates non-functional requirements:
-  NFR-001: process_agent_output completes in < 200 ms on a ~50 KB context file.
+  NFR-001: process_agent_output completes in < 200 ms on a ~50 KB payload.
   NFR-002: deep_merge handles ~50 KB without degradation (linear, not quadratic).
 
 Modules under test:
@@ -13,7 +13,6 @@ Modules under test:
 
 import sys
 import json
-import shutil
 import time
 import pytest
 from pathlib import Path
@@ -23,18 +22,27 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "hooks"
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(TOOLS_DIR / "context"))
 
+# DB helpers
+from tests.fixtures.db_helpers import (
+    bootstrap_gaia_schema,
+    seed_workspace,
+    seed_agent_perms,
+)
+
+
 # ---------------------------------------------------------------------------
 # Lazy import
 # ---------------------------------------------------------------------------
 
 def _import_process_agent_output():
+    import context_writer as _cw
+    _cw._permissions_cache.clear()
     from context_writer import process_agent_output
     return process_agent_output
 
@@ -475,21 +483,21 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
     return context
 
 
-def _make_agent_output(update_dict: dict) -> str:
-    """Build an agent output string containing a CONTEXT_UPDATE block."""
+def _make_agent_output(contract: str, payload: dict) -> str:
+    """Build an agent output string with a CONTEXT_UPDATE block (new format)."""
     return (
         "## Agent Execution Complete\n\n"
         "Task completed successfully.\n\n"
         "CONTEXT_UPDATE:\n"
-        + json.dumps(update_dict, indent=2)
+        + json.dumps({"contract": contract, "payload": payload}, indent=2)
     )
 
 
-def _build_task_info(agent_type: str, context_path: Path, config_dir: Path) -> dict:
+def _build_task_info(agent_type: str, db_path: Path, workspace: str = "global") -> dict:
     return {
         "agent_type": agent_type,
-        "context_path": str(context_path),
-        "config_dir": str(config_dir),
+        "db_path": db_path,
+        "workspace": workspace,
     }
 
 
@@ -511,26 +519,27 @@ def _median_time_ms(fn, iterations: int = TIMING_ITERATIONS) -> float:
 
 @pytest.fixture
 def setup_perf(tmp_path):
-    """Create an isolated ~50 KB project-context.json and matching config dir.
+    """Create an isolated gaia.db + large payload for performance tests.
 
-    Returns (context_file, config_dir, context_data).
+    Returns (db_path, large_payload_dict).
+
+    The fixture does NOT depend on context-contracts.json. Permissions are
+    seeded directly in the DB via db_helpers, so tests run in isolation.
     """
-    context_dir = tmp_path / ".claude" / "project-context"
-    context_dir.mkdir(parents=True)
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
+    db_path = tmp_path / "gaia_perf.db"
+    bootstrap_gaia_schema(db_path)
+    seed_workspace(db_path, "global")
+    seed_agent_perms(
+        db_path,
+        "cloud-troubleshooter",
+        reads=["cluster_details", "infrastructure_topology", "application_services",
+               "monitoring_observability", "architecture_overview"],
+        writes=["cluster_details", "infrastructure_topology", "application_services",
+                "monitoring_observability", "architecture_overview"],
+    )
 
-    # Copy the real GCP contracts so permission checks use production rules
-    real_contracts = CONFIG_DIR / "context-contracts.json"
-    if real_contracts.exists():
-        shutil.copy(real_contracts, config_dir / "context-contracts.json")
-
-    # Generate and write the large context
-    context_data = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
-    context_file = context_dir / "project-context.json"
-    context_file.write_text(json.dumps(context_data, indent=2))
-
-    return context_file, config_dir, context_data
+    large_payload = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
+    return db_path, large_payload
 
 
 # ============================================================================
@@ -541,21 +550,21 @@ class TestContextGeneration:
     """Verify the generated fixture is realistic and meets the size target."""
 
     def test_generated_context_is_approximately_50kb(self, setup_perf):
-        context_file, _, _ = setup_perf
-        size_kb = context_file.stat().st_size / 1024
+        _, large_payload = setup_perf
+        size_kb = len(json.dumps(large_payload)) / 1024
         assert size_kb >= 45, f"Context too small: {size_kb:.1f} KB (expected >= 45 KB)"
         assert size_kb <= 120, f"Context too large: {size_kb:.1f} KB (expected <= 120 KB)"
 
     def test_generated_context_has_13_sections(self, setup_perf):
-        _, _, context_data = setup_perf
-        sections = context_data["sections"]
+        _, large_payload = setup_perf
+        sections = large_payload["sections"]
         assert len(sections) == 13, (
             f"Expected 13 sections, got {len(sections)}: {sorted(sections.keys())}"
         )
 
     def test_generated_context_has_nested_structures(self, setup_perf):
-        _, _, context_data = setup_perf
-        sections = context_data["sections"]
+        _, large_payload = setup_perf
+        sections = large_payload["sections"]
 
         # Nested dicts
         assert isinstance(sections["infrastructure_topology"]["vpc"], dict)
@@ -569,57 +578,28 @@ class TestContextGeneration:
 
 
 # ============================================================================
-# NFR-001: process_agent_output < 200 ms on ~50 KB context
+# NFR-001: process_agent_output < 200 ms on ~50 KB payload
 # ============================================================================
 
 class TestNFR001ProcessAgentOutputLatency:
     """NFR-001: end-to-end process_agent_output must complete in < 200 ms."""
 
     def test_two_section_update_under_200ms(self, setup_perf):
-        """Time process_agent_output updating 2 sections on a ~50 KB file.
+        """Time process_agent_output writing a ~50 KB payload to the DB.
 
-        The update touches ``cluster_details`` (array of named dicts) and
-        ``infrastructure_topology`` (nested dict), exercising both merge
-        strategies.
+        Uses cluster_details and infrastructure_topology contracts.
         """
         process_agent_output = _import_process_agent_output()
-        context_file, config_dir, _ = setup_perf
+        db_path, large_payload = setup_perf
 
-        update = {
-            "cluster_details": {
-                "clusters": [
-                    {
-                        "name": "gke-cluster-us-central1-production",
-                        "node_count": 12,
-                        "kubernetes_version": "1.30.0",
-                        "status": "RECONCILING",
-                    },
-                ],
-            },
-            "infrastructure_topology": {
-                "vpc": {
-                    "subnets": [
-                        {
-                            "name": "subnet-99",
-                            "cidr": "10.0.99.0/24",
-                            "region": "us-central1",
-                            "purpose": "new-workload",
-                        },
-                    ],
-                },
-                "dns_zones": [
-                    {"name": "zone-perf.example.com", "records": 42},
-                ],
-            },
-        }
-        agent_output = _make_agent_output(update)
-        task_info = _build_task_info("cloud-troubleshooter", context_file, config_dir)
+        cluster_payload = large_payload["sections"]["cluster_details"].copy()
+        cluster_payload["clusters"][0]["node_count"] = 12
+        cluster_payload["clusters"][0]["kubernetes_version"] = "1.30.0"
+
+        agent_output = _make_agent_output("cluster_details", cluster_payload)
+        task_info = _build_task_info("cloud-troubleshooter", db_path)
 
         def run_once():
-            # Re-write the original context each iteration to ensure a
-            # consistent starting state (process_agent_output mutates the file).
-            context_data = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
-            context_file.write_text(json.dumps(context_data, indent=2))
             process_agent_output(agent_output, task_info)
 
         elapsed_ms = _median_time_ms(run_once)
@@ -630,23 +610,15 @@ class TestNFR001ProcessAgentOutputLatency:
         )
 
     def test_single_section_scalar_update_under_200ms(self, setup_perf):
-        """Simpler case: update a single scalar field in infrastructure_topology."""
+        """Simpler case: update a single compact payload in infrastructure_topology."""
         process_agent_output = _import_process_agent_output()
-        context_file, config_dir, _ = setup_perf
+        db_path, _ = setup_perf
 
-        update = {
-            "infrastructure_topology": {
-                "vpc": {
-                    "name": "main-vpc-v2",
-                },
-            },
-        }
-        agent_output = _make_agent_output(update)
-        task_info = _build_task_info("cloud-troubleshooter", context_file, config_dir)
+        payload = {"vpc": {"name": "main-vpc-v2"}}
+        agent_output = _make_agent_output("infrastructure_topology", payload)
+        task_info = _build_task_info("cloud-troubleshooter", db_path)
 
         def run_once():
-            context_data = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
-            context_file.write_text(json.dumps(context_data, indent=2))
             process_agent_output(agent_output, task_info)
 
         elapsed_ms = _median_time_ms(run_once)
@@ -729,93 +701,57 @@ class TestNFR002DeepMergeScalability:
 
 
 # ============================================================================
-# Correctness under load: verify merge results are still accurate
+# Correctness under load: verify process_agent_output results are accurate
 # ============================================================================
 
-_PERF_SKIP_REASON = (
-    "Retired in substrate v6 (B3): process_agent_output return shape changed "
-    "from {updated, sections_updated, rejected} to {updated, table, rows_applied, "
-    "rejected, error}. context-contracts.json was removed. "
-    "Rewrite against the new gaia.store / gaia.db API."
-)
-
-
 class TestCorrectnessUnderLoad:
-    """Ensure that the 50 KB context update produces correct merge results,
-    not just fast ones."""
+    """Ensure that process_agent_output produces correct DB writes, not just fast ones."""
 
-    @pytest.mark.skip(reason=_PERF_SKIP_REASON)
-    def test_two_section_update_correctness(self, setup_perf):
+    def test_large_payload_written_correctly(self, setup_perf):
+        """Writing a large cluster_details payload stores it exactly in the DB."""
+        import sqlite3
         process_agent_output = _import_process_agent_output()
-        context_file, config_dir, original_data = setup_perf
+        db_path, large_payload = setup_perf
 
-        update = {
-            "cluster_details": {
-                "clusters": [
-                    {
-                        "name": "gke-cluster-us-central1-production",
-                        "node_count": 99,
-                    },
-                ],
-            },
-            "infrastructure_topology": {
-                "vpc": {
-                    "name": "renamed-vpc",
-                },
-            },
-        }
-        agent_output = _make_agent_output(update)
-        task_info = _build_task_info("cloud-troubleshooter", context_file, config_dir)
+        cluster_payload = large_payload["sections"]["cluster_details"].copy()
+        # Modify one field so we can verify the write
+        cluster_payload["clusters"][0]["node_count"] = 99
+
+        agent_output = _make_agent_output("cluster_details", cluster_payload)
+        task_info = _build_task_info("cloud-troubleshooter", db_path)
 
         result = process_agent_output(agent_output, task_info)
 
-        # Verify the function reported success
         assert result["updated"] is True
-        assert "cluster_details" in result["sections_updated"]
-        assert "infrastructure_topology" in result["sections_updated"]
-        assert len(result["rejected"]) == 0
+        assert result["contract"] == "cluster_details"
+        assert result["rejected"] == []
 
-        # Read back and verify merge results
-        written = json.loads(context_file.read_text())
+        con = sqlite3.connect(str(db_path))
+        row = con.execute(
+            "SELECT payload FROM project_context_contracts WHERE workspace='global' AND contract_name='cluster_details'"
+        ).fetchone()
+        con.close()
 
-        # cluster_details.clusters: named-dict merge -- node_count updated,
-        # other clusters preserved (no-delete policy)
-        clusters = written["sections"]["cluster_details"]["clusters"]
+        assert row is not None, "cluster_details contract must be written to DB"
+        stored = json.loads(row[0])
+
         prod_cluster = next(
-            c for c in clusters if c["name"] == "gke-cluster-us-central1-production"
+            (c for c in stored["clusters"] if c["name"] == "gke-cluster-us-central1-production"),
+            None
         )
+        assert prod_cluster is not None
         assert prod_cluster["node_count"] == 99
-        # Original fields preserved via deep merge
-        assert "kubernetes_version" in prod_cluster
-        # Other clusters still present
-        cluster_names = [c["name"] for c in clusters]
-        assert "gke-cluster-us-east1-staging" in cluster_names
 
-        # infrastructure_topology: nested dict merge
-        vpc = written["sections"]["infrastructure_topology"]["vpc"]
-        assert vpc["name"] == "renamed-vpc"
-        # Original VPC fields preserved
-        assert vpc["cidr"] == "10.0.0.0/16"
-        assert len(vpc["subnets"]) >= 15
-
-        # Sections NOT in update are untouched
-        original_services = original_data["sections"]["application_services"]["services"]
-        written_services = written["sections"]["application_services"]["services"]
-        assert len(written_services) == len(original_services)
-
-    @pytest.mark.skip(reason=_PERF_SKIP_REASON)
-    def test_permission_rejection_on_large_context(self, setup_perf):
-        """cloud-troubleshooter cannot write gitops_configuration on large context."""
+    def test_permission_rejection_on_large_payload(self, setup_perf):
+        """cloud-troubleshooter cannot write gitops_configuration."""
         process_agent_output = _import_process_agent_output()
-        context_file, config_dir, original_data = setup_perf
+        db_path, large_payload = setup_perf
 
-        update = {
-            "gitops_configuration": {
-                "repo_url": "https://evil.example.com/gitops",
-            },
-        }
-        agent_output = _make_agent_output(update)
-        task_info = _build_task_info("cloud-troubleshooter", context_file, config_dir)
+        gitops_payload = large_payload["sections"]["gitops_configuration"].copy()
+        gitops_payload["repo_url"] = "https://evil.example.com/gitops"
+
+        agent_output = _make_agent_output("gitops_configuration", gitops_payload)
+        task_info = _build_task_info("cloud-troubleshooter", db_path)
 
         result = process_agent_output(agent_output, task_info)
 

@@ -316,8 +316,8 @@ class TestBootstrapMigrationFramework(unittest.TestCase):
                 count = con.execute(
                     "SELECT COUNT(*) FROM schema_version"
                 ).fetchone()[0]
-                # v1 + v2 = 2 rows; no duplicates from re-running.
-                self.assertEqual(count, 2,
+                # v1 + v2 + v3 = 3 rows; no duplicates from re-running.
+                self.assertEqual(count, 3,
                                  "second bootstrap duplicated schema_version rows")
             finally:
                 con.close()
