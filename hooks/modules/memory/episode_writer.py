@@ -211,6 +211,13 @@ def write(
         logger.info(f"Captured episode: {episode_id} (outcome: {outcome}, plan_status: {plan_status})")
         return episode_id
 
+    except RuntimeError as e:
+        # store_episode raises RuntimeError when the DB write fails (e.g.
+        # gaia.store.writer not importable, INSERT rejected). Log at ERROR
+        # level so the failure is visible in hooks-*.log instead of being
+        # swallowed at DEBUG.
+        logger.error(f"Failed to persist episodic memory: {e}")
+        return None
     except Exception as e:
         logger.debug(f"Failed to capture episodic memory: {e}")
         return None

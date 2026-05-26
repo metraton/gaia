@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from adapters.claude_code import ClaudeCodeAdapter
 from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
-from modules.audit.workflow_recorder import record_agent_skill_snapshot
 
 # Configure logging
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -36,21 +35,6 @@ def _handle_subagent_start(event) -> None:
     context_result = adapter.adapt_subagent_start(event.payload)
     agent_type = event.payload.get("agent_type", "unknown")
     task_description = event.payload.get("task_description", "")
-
-    if agent_type and agent_type != "unknown":
-        skill_snapshot = record_agent_skill_snapshot(
-            agent_type,
-            session_context={
-                "timestamp": datetime.now().isoformat(),
-                "session_id": event.session_id,
-            },
-            task_description=task_description,
-        )
-        logger.info(
-            "Recorded runtime defaults for %s (skills=%s)",
-            agent_type,
-            skill_snapshot.get("skills_count", 0),
-        )
 
     logger.info(
         "SubagentStart: agent_type=%s, context_injected=%s",

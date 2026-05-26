@@ -7,7 +7,6 @@ ToolDefinition dataclass, and the default tool definitions list.
 Staleness threshold is overridable via GAIA_SCAN_STALENESS_HOURS env var.
 """
 
-import json
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -64,7 +63,6 @@ class ScanConfig:
         timeout_per_scanner: Timeout in seconds per scanner (default 10).
         parallel: Whether to run scanners in parallel (default True).
         verbose: Print detailed output (default False).
-        output_path: Path to write project-context.json (None = default location).
         staleness_hours: Hours before a scan is considered stale (default 24).
     """
 
@@ -73,7 +71,6 @@ class ScanConfig:
     timeout_per_scanner: int = 10
     parallel: bool = True
     verbose: bool = False
-    output_path: Optional[Path] = None
     staleness_hours: int = 24
 
     def __post_init__(self) -> None:
@@ -210,38 +207,19 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
 
 
 def load_scan_config(project_root: Path) -> ScanConfig:
-    """Load scan configuration from project-context.json if it exists.
+    """Return a ScanConfig for the given project root.
 
-    Reads metadata.scan_config from the project context file. Falls back
-    to defaults if the file does not exist or the section is missing.
+    Staleness threshold is read from the GAIA_SCAN_STALENESS_HOURS env var
+    if set; otherwise the default (24 h) is used. The legacy JSON read path
+    has been retired -- gaia.db is the sole persistence layer.
 
     Args:
         project_root: Absolute path to the project root directory.
 
     Returns:
-        ScanConfig with values from file or defaults.
+        ScanConfig with project_root set and env-var overrides applied.
     """
-    context_path = project_root / ".claude" / "project-context" / "project-context.json"
-
-    config = ScanConfig(project_root=project_root)
-
-    if context_path.is_file():
-        try:
-            with open(context_path, "r") as f:
-                data = json.load(f)
-
-            scan_config = data.get("metadata", {}).get("scan_config", {})
-
-            if "staleness_hours" in scan_config:
-                config.staleness_hours = int(scan_config["staleness_hours"])
-
-        except (json.JSONDecodeError, ValueError, OSError):
-            pass  # Use defaults on any error
-
-    return config
+    return ScanConfig(project_root=project_root)
 
 
 DEFAULT_SCAN_CONFIG = ScanConfig()
-
-# Path to the context-contracts.json file (relative to the gaia-ops-plugin root)
-CONTRACT_CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "context-contracts.json"

@@ -30,19 +30,20 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 def _find_project_root(start: Path) -> Path | None:
-    """Locate the project root that owns .claude/project-context/project-context.json.
+    """Locate the project root that owns a .claude/ directory.
 
     Resolution order:
     1. CLAUDE_PLUGIN_DATA env var (set by Claude Code at runtime) -- its
        parent is the project root.
-    2. Walk up from ``start`` looking for .claude/project-context/project-context.json
-       (has actual user context data, not just plugin config).
-    3. Walk up from ``start`` looking for .claude/project-context/ directory.
-    4. Walk up from ``start`` for any .claude/ directory (original fallback).
+    2. Walk up from ``start`` looking for .claude/project-context/ directory
+       (legacy marker; still accepted for backward compat with installs
+       that have the directory even if project-context.json is retired).
+    3. Walk up from ``start`` for any .claude/ directory (canonical fallback).
 
-    This ensures the CLI skips a plugin's own .claude/ config dir (e.g.,
-    gaia-ops-dev/.claude/) and continues up to the user's project root when
-    the CLI is invoked from inside a plugin subdirectory.
+    Note (T1.3): the legacy Pass 1 that looked for project-context.json by
+    file existence has been removed. Project context now lives exclusively in
+    gaia.db (project_context_contracts table). The .claude/ directory itself
+    is the authoritative marker.
     """
     import os
     plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")
@@ -55,26 +56,17 @@ def _find_project_root(start: Path) -> Path | None:
     current = start.resolve()
     candidates = [current, *current.parents]
 
-    # Pass 1: prefer a root that has the actual project-context.json file.
-    for parent in candidates:
-        if (parent / ".claude" / "project-context" / "project-context.json").is_file():
-            return parent
-
-    # Pass 2: accept any root that has project-context/ directory.
+    # Pass 1: prefer a root that has the project-context/ directory.
     for parent in candidates:
         if (parent / ".claude" / "project-context").is_dir():
             return parent
 
-    # Pass 3: original fallback -- any .claude/ directory.
+    # Pass 2: any .claude/ directory.
     for parent in candidates:
         if (parent / ".claude").is_dir():
             return parent
 
     return None
-
-
-def _get_context_path(project_root: Path) -> Path:
-    return project_root / ".claude" / "project-context" / "project-context.json"
 
 
 # ---------------------------------------------------------------------------
@@ -185,35 +177,40 @@ def _cmd_scan(args) -> int:
     dry_run = getattr(args, "dry_run", False)
 
     if dry_run:
-        # Validate context freshness and report what would be scanned
-        context_path = _get_context_path(project_root)
+        # Report what would be scanned. Reads last_scan_at from DB (T1.3).
+        last_scan = None
+        try:
+            from gaia.project import current as _project_current
+            from gaia.store.writer import _connect as _store_connect
+            ws = _project_current(cwd=project_root)
+            con = _store_connect()
+            try:
+                row = con.execute(
+                    "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
+                ).fetchone()
+                if row:
+                    last_scan = row[0]
+            finally:
+                con.close()
+        except Exception:
+            pass
+
         result = {
             "dry_run": True,
             "project_root": str(project_root),
-            "context_path": str(context_path),
-            "context_exists": context_path.exists(),
+            "last_scan": last_scan or "unknown",
+            "would_scan": (
+                "all scanners (stack, git, infrastructure, environment, "
+                "orchestration, architecture)"
+            ),
         }
-        if context_path.exists():
-            try:
-                data = json.loads(context_path.read_text(encoding="utf-8"))
-                scan_cfg = data.get("metadata", {}).get("scan_config", {})
-                result["last_scan"] = scan_cfg.get("last_scan", "unknown")
-                result["scanner_version"] = scan_cfg.get("scanner_version", "unknown")
-                result["staleness_hours"] = scan_cfg.get("staleness_hours", 24)
-                result["would_scan"] = "all scanners (stack, git, infrastructure, environment, orchestration, architecture)"
-            except (json.JSONDecodeError, OSError):
-                result["would_scan"] = "all scanners (could not read existing context)"
-        else:
-            result["would_scan"] = "all scanners (no existing context)"
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
         else:
             print("[dry-run] Context scan would execute:")
             print(f"  project_root : {result['project_root']}")
-            print(f"  context_path : {result['context_path']}")
-            print(f"  context_exists: {result['context_exists']}")
-            if result.get("last_scan"):
+            if result.get("last_scan") and result["last_scan"] != "unknown":
                 print(f"  last_scan    : {result['last_scan']}")
             print(f"  would_scan   : {result['would_scan']}")
         return 0

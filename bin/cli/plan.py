@@ -58,7 +58,43 @@ def _err(msg: str, as_json: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_save(args) -> int:
-    """Upsert a plan attached to ``--brief``."""
+    """Canonical path to UPSERT a plan into gaia.db.
+
+    Usage
+    -----
+    ``gaia plan save --brief=<slug> --content=<md> [--status=draft]``
+
+    This is the ONLY supported way to create or update a plan in gaia.db.
+    Every call is idempotent: if no plan exists for the brief it is INSERTed;
+    if one already exists its ``status`` and ``content`` fields are UPDATEd.
+    The ``plan_id`` assigned on the first insert is permanent -- subsequent
+    saves do not change it.
+
+    Scope of the upsert
+    -------------------
+    ``gaia plan save`` only touches ``plans.status`` and ``plans.content``.
+    It is NOT a full-sync over child rows. The ``tasks`` table, acceptance
+    criteria rows, and milestones are managed by their own granular writers
+    (``add_task_to_plan``, ``remove_task_from_plan``, ``reorder_tasks``).
+    Calling ``gaia plan save`` does NOT delete or reorder tasks -- it is safe
+    to call repeatedly without losing structured sub-rows.
+
+    Anti-pattern: DO NOT use ``gaia brief edit`` to persist plan content
+    --------------------------------------------------------------------
+    ``gaia brief edit <slug>`` writes to the ``briefs`` table (brief body
+    field), not the ``plans`` table. Plans and briefs are separate rows in
+    separate tables. Any content written via ``gaia brief edit`` will NOT
+    appear in ``gaia plan show``.
+
+    Specifically, the pattern ``EDITOR=cp /tmp/plan.md gaia brief edit <slug>``
+    is a confirmed anti-pattern (observed 2026-05-22). It side-loads content
+    into the wrong table, overwrites the brief body, and produces a stale
+    brief that does not reflect the plan. Never repeat this. If the plan
+    content is too large to pass inline, use:
+    ``gaia plan save --brief=<slug> --content="$(cat /tmp/plan.md)"``
+
+    Verify after saving with ``gaia plan show <slug>``.
+    """
     from gaia.store.writer import upsert_plan, get_plan
 
     workspace = _resolve_workspace(getattr(args, "workspace", None))
@@ -223,6 +259,9 @@ def _cmd_set_status(args) -> int:
         else:
             print(f"Plan for '{brief_name}': "
                   f"{res['old_status']} -> {res['new_status']}")
+        # D11 advisory: surface unsatisfied ACs on plan close.
+        for w in res.get("warnings", []):
+            print(f"Warning: {w}", file=sys.stderr)
     return 0
 
 

@@ -1,22 +1,22 @@
 """
 Context freshness checker for SessionStart hook.
 
-Determines whether project-context.json is fresh enough to skip a rescan.
-Uses metadata.scan_config.last_scan (preferred) or file mtime as fallback.
+Determines whether project-context rows in ~/.gaia/gaia.db are fresh enough
+to skip a rescan. Queries the max(updated_at) over project_context_contracts
+for the current workspace. When no rows exist (workspace not yet seeded), the
+result is is_fresh=False so the SessionStart hook triggers a scan.
 
 Public API:
-    - check_freshness(project_root: Path) -> FreshnessResult
+    - check_freshness(project_root: Path = None) -> FreshnessResult
 """
 
-import json
 import logging
 import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-
-from ..core.paths import find_claude_dir
 
 logger = logging.getLogger(__name__)
 
@@ -33,31 +33,22 @@ class FreshnessResult:
     age_hours: float = 0.0
 
 
-def _get_context_path() -> Path:
-    """Return path to project-context.json."""
-    claude_dir = find_claude_dir()
-    return claude_dir / "project-context" / "project-context.json"
-
-
-def _read_staleness_from_context(context_path: Path) -> Optional[int]:
-    """Read staleness_hours from metadata.scan_config in the context file.
-
-    Returns None if the file cannot be read or the field is absent.
-    """
-    if not context_path.is_file():
-        return None
+def _get_db_path() -> Optional[Path]:
+    """Return path to ~/.gaia/gaia.db, preferring the canonical resolver."""
     try:
-        with open(context_path, "r") as f:
-            data = json.load(f)
-        return (
-            int(
-                data.get("metadata", {})
-                .get("scan_config", {})
-                .get("staleness_hours", 0)
-            )
-            or None
-        )
-    except (json.JSONDecodeError, OSError, ValueError, TypeError):
+        from gaia.paths import db_path
+        return db_path()
+    except Exception:
+        return Path.home() / ".gaia" / "gaia.db"
+
+
+def _resolve_workspace() -> Optional[str]:
+    """Return the current workspace identity, or None if it cannot be resolved."""
+    try:
+        from gaia.project import current as _project_current
+        return _project_current()
+    except Exception as exc:
+        logger.debug("workspace resolution failed: %s", exc)
         return None
 
 
@@ -71,65 +62,68 @@ def _get_effective_threshold() -> int:
     )
 
 
+def _query_max_updated_at(db_path: Path, workspace: str) -> Optional[str]:
+    """Return MAX(updated_at) ISO string for the workspace, or None if no rows."""
+    try:
+        con = sqlite3.connect(str(db_path))
+        row = con.execute(
+            "SELECT MAX(updated_at) FROM project_context_contracts WHERE workspace = ?",
+            (workspace,),
+        ).fetchone()
+        con.close()
+    except sqlite3.Error as exc:
+        logger.warning("DB error querying freshness for '%s': %s", workspace, exc)
+        return None
+    return row[0] if row and row[0] else None
+
+
 def check_freshness(project_root: Path = None) -> FreshnessResult:
-    """Check if project-context.json exists and is fresh (< threshold).
+    """Check whether project-context rows in gaia.db are fresh for this workspace.
 
     Args:
-        project_root: Unused, kept for API compatibility. Context path
-            is resolved via find_claude_dir().
+        project_root: Unused, kept for API compatibility. Workspace identity
+            is resolved via gaia.project.current().
 
     Returns:
-        FreshnessResult with is_fresh, reason, and age_hours.
+        FreshnessResult with is_fresh, reason, and age_hours. Reasons:
+            - "missing": gaia.db unavailable or no rows for this workspace
+            - "stale": MAX(updated_at) older than threshold
+            - "fresh": MAX(updated_at) within threshold
+            - "error": exception during evaluation
     """
-    context_path = _get_context_path()
-
-    if not context_path.exists():
-        logger.info("project-context.json not found at %s", context_path)
+    db_path = _get_db_path()
+    if db_path is None or not db_path.exists():
+        logger.info("gaia.db not found at %s", db_path)
         return FreshnessResult(is_fresh=False, reason="missing", age_hours=0.0)
 
-    # Determine effective threshold: env var > context file > default
+    workspace = _resolve_workspace()
+    if not workspace:
+        return FreshnessResult(is_fresh=False, reason="missing", age_hours=0.0)
+
+    max_updated_at = _query_max_updated_at(db_path, workspace)
+    if not max_updated_at:
+        logger.info(
+            "no project_context_contracts rows for workspace '%s'", workspace
+        )
+        return FreshnessResult(is_fresh=False, reason="missing", age_hours=0.0)
+
     effective_hours = _get_effective_threshold()
-    ctx_hours = _read_staleness_from_context(context_path)
-    if ctx_hours and not os.environ.get("GAIA_SCAN_STALENESS_HOURS"):
-        effective_hours = ctx_hours
 
     try:
-        # Try metadata.scan_config.last_scan first (more accurate)
-        with open(context_path, "r") as f:
-            data = json.load(f)
-        last_scan = data.get("metadata", {}).get("scan_config", {}).get("last_scan")
-
-        if last_scan:
-            scan_dt = datetime.fromisoformat(last_scan)
-            now = datetime.now(timezone.utc)
-            age = now - scan_dt
-            age_hours = age.total_seconds() / 3600.0
-            threshold = timedelta(hours=effective_hours)
-
-            if age > threshold:
-                logger.info(
-                    "project-context.json is stale (last_scan age: %s, threshold: %sh)",
-                    age,
-                    effective_hours,
-                )
-                return FreshnessResult(
-                    is_fresh=False, reason="stale", age_hours=age_hours
-                )
-
-            logger.debug("project-context.json is fresh (last_scan age: %s)", age)
-            return FreshnessResult(
-                is_fresh=True, reason="fresh", age_hours=age_hours
-            )
-
-        # Fallback: use file mtime
-        mtime = datetime.fromtimestamp(context_path.stat().st_mtime)
-        age = datetime.now() - mtime
+        last_scan_dt = datetime.fromisoformat(max_updated_at)
+        # Normalize to UTC: rows written by the scanner use timezone-aware
+        # isoformat, but legacy migrations may write naive timestamps.
+        if last_scan_dt.tzinfo is None:
+            last_scan_dt = last_scan_dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        age = now - last_scan_dt
         age_hours = age.total_seconds() / 3600.0
         threshold = timedelta(hours=effective_hours)
 
         if age > threshold:
             logger.info(
-                "project-context.json is stale (mtime age: %s, threshold: %sh)",
+                "workspace '%s' context is stale (age: %s, threshold: %sh)",
+                workspace,
                 age,
                 effective_hours,
             )
@@ -137,7 +131,9 @@ def check_freshness(project_root: Path = None) -> FreshnessResult:
                 is_fresh=False, reason="stale", age_hours=age_hours
             )
 
-        logger.debug("project-context.json is fresh (mtime age: %s)", age)
+        logger.debug(
+            "workspace '%s' context is fresh (age: %s)", workspace, age
+        )
         return FreshnessResult(is_fresh=True, reason="fresh", age_hours=age_hours)
 
     except Exception as e:

@@ -22,7 +22,7 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | `hooks/post_compact.py` | PostCompact | (all) |
 | `hooks/elicitation_result.py` | ElicitationResult | (all) |
 
-SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) when running in ops mode. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome.
+SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) when running in ops mode. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome. SubagentStart injects two memory blocks into every dispatched agent: `## Memory Index` (episodic atoms ranked by relevance to the task) and `## Workspace Memory` (curated persistent memory atoms — user preferences, key decisions, project facts — stored in `~/.gaia/gaia.db` and scoped to the workspace).
 
 ### Hook Modules (13 packages)
 
@@ -76,7 +76,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `gmail-triage/` | Technique | Injected (gaia-operator) |
 | `gws-setup/` | Technique | On-demand |
 | `investigation/` | Technique | Injected |
-| `memory-curation/` | Reference | Injected (orchestrator) |
+| `memory/` | Technique | Injected (gaia-operator) |
 | `orchestrator-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
@@ -95,11 +95,11 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 
 | Subsystem | Location | Purpose |
 |-----------|----------|---------|
-| context | `tools/context/` | `context_provider`, `context_section_reader`, `deep_merge`, `pending_updates`, `surface_router` |
+| context | `tools/context/` | `context_provider`, `deep_merge`, `surface_router` |
 | fast-queries | `tools/fast-queries/` | Triage scripts for cloud/gitops/terraform/appservices |
 | gaia_simulator | `tools/gaia_simulator/` | Routing simulator: `cli`, `extractor`, `reporter`, `routing_simulator`, `runner`, `skills_mapper` |
 | memory | `tools/memory/` | `episodic` -- episodic memory store |
-| review | `tools/review/` | `review_engine` -- code review engine |
+| review | `tools/review/` | (deprecated; `review_engine` removed -- review logic lives in skills/code-review) |
 | scan | `tools/scan/` | Project scanner: `orchestrator`, `registry`, `scanners/`, `config`, `merge`, `verify`, `walk`, `workspace`, `ui` |
 | validation | `tools/validation/` | `approval_gate`, `validate_skills` |
 | (top-level) | `tools/persist_transcript_analysis.py` | Transcript persistence utility |
@@ -132,7 +132,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | File | Purpose |
 |------|---------|
 | `config/universal-rules.json` | Rules shared by both plugin modes |
-| `config/context-contracts.json` | Context injection contracts per agent |
+| `config/context-contracts.json` | Seeding source for per-agent context contracts (applied to gaia.db on install; runtime SSOT is DB) |
 | `config/surface-routing.json` | Surface routing table (intent to agent mapping) |
 | `config/git_standards.json` | Git commit and branch standards |
 | `config/cloud/aws.json` | AWS service patterns and commands |
@@ -206,30 +206,38 @@ npm publish                    # publishes @jaguilar87/gaia
 ### Postinstall (`gaia install --postinstall`, invoked by npm scripts on `npm install`)
 
 **First install** (no `.claude/`):
-1. Check Python 3 available
-2. Run `gaia scan --fresh --npm-postinstall` to create `.claude/`, symlinks, settings, project-context
-3. Create `plugin-registry.json`
-4. Merge permissions into `settings.local.json`
-5. Merge hooks into `settings.local.json` -- also writes `defaultMode: acceptEdits` to `settings.local.json` for the parent session
-6. Verification
+1. Check Python 3 available.
+2. Create `.claude/` if missing (created early so subsequent steps can write into it).
+3. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
+4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
+5. Merge hooks from `hooks.json` into `settings.local.json` via the consolidated `merge_hooks` step.
+6. Create `.claude/{agents, tools, hooks, commands, templates, config, skills}` symlinks (7) plus `CHANGELOG.md` file link.
+7. Write `plugin-registry.json` with `installed[].name == "gaia-ops"` (or `gaia-security`).
+8. Write `project-context.json`.
+9. Verification.
 
 **Update** (`.claude/` exists):
-1. Show version transition
-2. `settings.json`: create only if missing (non-invasive)
-3. Merge permissions, env vars, agent key into `settings.local.json` (union, preserves user config)
-4. Merge hooks from `hooks.json` into `settings.local.json`
-5. Recreate/fix broken symlinks
-6. Verify hooks, Python, project-context, config
+1. Show version transition.
+2. `settings.json`: create only if missing (non-invasive).
+3. Merge permissions, env vars, agent key into `settings.local.json` (union, preserves user config).
+4. Merge hooks from `hooks.json` into `settings.local.json`.
+5. Recreate/fix broken symlinks.
+6. Run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`.
+7. Verify hooks, Python, project-context, config.
+
+The hook invoker is `python3 <script>` rather than executing the script directly, so missing exec bits on cross-platform checkouts do not break the install.
 
 ### Symlinks Created
 
 ```
-.claude/agents   -> node_modules/@jaguilar87/gaia/agents/
-.claude/hooks    -> node_modules/@jaguilar87/gaia/hooks/
-.claude/skills   -> node_modules/@jaguilar87/gaia/skills/
-.claude/tools    -> node_modules/@jaguilar87/gaia/tools/
-.claude/commands -> node_modules/@jaguilar87/gaia/commands/
-.claude/config   -> node_modules/@jaguilar87/gaia/config/
+.claude/agents    -> node_modules/@jaguilar87/gaia/agents/
+.claude/tools     -> node_modules/@jaguilar87/gaia/tools/
+.claude/hooks     -> node_modules/@jaguilar87/gaia/hooks/
+.claude/commands  -> node_modules/@jaguilar87/gaia/commands/
+.claude/templates -> node_modules/@jaguilar87/gaia/templates/
+.claude/config    -> node_modules/@jaguilar87/gaia/config/
+.claude/skills    -> node_modules/@jaguilar87/gaia/skills/
+.claude/CHANGELOG.md (file link) -> node_modules/@jaguilar87/gaia/CHANGELOG.md
 ```
 
 ---

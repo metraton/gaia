@@ -1,8 +1,9 @@
 """
 Section-Aware Context Combining Logic
 
-Merges scanner results with existing project-context.json following the
-merge rules from contracts/merge-behavior.md:
+Merges scanner sections in-memory following the merge rules from
+contracts/merge-behavior.md. No file I/O -- gaia.db is the sole
+persistence layer.
 
   Rule 1: Scanner-owned sections -> full replace
   Rule 2: Agent-enriched sections -> never touch

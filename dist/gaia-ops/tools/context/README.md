@@ -4,13 +4,12 @@
 
 ## Overview
 
-This module manages the SSOT (Single Source of Truth) context that agents receive. It loads project configuration, filters by agent contract (defined in `config/context-contracts.json` + cloud extensions), and provides context to agents.
-It also classifies the task into generic Gaia surfaces, emits an `investigation_brief`, and injects `write_permissions` so agents receive deterministic cross-surface guidance and writable-section ownership, not just raw project data.
+This module manages the project knowledge agents receive at dispatch time. It reads agent contracts from the `project_context_contracts` and `agent_contract_permissions` tables in `~/.gaia/gaia.db`, filters sections by contract, and builds the injection payload. It also classifies the task into Gaia surfaces, emits an `investigation_brief`, and injects `write_permissions` so agents receive deterministic cross-surface guidance and writable-section ownership, not just raw project data.
 
 ## Core Functions
 
 ### `load_project_context(path)`
-Loads the project-context.json file.
+Loads the project-context.json file. Used by `gaia scan` to hydrate the on-disk artifact alongside DB writes.
 
 ```python
 from tools.context.context_provider import load_project_context
@@ -18,7 +17,7 @@ context = load_project_context(Path(".claude/project-context/project-context.jso
 ```
 
 ### `get_contract_context(project_context, agent_name, provider_contracts)`
-Gets the specific context needed for an agent based on its contract.
+Gets the specific context needed for an agent based on its contract. Contracts are sourced from the DB; `provider_contracts` carries the cloud extension overlay.
 
 ```python
 from tools.context.context_provider import get_contract_context
@@ -30,7 +29,7 @@ contract_context = get_contract_context(
 ```
 
 ### `get_context_update_contract(agent_name, provider_contracts)`
-Gets the readable/writable section contract that governs `CONTEXT_UPDATE`.
+Gets the readable/writable section contract that governs `CONTEXT_UPDATE`. The source of truth is `agent_contract_permissions` in `~/.gaia/gaia.db`.
 
 ```python
 from tools.context.context_provider import get_context_update_contract
@@ -38,7 +37,7 @@ update_contract = get_context_update_contract("terraform-architect", provider_co
 ```
 
 ### `load_provider_contracts(cloud_provider)`
-Loads cloud provider-specific agent contracts (GCP, AWS).
+Loads cloud provider-specific agent contracts (GCP, AWS) from `config/cloud/`.
 
 ```python
 from tools.context.context_provider import load_provider_contracts
@@ -61,20 +60,9 @@ from tools.context.surface_router import build_investigation_brief
 brief = build_investigation_brief("Review hook/skill drift", "gaia-system", contract_context={})
 ```
 
-## Core Classes
-
-### `ContextSectionReader`
-Selective context loading for token optimization.
-
-```python
-from tools.context.context_section_reader import ContextSectionReader
-reader = ContextSectionReader(project_context)
-sections = reader.get_sections_for_agent("gitops-operator")
-```
-
 ## Agent Contracts
 
-Each agent receives specific v2 context sections (defined in `config/context-contracts.json` v3):
+Agent contracts live in `~/.gaia/gaia.db` (`project_context_contracts` + `agent_contract_permissions` tables). `config/context-contracts.json` is the seeding source applied by `gaia install`; the DB is the runtime SSOT. Each agent receives specific sections:
 
 **terraform-architect:**
 - project_identity, stack, git, environment, infrastructure, orchestration
@@ -91,7 +79,7 @@ Each agent receives specific v2 context sections (defined in `config/context-con
 - cluster_details, infrastructure_topology, terraform_infrastructure
 - gitops_configuration, application_services, monitoring_observability, architecture_overview
 
-The same contracts are also exposed under `write_permissions`:
+The same contracts are exposed under `write_permissions`:
 - `readable_sections`
 - `writable_sections`
 
@@ -118,15 +106,15 @@ context/
 ├── context_compressor.py      # Context compression for token optimization
 ├── context_lazy_loader.py     # Lazy loading for large contexts
 ├── deep_merge.py              # Deep merge utility for contract merging
-├── pending_updates.py         # Pending context update management
 ├── benchmark_context.py       # Performance benchmarking
 └── README.md
 ```
 
 ## See Also
 
-- `config/context-contracts.json` - Agent contracts (SSOT)
-- `config/cloud/gcp.json` - GCP-specific contract extensions
-- `config/cloud/aws.json` - AWS-specific contract extensions
-- `hooks/modules/context/context_writer.py` - Context write operations
-- `tests/tools/test_context_provider.py` - Test suite
+- `~/.gaia/gaia.db` — `project_context_contracts` + `agent_contract_permissions` tables (runtime SSOT)
+- `config/context-contracts.json` — seeding source for agent contracts; applied on install
+- `config/cloud/gcp.json` — GCP-specific contract extensions
+- `config/cloud/aws.json` — AWS-specific contract extensions
+- `hooks/modules/context/context_writer.py` — Context write operations
+- `tests/tools/test_context_provider.py` — Test suite

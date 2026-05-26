@@ -4,7 +4,6 @@ gaia.briefs -- Brief and plan storage on top of the Gaia SQLite substrate (B8).
 This module owns:
   - Frontmatter + body parser/serializer (markdown <-> dict round-trip)
   - Store API for briefs (insert, update, list, show, close, deps, search)
-  - Import-from-fs for migrating existing /home/jorge/ws/me/briefs/*/brief.md
 
 Storage layer: ``~/.gaia/gaia.db`` via gaia.store.writer._connect (B1).
 Schema lives in gaia/store/schema.sql (briefs, acceptance_criteria, milestones,
@@ -21,7 +20,6 @@ Public API::
         close_brief,
         get_dependencies,
         search_briefs,
-        import_from_fs,
     )
 """
 
@@ -36,7 +34,6 @@ from gaia.briefs.store import (
     close_brief,
     get_dependencies,
     search_briefs,
-    import_from_fs,
     delete_brief,
     set_status_brief,
     VALID_STATUSES,
@@ -51,7 +48,6 @@ __all__ = [
     "close_brief",
     "get_dependencies",
     "search_briefs",
-    "import_from_fs",
     "delete_brief",
     "set_status_brief",
     "VALID_STATUSES",

@@ -577,16 +577,30 @@ def collect_created_summary(project_root: "Path", output: Any) -> Dict[str, str]
     if settings.is_file():
         items["settings.json"] = "hooks + permissions"
 
-    # project-context sections
-    ctx_path = claude_dir / "project-context" / "project-context.json"
-    if ctx_path.is_file():
+    # project-context contracts (T1.3: DB-backed read -- no longer from JSON file)
+    try:
+        import sys as _sys
+        _repo_root = Path(project_root).resolve().parents[0]
+        # Walk up to find repo root containing gaia/ package
+        _candidate = Path(__file__).resolve().parents[2]
+        if str(_candidate) not in _sys.path:
+            _sys.path.insert(0, str(_candidate))
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
         try:
-            import json
-            data = json.loads(ctx_path.read_text())
-            section_count = len(data.get("sections", {}))
-            items["project-context"] = f"{section_count} sections detected"
-        except Exception:
-            items["project-context"] = "generated"
+            row = con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts WHERE workspace = ?",
+                (ws,),
+            ).fetchone()
+            count = row[0] if row else 0
+        finally:
+            con.close()
+        if count > 0:
+            items["project-context"] = f"{count} contracts in DB"
+    except Exception:
+        pass
 
     return items
 

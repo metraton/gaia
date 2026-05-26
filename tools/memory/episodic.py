@@ -33,6 +33,82 @@ except ImportError:
     _fts5_index = None
 
 
+def _ensure_gaia_store_importable() -> None:
+    """Ensure ``gaia.store.writer`` is importable from sys.path.
+
+    Background: when this module is copied into ``.claude/tools/memory/``
+    by the npm installer, the copy has no relative path back to the gaia
+    package root (``<root>/gaia/store/writer.py``). The hook subprocess
+    runs Python without a PYTHONPATH that includes the package, so the
+    ``from gaia.store.writer import insert_episode`` statement below
+    raises ``ImportError: No module named 'gaia.store'`` -- which
+    previously was swallowed by a stderr-print-and-return-episode_id
+    branch, masking persistence failures for 26 days (brief
+    ``episodic-workflow-to-db`` T4 silent-failure regression).
+
+    Resolution order (first match wins):
+        1. ``GAIA_PACKAGE_ROOT`` env var (explicit override).
+        2. ``__file__.parent.parent.parent`` -- works in the source tree
+           and in the npm package layout where ``tools/memory/episodic.py``
+           sits two directories below the package root.
+        3. ``node_modules/@jaguilar87/gaia`` walking up from ``__file__``
+           and from cwd -- covers the .claude/-copy case.
+        4. cwd / 'gaia' -- last-resort, when running from a workspace
+           that vendors gaia as a subdirectory.
+
+    The first candidate whose ``<root>/gaia/store/writer.py`` exists is
+    prepended to ``sys.path``. If none match the function leaves
+    ``sys.path`` untouched and the caller's import will raise -- which
+    the caller now turns into a loud ``RuntimeError`` instead of a silent
+    pseudo-success.
+    """
+    # Fast path: already importable.
+    try:
+        import gaia.store.writer  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    candidates: List[Path] = []
+
+    env_root = os.environ.get("GAIA_PACKAGE_ROOT")
+    if env_root:
+        candidates.append(Path(env_root))
+
+    here = Path(__file__).resolve()
+    # tools/memory/episodic.py -> tools/memory -> tools -> <root>
+    candidates.append(here.parent.parent.parent)
+
+    # Walk up looking for node_modules/@jaguilar87/gaia (handles .claude-copy
+    # case where __file__ points at the installed copy with no relation to
+    # the package).
+    for anchor in (here, Path.cwd()):
+        cursor = anchor
+        for _ in range(6):
+            nm = cursor / "node_modules" / "@jaguilar87" / "gaia"
+            if (nm / "gaia" / "store" / "writer.py").exists():
+                candidates.append(nm)
+                break
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+
+    # Last resort: cwd-vendored gaia.
+    candidates.append(Path.cwd() / "gaia")
+
+    for root in candidates:
+        if (root / "gaia" / "store" / "writer.py").is_file():
+            root_str = str(root)
+            if root_str not in sys.path:
+                sys.path.insert(0, root_str)
+            return
+    # Nothing matched -- leave sys.path alone and let the caller's
+    # ImportError surface to the RuntimeError raise in store_episode.
+
+
+_ensure_gaia_store_importable()
+
+
 # Valid relationship types for episode connections
 RELATIONSHIP_TYPES = frozenset([
     "SOLVES",       # This episode solves another (problem -> solution)
@@ -87,13 +163,26 @@ class EpisodicMemory:
     - Track outcomes and relationships between episodes (P0/P1)
     """
 
-    def __init__(self, base_path: Optional[Union[str, Path]] = None):
+    def __init__(
+        self,
+        base_path: Optional[Union[str, Path]] = None,
+        db_path: Optional[Union[str, Path]] = None,
+    ):
         """
         Initialize EpisodicMemory with specified or default path.
 
         Args:
-            base_path: Base directory for episodic memory storage.
-                      Defaults to .claude/project-context/episodic-memory/
+            base_path: Base directory for the legacy episodic-memory filesystem
+                layout. After T6 of brief ``episodic-workflow-to-db`` the
+                constructor no longer creates this directory or any child
+                paths. The parameter is retained for callers that pass an
+                explicit path (e.g. tests, CLI) so that legacy read methods
+                (``get_episode``, ``update_outcome``) still resolve files
+                relative to the right root when those files happen to exist.
+            db_path: Optional override for the gaia.db file. When ``None``
+                the writer resolves the canonical path via
+                ``gaia.paths.db_path()``. Test fixtures pass an isolated
+                ``tmp_path`` to avoid polluting the shared substrate.
         """
         if base_path:
             self.base_path = Path(base_path)
@@ -114,21 +203,7 @@ class EpisodicMemory:
         self.episodes_dir = self.base_path / "episodes"
         self.index_file = self.base_path / "index.json"
         self.episodes_jsonl = self.base_path / "episodes.jsonl"
-
-        # Auto-create directories
-        self._ensure_directories()
-
-    def _ensure_directories(self):
-        """Create required directories if they don't exist."""
-        self.base_path.mkdir(parents=True, exist_ok=True)
-        self.episodes_dir.mkdir(parents=True, exist_ok=True)
-
-        if not self.index_file.exists():
-            self._save_index({
-                "episodes": [],
-                "relationships": [],  # P1: Track relationships in index
-                "metadata": {"created": datetime.now(timezone.utc).isoformat()}
-            })
+        self.db_path = Path(db_path) if db_path else None
 
     def _save_index(self, index_data: Dict[str, Any]):
         """Save index to JSON file."""
@@ -220,30 +295,53 @@ class EpisodicMemory:
         success: Optional[bool] = None,
         duration_seconds: Optional[float] = None,
         commands_executed: Optional[List[str]] = None,
-        # P1: Relationship parameters
+        # P1: Relationship parameters (deprecated path -- T4 episodic-workflow-to-db)
         related_episodes: Optional[List[Dict[str, str]]] = None,
         # P3: Workflow metric fields for CLI compatibility
         workflow_metrics: Optional[Dict] = None
     ) -> str:
         """
-        Store a new episode in memory.
+        Store a new episode in the gaia.db ``episodes`` table.
+
+        T4 of brief ``episodic-workflow-to-db`` migrated this writer from
+        JSONL/JSON file output to a single INSERT into ``episodes`` plus zero
+        or more INSERTs into ``episode_anomalies`` for entries found under
+        ``context["anomalies"]``. The function no longer touches
+        ``episodes.jsonl``, ``episode-<id>.json``, ``index.json``, or
+        ``search.db`` -- the schema's INSERT trigger handles FTS5 indexing
+        automatically. Readers still consult the legacy files until T6
+        finishes its half of the migration.
 
         Args:
-            prompt: Original user prompt
-            clarifications: Any clarifications made during processing
-            enriched_prompt: Enriched version of the prompt
-            context: Additional context information
-            tags: Optional tags for categorization
-            episode_id: Optional specific ID (auto-generated if not provided)
-            outcome: Episode outcome ("success", "partial", "failed", "abandoned")
-            success: Boolean indicating if episode was successful
-            duration_seconds: How long the episode took to complete
-            commands_executed: List of commands executed during episode
-            related_episodes: List of related episode references [{"id": "ep_xxx", "type": "SOLVES"}]
-            workflow_metrics: Optional workflow metrics dict (agent, session_id, task_id, etc.)
+            prompt: Original user prompt.
+            clarifications: Discarded under T4 (drop list in the brief). The
+                parameter is preserved on the signature for caller
+                compatibility but its value is ignored.
+            enriched_prompt: Enriched version of the prompt.
+            context: Additional context. ``context["anomalies"]`` (list[dict])
+                is extracted into ``episode_anomalies`` rows; the remaining
+                keys are flattened into the ``context_metrics`` JSON blob.
+            tags: Optional tags for categorization.
+            episode_id: Optional specific ID (auto-generated when omitted).
+            outcome: Episode outcome ("success", "partial", "failed",
+                "abandoned").
+            success: Discarded under T4 (drop list); kept on signature for
+                compatibility.
+            duration_seconds: How long the episode took to complete.
+            commands_executed: List of commands executed during the episode.
+            related_episodes: Discarded under T4 (drop list). Kept on
+                signature; T6 will rewire relationships through a dedicated
+                table if needed.
+            workflow_metrics: Optional workflow metrics dict supplied by the
+                SubagentStop hook. Recognized keys: agent, session_id,
+                task_id, tier, exit_code, plan_status, output_length,
+                output_tokens_approx, prompt (wf_prompt), and any of the
+                context_metrics sub-blob (metrics, session_events,
+                context_anchor_hits, compliance_score, token_costs,
+                model_used, skills_injected, default_skills_snapshot).
 
         Returns:
-            Episode ID
+            Episode ID.
         """
         if not episode_id:
             episode_id = f"ep_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -252,143 +350,123 @@ class EpisodicMemory:
             print(f"Warning: Invalid outcome '{outcome}'. Must be one of {OUTCOME_VALUES}", file=sys.stderr)
             outcome = None
 
-        validated_relationships = None
-        if related_episodes:
-            validated_relationships = []
-            for rel in related_episodes:
-                if isinstance(rel, dict) and "id" in rel and "type" in rel:
-                    if rel["type"] in RELATIONSHIP_TYPES:
-                        validated_relationships.append({"id": rel["id"], "type": rel["type"]})
-                    else:
-                        print(f"Warning: Invalid relationship type '{rel['type']}'. Skipping.", file=sys.stderr)
-            if not validated_relationships:
-                validated_relationships = None
+        context = context or {}
+        workflow_metrics = workflow_metrics or {}
 
-        all_text = prompt
-        if enriched_prompt:
-            all_text += " " + enriched_prompt
-        keywords = self._extract_keywords(all_text)
-
-        if tags:
-            keywords = list(set(keywords + [t.lower() for t in tags]))
-
-        episode_type = self._determine_type(prompt, context or {})
+        episode_type = self._determine_type(prompt, context)
         title = self._generate_title(enriched_prompt or prompt)
+        timestamp = datetime.now(timezone.utc).isoformat()
 
-        episode = Episode(
-            episode_id=episode_id,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            keywords=keywords,
-            prompt=prompt,
-            clarifications=clarifications or {},
-            enriched_prompt=enriched_prompt or prompt,
-            context=context or {},
-            tags=tags,
-            type=episode_type,
-            title=title,
-            relevance_score=1.0,
-            # P0: Outcome fields
-            outcome=outcome,
-            success=success,
-            duration_seconds=duration_seconds,
-            commands_executed=commands_executed,
-            # P1: Relationships
-            related_episodes=validated_relationships
-        )
+        # tier: prefer explicit workflow_metrics value, fall back to context.
+        tier = workflow_metrics.get("tier") or context.get("tier")
 
-        episode_file = self.episodes_dir / f"episode-{episode_id}.json"
-        with open(episode_file, 'w') as f:
-            json.dump(episode.to_dict(), f, indent=2)
+        # Split off anomalies for the child table; everything else from the
+        # context object lands in context_metrics as a JSON blob.
+        anomalies = list(context.get("anomalies", []) or [])
+        context_for_blob = {k: v for k, v in context.items() if k != "anomalies"}
 
-        # Append to JSONL file (enriched with workflow metrics for consistency)
-        jsonl_entry = episode.to_dict()
-        if workflow_metrics:
-            jsonl_entry["agent"] = workflow_metrics.get("agent", "")
-            jsonl_entry["session_id"] = workflow_metrics.get("session_id", "")
-            jsonl_entry["task_id"] = workflow_metrics.get("task_id", "")
-            jsonl_entry["exit_code"] = workflow_metrics.get("exit_code", 0)
-            jsonl_entry["plan_status"] = workflow_metrics.get("plan_status", "")
-            jsonl_entry["output_length"] = workflow_metrics.get("output_length", 0)
-            jsonl_entry["output_tokens_approx"] = workflow_metrics.get("output_tokens_approx", 0)
-            jsonl_entry["wf_prompt"] = workflow_metrics.get("prompt", "")
-        with open(self.episodes_jsonl, 'a') as f:
-            f.write(json.dumps(jsonl_entry) + '\n')
-
-        index = self._load_index()
-        index_entry = {
-            "id": episode_id,
-            "timestamp": episode.timestamp,
-            "keywords": keywords[:10],  # Store limited keywords in index
-            "tags": tags or [],
+        fields = {
+            "timestamp": timestamp,
+            "session_id": workflow_metrics.get("session_id"),
+            "task_id": workflow_metrics.get("task_id"),
+            "agent": workflow_metrics.get("agent"),
+            "tier": tier,
             "type": episode_type,
             "title": title,
-            "relevance_score": 1.0,
-            # P0: Include outcome summary in index
+            "prompt": prompt,
+            "enriched_prompt": enriched_prompt or prompt,
+            "wf_prompt": workflow_metrics.get("prompt"),
+            "tags": tags or [],
+            "commands_executed": commands_executed or [],
+            "context_metrics": context_for_blob,
             "outcome": outcome,
-            "success": success,
-            # P1: Include relationship count in index
-            "relationship_count": len(validated_relationships) if validated_relationships else 0,
-            # P3: Workflow metric fields for CLI compatibility
-            "agent": (workflow_metrics or {}).get("agent", ""),
-            "session_id": (workflow_metrics or {}).get("session_id", ""),
-            "task_id": (workflow_metrics or {}).get("task_id", ""),
-            "exit_code": (workflow_metrics or {}).get("exit_code", 0),
-            "plan_status": (workflow_metrics or {}).get("plan_status", ""),
-            "output_length": (workflow_metrics or {}).get("output_length", 0),
-            "output_tokens_approx": (workflow_metrics or {}).get("output_tokens_approx", 0),
-            "prompt": (workflow_metrics or {}).get("prompt", ""),
-            "retrieval_count": 0,
-            "last_retrieved": None,
+            "duration_seconds": duration_seconds,
+            "exit_code": workflow_metrics.get("exit_code"),
+            "plan_status": workflow_metrics.get("plan_status"),
+            "output_length": workflow_metrics.get("output_length"),
+            "output_tokens_approx": workflow_metrics.get("output_tokens_approx"),
         }
-        index["episodes"].append(index_entry)
 
-        # P1: Add relationships to index for fast lookup
-        if validated_relationships:
-            for rel in validated_relationships:
-                index["relationships"].append({
-                    "source": episode_id,
-                    "target": rel["id"],
-                    "type": rel["type"],
-                    "timestamp": episode.timestamp
-                })
+        workspace = self._resolve_workspace()
 
-        # Keep only last N episodes in index (configurable via GAIA_EPISODE_INDEX_LIMIT)
-        _episode_index_limit = int(os.environ.get("GAIA_EPISODE_INDEX_LIMIT", "50000"))
-        if len(index["episodes"]) > _episode_index_limit:
-            index["episodes"] = index["episodes"][-_episode_index_limit:]
+        try:
+            from gaia.store.writer import insert_episode, insert_episode_anomaly
+        except ImportError as exc:
+            # Fail loud rather than silently masking a persistence outage.
+            # Previously this branch printed to stderr (invisible to the
+            # hook's logger) and returned episode_id, making the caller
+            # believe the row was inserted. The result was 26 days of
+            # ghost episodes before the regression was caught -- see
+            # brief ``episodic-workflow-to-db`` T4 silent-failure post-mortem.
+            raise RuntimeError(
+                f"gaia.store.writer not importable -- episode {episode_id} "
+                f"not persisted: {exc}. Set GAIA_PACKAGE_ROOT or install "
+                f"gaia as a Python package on sys.path."
+            ) from exc
 
-        # Keep only last 5000 relationships in index
-        if len(index["relationships"]) > 5000:
-            index["relationships"] = index["relationships"][-5000:]
+        result = insert_episode(workspace, episode_id, fields, db_path=self.db_path)
+        if result.get("status") != "applied":
+            # Same rationale as the ImportError branch: surface failure
+            # to the caller instead of returning a pseudo-success.
+            raise RuntimeError(
+                f"insert_episode rejected for {episode_id}: "
+                f"{result.get('reason', 'unknown')}"
+            )
 
-        # Ensure metadata exists
-        if "metadata" not in index:
-            index["metadata"] = {}
-        index["metadata"]["last_updated"] = datetime.now(timezone.utc).isoformat()
-        self._save_index(index)
+        # Persist each anomaly. Failures are logged but do not abort the
+        # episode write -- the parent row is already in the DB and the FK
+        # CASCADE only kicks in on delete.
+        for anomaly in anomalies:
+            if not isinstance(anomaly, dict):
+                continue
+            anomaly_fields = {
+                "timestamp": anomaly.get("timestamp") or timestamp,
+                "type": anomaly.get("type", "unknown"),
+                "severity": anomaly.get("severity"),
+                "message": anomaly.get("message"),
+                "payload": anomaly,
+            }
+            sub_result = insert_episode_anomaly(
+                workspace, episode_id, anomaly_fields, db_path=self.db_path
+            )
+            if sub_result.get("status") != "applied":
+                print(
+                    f"Warning: insert_episode_anomaly failed for {episode_id}: "
+                    f"{sub_result.get('reason', 'unknown')}",
+                    file=sys.stderr,
+                )
 
-        print(f"Stored episode: {episode_id} with {len(keywords)} keywords", file=sys.stderr)
-
-        if _fts5_index:
-            try:
-                _fts5_index(episode_id, prompt, enriched_prompt, ' '.join(tags or []), title)
-            except Exception:
-                pass
-        else:
-            # Module-level import failed (e.g. loaded via importlib without tools/ in
-            # sys.path). Attempt a local import using the known path of this file so
-            # that episodes written from hooks are still indexed in FTS5.
-            try:
-                import sys as _sys
-                _tools_dir = str(Path(__file__).parent.parent)
-                if _tools_dir not in _sys.path:
-                    _sys.path.insert(0, _tools_dir)
-                from memory.search_store import index_episode as _fallback_fts5
-                _fallback_fts5(episode_id, prompt, enriched_prompt, ' '.join(tags or []), title)
-            except Exception:
-                pass
-
+        print(
+            f"Stored episode: {episode_id} (workspace={workspace}, "
+            f"anomalies={len(anomalies)})",
+            file=sys.stderr,
+        )
         return episode_id
+
+    def _resolve_workspace(self) -> str:
+        """Resolve the workspace name to insert episodes under.
+
+        Resolution order:
+            1. ``GAIA_DISPATCH_WORKSPACE`` environment variable (set by the
+               SubagentStop hook chain).
+            2. ``GAIA_WORKSPACE`` environment variable (set by ``gaia <cmd>
+               --workspace=<name>``).
+            3. ``gaia.project.current()`` -- canonical workspace identity
+               derived from the git remote of the current directory.
+            4. Literal ``"global"`` when nothing else resolves.
+        """
+        for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
+            value = os.environ.get(env_key)
+            if value:
+                return value
+        try:
+            from gaia.project import current as _project_current
+            ws = _project_current()
+            if ws:
+                return ws
+        except Exception:
+            pass
+        return "global"
 
     def update_outcome(
         self,

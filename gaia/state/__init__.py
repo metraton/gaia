@@ -82,6 +82,30 @@ VALID_TASK_STATUSES: tuple[str, ...] = (
     "skipped",
 )
 
+# ---------------------------------------------------------------------------
+# 5) Acceptance criteria lifecycle -- acceptance_criteria.status (v5)
+#
+# 'blocked' replaces 'skipped' from the task enum: an AC is not "skipped"
+# but can be "blocked" (stuck, needs action) before reaching "done".
+# Reopen (done -> pending) is intentionally allowed for AC revision.
+# ---------------------------------------------------------------------------
+VALID_AC_STATUSES: tuple[str, ...] = (
+    "pending",
+    "done",
+    "blocked",
+)
+
+# ---------------------------------------------------------------------------
+# 6) Milestone lifecycle -- milestones.status (v5)
+#
+# Same enum as AC: milestones can be pending, completed (done), or blocked.
+# ---------------------------------------------------------------------------
+VALID_MILESTONE_STATUSES: tuple[str, ...] = (
+    "pending",
+    "done",
+    "blocked",
+)
+
 
 # ---------------------------------------------------------------------------
 # Convenience: a registry mapping (table, column) -> tuple, used by the
@@ -92,6 +116,8 @@ STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
     ("briefs", "status"): VALID_BRIEF_STATUSES,
     ("plans", "status"): VALID_PLAN_LIFECYCLE_STATUSES,
     ("tasks", "status"): VALID_TASK_STATUSES,
+    ("acceptance_criteria", "status"): VALID_AC_STATUSES,
+    ("milestones", "status"): VALID_MILESTONE_STATUSES,
 }
 
 
@@ -100,5 +126,7 @@ __all__ = [
     "VALID_BRIEF_STATUSES",
     "VALID_PLAN_LIFECYCLE_STATUSES",
     "VALID_TASK_STATUSES",
+    "VALID_AC_STATUSES",
+    "VALID_MILESTONE_STATUSES",
     "STATE_MACHINE_REGISTRY",
 ]

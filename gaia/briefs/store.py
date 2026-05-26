@@ -19,7 +19,6 @@ Public API::
     close_brief(workspace, name, *, db_path=None) -> bool
     get_dependencies(workspace, name, *, db_path=None) -> list[dict]
     search_briefs(workspace, query, *, limit=10, db_path=None) -> list[dict]
-    import_from_fs(source, *, workspace="me", db_path=None) -> dict
     delete_brief(workspace, name, *, db_path=None) -> bool
 """
 
@@ -72,25 +71,6 @@ _BRIEF_COLUMNS = (
     "status", "surface_type", "title", "objective", "context",
     "approach", "out_of_scope", "topic_key",
 )
-
-
-def _strip_dir_prefix(dir_name: str) -> tuple[str, str | None]:
-    """Strip the ``open_/closed_/in-progress_/archived_`` prefix from a directory
-    name; return (bare_name, derived_status).
-
-    derived_status is one of 'draft', 'in-progress', 'closed', 'archived', or
-    None when no known prefix matched.
-    """
-    mapping = {
-        "open_": "draft",
-        "in-progress_": "in-progress",
-        "closed_": "closed",
-        "archived_": "archived",
-    }
-    for prefix, status in mapping.items():
-        if dir_name.startswith(prefix):
-            return dir_name[len(prefix):], status
-    return dir_name, None
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
@@ -418,6 +398,9 @@ def set_status_brief(
             :data:`VALID_STATUSES`, or the transition from current to new is
             not in :data:`_LEGAL_TRANSITIONS`.
     """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("briefs")
+
     if new_status not in VALID_STATUSES:
         raise ValueError(
             f"invalid status '{new_status}'; must be one of {list(VALID_STATUSES)}"
@@ -594,87 +577,522 @@ def search_briefs(
 
 
 # ---------------------------------------------------------------------------
-# import_from_fs
+# Granular AC mutation (v5 -- T5.1)
 # ---------------------------------------------------------------------------
+#
+# These functions provide individual add/remove/edit semantics for
+# acceptance_criteria rows, bypassing the full-sync `upsert_brief` path.
+# Permission matrix D1: acceptance_criteria is `curator_only=False` --
+# subagents are allowed to mutate. The guard is still invoked so that the
+# enforcement layer can evolve without touching callers.
 
-def import_from_fs(
-    source: str | Path,
+
+def _resolve_brief_id_local(con, workspace: str, brief_name: str) -> int:
+    row = con.execute(
+        "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
+        (workspace, brief_name),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"brief '{brief_name}' not found in workspace '{workspace}'"
+        )
+    return row["id"]
+
+
+def add_ac(
+    workspace: str,
+    brief_name: str,
+    ac_id: str,
     *,
-    workspace: str = "me",
+    description: str | None = None,
+    evidence_type: str | None = None,
+    evidence_shape: Any = None,
+    artifact_path: str | None = None,
     db_path: Path | None = None,
 ) -> dict:
-    """Walk ``source`` for ``<status>_<name>/brief.md`` directories and upsert
-    each into the DB. Status is derived from the directory prefix; falls back
-    to frontmatter status if the prefix is unknown.
+    """Insert a new acceptance_criteria row.
 
-    Args:
-        source: directory containing brief subdirectories.
-        workspace: workspace identity to assign to each imported brief.
-        db_path: optional explicit DB path (tests).
-
-    Returns:
-        ``{"imported": int, "errors": [...], "names": [str, ...]}``.
+    Raises ValueError on duplicate ac_id for the same brief or on missing brief.
     """
-    src = Path(source)
-    if not src.is_dir():
-        return {"imported": 0, "errors": [f"source not a directory: {src}"], "names": []}
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("acceptance_criteria")
 
-    imported: list[dict] = []
-    errors: list[dict] = []
-    names: list[str] = []
+    if not ac_id or not ac_id.strip():
+        raise ValueError("ac_id cannot be empty")
 
-    # Two passes: pass 1 imports all briefs (without dependencies wired up),
-    # pass 2 re-applies dependencies once every brief has an id.
-    parsed_entries: list[tuple[str, dict]] = []
+    shape = evidence_shape
+    if isinstance(shape, (dict, list)):
+        shape = json.dumps(shape, sort_keys=True)
 
-    for entry in sorted(src.iterdir()):
-        if not entry.is_dir():
-            continue
-        bare, derived_status = _strip_dir_prefix(entry.name)
-        if derived_status is None and not (entry / "brief.md").exists():
-            continue
-        brief_file = entry / "brief.md"
-        if not brief_file.exists():
-            continue
-        try:
-            text = brief_file.read_text(encoding="utf-8")
-            parsed = parse_brief_markdown(text)
-        except Exception as exc:
-            errors.append({"name": entry.name, "error": f"parse: {exc}"})
-            continue
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        existing = con.execute(
+            "SELECT id FROM acceptance_criteria WHERE brief_id = ? AND ac_id = ?",
+            (brief_id, ac_id),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError(
+                f"AC '{ac_id}' already exists in brief '{brief_name}'"
+            )
 
-        # Override status from directory prefix if frontmatter didn't pin one
-        # OR if directory prefix conflicts (directory wins by convention).
-        if derived_status is not None:
-            parsed["status"] = derived_status
+        con.execute(
+            "INSERT INTO acceptance_criteria "
+            "(brief_id, ac_id, description, evidence_type, evidence_shape, "
+            " artifact_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (brief_id, ac_id, description or "", evidence_type, shape,
+             artifact_path),
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "inserted",
+            "brief_name": brief_name,
+            "ac_id": ac_id,
+        }
+    finally:
+        con.close()
 
-        parsed_entries.append((bare, parsed))
 
-    # Pass 1: upsert without deps
-    for bare, parsed in parsed_entries:
-        no_deps = dict(parsed)
-        no_deps["dependencies"] = []
-        try:
-            upsert_brief(workspace, bare, no_deps, db_path=db_path)
-            imported.append({"name": bare, "acs": len(parsed.get("acceptance_criteria") or []),
-                             "milestones": len(parsed.get("milestones") or [])})
-            names.append(bare)
-        except Exception as exc:
-            errors.append({"name": bare, "error": f"upsert: {exc}"})
+def remove_ac(
+    workspace: str,
+    brief_name: str,
+    ac_id: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Delete an acceptance_criteria row by (brief, ac_id).
 
-    # Pass 2: re-apply deps now that all rows exist
-    for bare, parsed in parsed_entries:
-        if not parsed.get("dependencies"):
-            continue
-        try:
-            # We already have everything except deps; do a thin update via re-upsert
-            upsert_brief(workspace, bare, parsed, db_path=db_path)
-        except Exception as exc:
-            errors.append({"name": bare, "error": f"deps: {exc}"})
+    Raises ValueError if the brief or AC does not exist.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("acceptance_criteria")
 
-    return {
-        "imported": len(imported),
-        "errors": errors,
-        "names": names,
-        "details": imported,
-    }
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        cur = con.execute(
+            "DELETE FROM acceptance_criteria WHERE brief_id = ? AND ac_id = ?",
+            (brief_id, ac_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"AC '{ac_id}' not found in brief '{brief_name}'"
+            )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "deleted",
+            "brief_name": brief_name,
+            "ac_id": ac_id,
+        }
+    finally:
+        con.close()
+
+
+def update_ac(
+    workspace: str,
+    brief_name: str,
+    ac_id: str,
+    *,
+    description: str | None = None,
+    evidence_type: str | None = None,
+    evidence_shape: Any = None,
+    artifact_path: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Update fields of an existing acceptance_criteria row.
+
+    None fields are not modified. At least one non-None field must be passed.
+    Raises ValueError if the AC or brief does not exist.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("acceptance_criteria")
+
+    updates: dict[str, Any] = {}
+    if description is not None:
+        updates["description"] = description
+    if evidence_type is not None:
+        updates["evidence_type"] = evidence_type
+    if evidence_shape is not None:
+        shape = evidence_shape
+        if isinstance(shape, (dict, list)):
+            shape = json.dumps(shape, sort_keys=True)
+        updates["evidence_shape"] = shape
+    if artifact_path is not None:
+        updates["artifact_path"] = artifact_path
+
+    if not updates:
+        raise ValueError("at least one field must be specified for update")
+
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        existing = con.execute(
+            "SELECT id FROM acceptance_criteria WHERE brief_id = ? AND ac_id = ?",
+            (brief_id, ac_id),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(
+                f"AC '{ac_id}' not found in brief '{brief_name}'"
+            )
+
+        set_clauses = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [existing["id"]]
+        con.execute(
+            f"UPDATE acceptance_criteria SET {set_clauses} WHERE id = ?",
+            values,
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "updated",
+            "brief_name": brief_name,
+            "ac_id": ac_id,
+            "fields": list(updates.keys()),
+        }
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Granular milestone mutation (v5 -- T5.2)
+# ---------------------------------------------------------------------------
+#
+# Milestones are `curator_only=True` per D1 -- only orchestrator/operator may
+# add/remove/edit them. The guard rejects non-curator dispatches.
+
+
+def add_milestone(
+    workspace: str,
+    brief_name: str,
+    name: str,
+    *,
+    description: str | None = None,
+    order_num: int | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Insert a new milestones row.
+
+    If order_num is None, it auto-assigns to MAX(order_num)+1 for the brief.
+    Raises ValueError on duplicate name within the brief or missing brief.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("milestones")
+
+    if not name or not name.strip():
+        raise ValueError("milestone name cannot be empty")
+
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        existing = con.execute(
+            "SELECT id FROM milestones WHERE brief_id = ? AND name = ?",
+            (brief_id, name),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError(
+                f"milestone '{name}' already exists in brief '{brief_name}'"
+            )
+
+        if order_num is None:
+            row = con.execute(
+                "SELECT COALESCE(MAX(order_num), 0) AS max_o FROM milestones "
+                "WHERE brief_id = ?",
+                (brief_id,),
+            ).fetchone()
+            order_num = (row["max_o"] or 0) + 1
+
+        con.execute(
+            "INSERT INTO milestones (brief_id, order_num, name, description) "
+            "VALUES (?, ?, ?, ?)",
+            (brief_id, order_num, name, description or ""),
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "inserted",
+            "brief_name": brief_name,
+            "name": name,
+            "order_num": order_num,
+        }
+    finally:
+        con.close()
+
+
+def remove_milestone(
+    workspace: str,
+    brief_name: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Delete a milestones row by (brief, name).
+
+    Raises ValueError if the brief or milestone does not exist.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("milestones")
+
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        cur = con.execute(
+            "DELETE FROM milestones WHERE brief_id = ? AND name = ?",
+            (brief_id, name),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"milestone '{name}' not found in brief '{brief_name}'"
+            )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "deleted",
+            "brief_name": brief_name,
+            "name": name,
+        }
+    finally:
+        con.close()
+
+
+def update_milestone(
+    workspace: str,
+    brief_name: str,
+    name: str,
+    *,
+    new_name: str | None = None,
+    description: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Update name or description of an existing milestone.
+
+    None fields are not modified. Raises ValueError if the milestone or
+    brief does not exist, or if no field is specified.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("milestones")
+
+    updates: dict[str, Any] = {}
+    if new_name is not None:
+        if not new_name.strip():
+            raise ValueError("new_name cannot be empty")
+        updates["name"] = new_name
+    if description is not None:
+        updates["description"] = description
+
+    if not updates:
+        raise ValueError("at least one field must be specified for update")
+
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        existing = con.execute(
+            "SELECT id FROM milestones WHERE brief_id = ? AND name = ?",
+            (brief_id, name),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(
+                f"milestone '{name}' not found in brief '{brief_name}'"
+            )
+
+        # If renaming, check for collision
+        if "name" in updates and updates["name"] != name:
+            collision = con.execute(
+                "SELECT id FROM milestones WHERE brief_id = ? AND name = ?",
+                (brief_id, updates["name"]),
+            ).fetchone()
+            if collision is not None:
+                raise ValueError(
+                    f"milestone '{updates['name']}' already exists in brief "
+                    f"'{brief_name}'"
+                )
+
+        set_clauses = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [existing["id"]]
+        con.execute(
+            f"UPDATE milestones SET {set_clauses} WHERE id = ?",
+            values,
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "updated",
+            "brief_name": brief_name,
+            "name": name,
+            "fields": list(updates.keys()),
+        }
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Brief invariant verification (v5 -- T5.6)
+# ---------------------------------------------------------------------------
+
+
+def verify_brief(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Run invariant checks on a brief and return a structured diagnosis.
+
+    Returns dict with keys:
+      * brief_name (str)
+      * inconsistencies (list[dict]): each dict has {kind, detail}
+      * pass (bool): True if inconsistencies is empty
+    """
+    con = _connect(db_path)
+    try:
+        brief_row = con.execute(
+            "SELECT id, name FROM briefs WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if brief_row is None:
+            raise ValueError(
+                f"brief '{name}' not found in workspace '{workspace}'"
+            )
+        brief_id = brief_row["id"]
+
+        inconsistencies: list[dict] = []
+
+        # Invariant 1: plans with zero tasks
+        plan_row = con.execute(
+            "SELECT id FROM plans WHERE brief_id = ?", (brief_id,)
+        ).fetchone()
+        plan_id = plan_row["id"] if plan_row else None
+
+        if plan_id is not None:
+            task_count = con.execute(
+                "SELECT COUNT(*) AS c FROM tasks WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchone()["c"]
+            if task_count == 0:
+                inconsistencies.append({
+                    "kind": "empty_plan",
+                    "detail": f"plan for brief '{name}' has zero tasks",
+                })
+
+        # Invariant 2: tasks goal references an ac_id that does not exist on
+        # the brief. Heuristic: scan task.goal for tokens like 'AC-<n>' and
+        # confirm each one exists in acceptance_criteria(brief_id, ac_id).
+        if plan_id is not None:
+            ac_rows = con.execute(
+                "SELECT ac_id FROM acceptance_criteria WHERE brief_id = ?",
+                (brief_id,),
+            ).fetchall()
+            known_acs = {r["ac_id"] for r in ac_rows}
+
+            ac_pattern = re.compile(r"\bAC-\d+\b")
+            task_rows = con.execute(
+                "SELECT order_num, goal FROM tasks WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchall()
+            for trow in task_rows:
+                goal = trow["goal"] or ""
+                for token in ac_pattern.findall(goal):
+                    if token not in known_acs:
+                        inconsistencies.append({
+                            "kind": "orphan_task_ac_ref",
+                            "detail": (
+                                f"task order_num={trow['order_num']} references "
+                                f"unknown AC '{token}'"
+                            ),
+                        })
+
+        # Invariant 3: AC with status='done' but no artifact_path AND
+        # evidence_type is set (the type promised evidence; the artifact is
+        # missing).
+        bad_acs = con.execute(
+            "SELECT ac_id, evidence_type, artifact_path FROM acceptance_criteria "
+            "WHERE brief_id = ? AND status = 'done' "
+            "AND evidence_type IS NOT NULL "
+            "AND (artifact_path IS NULL OR artifact_path = '')",
+            (brief_id,),
+        ).fetchall()
+        for ac_row in bad_acs:
+            inconsistencies.append({
+                "kind": "done_ac_without_artifact",
+                "detail": (
+                    f"AC '{ac_row['ac_id']}' is status=done with "
+                    f"evidence_type={ac_row['evidence_type']!r} but no "
+                    f"artifact_path"
+                ),
+            })
+
+        # Invariant 4: plan is 'active' but all tasks are 'done' -> should be closed
+        if plan_id is not None:
+            plan_status = con.execute(
+                "SELECT status FROM plans WHERE id = ?", (plan_id,)
+            ).fetchone()["status"]
+            if plan_status == "active":
+                task_status_counts = con.execute(
+                    "SELECT status, COUNT(*) AS c FROM tasks WHERE plan_id = ? "
+                    "GROUP BY status",
+                    (plan_id,),
+                ).fetchall()
+                statuses = {r["status"]: r["c"] for r in task_status_counts}
+                total = sum(statuses.values())
+                done_count = statuses.get("done", 0)
+                if total > 0 and done_count == total:
+                    inconsistencies.append({
+                        "kind": "active_plan_all_tasks_done",
+                        "detail": (
+                            f"plan for brief '{name}' is 'active' but all "
+                            f"{total} tasks are 'done' -- consider closing"
+                        ),
+                    })
+
+        # Invariant 5: if a plan is closed, at least one agent_contract_handoffs
+        # row with task_status='COMPLETE' must exist for this brief.
+        # Catches plans manually forced-closed without any agent completing them.
+        if plan_id is not None:
+            plan_status_row = con.execute(
+                "SELECT status FROM plans WHERE id = ?", (plan_id,)
+            ).fetchone()
+            if plan_status_row and plan_status_row["status"] == "closed":
+                complete_count = con.execute(
+                    "SELECT COUNT(*) AS c FROM agent_contract_handoffs "
+                    "WHERE brief_id = ? AND task_status = 'COMPLETE'",
+                    (brief_id,),
+                ).fetchone()["c"]
+                if complete_count == 0:
+                    inconsistencies.append({
+                        "kind": "closed_plan_without_completion_handoff",
+                        "detail": (
+                            f"plan for brief '{name}' is 'closed' but no "
+                            f"agent_contract_handoffs row with task_status='COMPLETE' "
+                            f"exists for this brief"
+                        ),
+                    })
+
+        # Invariant 6: if the most recent agent_contract_handoffs row for this
+        # brief has task_status != 'COMPLETE', the agent session ended without
+        # completing. Surface as a stalled_handoff inconsistency.
+        latest_handoff = con.execute(
+            "SELECT id, agent_id, task_status, created_at "
+            "FROM agent_contract_handoffs "
+            "WHERE brief_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (brief_id,),
+        ).fetchone()
+        if latest_handoff is not None and latest_handoff["task_status"] != "COMPLETE":
+            inconsistencies.append({
+                "kind": "stalled_handoff",
+                "detail": (
+                    f"most recent handoff (agent_id='{latest_handoff['agent_id']}', "
+                    f"created_at='{latest_handoff['created_at']}') has "
+                    f"task_status='{latest_handoff['task_status']}' (not COMPLETE)"
+                ),
+            })
+
+        return {
+            "brief_name": name,
+            "inconsistencies": inconsistencies,
+            "pass": len(inconsistencies) == 0,
+        }
+    finally:
+        con.close()

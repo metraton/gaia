@@ -76,9 +76,65 @@ def assert_legal_task_lifecycle(
         )
 
 
+# ---------------------------------------------------------------------------
+# Acceptance criteria lifecycle (acceptance_criteria.status: pending, done, blocked)
+# ---------------------------------------------------------------------------
+AC_LIFECYCLE_TRANSITIONS: Mapping[str, frozenset[str]] = {
+    "pending": frozenset({"done", "blocked"}),
+    "done": frozenset({"pending"}),      # allow reopen for AC revision
+    "blocked": frozenset({"pending"}),   # allow unblock
+}
+
+
+def assert_legal_ac_lifecycle(
+    old_status: str,
+    new_status: str,
+) -> None:
+    """Raise ``ValueError`` if the AC lifecycle transition is illegal."""
+    if old_status == new_status:
+        return
+    allowed = AC_LIFECYCLE_TRANSITIONS.get(old_status, frozenset())
+    if new_status not in allowed:
+        raise ValueError(
+            f"illegal AC lifecycle transition '{old_status}' -> "
+            f"'{new_status}'; allowed from '{old_status}': "
+            f"{sorted(allowed) or '(none)'}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Milestone lifecycle (milestones.status: pending, done, blocked)
+# ---------------------------------------------------------------------------
+MILESTONE_LIFECYCLE_TRANSITIONS: Mapping[str, frozenset[str]] = {
+    "pending": frozenset({"done", "blocked"}),
+    "done": frozenset({"pending"}),      # allow reopen
+    "blocked": frozenset({"pending"}),   # allow unblock
+}
+
+
+def assert_legal_milestone_lifecycle(
+    old_status: str,
+    new_status: str,
+) -> None:
+    """Raise ``ValueError`` if the milestone lifecycle transition is illegal."""
+    if old_status == new_status:
+        return
+    allowed = MILESTONE_LIFECYCLE_TRANSITIONS.get(old_status, frozenset())
+    if new_status not in allowed:
+        raise ValueError(
+            f"illegal milestone lifecycle transition '{old_status}' -> "
+            f"'{new_status}'; allowed from '{old_status}': "
+            f"{sorted(allowed) or '(none)'}"
+        )
+
+
 __all__ = [
     "PLAN_LIFECYCLE_TRANSITIONS",
     "TASK_LIFECYCLE_TRANSITIONS",
+    "AC_LIFECYCLE_TRANSITIONS",
+    "MILESTONE_LIFECYCLE_TRANSITIONS",
     "assert_legal_plan_lifecycle",
     "assert_legal_task_lifecycle",
+    "assert_legal_ac_lifecycle",
+    "assert_legal_milestone_lifecycle",
 ]

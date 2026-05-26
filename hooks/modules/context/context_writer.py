@@ -1,11 +1,12 @@
 """
 ContextWriter: validates and persists CONTEXT_UPDATE blocks from agent output.
 
-Parses CONTEXT_UPDATE blocks, enforces write permissions via
+Parses CONTEXT_UPDATE blocks (legacy text path) and update_contracts arrays
+(new envelope path, T2.3), enforces write permissions via
 agent_contract_permissions in ~/.gaia/gaia.db, and upserts to
 project_context_contracts.
 
-CONTEXT_UPDATE format::
+Legacy CONTEXT_UPDATE format (single block)::
 
     CONTEXT_UPDATE:
     {
@@ -13,12 +14,20 @@ CONTEXT_UPDATE format::
       "payload": { ... }
     }
 
+New update_contracts format (array inside json:contract/agent_contract_handoff)::
+
+    "update_contracts": [
+      { "contract": "<contract_name>", "payload": { ... } },
+      ...
+    ]
+
 Public API:
     - parse_context_update(agent_output) -> Optional[dict]
     - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
     - apply_update(update, agent_name, workspace, db_path) -> dict
     - process_agent_output(agent_output, task_info) -> dict
     - process_context_updates(agent_output, task_info, find_claude_dir_fn=None) -> Optional[dict]
+    - process_update_contracts(contract_dict, task_info) -> dict
 """
 
 import json
@@ -402,3 +411,234 @@ def process_context_updates(
     except Exception as exc:
         logger.debug("Context update processing failed (non-fatal): %s", exc)
         return None
+
+
+# ============================================================================
+# 6. process_update_contracts (T2.3 -- new envelope path)
+# ============================================================================
+
+def process_update_contracts(
+    contract_dict: dict,
+    task_info: dict,
+) -> dict:
+    """Process the ``update_contracts`` array from a parsed contract dict.
+
+    This is the new envelope path (T2.3) that replaces the single-block
+    ``CONTEXT_UPDATE:`` text path.  It supports N atomic updates per turn,
+    removing the "first-block-only" limitation of the legacy path.
+
+    Each entry in ``update_contracts`` must be ``{contract, payload}``.
+    Permission is checked per entry via ``validate_permission``.  Entries
+    that fail permission are collected in ``rejected``; successful entries
+    are applied immediately.
+
+    Args:
+        contract_dict: Parsed JSON contract dict (from parse_contract()).
+        task_info: Task metadata (agent, db_path, cloud_scope, workspace).
+
+    Returns:
+        dict with keys:
+            updated (bool)         -- True when at least one entry was applied
+            contracts (list[str])  -- Names of successfully applied contracts
+            rejected (list[str])   -- Names of rejected contracts
+            errors (list[str])     -- Error messages for failed entries
+    """
+    result = {
+        "updated": False,
+        "contracts": [],
+        "rejected": [],
+        "errors": [],
+    }
+
+    if not isinstance(contract_dict, dict):
+        return result
+
+    try:
+        from ..agents.contract_validator import parse_update_contracts
+        entries = parse_update_contracts(contract_dict)
+    except Exception as exc:
+        logger.debug("parse_update_contracts failed (non-fatal): %s", exc)
+        return result
+
+    if not entries:
+        return result
+
+    agent_name = task_info.get("agent", task_info.get("agent_type", "unknown"))
+    db_path = task_info.get("db_path")
+    cloud_scope = task_info.get("cloud_scope")
+    workspace = task_info.get("workspace")
+
+    evidence_entries = []
+    context_entries = []
+    for entry in entries:
+        if entry.get("contract") == "evidence":
+            evidence_entries.append(entry)
+        else:
+            context_entries.append(entry)
+
+    # Process project_context entries (existing path -- permission-gated)
+    for entry in context_entries:
+        allowed, rejection_msg = validate_permission(
+            entry, agent_name, cloud_scope, db_path
+        )
+        if not allowed:
+            contract_name = entry.get("contract", "")
+            result["rejected"].append(contract_name)
+            result["errors"].append(rejection_msg)
+            logger.warning(rejection_msg)
+            continue
+
+        audit = apply_update(entry, agent_name, workspace=workspace, db_path=db_path)
+        if audit["success"]:
+            result["contracts"].append(audit["contract"])
+            result["updated"] = True
+            logger.info(
+                "update_contracts applied by %s: workspace=%s contract=%s",
+                agent_name,
+                audit.get("workspace"),
+                audit["contract"],
+            )
+        else:
+            result["errors"].append(audit.get("error", "unknown error"))
+            logger.error(
+                "update_contracts failed for %s entry '%s': %s",
+                agent_name,
+                entry.get("contract", ""),
+                audit.get("error"),
+            )
+
+    # Process evidence entries (fail-together per D8 -- hook-trusted path)
+    if evidence_entries:
+        _apply_evidence_entries(evidence_entries, workspace, db_path, agent_name, result)
+
+    return result
+
+
+def _validate_evidence_payload(payload: dict) -> list:
+    """Validate an evidence clause payload at write time.
+
+    Returns a list of error strings (empty = valid).  Mirrors the parse-time
+    check in contract_validator.validate_evidence_update_contract_payload but
+    lives in the writer layer so write-time rejections are reported consistently.
+    """
+    errors = []
+    if not isinstance(payload, dict):
+        errors.append("evidence payload must be an object/dict")
+        return errors
+
+    raw_brief_id = payload.get("brief_id")
+    if raw_brief_id is None:
+        errors.append("evidence payload missing required field: brief_id")
+    else:
+        try:
+            int(raw_brief_id)
+        except (TypeError, ValueError):
+            errors.append(
+                f"evidence payload brief_id must be an integer, got {type(raw_brief_id).__name__!r}"
+            )
+
+    ac_id = payload.get("ac_id")
+    if not ac_id or not str(ac_id).strip():
+        errors.append("evidence payload missing or empty required field: ac_id")
+
+    _valid_types = frozenset({"text", "file", "command_output", "url", "screenshot"})
+    ev_type = payload.get("type")
+    if not ev_type:
+        errors.append(
+            f"evidence payload missing required field: type (must be one of {sorted(_valid_types)})"
+        )
+    elif ev_type not in _valid_types:
+        errors.append(
+            f"evidence payload type {ev_type!r} is invalid; must be one of {sorted(_valid_types)}"
+        )
+
+    has_text = payload.get("text") is not None
+    has_artifact = payload.get("artifact_path") is not None
+    if has_text and has_artifact:
+        errors.append(
+            "evidence payload fields 'text' and 'artifact_path' are mutually exclusive"
+        )
+    elif not has_text and not has_artifact:
+        errors.append("evidence payload requires exactly one of 'text' or 'artifact_path'")
+
+    return errors
+
+
+def _apply_evidence_entries(
+    entries: list,
+    workspace,
+    db_path,
+    agent_name: str,
+    result: dict,
+) -> None:
+    """Insert evidence rows from update_contracts evidence clauses.
+
+    Implements fail-together semantics (D8): if ANY entry has a validation
+    error, NO rows are inserted for the batch.  Other contract types in the
+    same update_contracts array are unaffected.
+
+    Successful inserts are appended to result["contracts"] as "evidence:<id>"
+    strings.  Failures are appended to result["rejected"] and result["errors"].
+    """
+    # Phase 1: validate ALL entries before touching the DB (fail-together)
+    all_errors = []
+    for i, entry in enumerate(entries):
+        payload = entry.get("payload", {})
+        errs = _validate_evidence_payload(payload)
+        for err in errs:
+            all_errors.append(f"evidence[{i}]: {err}")
+
+    if all_errors:
+        for entry in entries:
+            result["rejected"].append(entry.get("contract", "evidence"))
+        result["errors"].extend(all_errors)
+        logger.warning(
+            "_apply_evidence_entries: rejecting %d evidence entries due to validation errors: %s",
+            len(entries),
+            "; ".join(all_errors),
+        )
+        return
+
+    # Phase 2: all valid -- insert each entry
+    import sys as _sys
+    import pathlib as _pl
+    _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent
+    if str(_repo_root) not in _sys.path:
+        _sys.path.insert(0, str(_repo_root))
+    try:
+        from gaia.evidence.store import insert_evidence
+    except ImportError as exc:
+        err = f"gaia.evidence.store unavailable: {exc}"
+        result["errors"].append(err)
+        logger.error("_apply_evidence_entries: %s", err)
+        return
+
+    ws = workspace or _derive_workspace()
+
+    for i, entry in enumerate(entries):
+        payload = entry.get("payload", {})
+        try:
+            row = insert_evidence(
+                ws,
+                int(payload["brief_id"]),
+                str(payload["ac_id"]),
+                type=payload["type"],
+                text=payload.get("text"),
+                artifact_path=payload.get("artifact_path"),
+                size_bytes=payload.get("size_bytes"),
+                task_id=payload.get("task_id"),
+                created_by_agent=payload.get("created_by_agent") or agent_name,
+                db_path=db_path,
+                bypass_dispatch_guard=True,
+            )
+            ev_ref = f"evidence:{row['id']}"
+            result["contracts"].append(ev_ref)
+            result["updated"] = True
+            logger.info(
+                "_apply_evidence_entries: inserted %s by %s (brief_id=%s ac_id=%s)",
+                ev_ref, agent_name, payload["brief_id"], payload["ac_id"],
+            )
+        except Exception as exc:
+            err = f"evidence[{i}] insert failed: {exc}"
+            result["errors"].append(err)
+            logger.error("_apply_evidence_entries: %s", err)

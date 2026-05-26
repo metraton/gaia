@@ -50,42 +50,59 @@ def _find_project_root() -> Path:
 
 def _read_workflow_metrics(root: Path) -> list:
     """
-    Read agent session history.
-    Primary source: episodic-memory/index.json (episodes array with agent field).
-    Fallback: workflow-episodic-memory/metrics.jsonl.
-    """
-    # Primary
-    index_path = root / ".claude" / "project-context" / "episodic-memory" / "index.json"
-    if index_path.exists():
-        try:
-            data = json.loads(index_path.read_text(encoding="utf-8"))
-            episodes = [e for e in (data.get("episodes") or []) if e.get("agent")]
-            if episodes:
-                return episodes
-        except (json.JSONDecodeError, OSError):
-            pass
+    Read agent session history from gaia.db episodes table.
 
-    # Fallback
-    metrics_path = root / ".claude" / "project-context" / "workflow-episodic-memory" / "metrics.jsonl"
-    if not metrics_path.exists():
+    T6 migration: primary source is now the episodes table in gaia.db.
+    The legacy episodic-memory/index.json and workflow-episodic-memory/metrics.jsonl
+    files are no longer read here.
+
+    Returns a list of episode dicts (rows with an 'agent' field).
+    """
+    import sys as _sys
+    _BIN_DIR = Path(__file__).resolve().parent.parent
+    _REPO_ROOT = _BIN_DIR.parent
+    for p in (_REPO_ROOT, str(_REPO_ROOT)):
+        if str(p) not in _sys.path:
+            _sys.path.insert(0, str(p))
+
+    try:
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
         return []
 
-    entries = []
     try:
-        for line in metrics_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                if entry.get("agent"):
-                    entries.append(entry)
-            except json.JSONDecodeError:
-                pass
-    except OSError:
-        pass
+        ws = _project_current(cwd=root)
+    except Exception:
+        ws = None
 
-    return entries
+    try:
+        con = _store_connect()
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT episode_id, workspace, timestamp, session_id, task_id, "
+                    "agent, type, title, prompt, enriched_prompt, plan_status, "
+                    "outcome, exit_code, duration_seconds, output_tokens_approx, tier "
+                    "FROM episodes "
+                    "WHERE workspace = ? AND agent IS NOT NULL "
+                    "ORDER BY timestamp DESC",
+                    (ws,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT episode_id, workspace, timestamp, session_id, task_id, "
+                    "agent, type, title, prompt, enriched_prompt, plan_status, "
+                    "outcome, exit_code, duration_seconds, output_tokens_approx, tier "
+                    "FROM episodes "
+                    "WHERE agent IS NOT NULL "
+                    "ORDER BY timestamp DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------

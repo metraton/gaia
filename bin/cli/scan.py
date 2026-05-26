@@ -60,25 +60,29 @@ def _resolve_workspace(workspace: Optional[str]) -> Path:
 
 
 def _is_context_fresh(project_root: Path, staleness_hours: int) -> bool:
-    """Return True if project-context.json is younger than staleness_hours."""
-    context_path = project_root / ".claude" / "project-context" / "project-context.json"
-    if not context_path.is_file():
-        return False
+    """Return True if last_scan_at in DB is younger than staleness_hours.
+
+    T1.3: reads from workspaces.last_scan_at instead of project-context.json.
+    Returns False when the workspace row is absent or last_scan_at is NULL.
+    """
     try:
-        with open(context_path, "r") as f:
-            data = json.load(f)
-        last_scan = (
-            data.get("metadata", {}).get("scan_config", {}).get("last_scan")
-        )
-        if last_scan:
-            scan_dt = datetime.fromisoformat(last_scan)
-            now = datetime.now(timezone.utc)
-            age_hours = (now - scan_dt).total_seconds() / 3600
-            return age_hours < staleness_hours
-        mtime = context_path.stat().st_mtime
-        age_hours = (time.time() - mtime) / 3600
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
+            ).fetchone()
+        finally:
+            con.close()
+        if not row or not row[0]:
+            return False
+        scan_dt = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        age_hours = (now - scan_dt).total_seconds() / 3600
         return age_hours < staleness_hours
-    except (json.JSONDecodeError, OSError, ValueError):
+    except Exception:
         return False
 
 
@@ -122,44 +126,44 @@ def _run_scan(project_root: Path, scan_config) -> Any:
 def _mode_dry_run(project_root: Path, args: argparse.Namespace) -> int:
     """Report what would change without writing.
 
-    Does NOT touch the SQLite DB or project-context.json -- pure preview.
-    Equivalent to `gaia context scan --dry-run`.
+    Does NOT touch the SQLite DB -- pure preview.
+    T1.3: reads last_scan_at from workspaces DB row instead of project-context.json.
     """
-    context_path = (
-        project_root / ".claude" / "project-context" / "project-context.json"
-    )
+    last_scan = None
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
+            ).fetchone()
+            if row:
+                last_scan = row[0]
+        finally:
+            con.close()
+    except Exception:
+        pass
+
     result: Dict[str, Any] = {
         "dry_run": True,
         "project_root": str(project_root),
-        "context_path": str(context_path),
-        "context_exists": context_path.is_file(),
         "fresh": getattr(args, "fresh", False),
+        "last_scan": last_scan or "unknown",
+        "would_scan": (
+            "all scanners (stack, git, infrastructure, environment, "
+            "orchestration, architecture)"
+        ),
     }
-    if context_path.is_file():
-        try:
-            data = json.loads(context_path.read_text(encoding="utf-8"))
-            scan_cfg = data.get("metadata", {}).get("scan_config", {})
-            result["last_scan"] = scan_cfg.get("last_scan", "unknown")
-            result["scanner_version"] = scan_cfg.get("scanner_version", "unknown")
-            result["staleness_hours"] = scan_cfg.get("staleness_hours", 24)
-            result["would_scan"] = (
-                "all scanners (stack, git, infrastructure, environment, "
-                "orchestration, architecture)"
-            )
-        except (json.JSONDecodeError, OSError):
-            result["would_scan"] = "all scanners (could not read existing context)"
-    else:
-        result["would_scan"] = "all scanners (no existing context)"
 
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2))
     else:
         print("[dry-run] gaia scan would execute:")
         print(f"  project_root  : {result['project_root']}")
-        print(f"  context_path  : {result['context_path']}")
-        print(f"  context_exists: {result['context_exists']}")
         print(f"  fresh         : {result['fresh']}")
-        if result.get("last_scan"):
+        if result.get("last_scan") and result["last_scan"] != "unknown":
             print(f"  last_scan     : {result['last_scan']}")
         print(f"  would_scan    : {result['would_scan']}")
     return 0
@@ -221,6 +225,15 @@ def _mode_fresh(project_root: Path, scan_config, args: argparse.Namespace,
 
     ui.footer("Run claude to start. Context will enrich automatically.")
 
+    # Record scan timestamp in DB (T1.2: D8).
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import set_workspace_last_scan_at
+        _ws = _project_current(cwd=project_root)
+        set_workspace_last_scan_at(_ws)
+    except Exception:  # pragma: no cover -- non-fatal
+        pass
+
     summary = _build_summary(output, scanner_version)
     summary["status"] = "success"
     summary["mode"] = "fresh"
@@ -276,6 +289,16 @@ def _mode_existing(project_root: Path, scan_config, args: argparse.Namespace,
     ui.updated(sections_updated, sections_preserved)
     ui.footer("Ready.")
 
+    # Record scan timestamp in DB (T1.2: D8).
+    if not output.errors:
+        try:
+            from gaia.project import current as _project_current
+            from gaia.store.writer import set_workspace_last_scan_at
+            _ws = _project_current(cwd=project_root)
+            set_workspace_last_scan_at(_ws)
+        except Exception:  # pragma: no cover -- non-fatal
+            pass
+
     summary = _build_summary(output, scanner_version)
     summary["status"] = "error" if output.errors else "success"
     summary["mode"] = "existing"
@@ -303,6 +326,16 @@ def _mode_scan_only(project_root: Path, scan_config, args: argparse.Namespace,
     sections_count = len(output.sections_updated)
     ui.done(duration_s, suffix=f"{sections_count} sections updated")
     ui.footer("gaia.db updated")
+
+    # Record scan timestamp in DB (T1.2: D8).
+    if not output.errors:
+        try:
+            from gaia.project import current as _project_current
+            from gaia.store.writer import set_workspace_last_scan_at
+            _ws = _project_current(cwd=project_root)
+            set_workspace_last_scan_at(_ws)
+        except Exception:  # pragma: no cover -- non-fatal
+            pass
 
     summary = _build_summary(output, scanner_version)
     summary["status"] = "error" if output.errors else "success"

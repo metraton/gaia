@@ -146,7 +146,6 @@ class TestDryRun:
         data = json.loads(captured.out)
         assert data["dry_run"] is True
         assert data["project_root"] == str(tmp_path)
-        assert data["context_exists"] is False
 
     def test_dry_run_does_not_write_context_file(self, tmp_path):
         """--dry-run must not create or modify project-context.json."""
@@ -178,25 +177,20 @@ class TestDryRun:
         )
 
     def test_dry_run_with_existing_context_reports_metadata(self, tmp_path, capsys):
-        ctx_dir = tmp_path / ".claude" / "project-context"
-        ctx_dir.mkdir(parents=True)
-        (ctx_dir / "project-context.json").write_text(json.dumps({
-            "metadata": {
-                "scan_config": {
-                    "last_scan": "2026-04-15T00:00:00+00:00",
-                    "scanner_version": "5.0.0",
-                    "staleness_hours": 24,
-                },
-            },
-            "sections": {},
-        }))
+        """--dry-run reports DB-backed metadata; last_scan comes from workspaces table.
+
+        T1.3: project context is in gaia.db, not project-context.json. When the
+        workspaces row is absent (no prior scan), last_scan falls back to "unknown".
+        """
         args = _MockArgs(workspace=str(tmp_path), dry_run=True, json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data["context_exists"] is True
-        assert data["last_scan"] == "2026-04-15T00:00:00+00:00"
-        assert data["scanner_version"] == "5.0.0"
+        assert data["dry_run"] is True
+        assert data["project_root"] == str(tmp_path)
+        # last_scan is DB-backed; "unknown" when workspace row is absent
+        assert "last_scan" in data
+        assert "would_scan" in data
 
 
 # ---------------------------------------------------------------------------

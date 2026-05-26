@@ -300,6 +300,7 @@ class TestCmdScan:
         assert rc == 0
 
     def test_dry_run_json_includes_project_root(self, tmp_path, capsys):
+        """--dry-run JSON output includes project_root; context_path removed (DB-backed, T1.3)."""
         _write_context(tmp_path)
         args = _MockArgs(context_cmd="scan", dry_run=True, json=True)
         with patch("cli.context._find_project_root", return_value=tmp_path):
@@ -307,7 +308,7 @@ class TestCmdScan:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert "project_root" in data
-        assert "context_path" in data
+        assert "last_scan" in data
 
     def test_dry_run_shows_would_scan(self, tmp_path, capsys):
         _write_context(tmp_path)

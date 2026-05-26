@@ -185,7 +185,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 3
+EXPECTED_SCHEMA_VERSION = 11
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -549,7 +549,7 @@ def check_schema_ddl_consistency() -> dict:
                 # surface the real problem.
                 continue
             live_values = _extract_check_values(row[0], column)
-            source_values = _extract_check_values(schema_text, column)
+            source_values = _extract_check_values(schema_text, column, table=table)
 
             if live_values is None or source_values is None:
                 # Could not parse one side -- treat as inconclusive rather
@@ -594,11 +594,19 @@ def check_schema_ddl_consistency() -> dict:
     )
 
 
-def _extract_check_values(sql_text: str, column: str) -> "set[str] | None":
+def _extract_check_values(
+    sql_text: str, column: str, table: "str | None" = None
+) -> "set[str] | None":
     """Extract the allowed-value set from a `CHECK (<column> IN (...))` clause.
 
     Returns the parsed set of literal values (without surrounding quotes),
     or None if the column / CHECK clause cannot be located.
+
+    When *table* is given the search is narrowed to the CREATE TABLE block for
+    that table before the CHECK pattern is applied.  This is essential when
+    parsing a multi-table schema file (e.g. schema.sql) where multiple tables
+    share the same column name -- without narrowing, ``re.search`` would always
+    return the first match in the file, which may belong to the wrong table.
 
     Used by `check_schema_ddl_consistency` to compare live DDL against
     schema.sql. Kept module-level (not nested) so tests can exercise the
@@ -606,13 +614,40 @@ def _extract_check_values(sql_text: str, column: str) -> "set[str] | None":
     """
     import re  # noqa: PLC0415
 
-    # Pattern: <column> ... CHECK (... <column> IN ('a', 'b', ...))
+    search_text = sql_text
+
+    if table is not None:
+        # Narrow to the CREATE TABLE block for the target table.
+        # Matches from "CREATE TABLE [IF NOT EXISTS] <table> (" up to the
+        # balancing closing ");" that terminates the statement.
+        tbl_pattern = re.compile(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?" + re.escape(table) + r"\s*\(",
+            re.IGNORECASE | re.DOTALL,
+        )
+        tbl_match = tbl_pattern.search(sql_text)
+        if tbl_match is None:
+            return None
+        # Walk forward from the opening "(" to find its balancing ")".
+        depth = 0
+        start = tbl_match.end() - 1  # position of the opening "("
+        end = start
+        for i, ch in enumerate(sql_text[start:], start=start):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        search_text = sql_text[start : end + 1]
+
+    # Pattern: CHECK (<column> IN ('a', 'b', ...))
     # Tolerates whitespace, newlines, and extra parens around the IN clause.
     pattern = re.compile(
         r"CHECK\s*\(\s*" + re.escape(column) + r"\s+IN\s*\(([^)]+)\)\s*\)",
         re.IGNORECASE | re.DOTALL,
     )
-    match = pattern.search(sql_text)
+    match = pattern.search(search_text)
     if not match:
         return None
 
@@ -778,60 +813,74 @@ def check_hook_files(project_root: Path) -> dict:
 
 @register_check("project-context", order=90)
 def check_project_context(project_root: Path) -> dict:
-    """Check project-context.json is valid and enriched."""
-    path = project_root / ".claude" / "project-context" / "project-context.json"
-    if not path.is_file():
-        return _result("project-context", "warning", "Missing", "Run `gaia scan`")
+    """Check project context contracts exist in the DB (T1.3: DB-backed read).
 
-    data = _read_json(path)
-    if not data:
-        return _result("project-context", "warning", "Invalid JSON", "Regenerate with `gaia scan`")
+    Reads from project_context_contracts table in gaia.db instead of the
+    legacy project-context.json file (retired in agent-contract-handoff M1).
+    """
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts WHERE workspace = ?",
+                (ws,),
+            ).fetchone()
+            count = row[0] if row else 0
+        finally:
+            con.close()
+    except Exception as exc:
+        return _result("project-context", "warning", f"DB read error: {exc}", "Run `gaia scan`")
 
-    warnings = []
-    infos = []
+    if count == 0:
+        return _result("project-context", "warning", "No contracts in DB", "Run `gaia scan`")
 
-    if not data.get("metadata"):
-        warnings.append("Missing metadata section")
-    if not data.get("sections"):
-        warnings.append("Missing sections")
+    if count < 3:
+        return _result(
+            "project-context", "info",
+            f"{count} contracts (expected >=3)",
+            "Run `gaia scan` to enrich",
+        )
 
-    is_v2 = (data.get("metadata") or {}).get("version") == "2.0"
-
-    has_paths = bool((data.get("sections") or {}).get("infrastructure", {}).get("paths")) if is_v2 else bool(data.get("paths"))
-    if not has_paths:
-        infos.append("No paths section")
-
-    sections = data.get("sections")
-    if sections:
-        section_count = len(sections)
-        if section_count < 3:
-            infos.append(f"Only {section_count} sections (expected >=3)")
-    else:
-        section_count = 0
-
-    if warnings:
-        detail = "; ".join(warnings + infos)
-        return _result("project-context", "warning", detail, "Run `gaia scan` to enrich")
-
-    if infos:
-        return _result("project-context", "info", f"{section_count} sections -- {'; '.join(infos)}")
-
-    return _result("project-context", "pass", f"{section_count} sections")
+    return _result("project-context", "pass", f"{count} contracts")
 
 
 @register_check("Project dirs", order=100)
 def check_project_dirs(project_root: Path) -> dict:
-    """Check paths declared in project-context exist on disk."""
-    context_path = project_root / ".claude" / "project-context" / "project-context.json"
-    if not context_path.is_file():
-        return _result("Project dirs", "pass", "Skipped (no context)")
+    """Check paths declared in project-context contracts exist on disk.
 
-    data = _read_json(context_path)
-    if not data:
+    Reads the infrastructure.paths payload from project_context_contracts
+    in gaia.db (T1.3: DB-backed read). Falls back gracefully when no paths
+    contract exists.
+    """
+    try:
+        import json as _json
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT payload FROM project_context_contracts "
+                "WHERE workspace = ? AND contract_name = 'infrastructure'",
+                (ws,),
+            ).fetchone()
+        finally:
+            con.close()
+    except Exception:
+        return _result("Project dirs", "pass", "Skipped (DB read error)")
+
+    if not row:
+        return _result("Project dirs", "pass", "Skipped (no infrastructure contract)")
+
+    try:
+        payload = _json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    except Exception:
         return _result("Project dirs", "pass", "Skipped (parse error)")
 
-    sections = data.get("sections") or {}
-    paths = sections.get("infrastructure", {}).get("paths") or data.get("paths") or {}
+    paths = (payload or {}).get("paths") or {}
     issues = []
     verified = 0
 
@@ -859,15 +908,46 @@ def check_project_dirs(project_root: Path) -> dict:
 
 @register_check("memory_fts5_db", order=120)
 def check_memory_fts5_db(project_root: Path) -> dict:
-    """Check if the FTS5 search.db exists for episodic memory."""
-    db_path = project_root / ".claude" / "project-context" / "episodic-memory" / "search.db"
-    if db_path.is_file():
-        return _result("memory_fts5_db", "pass", f"search.db present ({db_path.stat().st_size} bytes)")
+    """Check if episodes_fts virtual table exists and has rows in gaia.db.
+
+    T6 migration: replaced legacy search.db filesystem check with a query
+    against the episodes_fts FTS5 table in gaia.db.
+    """
+    try:
+        import sys as _sys
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        from gaia.store.writer import _connect as _store_connect
+    except ImportError:
+        return _result(
+            "memory_fts5_db",
+            "warning",
+            "gaia.store.writer not importable — cannot verify episodes_fts",
+            "Check gaia installation",
+        )
+
+    try:
+        con = _store_connect()
+        try:
+            row = con.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()
+            count = row[0] if row else 0
+        finally:
+            con.close()
+    except Exception as exc:
+        return _result(
+            "memory_fts5_db",
+            "warning",
+            f"episodes_fts not accessible in gaia.db: {exc}",
+            "Run: gaia doctor --fix",
+        )
+
+    if count > 0:
+        return _result("memory_fts5_db", "pass", f"episodes_fts in gaia.db: {count} rows indexed")
     return _result(
         "memory_fts5_db",
         "info",
-        "search.db not found (created on first use)",
-        "Run: gaia doctor --fix",
+        "episodes_fts table present in gaia.db but empty (no episodes yet)",
     )
 
 

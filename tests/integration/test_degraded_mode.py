@@ -90,13 +90,18 @@ class TestContextProviderDegradedMode:
     """context_provider should handle missing files without crashing unexpectedly."""
 
     def test_load_project_context_exits_on_missing(self, tmp_path):
-        """load_project_context calls sys.exit(1) when file is missing."""
+        """load_project_context returns empty context when workspace has no DB rows.
+
+        T1.3: context is in gaia.db, not project-context.json. When the workspace
+        name is unknown (no rows in project_context_contracts), the function returns
+        an empty sections dict rather than exiting -- degraded mode is safe.
+        """
         from context_provider import load_project_context
 
-        missing_path = tmp_path / "nonexistent" / "project-context.json"
-        with pytest.raises(SystemExit) as exc_info:
-            load_project_context(missing_path)
-        assert exc_info.value.code == 1
+        result = load_project_context("nonexistent-workspace-xyz")
+        assert isinstance(result, dict)
+        assert "sections" in result
+        assert result["sections"] == {}
 
     def test_load_universal_rules_returns_empty_on_missing(self, tmp_path):
         """load_universal_rules returns empty rule sets when file is missing."""
@@ -116,10 +121,14 @@ class TestContextProviderDegradedMode:
         assert result == "gcp"
 
     def test_detect_cloud_provider_reads_metadata(self):
-        """detect_cloud_provider reads from metadata.cloud_provider."""
+        """detect_cloud_provider reads from infrastructure.cloud_providers[0].name (T1.3)."""
         from context_provider import detect_cloud_provider
 
-        result = detect_cloud_provider({"metadata": {"cloud_provider": "aws"}})
+        result = detect_cloud_provider({
+            "infrastructure": {
+                "cloud_providers": [{"name": "aws", "region": "us-east-1"}]
+            }
+        })
         assert result == "aws"
 
 

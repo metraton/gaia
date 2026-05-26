@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..core.paths import get_plugin_data_dir
@@ -141,7 +141,13 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
     project_knowledge = context_payload.get("project_knowledge") or {}
     metadata = context_payload.get("metadata") or {}
     surface_routing = context_payload.get("surface_routing") or {}
-    investigation_brief = context_payload.get("investigation_brief") or {}
+    # T2.1a: renamed from investigation_brief -> agent_contract_handoff
+    # Read from new key first; fall back to legacy key during dual-mode window
+    _brief_raw = (
+        context_payload.get("agent_contract_handoff")
+        or context_payload.get("investigation_brief")
+        or {}
+    )
     write_permissions = context_payload.get("write_permissions") or {}
 
     contract_sections = sorted(project_knowledge.keys())
@@ -167,14 +173,14 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
             "multi_surface": surface_routing.get("multi_surface"),
             "recommended_agents": sorted(surface_routing.get("recommended_agents") or []),
         }),
-        "investigation_brief": _prune_empty_values({
-            "agent_role": investigation_brief.get("agent_role"),
-            "primary_surface": investigation_brief.get("primary_surface"),
-            "adjacent_surfaces": sorted(investigation_brief.get("adjacent_surfaces") or []),
-            "cross_check_required": investigation_brief.get("cross_check_required"),
-            "consolidation_required": investigation_brief.get("consolidation_required"),
-            "required_checks_count": len(investigation_brief.get("required_checks") or []),
-            "evidence_required": sorted(investigation_brief.get("evidence_required") or []),
+        "agent_contract_handoff": _prune_empty_values({
+            "agent_role": _brief_raw.get("agent_role"),
+            "primary_surface": _brief_raw.get("primary_surface"),
+            "adjacent_surfaces": sorted(_brief_raw.get("adjacent_surfaces") or []),
+            "cross_check_required": _brief_raw.get("cross_check_required"),
+            "consolidation_required": _brief_raw.get("consolidation_required"),
+            "required_checks_count": len(_brief_raw.get("required_checks") or []),
+            "evidence_required": sorted(_brief_raw.get("evidence_required") or []),
         }),
         "context_update_scope": _prune_empty_values({
             "readable_sections": readable_sections,
@@ -186,117 +192,100 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
 
 
 def check_recent_critical_anomalies() -> str:
-    """Check anomalies.jsonl for recent critical anomalies and return a summary.
+    """Check episode_anomalies table in gaia.db for recent critical anomalies.
 
-    Scans the last 20 lines of the anomaly log for critical-severity entries
-    from the past hour.  Returns a short warning string suitable for context
-    injection, or empty string if nothing noteworthy is found.
+    T6 migration: reads from episode_anomalies table in gaia.db instead of
+    the legacy workflow-episodic-memory/anomalies.jsonl file.
 
-    This is intentionally lightweight: reads only the tail of the file and
-    returns at most a one-line count + type summary.
+    Scans anomalies from the past hour with severity=critical.
+    Returns a short warning string suitable for context injection,
+    or empty string if nothing noteworthy is found.
     """
-    anomaly_log = (
-        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "anomalies.jsonl"
-    )
-    if not anomaly_log.exists():
+    try:
+        import sys as _sys
+        _hooks_dir = Path(__file__).resolve().parent.parent.parent
+        _repo_root = _hooks_dir.parent
+        for p in (str(_repo_root),):
+            if p not in _sys.path:
+                _sys.path.insert(0, p)
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
         return ""
 
     try:
-        # Read only the tail (last 20 lines) for speed
-        lines = anomaly_log.read_text().splitlines()[-20:]
-        one_hour_ago = datetime.now().timestamp() - 3600
-        critical_types: list[str] = []
+        ws = _project_current()
+    except Exception:
+        ws = None
 
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            ts = entry.get("timestamp", "")
-            if ts:
-                try:
-                    entry_time = datetime.fromisoformat(ts).timestamp()
-                except (ValueError, TypeError):
-                    continue
-                if entry_time < one_hour_ago:
-                    continue
-            for anomaly in entry.get("anomalies", []):
-                if anomaly.get("severity") == "critical":
-                    critical_types.append(anomaly.get("type", "unknown"))
+    try:
+        con = _store_connect()
+        try:
+            one_hour_ago_dt = datetime.now() - timedelta(hours=1)
+            one_hour_ago_iso = one_hour_ago_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-        if not critical_types:
-            return ""
-
-        # Deduplicate and summarize
-        unique_types = sorted(set(critical_types))
-        return (
-            f"\n# Recent Critical Anomalies\n"
-            f"{len(critical_types)} critical anomaly(ies) in the last hour "
-            f"(types: {', '.join(unique_types)}). "
-            f"Consider investigating with /gaia.\n"
-        )
+            if ws:
+                rows = con.execute(
+                    "SELECT type FROM episode_anomalies "
+                    "WHERE workspace = ? AND severity = 'critical' "
+                    "AND timestamp >= ? "
+                    "ORDER BY timestamp DESC LIMIT 20",
+                    (ws, one_hour_ago_iso),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT type FROM episode_anomalies "
+                    "WHERE severity = 'critical' "
+                    "AND timestamp >= ? "
+                    "ORDER BY timestamp DESC LIMIT 20",
+                    (one_hour_ago_iso,),
+                ).fetchall()
+        finally:
+            con.close()
     except Exception as e:
-        logger.debug(f"Critical anomaly check failed (non-fatal): {e}")
+        logger.debug(f"Critical anomaly DB check failed (non-fatal): {e}")
         return ""
+
+    critical_types = [r[0] for r in rows if r[0]]
+    if not critical_types:
+        return ""
+
+    unique_types = sorted(set(critical_types))
+    return (
+        f"\n# Recent Critical Anomalies\n"
+        f"{len(critical_types)} critical anomaly(ies) in the last hour "
+        f"(types: {', '.join(unique_types)}). "
+        f"Consider investigating with /gaia.\n"
+    )
 
 
 def consume_anomaly_flag(enriched_prompt: str) -> str:
-    """Read and delete the needs_analysis.flag if it exists, appending a warning.
+    """No-op stub for legacy anomaly flag consumption.
 
-    The flag is created by subagent_stop.py when workflow anomalies are
-    detected.  Reading it once and deleting ensures the warning is shown
-    exactly once.  Must not slow down context injection -- returns
-    immediately if the file does not exist.
+    T4 retired the needs_analysis.flag mechanism -- anomaly signals are
+    now written directly to the episode_anomalies table in gaia.db and
+    surfaced via check_recent_critical_anomalies() which queries the DB.
 
-    TTL enforcement: flags older than 1 hour (by created_at or file mtime)
-    are auto-expired and deleted without injecting a warning.
+    This function is kept as a no-op to avoid breaking any callers that
+    reference it. Any remaining flag files from before T4 are silently
+    cleaned up if found, but no warning is injected.
+
+    T6 migration: no longer reads workflow-episodic-memory/signals/*.flag.
     """
-    flag_path = get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "signals" / "needs_analysis.flag"
-    if not flag_path.exists():
-        return enriched_prompt
+    # Silently clean up any stale flag files from before T4 (non-blocking)
     try:
-        signal_data = json.loads(flag_path.read_text())
-
-        # TTL check: auto-expire flags older than ttl_hours (default 1 hour)
-        ttl_hours = signal_data.get("ttl_hours", 1)
-        ttl_seconds = ttl_hours * 3600
-        created_at = signal_data.get("created_at") or signal_data.get("timestamp")
-        if created_at:
-            created_dt = datetime.fromisoformat(created_at)
-            age_seconds = (datetime.now() - created_dt).total_seconds()
-            if age_seconds > ttl_seconds:
-                flag_path.unlink()
-                logger.info(
-                    "Auto-expired anomaly flag (age: %.0fs, ttl: %ds)",
-                    age_seconds, ttl_seconds,
-                )
-                return enriched_prompt
-        else:
-            # Fallback: check file modification time
-            mtime = flag_path.stat().st_mtime
-            age_seconds = datetime.now().timestamp() - mtime
-            if age_seconds > ttl_seconds:
-                flag_path.unlink()
-                logger.info(
-                    "Auto-expired anomaly flag by mtime (age: %.0fs, ttl: %ds)",
-                    age_seconds, ttl_seconds,
-                )
-                return enriched_prompt
-
-        anomalies = signal_data.get("anomalies", [])
-        summary = "; ".join(a.get("message", "") for a in anomalies if a.get("message"))
-        if summary:
-            enriched_prompt += (
-                f"\n# Anomaly Alert\n"
-                f"Recent anomalies detected: {summary}. "
-                f"Consider investigating with /gaia.\n"
-            )
-        flag_path.unlink()
-        logger.info("Consumed anomaly flag and injected warning")
-    except Exception as e:
-        logger.debug(f"Failed to consume anomaly flag (non-fatal): {e}")
+        flag_path = (
+            get_plugin_data_dir()
+            / "project-context"
+            / "workflow-episodic-memory"
+            / "signals"
+            / "needs_analysis.flag"
+        )
+        if flag_path.exists():
+            flag_path.unlink()
+            logger.debug("Removed stale anomaly flag file (T4 retired flag mechanism)")
+    except Exception:
+        pass
     return enriched_prompt
 
 
@@ -377,7 +366,12 @@ def build_project_context(
         # Build context sections from payload
         project_knowledge = context_payload.get("project_knowledge", {})
         write_perms = context_payload.get("write_permissions", {})
-        investigation_brief = context_payload.get("investigation_brief", {})
+        # T2.1a: read from new key first, fall back to legacy key during dual-mode window
+        investigation_brief = (
+            context_payload.get("agent_contract_handoff")
+            or context_payload.get("investigation_brief")
+            or {}
+        )
         rules = context_payload.get("rules", {})
         surface_routing_data = context_payload.get("surface_routing", {})
         metadata = context_payload.get("metadata", {})
@@ -403,7 +397,7 @@ def build_project_context(
         if routing_section:
             orientation_lines.append("- **Surface Routing** -- intent-to-agent mapping; use when delegating or checking ownership")
         if investigation_brief:
-            orientation_lines.append("- **Brief** -- goal, acceptance criteria, and scope for the current task")
+            orientation_lines.append("- **Agent Contract Handoff** -- goal, acceptance criteria, and scope for the current task")
         if write_perms:
             orientation_lines.append("- **Permissions** -- which context sections are writable vs readable; required before emitting CONTEXT_UPDATE")
         if memory_index_section:
@@ -444,7 +438,7 @@ def build_project_context(
 
 # Routing
 {routing_section}
-# Brief
+# Agent Contract Handoff
 
 {brief_mkv}
 

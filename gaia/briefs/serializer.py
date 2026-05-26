@@ -1,7 +1,7 @@
 """
 gaia.briefs.serializer -- Brief markdown <-> dict round-trip.
 
-The on-disk brief format used by `/home/jorge/ws/me/briefs/*/brief.md` is:
+The brief markdown format (used by the interactive --editor flow) is:
 
     ---
     status: <str>
@@ -43,7 +43,7 @@ The on-disk brief format used by `/home/jorge/ws/me/briefs/*/brief.md` is:
 
 We support a strict round-trip: parse(serialize(x)) == x for all fields
 the schema captures. We do NOT preserve verbatim YAML/markdown formatting
-because the DB is the source of truth post-migration.
+because the DB is the single source of truth.
 
 The parser is tolerant: it accepts known variants seen across the existing
 briefs (lists with or without trailing colon, evidence blocks with nested

@@ -2,11 +2,22 @@
 """
 Tests for workflow telemetry recording.
 
-Validates additive run telemetry, compact context snapshots, and runtime
-skill snapshot persistence.
+After T4 of brief ``episodic-workflow-to-db`` the recorder no longer writes
+``run-snapshots.jsonl`` or ``metrics.jsonl``. ``record()`` now just builds
+the metrics dict and returns it; persistence happens downstream in
+``hooks/modules/memory/episode_writer.write()`` via ``store_episode()``,
+which inserts into the ``episodes`` table.
+
+The tests verify:
+1. ``record()`` returns the full metrics dict with the expected fields.
+2. ``record()`` does NOT create ``run-snapshots.jsonl`` or ``metrics.jsonl``
+   under the workflow memory dir, even when ``GAIA_WRITE_WORKFLOW_METRICS=1``
+   (the gate is intentionally inert post-T4).
+3. ``build_context_telemetry_snapshot()`` compacts the injected payload as
+   before -- that helper still feeds the in-memory metrics dict that the
+   audit pipeline hands off to ``store_episode``.
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -15,30 +26,21 @@ import pytest
 HOOKS_DIR = Path(__file__).resolve().parents[4] / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-from modules.audit.workflow_recorder import record, record_agent_skill_snapshot
-from modules.context.context_injector import build_context_telemetry_snapshot
-from modules.core.paths import clear_path_cache
+from modules.audit.workflow_recorder import record  # noqa: E402
+from modules.context.context_injector import build_context_telemetry_snapshot  # noqa: E402
+from modules.core.paths import clear_path_cache  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def isolated_workflow_env(tmp_path, monkeypatch):
-    """Isolate workflow telemetry writes to a temporary directory."""
+    """Isolate workflow telemetry under a temp dir; assertions verify the
+    directory stays clean."""
     clear_path_cache()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("WORKFLOW_MEMORY_BASE_PATH", str(tmp_path))
     monkeypatch.setenv("GAIA_WRITE_WORKFLOW_METRICS", "1")
     yield tmp_path
     clear_path_cache()
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return [
-        json.loads(line)
-        for line in path.read_text().splitlines()
-        if line.strip()
-    ]
 
 
 def test_build_context_telemetry_snapshot_compacts_injected_payload():
@@ -84,12 +86,15 @@ def test_build_context_telemetry_snapshot_compacts_injected_payload():
     assert snapshot["contract_sections_count"] == 2
     assert snapshot["surface_routing"]["primary_surface"] == "live_runtime"
     assert snapshot["surface_routing"]["multi_surface"] is True
-    assert snapshot["investigation_brief"]["required_checks_count"] == 2
+    # context_injector renamed investigation_brief -> agent_contract_handoff
+    # (T2.1a). The legacy key in the fixture payload still feeds the new field
+    # via the dual-read fallback in build_context_telemetry_snapshot().
+    assert snapshot["agent_contract_handoff"]["required_checks_count"] == 2
     assert snapshot["context_update_scope"]["writable_sections"] == ["cluster_details"]
     assert snapshot["context_update_scope"]["readable_sections_count"] == 2
 
 
-def test_record_persists_additive_run_telemetry(tmp_path):
+def test_record_returns_metrics_dict_without_jsonl_side_effects(tmp_path):
     task_info = {
         "task_id": "agent-001",
         "agent_id": "agent-001",
@@ -145,42 +150,21 @@ def test_record_persists_additive_run_telemetry(tmp_path):
     )
 
     assert metrics["agent_id"] == "agent-001"
+    assert metrics["agent"] == "cloud-troubleshooter"
+    assert metrics["tier"] == "T0"
+    assert metrics["plan_status"] == "COMPLETE"
     assert metrics["commands_executed_count"] == 1
+    assert metrics["commands_executed"] == ["kubectl get pods -n prod"]
     assert metrics["context_updated"] is True
     assert metrics["context_sections_updated"] == ["cluster_details"]
     assert metrics["context_rejected_sections"] == ["operational_guidelines"]
-    assert metrics["context_snapshot"]["surface_routing"]["primary_surface"] == "live_runtime"
+    assert (
+        metrics["context_snapshot"]["surface_routing"]["primary_surface"]
+        == "live_runtime"
+    )
     assert "agent-protocol" in metrics["default_skills_snapshot"]["skills"]
 
+    # T4 invariant: workflow_recorder no longer writes JSONL files.
     workflow_dir = tmp_path / "project-context" / "workflow-episodic-memory"
-    metrics_entries = _read_jsonl(workflow_dir / "metrics.jsonl")
-    run_entries = _read_jsonl(workflow_dir / "run-snapshots.jsonl")
-
-    assert len(metrics_entries) == 1
-    assert len(run_entries) == 1
-    assert metrics_entries[0]["commands_executed"] == ["kubectl get pods -n prod"]
-    assert metrics_entries[0]["context_snapshot"]["contract_sections_count"] == 2
-    assert run_entries[0]["context_updated"] is True
-    assert run_entries[0]["default_skills_snapshot"]["skills_count"] >= 1
-
-
-def test_record_agent_skill_snapshot_appends_runtime_defaults(tmp_path):
-    snapshot = record_agent_skill_snapshot(
-        "developer",
-        session_context={
-            "timestamp": "2026-03-11T12:15:00",
-            "session_id": "sess-skills-001",
-        },
-        task_description="Run targeted telemetry tests",
-    )
-
-    assert snapshot["agent"] == "developer"
-    assert "developer-patterns" in snapshot["skills"]
-    assert snapshot["skills_count"] >= 1
-
-    workflow_dir = tmp_path / "project-context" / "workflow-episodic-memory"
-    skill_entries = _read_jsonl(workflow_dir / "agent-skills.jsonl")
-
-    assert len(skill_entries) == 1
-    assert skill_entries[0]["session_id"] == "sess-skills-001"
-    assert "agent-protocol" in skill_entries[0]["skills"]
+    assert not (workflow_dir / "metrics.jsonl").exists()
+    assert not (workflow_dir / "run-snapshots.jsonl").exists()

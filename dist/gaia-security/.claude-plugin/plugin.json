@@ -1,6 +1,6 @@
 {
   "name": "gaia-security",
-  "version": "5.0.0-rc.4",
+  "version": "5.0.0-rc.7",
   "description": "Keeps you in the loop only when it matters. Gaia Security analyzes every command and classifies it into risk tiers: read-only queries run freely, simulations and validations pass through, and state-changing operations (create, delete, apply, push) pause for your explicit approval before executing. Irreversible commands like dropping databases or deleting cloud infrastructure are permanently blocked.",
   "author": {
     "name": "jaguilar87",
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
           }
         ]
       },
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
           }
         ]
       },
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
           }
         ]
       }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"
           }
         ]
       },
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"
           }
         ]
       }
@@ -76,7 +76,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop_hook.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/stop_hook.py"
           }
         ]
       }
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/user_prompt_submit.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/user_prompt_submit.py"
           }
         ]
       }
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"
           }
         ]
       }
@@ -108,7 +108,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
           }
         ]
       },
@@ -117,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
           }
         ]
       },
@@ -126,7 +126,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session_end_hook.py"
           }
         ]
       }

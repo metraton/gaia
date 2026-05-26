@@ -333,12 +333,27 @@ class TestCmdSearch:
 # Tests: stats
 # ---------------------------------------------------------------------------
 
+def _patch_db_stats(monkeypatch, *, episode_count=0, fts_count=0, episodes=None):
+    """Patch the DB-backed stats functions in memory_mod.
+
+    T6: _cmd_stats now reads from gaia.db via _count_episodes_from_db and
+    _count_episodes_fts_from_db instead of reading index.json from filesystem.
+    """
+    monkeypatch.setattr(memory_mod, "_count_episodes_from_db", lambda ws=None: episode_count)
+    monkeypatch.setattr(memory_mod, "_count_episodes_fts_from_db", lambda: fts_count)
+    if episodes is not None:
+        monkeypatch.setattr(memory_mod, "_query_episodes_from_db", lambda ws=None: episodes)
+    else:
+        monkeypatch.setattr(memory_mod, "_query_episodes_from_db", lambda ws=None: [])
+
+
 class TestCmdStats:
     """_cmd_stats via cmd_memory dispatch."""
 
     def test_stats_returns_required_keys(self, memory_project, monkeypatch, capsys):
         """Stats output must contain total_episodes, indexed, avg_score, conflicts, warnings."""
         _make_fake_modules(monkeypatch, count=2, conflicts=[], score=0.4)
+        _patch_db_stats(monkeypatch, episode_count=2, fts_count=2)
 
         monkeypatch.chdir(memory_project)
 
@@ -359,14 +374,13 @@ class TestCmdStats:
         assert data["warnings"] == []
 
     def test_stats_emits_warning_when_sentinel_returned(self, memory_project, monkeypatch, capsys):
-        """When search_store.count() returns -1, stats surfaces a warning.
+        """When episodes_fts returns -1 (sentinel), stats surfaces a warning.
 
-        This is the drift-visibility fix: before, a broken FTS5 path produced
-        `indexed=0` silently. Now the sentinel is preserved in the JSON output
-        and a warning string is added so consumers (humans or scripts) know
-        the count is unreliable.
+        T6 migration: sentinel now comes from _count_episodes_fts_from_db()
+        returning -1 when episodes_fts is not reachable in gaia.db.
         """
-        _make_fake_modules(monkeypatch, count=-1, conflicts=[], score=0.4)
+        _make_fake_modules(monkeypatch, count=0, conflicts=[], score=0.4)
+        _patch_db_stats(monkeypatch, episode_count=0, fts_count=-1)
 
         monkeypatch.chdir(memory_project)
 
@@ -381,13 +395,15 @@ class TestCmdStats:
         assert data["indexed"] == -1, "sentinel must be preserved in JSON output"
         assert len(data["warnings"]) >= 1, "at least one warning must be emitted"
         joined = " ".join(data["warnings"]).lower()
-        assert "fts5" in joined and "doctor" in joined, (
-            f"warning should mention FTS5 and point at `gaia doctor`, got: {data['warnings']}"
+        # T6 migration: warning text changed from "fts5" to "episodes_fts" (DB-backed)
+        assert ("fts5" in joined or "episodes_fts" in joined) and "doctor" in joined, (
+            f"warning should mention FTS5/episodes_fts and point at `gaia doctor`, got: {data['warnings']}"
         )
 
     def test_stats_human_output_shows_unknown_on_sentinel(self, memory_project, monkeypatch, capsys):
         """Human-readable stats prints 'unknown' (not '-1' or '0') when sentinel returned."""
-        _make_fake_modules(monkeypatch, count=-1, conflicts=[], score=0.4)
+        _make_fake_modules(monkeypatch, count=0, conflicts=[], score=0.4)
+        _patch_db_stats(monkeypatch, episode_count=0, fts_count=-1)
 
         monkeypatch.chdir(memory_project)
 
@@ -404,8 +420,14 @@ class TestCmdStats:
         )
 
     def test_stats_episode_count_from_index(self, memory_project, monkeypatch, capsys):
-        """total_episodes must reflect the episode count in index.json."""
+        """total_episodes must reflect the episode count from gaia.db episodes table.
+
+        T6 migration: now reads from DB via _count_episodes_from_db() instead of index.json.
+        The fixture still creates index.json (for pre-T6 compat tests) but stats ignores it.
+        """
         _make_fake_modules(monkeypatch, count=2, score=0.5)
+        # T6: patch the DB functions -- index.json is ignored by _cmd_stats
+        _patch_db_stats(monkeypatch, episode_count=2, fts_count=2)
 
         monkeypatch.chdir(memory_project)
 
@@ -416,9 +438,14 @@ class TestCmdStats:
         data = json.loads(capsys.readouterr().out)
         assert data["total_episodes"] == 2
 
-    def test_stats_indexed_from_search_store(self, memory_project, monkeypatch, capsys):
-        """indexed must reflect search_store.count() return value."""
-        _make_fake_modules(monkeypatch, count=7, score=0.5)
+    def test_stats_indexed_from_episodes_fts(self, memory_project, monkeypatch, capsys):
+        """indexed must reflect episodes_fts count from gaia.db.
+
+        T6 migration: indexed count now comes from _count_episodes_fts_from_db()
+        instead of search_store.count() (legacy FTS5 file).
+        """
+        _make_fake_modules(monkeypatch, count=0, score=0.5)
+        _patch_db_stats(monkeypatch, episode_count=7, fts_count=7)
 
         monkeypatch.chdir(memory_project)
 
@@ -432,6 +459,7 @@ class TestCmdStats:
     def test_stats_human_output_no_crash(self, memory_project, monkeypatch, capsys):
         """Human mode should print stats table without crashing."""
         _make_fake_modules(monkeypatch, count=2, score=0.3)
+        _patch_db_stats(monkeypatch, episode_count=2, fts_count=2)
 
         monkeypatch.chdir(memory_project)
 
@@ -441,6 +469,26 @@ class TestCmdStats:
         assert rc == 0
         out = capsys.readouterr().out
         assert "Memory Stats" in out
+
+    def test_stats_no_filesystem_reads_from_episodic_memory(self, tmp_path, monkeypatch, capsys):
+        """T6: _cmd_stats must not open episodic-memory/index.json.
+
+        Verifies that no filesystem read of the legacy directory happens.
+        The DB functions are patched; no .claude/ dir is created.
+        """
+        _make_fake_modules(monkeypatch, count=0, score=0.5)
+        _patch_db_stats(monkeypatch, episode_count=5, fts_count=5)
+
+        monkeypatch.chdir(tmp_path)
+
+        args = SimpleNamespace(json=True, func=memory_mod._cmd_stats)
+        rc = memory_mod.cmd_memory(args)
+
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        # If this reads from filesystem, episode count would be 0 (no index.json).
+        # With DB patch it should be 5.
+        assert data["total_episodes"] == 5
 
 
 # ---------------------------------------------------------------------------

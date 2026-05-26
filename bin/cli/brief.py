@@ -21,8 +21,6 @@ Subcommands:
     gaia brief search <query> [--limit N] FTS5 search over objective/context/approach
     gaia brief delete <name> [--yes]      Hard-delete a brief from the DB
                   [--json]                (cascades to ACs, milestones, deps)
-    gaia brief import-from-fs --source PATH [--workspace W]
-                                          One-time migration of brief.md files
 """
 
 from __future__ import annotations
@@ -35,10 +33,27 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+# ---------------------------------------------------------------------------
+# File / stdin helpers
+# ---------------------------------------------------------------------------
+
 # Ensure the gaia package (repo root) is importable regardless of cwd.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+
+def _read_content_file(path_str: str) -> str:
+    """Read content text from a file path or stdin.
+
+    Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8).
+    Pass any other path string to read that file (utf-8).
+    Raises ``FileNotFoundError`` for missing paths (caller converts to _err).
+    """
+    if path_str == "-":
+        return sys.stdin.read()
+    return Path(path_str).read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +182,47 @@ def _cmd_new(args) -> int:
                 as_json=as_json,
             )
 
+        # Resolve *-file flags for fields that support them.
+        def _resolve_field(inline_val, file_attr, field_name):
+            """Return inline_val unless a --*-file flag was given."""
+            path_str = getattr(args, file_attr, None)
+            if path_str is None:
+                return inline_val
+            try:
+                return _read_content_file(path_str)
+            except FileNotFoundError:
+                raise ValueError(
+                    f"--{field_name}-file: file not found: {path_str}"
+                )
+            except OSError as exc:
+                raise ValueError(
+                    f"--{field_name}-file: cannot read '{path_str}': {exc}"
+                )
+
+        try:
+            objective = _resolve_field(
+                getattr(args, "objective", None), "objective_file", "objective"
+            )
+            context_val = _resolve_field(
+                getattr(args, "context", None), "context_file", "context"
+            )
+            approach = _resolve_field(
+                getattr(args, "approach", None), "approach_file", "approach"
+            )
+            out_of_scope = _resolve_field(
+                getattr(args, "out_of_scope", None), "out_of_scope_file",
+                "out-of-scope"
+            )
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
+
         fields = {
             "title": title,
             "status": status,
-            "objective": getattr(args, "objective", None),
-            "context": getattr(args, "context", None),
-            "approach": getattr(args, "approach", None),
-            "out_of_scope": getattr(args, "out_of_scope", None),
+            "objective": objective,
+            "context": context_val,
+            "approach": approach,
+            "out_of_scope": out_of_scope,
         }
         # Strip None values so DEFAULTs in upsert_brief / NULL columns stay clean.
         fields = {k: v for k, v in fields.items() if v is not None}
@@ -248,6 +297,11 @@ def _cmd_edit(args) -> int:
     :func:`gaia.store.writer.update_brief_field`. The append flag concatenates
     with ``\\n\\n`` separator when the field already has content.
 
+    ``--content-file PATH`` (mutex with ``--content``) reads the content from
+    a file.  Use ``-`` to read from stdin.  This is the recommended approach
+    for bodies containing angle brackets, nested quotes, or code blocks that
+    break shell quoting.
+
     Interactive flow: opens the brief markdown in ``$EDITOR``; the caller
     saves the file and the parsed result is upserted.
     """
@@ -261,12 +315,30 @@ def _cmd_edit(args) -> int:
 
         field = getattr(args, "field", None)
         content = getattr(args, "content", None)
+        content_file = getattr(args, "content_file", None)
         append = getattr(args, "append", False)
 
         if not field:
             return _err("--field is required with --headless", as_json=as_json)
+
+        if content_file is not None:
+            try:
+                content = _read_content_file(content_file)
+            except FileNotFoundError:
+                return _err(
+                    f"--content-file: file not found: {content_file}", as_json=as_json
+                )
+            except OSError as exc:
+                return _err(
+                    f"--content-file: cannot read '{content_file}': {exc}",
+                    as_json=as_json,
+                )
+
         if content is None or content == "":
-            return _err("--content is required with --headless", as_json=as_json)
+            return _err(
+                "--content or --content-file is required with --headless",
+                as_json=as_json,
+            )
 
         try:
             res = update_brief_field(workspace, name, field, content,
@@ -477,26 +549,6 @@ def _cmd_delete(args) -> int:
     return 0
 
 
-def _cmd_import_from_fs(args) -> int:
-    from gaia.briefs import import_from_fs
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
-    source = getattr(args, "source", None)
-    if not source:
-        return _err("--source is required")
-    res = import_from_fs(source, workspace=workspace)
-    if getattr(args, "json", False):
-        print(json.dumps(res, indent=2, default=str))
-        return 0
-    print(f"Imported {res['imported']} briefs into workspace '{workspace}'")
-    for d in res.get("details", [])[:20]:
-        print(f"  - {d['name']} (acs={d['acs']}, milestones={d['milestones']})")
-    if res.get("errors"):
-        print(f"Errors: {len(res['errors'])}")
-        for e in res["errors"][:10]:
-            print(f"  ! {e.get('name', '?')}: {e.get('error', '?')}")
-    return 0
-
-
 # ---------------------------------------------------------------------------
 # Plugin registration
 # ---------------------------------------------------------------------------
@@ -539,12 +591,39 @@ def register(subparsers) -> None:
                        help="Title. Required with --headless.")
     new_p.add_argument("--objective", default=None,
                        help="Objective section. str.")
+    new_p.add_argument(
+        "--objective-file", dest="objective_file", default=None, metavar="PATH",
+        help=(
+            "Read --objective from PATH. Use '-' to read from stdin. "
+            "Useful for content containing angle brackets, code blocks, or "
+            "nested quotes that break shell quoting."
+        ),
+    )
     new_p.add_argument("--context", default=None,
                        help="Context section. str.")
+    new_p.add_argument(
+        "--context-file", dest="context_file", default=None, metavar="PATH",
+        help=(
+            "Read --context from PATH. Use '-' to read from stdin."
+        ),
+    )
     new_p.add_argument("--approach", default=None,
                        help="Approach section. str.")
+    new_p.add_argument(
+        "--approach-file", dest="approach_file", default=None, metavar="PATH",
+        help=(
+            "Read --approach from PATH. Use '-' to read from stdin."
+        ),
+    )
     new_p.add_argument("--out-of-scope", dest="out_of_scope", default=None,
                        help="Out-of-scope section. str.")
+    new_p.add_argument(
+        "--out-of-scope-file", dest="out_of_scope_file", default=None,
+        metavar="PATH",
+        help=(
+            "Read --out-of-scope from PATH. Use '-' to read from stdin."
+        ),
+    )
     new_p.add_argument("--status", default=None,
                        choices=("draft", "open", "in-progress", "closed", "archived"),
                        help="Initial status. Default: draft.")
@@ -576,8 +655,19 @@ def register(subparsers) -> None:
                  "description", "title"),
         help="Column to patch. Required with --headless.",
     )
-    edit_p.add_argument("--content", default=None,
-                        help="New value. Required with --headless.")
+    _edit_content_group = edit_p.add_mutually_exclusive_group()
+    _edit_content_group.add_argument(
+        "--content", default=None,
+        help="New value for --field. Required with --headless (or --content-file).",
+    )
+    _edit_content_group.add_argument(
+        "--content-file", dest="content_file", default=None, metavar="PATH",
+        help=(
+            "Read --content from PATH. Use '-' to read from stdin. "
+            "Mutex with --content. Recommended for bodies containing angle "
+            "brackets, code blocks, or nested quotes that break shell quoting."
+        ),
+    )
     edit_p.add_argument("--append", action="store_true", default=False,
                         help="Append (separator '\\n\\n') instead of overwrite. "
                              "bool. Default: false.")
@@ -687,18 +777,53 @@ def register(subparsers) -> None:
         help="Emit JSON. bool.",
     )
 
-    # -- import-from-fs -----------------------------------------------------
-    import_p = actions.add_parser(
-        "import-from-fs",
-        help="Migrate brief.md files into the DB",
-        description="One-time import of brief.md files from a directory tree.",
+    # -- verify ---------------------------------------------------------------
+    verify_p = actions.add_parser(
+        "verify",
+        help="Run invariant checks against a brief",
+        description=(
+            "Detect inconsistencies between brief, plan, tasks, ACs, and "
+            "milestones. Returns a structured report; exit code 0 means "
+            "no inconsistencies, exit code 2 means inconsistencies found."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia brief verify my-brief\n"
+            "  gaia brief verify my-brief --json\n"
+        ),
     )
-    import_p.add_argument("--source", required=True,
-                          help="Source directory path. Required.")
-    import_p.add_argument("--workspace", default=None,
+    verify_p.add_argument("name", metavar="NAME", help="Brief slug.")
+    verify_p.add_argument("--workspace", default=None, metavar="W",
                           help="Workspace identity.")
-    import_p.add_argument("--json", action="store_true", default=False,
-                          help="Emit JSON. bool.")
+    verify_p.add_argument("--json", action="store_true", default=False,
+                          help="Emit JSON.")
+
+
+def _cmd_verify(args) -> int:
+    from gaia.briefs.store import verify_brief
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    as_json = getattr(args, "json", False)
+
+    try:
+        result = verify_brief(workspace, name)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        if result["pass"]:
+            print(f"Brief '{name}': OK (no inconsistencies)")
+        else:
+            print(f"Brief '{name}': {len(result['inconsistencies'])} "
+                  f"inconsistencies detected")
+            for issue in result["inconsistencies"]:
+                print(f"  - [{issue['kind']}] {issue['detail']}")
+
+    return 0 if result["pass"] else 2
 
 
 def cmd_brief(args) -> int:
@@ -714,15 +839,14 @@ def cmd_brief(args) -> int:
         "deps": _cmd_deps,
         "search": _cmd_search,
         "delete": _cmd_delete,
-        "import-from-fs": _cmd_import_from_fs,
+        "verify": _cmd_verify,
     }
     if action in handlers:
         return handlers[action](args)
 
     print(
         "Usage: gaia brief "
-        "<new|edit|show|list|close|set-status|deps|search|delete|"
-        "import-from-fs>",
+        "<new|edit|show|list|close|set-status|deps|search|delete|verify>",
         file=sys.stderr,
     )
     return 0

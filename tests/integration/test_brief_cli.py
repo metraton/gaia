@@ -9,7 +9,6 @@ Covers:
   - test_deps: gaia brief deps walks brief_dependencies
   - test_edit_round_trip: $EDITOR mock changes objective, show reflects it
   - test_search_uses_fts5: gaia brief search returns matches by FTS5
-  - test_import_from_fs: walks fixture directory, upserts briefs
 
 Tests use a tmp_path-routed DB via GAIA_DATA_DIR monkeypatch so they never
 touch the user's real ~/.gaia/gaia.db.
@@ -675,35 +674,3 @@ def test_edit_headless_description_alias(tmp_db, tmp_path, monkeypatch, capsys):
     assert rc == 0, capsys.readouterr()
     brief = get_brief("me", "alias-brief", db_path=tmp_db)
     assert brief["objective"] == "aliased value"
-
-
-def test_import_from_fs(tmp_db, tmp_path):
-    """import_from_fs walks <status>_<name>/brief.md directories."""
-    from gaia.briefs import import_from_fs, list_briefs
-
-    src = tmp_path / "briefs-src"
-    src.mkdir()
-
-    open_dir = src / "open_first-brief"
-    open_dir.mkdir()
-    (open_dir / "brief.md").write_text(_SAMPLE_BRIEF_MD)
-
-    closed_dir = src / "closed_second-brief"
-    closed_dir.mkdir()
-    (closed_dir / "brief.md").write_text(
-        _SAMPLE_BRIEF_MD.replace("status: draft", "status: closed")
-                       .replace("Sample Brief", "Second Brief")
-    )
-
-    res = import_from_fs(src, workspace="me", db_path=tmp_db)
-    assert res["imported"] == 2
-    assert "first-brief" in res["names"]
-    assert "second-brief" in res["names"]
-
-    briefs = list_briefs("me", db_path=tmp_db)
-    statuses = {b["name"]: b["status"] for b in briefs}
-    # Directory prefix should drive status:
-    #   open_*  -> 'draft'
-    #   closed_*-> 'closed'
-    assert statuses["first-brief"] == "draft"
-    assert statuses["second-brief"] == "closed"

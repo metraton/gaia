@@ -272,6 +272,163 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 fi
                 # Otherwise: state 1 (only old) -- fall through to default rename script.
                 ;;
+            4)
+                # v3 -> v4: add memory.class + memory.status columns plus the
+                # memory_links table. Target state contains the `class` column
+                # on the memory table. We probe pragma_table_info; presence of
+                # 'class' is the fingerprint of v4 target state.
+                #
+                # Note: idx_memory_class_status is intentionally NOT declared
+                # in schema.sql -- it references columns that ALTER TABLE adds
+                # later, and CREATE INDEX in schema.sql would parse-fail on
+                # v3 DBs. On fresh-install (ALREADY_AT_TARGET=1) we run the
+                # migration script anyway because its statements are all
+                # idempotent (`IF NOT EXISTS`) and the only operation that is
+                # NOT a no-op on fresh install is the index creation.
+                MEMORY_HAS_CLASS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('memory') WHERE name='class';")"
+                MEMORY_LINKS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_links';")"
+                if [ "$MEMORY_HAS_CLASS" = "class" ] && [ "$MEMORY_LINKS_EXISTS" = "memory_links" ]; then
+                    # Fresh install: schema.sql created the v4 columns and
+                    # memory_links table. Run the migration anyway -- the
+                    # ALTER TABLE statements need to be skipped because the
+                    # columns already exist. We branch to a fresh-install
+                    # variant that ONLY creates the index.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v3_to_v4_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v3->v4 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v3 DB -- fall through to default v3_to_v4.sql.
+                ;;
+            5)
+                # v4 -> v5: add acceptance_criteria.status + milestones.status.
+                # Target state: acceptance_criteria has 'status' column.
+                AC_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('acceptance_criteria') WHERE name='status';")"
+                MS_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('milestones') WHERE name='status';")"
+                if [ "$AC_HAS_STATUS" = "status" ] && [ "$MS_HAS_STATUS" = "status" ]; then
+                    # Fresh install: schema.sql already created v5 columns.
+                    # Run the fresh-install variant that ONLY creates the indexes.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v4_to_v5_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v4->v5 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v4 DB -- fall through to default v4_to_v5.sql.
+                ;;
+            6)
+                # v5 -> v6: add evidence table (three-tier storage model).
+                # Target state: evidence table exists.
+                EVIDENCE_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='evidence';")"
+                if [ "$EVIDENCE_EXISTS" = "evidence" ]; then
+                    # Fresh install: schema.sql already created the evidence table.
+                    # Run the fresh-install variant that ONLY creates the indexes.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v5_to_v6_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v5->v6 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v5 DB -- fall through to default v5_to_v6.sql.
+                ;;
+            7)
+                # v6 -> v7: add workspaces.last_scan_at column (agent-contract-handoff M1).
+                # Target state: workspaces table has a 'last_scan_at' column.
+                WS_HAS_LAST_SCAN="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('workspaces') WHERE name='last_scan_at';")"
+                if [ "$WS_HAS_LAST_SCAN" = "last_scan_at" ]; then
+                    # Fresh install: schema.sql already created the column.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v6_to_v7_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v6->v7 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v6 DB -- fall through to default v6_to_v7.sql.
+                ;;
+            8)
+                # v7 -> v8: add approval_grants table (agent-contract-handoff M3).
+                # Target state: approval_grants table exists.
+                GRANTS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='approval_grants';")"
+                if [ "$GRANTS_EXISTS" = "approval_grants" ]; then
+                    # Fresh install: schema.sql already created the approval_grants table.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v7_to_v8_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v7->v8 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v7 DB -- fall through to default v7_to_v8.sql.
+                ;;
+            9)
+                # v8 -> v9: add agent_contract_handoffs, agent_contract_handoff_approvals,
+                # project_context_contracts_history tables + trg_pcc_history trigger
+                # (agent-contract-handoff M4: handoff persistence).
+                # Target state: agent_contract_handoffs table exists.
+                HANDOFFS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_contract_handoffs';")"
+                if [ "$HANDOFFS_EXISTS" = "agent_contract_handoffs" ]; then
+                    # Fresh install: schema.sql already created all v9 tables and trigger.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v8_to_v9_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v8->v9 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v8 DB -- fall through to default v8_to_v9.sql.
+                ;;
+            10)
+                # v9 -> v10: add episodes.tier column + idx_episodes_tier + idx_episodes_tier_outcome
+                # + episode_anomalies table + its 3 indexes
+                # (episodic-workflow-to-db AC-3: migration apply).
+                #
+                # Target state fingerprint: episodes.tier column exists.
+                # We use PRAGMA table_info to check for the tier column.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates episodes WITH tier -> tier exists
+                #   - Existing v9 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> tier does NOT exist -> falls through to the full migration
+                # Note: episode_anomalies table is NOT a valid fingerprint because
+                # schema.sql creates it via CREATE TABLE IF NOT EXISTS even on existing DBs.
+                TIER_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('episodes') WHERE name='tier';")"
+                if [ "$TIER_EXISTS" = "tier" ]; then
+                    # Fresh install: schema.sql already created episodes with tier column.
+                    # Run the fresh-install variant (creates tier indexes) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v9_to_v10_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v9->v10 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v9 DB -- fall through to default v9_to_v10.sql.
+                ;;
+            11)
+                # v10 -> v11: memory.class NOT NULL + CHECK(anchor|thread|log)
+                # + trg_pcc_history trigger column fix (contract_key->contract_name,
+                # payload_json->payload). Closes ledger task #6.
+                #
+                # Target state fingerprint: memory.class column is NOT NULL.
+                # We query pragma_table_info and check the notnull flag (column 3 in
+                # the pragma output: 0=nullable, 1=NOT NULL). A fresh install creates
+                # memory with NOT NULL class -> notnull=1. An existing v10 DB has
+                # class as nullable -> notnull=0 -> falls through to the full migration.
+                # Correct fingerprint because:
+                #   - Fresh install (schema.sql creates memory with NOT NULL class): notnull=1
+                #   - Existing v10 DB (CREATE TABLE IF NOT EXISTS is a no-op): notnull=0
+                MEMORY_CLASS_NOTNULL="$(sqlite3 "$GAIA_DB" "SELECT \"notnull\" FROM pragma_table_info('memory') WHERE name='class';")"
+                if [ "$MEMORY_CLASS_NOTNULL" = "1" ]; then
+                    # Fresh install: schema.sql already created memory with NOT NULL class.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v10_to_v11_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v10->v11 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v10 DB -- fall through to default v10_to_v11.sql.
+                ;;
             *)
                 # Future migrations: each new N must add a case here with a
                 # fingerprint of the post-migration state.

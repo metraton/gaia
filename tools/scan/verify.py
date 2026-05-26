@@ -123,38 +123,53 @@ def check_settings_json(project_root: Path) -> CheckResult:
 
 
 def check_project_context(project_root: Path) -> CheckResult:
-    """Verify that project-context.json exists and has sections.
+    """Verify that project context contracts exist in the DB (T1.3: DB-backed read).
+
+    Reads from project_context_contracts table in gaia.db rather than from
+    the legacy project-context.json file.
 
     Args:
         project_root: Project root directory.
 
     Returns:
-        CheckResult with section count.
+        CheckResult with contract count.
     """
-    path = project_root / ".claude" / "project-context" / "project-context.json"
-    if not path.is_file():
-        return CheckResult(
-            name="project-context",
-            ok=False,
-            detail="Missing",
-            fix="Run `gaia scan`",
-        )
-
     try:
-        data = json.loads(path.read_text())
-        sections = len(data.get("sections", {}))
+        import sys as _sys
+        _repo_root = Path(__file__).resolve().parents[2]
+        if str(_repo_root) not in _sys.path:
+            _sys.path.insert(0, str(_repo_root))
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts WHERE workspace = ?",
+                (ws,),
+            ).fetchone()
+            count = row[0] if row else 0
+        finally:
+            con.close()
+        if count == 0:
+            return CheckResult(
+                name="project-context",
+                ok=False,
+                detail="No contracts in DB",
+                fix="Run `gaia scan`",
+            )
         return CheckResult(
             name="project-context",
-            ok=sections >= 3,
-            detail=f"{sections} sections",
-            fix="Run `gaia scan` to regenerate" if sections < 3 else None,
+            ok=count >= 3,
+            detail=f"{count} contracts",
+            fix="Run `gaia scan` to enrich" if count < 3 else None,
         )
-    except (json.JSONDecodeError, OSError):
+    except Exception as exc:
         return CheckResult(
             name="project-context",
             ok=False,
-            detail="Invalid JSON",
-            fix="Run `gaia scan` to regenerate",
+            detail=f"DB read error: {exc}",
+            fix="Run `gaia scan`",
         )
 
 

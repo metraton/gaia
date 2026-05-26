@@ -152,3 +152,141 @@ def seed_agent_perms(
         )
     con.commit()
     con.close()
+
+
+def bootstrap_m4_schema(db_path: Path) -> None:
+    """Apply M4-specific schema extensions (v9) on top of minimal schema.
+
+    Adds M4 tables needed for agent_contract_handoff tests:
+    - briefs (parent table for agent_contract_handoffs FK)
+    - agent_contract_handoffs
+    - agent_contract_handoff_approvals
+    - approval_grants
+    - project_context_contracts_history + trigger
+    - updates project_context_contracts with proper column names
+
+    Idempotent: safe to call on a DB that already has the tables.
+    """
+    con = sqlite3.connect(str(db_path))
+    con.executescript("""
+    PRAGMA foreign_keys = ON;
+
+    -- briefs table (parent for agent_contract_handoffs FK)
+    CREATE TABLE IF NOT EXISTS briefs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        workspace    TEXT NOT NULL,
+        name         TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'draft',
+        surface_type TEXT,
+        title        TEXT,
+        objective    TEXT,
+        context      TEXT,
+        approach     TEXT,
+        out_of_scope TEXT,
+        topic_key    TEXT,
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        UNIQUE (workspace, name),
+        FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_briefs_workspace ON briefs(workspace);
+    CREATE INDEX IF NOT EXISTS idx_briefs_status ON briefs(status);
+    CREATE INDEX IF NOT EXISTS idx_briefs_topic_key ON briefs(topic_key);
+
+    -- Ensure project_context_contracts has correct columns (v9 schema)
+    -- If it was created by bootstrap_gaia_schema with wrong names, this is a no-op (table exists)
+    CREATE TABLE IF NOT EXISTS project_context_contracts (
+        workspace     TEXT NOT NULL,
+        contract_name TEXT NOT NULL,
+        payload       TEXT NOT NULL,
+        metadata      TEXT,
+        updated_at    TEXT,
+        PRIMARY KEY (workspace, contract_name),
+        FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_context_contracts_workspace
+        ON project_context_contracts(workspace);
+
+    -- approval_grants table (v7 / M3, needed as FK for handoff_approvals)
+    CREATE TABLE IF NOT EXISTS approval_grants (
+        approval_id          TEXT PRIMARY KEY,
+        agent_id             TEXT,
+        session_id           TEXT,
+        command_set_json     TEXT NOT NULL,
+        scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
+        created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        expires_at           TEXT,
+        status               TEXT NOT NULL DEFAULT 'PENDING',
+        consumed_indexes_json TEXT,
+        consumed_at          TEXT,
+        revoked_at           TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_approval_grants_agent   ON approval_grants(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_approval_grants_session ON approval_grants(session_id);
+    CREATE INDEX IF NOT EXISTS idx_approval_grants_status  ON approval_grants(status);
+
+    -- agent_contract_handoffs table (v9/M4)
+    CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id         TEXT NOT NULL,
+        session_id       TEXT,
+        workspace        TEXT NOT NULL,
+        brief_id         INTEGER,
+        task_status      TEXT NOT NULL,
+        raw_handoff_json TEXT NOT NULL,
+        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        FOREIGN KEY (workspace) REFERENCES workspaces(name),
+        FOREIGN KEY (brief_id)  REFERENCES briefs(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_workspace ON agent_contract_handoffs(workspace);
+    CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_brief     ON agent_contract_handoffs(brief_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_session   ON agent_contract_handoffs(session_id);
+
+    -- agent_contract_handoff_approvals table (v9/M4)
+    CREATE TABLE IF NOT EXISTS agent_contract_handoff_approvals (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        handoff_id  INTEGER NOT NULL,
+        approval_id TEXT NOT NULL,
+        decision    TEXT NOT NULL CHECK (decision IN ('APPROVED', 'REJECTED', 'EXPIRED', 'REVOKED')),
+        decided_at  TEXT NOT NULL,
+        FOREIGN KEY (handoff_id)  REFERENCES agent_contract_handoffs(id) ON DELETE CASCADE,
+        FOREIGN KEY (approval_id) REFERENCES approval_grants(approval_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_contract_handoff_approvals_handoff
+        ON agent_contract_handoff_approvals(handoff_id);
+
+    -- project_context_contracts_history + trigger (v9/M4)
+    CREATE TABLE IF NOT EXISTS project_context_contracts_history (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_key        TEXT NOT NULL,
+        workspace           TEXT NOT NULL,
+        before_payload_json TEXT,
+        after_payload_json  TEXT NOT NULL,
+        changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        changed_by_agent    TEXT,
+        FOREIGN KEY (workspace) REFERENCES workspaces(name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pcc_history_contract ON project_context_contracts_history(contract_key);
+
+    CREATE TRIGGER IF NOT EXISTS trg_pcc_history
+    AFTER UPDATE ON project_context_contracts
+    BEGIN
+        INSERT INTO project_context_contracts_history (
+            contract_key, workspace, before_payload_json, after_payload_json, changed_at
+        ) VALUES (
+            OLD.contract_name,
+            OLD.workspace,
+            OLD.payload,
+            NEW.payload,
+            strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        );
+    END;
+    """)
+    con.commit()
+    con.close()

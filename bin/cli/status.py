@@ -43,30 +43,55 @@ def _read_json(path: Path):
 
 
 def _read_episodic_index(project_root: Path):
-    """Read episodic memory index. Returns dict with episodes, last_agent, source."""
-    index_path = project_root / ".claude" / "project-context" / "episodic-memory" / "index.json"
-    data = _read_json(index_path)
+    """Read episodic memory from gaia.db episodes table.
 
-    if data and isinstance(data.get("episodes"), list):
-        episodes = data["episodes"]
-        with_agent = [e for e in episodes if e.get("agent")]
-        last_agent = with_agent[-1] if with_agent else None
-        return {"episodes": episodes, "last_agent": last_agent, "source": "episodic-memory"}
+    T6 migration: primary source is now the episodes table in gaia.db.
+    The legacy episodic-memory/index.json and workflow-episodic-memory/metrics.jsonl
+    files are no longer read here.
 
-    # Fallback: legacy metrics.jsonl
-    metrics_path = (
-        project_root / ".claude" / "project-context" / "workflow-episodic-memory" / "metrics.jsonl"
-    )
-    last_agent = None
-    if metrics_path.is_file():
+    Returns dict with episodes, last_agent, source.
+    """
+    import sys as _sys
+    _PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
+    if str(_PLUGIN_ROOT) not in _sys.path:
+        _sys.path.insert(0, str(_PLUGIN_ROOT))
+
+    try:
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
+        return {"episodes": [], "last_agent": None, "source": "db-unavailable"}
+
+    try:
+        ws = _project_current(cwd=project_root)
+    except Exception:
+        ws = None
+
+    try:
+        con = _store_connect()
         try:
-            lines = [ln.strip() for ln in metrics_path.read_text().splitlines() if ln.strip()]
-            if lines:
-                last_agent = json.loads(lines[-1])
-        except Exception:
-            pass
+            if ws:
+                rows = con.execute(
+                    "SELECT episode_id, workspace, timestamp, agent, plan_status, "
+                    "outcome, exit_code, output_tokens_approx "
+                    "FROM episodes WHERE workspace = ? ORDER BY timestamp ASC",
+                    (ws,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT episode_id, workspace, timestamp, agent, plan_status, "
+                    "outcome, exit_code, output_tokens_approx "
+                    "FROM episodes ORDER BY timestamp ASC"
+                ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return {"episodes": [], "last_agent": None, "source": "db-error"}
 
-    return {"episodes": [], "last_agent": last_agent, "source": "legacy"}
+    episodes = [dict(r) for r in rows]
+    with_agent = [e for e in episodes if e.get("agent")]
+    last_agent = with_agent[-1] if with_agent else None
+    return {"episodes": episodes, "last_agent": last_agent, "source": "gaia.db"}
 
 
 def _get_pending_count(project_root: Path) -> int:
@@ -90,62 +115,109 @@ def _get_anomaly_count(project_root: Path) -> int:
 
 
 def _get_context_last_updated(project_root: Path):
-    """Get last_updated from project-context.json metadata."""
-    path = project_root / ".claude" / "project-context" / "project-context.json"
-    data = _read_json(path)
-    if data:
-        return (data.get("metadata") or {}).get("last_updated")
+    """Get last_scan_at from the DB workspaces row (T1.3: DB-backed read).
+
+    Falls back to None when the workspace row or column is absent.
+    """
+    try:
+        import sys as _sys
+        _PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
+        if str(_PLUGIN_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(_PLUGIN_ROOT))
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=project_root)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
+            ).fetchone()
+            if row:
+                return row[0]
+        finally:
+            con.close()
+    except Exception:
+        pass
     return None
 
 
 def _get_memory_v2_stats(project_root: Path) -> dict:
-    """Get Memory v2 stats: indexed count and avg score.
+    """Get Memory v2 stats: indexed count and avg score from gaia.db.
 
-    Lazily imports tools.memory.search_store and tools.memory.scoring.
+    T6 migration: reads episodes_fts count and episode timestamps from gaia.db.
+    No longer reads from episodic-memory/index.json.
     Returns {"indexed": 0, "avg_score": None} on any failure.
     """
+    import sys as _sys
+    _PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
+    if str(_PLUGIN_ROOT) not in _sys.path:
+        _sys.path.insert(0, str(_PLUGIN_ROOT))
+
     base = {"indexed": 0, "avg_score": None}
+
     try:
-        import tools.memory.search_store as search_store  # noqa: PLC0415
         import tools.memory.scoring as scoring  # noqa: PLC0415
+    except ImportError:
+        scoring = None
+
+    try:
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
     except ImportError:
         return base
 
     try:
-        indexed = search_store.count()
+        ws = _project_current(cwd=project_root)
+    except Exception:
+        ws = None
+
+    try:
+        con = _store_connect()
+        try:
+            # FTS5 indexed count from episodes_fts
+            row = con.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()
+            indexed = row[0] if row else 0
+
+            # avg_score from a sample of episodes timestamps
+            avg_score = None
+            if scoring is not None:
+                if ws:
+                    ep_rows = con.execute(
+                        "SELECT timestamp FROM episodes WHERE workspace = ? "
+                        "ORDER BY timestamp DESC LIMIT 50",
+                        (ws,),
+                    ).fetchall()
+                else:
+                    ep_rows = con.execute(
+                        "SELECT timestamp FROM episodes ORDER BY timestamp DESC LIMIT 50"
+                    ).fetchall()
+                if ep_rows:
+                    now = __import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc
+                    )
+                    scores = []
+                    for ep_row in ep_rows:
+                        ts = ep_row[0] if ep_row else None
+                        if ts:
+                            try:
+                                dt = __import__("datetime").datetime.fromisoformat(
+                                    ts.replace("Z", "+00:00")
+                                )
+                                days_old = max(0.0, (now - dt).total_seconds() / 86400)
+                            except Exception:
+                                days_old = 0.0
+                        else:
+                            days_old = 0.0
+                        try:
+                            scores.append(scoring.score_memory(days_old, 0))
+                        except Exception:
+                            pass
+                    if scores:
+                        avg_score = sum(scores) / len(scores)
+        finally:
+            con.close()
     except Exception:
         return base
-
-    # Compute avg_score from a sample of index entries
-    index_path = (
-        project_root / ".claude" / "project-context" / "episodic-memory" / "index.json"
-    )
-    avg_score = None
-    try:
-        data = _read_json(index_path)
-        if data and isinstance(data.get("episodes"), list):
-            episodes = data["episodes"]
-            if episodes:
-                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
-                scores = []
-                for ep in episodes[:50]:  # sample at most 50 entries
-                    ts = ep.get("timestamp") or ep.get("created_at")
-                    retrieval_count = ep.get("retrieval_count", 0) or 0
-                    if ts:
-                        try:
-                            dt = __import__("datetime").datetime.fromisoformat(
-                                ts.replace("Z", "+00:00")
-                            )
-                            days_old = max(0.0, (now - dt).total_seconds() / 86400)
-                        except Exception:
-                            days_old = 0.0
-                    else:
-                        days_old = 0.0
-                    scores.append(scoring.score_memory(days_old, retrieval_count))
-                if scores:
-                    avg_score = sum(scores) / len(scores)
-    except Exception:
-        pass
 
     return {"indexed": indexed, "avg_score": avg_score}
 
@@ -249,9 +321,9 @@ def _print_human(status: dict) -> None:
     # Context
     ctx = status["context_updated"]
     if ctx:
-        print(f"  Context:      project-context.json -- updated {_format_time(ctx)}")
+        print(f"  Context:      last scan {_format_time(ctx)}")
     else:
-        print("  Context:      project-context.json missing -- run `gaia scan`")
+        print("  Context:      never scanned -- run `gaia scan`")
 
     # Memory
     ep = status["episode_count"]

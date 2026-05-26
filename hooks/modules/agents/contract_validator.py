@@ -1,17 +1,26 @@
 """
 Contract validation for agent output: structural checks, evidence parsing,
-command extraction, PLAN_STATUS parsing, and exit code derivation.
+command extraction, PLAN_STATUS/TASK_STATUS parsing, and exit code derivation.
 
-Only the ``json:contract`` fenced-block format is supported.  Legacy
-HTML-comment blocks (``<!-- AGENT_STATUS -->``, etc.) are **not** parsed here.
+Two fenced-block formats are supported in dual-mode:
+- ``json:contract``          (legacy) -- field name ``plan_status``
+- ``agent_contract_handoff`` (new)    -- field name ``task_status``
+
+Legacy HTML-comment blocks (``<!-- AGENT_STATUS -->``, etc.) are **not** parsed.
 
 Provides:
-    - parse_contract(): Extract structured dict from json:contract fenced block
+    - parse_contract(): Extract structured dict from json:contract OR
+                        agent_contract_handoff fenced block
     - validate(): Check agent output against contract requirements -> ValidationResult
     - extract_commands_from_evidence(): Parse COMMANDS_RUN field
     - requires_consolidation_report(): Check if consolidation is needed
-    - extract_plan_status_from_output(): Extract PLAN_STATUS string
-    - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
+    - extract_plan_status_from_output(): Extract PLAN_STATUS/TASK_STATUS string
+    - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS/TASK_STATUS
+    - parse_loop_state(): Parse loop_state clause (blocking check on COMPLETE)
+    - parse_update_contracts(): Parse update_contracts array clause
+    - parse_rollback_executed(): Parse rollback_executed clause (advisory)
+    - parse_context_consumption(): Parse context_consumption clause (advisory)
+    - parse_memory_suggestions(): Parse memory_suggestions clause (advisory)
 """
 
 import json
@@ -57,28 +66,82 @@ class ValidationResult:
 
 
 # ============================================================================
-# JSON contract parser
+# JSON contract parser (dual-mode: json:contract + agent_contract_handoff)
 # ============================================================================
 
-def parse_contract(agent_output: str) -> Optional[dict]:
-    """Extract structured contract dict from a ``json:contract`` fenced block.
+# Tag patterns for dual-mode detection (whichever appears first wins)
+_TAG_LEGACY = "json:contract"
+_TAG_NEW = "agent_contract_handoff"
 
-    Searches for the first occurrence of a fenced code block tagged
-    ``json:contract`` and attempts to parse its contents as JSON.
+_RE_LEGACY = re.compile(r'```json:contract\s*\n(.*?)```', re.DOTALL)
+_RE_NEW = re.compile(r'```agent_contract_handoff\s*\n(.*?)```', re.DOTALL)
+
+
+def _find_first_tag_match(agent_output: str):
+    """Return (match_object, tag_name) for whichever fenced tag appears first.
+
+    Checks both ``json:contract`` and ``agent_contract_handoff`` and returns
+    the match whose start position is smaller (i.e. the one that appears first
+    in the output). Returns (None, None) when neither tag is present.
+    """
+    m_legacy = _RE_LEGACY.search(agent_output)
+    m_new = _RE_NEW.search(agent_output)
+
+    if m_legacy is None and m_new is None:
+        return None, None
+    if m_legacy is None:
+        return m_new, _TAG_NEW
+    if m_new is None:
+        return m_legacy, _TAG_LEGACY
+    # Both present -- use whichever starts first
+    if m_legacy.start() <= m_new.start():
+        return m_legacy, _TAG_LEGACY
+    return m_new, _TAG_NEW
+
+
+def parse_contract(agent_output: str) -> Optional[dict]:
+    """Extract structured contract dict from a fenced contract block.
+
+    Accepts two fenced tags in dual-mode:
+    - ``json:contract``          (legacy) -- expects ``plan_status``
+    - ``agent_contract_handoff`` (new)    -- expects ``task_status``
+
+    Whichever tag appears first in the output is used.  The parsed dict is
+    augmented with a ``_contract_tag`` key (``"json:contract"`` or
+    ``"agent_contract_handoff"``) so callers can distinguish the two paths.
 
     Args:
         agent_output: Complete output from agent execution.
 
     Returns:
-        Parsed dict if a valid json:contract block is found, None otherwise.
+        Parsed dict augmented with ``_contract_tag`` if a valid block is found,
+        None otherwise.
     """
-    m = re.search(r'```json:contract\s*\n(.*?)```', agent_output, re.DOTALL)
-    if not m:
+    m, tag = _find_first_tag_match(agent_output)
+    if m is None:
         return None
     try:
-        return json.loads(m.group(1))
+        parsed = json.loads(m.group(1))
+        if isinstance(parsed, dict):
+            parsed["_contract_tag"] = tag
+        return parsed
     except json.JSONDecodeError:
         return None
+
+
+def _resolve_status(agent_status: dict) -> str:
+    """Resolve the effective status string from an agent_status dict.
+
+    For the new ``agent_contract_handoff`` envelope the field is
+    ``task_status``; for legacy ``json:contract`` the field is ``plan_status``.
+    Falls back to ``plan_status`` when ``task_status`` is absent so that
+    partially migrated agents continue to work during the dual-mode window.
+    """
+    task_status = str(agent_status.get("task_status", "")).strip()
+    if task_status:
+        return task_status.upper().rstrip(".,;")
+    plan_status = str(agent_status.get("plan_status", "")).strip()
+    return plan_status.upper().rstrip(".,;")
 
 
 # ============================================================================
@@ -89,9 +152,13 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
     """Validate agent output using the parsed JSON contract dict.
 
     Checks that the contract dict contains the required keys:
-    - agent_status with plan_status and agent_id
-    - evidence_report with required fields (when plan_status requires it)
+    - agent_status with plan_status/task_status and agent_id
+    - evidence_report with required fields (when status requires it)
     - consolidation_report (when multi-surface task requires it)
+    - blocking promotions (T2.2):
+        * verification.result must be "pass" when status is COMPLETE
+        * approval_request.rollback must be present when approval_request present
+        * approval_request.verification must be present when approval_request present
 
     Args:
         contract: Parsed dict from parse_contract().
@@ -102,27 +169,29 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
     """
     all_missing: List[str] = []
 
-    # 1. Check agent_status
+    # 1. Check agent_status (dual-mode: task_status or plan_status)
     agent_status = contract.get("agent_status")
     if not agent_status or not isinstance(agent_status, dict):
         all_missing.extend(["AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"])
     else:
-        if not agent_status.get("plan_status"):
+        # Accept task_status (new) or plan_status (legacy)
+        has_status = bool(agent_status.get("task_status") or agent_status.get("plan_status"))
+        if not has_status:
             all_missing.append("PLAN_STATUS")
         if not agent_status.get("agent_id"):
             all_missing.append("AGENT_ID")
 
-    # Determine plan_status for evidence check
-    plan_status = ""
+    # Determine effective status for downstream checks
+    effective_status = ""
     if agent_status and isinstance(agent_status, dict):
-        plan_status = str(agent_status.get("plan_status", "")).upper()
+        effective_status = _resolve_status(agent_status)
 
     statuses_requiring_evidence = {
         "IN_PROGRESS", "APPROVAL_REQUEST",
         "COMPLETE", "BLOCKED", "NEEDS_INPUT",
     }
 
-    if plan_status in statuses_requiring_evidence:
+    if effective_status in statuses_requiring_evidence:
         # 2. Check evidence_report
         evidence = contract.get("evidence_report")
         if not evidence or not isinstance(evidence, dict):
@@ -130,8 +199,9 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
         else:
             for field in _EVIDENCE_REQUIRED_FIELDS:
                 # Accept both lower-case keys (JSON style) and upper-case (legacy)
+                # Use key-presence check (not truthiness) so empty lists [] are accepted
                 key_lower = field.lower()
-                if not evidence.get(key_lower) and not evidence.get(field):
+                if key_lower not in evidence and field not in evidence:
                     all_missing.append(field)
 
     # 3. Check consolidation_report (only when required)
@@ -144,6 +214,31 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
                 key_lower = field.lower()
                 if not consolidation.get(key_lower) and not consolidation.get(field):
                     all_missing.append(field)
+
+    # 4. Blocking promotions (T2.2)
+    # 4a. verification.result must be "pass" when status is COMPLETE
+    if effective_status == "COMPLETE":
+        evidence_block = contract.get("evidence_report") or {}
+        verification = evidence_block.get("verification")
+        if not isinstance(verification, dict):
+            all_missing.append("VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE")
+        else:
+            result_val = str(verification.get("result", "")).lower().strip()
+            if result_val != "pass":
+                all_missing.append("VERIFICATION_RESULT_MUST_BE_PASS")
+
+    # 4b. approval_request.rollback and approval_request.verification must be present
+    approval_req = contract.get("approval_request")
+    if approval_req and isinstance(approval_req, dict):
+        if not approval_req.get("rollback"):
+            all_missing.append("APPROVAL_REQUEST_ROLLBACK_REQUIRED")
+        if not approval_req.get("verification"):
+            all_missing.append("APPROVAL_REQUEST_VERIFICATION_REQUIRED")
+
+    # 5. Loop-state blocking check (T2.3)
+    loop_anomaly = _check_loop_state_blocking(contract, effective_status)
+    if loop_anomaly:
+        all_missing.append(loop_anomaly)
 
     if all_missing:
         fields_str = ", ".join(all_missing)
@@ -173,8 +268,9 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
             f"}}\n"
             f"```\n"
             f"\n"
-            f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
-            f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps"
+            f"Required fields: agent_status (plan_status/task_status, agent_id, pending_steps, next_action), evidence_report\n"
+            f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps\n"
+            f"Blocking: COMPLETE requires verification.result=pass; approval_request requires rollback and verification fields"
         )
         return ValidationResult(
             is_valid=False,
@@ -192,12 +288,16 @@ def _validate_from_json_contract(contract: dict, task_info: Dict[str, Any]) -> V
 def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     """Validate agent output against contract requirements.
 
-    Only the ``json:contract`` fenced-block format is supported.
+    Accepts both ``json:contract`` (legacy) and ``agent_contract_handoff`` (new)
+    fenced-block formats. Whichever appears first in the output is used.
 
     Checks:
-    1. AGENT_STATUS block with plan_status and agent_id
-    2. EVIDENCE_REPORT with required fields (when plan_status requires it)
+    1. AGENT_STATUS block with plan_status/task_status and agent_id
+    2. EVIDENCE_REPORT with required fields (when status requires it)
     3. CONSOLIDATION_REPORT (when multi-surface task requires it)
+    4. Blocking promotions: verification.result=pass for COMPLETE,
+       approval_request.rollback and approval_request.verification when present
+    5. Loop-state blocking: iteration < max_iterations with metric below threshold
 
     Args:
         agent_output: Complete output from agent execution.
@@ -210,14 +310,14 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     if contract is not None:
         return _validate_from_json_contract(contract, task_info)
 
-    # No json:contract block found -- report everything as missing.
+    # No recognized contract block found -- report everything as missing.
     all_missing = ["AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"]
     fields_str = ", ".join(all_missing)
     error_message = (
         f"Contract incomplete. Missing: {fields_str}. "
-        f"No json:contract fenced block found.\n"
+        f"No json:contract or agent_contract_handoff fenced block found.\n"
         f"\n"
-        f"Repair: your response MUST end with a json:contract block:\n"
+        f"Repair: your response MUST end with a contract block:\n"
         f"\n"
         f"```json:contract\n"
         f'{{\n'
@@ -240,7 +340,7 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
         f"}}\n"
         f"```\n"
         f"\n"
-        f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
+        f"Required fields: agent_status (plan_status/task_status, agent_id, pending_steps, next_action), evidence_report\n"
         f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps"
     )
     return ValidationResult(
@@ -291,8 +391,9 @@ def extract_commands_from_evidence(agent_output: str) -> List[str]:
 def requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
     """Determine whether runtime should require a CONSOLIDATION_REPORT block.
 
-    Checks injected_context for investigation_brief.consolidation_required,
-    investigation_brief.cross_check_required, or surface_routing.multi_surface.
+    Checks injected_context for agent_contract_handoff.consolidation_required,
+    agent_contract_handoff.cross_check_required, or surface_routing.multi_surface.
+    Also checks the legacy ``investigation_brief`` key for backward compatibility.
 
     Falls back to reading from the transcript if injected_context was not
     pre-extracted.
@@ -307,19 +408,289 @@ def requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
     if not payload:
         return False
 
+    # New field name (T2.1a) -- check first
+    agent_contract_handoff = payload.get("agent_contract_handoff", {}) or {}
+    # Legacy field name -- backward compatibility during dual-mode window
     investigation_brief = payload.get("investigation_brief", {}) or {}
     surface_routing = payload.get("surface_routing", {}) or {}
     return bool(
-        investigation_brief.get("consolidation_required")
+        agent_contract_handoff.get("consolidation_required")
+        or agent_contract_handoff.get("cross_check_required")
+        or investigation_brief.get("consolidation_required")
         or investigation_brief.get("cross_check_required")
         or surface_routing.get("multi_surface")
     )
 
 
-def extract_plan_status_from_output(agent_output: str) -> str:
-    """Extract the PLAN_STATUS string from agent output.
+# ============================================================================
+# T2.3 Clause parsers (new envelope fields)
+# ============================================================================
 
-    Only the ``json:contract`` fenced-block format is supported.
+_VALID_EVIDENCE_TYPES = frozenset({
+    "text", "file", "command_output", "url", "screenshot",
+})
+
+
+def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
+    """Validate the payload of an evidence update_contracts clause.
+
+    Enforces the flat-field shape from D6 (brief plan decisions):
+    - ``brief_id`` required, must be int (or string coercible to int)
+    - ``ac_id``    required, non-empty string
+    - ``type``     required, must be in the valid evidence type enum
+    - ``text`` and ``artifact_path`` are mutually exclusive (exactly one)
+    - ``task_id``, ``created_by_agent``, ``size_bytes`` are optional
+
+    Returns a list of error strings.  An empty list means the payload is valid.
+    """
+    errors: List[str] = []
+
+    if not isinstance(payload, dict):
+        errors.append("evidence payload must be an object/dict")
+        return errors
+
+    # brief_id: required, must be coercible to int
+    raw_brief_id = payload.get("brief_id")
+    if raw_brief_id is None:
+        errors.append("evidence payload missing required field: brief_id")
+    else:
+        try:
+            int(raw_brief_id)
+        except (TypeError, ValueError):
+            errors.append(
+                f"evidence payload brief_id must be an integer, got {type(raw_brief_id).__name__!r}: {raw_brief_id!r}"
+            )
+
+    # ac_id: required, non-empty string
+    ac_id = payload.get("ac_id")
+    if not ac_id or not str(ac_id).strip():
+        errors.append("evidence payload missing or empty required field: ac_id")
+
+    # type: required, must be in enum
+    ev_type = payload.get("type")
+    if not ev_type:
+        errors.append(
+            f"evidence payload missing required field: type "
+            f"(must be one of {sorted(_VALID_EVIDENCE_TYPES)})"
+        )
+    elif ev_type not in _VALID_EVIDENCE_TYPES:
+        errors.append(
+            f"evidence payload type {ev_type!r} is invalid; "
+            f"must be one of {sorted(_VALID_EVIDENCE_TYPES)}"
+        )
+
+    # text / artifact_path: mutually exclusive, at least one required
+    has_text = payload.get("text") is not None
+    has_artifact = payload.get("artifact_path") is not None
+
+    if has_text and has_artifact:
+        errors.append(
+            "evidence payload fields 'text' and 'artifact_path' are mutually exclusive; "
+            "supply exactly one"
+        )
+    elif not has_text and not has_artifact:
+        errors.append(
+            "evidence payload requires exactly one of 'text' or 'artifact_path'"
+        )
+
+    return errors
+
+
+def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
+    """Parse the ``update_contracts`` clause from a contract dict.
+
+    The clause is an array of ``{contract, payload}`` objects.  Each
+    structurally well-formed entry (has both ``contract`` and ``payload`` keys
+    and is a dict) is returned as-is.
+
+    Structural failures (not a dict, missing required keys) are skipped and
+    logged.  Payload-level validation for specific contract types (e.g.
+    ``evidence``) is intentionally **not** performed here so that callers can
+    apply type-specific semantics (e.g. fail-together for evidence batches per
+    D8).  Use ``validate_evidence_update_contract_payload()`` directly when
+    pre-validating evidence payloads before calling the writer.
+
+    Returns an empty list when the clause is absent or entirely malformed.
+    """
+    raw = contract.get("update_contracts")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("update_contracts: expected array, got %s", type(raw).__name__)
+        return []
+
+    results: List[Dict[str, Any]] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            logger.warning("update_contracts[%d]: not an object, skipping", i)
+            continue
+        if "contract" not in entry or "payload" not in entry:
+            logger.warning(
+                "update_contracts[%d]: missing required keys 'contract'/'payload', skipping", i
+            )
+            continue
+
+        # EXTENSION_POINT: add additional contract-type validators here
+        # Note: evidence payload validation (validate_evidence_update_contract_payload)
+        # is applied at write time by context_writer._apply_evidence_entries() with
+        # fail-together semantics (D8). Do not filter evidence entries here.
+
+        results.append(entry)
+    return results
+
+
+def parse_loop_state(contract: dict) -> Optional[Dict[str, Any]]:
+    """Parse the ``loop_state`` clause from a contract dict.
+
+    Expected shape::
+
+        { "iteration": int, "max_iterations": int, "metric": float|null, "threshold": float|null }
+
+    Returns the parsed dict, or None when the clause is absent or malformed.
+    """
+    raw = contract.get("loop_state")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        logger.warning("loop_state: expected object, got %s", type(raw).__name__)
+        return None
+
+    # Coerce numeric fields -- allow None/null for metric/threshold
+    # iteration is required; return None when the key is absent entirely
+    if "iteration" not in raw:
+        logger.warning("loop_state: missing required field 'iteration'")
+        return None
+    try:
+        iteration = int(raw["iteration"]) if raw.get("iteration") is not None else None
+        max_iterations = int(raw["max_iterations"]) if raw.get("max_iterations") is not None else None
+    except (TypeError, ValueError, KeyError) as exc:
+        logger.warning("loop_state: could not parse numeric fields: %s", exc)
+        return None
+
+    metric_raw = raw.get("metric")
+    threshold_raw = raw.get("threshold")
+
+    try:
+        metric = float(metric_raw) if metric_raw is not None else None
+        threshold = float(threshold_raw) if threshold_raw is not None else None
+    except (TypeError, ValueError):
+        metric = None
+        threshold = None
+
+    return {
+        "iteration": iteration,
+        "max_iterations": max_iterations,
+        "metric": metric,
+        "threshold": threshold,
+    }
+
+
+def _check_loop_state_blocking(contract: dict, effective_status: str) -> Optional[str]:
+    """Check loop_state blocking invariant (T2.3).
+
+    Blocking condition: task_status=COMPLETE AND iteration < max_iterations
+    AND metric is not None AND metric < threshold.
+
+    Returns an error token string if the check fails, None otherwise.
+    """
+    if effective_status != "COMPLETE":
+        return None
+
+    loop = parse_loop_state(contract)
+    if loop is None:
+        return None  # No loop_state clause -- check does not apply
+
+    iteration = loop.get("iteration")
+    max_iterations = loop.get("max_iterations")
+    metric = loop.get("metric")
+    threshold = loop.get("threshold")
+
+    if (
+        iteration is not None
+        and max_iterations is not None
+        and metric is not None
+        and threshold is not None
+        and iteration < max_iterations
+        and metric < threshold
+    ):
+        return (
+            f"LOOP_STATE_INCOMPLETE:"
+            f"iteration={iteration}<max={max_iterations},"
+            f"metric={metric}<threshold={threshold}"
+        )
+    return None
+
+
+def parse_rollback_executed(contract: dict) -> Optional[str]:
+    """Parse the ``rollback_executed`` clause from a contract dict (advisory).
+
+    Returns the string value (or None) when present, or ``"ABSENT"`` sentinel
+    when the key is not in the contract at all.
+
+    The return value is purely informational; the validator never rejects based
+    on this field.
+    """
+    if "rollback_executed" not in contract:
+        return "ABSENT"
+    val = contract.get("rollback_executed")
+    return str(val) if val is not None else None
+
+
+def parse_context_consumption(contract: dict) -> Optional[Dict[str, Any]]:
+    """Parse the ``context_consumption`` clause from a contract dict (advisory).
+
+    Expected shape::
+
+        { "tokens_used": int|null, "pct_window": float|null }
+
+    Returns the parsed dict, or None when absent or malformed.  The validator
+    never rejects based on this field.
+    """
+    raw = contract.get("context_consumption")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        logger.warning("context_consumption: expected object, got %s", type(raw).__name__)
+        return None
+
+    tokens_raw = raw.get("tokens_used")
+    pct_raw = raw.get("pct_window")
+
+    try:
+        tokens_used = int(tokens_raw) if tokens_raw is not None else None
+    except (TypeError, ValueError):
+        tokens_used = None
+
+    try:
+        pct_window = float(pct_raw) if pct_raw is not None else None
+    except (TypeError, ValueError):
+        pct_window = None
+
+    return {"tokens_used": tokens_used, "pct_window": pct_window}
+
+
+def parse_memory_suggestions(contract: dict) -> List[str]:
+    """Parse the ``memory_suggestions`` clause from a contract dict (advisory).
+
+    Returns a list of suggestion strings. Non-string entries are coerced to
+    strings. Returns empty list when the clause is absent or malformed.  The
+    validator never rejects based on this field.
+    """
+    raw = contract.get("memory_suggestions")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        logger.warning("memory_suggestions: expected array, got %s", type(raw).__name__)
+        return []
+    return [str(item) for item in raw if item is not None]
+
+
+def extract_plan_status_from_output(agent_output: str) -> str:
+    """Extract the effective status string from agent output.
+
+    Supports both ``json:contract`` (legacy, ``plan_status`` field) and
+    ``agent_contract_handoff`` (new, ``task_status`` field).  ``task_status``
+    takes precedence when both are present in the same block.
 
     Returns the raw status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT")
     or empty string if not found.
@@ -329,10 +700,7 @@ def extract_plan_status_from_output(agent_output: str) -> str:
         return ""
 
     agent_status = contract.get("agent_status", {}) or {}
-    plan_status = agent_status.get("plan_status", "")
-    if plan_status:
-        return str(plan_status).upper().rstrip(".,;")
-    return ""
+    return _resolve_status(agent_status)
 
 
 def extract_exit_code_from_output(agent_output: str) -> int:

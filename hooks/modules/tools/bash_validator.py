@@ -48,6 +48,7 @@ from ..security.approval_grants import (
     find_pending_for_command,
     generate_nonce,
     last_check_found_expired,
+    match_command_set_grant,
     write_pending_approval,
 )
 from ..security.approval_messages import (
@@ -591,7 +592,30 @@ class BashValidator:
         # Mutative verb detection
         result = detect_mutative_command(command)
         if result.is_mutative:
-            # Check for an active approval grant before blocking.
+            # Check for a DB-backed command_set grant first (M3 path).
+            # Byte-for-byte match per D10: no normalization.
+            cs_match = match_command_set_grant(command, session_id=session_id)
+            if cs_match is not None:
+                cs_approval_id, cs_index = cs_match
+                try:
+                    from gaia.store.writer import mark_command_set_item_consumed
+                    mark_command_set_item_consumed(cs_approval_id, cs_index)
+                except Exception as _cs_err:
+                    logger.warning(
+                        "command_set item consumption failed (non-fatal): %s", _cs_err
+                    )
+                logger.info(
+                    "T3 command allowed via command_set grant: %s "
+                    "(approval_id=%s, index=%d)",
+                    command[:80], cs_approval_id[:12], cs_index,
+                )
+                return BashValidationResult(
+                    allowed=True,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason="Command-set grant matched",
+                )
+
+            # Fall back to filesystem-based approval grant check.
             grant = check_approval_grant(command, session_id=session_id)
             if grant is not None:
                 if grant.confirmed:

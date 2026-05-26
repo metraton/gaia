@@ -189,49 +189,16 @@ def full_devops_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.fixture
-def existing_agent_context(tmp_path: Path) -> Dict[str, Any]:
-    """Create a pre-existing project-context.json with agent-enriched data.
-
-    Simulates a scenario where agents previously populated cluster_details
-    and operational_guidelines.
-    """
-    return {
-        "metadata": {
-            "version": "2.0",
-            "last_updated": "2026-01-01T00:00:00Z",
-            "scan_config": {
-                "staleness_hours": 24,
-                "last_scan": "2026-01-01T00:00:00Z",
-                "scanner_version": "0.1.0",
-            },
-        },
-        "paths": {},
-        "sections": {
-            "cluster_details": {
-                "_source": "agent:cloud-troubleshooter",
-                "cluster_name": "prod-us-central1",
-                "node_count": 5,
-            },
-            "operational_guidelines": {
-                "_source": "agent:developer",
-                "deployment_strategy": "blue-green",
-                "rollback_procedure": "manual",
-            },
-        },
-    }
-
-
 def _make_orchestrator(
     project_root: Path,
     output_path: Path,
     parallel: bool = False,
 ) -> ScanOrchestrator:
-    """Build a ScanOrchestrator with an explicit output path.
+    """Build a ScanOrchestrator for the given project root.
 
     Args:
         project_root: Project root directory.
-        output_path: Path for project-context.json.
+        output_path: Unused -- retained for call-site compatibility.
         parallel: Whether to run scanners in parallel.
 
     Returns:
@@ -239,7 +206,6 @@ def _make_orchestrator(
     """
     config = ScanConfig(
         project_root=project_root,
-        output_path=output_path,
         parallel=parallel,
     )
     registry = ScannerRegistry()
@@ -257,21 +223,22 @@ class TestFullDevOpsScan:
     def test_full_scan_produces_valid_context(
         self, full_devops_project: Path, tmp_path: Path
     ) -> None:
-        """Full scan produces a valid project-context.json with all sections."""
+        """Full scan produces a valid in-memory context with all sections.
+
+        Post-retirement: orchestrator no longer persists project-context.json
+        (gaia.db is the sole persistence layer). The structural contract is
+        now enforced on ScanOutput.context.
+        """
         output_path = tmp_path / "output" / "project-context.json"
         orch = _make_orchestrator(full_devops_project, output_path)
         result = orch.run(project_root=full_devops_project)
 
-        # ScanOutput should be returned
         assert isinstance(result, ScanOutput)
-        # File should be written
-        assert output_path.is_file()
 
-        # Validate JSON structure
-        written = json.loads(output_path.read_text())
-        assert "metadata" in written
-        assert "sections" in written
-        assert written["metadata"]["version"] == "2.0"
+        # Validate in-memory context structure
+        assert "metadata" in result.context
+        assert "sections" in result.context
+        assert result.context["metadata"]["version"] == "2.0"
 
     def test_project_identity_from_package_json(
         self, full_devops_project: Path, tmp_path: Path
@@ -407,31 +374,13 @@ class TestFullDevOpsScan:
         assert "application_architecture" not in sections
         assert "development_standards" not in sections
 
-    def test_agent_enriched_data_preserved(
-        self,
-        full_devops_project: Path,
-        existing_agent_context: Dict[str, Any],
-        tmp_path: Path,
-    ) -> None:
-        """Pre-existing agent-enriched sections (cluster_details) are preserved."""
-        output_path = tmp_path / "output" / "project-context.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write existing context with agent-enriched data
-        output_path.write_text(json.dumps(existing_agent_context, indent=2))
-
-        orch = _make_orchestrator(full_devops_project, output_path)
-        result = orch.run(project_root=full_devops_project)
-
-        sections = result.context["sections"]
-        # Agent-enriched cluster_details should be preserved
-        assert "cluster_details" in sections
-        assert sections["cluster_details"]["cluster_name"] == "prod-us-central1"
-        assert sections["cluster_details"]["node_count"] == 5
-
-        # operational_guidelines should also be preserved
-        assert "operational_guidelines" in sections
-        assert sections["operational_guidelines"]["deployment_strategy"] == "blue-green"
+    # test_agent_enriched_data_preserved DELETED:
+    # Tested the orchestrator's old JSON-merge behavior where pre-existing
+    # agent-enriched sections in project-context.json survived a scan. After
+    # the JSON-writer retirement (task #6) the orchestrator no longer reads
+    # or writes project-context.json -- agent enrichment now flows through
+    # the project_context_contracts table in gaia.db, with merge semantics
+    # tested in tests/tools/test_context_writer.py.
 
     def test_scan_completes_under_10_seconds(
         self, full_devops_project: Path, tmp_path: Path
@@ -463,19 +412,20 @@ class TestFullDevOpsScan:
     def test_json_schema_written_correctly(
         self, full_devops_project: Path, tmp_path: Path
     ) -> None:
-        """project-context.json has correct top-level schema."""
+        """ScanOutput.context has the correct top-level schema.
+
+        Post-retirement: schema validated in-memory; no JSON persistence.
+        """
         output_path = tmp_path / "output" / "project-context.json"
         orch = _make_orchestrator(full_devops_project, output_path)
-        orch.run(project_root=full_devops_project)
+        result = orch.run(project_root=full_devops_project)
 
-        written = json.loads(output_path.read_text())
-        # Top-level keys
-        assert "metadata" in written
-        assert "sections" in written
-        # Metadata fields
-        assert "last_updated" in written["metadata"]
-        assert "scan_config" in written["metadata"]
-        assert "scanner_version" in written["metadata"]["scan_config"]
+        ctx = result.context
+        assert "metadata" in ctx
+        assert "sections" in ctx
+        assert "last_updated" in ctx["metadata"]
+        assert "scan_config" in ctx["metadata"]
+        assert "scanner_version" in ctx["metadata"]["scan_config"]
 
 
 # ===========================================================================
@@ -653,16 +603,17 @@ class TestMinimalProjectScan:
     def test_minimal_project_writes_valid_json(
         self, tmp_path: Path
     ) -> None:
-        """Minimal project writes valid JSON to disk."""
+        """Minimal project produces a valid in-memory context.
+
+        Post-retirement: no JSON persistence; validate ScanOutput.context.
+        """
         (tmp_path / "README.md").write_text("# My Project\n")
         output_path = tmp_path / "output" / "project-context.json"
         orch = _make_orchestrator(tmp_path, output_path)
-        orch.run(project_root=tmp_path)
+        result = orch.run(project_root=tmp_path)
 
-        assert output_path.is_file()
-        written = json.loads(output_path.read_text())
-        assert "metadata" in written
-        assert "sections" in written
+        assert "metadata" in result.context
+        assert "sections" in result.context
 
 
 # ===========================================================================
@@ -735,32 +686,11 @@ class TestIdempotency:
 
         assert result1.context["sections"] == result2.context["sections"]
 
-    def test_agent_enriched_data_preserved_between_scans(
-        self,
-        full_devops_project: Path,
-        existing_agent_context: Dict[str, Any],
-        tmp_path: Path,
-    ) -> None:
-        """Agent-enriched data is preserved across multiple scans."""
-        output_path = tmp_path / "output" / "project-context.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Write existing context with agent-enriched data
-        output_path.write_text(json.dumps(existing_agent_context, indent=2))
-
-        orch = _make_orchestrator(full_devops_project, output_path)
-
-        # Run scan twice
-        result1 = orch.run(project_root=full_devops_project)
-        result2 = orch.run(project_root=full_devops_project)
-
-        # Agent-enriched sections must survive both scans
-        for result in (result1, result2):
-            sections = result.context["sections"]
-            assert "cluster_details" in sections
-            assert sections["cluster_details"]["cluster_name"] == "prod-us-central1"
-            assert "operational_guidelines" in sections
-            assert sections["operational_guidelines"]["deployment_strategy"] == "blue-green"
+    # test_agent_enriched_data_preserved_between_scans DELETED:
+    # Same rationale as test_agent_enriched_data_preserved above. The
+    # cross-scan preservation of agent-enriched contracts is now a property
+    # of project_context_contracts in gaia.db (task #2 context_writer), not
+    # of orchestrator.run().
 
     def test_no_random_ordering_in_output(
         self, full_devops_project: Path, tmp_path: Path
@@ -820,7 +750,6 @@ class TestScannerFailureIsolation:
         """Build an orchestrator with the stack scanner replaced by a failing one."""
         config = ScanConfig(
             project_root=project_root,
-            output_path=output_path,
             parallel=False,
         )
         registry = ScannerRegistry()
