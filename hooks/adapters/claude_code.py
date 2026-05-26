@@ -1051,6 +1051,7 @@ class ClaudeCodeAdapter(HookAdapter):
         """
         from modules.security.approval_grants import (
             activate_cross_session_pending,
+            activate_db_pending_by_prefix,
             activate_grants_for_session,
             activate_pending_approval,
             extract_nonce_from_label,
@@ -1123,6 +1124,7 @@ class ClaudeCodeAdapter(HookAdapter):
                             nonce_prefix, pending_session[:12], session_id[:12],
                             getattr(result.status, "value", str(result.status)),
                         )
+                        return
                     else:
                         logger.warning(
                             "AskUserQuestion nonce-targeted activation failed: "
@@ -1132,16 +1134,37 @@ class ClaudeCodeAdapter(HookAdapter):
                             result.reason,
                         )
                 else:
-                    logger.warning(
+                    # Filesystem pending not found -- try DB lookup (M2 bridge).
+                    # Since M2, REQUESTED writes go to DB only; no pending-{nonce}.json
+                    # is written to the filesystem any more.
+                    logger.info(
                         "AskUserQuestion: nonce prefix %s found in label but no "
-                        "matching pending file -- falling back to session-wide",
+                        "matching pending file -- trying DB lookup (M2 bridge)",
                         nonce_prefix,
                     )
+                    result = activate_db_pending_by_prefix(
+                        nonce_prefix, current_session_id=session_id,
+                    )
+                    if result.success:
+                        logger.info(
+                            "AskUserQuestion DB-bridge activation: prefix=%s status=%s",
+                            nonce_prefix,
+                            getattr(result.status, "value", str(result.status)),
+                        )
+                        return
+                    else:
+                        logger.warning(
+                            "AskUserQuestion DB-bridge activation failed: "
+                            "prefix=%s status=%s reason=%s -- falling back to session-wide",
+                            nonce_prefix,
+                            getattr(result.status, "value", str(result.status)),
+                            result.reason,
+                        )
                     # Fall through to session-wide activation below
                     nonce_prefix = None
 
             if not nonce_prefix:
-                # No nonce in label (or prefix lookup failed) -- fall back to
+                # No nonce in label (or all targeted paths failed) -- fall back to
                 # session-wide activation for backward compatibility
                 pending = get_pending_approvals_for_session(session_id)
                 if not pending:

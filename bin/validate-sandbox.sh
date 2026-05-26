@@ -152,13 +152,37 @@ is_gaia_instance() {
   return 1
 }
 
+is_gaia_repo_root() {
+  # Return 0 (true) if a directory is the root of the Gaia source repo itself.
+  # Detected by the presence of both package.json with name "@jaguilar87/gaia"
+  # and the bin/validate-sandbox.sh script (which only lives in the source tree).
+  local dir="$1"
+  [[ -f "${dir}/package.json" ]] || return 1
+  [[ -f "${dir}/bin/validate-sandbox.sh" ]] || return 1
+  grep -q '"name": "@jaguilar87/gaia"' "${dir}/package.json" 2>/dev/null && return 0
+  return 1
+}
+
 detect_local_workspace() {
   # Priority 1: walk up from cwd looking for .claude/ with a Gaia marker.
   # Preferring cwd means `cd project-X && npm run gaia:install-local`
   # installs into project-X, not whatever comes first in $HOME.
+  #
+  # SAFETY GUARD: skip any directory that is the Gaia source repo itself.
+  # The repo ships a node_modules/@jaguilar87/gaia/ entry (self-referencing
+  # dependency) which trips is_gaia_instance(), causing auto-detect to
+  # resolve to the repo root instead of the intended consumer workspace.
+  # The result is a "PASS" install that wires .claude/hooks -> the repo's
+  # node_modules, not the consumer workspace's node_modules.
   local dir
   dir="$(pwd)"
   while [[ "${dir}" != "/" ]]; do
+    if is_gaia_repo_root "${dir}"; then
+      # This directory is the Gaia source repo. Skip it -- installing here
+      # would wire symlinks into the repo's own node_modules.
+      dir="$(dirname "${dir}")"
+      continue
+    fi
     if [[ -d "${dir}/.claude" ]] && is_gaia_instance "${dir}"; then
       echo "${dir}"
       return 0

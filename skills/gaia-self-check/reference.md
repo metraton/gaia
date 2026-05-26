@@ -773,7 +773,7 @@ hook), the dispatch behavior across the bundle is governed by:
   SendMessage resume". If any step in the bundle emits APPROVAL_REQUEST,
   the resume runs in `default` and the next protected operation
   re-blocks even though the original dispatch was `acceptEdits`.
-- `orchestrator-approval/SKILL.md` -> "Re-dispatch instead of resume".
+- `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume".
   For bundles that span an approval, the orchestrator must re-dispatch
   fresh with the same mode rather than resuming.
 
@@ -850,8 +850,8 @@ construct and present a normal propuesta for the now-unambiguous fix.
 ### Cross-reference
 
 The approval mechanism used here is semantically equivalent to the one
-in `skills/request-approval/SKILL.md` (operation / exact_content /
-scope / risk / rollback fields). The difference is context: `request-
+in `skills/subagent-request-approval/SKILL.md` (operation / exact_content /
+scope / risk / rollback fields). The difference is context: `subagent-request-
 approval` handles hook-blocked Bash commands; this flow handles
 documentation, frontmatter, and pillar fixes. The same informed-consent
 principle applies to both.

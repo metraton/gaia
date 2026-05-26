@@ -60,7 +60,7 @@ Goal -> Mode recomendado:
 
 Regla del borde: si el goal no enumera archivos o patrón concreto, el orchestrator pregunta al usuario antes del dispatch. No adivinar un mode cuando el scope es vago.
 
-Cross-reference: para el checklist pre-dispatch con ejemplos concretos, ver `orchestrator-approval/reference.md` -> "Dispatch mode checklist".
+Cross-reference: para el checklist pre-dispatch con ejemplos concretos, ver `orchestrator-present-approval/reference.md` -> "Dispatch mode checklist".
 
 ## Foreground vs background detail
 
@@ -69,7 +69,7 @@ R4 (en SKILL.md) cubre la regla; aquí el detalle operativo.
 - **Foreground (default)**: el agente puede recibir prompts nativos de CC y emitir `approval_request` mid-task. Cualquier T3 que requiera consentimiento del usuario funciona end-to-end.
 - **Background**: no puede mostrar prompts ni esperar input. Requiere un mode que pre-satisfaga los permisos necesarios (`acceptEdits` para Edit/Write, `bypassPermissions` para Bash mutativo).
 
-Regla de selección: la decisión que realmente moldea el runtime es **dispatch-vs-resume** (ver `orchestrator-approval/SKILL.md` -> "Re-dispatch instead of resume"), porque los SendMessage resumes corren en background literal independientemente de cómo se haya despachado el original.
+Regla de selección: la decisión que realmente moldea el runtime es **dispatch-vs-resume** (ver `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume"), porque los SendMessage resumes corren en background literal independientemente de cómo se haya despachado el original.
 
 **Nota sobre hooks y background:** Los hooks `PreToolUse` son ortogonales al mode -- se invocan independientemente. `bypassPermissions` en background pre-aprueba el bundle de permisos de CC, lo que en la práctica significa que operaciones encadenadas no re-disparan el prompt nativo por operación. Los hooks de Gaia (`_is_protected()`, `mutative_verbs.py`) siguen activos en ambos casos. Ver R2 en SKILL.md.
 

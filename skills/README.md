@@ -34,16 +34,16 @@ Agent starts with all listed skills already in context
 Agent is running and encounters a situation
 requiring a workflow skill (e.g. approval, execution, git-conventions)
         |
-Agent calls Skill tool: Skill("request-approval")
+Agent calls Skill tool: Skill("subagent-request-approval")
         |
-Claude Code reads skills/request-approval/SKILL.md from disk
+Claude Code reads skills/subagent-request-approval/SKILL.md from disk
         |
 Content is injected into the agent's active context window
         |
 Agent follows the newly loaded protocol
 ```
 
-Orchestrator-level skills (`agent-response`, `orchestrator-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation.
+Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation.
 
 ## Qué hay aquí
 
@@ -77,12 +77,15 @@ skills/
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
-├── orchestrator-approval/ # T3 approval presentation for orchestrator
+├── orchestrator-approval/ # DEPRECATED — see orchestrator-present-approval
+├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
 ├── readme-writing/        # How to write READMEs for Gaia component folders
-├── request-approval/      # T3 approval-request workflow (attempt first, emit APPROVAL_REQUEST)
+├── request-approval/      # DEPRECATED — see subagent-request-approval
+├── subagent-request-approval/ # T3 approval-request workflow (attempt first, emit APPROVAL_REQUEST)
 │   ├── reference.md
 │   └── examples.md
+├── agent-approval-protocol/ # Unified approval protocol combining request + present flows
 ├── schedule-task/         # Dispatch parameter extraction and prompt templates
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
@@ -109,17 +112,18 @@ skills/
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
-- `orchestrator-approval` — T3 approval presentation and grant activation
+- `orchestrator-present-approval` — T3 approval presentation and grant activation
 - `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
 
 Workflow skills (on-demand injection, not in any agent frontmatter):
+- `agent-approval-protocol` — unified approval protocol combining request + present flows
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system, `user-invocable: false`
 - `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt, `user-invocable: false`
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline
 - `git-conventions` — Conventional Commits format
 - `pending-approvals` — present and resolve pending approval requests
-- `request-approval` — T3 approval-request workflow
+- `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
 - `schedule-task` — dispatch parameter templates
 - `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
 
@@ -130,8 +134,8 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 | Core | Always via `skills:` frontmatter | agent-protocol, security-tiers |
 | Common | Most agents via `skills:` frontmatter | command-execution, context-updater |
 | Domain | Per-agent via `skills:` frontmatter | terraform-patterns, gaia-patterns |
-| Workflow | On-demand (agent reads from disk) | request-approval, execution, git-conventions |
-| Orchestrator | On-demand via Skill tool | agent-response, orchestrator-approval |
+| Workflow | On-demand (agent reads from disk) | subagent-request-approval, execution, git-conventions |
+| Orchestrator | On-demand via Skill tool | agent-response, orchestrator-present-approval |
 
 **SKILL.md format:**
 

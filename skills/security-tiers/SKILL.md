@@ -54,7 +54,7 @@ When a T3 command is denied with an `approval_id`, the agent must report the
 block back to the orchestrator via the response contract defined in
 `agent-protocol/SKILL.md` -- specifically by emitting `plan_status:
 APPROVAL_REQUEST` with the `approval_id` in `approval_request`. See
-`request-approval/SKILL.md` for the full approval request schema and
+`subagent-request-approval/SKILL.md` for the full approval request schema and
 `agent-protocol/SKILL.md` for the surrounding response envelope.
 
 Conditional commands like `git branch` are safe for listing but T3 with mutative flags (`-D`, `-d`, `-m`). See `reference.md`.
@@ -96,7 +96,7 @@ The `mutative_verbs.py` hook classifies Bash verbs as MUTATIVE and emits an `app
 
 ### R3 -- `mode` does NOT survive a SendMessage resume
 
-The `mode` parameter is per-dispatch of the Agent tool. If a subagent dispatched with `acceptEdits` or `bypassPermissions` emits APPROVAL_REQUEST mid-task, the SendMessage resume runs in `default` -- CC native re-blocks the next protected operation even after the Gaia grant has activated. For multi-step bundles on protected paths, either pack every step into the same turn the dispatch started, or accept that the orchestrator must re-dispatch fresh with the same mode. See `orchestrator-approval/SKILL.md` -> "Re-dispatch instead of resume".
+The `mode` parameter is per-dispatch of the Agent tool. If a subagent dispatched with `acceptEdits` or `bypassPermissions` emits APPROVAL_REQUEST mid-task, the SendMessage resume runs in `default` -- CC native re-blocks the next protected operation even after the Gaia grant has activated. For multi-step bundles on protected paths, either pack every step into the same turn the dispatch started, or accept that the orchestrator must re-dispatch fresh with the same mode. See `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume".
 
 ### R4 -- `run_in_background` default is foreground
 
@@ -113,4 +113,4 @@ The `mode` parameter is per-dispatch of the Agent tool. If a subagent dispatched
 
 For the goal->mode decision tree (Spanish), foreground/background examples, and notes on hooks under background, see `reference.md` -> "Mode decision tree" and "Foreground vs background detail".
 
-For the dispatch-vs-resume operational rule, see `orchestrator-approval/SKILL.md` -> "Re-dispatch instead of resume".
+For the dispatch-vs-resume operational rule, see `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume".

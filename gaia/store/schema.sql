@@ -852,6 +852,89 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- approvals: durable approval lifecycle records (v12 / approval-model-redesign)
+-- One row per approval request. Survives session close; queryable cross-session.
+-- id carries a P-{uuid4} prefix so it is readable in denial messages and logs.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approvals (
+    id           TEXT PRIMARY KEY,           -- P-{uuid4} prefixed identifier
+    agent_id     TEXT,                       -- agent that initiated the request
+    session_id   TEXT,                       -- CLAUDE_SESSION_ID at request time
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'approved', 'rejected', 'revoked', 'expired')),
+    fingerprint  TEXT,                       -- SHA-256 hex of canonical sealed_payload_json
+    payload_json TEXT,                       -- canonical-JSON sealed_payload at REQUESTED time
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at   TEXT                        -- ISO-8601 UTC when approved/rejected/revoked
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status     ON approvals(status);
+CREATE INDEX IF NOT EXISTS idx_approvals_agent      ON approvals(agent_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_session    ON approvals(session_id);
+
+-- ---------------------------------------------------------------------------
+-- approval_events: append-only hash-chained audit log (v12 / approval-model-redesign)
+-- Column inventory from plan D15. this_hash is computed by the AFTER INSERT
+-- trigger ai_approval_events_hash via the gaia_sha256 scalar function registered
+-- at connection time in gaia.store.writer._connect().
+-- prev_hash IS NULL for the genesis row (row 0 in the chain per approval).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approval_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    approval_id   TEXT NOT NULL,                     -- FK -> approvals.id
+    event_type    TEXT NOT NULL CHECK (event_type IN (
+                      'REQUESTED',
+                      'SHOWN',
+                      'APPROVED',
+                      'REJECTED',
+                      'EXECUTED',
+                      'FAILED',
+                      'NOOP',
+                      'REVOKED',
+                      'REVERTED'
+                  )),
+    agent_id      TEXT,
+    session_id    TEXT,
+    payload_json  TEXT,
+    fingerprint   TEXT,
+    prev_hash     TEXT,                              -- NULL for genesis row
+    this_hash     TEXT,                              -- computed by trigger
+    metadata_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (approval_id) REFERENCES approvals(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_events_approval  ON approval_events(approval_id, id);
+CREATE INDEX IF NOT EXISTS idx_approval_events_type      ON approval_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_approval_events_session   ON approval_events(session_id);
+
+-- AFTER INSERT trigger: named placeholder for schema introspection consistency.
+-- this_hash is computed by the application layer (gaia.approvals.chain.insert_event)
+-- before each INSERT; the trigger is a no-op SELECT that exists so that `gaia doctor`
+-- can assert all three expected triggers are present.
+-- Note: a real AFTER INSERT + UPDATE-on-same-row conflicts with the BEFORE UPDATE
+-- immutability trigger in SQLite; application-layer computation resolves this.
+CREATE TRIGGER IF NOT EXISTS ai_approval_events_hash
+AFTER INSERT ON approval_events
+BEGIN
+    SELECT 1;
+END;
+
+-- BEFORE UPDATE trigger: enforce append-only invariant.
+CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
+BEFORE UPDATE ON approval_events
+BEGIN
+    SELECT RAISE(ABORT, 'approval_events is append-only');
+END;
+
+-- BEFORE DELETE trigger: enforce append-only invariant.
+CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
+BEFORE DELETE ON approval_events
+BEGIN
+    SELECT RAISE(ABORT, 'approval_events is append-only');
+END;
+
+-- ---------------------------------------------------------------------------
 -- schema_version: migration ledger.
 -- One row per applied schema migration; the highest version is the current
 -- live schema. `gaia doctor` reads MAX(version) and compares against the

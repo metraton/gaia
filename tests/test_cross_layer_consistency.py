@@ -414,9 +414,9 @@ class TestSkillsCrossReferences:
 
     def test_approval_skill_references_approval_id_concept(self):
         """Approval-request skill must reference the approval_id mechanism."""
-        content = (SKILLS_DIR / "request-approval" / "SKILL.md").read_text().lower()
+        content = (SKILLS_DIR / "subagent-request-approval" / "SKILL.md").read_text().lower()
         assert "approval_id" in content, (
-            "request-approval skill must mention the approval_id mechanism"
+            "subagent-request-approval skill must mention the approval_id mechanism"
         )
 
     def test_identity_references_approval_workflow(self):
@@ -428,7 +428,7 @@ class TestSkillsCrossReferences:
         """
         identity_path = GAIA_OPS_ROOT / "agents" / "gaia-orchestrator.md"
         identity_content = identity_path.read_text().lower()
-        approval_skill_path = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
+        approval_skill_path = SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
         combined = identity_content
         if approval_skill_path.exists():
             combined += "\n" + approval_skill_path.read_text().lower()
