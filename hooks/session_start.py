@@ -9,7 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).parent))
+_hooks_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(_hooks_dir))
+_pkg_root = str(_hooks_dir.parent)
+if _pkg_root not in sys.path:
+    sys.path.insert(0, _pkg_root)
 from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
 ensure_workspace_hooks_link()
 

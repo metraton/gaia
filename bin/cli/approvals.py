@@ -859,6 +859,657 @@ def _print_error(msg: str, args=None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Approval store import helper (lazy, for test monkeypatching)
+# ---------------------------------------------------------------------------
+
+def _import_approval_store():
+    """Import gaia.approvals.store lazily to allow mocking in tests."""
+    from gaia.approvals import store
+    return store
+
+
+def _import_approval_display():
+    """Import gaia.approvals.display lazily."""
+    from gaia.approvals import display
+    return display
+
+
+def _import_approval_revert():
+    """Import gaia.approvals.revert lazily."""
+    from gaia.approvals import revert as revert_mod
+    return revert_mod
+
+
+# ---------------------------------------------------------------------------
+# T3.1: gaia approvals pending -- shortcut for list --status=pending
+# ---------------------------------------------------------------------------
+
+def cmd_pending(args) -> int:
+    """Show pending approvals from the new approvals table.
+
+    With ``--all-sessions``, returns pending approvals from all sessions
+    (cross-session recovery, D9). Without it, returns pending for the
+    current session when SESSION_ID env var is set, or all sessions.
+
+    Exits 0 on success, 1 on error.
+    """
+    all_sessions = getattr(args, "all_sessions", False)
+    session_id = getattr(args, "session", None)
+    output_json = getattr(args, "json", False)
+
+    # If no session_id provided, default to all_sessions behavior.
+    if session_id is None and not all_sessions:
+        # Try to detect session from environment (mirrors hook behavior).
+        session_id = os.environ.get("CLAUDE_SESSION_ID") or None
+
+    try:
+        store = _import_approval_store()
+        rows = store.list_pending(
+            all_sessions=all_sessions,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        _print_error(f"Failed to query pending approvals: {exc}", args)
+        return 1
+
+    if output_json:
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+
+    display = _import_approval_display()
+    display.print_approvals_table(rows)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# T3.2: gaia approvals show-v2 <id> -- detail from new approvals table
+# (Registered as 'show' overlay -- checks new DB first, falls back to old)
+# T3.2: gaia approvals history <id> -- event chain for one approval
+# ---------------------------------------------------------------------------
+
+def _resolve_approval_id(raw_id: str) -> str:
+    """Normalize a raw approval_id input.
+
+    Accepts:
+      - Full P-{uuid4hex} form: returned as-is.
+      - Bare hex (no P- prefix): prefixed with 'P-'.
+      - P-XXXX short form: returned as-is for prefix search downstream.
+    """
+    stripped = raw_id.strip()
+    if stripped.upper().startswith("P-"):
+        return stripped
+    # Try to detect if it's a bare hex string missing the P- prefix.
+    return stripped
+
+
+def cmd_show_v2(args) -> int:
+    """Show full detail for an approval from the new approvals table.
+
+    Looks up by full P-{uuid4} id or by prefix match. Falls back to the
+    old filesystem-based show (cmd_show) when not found in the new table.
+
+    Exits 0 on success, 1 when not found.
+    """
+    raw_id = _resolve_approval_id(args.approval_id)
+    output_json = getattr(args, "json", False)
+
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(raw_id)
+        if approval is None:
+            # Fall back to old show command.
+            return cmd_show(args)
+
+        events = store.get_history(raw_id)
+    except Exception as exc:
+        # Try old path on error.
+        try:
+            return cmd_show(args)
+        except Exception:
+            _print_error(f"Failed to load approval: {exc}", args)
+            return 1
+
+    if output_json:
+        print(json.dumps({"approval": approval, "events": events}, indent=2, default=str))
+        return 0
+
+    display = _import_approval_display()
+    display.print_approval_detail(approval, events)
+    return 0
+
+
+def cmd_history_single(args) -> int:
+    """Show the event chain for a single approval (by id).
+
+    Exits 0 on success, 1 when not found.
+    """
+    raw_id = _resolve_approval_id(args.approval_id)
+    output_json = getattr(args, "json", False)
+
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(raw_id)
+        if approval is None:
+            _print_error(f"No approval found for id: {raw_id}", args)
+            return 1
+        events = store.get_history(raw_id)
+    except Exception as exc:
+        _print_error(f"Failed to load events: {exc}", args)
+        return 1
+
+    if output_json:
+        print(json.dumps({"approval_id": raw_id, "events": events}, indent=2, default=str))
+        return 0
+
+    print(f"Event chain for approval {raw_id}:")
+    display = _import_approval_display()
+    display.print_events_table(events)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# T3.2: gaia approvals revoke-v2 <id> -- revoke using new approvals table
+# ---------------------------------------------------------------------------
+
+def cmd_revoke_v2(args) -> int:
+    """Revoke a pending approval from the new approvals table.
+
+    Inserts a REVOKED event and updates status to 'revoked'. Requires
+    the approval to be in 'pending' status.
+
+    With ``--yes``, skips the interactive confirmation prompt.
+    Exits 0 on success, 1 on error.
+    """
+    raw_id = _resolve_approval_id(args.approval_id)
+    skip_confirm = getattr(args, "yes", False)
+
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(raw_id)
+    except Exception as exc:
+        _print_error(f"Failed to look up approval: {exc}", args)
+        return 1
+
+    if approval is None:
+        # Fall back to old revoke command if not found in new table.
+        return cmd_revoke(args)
+
+    current_status = approval.get("status", "?")
+    if current_status != "pending":
+        _print_error(
+            f"Cannot revoke approval {raw_id}: status is {current_status!r} (must be 'pending')",
+            args,
+        )
+        return 1
+
+    if not skip_confirm:
+        display = _import_approval_display()
+        print(f"Revoke approval {raw_id}?")
+        print(f"  Status  : {current_status}")
+        op = ""
+        payload_json = approval.get("payload_json")
+        if payload_json:
+            try:
+                payload = json.loads(payload_json)
+                op = payload.get("operation") or payload.get("exact_content") or ""
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if op:
+            print(f"  Command : {op}")
+        try:
+            confirm = input("Confirm revoke? [y/N] ").strip().lower()
+        except EOFError:
+            confirm = "n"
+        if confirm not in ("y", "yes"):
+            print("Revoke cancelled.")
+            return 0
+
+    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
+    try:
+        store = _import_approval_store()
+        store.revoke(raw_id, session_id)
+    except ValueError as exc:
+        _print_error(str(exc), args)
+        return 1
+    except Exception as exc:
+        _print_error(f"Revoke failed: {exc}", args)
+        return 1
+
+    print(f"Revoked {raw_id}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# T3.3: gaia approvals approve <id> -- cross-session grant
+# ---------------------------------------------------------------------------
+
+def cmd_approve(args) -> int:
+    """Approve a pending approval (cross-session).
+
+    A user in any session can approve a pending approval created in any
+    other session on the same machine. Inserts an APPROVED event and
+    updates status to 'approved'.
+
+    With ``--yes``, skips the interactive confirmation prompt.
+    Exits 0 on success, 1 on error.
+    """
+    raw_id = _resolve_approval_id(args.approval_id)
+    skip_confirm = getattr(args, "yes", False)
+    output_json = getattr(args, "json", False)
+
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(raw_id)
+    except Exception as exc:
+        _print_error(f"Failed to look up approval: {exc}", args)
+        return 1
+
+    if approval is None:
+        _print_error(f"No approval found for id: {raw_id}", args)
+        return 1
+
+    current_status = approval.get("status", "?")
+    if current_status != "pending":
+        _print_error(
+            f"Cannot approve approval {raw_id}: status is {current_status!r} (must be 'pending')",
+            args,
+        )
+        return 1
+
+    if not skip_confirm:
+        print(f"Approve {raw_id}?")
+        payload_json = approval.get("payload_json")
+        if payload_json:
+            try:
+                payload = json.loads(payload_json)
+                op = payload.get("exact_content") or payload.get("operation") or ""
+                if op:
+                    print(f"  Command : {op}")
+                risk = payload.get("risk_level")
+                if risk:
+                    print(f"  Risk    : {risk}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        try:
+            confirm = input("Confirm approve? [y/N] ").strip().lower()
+        except EOFError:
+            confirm = "n"
+        if confirm not in ("y", "yes"):
+            print("Approval cancelled.")
+            return 0
+
+    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
+    try:
+        store = _import_approval_store()
+        store.approve(raw_id, approver_session=session_id)
+    except ValueError as exc:
+        _print_error(str(exc), args)
+        return 1
+    except Exception as exc:
+        _print_error(f"Approve failed: {exc}", args)
+        return 1
+
+    if output_json:
+        print(json.dumps({"status": "approved", "approval_id": raw_id}))
+    else:
+        print(f"Approved {raw_id}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# T3.4: gaia approvals history [--limit N] -- temporal view
+# ---------------------------------------------------------------------------
+
+def cmd_history(args) -> int:
+    """Show a temporal history of approvals across all sessions.
+
+    Without a positional id, shows the most recent N approvals regardless
+    of status (pending, approved, rejected, revoked). Use --limit to
+    control how many rows to show.
+
+    With a positional id, shows the event chain for that specific approval
+    (delegates to cmd_history_single).
+
+    Exits 0 always.
+    """
+    approval_id = getattr(args, "approval_id", None)
+    if approval_id:
+        return cmd_history_single(args)
+
+    limit = getattr(args, "limit", 50)
+    status_filter = getattr(args, "status", None)
+    output_json = getattr(args, "json", False)
+
+    try:
+        store = _import_approval_store()
+        rows = store.list_all(status=status_filter, limit=limit)
+    except Exception as exc:
+        _print_error(f"Failed to query history: {exc}", args)
+        return 1
+
+    if output_json:
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+
+    display = _import_approval_display()
+    display.print_history_table(rows)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# T3.5: gaia approvals revert <id> -- interactive inverse-command UX (D14)
+# ---------------------------------------------------------------------------
+
+def cmd_revert(args) -> int:
+    """Revert an approval by executing inverse commands for its EXECUTED events.
+
+    Per D14:
+    - Interactive by default: shows numbered list of candidate inverse commands,
+      user selects by number, comma-separated, 'all', or 'none'.
+    - ``--yes`` suppresses per-event confirmation.
+    - ``--file ids.txt`` reads event_ids from a file (one per line) for batch mode.
+    - ``--dry-run`` shows the inverse commands without executing them.
+
+    Exits 0 on success or when no reversible events exist.
+    Exits 1 on error.
+    """
+    raw_id = _resolve_approval_id(args.approval_id)
+    skip_confirm = getattr(args, "yes", False)
+    dry_run = getattr(args, "dry_run", False)
+    batch_file = getattr(args, "file", None)
+    output_json = getattr(args, "json", False)
+
+    # Resolve the approval and its EXECUTED events.
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(raw_id)
+        if approval is None:
+            _print_error(f"No approval found for id: {raw_id}", args)
+            return 1
+    except Exception as exc:
+        _print_error(f"Failed to look up approval: {exc}", args)
+        return 1
+
+    # Derive inverse commands.
+    try:
+        revert_mod = _import_approval_revert()
+        store = _import_approval_store()
+        con = store._open_db()
+        try:
+            inverses = revert_mod.derive_inverses_for_approval(raw_id, con)
+        finally:
+            con.close()
+    except Exception as exc:
+        _print_error(f"Failed to derive inverse commands: {exc}", args)
+        return 1
+
+    if not inverses:
+        print(f"No EXECUTED events found for approval {raw_id}. Nothing to revert.")
+        return 0
+
+    # Display the candidate inverse commands.
+    print(f"\nCandidate inverse commands for approval {raw_id}:")
+    print("-" * 60)
+    for i, ic in enumerate(inverses):
+        reversible_marker = "" if ic.reversible else " [NOT REVERSIBLE]"
+        inverse_display = ic.inverse_command if ic.inverse_command else "N/A"
+        print(f"  [{i}] Original : {ic.original_command}")
+        print(f"      Inverse  : {inverse_display}{reversible_marker}")
+        print(f"      Notes    : {ic.notes}")
+        print()
+
+    # Filter to only reversible ones.
+    reversible = [ic for ic in inverses if ic.reversible and ic.inverse_command]
+    if not reversible:
+        print("None of the events have derivable inverse commands.")
+        return 0
+
+    if dry_run:
+        print("[dry-run] Would execute the following inverse commands:")
+        for ic in reversible:
+            print(f"  {ic.inverse_command}")
+        return 0
+
+    # Batch file mode: read event_ids to revert.
+    selected = reversible
+    if batch_file:
+        try:
+            with open(batch_file) as fh:
+                event_ids_str = {line.strip() for line in fh if line.strip()}
+        except OSError as exc:
+            _print_error(f"Cannot read batch file {batch_file!r}: {exc}", args)
+            return 1
+        event_ids = set()
+        for eid in event_ids_str:
+            try:
+                event_ids.add(int(eid))
+            except ValueError:
+                pass
+        selected = [ic for ic in reversible if ic.event_id in event_ids]
+        if not selected:
+            print(f"No matching reversible events found in batch file.")
+            return 0
+    elif not skip_confirm:
+        # Interactive selection.
+        print("Select events to revert (comma-separated numbers, 'all', or 'none'):")
+        try:
+            choice = input("> ").strip().lower()
+        except EOFError:
+            choice = "none"
+
+        if choice == "none" or choice == "":
+            print("Revert cancelled.")
+            return 0
+        elif choice == "all":
+            selected = reversible
+        else:
+            try:
+                indices = [int(x.strip()) for x in choice.split(",") if x.strip()]
+                selected = [reversible[i] for i in indices if 0 <= i < len(reversible)]
+            except (ValueError, IndexError):
+                _print_error("Invalid selection. Use numbers, 'all', or 'none'.", args)
+                return 1
+
+    if not selected:
+        print("No events selected. Revert cancelled.")
+        return 0
+
+    # Final confirmation.
+    if not skip_confirm:
+        print("\nWill execute:")
+        for ic in selected:
+            print(f"  {ic.inverse_command}")
+        try:
+            confirm = input("\nProceed? [y/N] ").strip().lower()
+        except EOFError:
+            confirm = "n"
+        if confirm not in ("y", "yes"):
+            print("Revert cancelled.")
+            return 0
+
+    # Execute inverse commands.
+    import subprocess
+    results = []
+    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
+    all_ok = True
+
+    for ic in selected:
+        print(f"Executing: {ic.inverse_command}")
+        try:
+            proc = subprocess.run(
+                ic.inverse_command,
+                shell=True,
+                capture_output=True,
+                text=True,
+            )
+            ok = proc.returncode == 0
+            results.append({
+                "event_id": ic.event_id,
+                "command": ic.inverse_command,
+                "exit_code": proc.returncode,
+                "stdout": proc.stdout.strip(),
+                "stderr": proc.stderr.strip(),
+            })
+            if ok:
+                print(f"  OK (exit 0)")
+                # Record REVERTED event in the chain.
+                try:
+                    store = _import_approval_store()
+                    import json as _json
+                    metadata = _json.dumps({
+                        "original_event_id": ic.event_id,
+                        "inverse_command": ic.inverse_command,
+                    })
+                    store.record_event(
+                        raw_id,
+                        "REVERTED",
+                        session_id=session_id,
+                        metadata_json=metadata,
+                    )
+                except Exception:
+                    pass  # Chain write failure is non-fatal for the revert operation.
+            else:
+                print(f"  FAILED (exit {proc.returncode})")
+                if proc.stderr:
+                    print(f"  stderr: {proc.stderr.strip()}")
+                all_ok = False
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+            results.append({
+                "event_id": ic.event_id,
+                "command": ic.inverse_command,
+                "exit_code": -1,
+                "error": str(exc),
+            })
+            all_ok = False
+
+    if output_json:
+        print(json.dumps({"results": results, "all_ok": all_ok}))
+
+    return 0 if all_ok else 1
+
+
+# ---------------------------------------------------------------------------
+# T3.5: gaia approvals replay <id> [--dry-run]
+# ---------------------------------------------------------------------------
+
+def cmd_replay(args) -> int:
+    """Replay the commands from an executed approval.
+
+    Re-presents the sealed_payload of an approval so the user can confirm
+    and re-execute the same commands. Validates fingerprint before showing.
+
+    With ``--dry-run``, prints the commands that would be re-executed without
+    prompting or running them.
+
+    Exits 0 on success.
+    Exits 1 when the approval is not found or has no EXECUTED payload.
+    """
+    raw_id = _resolve_approval_id(args.approval_id)
+    dry_run = getattr(args, "dry_run", False)
+    skip_confirm = getattr(args, "yes", False)
+    output_json = getattr(args, "json", False)
+
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(raw_id)
+        if approval is None:
+            _print_error(f"No approval found for id: {raw_id}", args)
+            return 1
+    except Exception as exc:
+        _print_error(f"Failed to look up approval: {exc}", args)
+        return 1
+
+    # Retrieve and validate the payload.
+    try:
+        store = _import_approval_store()
+        payload = store.get_executed_payload(raw_id)
+    except Exception as exc:
+        _print_error(f"Failed to retrieve payload: {exc}", args)
+        return 1
+
+    if payload is None:
+        _print_error(
+            f"No executed payload found for approval {raw_id}. "
+            "Cannot replay an approval that was never executed.",
+            args,
+        )
+        return 1
+
+    # Validate fingerprint against REQUESTED event.
+    try:
+        from gaia.approvals.chain import verify_fingerprint
+        import json as _json
+        canon_json = _json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        store = _import_approval_store()
+        con = store._open_db()
+        try:
+            verify_fingerprint(raw_id, canon_json, con)
+        finally:
+            con.close()
+    except Exception as exc:
+        # Non-fatal for replay -- warn but continue.
+        print(f"Warning: fingerprint validation failed: {exc}", file=sys.stderr)
+
+    commands = payload.get("commands") or []
+    exact_content = payload.get("exact_content") or ""
+    if not commands and exact_content:
+        commands = [l.strip() for l in exact_content.splitlines() if l.strip()]
+
+    if output_json:
+        print(json.dumps({"approval_id": raw_id, "payload": payload, "commands": commands}))
+        return 0
+
+    print(f"\nReplay approval {raw_id}")
+    print("-" * 60)
+    op = payload.get("operation") or ""
+    if op:
+        print(f"  Operation : {op}")
+    risk = payload.get("risk_level") or ""
+    if risk:
+        print(f"  Risk      : {risk}")
+    if commands:
+        print(f"  Commands  ({len(commands)}):")
+        for i, cmd in enumerate(commands):
+            print(f"    [{i}] {cmd}")
+    else:
+        print("  (No commands recorded)")
+
+    if dry_run:
+        print("\n[dry-run] -- commands not executed.")
+        return 0
+
+    if not skip_confirm:
+        try:
+            confirm = input("\nRe-execute these commands? [y/N] ").strip().lower()
+        except EOFError:
+            confirm = "n"
+        if confirm not in ("y", "yes"):
+            print("Replay cancelled.")
+            return 0
+
+    # Execute the commands sequentially.
+    import subprocess
+    all_ok = True
+    for cmd in commands:
+        print(f"Executing: {cmd}")
+        try:
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if proc.returncode == 0:
+                print(f"  OK")
+            else:
+                print(f"  FAILED (exit {proc.returncode})")
+                if proc.stderr:
+                    print(f"  stderr: {proc.stderr.strip()}")
+                all_ok = False
+        except Exception as exc:
+            print(f"  ERROR: {exc}")
+            all_ok = False
+
+    return 0 if all_ok else 1
+
+
+# ---------------------------------------------------------------------------
 # Plugin registration (called by bin/gaia dispatcher)
 # ---------------------------------------------------------------------------
 
@@ -867,13 +1518,13 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "approvals",
         help="Manage T3 pending approvals",
-        description="View, reject, and clean up Gaia approval requests.",
+        description="View, approve, reject, revert, and replay Gaia approval requests.",
     )
     sub = p.add_subparsers(dest="approvals_cmd", metavar="SUBCOMMAND")
     sub.required = True
 
-    # list
-    p_list = sub.add_parser("list", help="List pending approvals")
+    # list (legacy + new DB path via pending)
+    p_list = sub.add_parser("list", help="List pending approvals (legacy + DB)")
     p_list.add_argument("--json", action="store_true", help="JSON output")
     p_list.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
     p_list.add_argument(
@@ -884,28 +1535,156 @@ def register(subparsers) -> None:
     )
     p_list.set_defaults(func=cmd_list)
 
-    # show
-    p_show = sub.add_parser("show", help="Show detail for a specific approval")
-    p_show.add_argument("approval_id", metavar="APPROVAL_ID", help="P-XXXX identifier, nonce prefix, or DB approval_id")
-    p_show.add_argument("--json", action="store_true", help="JSON output")
-    p_show.set_defaults(func=cmd_show)
+    # pending (T3.1) -- shortcut for new DB pending
+    p_pending = sub.add_parser(
+        "pending",
+        help="List pending approvals from the new approvals table",
+        description=(
+            "Show pending T3 approvals from the DB-backed approvals table.\n\n"
+            "Use --all-sessions to see pending approvals from all sessions\n"
+            "(cross-session recovery -- local machine only)."
+        ),
+    )
+    p_pending.add_argument("--json", action="store_true", help="JSON output")
+    p_pending.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
+    p_pending.add_argument(
+        "--all-sessions",
+        action="store_true",
+        dest="all_sessions",
+        help="Show pending from all sessions (cross-session recovery)",
+    )
+    p_pending.set_defaults(func=cmd_pending)
 
-    # revoke
+    # show (T3.2) -- now checks new DB first
+    p_show = sub.add_parser(
+        "show",
+        help="Show detail for a specific approval",
+        description=(
+            "Show full detail for an approval including its event chain.\n\n"
+            "Checks the new approvals table first, then falls back to the\n"
+            "legacy filesystem-based pending lookup."
+        ),
+    )
+    p_show.add_argument("approval_id", metavar="APPROVAL_ID", help="P-XXXX identifier or full DB approval_id")
+    p_show.add_argument("--json", action="store_true", help="JSON output")
+    p_show.set_defaults(func=cmd_show_v2)
+
+    # revoke (T3.2) -- now checks new DB first
     p_revoke = sub.add_parser(
         "revoke",
-        help="Revoke an active command_set grant by approval_id",
+        help="Revoke a pending approval",
         description=(
-            "Revoke a COMMAND_SET grant identified by its approval_id.\n\n"
-            "After revocation, any unconsumed commands in the command_set will\n"
-            "require fresh approval from the user."
+            "Revoke a pending approval from the new approvals table.\n\n"
+            "Inserts a REVOKED event and updates status. For legacy\n"
+            "command_set grants, falls back to the old revoke path."
         ),
     )
     p_revoke.add_argument(
         "approval_id",
         metavar="APPROVAL_ID",
-        help="Full approval_id (32-char hex) of the grant to revoke",
+        help="Full approval_id (P-{uuid4hex}) of the approval to revoke",
     )
-    p_revoke.set_defaults(func=cmd_revoke)
+    p_revoke.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    p_revoke.set_defaults(func=cmd_revoke_v2)
+
+    # approve (T3.3) -- cross-session grant
+    p_approve = sub.add_parser(
+        "approve",
+        help="Approve a pending approval (cross-session)",
+        description=(
+            "Approve a pending T3 approval from any session.\n\n"
+            "Inserts an APPROVED event and updates status to 'approved'.\n"
+            "This is the cross-session path: session S2 can approve a\n"
+            "pending approval created in session S1."
+        ),
+    )
+    p_approve.add_argument(
+        "approval_id",
+        metavar="APPROVAL_ID",
+        help="Full approval_id (P-{uuid4hex}) of the approval to approve",
+    )
+    p_approve.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    p_approve.add_argument("--json", action="store_true", help="JSON output")
+    p_approve.set_defaults(func=cmd_approve)
+
+    # history (T3.4) -- temporal view or per-approval chain
+    p_history = sub.add_parser(
+        "history",
+        help="Show temporal history of approvals or event chain for one approval",
+        description=(
+            "Without APPROVAL_ID: show the N most recent approvals across all\n"
+            "sessions (any status). Use --limit to control how many.\n\n"
+            "With APPROVAL_ID: show the full event chain for that approval."
+        ),
+    )
+    p_history.add_argument(
+        "approval_id",
+        metavar="APPROVAL_ID",
+        nargs="?",
+        help="Optional P-{uuid4hex} to show events for one approval",
+    )
+    p_history.add_argument(
+        "--limit",
+        metavar="N",
+        type=int,
+        default=50,
+        help="Maximum number of approvals to show (default: 50)",
+    )
+    p_history.add_argument(
+        "--status",
+        metavar="STATUS",
+        default=None,
+        help="Filter by status (pending, approved, rejected, revoked)",
+    )
+    p_history.add_argument("--json", action="store_true", help="JSON output")
+    p_history.set_defaults(func=cmd_history)
+
+    # revert (T3.5) -- interactive inverse-command UX
+    p_revert = sub.add_parser(
+        "revert",
+        help="Revert an approval by executing inverse commands (interactive)",
+        description=(
+            "Per D14: interactive inverse-command UX for reverting executed approvals.\n\n"
+            "Shows candidate inverse commands, prompts for selection, then executes\n"
+            "the selected inverses sequentially. Uses --yes to skip per-event prompts.\n"
+            "Use --dry-run to preview without executing."
+        ),
+    )
+    p_revert.add_argument(
+        "approval_id",
+        metavar="APPROVAL_ID",
+        help="P-{uuid4hex} of the approval to revert",
+    )
+    p_revert.add_argument("--yes", action="store_true", help="Skip confirmation prompts")
+    p_revert.add_argument("--dry-run", action="store_true", dest="dry_run", help="Preview only")
+    p_revert.add_argument(
+        "--file",
+        metavar="PATH",
+        default=None,
+        help="File of event_ids to revert (one per line) for batch mode",
+    )
+    p_revert.add_argument("--json", action="store_true", help="JSON output for results")
+    p_revert.set_defaults(func=cmd_revert)
+
+    # replay (T3.5) -- re-run commands from an executed approval
+    p_replay = sub.add_parser(
+        "replay",
+        help="Replay commands from an executed approval",
+        description=(
+            "Re-present and optionally re-execute the commands from an executed\n"
+            "approval. Validates the fingerprint against the REQUESTED event before\n"
+            "showing. Use --dry-run to print commands without executing."
+        ),
+    )
+    p_replay.add_argument(
+        "approval_id",
+        metavar="APPROVAL_ID",
+        help="P-{uuid4hex} of the approval to replay",
+    )
+    p_replay.add_argument("--dry-run", action="store_true", dest="dry_run", help="Preview only")
+    p_replay.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    p_replay.add_argument("--json", action="store_true", help="JSON output")
+    p_replay.set_defaults(func=cmd_replay)
 
     # reject
     p_reject = sub.add_parser(
@@ -989,10 +1768,21 @@ def cmd_approvals(args) -> int:
 
 def _approvals_default(args) -> int:
     """Default handler when no sub-subcommand is given."""
-    print("Usage: gaia approvals {list,show,revoke,reject,reject-all,clean,stats} [options]")
-    print("       gaia approvals revoke APPROVAL_ID              # revoke a command_set grant")
-    print("       gaia approvals reject --all [--reason TEXT]   # bulk reject (flag form)")
-    print("       gaia approvals reject-all [--dry-run] [--workspace PATH]  # bulk reject (subcommand)")
+    print("Usage: gaia approvals SUBCOMMAND [options]")
+    print("")
+    print("  pending [--all-sessions]          -- list pending approvals (new DB)")
+    print("  show APPROVAL_ID                  -- full detail with event chain")
+    print("  approve APPROVAL_ID               -- cross-session approve")
+    print("  revoke APPROVAL_ID                -- revoke a pending approval")
+    print("  history [APPROVAL_ID] [--limit N] -- temporal history or per-approval chain")
+    print("  revert APPROVAL_ID [--dry-run]    -- interactive inverse-command revert")
+    print("  replay APPROVAL_ID [--dry-run]    -- replay an executed approval")
+    print("  list [--session S] [--orphans-only]  -- list (legacy + DB grants)")
+    print("  reject NONCE [--all]              -- reject pending (legacy)")
+    print("  reject-all [--dry-run]            -- bulk reject (legacy)")
+    print("  clean [--dry-run]                 -- remove expired approvals")
+    print("  stats                             -- approval system statistics")
+    print("")
     print("Run 'gaia approvals --help' for more information.")
     return 0
 
@@ -1018,14 +1808,49 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     )
     p_list.set_defaults(func=cmd_list)
 
+    p_pending = subparsers.add_parser("pending", help="List pending approvals (new DB)")
+    p_pending.add_argument("--json", action="store_true")
+    p_pending.add_argument("--session", metavar="SESSION_ID")
+    p_pending.add_argument("--all-sessions", action="store_true", dest="all_sessions")
+    p_pending.set_defaults(func=cmd_pending)
+
     p_show = subparsers.add_parser("show", help="Show approval detail")
     p_show.add_argument("approval_id", metavar="APPROVAL_ID")
     p_show.add_argument("--json", action="store_true")
-    p_show.set_defaults(func=cmd_show)
+    p_show.set_defaults(func=cmd_show_v2)
 
-    p_revoke = subparsers.add_parser("revoke", help="Revoke an active command_set grant")
+    p_approve = subparsers.add_parser("approve", help="Approve a pending approval")
+    p_approve.add_argument("approval_id", metavar="APPROVAL_ID")
+    p_approve.add_argument("--yes", action="store_true")
+    p_approve.add_argument("--json", action="store_true")
+    p_approve.set_defaults(func=cmd_approve)
+
+    p_revoke = subparsers.add_parser("revoke", help="Revoke a pending approval")
     p_revoke.add_argument("approval_id", metavar="APPROVAL_ID")
-    p_revoke.set_defaults(func=cmd_revoke)
+    p_revoke.add_argument("--yes", action="store_true")
+    p_revoke.set_defaults(func=cmd_revoke_v2)
+
+    p_history = subparsers.add_parser("history", help="Show approval history")
+    p_history.add_argument("approval_id", metavar="APPROVAL_ID", nargs="?")
+    p_history.add_argument("--limit", metavar="N", type=int, default=50)
+    p_history.add_argument("--status", metavar="STATUS", default=None)
+    p_history.add_argument("--json", action="store_true")
+    p_history.set_defaults(func=cmd_history)
+
+    p_revert = subparsers.add_parser("revert", help="Revert an approval (interactive)")
+    p_revert.add_argument("approval_id", metavar="APPROVAL_ID")
+    p_revert.add_argument("--yes", action="store_true")
+    p_revert.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_revert.add_argument("--file", metavar="PATH", default=None)
+    p_revert.add_argument("--json", action="store_true")
+    p_revert.set_defaults(func=cmd_revert)
+
+    p_replay = subparsers.add_parser("replay", help="Replay an executed approval")
+    p_replay.add_argument("approval_id", metavar="APPROVAL_ID")
+    p_replay.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_replay.add_argument("--yes", action="store_true")
+    p_replay.add_argument("--json", action="store_true")
+    p_replay.set_defaults(func=cmd_replay)
 
     p_reject = subparsers.add_parser("reject", help="Reject a pending approval (or all with --all)")
     p_reject.add_argument("nonce", metavar="NONCE", nargs="?")

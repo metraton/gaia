@@ -14,6 +14,9 @@ status and approval_id mechanism:
 8. Subagent retry reuses existing pending nonce
 """
 
+import hashlib
+import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -41,6 +44,94 @@ from modules.security.approval_grants import (
     write_pending_approval,
 )
 from modules.tools.bash_validator import BashValidator, validate_bash_command
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers -- DB-side approval testing (T2.1 cutover)
+# ---------------------------------------------------------------------------
+
+def _sha256(value: str | None) -> str:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _make_v12_schema_on(con: sqlite3.Connection) -> None:
+    """Apply the v12 approval schema to an existing SQLite connection.
+
+    Mirrors the helper in tests/hooks/test_approval_events.py.
+    Kept local here to avoid cross-module import coupling.
+    """
+    con.execute("PRAGMA foreign_keys = ON")
+    con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS approvals (
+            id           TEXT PRIMARY KEY,
+            agent_id     TEXT,
+            session_id   TEXT,
+            status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
+            fingerprint  TEXT,
+            payload_json TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            decided_at   TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS approval_events (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_id   TEXT NOT NULL,
+            event_type    TEXT NOT NULL CHECK (event_type IN (
+                              'REQUESTED','SHOWN','APPROVED','REJECTED',
+                              'EXECUTED','FAILED','NOOP','REVOKED','REVERTED'
+                          )),
+            agent_id      TEXT,
+            session_id    TEXT,
+            payload_json  TEXT,
+            fingerprint   TEXT,
+            prev_hash     TEXT,
+            this_hash     TEXT,
+            metadata_json TEXT,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY (approval_id) REFERENCES approvals(id)
+        );
+
+        CREATE TRIGGER IF NOT EXISTS ai_approval_events_hash
+        AFTER INSERT ON approval_events
+        BEGIN
+            SELECT 1;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
+        BEFORE UPDATE ON approval_events
+        BEGIN
+            SELECT RAISE(ABORT, 'approval_events is append-only');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
+        BEFORE DELETE ON approval_events
+        BEGIN
+            SELECT RAISE(ABORT, 'approval_events is append-only');
+        END;
+    """)
+
+
+@pytest.fixture()
+def approvals_test_db(tmp_path):
+    """File-backed SQLite DB with v12 approval schema.
+
+    Returns a (db_path, open_connection) tuple.  The db_path is used by the
+    monkeypatched _open_db() factory so that multiple connections to the same
+    file share durable state across commit/close cycles.  The open_connection
+    is a long-lived handle for direct assertion queries.
+
+    Using a file (not :memory:) is required because store._open_db() is called
+    inside insert_requested() with owned=True, meaning it will commit and close
+    the connection.  A :memory: DB is destroyed on close; a file survives it.
+    """
+    db_path = tmp_path / "approvals_v12_test.db"
+    con = sqlite3.connect(str(db_path))
+    _make_v12_schema_on(con)
+    con.commit()
+    yield db_path, con
+    con.close()
 
 
 @pytest.fixture(autouse=True)
@@ -87,8 +178,37 @@ class TestSubagentMutativeDeny:
             f"Expected approval_id in deny reason, got: {reason}"
         )
 
-    def test_subagent_deny_creates_pending_approval(self):
-        """Subagent deny should create a pending approval file."""
+    def test_subagent_deny_creates_pending_approval(self, approvals_test_db, monkeypatch):
+        """Subagent deny should create a DB pending approval row.
+
+        T2.1 cutover: write_pending_approval (filesystem) was replaced by
+        store.insert_requested (DB).  This test now asserts the DB row exists
+        instead of the legacy filesystem file.
+
+        M2 partial migration: DB-side asserted here.  Activation-side
+        (activate_grants_for_session) is still filesystem until T-activation
+        migration.
+        """
+        import gaia.approvals.store as astore
+
+        db_path, assert_con = approvals_test_db
+
+        # Patch store._open_db so insert_requested writes to our temp file DB.
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
+        )
+        # Also patch _find_pending_in_db inside bash_validator so the retry
+        # check uses the same temp DB.
+        _orig_get_pending = astore.get_pending
+
+        def _patched_get_pending(session_id=None, all_sessions=False, con=None):
+            if con is None:
+                con = sqlite3.connect(str(db_path))
+            return _orig_get_pending(session_id=session_id, all_sessions=all_sessions, con=con)
+
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
+
         result = validate_bash_command(
             "git push origin main",
             is_subagent=True,
@@ -96,9 +216,19 @@ class TestSubagentMutativeDeny:
         )
 
         assert not result.allowed
-        pending = get_pending_approvals_for_session("test-cycle-session")
-        assert len(pending) >= 1, "Expected at least one pending approval"
-        assert pending[0]["danger_verb"] == "push"
+
+        # Assert via DB: expect a pending row for this session.
+        pending = astore.get_pending(session_id="test-cycle-session", con=assert_con)
+        assert len(pending) >= 1, "Expected at least one pending approval in DB"
+
+        # The sealed_payload contains exact_content == the command.
+        payload = json.loads(pending[0]["payload_json"])
+        assert "push" in payload.get("operation", ""), (
+            f"Expected 'push' in operation field, got: {payload.get('operation')}"
+        )
+        assert payload.get("exact_content") == "git push origin main", (
+            f"Expected exact_content='git push origin main', got: {payload.get('exact_content')}"
+        )
 
 
 class TestOrchestratorMutativeAsk:
@@ -159,17 +289,42 @@ class TestElicitationResultActivatesGrant:
 class TestFullApprovalCycle:
     """Test 4: Full cycle -- deny, approve, retry succeeds (passthrough)."""
 
-    def test_deny_activate_retry_succeeds(self):
+    def test_deny_activate_retry_succeeds(self, approvals_test_db, monkeypatch):
         """Complete cycle: subagent denied, approval activated, retry passthrough.
 
         With grant passthrough, once a grant is activated (even unconfirmed),
         the validator returns allowed=True immediately. PostToolUse will
         confirm and consume the grant after execution.
+
+        M2 partial migration: DB-side deny (insert_requested) is asserted via
+        the patched store.  The activation-side (activate_grants_for_session)
+        is still filesystem-based; a filesystem pending is written manually so
+        the activation step works without requiring the activation migration.
+        Activation-side DB migration is tracked separately.
         """
+        import re
+        import gaia.approvals.store as astore
+
         command = "terraform apply"
         session_id = "test-cycle-session"
+        db_path, assert_con = approvals_test_db
 
-        # Step 1: Subagent command is denied with approval_id
+        # Patch store._open_db so insert_requested writes to our temp file DB.
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
+        )
+
+        _orig_get_pending = astore.get_pending
+
+        def _patched_get_pending(session_id=None, all_sessions=False, con=None):
+            if con is None:
+                con = sqlite3.connect(str(db_path))
+            return _orig_get_pending(session_id=session_id, all_sessions=all_sessions, con=con)
+
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
+
+        # Step 1: Subagent command is denied with approval_id (written to DB).
         result1 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
@@ -177,19 +332,38 @@ class TestFullApprovalCycle:
         hook_output = result1.block_response["hookSpecificOutput"]
         assert hook_output["permissionDecision"] == "deny"
 
-        # Extract approval_id from the deny reason
+        # Extract approval_id from the deny reason.
         reason = hook_output["permissionDecisionReason"]
-        import re
-        match = re.search(r"approval_id:\s*(\w+)", reason)
+        match = re.search(r"approval_id:\s*([\w-]+)", reason)
         assert match, f"Could not extract approval_id from: {reason}"
         approval_id = match.group(1)
 
-        # Step 2: Activate grants for the session (simulates ElicitationResult)
+        # DB-side assertion: confirm the pending row exists in the DB.
+        pending_rows = astore.get_pending(session_id=session_id, con=assert_con)
+        assert len(pending_rows) >= 1, "DB pending row must exist after deny"
+        assert pending_rows[0]["id"] == approval_id, (
+            f"DB approval_id mismatch: stored={pending_rows[0]['id']}, deny={approval_id}"
+        )
+
+        # Step 2: Activation-side bridge (filesystem pending for activate_grants_for_session).
+        # activate_grants_for_session still reads filesystem (pre-migration).
+        # Write a filesystem pending so it can activate a grant for this session.
+        # M2 partial migration: this bridge will be removed when the activation
+        # side is migrated to DB in a future task.
+        fs_nonce = generate_nonce()
+        write_pending_approval(
+            nonce=fs_nonce,
+            command=command,
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
         results = activate_grants_for_session(session_id)
         assert len(results) >= 1
         assert results[0].success, f"Activation failed: {results[0].reason}"
 
-        # Step 3: Retry the same command -- passthrough (grant exists)
+        # Step 3: Retry the same command -- passthrough (filesystem grant exists).
         result2 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
@@ -644,27 +818,67 @@ class TestConditionalActivation:
 class TestConsumeGrantAtSubagentStop:
     """Test 12: grants live for the full subagent session, consumed at SubagentStop."""
 
-    def test_full_cycle_grant_consumed_at_subagent_stop(self):
+    def test_full_cycle_grant_consumed_at_subagent_stop(self, approvals_test_db, monkeypatch):
         """After deny -> activate -> passthrough -> confirm -> SubagentStop consume.
 
         Grants survive PostToolUse (only confirmed there) and are consumed
         when the subagent session ends via consume_session_grants().
+
+        M2 partial migration: DB-side deny (insert_requested) is asserted via
+        the patched store.  The activation-side (activate_grants_for_session)
+        is still filesystem-based; a filesystem pending is written manually so
+        the activation step works without requiring the activation migration.
+        Activation-side DB migration is tracked separately.
         """
+        import gaia.approvals.store as astore
+
         command = "terraform apply"
         session_id = "test-cycle-session"
+        db_path, assert_con = approvals_test_db
 
-        # Step 1: Subagent command denied
+        # Patch store._open_db so insert_requested writes to our temp file DB.
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
+        )
+
+        _orig_get_pending = astore.get_pending
+
+        def _patched_get_pending(session_id=None, all_sessions=False, con=None):
+            if con is None:
+                con = sqlite3.connect(str(db_path))
+            return _orig_get_pending(session_id=session_id, all_sessions=all_sessions, con=con)
+
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
+
+        # Step 1: Subagent command denied (writes DB pending row).
         result1 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
         assert not result1.allowed
 
-        # Step 2: Activate grants
+        # DB-side assertion: pending row present.
+        pending_rows = astore.get_pending(session_id=session_id, con=assert_con)
+        assert len(pending_rows) >= 1, "DB pending row must exist after deny"
+
+        # Step 2: Activation-side bridge (filesystem pending for activate_grants_for_session).
+        # activate_grants_for_session still reads filesystem (pre-migration).
+        # M2 partial migration: this bridge will be removed when the activation
+        # side is migrated to DB in a future task.
+        fs_nonce = generate_nonce()
+        write_pending_approval(
+            nonce=fs_nonce,
+            command=command,
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+            session_id=session_id,
+        )
+
         results = activate_grants_for_session(session_id)
         assert len(results) >= 1
         assert results[0].success
 
-        # Step 3: Retry - passthrough (active grant)
+        # Step 3: Retry - passthrough (active filesystem grant)
         result2 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )

@@ -18,7 +18,7 @@ each represents a different kind of decision point for the user.
 Agent returns json:contract
   |- COMPLETE            -> Summarize key_outputs (3-5 bullets)
   |- NEEDS_INPUT         -> AskUserQuestion, then SendMessage answer back
-  |- APPROVAL_REQUEST    -> Load Skill("orchestrator-approval") if approval_id present,
+  |- APPROVAL_REQUEST    -> Load Skill("orchestrator-present-approval") if approval_id present,
   |                         otherwise AskUserQuestion (execute/modify/cancel),
   |                         then SendMessage to resume the same agent
   |- BLOCKED             -> Present open_gaps via AskUserQuestion
@@ -33,7 +33,7 @@ Agent returns json:contract
 |---|---|---|
 | `COMPLETE` | Summarize `key_outputs` in 3-5 bullets. Mention `cross_layer_impacts` and `open_gaps` if non-empty. Say "ask for details" if `verbatim_outputs` exists. | Direct response |
 | `NEEDS_INPUT` | Present the agent's question with options | `AskUserQuestion` -> `SendMessage` |
-| `APPROVAL_REQUEST` | If `approval_request.approval_id` is present: load `Skill("orchestrator-approval")`. Otherwise: present plan with options execute / modify / cancel. On execute or modify: resume the SAME agent via SendMessage -- it already holds full context from its investigation. | `AskUserQuestion` -> `SendMessage` |
+| `APPROVAL_REQUEST` | If `approval_request.approval_id` is present: load `Skill("orchestrator-present-approval")`. Otherwise: present plan with options execute / modify / cancel. On execute or modify: resume the SAME agent via SendMessage -- it already holds full context from its investigation. | `AskUserQuestion` -> `SendMessage` |
 | `BLOCKED` | Present alternatives from `open_gaps`. If user provides direction, dispatch a new agent addressing the blocker. If user accepts the limitation, close as incomplete and move on. | `AskUserQuestion` |
 | `IN_PROGRESS` | Agent was interrupted, let it continue | `SendMessage` |
 

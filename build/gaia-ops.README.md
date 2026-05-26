@@ -51,7 +51,7 @@ Inside Claude Code, you can invoke the orchestrator directly and let it dispatch
 
 **Agents** (8): `gaia-orchestrator`, `gaia-operator`, `gaia-system`, `gaia-planner`, `developer`, `cloud-troubleshooter`, `gitops-operator`, `terraform-architect`
 
-**Skills** (shared library): investigation, security-tiers, command-execution, agent-protocol, gaia-planner, brief-spec, terraform-patterns, gitops-patterns, developer-patterns, fast-queries, request-approval, execution, orchestrator-approval, readme-writing, skill-creation, context-updater, memory, and more.
+**Skills** (shared library): investigation, security-tiers, command-execution, agent-protocol, gaia-planner, brief-spec, terraform-patterns, gitops-patterns, developer-patterns, fast-queries, subagent-request-approval, execution, orchestrator-present-approval, agent-approval-protocol, readme-writing, skill-creation, context-updater, memory, and more.
 
 **Hooks** (10 lifecycle events): `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart`, `SubagentStart`, `SubagentStop`, `Stop`, `TaskCompleted`, `PreCompact`, `PostCompact`. The pre-tool-use pipeline enforces command classification (T0-T3) and the nonce-based approval flow.
 

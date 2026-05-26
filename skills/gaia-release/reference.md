@@ -15,6 +15,18 @@ npm run gaia:install-local
 ```
 The harness detects the workspace by walking up from `cwd` for a `.claude/` with a Gaia instance marker, falling back to `$HOME/ws/me/` if present.
 
+**Important -- always pass `--workspace` when invoking from inside the gaia repo.**
+The harness auto-detect skips the gaia repo root itself (guarded by `is_gaia_repo_root()` in `validate-sandbox.sh`), but the safest and most explicit invocation is:
+```
+cd /home/jorge/ws/me/gaia
+npm pack
+bash bin/validate-sandbox.sh \
+  --tarball ./jaguilar87-gaia-*.tgz \
+  --target local \
+  --workspace /home/jorge/ws/me
+```
+This bypasses auto-detect entirely and guarantees the install lands in the correct consumer workspace regardless of cwd ancestry.
+
 **external** (install into a different workspace):
 ```
 cd /home/jorge/ws/me/gaia
@@ -101,6 +113,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix. 
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| Install reports PASS, `~/.gaia/gaia.db` migrated, but `.claude/hooks` symlink still points to old rc version after restart | `detect_local_workspace()` matched the gaia repo itself (which has `node_modules/@jaguilar87/gaia/` as a self-referencing dep) instead of the consumer workspace. Symlinks got wired to the repo's `node_modules`, not the consumer workspace's. | Always pass `--workspace /home/jorge/ws/me` explicitly. The harness now guards against this with `is_gaia_repo_root()` but explicit `--workspace` is the safest path. Verify with `readlink /home/jorge/ws/me/.claude/hooks` -- it must resolve to `../node_modules/@jaguilar87/gaia/hooks` relative to the workspace, not the repo. |
 | `.claude/` not created after `npm install` | Bootstrap script not shipped, or bootstrap exited non-zero | `cat ~/.gaia/last-install-error.json`. Re-install with `npm install @jaguilar87/gaia@latest`. If persists, file a bug. |
 | `gaia doctor` walks up to user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --workspace <path>` or `gaia scan --fresh`. |
 | `mode: security` when it should be `ops` | `plugin-registry.json` not created with `name: gaia-ops` -- bootstrap failed silently in an older build | Check `~/.gaia/last-install-error.json`. Re-install with current rc. |
@@ -109,7 +122,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix. 
 | `Permission denied` invoking `session_end_hook.py`, `pre_compact.py`, etc. | Exec bit lost on cross-platform checkout | Update to `>= rc.4` (`b45304a` switched the invoker to `python3 <script>`, so exec bit no longer matters). |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired | Re-install. If persists, file a bug. |
 | Bash command unexpectedly blocked despite looking innocuous | Bash tokenization bug in `mutative_verbs.py` (pre-Round-2) | Update to `>= rc.4` post-Round-2 (`fd47a74` fundamental tokenization fix). |
-| Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. For batch operations, the agent should emit `approval_request.batch_scope: "verb_family"`. See `orchestrator-approval/SKILL.md` -> Rule 1. |
+| Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. For batch operations, the agent should emit `approval_request.batch_scope: "verb_family"`. See `orchestrator-present-approval/SKILL.md` -> Rule 1. |
 
 ## Schema Migration Protocol
 

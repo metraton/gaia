@@ -921,6 +921,15 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
     If a valid grant exists that matches the command, the command should
     be allowed through.
 
+    Primary path (DB): check_db_semantic_grant() in gaia.store.writer is
+    consulted first.  When a DB row is found it is wrapped as an ApprovalGrant
+    with confirmed=True so downstream consumers see the same interface.
+
+    Fallback path (filesystem): the legacy grant-{session}-*.json files are
+    scanned when no DB row is found.  This path is DEPRECATED -- it remains
+    for backward compatibility with grants created before the DB cutover and
+    will be removed in a future migration.
+
     Args:
         command: The shell command to check.
         session_id: Session ID for grant scoping (defaults to env var).
@@ -933,6 +942,98 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
 
     if not session_id:
         session_id = _get_session_id()
+
+    # ------------------------------------------------------------------ #
+    # DB-primary path (Brief 71 CHECK-side cutover)
+    # ------------------------------------------------------------------ #
+    try:
+        from gaia.store.writer import check_db_semantic_grant
+        db_row = check_db_semantic_grant(command, session_id=session_id)
+        if db_row is not None:
+            # Reconstruct an ApprovalGrant from DB row so callers see the
+            # same interface.  The row stores the scope_signature in
+            # command_set_json under the key 'scope_signature'.
+            import json as _j
+            row_data = _j.loads(db_row.get("command_set_json") or "{}")
+            sig_dict = row_data.get("scope_signature")
+            grant = ApprovalGrant(
+                session_id=db_row.get("session_id", session_id),
+                approved_verbs=[],
+                approved_scope=row_data.get("command", command),
+                scope_type=SCOPE_SEMANTIC_SIGNATURE,
+                scope_signature=sig_dict,
+                granted_at=0.0,  # TTL enforced by DB expires_at; not re-checked here
+                ttl_minutes=0,   # 0 = no TTL (already filtered by check_db_semantic_grant)
+                used=False,
+                confirmed=True,  # DB grants are always user-approved
+                multi_use=False,
+            )
+            # Attach the approval_id so bash_validator can consume it.
+            grant._db_approval_id = db_row.get("approval_id")
+            logger.info(
+                "Approval grant matched (DB path): command='%s', approval_id=%s",
+                command[:80], (db_row.get("approval_id") or "?")[:16],
+            )
+            return grant
+    except Exception as _db_err:
+        logger.debug(
+            "check_approval_grant: DB path unavailable (%s), falling through to filesystem",
+            _db_err,
+        )
+
+    # ------------------------------------------------------------------ #
+    # DEPRECATED filesystem fallback
+    # Retained for grants created before the DB cutover.
+    #
+    # Security guard: before returning a filesystem grant, verify that
+    # the DB does NOT already have a CONSUMED grant for this command.
+    # If the DB shows the grant was consumed (e.g. by bash_validator in a
+    # prior call), the filesystem grant must NOT be returned -- it is a
+    # stale copy that would bypass replay protection.
+    # ------------------------------------------------------------------ #
+
+    # Check DB for a CONSUMED grant matching this command (replay guard).
+    try:
+        from gaia.store.writer import check_db_semantic_grant as _chk_consumed
+        import gaia.store.writer as _sw
+        # We need to check consumed grants, not just pending ones.
+        # Query approval_grants directly for a CONSUMED row matching signature.
+        from datetime import datetime, timezone as _tz
+        _now_iso_val = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            from ..security.approval_scopes import (
+                ApprovalSignature as _AS,
+                matches_approval_signature as _match,
+            )
+            _con = _sw._connect()
+            try:
+                _rows = _con.execute(
+                    "SELECT command_set_json FROM approval_grants "
+                    "WHERE scope='SCOPE_SEMANTIC_SIGNATURE' AND status='CONSUMED' "
+                    "AND session_id=? ORDER BY created_at DESC LIMIT 50",
+                    (session_id,),
+                ).fetchall()
+                for _r in _rows:
+                    try:
+                        _gd = json.loads(_r[0] or "{}")
+                        _sd = _gd.get("scope_signature")
+                        if not _sd:
+                            continue
+                        _sig = _AS.from_dict(_sd)
+                        if _match(_sig, command):
+                            logger.info(
+                                "Filesystem fallback suppressed: DB shows grant already "
+                                "CONSUMED for command='%s'", command[:80],
+                            )
+                            return None
+                    except Exception:
+                        continue
+            finally:
+                _con.close()
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     try:
         grants_dir = _get_grants_dir()
@@ -963,7 +1064,8 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
                 # Check if command matches the explicit scope signature
                 if grant.matches_command(command):
                     logger.info(
-                        "Approval grant matched: command='%s', scope='%s', type=%s",
+                        "Approval grant matched (filesystem fallback): "
+                        "command='%s', scope='%s', type=%s",
                         command[:80], grant.approved_scope, grant.scope_type,
                     )
                     return grant
@@ -1572,6 +1674,285 @@ def find_pending_for_file(
             continue
 
     return None
+
+
+def activate_db_pending_by_prefix(
+    nonce_prefix: str,
+    current_session_id: Optional[str] = None,
+    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+) -> ApprovalActivationResult:
+    """Activate a DB-stored pending approval by its nonce prefix.
+
+    Called when ``load_pending_by_nonce_prefix()`` returns None (because M2
+    migrated REQUESTED writes to DB only -- no filesystem pending file is
+    written any more).  This function bridges the gap:
+
+      1. Looks up the approval row in the DB using ``id LIKE 'P-<prefix>%'``
+         with ``status='pending'``.
+      2. Writes SHOWN + APPROVED events via ``gaia.approvals.store``.
+      3. Creates a filesystem grant file so that ``check_approval_grant()``
+         (which still reads the filesystem) can find it on the subagent retry.
+
+    Cross-session semantics: the DB approval was created under the subagent's
+    session.  The filesystem grant is created under ``current_session_id`` so
+    that the re-dispatched subagent (which shares or sees the same session)
+    finds the grant file.
+
+    Args:
+        nonce_prefix: First 8 hex chars extracted from the ``[P-xxx]`` label
+            in the AskUserQuestion answer.
+        current_session_id: Session doing the activation (orchestrator or
+            resumed subagent).  Defaults to ``_get_session_id()``.
+        ttl_minutes: TTL for the created filesystem grant.
+
+    Returns:
+        ``ApprovalActivationResult`` with success=True and a grant_path when
+        the activation succeeded; success=False otherwise.
+    """
+    if current_session_id is None:
+        current_session_id = _get_session_id()
+
+    try:
+        # Step 1: Find the DB pending approval by prefix.
+        from gaia.approvals.store import get_pending, record_event, approve, get_by_id
+        import json as _json
+
+        # Query all pending approvals and match by prefix (cross-session --
+        # use all_sessions=True because the approval was created by the
+        # subagent whose session may differ from the orchestrator's).
+        all_pending = get_pending(all_sessions=True)
+        matched_row = None
+        for row in all_pending:
+            row_id = row.get("id", "")
+            # approval_id format: P-{uuid4_hex} -- prefix follows "P-"
+            if row_id.startswith(f"P-{nonce_prefix}"):
+                matched_row = row
+                break
+
+        if matched_row is None:
+            logger.info(
+                "activate_db_pending_by_prefix: no DB pending found for prefix %s",
+                nonce_prefix,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_NOT_FOUND,
+                reason=f"No DB pending approval found for nonce prefix {nonce_prefix!r}.",
+            )
+
+        approval_id = matched_row["id"]
+        payload_json_str = matched_row.get("payload_json")
+        originating_session = matched_row.get("session_id", "")
+        agent_id = matched_row.get("agent_id")
+
+        # Step 2: Parse payload to get the exact command.
+        if not payload_json_str:
+            logger.warning(
+                "activate_db_pending_by_prefix: approval %s has no payload_json",
+                approval_id,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_PENDING,
+                reason="DB pending approval is missing payload_json.",
+            )
+
+        try:
+            payload = _json.loads(payload_json_str)
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "activate_db_pending_by_prefix: could not parse payload_json for %s: %s",
+                approval_id, exc,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_PENDING,
+                reason="DB pending approval has invalid payload_json.",
+            )
+
+        command = payload.get("exact_content") or payload.get("commands", [None])[0] or ""
+        if not command:
+            logger.warning(
+                "activate_db_pending_by_prefix: no command found in payload for %s",
+                approval_id,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_PENDING,
+                reason="Could not extract command from DB pending approval payload.",
+            )
+
+        # Step 3: Write SHOWN + APPROVED events and flip status in DB.
+        try:
+            record_event(
+                approval_id,
+                "SHOWN",
+                agent_id=agent_id,
+                session_id=current_session_id,
+            )
+            approve(
+                approval_id,
+                approver_session=current_session_id,
+                agent_id=agent_id,
+            )
+            logger.info(
+                "activate_db_pending_by_prefix: DB transition complete for %s "
+                "(SHOWN + APPROVED, status=approved)",
+                approval_id,
+            )
+        except ValueError as ve:
+            # transition() raises ValueError when status != 'pending' (e.g. already approved).
+            logger.warning(
+                "activate_db_pending_by_prefix: DB transition failed for %s: %s "
+                "(approval may have been processed already)",
+                approval_id, ve,
+            )
+            # If the approval is already approved, we can still create the
+            # filesystem grant if it doesn't exist yet -- don't abort.
+            current_row = get_by_id(approval_id)
+            if current_row and current_row.get("status") != "approved":
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"DB transition failed: {ve}",
+                )
+
+        # Step 4: Rebuild approval signature from the command so the
+        # filesystem grant has a valid scope_signature for check_approval_grant().
+        from .approval_scopes import build_approval_signature, SCOPE_SEMANTIC_SIGNATURE
+
+        # Extract verb from payload for signature building.
+        operation_str = payload.get("operation", "")
+        danger_verb = ""
+        danger_category = "MUTATIVE"
+        # The operation field is typically "{CATEGORY} command intercepted: {verb}"
+        if "intercepted:" in operation_str:
+            parts = operation_str.split("intercepted:")
+            if len(parts) == 2:
+                left = parts[0].strip()
+                danger_verb = parts[1].strip()
+                danger_category = left.split()[0] if left.split() else "MUTATIVE"
+
+        signature = build_approval_signature(
+            command,
+            scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            danger_verb=danger_verb,
+            danger_category=danger_category,
+        )
+        if signature is None:
+            logger.warning(
+                "activate_db_pending_by_prefix: could not build signature for "
+                "command='%s' -- using command string as fallback verb",
+                command[:80],
+            )
+            # Fallback: build a minimal signature using the first token as verb.
+            first_token = command.split()[0] if command.strip() else "unknown"
+            signature = build_approval_signature(
+                command,
+                scope_type=SCOPE_SEMANTIC_SIGNATURE,
+                danger_verb=first_token,
+                danger_category=danger_category,
+            )
+        if signature is None:
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_INVALID_SIGNATURE,
+                reason="Could not build approval signature for DB-pending command.",
+            )
+
+        verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else ["write"])
+
+        # Step 5a: Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants DB.
+        # This is the DB-primary path (CHECK-side cutover, Brief 71 FASE 2).
+        # The row is keyed by approval_id so check_db_semantic_grant() can find it
+        # cross-session without relying on filesystem files.
+        db_grant_inserted = False
+        try:
+            from gaia.store.writer import insert_semantic_grant
+            result_sg = insert_semantic_grant(
+                approval_id=approval_id,
+                command=command,
+                scope_signature=signature.to_dict(),
+                agent_id=agent_id,
+                session_id=current_session_id,
+                ttl_minutes=ttl_minutes,
+            )
+            if result_sg.get("status") == "applied":
+                db_grant_inserted = True
+                logger.info(
+                    "activate_db_pending_by_prefix: DB semantic grant inserted: "
+                    "approval_id=%s, session=%s",
+                    approval_id[:16], current_session_id[:12],
+                )
+            else:
+                logger.warning(
+                    "activate_db_pending_by_prefix: DB semantic grant insert failed "
+                    "(non-fatal, falling back to filesystem): %s",
+                    result_sg,
+                )
+        except Exception as _sg_err:
+            logger.warning(
+                "activate_db_pending_by_prefix: DB semantic grant insert error "
+                "(non-fatal, falling back to filesystem): %s",
+                _sg_err,
+            )
+
+        # Step 5b: Create filesystem grant under current_session_id.
+        # DEPRECATED: check_approval_grant() now prefers the DB path (Step 5a).
+        # The filesystem grant is retained as a fallback for any legacy consumers
+        # that still read filesystem directly.  It will be removed in a future
+        # migration once the DB path is stable in production.
+        grant = ApprovalGrant(
+            session_id=current_session_id,
+            approved_verbs=verbs,
+            approved_scope=command,
+            scope_type=signature.scope_type,
+            scope_signature=signature.to_dict(),
+            granted_at=time.time(),
+            ttl_minutes=ttl_minutes,
+            confirmed=True,  # user already approved via AskUserQuestion
+        )
+
+        grants_dir = _get_grants_dir()
+        nonce_suffix = approval_id.replace("P-", "")[:8]
+        grant_file = grants_dir / (
+            f"grant-{current_session_id}-{int(time.time() * 1000)}-{nonce_suffix}.json"
+        )
+        grant_file.write_text(json.dumps(asdict(grant), indent=2))
+
+        logger.info(
+            "activate_db_pending_by_prefix: %s grant created: "
+            "approval_id=%s, prefix=%s, originating_session=%s, "
+            "current_session=%s, command='%s', grant=%s",
+            "DB+filesystem" if db_grant_inserted else "filesystem-only",
+            approval_id[:16], nonce_prefix,
+            (originating_session or "")[:12],
+            current_session_id[:12],
+            command[:80],
+            grant_file.name,
+        )
+        return ApprovalActivationResult(
+            success=True,
+            status=ACTIVATION_ACTIVATED,
+            reason=(
+                "DB pending approval activated (SHOWN + APPROVED written, "
+                "DB semantic grant inserted, filesystem grant created)."
+                if db_grant_inserted
+                else "DB pending approval activated (SHOWN + APPROVED written, filesystem grant created)."
+            ),
+            grant_path=grant_file,
+        )
+
+    except Exception as exc:
+        logger.error(
+            "activate_db_pending_by_prefix: unexpected error for prefix %s: %s",
+            nonce_prefix, exc, exc_info=True,
+        )
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_ERROR,
+            reason=f"Unexpected error activating DB pending: {exc}",
+        )
 
 
 def activate_grants_for_session(

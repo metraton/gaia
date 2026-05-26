@@ -77,7 +77,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `gws-setup/` | Technique | On-demand |
 | `investigation/` | Technique | Injected |
 | `memory/` | Technique | Injected (gaia-operator) |
-| `orchestrator-approval/` | Discipline | Injected (orchestrator) |
+| `orchestrator-present-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
 | `terraform-patterns/` | Domain | Injected (terraform-architect) |

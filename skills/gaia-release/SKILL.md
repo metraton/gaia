@@ -57,3 +57,4 @@ Pre-publish, publish, and post-publish steps -- plus the schema migration protoc
 - **Stale dist/** -- forgetting `npm run build:plugins` before pack means validating old code.
 - **Missing restart** -- the process caches skills, hooks, and agents at startup; mode switches and fresh installs require restarting `claude`.
 - **Ignoring `~/.gaia/last-install-error.json`** -- when postinstall fails silently, this is the marker that says so. Treat its presence as a hard failure regardless of what `gaia doctor` reports.
+- **Relying on auto-detect when cwd is inside the gaia repo** -- the repo has a self-referencing `node_modules/@jaguilar87/gaia/` entry that can trick the workspace detector. Always pass `--workspace /home/jorge/ws/me` explicitly when running installs from within the gaia repo. Verify with `readlink /home/jorge/ws/me/.claude/hooks` post-install -- it must point to the consumer workspace's `node_modules`, not the repo's.

@@ -17,7 +17,11 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+_hooks_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(_hooks_dir))
+_pkg_root = str(_hooks_dir.parent)
+if _pkg_root not in sys.path:
+    sys.path.insert(0, _pkg_root)
 
 from modules.core.paths import get_logs_dir
 from modules.core.stdin import has_stdin_data
@@ -81,11 +85,18 @@ def _activate_grants(session_id: str, response: str = "") -> None:
     only the specific grant identified by that nonce is activated.  When no
     nonce is present (legacy approvals that predate nonce labeling) the
     function falls back to session-wide activation for backward compatibility.
+
+    Since M2, REQUESTED writes go to DB only (no filesystem pending file).
+    When ``load_pending_by_nonce_prefix()`` returns None (filesystem miss),
+    ``activate_db_pending_by_prefix()`` is tried as a DB fallback.  This
+    bridges the M2 partial migration: REQUESTED in DB, SHOWN+APPROVED written
+    to DB, filesystem grant created for ``check_approval_grant()`` to find.
     """
     from modules.security.approval_grants import (
         activate_grants_for_session,
         activate_pending_approval,
         activate_cross_session_pending,
+        activate_db_pending_by_prefix,
         extract_nonce_from_label,
         load_pending_by_nonce_prefix,
         get_pending_approvals_for_session,
@@ -120,11 +131,32 @@ def _activate_grants(session_id: str, response: str = "") -> None:
             )
             return
         else:
-            logger.warning(
+            # Filesystem pending not found -- try DB lookup (M2 bridge).
+            # Since M2, REQUESTED writes go to DB only; no pending-{nonce}.json
+            # is written to the filesystem any more.
+            logger.info(
                 "ElicitationResult: nonce prefix %s not found in pending files, "
-                "falling back to session-wide activation",
+                "trying DB lookup (M2 bridge)",
                 nonce_prefix,
             )
+            result = activate_db_pending_by_prefix(
+                nonce_prefix, current_session_id=session_id,
+            )
+            if result.success:
+                logger.info(
+                    "ElicitationResult DB-bridge activation: prefix=%s status=%s",
+                    nonce_prefix,
+                    getattr(result.status, "value", str(result.status)),
+                )
+                return
+            else:
+                logger.warning(
+                    "ElicitationResult DB-bridge activation failed: "
+                    "prefix=%s status=%s reason=%s -- falling back to session-wide",
+                    nonce_prefix,
+                    getattr(result.status, "value", str(result.status)),
+                    result.reason,
+                )
 
     # Fallback: session-wide activation (backward compat for unlabeled approvals)
     pending = get_pending_approvals_for_session(session_id)

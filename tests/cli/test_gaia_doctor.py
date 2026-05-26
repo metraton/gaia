@@ -661,10 +661,11 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 19 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # 20 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
         # last-install-error, workspace-initialized, schema-version) +
-        # 1 schema-DDL-consistency added by the migration framework rewrite.
-        assert len(data["checks"]) == 19
+        # 1 schema-DDL-consistency added by the migration framework rewrite +
+        # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1).
+        assert len(data["checks"]) == 20
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

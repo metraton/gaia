@@ -185,7 +185,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 11
+EXPECTED_SCHEMA_VERSION = 12
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -466,6 +466,106 @@ def check_schema_version() -> dict:
             "Upgrade Gaia: `npm install @jaguilar87/gaia@latest`.",
         )
     return _result("Schema version", "pass", f"v{live} matches CLI expectation")
+
+
+@register_check("Schema v12 tables", order=46)
+def check_schema_v12_tables() -> dict:
+    """Check that v12 approval tables and triggers are present in gaia.db.
+
+    v12 introduces `approvals`, `approval_events`, and three triggers that
+    enforce the hash-chain and append-only invariants. This check catches the
+    case where the ledger says v12 but the DDL was not actually applied (the
+    partial-apply silent failure documented in the memory atom about
+    bootstrap_database.sh and triggered-based migrations).
+
+    Skipped cleanly when:
+      - gaia.db does not exist (fresh machine, no DB yet)
+      - MAX(schema_version) < 12 (migration not yet applied)
+    """
+    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
+    db_path = Path(db_path_str).expanduser()
+
+    if not db_path.is_file():
+        return _result(
+            "Schema v12 tables",
+            "info",
+            f"no DB at {db_path} (nothing to verify yet)",
+        )
+
+    try:
+        con = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        return _result(
+            "Schema v12 tables",
+            "warning",
+            f"could not open {db_path}: {exc}",
+            "Delete the corrupt DB and re-run `gaia install`.",
+        )
+
+    try:
+        cur = con.cursor()
+
+        # If we're not at v12 yet, skip this check -- migration is pending.
+        cur.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version")
+        live_version = cur.fetchone()[0]
+        if live_version < 12:
+            return _result(
+                "Schema v12 tables",
+                "info",
+                f"schema at v{live_version} (v12 migration not yet applied)",
+            )
+
+        # Verify both tables exist.
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('approvals', 'approval_events') ORDER BY name"
+        )
+        found_tables = {row[0] for row in cur.fetchall()}
+        missing_tables = {"approvals", "approval_events"} - found_tables
+
+        # Verify three triggers exist.
+        expected_triggers = {
+            "ai_approval_events_hash",
+            "bu_approval_events_immutable",
+            "bd_approval_events_immutable",
+        }
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND name IN ('ai_approval_events_hash', "
+            "'bu_approval_events_immutable', 'bd_approval_events_immutable')"
+        )
+        found_triggers = {row[0] for row in cur.fetchall()}
+        missing_triggers = expected_triggers - found_triggers
+
+    except sqlite3.Error as exc:
+        return _result(
+            "Schema v12 tables",
+            "warning",
+            f"could not query sqlite_master: {exc}",
+            "Re-run `gaia install` to repair the DB.",
+        )
+    finally:
+        con.close()
+
+    issues = []
+    if missing_tables:
+        issues.append(f"missing tables: {', '.join(sorted(missing_tables))}")
+    if missing_triggers:
+        issues.append(f"missing triggers: {', '.join(sorted(missing_triggers))}")
+
+    if issues:
+        return _result(
+            "Schema v12 tables",
+            "error",
+            "; ".join(issues),
+            "Live DDL is missing v12 objects. Re-run `gaia install` to apply migration.",
+        )
+
+    return _result(
+        "Schema v12 tables",
+        "pass",
+        "2 tables + 3 hash-chain triggers present",
+    )
 
 
 @register_check("Schema DDL consistency", order=47)

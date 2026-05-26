@@ -27,6 +27,7 @@ Public API::
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -85,6 +86,18 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+
+    # Register gaia_sha256: scalar function used by the ai_approval_events_hash
+    # trigger to compute this_hash = SHA-256(prev_hash || fingerprint).
+    # SQLite does not include SHA-256 built-in; we inject it as a Python function
+    # at connection time. All connections opened via _connect() get this function,
+    # which means the trigger fires correctly on any INSERT into approval_events.
+    # The function accepts a single TEXT argument and returns the hex digest.
+    def _gaia_sha256(value: str | None) -> str:
+        return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+    con.create_function("gaia_sha256", 1, _gaia_sha256, deterministic=True)
+
     if fresh:
         con.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
         con.commit()
@@ -2476,6 +2489,243 @@ def list_approval_grants(
         return [dict(r) for r in rows]
     except Exception:
         return []
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: insert_semantic_grant / check_db_semantic_grant /
+#             consume_db_semantic_grant (CHECK-side DB cutover, Brief 71)
+# ---------------------------------------------------------------------------
+#
+# These three functions implement the DB-primary path for SCOPE_SEMANTIC_SIGNATURE
+# grants created by activate_db_pending_by_prefix().  They use the same
+# approval_grants table (scope='SCOPE_SEMANTIC_SIGNATURE') so all grant lifecycle
+# is visible in one place.
+#
+# Lifecycle:
+#   insert_semantic_grant()     -- called by activate_db_pending_by_prefix(); writes
+#                                  row with status=PENDING.
+#   check_db_semantic_grant()   -- called by check_approval_grant(); returns the
+#                                  matching row dict when a valid grant exists.
+#   consume_db_semantic_grant() -- called by bash_validator after command executes;
+#                                  sets status=CONSUMED + consumed_at.
+# ---------------------------------------------------------------------------
+
+
+def insert_semantic_grant(
+    approval_id: str,
+    command: str,
+    scope_signature: dict,
+    *,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    ttl_minutes: int = 5,
+    db_path: Path | None = None,
+) -> dict:
+    """Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants (status=PENDING).
+
+    Called by activate_db_pending_by_prefix() after the user approves via
+    AskUserQuestion.  The row represents a grant valid for one execution of
+    the approved command within the TTL window.
+
+    Args:
+        approval_id: The P-{hex} approval id that was activated.  Used as PK.
+        command: The exact command string approved by the user.
+        scope_signature: Dict from ApprovalSignature.to_dict() -- stored in
+            command_set_json so check_db_semantic_grant() can match semantically.
+        agent_id: Requesting agent identifier.
+        session_id: CLAUDE_SESSION_ID of the subagent that will execute.
+        ttl_minutes: Grant lifetime in minutes (default 5, matches filesystem TTL).
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied"} on success, {"status": "error", "reason": ...} otherwise.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # command_set_json stores the scope_signature dict so CHECK side can match.
+    # We also include the original command for audit trail.
+    grant_data = {
+        "command": command,
+        "scope_signature": scope_signature,
+    }
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO approval_grants
+                    (approval_id, agent_id, session_id, command_set_json,
+                     scope, created_at, expires_at, status,
+                     consumed_indexes_json)
+                VALUES (?, ?, ?, ?, 'SCOPE_SEMANTIC_SIGNATURE', ?, ?, 'PENDING', '[]')
+                """,
+                (
+                    approval_id,
+                    agent_id,
+                    session_id,
+                    _json.dumps(grant_data),
+                    _now_iso(),
+                    expires_at,
+                ),
+            )
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        return _applied()
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def check_db_semantic_grant(
+    command: str,
+    session_id: str | None = None,
+    *,
+    db_path: Path | None = None,
+) -> dict | None:
+    """Find an active SCOPE_SEMANTIC_SIGNATURE grant for command in the DB.
+
+    Called by check_approval_grant() as the primary (DB) check path.
+
+    Matching uses the scope_signature stored in command_set_json:
+    - Deserializes the ApprovalSignature via ApprovalSignature.from_dict()
+    - Delegates to matches_approval_signature() for semantic comparison
+
+    Grant must:
+    - Have scope='SCOPE_SEMANTIC_SIGNATURE'
+    - Have status='PENDING'
+    - Not be past its expires_at timestamp
+    - Belong to session_id (when provided)
+
+    Args:
+        command: The command string to check.
+        session_id: CLAUDE_SESSION_ID to scope lookup.  When None, all sessions
+            are searched -- useful for cross-session grant lookup.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        Dict with grant row data when a matching grant is found, None otherwise.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    try:
+        # Import matching utilities lazily to avoid circular imports at module load.
+        # These are in the hooks package, not gaia.store.
+        import sys as _sys
+        _hooks_root = str(_Path(__file__).resolve().parents[2] / "hooks")
+        if _hooks_root not in _sys.path:
+            _sys.path.insert(0, _hooks_root)
+
+        from modules.security.approval_scopes import (
+            ApprovalSignature,
+            matches_approval_signature,
+        )
+    except ImportError:
+        # Hooks package not available (e.g. standalone gaia.store test context).
+        # Fall back to None -- callers handle None gracefully.
+        return None
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    con = _connect(db_path)
+    try:
+        clauses = [
+            "scope = 'SCOPE_SEMANTIC_SIGNATURE'",
+            "status = 'PENDING'",
+        ]
+        params: list = []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+
+        where = " AND ".join(clauses)
+        rows = con.execute(
+            f"SELECT * FROM approval_grants WHERE {where} ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+
+        for row in rows:
+            row_dict = dict(row)
+            # TTL check: expires_at column holds ISO8601 string.
+            expires_at = row_dict.get("expires_at")
+            if expires_at and expires_at < now_iso:
+                continue
+
+            command_set_json = row_dict.get("command_set_json") or "{}"
+            try:
+                grant_data = _json.loads(command_set_json)
+            except Exception:
+                continue
+
+            sig_dict = grant_data.get("scope_signature")
+            if not sig_dict:
+                continue
+
+            try:
+                signature = ApprovalSignature.from_dict(sig_dict)
+                if matches_approval_signature(signature, command):
+                    return row_dict
+            except Exception:
+                continue
+
+        return None
+    except Exception:
+        return None
+    finally:
+        con.close()
+
+
+def consume_db_semantic_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Mark a SCOPE_SEMANTIC_SIGNATURE grant as CONSUMED (replay protection).
+
+    Called by bash_validator immediately after a command is allowed via a DB
+    semantic grant.  Setting status=CONSUMED prevents the same grant from
+    being reused within the TTL window (Gap B fix).
+
+    Args:
+        approval_id: The grant to consume.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        True if the grant was found and consumed, False otherwise.
+    """
+    now = _now_iso()
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                """
+                UPDATE approval_grants
+                SET status = 'CONSUMED', consumed_at = ?
+                WHERE approval_id = ?
+                  AND scope = 'SCOPE_SEMANTIC_SIGNATURE'
+                  AND status = 'PENDING'
+                """,
+                (now, approval_id),
+            )
+            con.commit()
+            return cur.rowcount > 0
+        except Exception:
+            con.rollback()
+            raise
+    except Exception:
+        return False
     finally:
         con.close()
 

@@ -1126,7 +1126,7 @@ class TestStandaloneParser:
         parser = approvals_mod._build_standalone_parser()
         args = parser.parse_args(["show", "abcd1234"])
         assert args.approval_id == "abcd1234"
-        assert args.func == approvals_mod.cmd_show
+        assert args.func == approvals_mod.cmd_show_v2
 
     def test_standalone_parser_clean_dry_run(self):
         parser = approvals_mod._build_standalone_parser()

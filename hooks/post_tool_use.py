@@ -14,7 +14,11 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, str(Path(__file__).parent))
+_hooks_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(_hooks_dir))
+_pkg_root = str(_hooks_dir.parent)
+if _pkg_root not in sys.path:
+    sys.path.insert(0, _pkg_root)
 
 from modules.core.paths import get_logs_dir
 from adapters.claude_code import ClaudeCodeAdapter

@@ -61,11 +61,51 @@ def build_t3_approval_instructions(nonce: str | None = None) -> str:
     """Return T3 approval block data.
 
     Kept minimal: just the facts (tier, nonce).  Workflow instructions
-    live in skills (approval, orchestrator-approval, security-tiers) so
+    live in skills (subagent-request-approval, orchestrator-present-approval, security-tiers) so
     the hook doesn't duplicate or conflict with them.
     """
     nonce_line = f"NONCE:{nonce}" if nonce else "NONCE:unavailable (retry command to generate)"
     return (
         f"[T3_APPROVAL_REQUIRED] {nonce_line}\n"
         "Load the approval skill for next steps."
+    )
+
+
+# Canonical skill name for subagent approval workflow (D11 — role-prefixed).
+# This constant is the single source of truth referenced by:
+#   - build_t3_blocked_denial_message()  (below)
+#   - tests/hooks/test_denial_messages.py
+_SUBAGENT_APPROVAL_SKILL = "subagent-request-approval"
+
+
+def build_t3_blocked_denial_message(
+    approval_id: str,
+    command: str,
+    verb: str,
+    category: str,
+) -> str:
+    """Return the canonical T3_BLOCKED denial message for subagent context.
+
+    Per plan D5 + D11, the message must include the literal skill name in the
+    format ``Load Skill('<name>')`` so the subagent knows exactly which skill
+    to load without inference.
+
+    Args:
+        approval_id: The P-{hex} approval identifier from the DB or filesystem.
+        command: The full command string that was blocked.
+        verb: The detected mutative verb (e.g. 'delete', 'push').
+        category: The verb category (e.g. 'MUTATIVE').
+
+    Returns:
+        The denial message string to embed in the hook response.
+    """
+    return (
+        f"[T3_BLOCKED] This command requires user approval.\n"
+        f"T3 command blocked. Load Skill('{_SUBAGENT_APPROVAL_SKILL}') to emit"
+        f" the approval payload and await user decision.\n"
+        f"Do NOT retry this command. Report APPROVAL_REQUEST with this"
+        f" approval_id in your json:contract.\n"
+        f"Command: {command}\n"
+        f"Verb: '{verb}' ({category})\n"
+        f"approval_id: {approval_id}"
     )

@@ -429,6 +429,34 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 fi
                 # Otherwise: existing v10 DB -- fall through to default v10_to_v11.sql.
                 ;;
+            12)
+                # v11 -> v12: add approvals + approval_events tables + three hash-chain triggers
+                # (approval-model-redesign M1: user-in-loop, fingerprint-bound, hash-chained).
+                #
+                # Target state fingerprint: approvals table exists.
+                # We probe sqlite_master for the table name.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates approvals table -> it exists
+                #   - Existing v11 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> approvals does NOT exist -> falls through to the full migration
+                # Note: approval_events triggers require the gaia_sha256 scalar function
+                # to be registered on the connection before any INSERT fires them.
+                # bootstrap_database.sh uses sqlite3 CLI which does NOT register Python
+                # functions; the trigger DDL is stored but can only fire via gaia.store.
+                # The migration SQL itself only defines the DDL (no INSERTs into
+                # approval_events), so the migration applies cleanly via sqlite3 CLI.
+                APPROVALS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='approvals';")"
+                if [ "$APPROVALS_EXISTS" = "approvals" ]; then
+                    # Fresh install: schema.sql already created the approvals table.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v11_to_v12_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v11->v12 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v11 DB -- fall through to default v11_to_v12.sql.
+                ;;
             *)
                 # Future migrations: each new N must add a case here with a
                 # fingerprint of the post-migration state.

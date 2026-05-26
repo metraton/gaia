@@ -45,15 +45,18 @@ from ..security.flag_classifiers import (
 from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
-    find_pending_for_command,
-    generate_nonce,
     last_check_found_expired,
     match_command_set_grant,
-    write_pending_approval,
+    # DEPRECATED (T2.1 cutover): generate_nonce, write_pending_approval,
+    # find_pending_for_command are no longer used in the T3 subagent intercept
+    # path. They remain in approval_grants.py for M3/M4 consumers (e.g.,
+    # filesystem-based activation in pre_tool_use) until those layers are
+    # migrated. Do not re-introduce these calls in _validate_atomic_command.
 )
 from ..security.approval_messages import (
     build_pending_approval_unavailable_message,
     build_t3_approval_instructions,
+    build_t3_blocked_denial_message,
 )
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.composition_rules import (
@@ -615,12 +618,49 @@ class BashValidator:
                     reason="Command-set grant matched",
                 )
 
-            # Fall back to filesystem-based approval grant check.
+            # DB-primary + filesystem-fallback grant check.
+            # check_approval_grant() now returns a DB row first (Brief 71 CHECK-
+            # side cutover), falling back to filesystem when no DB row exists.
             grant = check_approval_grant(command, session_id=session_id)
             if grant is not None:
+                # Consume the DB semantic grant immediately (replay protection,
+                # Gap B fix).  Single-use: a consumed grant will not match on a
+                # second attempt within the TTL window.
+                db_approval_id = getattr(grant, "_db_approval_id", None)
+                if db_approval_id:
+                    try:
+                        from gaia.store.writer import consume_db_semantic_grant
+                        consumed = consume_db_semantic_grant(db_approval_id)
+                        if consumed:
+                            logger.info(
+                                "DB semantic grant consumed (replay protection): "
+                                "approval_id=%s, command='%s'",
+                                db_approval_id[:16], command[:80],
+                            )
+                        else:
+                            logger.warning(
+                                "DB semantic grant consume returned False "
+                                "(may already be consumed): approval_id=%s",
+                                db_approval_id[:16],
+                            )
+                    except Exception as _cg_err:
+                        logger.warning(
+                            "DB semantic grant consume failed (non-fatal): %s", _cg_err
+                        )
+                    # Also mark the companion filesystem grant as used so the
+                    # filesystem fallback path cannot replay the same command.
+                    try:
+                        from ..security.approval_grants import consume_grant as _consume_fs_grant
+                        _consume_fs_grant(command, session_id=session_id)
+                    except Exception as _fs_cg_err:
+                        logger.debug(
+                            "Filesystem grant consume (companion cleanup) failed "
+                            "(non-fatal): %s", _fs_cg_err
+                        )
+
                 if grant.confirmed:
-                    # Already confirmed and consumed -- should not reach
-                    # here (single-use). But if it does, allow through.
+                    # DB grants are always confirmed=True (user approved via AskUserQuestion).
+                    # Filesystem grants may be confirmed or unconfirmed.
                     logger.info(
                         "T3 command allowed via confirmed grant: %s (scope='%s')",
                         command[:80], grant.approved_scope,
@@ -631,7 +671,7 @@ class BashValidator:
                         reason="Grant confirmed",
                     )
                 else:
-                    # Grant exists, not yet confirmed -- GAIA approved,
+                    # Filesystem grant exists, not yet confirmed -- GAIA approved,
                     # let it through. PostToolUse will confirm and consume
                     # the grant after successful execution.
                     logger.info(
@@ -645,25 +685,21 @@ class BashValidator:
                     )
             else:
                 if is_subagent:
-                    # Subagent context: check for an existing pending
+                    # Subagent context: check DB for an existing pending
                     # approval first (retry scenario). If found, reuse
-                    # the same nonce to prevent infinite approval_id
-                    # generation loops while the user reviews.
-                    existing_nonce = find_pending_for_command(
-                        session_id or "", command,
-                    )
-                    if existing_nonce:
-                        approval_id = existing_nonce
+                    # the same approval_id to prevent infinite generation
+                    # loops while the user reviews.
+                    approval_id = _find_pending_in_db(session_id or "", command)
+                    if approval_id:
                         logger.info(
                             "Reusing pending approval_id=%s for retry: %s",
                             approval_id, command[:80],
                         )
-                        reason = (
-                            f"[T3_BLOCKED] This command requires user approval.\n"
-                            f"Do NOT retry this command. Report APPROVAL_REQUEST with this approval_id in your json:contract.\n"
-                            f"Command: {command}\n"
-                            f"Verb: '{result.verb}' ({result.category})\n"
-                            f"approval_id: {approval_id}"
+                        reason = build_t3_blocked_denial_message(
+                            approval_id=approval_id,
+                            command=command,
+                            verb=result.verb,
+                            category=result.category,
                         )
                         hook_deny = build_hook_permission_response("deny", reason)
                         return BashValidationResult(
@@ -672,25 +708,26 @@ class BashValidator:
                             reason=f"T3 {result.category.lower()} command: {result.reason}",
                             block_response=hook_deny,
                         )
-                    # No existing pending -- generate a new nonce.
-                    # The ElicitationResult hook will activate the
-                    # grant when the user approves via AskUserQuestion.
-                    approval_id = generate_nonce()
-                    pending_path = write_pending_approval(
-                        nonce=approval_id,
+                    # No existing pending -- insert via DB (D16: exclusive path).
+                    sealed_payload = _build_sealed_payload(
                         command=command,
-                        danger_verb=result.verb,
-                        danger_category=result.category,
-                        session_id=session_id or None,
-                        cwd=os.getcwd(),
-                        context={"source": agent_type} if agent_type else None,
+                        verb=result.verb,
+                        category=result.category,
+                        agent_type=agent_type,
                     )
-                    if pending_path is None:
+                    try:
+                        from gaia.approvals.store import insert_requested
+                        approval_id = insert_requested(
+                            sealed_payload,
+                            agent_id=agent_type or None,
+                            session_id=session_id or None,
+                        )
+                    except Exception as _store_err:
                         # Persistence failure — fall back to ask
                         logger.warning(
-                            "Failed to persist pending approval for subagent; "
-                            "falling back to ask: %s",
-                            command[:80],
+                            "DB insert_requested failed for subagent; "
+                            "falling back to ask: %s -- %s",
+                            command[:80], _store_err,
                         )
                         reason = build_pending_approval_unavailable_message()
                         hook_ask = build_hook_permission_response("ask", reason)
@@ -700,12 +737,11 @@ class BashValidator:
                             reason="Pending approval persistence failed",
                             block_response=hook_ask,
                         )
-                    reason = (
-                        f"[T3_BLOCKED] This command requires user approval.\n"
-                        f"Do NOT retry this command. Report APPROVAL_REQUEST with this approval_id in your json:contract.\n"
-                        f"Command: {command}\n"
-                        f"Verb: '{result.verb}' ({result.category})\n"
-                        f"approval_id: {approval_id}"
+                    reason = build_t3_blocked_denial_message(
+                        approval_id=approval_id,
+                        command=command,
+                        verb=result.verb,
+                        category=result.category,
                     )
                     hook_deny = build_hook_permission_response("deny", reason)
                     return BashValidationResult(
@@ -1021,6 +1057,80 @@ class BashValidator:
             return msg.strip()
 
         return None
+
+# ---------------------------------------------------------------------------
+# T2.1 DB-backed helpers (cutover from filesystem approval cache)
+# ---------------------------------------------------------------------------
+
+def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
+    """Query the DB for an existing pending approval matching this command/session.
+
+    Replaces find_pending_for_command() (filesystem) as part of the T2.1
+    cutover. Looks up approvals with status='pending' in the DB and matches
+    the exact_content field of their payload_json against the command.
+
+    Args:
+        session_id: Current session identifier (empty string if unknown).
+        command: The Bash command that was blocked.
+
+    Returns:
+        The approval_id (P-{hex}) if a matching pending exists, else None.
+    """
+    try:
+        from gaia.approvals.store import get_pending
+        import json as _json
+        rows = get_pending(session_id=session_id or None, all_sessions=False)
+        for row in rows:
+            payload_str = row.get("payload_json")
+            if not payload_str:
+                continue
+            try:
+                payload = _json.loads(payload_str)
+            except Exception:
+                continue
+            if payload.get("exact_content") == command:
+                return row.get("id")
+    except Exception as _err:
+        logger.debug("_find_pending_in_db query failed (non-fatal): %s", _err)
+    return None
+
+
+def _build_sealed_payload(
+    command: str,
+    verb: str,
+    category: str,
+    agent_type: str = "",
+) -> dict:
+    """Build a sealed_payload dict from hook-intercepted command context.
+
+    Used by the T2.1 cutover path when bash_validator detects a T3 command
+    and calls store.insert_requested(). The 7 D13 fields are populated from
+    what is available at intercept time.
+
+    Args:
+        command: The full Bash command string that was blocked.
+        verb: The detected mutative verb (e.g. 'push', 'delete').
+        category: The verb category string (e.g. 'MUTATIVE').
+        agent_type: Name of the originating agent (may be empty).
+
+    Returns:
+        Dict with the 7 sealed_payload fields from D13.
+    """
+    return {
+        "operation": f"{category} command intercepted: {verb}",
+        "exact_content": command,
+        "scope": command.split()[0] if command.strip() else "unknown",
+        "risk_level": "high" if category.upper() == "DESTRUCTIVE" else "medium",
+        "rollback_hint": None,
+        "rationale": (
+            f"Agent '{agent_type}' attempted a {category.lower()} ({verb}) command "
+            "that requires user approval per the T3 security policy."
+            if agent_type
+            else f"A {category.lower()} ({verb}) command requires user approval per T3 policy."
+        ),
+        "commands": [command],
+    }
+
 
 def validate_bash_command(
     command: str,
