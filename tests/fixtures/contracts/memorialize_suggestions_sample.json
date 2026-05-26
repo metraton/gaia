@@ -1,0 +1,37 @@
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "a7c3f9",
+    "pending_steps": "[]",
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": ["reviewed prior migration scripts for v3->v4"],
+    "files_checked": ["gaia/store/schema.sql", "gaia/cli/install.py"],
+    "commands_run": ["`pytest tests/cli/test_schema_v4_memory_refactor.py -q` -> 8 passed"],
+    "key_outputs": ["schema v4 applies cleanly; live DB still at v3"],
+    "verbatim_outputs": ["8 passed in 1.23s"],
+    "cross_layer_impacts": ["orchestrator presentation flow extended (gaia-orchestrator.md)"],
+    "open_gaps": ["live gaia.db migration pending T9"]
+  },
+  "consolidation_report": null,
+  "approval_request": null,
+  "memorialize_suggestions": [
+    {
+      "slug": "decision_memory_schema_v4_class_status_links",
+      "type": "decision",
+      "class": "anchor",
+      "description": "Memory schema v4 splits class/status and introduces memory_links",
+      "body": "On 2026-05-22, memory schema advanced to v4. Atoms now carry a `class` field (anchor/thread/log) and a `status` field; structural connections live in the new `memory_links` table rather than being inlined in atom bodies. Migration is idempotent and preserves all v3 rows. The live ~/.gaia/gaia.db is migrated by `gaia install --live` (T9).",
+      "rationale": "Closed architectural choice that future memory writers and readers will need to reference; surfaced while validating T8 against the v3->v4 migration test."
+    },
+    {
+      "slug": "negative_inline_links_in_atom_bodies",
+      "type": "negative",
+      "class": "log",
+      "description": "Do not encode memory cross-references inside atom bodies",
+      "body": "Previously, links between memory atoms were encoded as substrings inside atom bodies (e.g. `see also atom_x`). v4 introduces `memory_links` as the structural channel for these relationships. New writers should populate `memory_links` rows; readers should resolve cross-references through that table rather than parsing body text.",
+      "rationale": "Path the workspace should not revisit; closed by the v4 refactor."
+    }
+  ]
+}

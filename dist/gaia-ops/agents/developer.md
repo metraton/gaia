@@ -5,6 +5,9 @@ tools: Read, Edit, Write, Agent, Glob, Grep, Bash, Task, Skill, WebSearch, WebFe
 model: inherit
 maxTurns: 50
 permissionMode: acceptEdits
+project_context_contracts:
+  read: [project_identity, stack, application_services, environment, architecture_overview, git]
+  write: [application_services]
 skills:
   - agent-protocol
   - security-tiers

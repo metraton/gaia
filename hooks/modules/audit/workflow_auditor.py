@@ -400,41 +400,6 @@ def audit(
             "message": f"Agent {metrics['agent']} failed with exit code {metrics['exit_code']}"
         })
 
-    # --- existing: consecutive_failures ---
-    try:
-        workflow_memory_dir = get_workflow_memory_dir()
-        metrics_file = workflow_memory_dir / "metrics.jsonl"
-
-        if metrics_file.exists():
-            with open(metrics_file) as f:
-                recent = list(deque(f, maxlen=7))
-            # Get last 5 metrics (excluding current which is the last line)
-            last_5 = (
-                [json.loads(line) for line in recent[:-1]][-5:]
-                if len(recent) > 1
-                else []
-            )
-
-            # Count recent failures for same agent
-            agent = metrics["agent"]
-            recent_failures = [
-                m for m in last_5
-                if m.get("agent") == agent and m.get("exit_code", 0) != 0
-            ]
-
-            # If current also failed and we have 2+ previous failures
-            if metrics.get("exit_code", 0) != 0 and len(recent_failures) >= 2:
-                anomalies.append({
-                    "type": "consecutive_failures",
-                    "severity": "critical",
-                    "message": (
-                        f"Agent {agent} has failed "
-                        f"{len(recent_failures) + 1} times consecutively"
-                    ),
-                })
-    except Exception as e:
-        logger.debug(f"Could not check consecutive failures: {e}")
-
     # --- NEW: missing_evidence ---
     if agent_output:
         plan_status = metrics.get("plan_status", "")
@@ -495,7 +460,7 @@ def audit(
 
     # --- NEW: skipped_verification ---
     injected = task_info.get("injected_context") or {}
-    investigation_brief = injected.get("investigation_brief", {}) or {}
+    investigation_brief = injected.get("agent_contract_handoff") or injected.get("investigation_brief", {}) or {}  # dual-key lookup during M2 dual-mode window
     required_checks = investigation_brief.get("required_checks", [])
     if required_checks and agent_output:
         # Extract commands that were actually run from evidence
@@ -571,41 +536,32 @@ def signal_gaia_analysis(
     """
     Signal that Gaia analysis is needed.
 
-    Creates a flag file that orchestrator can detect.
+    T4 of brief ``episodic-workflow-to-db`` removed the filesystem signals:
+
+    * ``signals/needs_analysis.flag`` and ``anomalies.jsonl`` are no longer
+      written. Anomalies are persisted as ``episode_anomalies`` rows by
+      ``hooks/modules/memory/episode_writer.write()`` via ``store_episode()``,
+      keyed by the parent episode_id. Querying recent anomalies is therefore
+      a SQL question:
+
+          SELECT * FROM episode_anomalies
+          WHERE workspace = ? AND timestamp > ?
+          ORDER BY timestamp DESC;
+
+    * The orchestrator's prior reliance on the ``.flag`` heuristic is the
+      reader half of the migration (T6) -- the writer side has been retired
+      already so dispatches no longer leave file droppings under
+      ``.claude/project-context/workflow-episodic-memory/``.
+
+    This function is now a no-op aside from a log line; the signature is
+    preserved so existing call sites (``hooks/subagent_stop.py``) continue
+    to work without coordinated changes.
     """
-    try:
-        signals_dir = get_workflow_memory_dir() / "signals"
-        signals_dir.mkdir(parents=True, exist_ok=True)
-
-        signal_file = signals_dir / "needs_analysis.flag"
-
-        signal_data = {
-            "timestamp": datetime.now().isoformat(),
-            "created_at": datetime.now().isoformat(),
-            "ttl_hours": 1,
-            "anomalies": anomalies,
-            "metrics_summary": {
-                "agent": metrics["agent"],
-                "task_id": metrics["task_id"],
-                "duration_ms": metrics.get("duration_ms"),
-                "exit_code": metrics.get("exit_code"),
-            },
-            "suggested_action": "Invoke /gaia for system analysis",
-        }
-
-        with open(signal_file, "w") as f:
-            json.dump(signal_data, f, indent=2)
-
-        logger.info(f"Gaia analysis signal created: {signal_file}")
-
-        # Also log to a permanent anomaly log
-        anomaly_log = signals_dir.parent / "anomalies.jsonl"
-        with open(anomaly_log, "a") as f:
-            f.write(json.dumps({
-                "timestamp": datetime.now().isoformat(),
-                "anomalies": anomalies,
-                "metrics": metrics,
-            }) + "\n")
-
-    except Exception as e:
-        logger.warning(f"Could not create analysis signal: {e}")
+    if anomalies:
+        logger.info(
+            "Gaia analysis signal: %d anomaly/anomalies detected for agent=%s "
+            "task=%s (persisted via episode_anomalies table)",
+            len(anomalies),
+            metrics.get("agent", "unknown"),
+            metrics.get("task_id", "unknown"),
+        )

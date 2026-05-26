@@ -495,7 +495,7 @@ def audit(
 
     # --- NEW: skipped_verification ---
     injected = task_info.get("injected_context") or {}
-    investigation_brief = injected.get("investigation_brief", {}) or {}
+    investigation_brief = injected.get("agent_contract_handoff") or injected.get("investigation_brief", {}) or {}  # dual-key lookup during M2 dual-mode window
     required_checks = investigation_brief.get("required_checks", [])
     if required_checks and agent_output:
         # Extract commands that were actually run from evidence

@@ -146,15 +146,68 @@ class TestRunVerification(unittest.TestCase):
             self.assertTrue(len(hook_issues) > 0)
 
     def test_valid_project_context(self):
+        """_run_verification checks project_context_contracts in DB (AC-7/T1.3).
+
+        Post-AC-7 migration the check reads from project_context_contracts
+        (gaia.db) instead of the legacy project-context.json file.  We seed a
+        temp DB with >=3 contract rows and redirect gaia.paths.db_path() via
+        GAIA_DATA_DIR so the check resolves to our in-memory fixture.
+        """
+        import os
+        import sqlite3 as _sqlite3
+
         with tempfile.TemporaryDirectory() as tmp:
             claude_dir = Path(tmp) / ".claude"
             claude_dir.mkdir()
-            ctx_dir = claude_dir / "project-context"
-            ctx_dir.mkdir()
-            ctx = {"sections": {f"s{i}": {} for i in range(4)}}
-            (ctx_dir / "project-context.json").write_text(json.dumps(ctx))
-            result = _run_verification(claude_dir)
-            ctx_check = next((c for c in result["checks"] if c["name"] == "project-context.json"), None)
+
+            # Workspace name that _run_verification will use when it calls
+            # gaia.project.current(cwd=claude_dir.parent).  We mock it to a
+            # stable value so the DB seed can use the same name.
+            fixed_ws = "test-update-ws"
+
+            # Build and seed a minimal gaia.db in a sub-directory so
+            # GAIA_DATA_DIR can be set without touching ~/.gaia.
+            data_dir = Path(tmp) / "gaia-data"
+            data_dir.mkdir()
+            db_path = data_dir / "gaia.db"
+
+            con = _sqlite3.connect(str(db_path))
+            con.executescript("""
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    name       TEXT NOT NULL PRIMARY KEY,
+                    identity   TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+                );
+                CREATE TABLE IF NOT EXISTS project_context_contracts (
+                    workspace     TEXT NOT NULL,
+                    contract_name TEXT NOT NULL,
+                    payload       TEXT NOT NULL DEFAULT '{}',
+                    metadata      TEXT,
+                    updated_at    TEXT,
+                    PRIMARY KEY (workspace, contract_name),
+                    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
+                );
+            """)
+            con.execute("INSERT OR IGNORE INTO workspaces (name) VALUES (?)", (fixed_ws,))
+            for contract in ("stack", "git", "infrastructure", "services"):
+                con.execute(
+                    "INSERT OR REPLACE INTO project_context_contracts "
+                    "  (workspace, contract_name, payload, updated_at) "
+                    "VALUES (?, ?, '{}', '2026-01-01T00:00:00Z')",
+                    (fixed_ws, contract),
+                )
+            con.commit()
+            con.close()
+
+            with patch.dict(os.environ, {"GAIA_DATA_DIR": str(data_dir)}):
+                with patch(
+                    "gaia.project.current",
+                    return_value=fixed_ws,
+                ):
+                    result = _run_verification(claude_dir)
+
+            ctx_check = next((c for c in result["checks"] if c["name"] == "project-context"), None)
             self.assertIsNotNone(ctx_check)
             self.assertTrue(ctx_check["ok"])
 

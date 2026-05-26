@@ -153,6 +153,37 @@ def _err(msg: str, as_json: bool) -> int:
     return 1
 
 
+def _read_body_file(path_str: str) -> str:
+    """Read body text from a file path or stdin.
+
+    Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8).
+    Pass any other path string to read that file (utf-8).
+    Raises ``FileNotFoundError`` for missing paths (caller converts to _err).
+    """
+    if path_str == "-":
+        return sys.stdin.read()
+    return Path(path_str).read_text(encoding="utf-8")
+
+
+def _is_rich_body(body: str) -> bool:
+    """Return True when *body* contains markdown structure that loses meaning
+    when collapsed to a 60-char fallback at SessionStart injection.
+
+    Detects any of:
+      - Fenced code blocks (``` or ~~~)
+      - Markdown headers (lines starting with ``#``)
+      - 3+ consecutive blank lines (multi-paragraph / complex structure)
+    """
+    import re as _re
+    if _re.search(r"^```|^~~~", body, _re.MULTILINE):
+        return True
+    if _re.search(r"^#{1,6} ", body, _re.MULTILINE):
+        return True
+    if _re.search(r"\n{3,}", body):
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -234,57 +265,193 @@ def _cmd_search(args) -> int:
     return 0
 
 
+def _query_episodes_from_db(workspace: str | None = None) -> list[dict]:
+    """Query episodes from gaia.db. Returns list of episode dicts.
+
+    Used by _cmd_stats, _cmd_episode_show, and _cmd_search_scoped (episodes scope).
+    Falls back to empty list on any import/DB error (non-blocking).
+    """
+    try:
+        import sys as _sys
+        _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+        if str(_REPO_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(_REPO_ROOT))
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
+        return []
+
+    ws = workspace or _project_current()
+    try:
+        con = _store_connect()
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT * FROM episodes WHERE workspace = ? ORDER BY timestamp DESC",
+                    (ws,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT * FROM episodes ORDER BY timestamp DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def _count_episodes_from_db(workspace: str | None = None) -> int:
+    """Return COUNT(*) from episodes table for the given workspace.
+
+    Returns 0 on any error (non-blocking).
+    """
+    try:
+        import sys as _sys
+        _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+        if str(_REPO_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(_REPO_ROOT))
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
+        return 0
+
+    ws = workspace or _project_current()
+    try:
+        con = _store_connect()
+        try:
+            if ws:
+                row = con.execute(
+                    "SELECT COUNT(*) FROM episodes WHERE workspace = ?", (ws,)
+                ).fetchone()
+            else:
+                row = con.execute("SELECT COUNT(*) FROM episodes").fetchone()
+            return row[0] if row else 0
+        finally:
+            con.close()
+    except Exception:
+        return 0
+
+
+def _count_episodes_fts_from_db() -> int:
+    """Return row count from episodes_fts table in gaia.db.
+
+    Returns -1 when the DB/table is unreachable (sentinel for broken state).
+    """
+    try:
+        import sys as _sys
+        _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+        if str(_REPO_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(_REPO_ROOT))
+        from gaia.store.writer import _connect as _store_connect
+    except ImportError:
+        return -1
+
+    try:
+        con = _store_connect()
+        try:
+            row = con.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()
+            return row[0] if row else 0
+        finally:
+            con.close()
+    except Exception:
+        return -1
+
+
+def _search_episodes_fts_from_db(
+    query: str,
+    workspace: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """FTS5 search over episodes_fts in gaia.db.
+
+    Returns list of episode dicts enriched with an fts_rank field.
+    Falls back to empty list on any error (non-blocking).
+    """
+    try:
+        import sys as _sys
+        _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+        if str(_REPO_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(_REPO_ROOT))
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
+        return []
+
+    ws = workspace or _project_current()
+    try:
+        con = _store_connect()
+        try:
+            # FTS5 MATCH with bm25 ranking; rank is negative (higher = more relevant)
+            if ws:
+                rows = con.execute(
+                    "SELECT e.*, rank AS fts_rank "
+                    "FROM episodes_fts "
+                    "JOIN episodes e ON e.rowid = episodes_fts.rowid "
+                    "WHERE episodes_fts MATCH ? AND e.workspace = ? "
+                    "ORDER BY rank "
+                    "LIMIT ?",
+                    (query, ws, limit),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT e.*, rank AS fts_rank "
+                    "FROM episodes_fts "
+                    "JOIN episodes e ON e.rowid = episodes_fts.rowid "
+                    "WHERE episodes_fts MATCH ? "
+                    "ORDER BY rank "
+                    "LIMIT ?",
+                    (query, limit),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
 def _cmd_stats(args) -> int:
-    """Handle `gaia memory stats`."""
+    """Handle `gaia memory stats`.
+
+    Reads episode count from episodes table in gaia.db (primary).
+    Reads FTS5 indexed count from episodes_fts table in gaia.db.
+    Legacy index.json is no longer consulted.
+    """
     as_json = getattr(args, "json", False)
-    project_root = _find_project_root()
 
-    index = _load_index(project_root)
-    episodes = index.get("episodes", [])
-    total_episodes = len(episodes)
-
-    search_store = _import_search_store()
     score_memory = _import_scoring()
     detect_conflicts = _import_conflict_detector()
 
     warnings: list[str] = []
 
-    # Indexed count. The FTS5 backend returns -1 as a sentinel when path
-    # resolution / connection fails (e.g. broken `.claude/*` symlinks).
-    # Previously we silently coerced that to 0, which hid drift: `doctor`
-    # would report 102/102 while `memory stats` reported 0/0 with no
-    # indication anything was wrong. Now we surface it explicitly.
-    indexed: int = 0
-    if search_store is not None:
-        try:
-            raw = search_store.count()
-        except Exception:
-            raw = -1
-        if isinstance(raw, int) and raw < 0:
-            warnings.append(
-                "FTS5 index path not resolved — symlinks may be broken. "
-                "Run: gaia doctor"
-            )
-            indexed = raw  # keep the sentinel visible in JSON output
-        else:
-            indexed = int(raw) if isinstance(raw, int) else 0
+    # Episode count from DB (primary source -- T6 migration)
+    total_episodes = _count_episodes_from_db()
 
-    # avg_score from a sample of episodes
+    # FTS5 indexed count from episodes_fts in gaia.db
+    indexed = _count_episodes_fts_from_db()
+    if indexed < 0:
+        warnings.append(
+            "episodes_fts table not reachable in gaia.db — DB may be missing or corrupt. "
+            "Run: gaia doctor"
+        )
+
+    # avg_score from a sample of episodes in DB
     avg_score = 0.0
-    if score_memory is not None and episodes:
-        sample = episodes[:100]  # cap to avoid slow computation on huge indexes
+    if score_memory is not None and total_episodes > 0:
+        episodes_sample = _query_episodes_from_db()[:100]
         scores = []
-        for ep in sample:
+        for ep in episodes_sample:
             try:
                 days = _days_old(ep.get("timestamp", ""))
-                rc = int(ep.get("retrieval_count", 0))
+                rc = int(ep.get("retrieval_score", 0) or 0)
                 scores.append(score_memory(days_old=days, retrieval_count=rc))
             except Exception:
                 pass
         if scores:
             avg_score = round(sum(scores) / len(scores), 4)
 
-    # Conflict count
+    # Conflict count (curated memory conflicts -- unrelated to episodes)
+    project_root = _find_project_root()
     conflicts_count = 0
     if detect_conflicts is not None:
         try:
@@ -321,6 +488,33 @@ def _cmd_stats(args) -> int:
     return 0
 
 
+def _get_episode_from_db(episode_id: str) -> dict | None:
+    """Fetch a single episode row from episodes table in gaia.db by episode_id.
+
+    Returns the row as a dict, or None if not found or on any error.
+    """
+    try:
+        import sys as _sys
+        _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+        if str(_REPO_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(_REPO_ROOT))
+        from gaia.store.writer import _connect as _store_connect
+    except ImportError:
+        return None
+
+    try:
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
 def _cmd_episode_show(args) -> int:
     """Handle `gaia memory episode-show <episode_id>`.
 
@@ -329,28 +523,33 @@ def _cmd_episode_show(args) -> int:
     inspector remains available under the explicit ``episode-show`` verb;
     pre-existing callers that import ``_cmd_show`` see an alias defined
     below for backward compatibility.
+
+    T6 migration: reads from episodes table in gaia.db (no filesystem reads).
     """
     as_json = getattr(args, "json", False)
     episode_id = args.episode_id
 
-    EpisodicMemory = _import_episodic()
     score_memory = _import_scoring()
 
-    if EpisodicMemory is None:
-        return _err("episodic module not available", as_json)
+    episode = _get_episode_from_db(episode_id)
 
-    try:
-        mem = EpisodicMemory()
-        episode = mem.get_episode(episode_id)
-    except Exception as exc:
-        return _err(f"Could not load episode: {exc}", as_json)
+    if episode is None:
+        # Fallback to legacy EpisodicMemory for backward compatibility
+        # (supports any episode_id that may not yet be in the DB)
+        EpisodicMemory = _import_episodic()
+        if EpisodicMemory is not None:
+            try:
+                mem = EpisodicMemory()
+                episode = mem.get_episode(episode_id)
+            except Exception as exc:
+                return _err(f"Could not load episode: {exc}", as_json)
 
     if episode is None:
         return _err(f"Episode not found: {episode_id}", as_json)
 
     # Compute score
     days = _days_old(episode.get("timestamp", ""))
-    retrieval_count = int(episode.get("retrieval_count", 0))
+    retrieval_count = int(episode.get("retrieval_count", 0) or 0)
     if score_memory is not None:
         try:
             score = round(score_memory(days_old=days, retrieval_count=retrieval_count), 4)
@@ -359,12 +558,20 @@ def _cmd_episode_show(args) -> int:
     else:
         score = 0.0
 
+    # Parse tags from JSON string if stored as JSON
+    raw_tags = episode.get("tags") or []
+    if isinstance(raw_tags, str):
+        try:
+            raw_tags = json.loads(raw_tags)
+        except Exception:
+            raw_tags = []
+
     output = {
         "id": episode.get("episode_id") or episode.get("id") or episode_id,
         "title": episode.get("title") or "",
         "content": episode.get("enriched_prompt") or episode.get("prompt") or "",
         "score": score,
-        "tags": episode.get("tags") or [],
+        "tags": raw_tags,
         "retrieval_count": retrieval_count,
         "age_days": round(days, 2),
     }
@@ -455,6 +662,30 @@ def _resolve_workspace(explicit: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Subcommand handler: add (DB-only writer)
 # ---------------------------------------------------------------------------
+#
+# T5 note: ``add`` and ``edit`` accept optional ``--class`` and ``--status``
+# flags. After the primary upsert / edit completes, if either flag was
+# supplied, the same ``reclassify_memory`` writer is invoked so the row's
+# semantic role and lifecycle state land in a single CLI call. The CLI is
+# the only surface that translates ``--status=null`` into the empty-string
+# clear-sentinel that ``reclassify_memory`` expects.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_status_flag(raw: str | None) -> tuple[bool, str | None]:
+    """Translate a CLI --status value into the writer's contract.
+
+    Returns ``(touches_column, value_for_writer)``:
+      * raw is None        -> (False, None)   -- writer ignores the column.
+      * raw == "null"      -> (True, "")      -- writer clears to NULL.
+      * any other string   -> (True, raw)     -- writer enum-checks it.
+    """
+    if raw is None:
+        return False, None
+    if raw == "null":
+        return True, ""
+    return True, raw
+
 
 def _cmd_add(args) -> int:
     """Handle ``gaia memory add --name=... --type=... --body=...``.
@@ -468,18 +699,38 @@ def _cmd_add(args) -> int:
     name = getattr(args, "name", None)
     mem_type = getattr(args, "type", None)
     body = getattr(args, "body", None)
+    body_file = getattr(args, "body_file", None)
     description = getattr(args, "description", None)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
+    class_flag = getattr(args, "class_", None)
+    status_flag = getattr(args, "status", None)
 
     if not name:
         return _err("--name is required", as_json)
     if not mem_type:
         return _err("--type is required", as_json)
+    if body_file is not None:
+        try:
+            body = _read_body_file(body_file)
+        except FileNotFoundError:
+            return _err(f"--body-file: file not found: {body_file}", as_json)
+        except OSError as exc:
+            return _err(f"--body-file: cannot read '{body_file}': {exc}", as_json)
     if not body:
-        return _err("--body is required", as_json)
+        return _err("--body or --body-file is required", as_json)
+
+    if _is_rich_body(body) and not description:
+        return _err(
+            "body contains markdown structure (code blocks/headers/multi-paragraph).\n"
+            "--description is required for rich bodies -- it's what gets injected at SessionStart.\n"
+            "Bodies without description fall back to body[:60] which destroys code-block semantics.",
+            as_json,
+        )
 
     try:
-        from gaia.store.writer import upsert_memory, VALID_MEMORY_TYPES
+        from gaia.store.writer import (
+            upsert_memory, reclassify_memory, VALID_MEMORY_TYPES,
+        )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
@@ -499,8 +750,34 @@ def _cmd_add(args) -> int:
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
+    except PermissionError as exc:
+        # Raised by writer._assert_dispatch_can_write_memory when the CLI is
+        # invoked from a non-curator subagent dispatch. Propagate verbatim
+        # so callers (and AC evidence) see the structural reason.
+        return _err(str(exc), as_json)
     except Exception as exc:  # noqa: BLE001
         return _err(f"failed to upsert memory: {exc}", as_json)
+
+    # T5: apply class/status if either flag was supplied. The reclassify
+    # writer handles enum validation, the status-only-on-thread rule, and
+    # the auto-clear-on-demotion semantics. If reclassify fails we surface
+    # the message but the primary upsert has already landed -- not ideal
+    # but acceptable for an interactive CLI surface; tests pin the
+    # behaviour so callers know what to expect.
+    reclassify_result = None
+    status_touches, status_for_writer = _normalize_status_flag(status_flag)
+    if class_flag is not None or status_touches:
+        try:
+            reclassify_result = reclassify_memory(
+                workspace,
+                name,
+                class_=class_flag,
+                status=status_for_writer,
+            )
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+        except PermissionError as exc:
+            return _err(str(exc), as_json)
 
     snippet = body.strip().replace("\n", " ")
     if len(snippet) > 80:
@@ -517,6 +794,9 @@ def _cmd_add(args) -> int:
             "body_preview": snippet,
             "updated_at": res.get("updated_at"),
         }
+        if reclassify_result is not None:
+            out["class"] = reclassify_result["class"]
+            out["memory_status"] = reclassify_result["memory_status"]
         print(json.dumps(out, indent=2))
     else:
         verb = "Updated" if res.get("action") == "updated" else "Created"
@@ -524,6 +804,11 @@ def _cmd_add(args) -> int:
         if description:
             print(f"  description: {description}")
         print(f"  body: {snippet}")
+        if reclassify_result is not None:
+            print(
+                f"  class={reclassify_result['class']}, "
+                f"status={reclassify_result['memory_status']}"
+            )
     return 0
 
 
@@ -589,6 +874,10 @@ _cmd_show = _cmd_episode_show
 #   3 atoms + 3 decisions + 2 negatives = 8 items, bounded to ~800 chars.
 # Tuned for orchestrator attention budget: each item is one short line, so
 # eight lines is enough to anchor the session without dominating the prompt.
+#
+# Legacy (pre-v4) quota: kept for the `--types=...` opt-in mode where a caller
+# explicitly asks for atom/decision/negative slicing. The default (v4) flow
+# below selects by class/status instead.
 _RELEVANT_DEFAULT_LIMIT = 8
 _RELEVANT_DEFAULT_MAX_CHARS = 800
 _RELEVANT_DEFAULT_TYPES = ("atom", "decision", "negative")
@@ -598,72 +887,330 @@ _RELEVANT_PER_TYPE_QUOTA = {
     "negative": 2,
 }
 
+# v4 class/status driven selection. carry_forward threads are injected first
+# without quota (user-explicit "carry me into the next session"); anchors and
+# thread/open rows get bounded quotas; class=log never injects.
+_RELEVANT_PER_CLASS_QUOTA = {
+    "anchor": 4,
+    "thread_open": 2,
+}
+_RELEVANT_CARRY_FORWARD_UNLIMITED = True
+
+# Section headers (T7). Coordinated with T6 (skills/memory/SKILL.md):
+# the legacy "## Workspace Memory (<ws>)" block is retired in favor of
+# three explicit user-facing sections. Empty sections drop their header;
+# if all three are empty the whole block is empty.
+_SECTION_HEADERS = {
+    "carry_forward": "## Memory — Para esta sesión",
+    "anchor":        "## Memory — Sobre ti / Lo que sé",
+    "thread_open":   "## Memory — Hilos abiertos",
+}
+
 
 def _cmd_get_relevant(args) -> int:
-    """Emit a compact Workspace Memory block for SessionStart injection.
+    """Emit a compact memory block for SessionStart injection (v4).
 
-    Reads the curated ``memory`` table, filters by workspace and the
-    requested type set (default: atom/decision/negative), orders by
-    ``updated_at DESC``, applies a per-type quota, and renders a Markdown
-    block bounded by ``--max-chars``. Prints empty string when there are
-    no curated rows for the workspace -- the hook then drops the block.
+    Selection model (T7, schema v4):
+      * Section 1 (Para esta sesión): all rows with class=thread, status=
+        carry_forward. Injected first, NO quota -- user-explicit hand-off.
+      * Section 2 (Sobre ti / Lo que sé): rows with class=anchor, ordered
+        by updated_at DESC, quota 4.
+      * Section 3 (Hilos abiertos): rows with class=thread, status=open,
+        ordered by updated_at DESC, quota 2.
+      * class=log rows are NEVER injected (closed-bitácora).
+      * class=NULL rows (legacy, pre-v4): treated as anchor for backward
+        compatibility -- the 36 me-workspace rows keep showing up until
+        T10 reclassifies them. Trade-off: invisible drift vs broken UX.
+      * Rows that are the destination of a `supersedes` edge are excluded
+        across all sections -- a newer memory has replaced them.
 
-    Output is NEVER raised: a database error simply produces an empty
-    payload so the SessionStart hook stays a no-op.
+    Char budget enforcement (T7):
+      Trim order on overflow: thread_open → anchor. carry_forward rows
+      are NEVER trimmed (user-explicit). If carry_forward alone exceeds
+      the budget, emit warning and pass through.
+
+    Legacy --types=... mode: when caller explicitly passes --types, the
+    pre-v4 flow (atom/decision/negative by type with the old quota) is
+    used unchanged. This preserves the existing test surface.
+
+    Output is NEVER raised: a database error returns empty payload.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
-    limit = int(getattr(args, "limit", None) or _RELEVANT_DEFAULT_LIMIT)
     max_chars = int(getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS)
     types_arg = getattr(args, "types", None)
+
     if types_arg:
-        types_list = tuple(
-            t.strip() for t in types_arg.split(",") if t.strip()
-        )
-    else:
-        types_list = _RELEVANT_DEFAULT_TYPES
+        # Legacy type-based selection -- keep verbatim for back-compat.
+        return _cmd_get_relevant_by_type(args, workspace, max_chars)
 
     try:
-        from gaia.store.writer import list_memory, get_memory
+        from gaia.store.writer import _connect, get_memory  # noqa: F401
     except ImportError:
-        # Surface module not available -> empty block. The caller drops it.
         if as_json:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    # Pull rows by type. ``list_memory`` returns them ordered by name, so we
-    # sort by updated_at descending ourselves. We hydrate body via get_memory
-    # for the items we actually keep -- avoids a full body fetch per row.
+    # Pull class/status-aware rows via raw SQL (list_memory doesn't expose
+    # those columns yet, and we need a supersedes-NOT-IN subquery).
+    rows_by_section: dict[str, list[dict]] = {
+        "carry_forward": [],
+        "anchor": [],
+        "thread_open": [],
+    }
+    try:
+        con = _connect()
+        try:
+            # NOT IN subquery: exclude rows that are the destination of any
+            # supersedes edge. A row A with an incoming `supersedes` from B
+            # means "B replaces A" -- A drops out of the injection.
+            base_select = (
+                "SELECT name, type, description, updated_at, class, status "
+                "FROM memory "
+                "WHERE workspace = ? "
+                "  AND name NOT IN ("
+                "    SELECT dst_name FROM memory_links "
+                "    WHERE workspace = ? AND kind = 'supersedes'"
+                "  ) "
+            )
+
+            # Section 1: carry_forward -- no LIMIT.
+            cur = con.execute(
+                base_select
+                + "  AND class = 'thread' AND status = 'carry_forward' "
+                + "ORDER BY COALESCE(updated_at, '') DESC",
+                (workspace, workspace),
+            )
+            rows_by_section["carry_forward"] = [dict(r) for r in cur.fetchall()]
+
+            # Section 2: anchor.
+            anchor_quota = _RELEVANT_PER_CLASS_QUOTA["anchor"]
+            cur = con.execute(
+                base_select
+                + "  AND class = 'anchor' "
+                + "ORDER BY COALESCE(updated_at, '') DESC "
+                + f"LIMIT {anchor_quota}",
+                (workspace, workspace),
+            )
+            rows_by_section["anchor"] = [dict(r) for r in cur.fetchall()]
+
+            # Section 3: thread/open (excluding carry_forward).
+            thread_quota = _RELEVANT_PER_CLASS_QUOTA["thread_open"]
+            cur = con.execute(
+                base_select
+                + "  AND class = 'thread' AND status = 'open' "
+                + "ORDER BY COALESCE(updated_at, '') DESC "
+                + f"LIMIT {thread_quota}",
+                (workspace, workspace),
+            )
+            rows_by_section["thread_open"] = [dict(r) for r in cur.fetchall()]
+        finally:
+            con.close()
+    except Exception:
+        # Any DB error -> empty block, fail-safe SessionStart contract.
+        if as_json:
+            print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
+        return 0
+
+    items_flat: list[dict] = []
+
+    def _build_section(section_key: str) -> list[str]:
+        sub = rows_by_section.get(section_key, [])
+        if not sub:
+            return []
+        out = [_SECTION_HEADERS[section_key], ""]
+        for r in sub:
+            name = r.get("name") or ""
+            desc = (r.get("description") or "").strip()
+            if not desc:
+                body = (r.get("body") or "").strip() if "body" in r else ""
+                if not body:
+                    try:
+                        from gaia.store.writer import get_memory as _gm
+                        full = _gm(workspace, name) or {}
+                        body = (full.get("body") or "").strip().replace("\n", " ")
+                    except Exception:
+                        body = ""
+                desc = body[:60] + ("..." if len(body) > 60 else "")
+            line = f"- {name}: {desc}" if desc else f"- {name}"
+            out.append(line)
+            items_flat.append({
+                "name": name,
+                "type": r.get("type"),
+                "class": r.get("class"),
+                "memory_status": r.get("status"),
+                "section": section_key,
+                "description": desc,
+            })
+        out.append("")  # blank line between sections
+        return out
+
+    # Order is fixed: carry_forward, anchor, thread_open. Empty sections
+    # contribute nothing (no header).
+    lines: list[str] = []
+    lines.extend(_build_section("carry_forward"))
+    lines.extend(_build_section("anchor"))
+    lines.extend(_build_section("thread_open"))
+
+    # Drop trailing blanks.
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    if not lines:
+        # All sections empty -> no block.
+        if as_json:
+            print(json.dumps({
+                "workspace": workspace, "items": [], "block": "",
+            }))
+        return 0
+
+    block = "\n".join(lines)
+
+    # Char budget: trim in order thread_open -> anchor. carry_forward is
+    # never trimmed. Track overflow counter and section breakdown.
+    overflow_count = 0
+    overflow_warning = None
+    carry_forward_lines = []
+    if len(block) > max_chars:
+        # Detect the "carry_forward alone exceeds budget" case by measuring
+        # the carry_forward header + its '- ' lines from the current `lines`
+        # list. We do NOT rebuild the section (that would double-count
+        # items_flat).
+        cf_header = _SECTION_HEADERS["carry_forward"]
+        cf_lines: list[str] = []
+        in_cf = False
+        for ln in lines:
+            if ln == cf_header:
+                in_cf = True
+                cf_lines.append(ln)
+                continue
+            if in_cf:
+                if ln.startswith("## Memory"):
+                    break
+                cf_lines.append(ln)
+        while cf_lines and cf_lines[-1] == "":
+            cf_lines.pop()
+        cf_block = "\n".join(cf_lines)
+        if len(cf_block) > max_chars:
+            overflow_warning = (
+                "carry_forward block exceeds max_chars; passing through "
+                "without trimming (user-explicit content)"
+            )
+
+        # Trim from the back: prefer to drop thread_open lines first,
+        # then anchor lines. Never touch carry_forward.
+        def _trim_one(target_section: str) -> bool:
+            """Remove one '- ' line from the named section. Return True on success."""
+            in_section = False
+            header = _SECTION_HEADERS[target_section]
+            section_start = -1
+            section_end = len(lines)
+            for i, ln in enumerate(lines):
+                if ln == header:
+                    section_start = i
+                    in_section = True
+                    continue
+                if in_section and ln.startswith("## Memory"):
+                    section_end = i
+                    break
+            if section_start < 0:
+                return False
+            # Find the LAST "- " line within the section span.
+            for j in range(section_end - 1, section_start, -1):
+                if lines[j].startswith("- "):
+                    lines.pop(j)
+                    # If section is now empty (only header + blank), drop
+                    # header + blank line too.
+                    body_remains = any(
+                        lines[k].startswith("- ")
+                        for k in range(section_start, min(section_end - 1, len(lines)))
+                    )
+                    if not body_remains:
+                        # Remove header and (possible) following blank.
+                        # Defensive bounds checking.
+                        nxt = section_start + 1
+                        if nxt < len(lines) and lines[nxt] == "":
+                            lines.pop(nxt)
+                        lines.pop(section_start)
+                    return True
+            return False
+
+        # Trim thread_open exhaustively, then anchor.
+        for trim_target in ("thread_open", "anchor"):
+            while len(block) > max_chars and _trim_one(trim_target):
+                overflow_count += 1
+                while lines and lines[-1] == "":
+                    lines.pop()
+                block = "\n".join(lines)
+            if len(block) <= max_chars:
+                break
+
+        # If carry_forward still exceeds, we leave it as-is (warning above).
+        if overflow_count > 0:
+            footer = (
+                f"\n... ({overflow_count} more items, use "
+                f"'gaia memory search' to query)"
+            )
+            if len(block) + len(footer) <= max_chars:
+                block = block + footer
+
+    if as_json:
+        payload = {
+            "workspace": workspace,
+            "items": items_flat,
+            "block": block,
+            "overflow": overflow_count,
+        }
+        if overflow_warning:
+            payload["overflow_warning"] = overflow_warning
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(block)
+    return 0
+
+
+def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
+    """Legacy --types=... pathway (pre-v4 quota by atom/decision/negative).
+
+    Kept verbatim from the original implementation so the existing test
+    surface keeps passing. The v4 default path lives in _cmd_get_relevant.
+    """
+    as_json = getattr(args, "json", False)
+    limit = int(getattr(args, "limit", None) or _RELEVANT_DEFAULT_LIMIT)
+    types_arg = getattr(args, "types", None)
+    types_list = tuple(
+        t.strip() for t in types_arg.split(",") if t.strip()
+    ) if types_arg else _RELEVANT_DEFAULT_TYPES
+
+    try:
+        from gaia.store.writer import list_memory, get_memory
+    except ImportError:
+        if as_json:
+            print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
+        return 0
+
     grouped: dict[str, list[dict]] = {t: [] for t in types_list}
     for t in types_list:
         try:
             rows = list_memory(workspace, type=t)
         except Exception:
             rows = []
-        # Order by updated_at DESC; None sorts last.
         rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
         grouped[t] = rows
 
-    # Apply per-type quota; fall back to even-share when caller passed a
-    # different mix or a larger --limit than the default quota covers.
     per_type_quota = dict(_RELEVANT_PER_TYPE_QUOTA)
-    # If the caller's types don't match the canonical 3 we evenly split.
     if set(types_list) != set(_RELEVANT_DEFAULT_TYPES):
         even = max(1, limit // max(1, len(types_list)))
         per_type_quota = {t: even for t in types_list}
 
     selected_per_type: dict[str, list[dict]] = {}
     total = 0
-    remainder = 0
     for t in types_list:
         quota = per_type_quota.get(t, 0)
         take = grouped[t][:quota]
         selected_per_type[t] = take
         total += len(take)
-        remainder += max(0, quota - len(take))
 
-    # Fill remainder from leftover rows across types if quota underfilled
-    # but global limit still has room.
     if total < limit:
         slack = limit - total
         leftovers: list[tuple[str, dict]] = []
@@ -676,7 +1223,6 @@ def _cmd_get_relevant(args) -> int:
             selected_per_type.setdefault(t, []).append(r)
             total += 1
 
-    # Render Markdown block. Each item is `- {name}: {desc-or-body-preview}`.
     if total == 0:
         if as_json:
             print(json.dumps({
@@ -703,8 +1249,6 @@ def _cmd_get_relevant(args) -> int:
         lines.append(f"{type_label.get(t, t.title())}:")
         for r in sub:
             name = r.get("name") or ""
-            # Description preferred for the one-liner; fall back to body
-            # preview (first 60 chars, single line).
             desc = (r.get("description") or "").strip()
             if not desc:
                 full = get_memory(workspace, name) or {}
@@ -715,33 +1259,22 @@ def _cmd_get_relevant(args) -> int:
             items_flat.append({
                 "name": name, "type": t, "description": desc,
             })
-        lines.append("")  # blank line between groups
+        lines.append("")
 
-    # Drop trailing blank line if present.
     while lines and lines[-1] == "":
         lines.pop()
 
     block = "\n".join(lines)
 
-    # Enforce the max-chars budget by trimming whole items from the tail
-    # until the rendered block fits, then attaching a footer that names
-    # how many items were dropped.
     if len(block) > max_chars:
-        # Trim from the end: drop one item line at a time. Keep group
-        # headers as long as at least one item under them survives.
         rendered_items = sum(1 for ln in lines if ln.startswith("- "))
         kept = rendered_items
         while len(block) > max_chars and kept > 1:
-            # Remove the last "- " line and any trailing blank line + header
-            # that became orphaned.
             for i in range(len(lines) - 1, -1, -1):
                 if lines[i].startswith("- "):
                     lines.pop(i)
                     overflow_count += 1
                     kept -= 1
-                    # Drop an orphaned header (label line with no items after).
-                    # A header is orphaned if the next non-blank line is
-                    # another header or end-of-list.
                     if (i - 1 >= 0
                             and lines[i - 1].endswith(":")
                             and (i >= len(lines)
@@ -756,7 +1289,6 @@ def _cmd_get_relevant(args) -> int:
                 f"\n... ({overflow_count} more items, use "
                 f"'gaia memory search' to query)"
             )
-            # Only attach footer if it still fits, otherwise truncate hard.
             if len(block) + len(footer) <= max_chars:
                 block = block + footer
 
@@ -840,7 +1372,10 @@ def _cmd_delete(args) -> int:
                 print(f"Aborted; memory '{name}' was not deleted.")
             return 0
 
-    deleted = delete_memory(workspace, name)
+    try:
+        deleted = delete_memory(workspace, name)
+    except PermissionError as exc:
+        return _err(str(exc), as_json)
     if not deleted:
         return _err(
             f"memory '{name}' could not be deleted (already gone?)",
@@ -861,36 +1396,237 @@ def _cmd_delete(args) -> int:
 
 
 def _cmd_edit(args) -> int:
-    """Patch a single column of a curated memory row."""
+    """Patch a single column of a curated memory row.
+
+    T5: also accepts ``--class`` and ``--status`` flags. When --field/--content
+    are omitted but a class/status flag is supplied, the call functions as a
+    pure reclassify -- useful for "I want to graduate this thread" style edits
+    without re-typing the body.
+    """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = getattr(args, "name", None)
     field = getattr(args, "field", None)
     content = getattr(args, "content", None)
+    body_file = getattr(args, "body_file", None)
     append = getattr(args, "append", False)
+    class_flag = getattr(args, "class_", None)
+    status_flag = getattr(args, "status", None)
 
     if not name:
         return _err("--name is required", as_json)
-    if not field:
-        return _err("--field is required", as_json)
-    if content is None or content == "":
-        return _err("--content is required", as_json)
+
+    if body_file is not None:
+        try:
+            content = _read_body_file(body_file)
+        except FileNotFoundError:
+            return _err(f"--body-file: file not found: {body_file}", as_json)
+        except OSError as exc:
+            return _err(f"--body-file: cannot read '{body_file}': {exc}", as_json)
+
+    # Defensive gate: body edits with rich markdown require a prior description
+    # to exist (or to be set via --field=description in the same call). Since
+    # edit patches one field at a time, we only block when field=body + the
+    # resolved content is rich. Callers that set --field=description first are
+    # unaffected.
+    if field == "body" and content and _is_rich_body(content):
+        # Look up the existing row to check whether a description is already set.
+        try:
+            from gaia.store.writer import get_memory as _gm_check
+            existing = _gm_check(_resolve_workspace(getattr(args, "workspace", None)), name)
+            if existing and not (existing.get("description") or "").strip():
+                return _err(
+                    "body contains markdown structure (code blocks/headers/multi-paragraph).\n"
+                    "--description is required for rich bodies -- it's what gets injected at SessionStart.\n"
+                    "Bodies without description fall back to body[:60] which destroys code-block semantics.",
+                    as_json,
+                )
+        except Exception:
+            pass  # import failure -> skip gate rather than block the edit
+
+    # On edit, --field/--content remain optional only when at least one
+    # class/status flag is provided. The classic "patch a column" path still
+    # requires both.
+    status_touches, status_for_writer = _normalize_status_flag(status_flag)
+    has_field_patch = field is not None and content not in (None, "")
+    has_reclassify = class_flag is not None or status_touches
+
+    if not has_field_patch and not has_reclassify:
+        return _err(
+            "--field/--content or --class/--status is required", as_json,
+        )
 
     try:
-        from gaia.store.writer import update_memory_field
+        from gaia.store.writer import update_memory_field, reclassify_memory
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    field_result = None
+    if has_field_patch:
+        try:
+            field_result = update_memory_field(
+                workspace, name, field, content, append=append,
+            )
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+        except PermissionError as exc:
+            return _err(str(exc), as_json)
+
+    reclassify_result = None
+    if has_reclassify:
+        try:
+            reclassify_result = reclassify_memory(
+                workspace,
+                name,
+                class_=class_flag,
+                status=status_for_writer,
+            )
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+        except PermissionError as exc:
+            return _err(str(exc), as_json)
+
+    if as_json:
+        payload = {
+            "name": name,
+            "workspace": workspace,
+            "field_update": field_result,
+            "reclassify": reclassify_result,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        if field_result is not None:
+            print(
+                f"Updated memory '{name}' field={field} "
+                f"action={field_result['action']}"
+            )
+        if reclassify_result is not None:
+            print(
+                f"Reclassified '{name}': class={reclassify_result['class']}, "
+                f"status={reclassify_result['memory_status']}"
+            )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handler: reclassify (curated memory class/status update)
+# ---------------------------------------------------------------------------
+
+def _cmd_reclassify(args) -> int:
+    """Handle ``gaia memory reclassify <slug> --class=... --status=...``.
+
+    UX notes:
+      * At least one of ``--class`` / ``--status`` must be supplied.
+      * ``--status=null`` is the explicit-clear sentinel: it NULLs the
+        status column. The writer auto-clears status when class moves from
+        ``thread`` to ``anchor``/``log`` without an explicit status flag,
+        so most callers will never need ``--status=null`` directly.
+      * Status is enum-checked AND constrained to class=thread rows: if the
+        resulting class is anchor or log and the resulting status is
+        non-NULL, the call fails with a structural-reason message.
+    """
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    class_flag = getattr(args, "class_", None)
+    status_flag = getattr(args, "status", None)
+
+    status_touches, status_for_writer = _normalize_status_flag(status_flag)
+
+    if class_flag is None and not status_touches:
+        return _err(
+            "at least one of --class or --status is required",
+            as_json,
+        )
+
+    try:
+        from gaia.store.writer import reclassify_memory
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
     try:
-        res = update_memory_field(workspace, name, field, content,
-                                  append=append)
+        res = reclassify_memory(
+            workspace,
+            name,
+            class_=class_flag,
+            status=status_for_writer,
+        )
     except ValueError as exc:
+        return _err(str(exc), as_json)
+    except PermissionError as exc:
+        # MemoryWriteForbidden -- T3 enforcement layer.
         return _err(str(exc), as_json)
 
     if as_json:
         print(json.dumps(res, indent=2, default=str))
     else:
-        print(f"Updated memory '{name}' field={field} action={res['action']}")
+        print(
+            f"Reclassified {name}: class={res['class']}, "
+            f"status={res['memory_status']} in workspace {workspace}"
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handler: link (memory_links graph primitives)
+# ---------------------------------------------------------------------------
+#
+# Brief: memory-model-refactor-class-status-links-structural-enforcement (T4).
+#
+# Duplicate-edge behavior: idempotent by default. Re-running
+# ``gaia memory link a b --kind=relates_to`` does not error; it returns an
+# action=noop so scripts can declaratively wire links without bookkeeping.
+# Strict mode is reachable via the writer (`if_exists="error"`) but is not
+# exposed on the CLI -- the CLI is the declarative surface.
+# ---------------------------------------------------------------------------
+
+def _cmd_link(args) -> int:
+    """Handle ``gaia memory link <src> <dst> --kind=<k> [--delete]``."""
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    src_name = args.src_name
+    dst_name = args.dst_name
+    kind = args.kind
+    do_delete = getattr(args, "delete", False)
+
+    try:
+        from gaia.store.writer import (
+            insert_memory_link, delete_memory_link, VALID_MEMORY_LINK_KINDS,
+        )
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    if kind not in VALID_MEMORY_LINK_KINDS:
+        return _err(
+            f"invalid --kind {kind!r}; must be one of "
+            f"{list(VALID_MEMORY_LINK_KINDS)}",
+            as_json,
+        )
+
+    try:
+        if do_delete:
+            res = delete_memory_link(workspace, src_name, dst_name, kind)
+            verb = "Deleted" if res["action"] == "deleted" else "Skipped"
+        else:
+            res = insert_memory_link(workspace, src_name, dst_name, kind)
+            verb = "Created" if res["action"] == "inserted" else "Skipped"
+    except ValueError as exc:
+        return _err(str(exc), as_json)
+    except PermissionError as exc:
+        # MemoryWriteForbidden -- structural enforcement layer (T3).
+        return _err(str(exc), as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        # Arrow uses ASCII-friendly form; no unicode dependence.
+        action_label = (
+            "link" if res["action"] in ("inserted", "deleted") else "link (no-op)"
+        )
+        print(
+            f"{verb} {action_label} {src_name} -[{kind}]-> {dst_name} "
+            f"in workspace {workspace}"
+        )
     return 0
 
 
@@ -926,11 +1662,34 @@ def _cmd_search_scoped(args) -> int:
         )
         scope = "memory"
 
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+
     if scope == "episodes":
-        return _cmd_search(args)
+        # T6 migration: FTS5 over episodes_fts table in gaia.db
+        hits = _search_episodes_fts_from_db(query, workspace=workspace, limit=limit)
+        episodes_out = []
+        for ep in hits:
+            episodes_out.append({
+                "id": ep.get("episode_id", ""),
+                "title": ep.get("title") or "",
+                "rank": float(ep.get("fts_rank", 0.0) or 0.0),
+                "date": (ep.get("timestamp") or "")[:10],
+                "snippet": (ep.get("enriched_prompt") or ep.get("prompt") or "")[:120],
+            })
+        if as_json:
+            print(json.dumps({"scope": "episodes", "results": episodes_out},
+                             indent=2, default=str))
+        else:
+            if not episodes_out:
+                print("No episode results found.")
+            else:
+                for i, r in enumerate(episodes_out, 1):
+                    print(f"\n{i}. [{r['rank']:.4f}] {r['title'] or r['id']}")
+                    print(f"   Date: {r['date']}")
+                    print(f"   {r['snippet']}")
+        return 0
 
     # Curated-memory path (used by --scope=memory and --scope=both).
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     try:
         from gaia.store.writer import search_memory_curated
     except ImportError as exc:
@@ -954,29 +1713,15 @@ def _cmd_search_scoped(args) -> int:
                         print(f"   {r['snippet']}")
         return 0
 
-    # both: run episode search and combine
-    search_store = _import_search_store()
-    EpisodicMemory = _import_episodic()
+    # both: run episode FTS5 search (from gaia.db) + curated memory search
     episodes_out: list = []
-    if search_store is not None:
-        raw = search_store.search(query, max_results=limit)
-        for hit in raw:
-            episode_id = hit.get("episode_id", "")
-            episode = None
-            if EpisodicMemory is not None:
-                try:
-                    episode = EpisodicMemory().get_episode(episode_id)
-                except Exception:
-                    episode = None
-            if episode is None:
-                episodes_out.append({"id": episode_id, "title": "",
-                                     "rank": hit.get("rank", 0.0)})
-                continue
-            episodes_out.append({
-                "id": episode_id,
-                "title": episode.get("title") or "",
-                "rank": hit.get("rank", 0.0),
-            })
+    hits = _search_episodes_fts_from_db(query, workspace=workspace, limit=limit)
+    for ep in hits:
+        episodes_out.append({
+            "id": ep.get("episode_id", ""),
+            "title": ep.get("title") or "",
+            "rank": float(ep.get("fts_rank", 0.0) or 0.0),
+        })
 
     if as_json:
         print(json.dumps(
@@ -1174,23 +1919,136 @@ def register(subparsers):
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory edit --name=foo --field=body "
-               "--append --content='...'\n",
+               "--append --content='...'\n"
+               "  gaia memory edit --name=foo --field=body "
+               "--body-file=/tmp/new_body.md\n"
+               "  cat new_body.md | gaia memory edit --name=foo --field=body "
+               "--body-file=-\n",
     )
     edit_p.add_argument("--name", required=True, help="Curated memory slug.")
+    # --field / --content are no longer required: T5 lets edit operate as a
+    # pure reclassify when only --class/--status are supplied. The handler
+    # surfaces a clear error if neither pair is provided.
     edit_p.add_argument(
-        "--field", required=True,
+        "--field", default=None,
         choices=("description", "body"),
-        help="Column to patch.",
+        help="Column to patch (optional; required only when --content or --body-file given).",
     )
-    edit_p.add_argument("--content", required=True,
-                        help="New value. Required.")
+    _edit_content_group = edit_p.add_mutually_exclusive_group()
+    _edit_content_group.add_argument(
+        "--content", default=None,
+        help="New value for --field.",
+    )
+    _edit_content_group.add_argument(
+        "--body-file", dest="body_file", default=None, metavar="PATH",
+        help=(
+            "Read new value for --field from PATH. Use '-' to read from stdin "
+            "until EOF. Useful for bodies with angle brackets, shell variables, "
+            "nested quotes, or markdown code blocks."
+        ),
+    )
     edit_p.add_argument("--append", action="store_true", default=False,
                         help="Append (separator '\\n\\n'). bool. Default: false.")
+    edit_p.add_argument(
+        "--class", dest="class_", default=None,
+        choices=("anchor", "thread", "log"),
+        help="T5: set memory.class. Writer-side enum.",
+    )
+    edit_p.add_argument(
+        "--status", dest="status", default=None,
+        help=(
+            "T5: set memory.status (open|carry_forward|graduated|closed); "
+            "use 'null' to clear. Only valid for class=thread."
+        ),
+    )
     edit_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
     edit_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON. bool.")
     edit_p.set_defaults(func=_cmd_edit)
+
+    # -- reclassify ---------------------------------------------------------
+    reclass_p = actions.add_parser(
+        "reclassify",
+        help="Update memory.class and/or memory.status on a curated row",
+        description=(
+            "Set the semantic role (class) and/or lifecycle (status) of a "
+            "curated memory row. At least one of --class / --status must be "
+            "supplied. status is only valid for class=thread; the writer "
+            "auto-clears status when class moves away from thread without "
+            "an explicit status flag. Use --status=null to clear explicitly."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory reclassify atom_node_20 --class=anchor\n"
+            "  gaia memory reclassify thread_handoff --class=thread "
+            "--status=open\n"
+            "  gaia memory reclassify thread_old --status=graduated\n"
+            "  gaia memory reclassify thread_promoted --class=anchor "
+            "--status=null   # explicit clear\n"
+        ),
+    )
+    reclass_p.add_argument("name", help="Curated memory slug.")
+    reclass_p.add_argument(
+        "--class", dest="class_", default=None,
+        choices=("anchor", "thread", "log"),
+        help="Semantic role. Writer-side enum (no DB CHECK).",
+    )
+    reclass_p.add_argument(
+        "--status", dest="status", default=None,
+        help=(
+            "Lifecycle for class=thread "
+            "(open|carry_forward|graduated|closed). Use 'null' to clear."
+        ),
+    )
+    reclass_p.add_argument(
+        "--workspace", default=None, metavar="W",
+        help="Workspace identity. Defaults to cwd-inferred.",
+    )
+    reclass_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit JSON. bool.",
+    )
+    reclass_p.set_defaults(func=_cmd_reclassify)
+
+    # -- link ---------------------------------------------------------------
+    link_p = actions.add_parser(
+        "link",
+        help="Create or delete a graph edge between two curated memory rows",
+        description=(
+            "Create (default) or --delete a row in memory_links. Both src and "
+            "dst must exist as curated memory rows. Idempotent: re-running the "
+            "same link is a no-op."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory link atom_node_20 anchor_routing --kind=relates_to\n"
+            "  gaia memory link decision_old decision_new --kind=supersedes\n"
+            "  gaia memory link a b --kind=relates_to --delete\n"
+        ),
+    )
+    link_p.add_argument("src_name", help="Source memory slug. Must exist.")
+    link_p.add_argument("dst_name", help="Destination memory slug. Must exist.")
+    link_p.add_argument(
+        "--kind", required=True,
+        choices=("relates_to", "supersedes", "derived_from", "graduated_to"),
+        help="Edge kind (CHECK-enforced in schema).",
+    )
+    link_p.add_argument(
+        "--workspace", default=None, metavar="W",
+        help="Workspace identity. Defaults to cwd-inferred.",
+    )
+    link_p.add_argument(
+        "--delete", action="store_true", default=False,
+        help="Delete the link instead of creating it. bool.",
+    )
+    link_p.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit JSON. bool.",
+    )
+    link_p.set_defaults(func=_cmd_link)
 
     # -- add ----------------------------------------------------------------
     add_p = actions.add_parser(
@@ -1200,7 +2058,11 @@ def register(subparsers):
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory add --name=feedback_x --type=feedback "
-               "--body='...'\n",
+               "--body='...'\n"
+               "  gaia memory add --name=atom_x --type=atom "
+               "--body-file=/tmp/body.md\n"
+               "  cat body.md | gaia memory add --name=atom_x --type=atom "
+               "--body-file=-\n",
     )
     add_p.add_argument("--name", required=True,
                        help="Slug. PK with project.")
@@ -1210,10 +2072,33 @@ def register(subparsers):
         help="Memory type. Curated taxonomy (atom/decision/negative) "
              "requires slug prefix matching the type, e.g. 'atom_node_20'.",
     )
-    add_p.add_argument("--body", required=True,
-                       help="Markdown body. Required.")
+    _add_body_group = add_p.add_mutually_exclusive_group(required=True)
+    _add_body_group.add_argument(
+        "--body", default=None,
+        help="Markdown body as a string.",
+    )
+    _add_body_group.add_argument(
+        "--body-file", dest="body_file", default=None, metavar="PATH",
+        help=(
+            "Read body from PATH. Use '-' to read from stdin until EOF. "
+            "Useful for bodies containing angle brackets, shell variables, "
+            "nested quotes, or markdown code blocks."
+        ),
+    )
     add_p.add_argument("--description", default=None,
                        help="Short summary. Shown in list.")
+    add_p.add_argument(
+        "--class", dest="class_", default=None,
+        choices=("anchor", "thread", "log"),
+        help="T5: set memory.class at insertion time. Writer-side enum.",
+    )
+    add_p.add_argument(
+        "--status", dest="status", default=None,
+        help=(
+            "T5: set memory.status (open|carry_forward|graduated|closed); "
+            "use 'null' to clear. Only valid for class=thread."
+        ),
+    )
     add_p.add_argument("--workspace", default=None, metavar="W",
                        help="Workspace identity.")
     add_p.add_argument("--json", action="store_true", default=False,

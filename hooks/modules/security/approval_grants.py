@@ -55,11 +55,9 @@ two different approval_id values.  This is **by design**, not a bug:
     reused beyond the intent the user actually approved.
 
 Operators who want one consent to cover a batch of related commands should
-emit ``approval_request.batch_scope = "verb_family"``. This creates a
-SCOPE_VERB_FAMILY grant with ``multi_use=True`` that survives multiple
-matches until its TTL expires or the sub-agent stops. See
-``create_verb_family_grant()`` for the implementation and
-``orchestrator-approval/SKILL.md`` for the user-facing protocol.
+use the COMMAND_SET grant mechanism (see ``create_command_set_grant()``).
+Each command in the set is approved explicitly by the user and consumed
+individually.  The legacy verb_family path has been removed.
 """
 
 import json
@@ -80,7 +78,6 @@ from .approval_scopes import (
     ApprovalSignature,
     SCOPE_FILE_PATH,
     SCOPE_SEMANTIC_SIGNATURE,
-    SCOPE_VERB_FAMILY,
     SUPPORTED_SCOPE_TYPES,
     build_approval_signature,
     build_file_path_signature,
@@ -159,13 +156,12 @@ class ApprovalGrant:
         session_id: The Claude session that owns this grant.
         approved_verbs: Human-readable verb summary for logs/debugging.
         approved_scope: Original approval scope text from the user.
-        scope_type: Approval scope mode (exact, semantic, or verb_family).
+        scope_type: Approval scope mode (exact or semantic).
         scope_signature: Persisted ApprovalSignature payload for matching.
         granted_at: Unix timestamp when the grant was created.
         ttl_minutes: How long the grant is valid.
         used: Whether the grant has been consumed.
         multi_use: When True, the grant is NOT consumed after a single use.
-            Used by SCOPE_VERB_FAMILY grants for batch operations.
     """
     session_id: str = ""
     approved_verbs: List[str] = field(default_factory=list)
@@ -1621,89 +1617,185 @@ def activate_grants_for_session(
 
 
 # ============================================================================
-# Batch (Verb-Family) Grant Creation
+# Command-Set Grant Creation and Matching (M3 / D4 / D10)
 # ============================================================================
+# Replaces the SCOPE_VERB_FAMILY multi-use grant design.
+# A command_set grant binds an approval_id to an explicit list of commands
+# (each with a rationale). Matching is byte-for-byte (D10): no whitespace
+# normalization, no quote canonicalization, no shell expansion. Wrapping an
+# approved command (adding cd, redirect, pipe, flag) produces a different
+# string and requires fresh approval. Each item in the set is single-use.
 
-DEFAULT_BATCH_TTL_MINUTES = 10
+DEFAULT_COMMAND_SET_TTL_MINUTES = 10
 
 
-def create_verb_family_grant(
-    session_id: str,
-    base_cmd: str,
-    verb: str,
-    danger_category: str = "",
-    ttl_minutes: int = DEFAULT_BATCH_TTL_MINUTES,
-) -> Optional[Path]:
-    """Create a multi-use SCOPE_VERB_FAMILY grant directly (no pending phase).
+def create_command_set_grant(
+    command_set: list,
+    approval_id: str,
+    *,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    ttl_minutes: int = DEFAULT_COMMAND_SET_TTL_MINUTES,
+    db_path=None,
+) -> bool:
+    """Create a COMMAND_SET approval grant persisted to the DB.
 
-    Called when the user approves a batch operation.  The resulting grant
-    matches any command with the same ``base_cmd`` and ``verb``, regardless
-    of arguments or non-dangerous flags, and is NOT consumed after a single
-    use.  It expires after ``ttl_minutes``.
+    Each item in ``command_set`` is a dict with ``command`` (str) and
+    ``rationale`` (str).  The ``approval_id`` nonce identifies this grant;
+    it is the value the user sees in the APPROVAL_REQUEST and echoes back.
+
+    Matching at execution time is byte-for-byte (D10):
+    - No whitespace normalization
+    - No quote canonicalization
+    - No shell expansion
+    - No cd-prefix stripping
 
     Args:
-        session_id: The Claude session that owns this grant.
-        base_cmd: CLI base command (e.g., "gws", "kubectl").
-        verb: The mutative verb (e.g., "modify", "delete").
-        danger_category: Optional danger category for stricter matching.
-        ttl_minutes: Grant lifetime in minutes (default 10).
+        command_set: List of dicts [{"command": str, "rationale": str}, ...].
+        approval_id: Unique nonce (32-char hex from generate_nonce()).
+        session_id: CLAUDE_SESSION_ID (defaults to current session).
+        agent_id: Agent identifier for audit trail.
+        ttl_minutes: Grant lifetime (default 10 min). Enforced at query time.
+        db_path: Optional explicit DB path override (used by tests).
 
     Returns:
-        Path to the grant file, or None on failure.
+        True if the grant was created successfully, False on error.
     """
-    from .mutative_verbs import CATEGORY_UNKNOWN, CLI_FAMILY_LOOKUP
-
-    if not session_id or not base_cmd or not verb:
+    if not command_set or not approval_id:
         logger.error(
-            "create_verb_family_grant called with missing required args: "
-            "session_id=%s, base_cmd=%s, verb=%s",
-            session_id, base_cmd, verb,
+            "create_command_set_grant: missing required args "
+            "(command_set len=%d, approval_id=%r)",
+            len(command_set) if command_set else 0,
+            approval_id,
         )
-        return None
+        return False
 
-    resolved_category = danger_category if danger_category else CATEGORY_UNKNOWN
-    cli_family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
+    if session_id is None:
+        session_id = _get_session_id()
 
-    signature = ApprovalSignature(
-        scope_type=SCOPE_VERB_FAMILY,
-        base_cmd=base_cmd,
-        cli_family=cli_family,
-        danger_category=resolved_category,
-        verb=verb.lower(),
-        # Intentionally empty -- verb_family matching ignores these:
-        semantic_tokens=(),
-        normalized_flags=(),
-        dangerous_flags=(),
-        exact_tokens=(),
-    )
-
-    grant = ApprovalGrant(
-        session_id=session_id,
-        approved_verbs=[verb.lower()],
-        approved_scope=f"batch:{base_cmd} {verb}",
-        scope_type=SCOPE_VERB_FAMILY,
-        scope_signature=signature.to_dict(),
-        granted_at=time.time(),
-        ttl_minutes=ttl_minutes,
-        used=False,
-        confirmed=False,
-        multi_use=True,
-    )
+    from datetime import datetime, timezone, timedelta
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
-        grants_dir = _get_grants_dir()
-        grant_file = grants_dir / f"grant-{session_id}-batch-{int(time.time() * 1000)}.json"
-        grant_file.write_text(json.dumps(asdict(grant), indent=2))
-        logger.info(
-            "Verb-family batch grant created: base_cmd=%s, verb=%s, "
-            "ttl=%d min, session=%s, file=%s",
-            base_cmd, verb, ttl_minutes, session_id[:12], grant_file.name,
+        from gaia.store.writer import insert_approval_grant
+        result = insert_approval_grant(
+            approval_id=approval_id,
+            command_set=command_set,
+            agent_id=agent_id,
+            session_id=session_id,
+            scope="COMMAND_SET",
+            expires_at=expires_at,
+            db_path=db_path,
         )
-        return grant_file
+        if result.get("status") == "applied":
+            logger.info(
+                "command_set grant created: approval_id=%s, items=%d, ttl=%d min",
+                approval_id[:12], len(command_set), ttl_minutes,
+            )
+            return True
+        logger.error(
+            "command_set grant creation failed: %s", result.get("reason", "unknown")
+        )
+        return False
+    except Exception as exc:
+        logger.error("create_command_set_grant error: %s", exc)
+        return False
 
-    except Exception as e:
-        logger.error("Failed to create verb-family grant: %s", e)
-        return None
+
+def match_command_set_grant(
+    retried_command: str,
+    *,
+    session_id: str | None = None,
+    db_path=None,
+) -> tuple | None:
+    """Find an active COMMAND_SET grant containing ``retried_command``.
+
+    Matching is byte-for-byte (D10): the ``command`` field of each
+    command_set item is compared character-by-character against
+    ``retried_command``.  No normalization of any kind is applied.
+
+    The grant must:
+    - Have status PENDING (not CONSUMED, REVOKED, or EXPIRED)
+    - Not be past its expires_at timestamp
+    - Contain ``retried_command`` at an index that has NOT been consumed
+    - Belong to the current session_id
+
+    Args:
+        retried_command: The exact command string the agent wants to run.
+        session_id: CLAUDE_SESSION_ID (defaults to current session).
+        db_path: Optional explicit DB path override (used by tests).
+
+    Returns:
+        Tuple of (approval_id: str, index: int) if a match is found, else None.
+        The caller should call mark_command_set_item_consumed(approval_id, index)
+        after successful execution.
+    """
+    if session_id is None:
+        session_id = _get_session_id()
+
+    try:
+        from gaia.store.writer import list_approval_grants
+        from datetime import datetime, timezone
+
+        grants = list_approval_grants(
+            session_id=session_id,
+            status="PENDING",
+            db_path=db_path,
+        )
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        for grant in grants:
+            # Check expiry
+            expires_at = grant.get("expires_at")
+            if expires_at and expires_at < now_iso:
+                # Mark as expired in DB (best-effort)
+                try:
+                    from gaia.store.writer import update_approval_grant_status
+                    update_approval_grant_status(
+                        grant["approval_id"], "EXPIRED", db_path=db_path
+                    )
+                except Exception:
+                    pass
+                continue
+
+            # Scope check
+            if grant.get("scope") != "COMMAND_SET":
+                continue
+
+            command_set = []
+            try:
+                import json as _json
+                command_set = _json.loads(grant.get("command_set_json") or "[]")
+            except Exception:
+                continue
+
+            consumed_indexes = []
+            try:
+                import json as _json
+                consumed_indexes = _json.loads(grant.get("consumed_indexes_json") or "[]")
+            except Exception:
+                pass
+
+            for idx, item in enumerate(command_set):
+                if idx in consumed_indexes:
+                    continue
+                # Byte-for-byte match (D10) -- no normalization
+                if item.get("command") == retried_command:
+                    logger.info(
+                        "command_set grant matched: approval_id=%s, index=%d, command=%r",
+                        grant["approval_id"][:12], idx, retried_command[:80],
+                    )
+                    return (grant["approval_id"], idx)
+
+    except Exception as exc:
+        logger.error("match_command_set_grant error: %s", exc)
+
+    return None
+
+
 
 
 def _cleanup_grant(grant_file: Path) -> None:

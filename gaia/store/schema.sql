@@ -26,9 +26,10 @@ PRAGMA foreign_keys = ON;
 -- A workspace may contain zero or more git-bearing projects.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS workspaces (
-    name        TEXT NOT NULL PRIMARY KEY,  -- workspace name (canonical: host/owner/repo or directory basename)
-    identity    TEXT,                       -- identity: for git-bearing workspace = git remote URL normalized lowercase; for organizational workspace = name; scanner-owned
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))  -- scanner-owned
+    name          TEXT NOT NULL PRIMARY KEY,  -- workspace name (canonical: host/owner/repo or directory basename)
+    identity      TEXT,                       -- identity: for git-bearing workspace = git remote URL normalized lowercase; for organizational workspace = name; scanner-owned
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),  -- scanner-owned
+    last_scan_at  TEXT                        -- ISO8601 timestamp of last successful `gaia scan` run; NULL = never scanned; v7
 );
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_identity ON workspaces(identity);
@@ -416,6 +417,8 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria (
     evidence_type  TEXT,
     evidence_shape TEXT,
     artifact_path  TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'done', 'blocked')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
 
@@ -427,6 +430,8 @@ CREATE TABLE IF NOT EXISTS milestones (
     order_num   INTEGER NOT NULL,
     name        TEXT NOT NULL,
     description TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'done', 'blocked')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
 
@@ -463,6 +468,31 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id);
+
+-- ---------------------------------------------------------------------------
+-- evidence (three-tier storage model)
+-- ---------------------------------------------------------------------------
+-- Per-AC evidence rows. Two storage modes:
+--   inline: text IS NOT NULL, artifact_path IS NULL (payload <= 4096 bytes)
+--   blob:   text IS NULL, artifact_path IS NOT NULL (payload stored in FS)
+-- type CHECK enforces the evidence taxonomy. brief_id CASCADE cleans up rows.
+
+CREATE TABLE IF NOT EXISTS evidence (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    brief_id         INTEGER NOT NULL,
+    ac_id            TEXT NOT NULL,
+    task_id          TEXT,
+    type             TEXT NOT NULL CHECK (type IN ('text', 'file', 'command_output', 'url', 'screenshot')),
+    text             TEXT,
+    artifact_path    TEXT,
+    size_bytes       INTEGER,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    created_by_agent TEXT,
+    FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_brief ON evidence(brief_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_ac ON evidence(brief_id, ac_id);
 
 -- ---------------------------------------------------------------------------
 -- FTS5 mirror for briefs (objective / context / approach)
@@ -524,12 +554,17 @@ CREATE TABLE IF NOT EXISTS episodes (
     plan_status           TEXT,
     output_length         INTEGER,
     output_tokens_approx  INTEGER,
+    tier                  TEXT,                         -- security tier (T0/T1/T2/T3); v10 addition
     CHECK (plan_status IS NULL OR plan_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_workspace_timestamp ON episodes(workspace, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
+-- idx_episodes_tier and idx_episodes_tier_outcome are created by the migration on
+-- existing DBs (v9_to_v10.sql) and by the fresh-install variant (v9_to_v10_fresh.sql)
+-- on clean installs. They cannot be declared here because schema.sql runs before
+-- migrations, and existing DBs do not yet have the tier column at that point.
 
 CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
     episode_id UNINDEXED,
@@ -559,9 +594,47 @@ CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- episode_anomalies: structured anomaly records extracted from episodes
+-- (v10 addition: episodic-workflow-to-db AC-3)
+-- ---------------------------------------------------------------------------
+-- Each row is one anomaly extracted from an episode's context_metrics blob.
+-- Provides efficient type-filtered, time-windowed, and workspace-scoped
+-- anomaly queries without full-table JSON parsing.
+-- The payload column preserves the full original JSON for forward compat.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS episode_anomalies (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id  TEXT NOT NULL,              -- FK -> episodes.episode_id
+    workspace   TEXT NOT NULL,              -- denormalized for partition queries without JOIN
+    timestamp   TEXT NOT NULL,              -- denormalized from parent episode for time-range queries
+    type        TEXT NOT NULL,              -- e.g. "investigation_skip", "no_tool_use"
+    severity    TEXT,                       -- e.g. "warning", "error", "info"
+    message     TEXT,                       -- human-readable description
+    payload     TEXT,                       -- full JSON object (forward-compat for extra keys)
+    FOREIGN KEY (episode_id) REFERENCES episodes(episode_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_episode_anomalies_type      ON episode_anomalies(type);
+CREATE INDEX IF NOT EXISTS idx_episode_anomalies_workspace  ON episode_anomalies(workspace, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_episode_anomalies_episode    ON episode_anomalies(episode_id);
+
+-- ---------------------------------------------------------------------------
 -- memory: curated memory documents (project_*, user_*, feedback_* markdown notes)
 -- Note: name prefix "project_" is a memory category name, unrelated to projects table.
 -- ---------------------------------------------------------------------------
+--
+-- Schema v4 (added 2026-05-22): two new nullable columns plus the memory_links
+-- table for graph primitives.
+-- Schema v11 (2026-05-26): memory.class promoted to NOT NULL with CHECK
+--   constraint. All pre-v4 NULL rows were reclassified by task #2 before
+--   the v10->v11 migration ran the table rebuild. Writer-side enforcement
+--   remains but DDL now also enforces the invariant.
+--
+--   class   -- semantic role of the memory document. NOT NULL since v11.
+--              Allowed values: 'anchor', 'thread', 'log'.
+--   status  -- lifecycle marker for class=thread rows ({open,carry_forward,
+--              graduated,closed}). NULL for class=anchor/log rows.
+--
 CREATE TABLE IF NOT EXISTS memory (
     workspace         TEXT NOT NULL,  -- FK -> workspaces.name
     name              TEXT NOT NULL,
@@ -570,12 +643,19 @@ CREATE TABLE IF NOT EXISTS memory (
     body              TEXT NOT NULL,
     origin_session_id TEXT,
     updated_at        TEXT,
+    class             TEXT NOT NULL DEFAULT 'log' CHECK (class IN ('anchor', 'thread', 'log')),  -- v4/v11
+    status            TEXT,  -- v4: lifecycle for class=thread (open|carry_forward|graduated|closed)
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_workspace ON memory(workspace);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
+-- Note: idx_memory_class_status is NOT declared here. It is created by
+-- scripts/migrations/v3_to_v4.sql after the columns exist on the live DB.
+-- Declaring it here would parse-fail on v3 DBs during the schema.sql replay
+-- because the index references columns that schema.sql declares but
+-- `CREATE TABLE IF NOT EXISTS` does not add to pre-existing tables.
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     workspace UNINDEXED,
@@ -602,6 +682,28 @@ CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN
     INSERT INTO memory_fts(rowid, workspace, name, description, body)
     VALUES (new.rowid, new.workspace, new.name, new.description, new.body);
 END;
+
+-- ---------------------------------------------------------------------------
+-- memory_links (v4): graph primitives between curated memory rows.
+-- kind enum enforced via CHECK because it is a fresh table -- no rebuild risk.
+--   relates_to     -- general association
+--   supersedes     -- src replaces dst; injector excludes rows that are
+--                     dst of an active supersedes edge
+--   derived_from   -- src is a refinement / instance of dst
+--   graduated_to   -- thread row graduated into an anchor row
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS memory_links (
+    workspace  TEXT NOT NULL,  -- FK -> workspaces.name
+    src_name   TEXT NOT NULL,
+    dst_name   TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('relates_to', 'supersedes', 'derived_from', 'graduated_to')),
+    created_at TEXT,
+    PRIMARY KEY (workspace, src_name, dst_name, kind),
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS memory_links_src ON memory_links(workspace, src_name);
+CREATE INDEX IF NOT EXISTS idx_memory_links_dst_kind ON memory_links(workspace, dst_name, kind);
 
 -- ---------------------------------------------------------------------------
 -- project_context_contracts: project-context.json reconstructed as (workspace, contract) rows
@@ -649,6 +751,105 @@ CREATE TABLE IF NOT EXISTS harness_events (
 
 CREATE INDEX IF NOT EXISTS idx_harness_events_workspace_ts ON harness_events(workspace, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_harness_events_type ON harness_events(type);
+
+-- ---------------------------------------------------------------------------
+-- approval_grants: DB-backed store for command_set approval grants (v7 / M3)
+-- Replaces the filesystem JSON store (.claude/cache/approvals/).
+-- Per D5/D10: no TTL column (enforced at query time via created_at + 10 min);
+-- byte-for-byte command match per command_set item; each item is single-use.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS approval_grants (
+    approval_id          TEXT PRIMARY KEY,           -- nonce, e.g. 32-char hex
+    agent_id             TEXT,                       -- agent that initiated the request
+    session_id           TEXT,                       -- CLAUDE_SESSION_ID at grant time
+    command_set_json     TEXT NOT NULL,              -- JSON array of {command, rationale}
+    scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',  -- grant scope type
+    created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    expires_at           TEXT,                       -- ISO8601 or NULL (TTL enforced at query time)
+    status               TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|CONSUMED|REVOKED|EXPIRED
+    consumed_indexes_json TEXT,                      -- JSON array of consumed command_set indexes
+    consumed_at          TEXT,                       -- ISO8601 when all items consumed
+    revoked_at           TEXT                        -- ISO8601 when explicitly revoked
+);
+
+CREATE INDEX IF NOT EXISTS idx_approval_grants_agent   ON approval_grants(agent_id);
+CREATE INDEX IF NOT EXISTS idx_approval_grants_session ON approval_grants(session_id);
+CREATE INDEX IF NOT EXISTS idx_approval_grants_status  ON approval_grants(status);
+
+-- ---------------------------------------------------------------------------
+-- agent_contract_handoffs: persisted SubagentStop contract envelopes (v9/M4)
+-- Each row captures one agent session's closing contract envelope.
+-- brief_id is NULLABLE -- agents without a brief context still produce a row.
+-- EXTENSION_POINT: state-machine-completion can query WHERE brief_id=N.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id         TEXT NOT NULL,               -- e.g. "a1b2c3d4e5"
+    session_id       TEXT,                        -- CLAUDE_SESSION_ID at SubagentStop time
+    workspace        TEXT NOT NULL,               -- FK -> workspaces.name
+    brief_id         INTEGER,                     -- NULLABLE FK -> briefs.id; EXTENSION_POINT
+    task_status      TEXT NOT NULL,               -- resolved plan_status from contract envelope
+    raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (workspace) REFERENCES workspaces(name),
+    FOREIGN KEY (brief_id)  REFERENCES briefs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_workspace ON agent_contract_handoffs(workspace);
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_brief     ON agent_contract_handoffs(brief_id);
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_session   ON agent_contract_handoffs(session_id);
+
+-- ---------------------------------------------------------------------------
+-- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)
+-- CASCADE-deletes when the parent handoff row is removed.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_contract_handoff_approvals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    handoff_id  INTEGER NOT NULL,                -- FK -> agent_contract_handoffs.id
+    approval_id TEXT NOT NULL,                   -- FK -> approval_grants.approval_id
+    decision    TEXT NOT NULL CHECK (decision IN ('APPROVED', 'REJECTED', 'EXPIRED', 'REVOKED')),
+    decided_at  TEXT NOT NULL,
+    FOREIGN KEY (handoff_id)  REFERENCES agent_contract_handoffs(id) ON DELETE CASCADE,
+    FOREIGN KEY (approval_id) REFERENCES approval_grants(approval_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoff_approvals_handoff ON agent_contract_handoff_approvals(handoff_id);
+
+-- ---------------------------------------------------------------------------
+-- project_context_contracts_history: audit trail for PCC mutations (v9/M4)
+-- trg_pcc_history fires AFTER UPDATE on project_context_contracts to capture
+-- before/after payloads at the SQL layer.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_context_contracts_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_key        TEXT NOT NULL,            -- stores project_context_contracts.contract_name value
+    workspace           TEXT NOT NULL,            -- FK -> workspaces.name
+    before_payload_json TEXT,                     -- NULL on first insert (no prior value)
+    after_payload_json  TEXT NOT NULL,            -- new payload value
+    changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    changed_by_agent    TEXT,                     -- optional: GAIA_DISPATCH_AGENT at write time
+    FOREIGN KEY (workspace) REFERENCES workspaces(name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pcc_history_contract ON project_context_contracts_history(contract_key);
+
+-- trg_pcc_history: fires AFTER UPDATE on project_context_contracts to capture
+-- before/after payloads at the SQL layer.
+-- Fixed in v11: OLD.contract_key -> OLD.contract_name (PCC PK column name),
+--               OLD/NEW.payload_json -> OLD/NEW.payload (PCC payload column name).
+CREATE TRIGGER IF NOT EXISTS trg_pcc_history
+AFTER UPDATE ON project_context_contracts
+BEGIN
+    INSERT INTO project_context_contracts_history (
+        contract_key, workspace, before_payload_json, after_payload_json, changed_at
+    ) VALUES (
+        OLD.contract_name,
+        OLD.workspace,
+        OLD.payload,
+        NEW.payload,
+        strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    );
+END;
 
 -- ---------------------------------------------------------------------------
 -- schema_version: migration ledger.

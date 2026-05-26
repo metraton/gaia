@@ -231,22 +231,29 @@ def _run_verification(claude_dir: Path) -> dict:
         checks.append({"name": "python3", "ok": False})
         issues.append("Python 3 not found (required for hooks)")
 
-    # 3. project-context.json
-    ctx_path = claude_dir / "project-context" / "project-context.json"
-    if ctx_path.exists():
+    # 3. project-context contracts (T1.3: DB-backed read).
+    # Reads from project_context_contracts table in gaia.db instead of
+    # the legacy project-context.json file.
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+        ws = _project_current(cwd=claude_dir.parent)
+        con = _store_connect()
         try:
-            ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
-            sections = len(ctx.get("sections", {}))
-            ok = sections >= 3
-            checks.append({"name": "project-context.json", "ok": ok, "detail": f"{sections} sections"})
-            if not ok:
-                issues.append("project-context.json has fewer than 3 sections")
-        except (json.JSONDecodeError, OSError):
-            checks.append({"name": "project-context.json", "ok": False})
-            issues.append("project-context.json is invalid JSON")
-    else:
-        checks.append({"name": "project-context.json", "ok": False})
-        issues.append("project-context.json not found (run `gaia scan`)")
+            row = con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts WHERE workspace = ?",
+                (ws,),
+            ).fetchone()
+            contract_count = row[0] if row else 0
+        finally:
+            con.close()
+        ok = contract_count >= 3
+        checks.append({"name": "project-context", "ok": ok, "detail": f"{contract_count} contracts"})
+        if not ok:
+            issues.append("project-context has fewer than 3 contracts in DB (run `gaia scan`)")
+    except Exception as exc:
+        checks.append({"name": "project-context", "ok": False})
+        issues.append(f"project-context DB read error: {exc}")
 
     # 4. Config files
     config_files = ["git_standards.json", "universal-rules.json", "surface-routing.json"]

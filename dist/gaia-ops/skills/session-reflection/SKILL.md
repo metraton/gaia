@@ -140,20 +140,31 @@ The skill *instructions* (this file) can be longer; the *output* cannot.
 
 After presenting the reflection, you may offer to save what is worth
 keeping. If the user accepts, persist via `gaia memory add` UPSERT against
-an entry like `project_session_<YYYY-MM-DD>_<topic>`:
+an entry like `project_session_<YYYY-MM-DD>_<topic>`. Use
+`--body-file` for any multi-line or markdown-structured body:
 
 ```bash
+# Write body to a temp file, then persist:
 gaia memory add \
   --name="project_session_2026-05-06_<topic>" \
   --type="project" \
   --description="<one-line summary of the arc>" \
-  --body="<reflection body, expanded if useful>"
+  --body-file=/tmp/reflection_body.md
+
+# Or via heredoc to stdin:
+cat <<'EOF' | gaia memory add \
+  --name="project_session_2026-05-06_<topic>" \
+  --type="project" \
+  --description="<one-line summary of the arc>" \
+  --body-file=-
+<reflection body here>
+EOF
 ```
 
 Never persist without explicit user consent. The reflection itself does
 not write anywhere -- it is offered, the user accepts or declines.
 
-See `memory-curation/SKILL.md` for the full schema and UPSERT semantics.
+See `memory/SKILL.md` for the full schema and UPSERT semantics.
 
 ## Anti-Patterns
 
@@ -179,7 +190,7 @@ See `memory-curation/SKILL.md` for the full schema and UPSERT semantics.
 Earlier iterations of this skill suggested writing to `MEMORY.md` directly.
 That path is **legacy** -- the curated memory layer is now the `memory`
 table in the Gaia substrate (`~/.gaia/gaia.db`), accessed through
-`gaia memory add`. See `memory-curation/SKILL.md`.
+`gaia memory add`. See `memory/SKILL.md`.
 
 If you find code, docs, or other skills that still describe writing
 reflections to `MEMORY.md` or `~/.claude/projects/.../memory/*.md`, flag

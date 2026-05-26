@@ -1,17 +1,22 @@
 """
 Workflow metrics capture and persistence.
 
-Renamed from metrics_recorder.py for clarity.
+Renamed from metrics_recorder.py for clarity. T4 of brief
+``episodic-workflow-to-db`` removed the JSONL file writers from this module
+-- ``run-snapshots.jsonl`` and ``metrics.jsonl`` are no longer produced. The
+signals those files captured (tier, context_snapshot, default_skills_snapshot,
+plus the full metrics dict) are now persisted on the ``episodes`` table by
+``hooks/modules/memory/episode_writer.write()`` via ``store_episode()``, which
+calls ``gaia.store.writer.insert_episode()``.
 
 Provides:
-    - get_workflow_memory_dir(): Resolve workflow memory directory
-    - record(): Build metrics dict, write to JSONL
+    - get_workflow_memory_dir(): Resolve workflow memory directory (kept for
+      readers and signal flag files; T6 retires it for writes).
+    - record(): Build metrics dict and return it. No filesystem side effects.
 """
 
-import json
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,13 +39,6 @@ def get_workflow_memory_dir() -> Path:
     if base_path:
         return Path(base_path) / "project-context" / "workflow-episodic-memory"
     return get_plugin_data_dir() / "project-context" / "workflow-episodic-memory"
-
-
-def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
-    """Append one JSON record per line."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
-        f.write(json.dumps(payload) + "\n")
 
 
 def _parse_frontmatter(text: str) -> Dict[str, Any]:
@@ -139,32 +137,6 @@ def load_agent_runtime_profile(agent_type: str) -> Dict[str, Any]:
     }
 
 
-def record_agent_skill_snapshot(
-    agent_type: str,
-    session_context: Optional[Dict[str, Any]] = None,
-    task_description: str = "",
-) -> Dict[str, Any]:
-    """Persist a historical snapshot of an agent's runtime defaults."""
-    session_context = session_context or {}
-    profile = load_agent_runtime_profile(agent_type)
-    snapshot = {
-        "timestamp": session_context.get("timestamp", datetime.now().isoformat()),
-        "session_id": session_context.get("session_id", ""),
-        "agent": profile.get("agent", agent_type or "unknown"),
-        "task_description": task_description[:200],
-        "model": profile.get("model", ""),
-        "tools": profile.get("tools", []),
-        "skills": profile.get("skills", []),
-        "skills_count": profile.get("skills_count", 0),
-    }
-
-    try:
-        _append_jsonl(get_workflow_memory_dir() / "agent-skills.jsonl", snapshot)
-    except Exception as exc:
-        logger.debug("Could not persist agent skill snapshot: %s", exc)
-
-    return snapshot
-
 
 def record(
     task_info: Dict[str, Any],
@@ -255,38 +227,13 @@ def record(
         metrics["compliance_score"] = compliance_result.total
         metrics["compliance_grade"] = compliance_result.grade
 
-    run_snapshot = {
-        "timestamp": metrics["timestamp"],
-        "session_id": metrics["session_id"],
-        "task_id": metrics["task_id"],
-        "agent_id": metrics["agent_id"],
-        "agent": metrics["agent"],
-        "tier": metrics["tier"],
-        "plan_status": metrics["plan_status"],
-        "context_snapshot": context_snapshot,
-        "context_updated": metrics["context_updated"],
-        "context_sections_updated": metrics["context_sections_updated"],
-        "context_rejected_sections": metrics["context_rejected_sections"],
-        "default_skills_snapshot": default_skills_snapshot,
-        "context_anchor_hits": anchor_hits,
-        "context_anchor_hit_rate": anchor_hits.get("hit_rate") if anchor_hits else None,
-    }
-
-    try:
-        workflow_memory_dir = get_workflow_memory_dir()
-        workflow_memory_dir.mkdir(parents=True, exist_ok=True)
-        _append_jsonl(workflow_memory_dir / "run-snapshots.jsonl", run_snapshot)
-    except Exception as exc:
-        logger.debug("Could not persist run telemetry snapshot: %s", exc)
-
-    # Save to workflow memory (gated behind env var; default: no write)
-    if os.environ.get("GAIA_WRITE_WORKFLOW_METRICS") == "1":
-        workflow_memory_dir = get_workflow_memory_dir()
-        workflow_memory_dir.mkdir(parents=True, exist_ok=True)
-
-        metrics_file = workflow_memory_dir / "metrics.jsonl"
-        with open(metrics_file, "a") as f:
-            f.write(json.dumps(metrics) + "\n")
+    # T4 of brief episodic-workflow-to-db removed the run-snapshots.jsonl
+    # and metrics.jsonl writers. The signals those files captured (tier,
+    # context_snapshot, default_skills_snapshot, plan_status, agent,
+    # commands_executed, exit_code) are persisted on the ``episodes`` row
+    # written by hooks/modules/memory/episode_writer.write() via
+    # store_episode(), which the audit pipeline calls with this dict as
+    # workflow_metrics + context["metrics"]. No filesystem side effects here.
 
     logger.debug(
         "Captured workflow metrics: %s (duration: %sms, exit: %s, commands: %s)",

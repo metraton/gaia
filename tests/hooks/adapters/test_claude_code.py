@@ -478,7 +478,10 @@ class TestAdaptSubagentStopSessionId:
         )
         _install_stub(
             "modules.context.context_writer",
-            {"process_context_updates": lambda *_a, **_k: None},
+            {
+                "process_context_updates": lambda *_a, **_k: None,
+                "process_update_contracts": lambda *_a, **_k: None,
+            },
         )
         _install_stub(
             "modules.memory.episode_writer", {"write": lambda *_a, **_k: None}
@@ -574,6 +577,7 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
                 ),
                 "validate_approval_request": lambda *_a, **_k: None,
                 "validate_verbatim_outputs_consistency": lambda *_a, **_k: None,
+                "_resolve_status": lambda *_a, **_k: "APPROVAL_REQUEST",
             },
         )
         _install_stub(
@@ -616,7 +620,10 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         )
         _install_stub(
             "modules.context.context_writer",
-            {"process_context_updates": lambda *_a, **_k: None},
+            {
+                "process_context_updates": lambda *_a, **_k: None,
+                "process_update_contracts": lambda *_a, **_k: None,
+            },
         )
         _install_stub(
             "modules.memory.episode_writer", {"write": lambda *_a, **_k: None}

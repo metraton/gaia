@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -23,6 +24,22 @@ if str(BIN_DIR) not in sys.path:
     sys.path.insert(0, str(BIN_DIR))
 
 import cli.status as status_mod
+
+
+# ---------------------------------------------------------------------------
+# Fake episodic data helpers
+# ---------------------------------------------------------------------------
+
+_FAKE_EPISODES = [
+    {"agent": "developer", "timestamp": "2026-04-15T09:00:00Z", "plan_status": "COMPLETE"},
+    {"agent": "terraform-architect", "timestamp": "2026-04-15T09:30:00Z", "plan_status": "BLOCKED"},
+]
+
+_FAKE_EPISODIC_INDEX = {
+    "episodes": _FAKE_EPISODES,
+    "last_agent": _FAKE_EPISODES[-1],
+    "source": "gaia.db",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -87,8 +104,18 @@ class TestCollectStatus:
     """Tests for the internal _collect_status function."""
 
     def test_full_data(self, project_dir):
-        """All data sources present -- should read them all correctly."""
-        status = status_mod._collect_status(project_dir)
+        """All data sources present -- should read them all correctly.
+
+        T6 migration: _read_episodic_index and _get_context_last_updated now
+        read gaia.db instead of legacy files. Patch both to return controlled
+        data; the fixture still provides pending-index.json and signals/ for
+        the non-episode assertions.
+        """
+        with patch.object(status_mod, "_read_episodic_index", return_value=_FAKE_EPISODIC_INDEX):
+            with patch.object(
+                status_mod, "_get_context_last_updated", return_value="2026-04-15T10:00:00Z"
+            ):
+                status = status_mod._collect_status(project_dir)
 
         assert status["pending_count"] == 3
         assert status["anomaly_count"] == 1
@@ -122,10 +149,16 @@ class TestCmdStatusHuman:
     """Test human-readable output mode."""
 
     def test_prints_status(self, project_dir, monkeypatch, capsys):
-        """Human output should contain key labels."""
-        monkeypatch.chdir(project_dir)
-        args = SimpleNamespace(json=False, subcommand="status")
-        rc = status_mod.cmd_status(args)
+        """Human output should contain key labels.
+
+        T6 migration: patch _read_episodic_index so episode data comes from
+        controlled fake rows (not gaia.db), and patch _find_project_root to
+        point at project_dir so pending/anomaly fixtures are also loaded.
+        """
+        with patch.object(status_mod, "_find_project_root", return_value=project_dir):
+            with patch.object(status_mod, "_read_episodic_index", return_value=_FAKE_EPISODIC_INDEX):
+                args = SimpleNamespace(json=False, subcommand="status")
+                rc = status_mod.cmd_status(args)
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -141,10 +174,14 @@ class TestCmdStatusHuman:
         assert "2 episodes" in out
 
     def test_no_claude_dir(self, no_project, monkeypatch, capsys):
-        """Should return 1 when .claude/ is missing."""
-        monkeypatch.chdir(no_project)
-        args = SimpleNamespace(json=False, subcommand="status")
-        rc = status_mod.cmd_status(args)
+        """Should return 1 when .claude/ is missing.
+
+        Patch _find_project_root to return no_project so _find_project_root
+        does not walk up to the real workspace .claude/ directory.
+        """
+        with patch.object(status_mod, "_find_project_root", return_value=no_project):
+            args = SimpleNamespace(json=False, subcommand="status")
+            rc = status_mod.cmd_status(args)
 
         assert rc == 1
         out = capsys.readouterr().out
@@ -187,10 +224,14 @@ class TestCmdStatusJson:
         assert data["pending_count"] == 3
 
     def test_json_no_claude_dir(self, no_project, monkeypatch, capsys):
-        """--json with no .claude/ should output error JSON."""
-        monkeypatch.chdir(no_project)
-        args = SimpleNamespace(json=True, subcommand="status")
-        rc = status_mod.cmd_status(args)
+        """--json with no .claude/ should output error JSON.
+
+        Patch _find_project_root to return no_project so the walker does not
+        resolve to the real workspace .claude/ directory.
+        """
+        with patch.object(status_mod, "_find_project_root", return_value=no_project):
+            args = SimpleNamespace(json=True, subcommand="status")
+            rc = status_mod.cmd_status(args)
 
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
@@ -217,24 +258,18 @@ class TestMemoryV2Stats:
     """Test enhanced memory line with indexed count and avg_score."""
 
     def test_status_json_includes_indexed(self, project_dir, monkeypatch, capsys):
-        """JSON output must include 'indexed' key."""
-        # Monkeypatch search_store.count() to return a predictable value
-        import types
+        """JSON output must include 'indexed' key with predictable count.
 
-        fake_search_store = types.ModuleType("tools.memory.search_store")
-        fake_search_store.count = lambda: 42
+        T6 migration: indexed count now comes from episodes_fts in gaia.db.
+        Patch _get_memory_v2_stats directly to return a controlled value so
+        the test is independent of the live DB state.
+        """
+        fake_stats = {"indexed": 42, "avg_score": None}
 
-        fake_scoring = types.ModuleType("tools.memory.scoring")
-        fake_scoring.score_memory = lambda days_old, retrieval_count, **kw: 0.5
-
-        monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
-        monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_search_store)
-        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-
-        monkeypatch.chdir(project_dir)
-        args = SimpleNamespace(json=True, subcommand="status")
-        rc = status_mod.cmd_status(args)
+        with patch.object(status_mod, "_find_project_root", return_value=project_dir):
+            with patch.object(status_mod, "_get_memory_v2_stats", return_value=fake_stats):
+                args = SimpleNamespace(json=True, subcommand="status")
+                rc = status_mod.cmd_status(args)
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
@@ -242,34 +277,35 @@ class TestMemoryV2Stats:
         assert data["indexed"] == 42
 
     def test_status_memory_line_shows_indexed(self, project_dir, monkeypatch, capsys):
-        """Human output memory line must contain 'indexed'."""
-        import types
+        """Human output memory line must contain 'indexed'.
 
-        fake_search_store = types.ModuleType("tools.memory.search_store")
-        fake_search_store.count = lambda: 7
+        T6 migration: patch _get_memory_v2_stats for predictable output.
+        """
+        fake_stats = {"indexed": 7, "avg_score": 0.75}
 
-        fake_scoring = types.ModuleType("tools.memory.scoring")
-        fake_scoring.score_memory = lambda days_old, retrieval_count, **kw: 0.75
-
-        monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
-        monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_search_store)
-        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-
-        monkeypatch.chdir(project_dir)
-        args = SimpleNamespace(json=False, subcommand="status")
-        rc = status_mod.cmd_status(args)
+        with patch.object(status_mod, "_find_project_root", return_value=project_dir):
+            with patch.object(status_mod, "_get_memory_v2_stats", return_value=fake_stats):
+                args = SimpleNamespace(json=False, subcommand="status")
+                rc = status_mod.cmd_status(args)
 
         assert rc == 0
         out = capsys.readouterr().out
         assert "indexed" in out
 
     def test_get_memory_v2_stats_import_failure(self, project_dir, monkeypatch):
-        """When tools.memory is not importable, returns safe defaults."""
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", None)
-        monkeypatch.setitem(sys.modules, "tools.memory.scoring", None)
+        """When gaia.store.writer._connect raises, returns safe defaults.
 
-        stats = status_mod._get_memory_v2_stats(project_dir)
+        T6 migration: _get_memory_v2_stats no longer uses tools.memory.search_store;
+        it queries gaia.db via _connect. Simulate failure by patching _connect to raise.
+        """
+        import gaia.store.writer as _writer_mod
+
+        def _raise():
+            raise Exception("simulated DB unavailable")
+
+        with patch.object(_writer_mod, "_connect", _raise):
+            stats = status_mod._get_memory_v2_stats(project_dir)
+
         assert stats["indexed"] == 0
         assert stats["avg_score"] is None
 

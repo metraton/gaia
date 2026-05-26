@@ -1047,18 +1047,12 @@ class ClaudeCodeAdapter(HookAdapter):
         Falls back to session-wide activation when no nonce is present in
         the answer (backward compatibility with older approval labels).
 
-        When the answer also contains "batch", a SCOPE_VERB_FAMILY multi-use
-        grant is created alongside the normal semantic grants.  This allows
-        batch operations (e.g., modifying hundreds of emails) to proceed
-        without per-command approval.
-
         Never blocks (no exceptions raised to caller).
         """
         from modules.security.approval_grants import (
             activate_cross_session_pending,
             activate_grants_for_session,
             activate_pending_approval,
-            create_verb_family_grant,
             extract_nonce_from_label,
             get_pending_approvals_for_session,
             load_pending_by_nonce_prefix,
@@ -1087,9 +1081,6 @@ class ClaudeCodeAdapter(HookAdapter):
             )
             return
 
-        # Detect batch intent: answer contains "batch" alongside "approve"
-        is_batch = any("batch" in str(v).lower() for v in answers.values())
-
         # User approved -- activate grants
         logger.info("AskUserQuestion: user approved, activating grants for session %s", session_id[:12])
 
@@ -1104,8 +1095,6 @@ class ClaudeCodeAdapter(HookAdapter):
                 nonce_prefix = extract_nonce_from_label(str(v))
                 if nonce_prefix:
                     break
-
-            activated_pending_data = None  # Track for batch grant creation
 
             if nonce_prefix:
                 # Nonce-targeted: load this specific pending regardless of session
@@ -1134,7 +1123,6 @@ class ClaudeCodeAdapter(HookAdapter):
                             nonce_prefix, pending_session[:12], session_id[:12],
                             getattr(result.status, "value", str(result.status)),
                         )
-                        activated_pending_data = pending_data
                     else:
                         logger.warning(
                             "AskUserQuestion nonce-targeted activation failed: "
@@ -1166,48 +1154,6 @@ class ClaudeCodeAdapter(HookAdapter):
                     "AskUserQuestion session-wide activation: %d/%d pending grants for session %s",
                     activated, len(results), session_id,
                 )
-                # Use the pending list for batch grant creation
-                if is_batch:
-                    activated_pending_data = pending  # List for batch iteration
-
-            # Batch approval: create a verb-family grant for each activated
-            # pending's base_cmd + verb, so future commands with different
-            # arguments are covered without per-command approval.
-            if is_batch and activated_pending_data:
-                from modules.security.approval_grants import DEFAULT_BATCH_TTL_MINUTES
-                from modules.security.approval_scopes import ApprovalSignature
-
-                # Normalize to list: nonce-targeted gives a single dict,
-                # session-wide gives a list
-                pending_list = (
-                    activated_pending_data
-                    if isinstance(activated_pending_data, list)
-                    else [activated_pending_data]
-                )
-
-                for pd in pending_list:
-                    sig_data = pd.get("scope_signature")
-                    if not sig_data:
-                        continue
-                    try:
-                        sig = ApprovalSignature.from_dict(sig_data)
-                        if sig.base_cmd and sig.verb:
-                            batch_path = create_verb_family_grant(
-                                session_id=session_id,
-                                base_cmd=sig.base_cmd,
-                                verb=sig.verb,
-                                danger_category=sig.danger_category,
-                                ttl_minutes=DEFAULT_BATCH_TTL_MINUTES,
-                            )
-                            if batch_path:
-                                logger.info(
-                                    "Batch verb-family grant created: %s %s -> %s",
-                                    sig.base_cmd, sig.verb, batch_path.name,
-                                )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to create batch grant from pending: %s", e,
-                        )
 
         except Exception as e:
             logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)
@@ -1240,7 +1186,7 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.agents.transcript_reader import read_transcript
         from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
         from modules.audit.workflow_recorder import record as record_workflow
-        from modules.context.context_writer import process_context_updates
+        from modules.context.context_writer import process_context_updates, process_update_contracts
         from modules.memory.episode_writer import write as write_episode
         from modules.security.approval_cleanup import cleanup as cleanup_approval
         from modules.session.session_manager import get_or_create_session_id
@@ -1321,6 +1267,25 @@ class ClaudeCodeAdapter(HookAdapter):
                     "Contract validation failed for %s: %s",
                     agent_type, contract_result.error_message,
                 )
+                # BUG D fix: surface validate() anomalies into the anomalies list
+                # (anomalies list is built later; collect here and merge below)
+                _validation_anomalies = []
+                for _m in (contract_result.missing or []):
+                    _validation_anomalies.append({
+                        "type": "contract_validation_failure",
+                        "severity": "warning",
+                        "message": f"Contract validation failed for {agent_type}: missing={_m}",
+                    })
+            else:
+                _validation_anomalies = []
+
+            # BUG A fix: use _resolve_status to handle both task_status (new
+            # agent_contract_handoff envelope) and plan_status (legacy json:contract).
+            from modules.agents.contract_validator import _resolve_status
+            _resolved_task_status = (
+                _resolve_status(parsed_contract.get("agent_status") or {})
+                if isinstance(parsed_contract, dict) else ""
+            )
 
             # Preserve pending files that the agent's final contract still
             # references via APPROVAL_REQUEST. Cleanup must not destroy
@@ -1328,7 +1293,7 @@ class ClaudeCodeAdapter(HookAdapter):
             preserved_nonces: set = set()
             if isinstance(parsed_contract, dict):
                 _agent_status = parsed_contract.get("agent_status") or {}
-                _plan_status = (_agent_status.get("plan_status") or "").upper()
+                _plan_status = _resolved_task_status
                 _approval_req = parsed_contract.get("approval_request") or {}
                 _nonce = _approval_req.get("approval_id") if isinstance(_approval_req, dict) else None
                 if _plan_status == "APPROVAL_REQUEST" and _nonce:
@@ -1355,6 +1320,35 @@ class ClaudeCodeAdapter(HookAdapter):
 
             commands_executed = extract_commands_from_evidence(agent_output)
             context_update_result = process_context_updates(agent_output, task_info)
+
+            # ----------------------------------------------------------
+            # BUG B fix: Process update_contracts array (M3/T2.3 envelope path).
+            # Handles evidence routing to the evidence table and any
+            # project_context entries in the new envelope format.
+            # Non-blocking: errors caught inside process_update_contracts.
+            # ----------------------------------------------------------
+            if isinstance(parsed_contract, dict):
+                _update_contracts_task_info = {
+                    "agent": agent_type,
+                    "db_path": task_info.get("db_path"),
+                    "cloud_scope": task_info.get("cloud_scope"),
+                    "workspace": task_info.get("workspace"),
+                }
+                _update_contracts_result = process_update_contracts(
+                    parsed_contract, _update_contracts_task_info
+                )
+                # Merge: if legacy path had no update but envelope path did, record it
+                if _update_contracts_result.get("updated") and not (context_update_result or {}).get("updated"):
+                    context_update_result = {
+                        "updated": True,
+                        "contract": ", ".join(_update_contracts_result.get("contracts", [])),
+                    }
+                if _update_contracts_result.get("rejected"):
+                    logger.warning(
+                        "update_contracts rejected for %s: %s",
+                        agent_type,
+                        _update_contracts_result.get("errors", []),
+                    )
 
             # ----------------------------------------------------------
             # Auto-capture install events (B4)
@@ -1444,6 +1438,9 @@ class ClaudeCodeAdapter(HookAdapter):
                 rejected_sections=(context_update_result or {}).get("rejected", []),
                 transcript_analysis=transcript_analysis,
             )
+            # BUG D fix: merge validate_contract() anomalies collected earlier
+            if _validation_anomalies:
+                anomalies.extend(_validation_anomalies)
             if not response_contract.valid:
                 missing = ", ".join(response_contract.missing) or "none"
                 invalid = ", ".join(response_contract.invalid) or "none"
@@ -1506,12 +1503,29 @@ class ClaudeCodeAdapter(HookAdapter):
                 commands_executed=commands_executed,
             )
 
+            # ----------------------------------------------------------
+            # BUG C fix: Persist handoff row to DB (M4 / T4.2).
+            # Wrapped in try/except per T4.2 spec -- DB failures must NOT
+            # crash the hook.
+            # ----------------------------------------------------------
+            try:
+                from modules.agents.handoff_persister import persist_handoff
+                persist_handoff(
+                    parsed_contract=parsed_contract,
+                    agent_output=agent_output,
+                    task_info=task_info,
+                    session_id=session_id,
+                )
+            except Exception as _handoff_exc:
+                logger.warning(
+                    "M4: handoff persistence call failed (non-blocking): %s",
+                    _handoff_exc,
+                )
+
             # Write AGENT_COMPLETE event (non-blocking)
             try:
                 from modules.events.event_writer import EventWriter, AGENT_COMPLETE
-                _plan = ""
-                if parsed_contract and isinstance(parsed_contract.get("agent_status"), dict):
-                    _plan = str(parsed_contract["agent_status"].get("plan_status", ""))
+                _plan = _resolved_task_status  # BUG A fix: use _resolved_task_status
                 _key_outputs = []
                 if parsed_contract and isinstance(parsed_contract.get("evidence_report"), dict):
                     _key_outputs = parsed_contract["evidence_report"].get("key_outputs", [])
@@ -1546,10 +1560,10 @@ class ClaudeCodeAdapter(HookAdapter):
 
             # ----------------------------------------------------------
             # Extract plan_status for downstream checks
+            # BUG A fix: use _resolved_task_status (from _resolve_status) which
+            # handles both task_status (new envelope) and plan_status (legacy).
             # ----------------------------------------------------------
-            _plan_status = ""
-            if parsed_contract and isinstance(parsed_contract.get("agent_status"), dict):
-                _plan_status = str(parsed_contract["agent_status"].get("plan_status", ""))
+            _plan_status = _resolved_task_status
 
             # ----------------------------------------------------------
             # State transition tracking
@@ -1653,8 +1667,10 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
             else:
                 from modules.agents.response_contract import VALID_PLAN_STATUSES
-                raw_plan_status = parsed_contract["agent_status"].get("plan_status", "")
-                normalized = str(raw_plan_status).upper().rstrip(".,;") if raw_plan_status else ""
+                # BUG A fix: use _resolve_status to handle task_status (new) and
+                # plan_status (legacy) uniformly.
+                normalized = _resolved_task_status
+                raw_plan_status = parsed_contract["agent_status"].get("plan_status", "") or parsed_contract["agent_status"].get("task_status", "")
                 if not normalized or normalized not in VALID_PLAN_STATUSES:
                     contract_rejected = True
                     valid_list = ", ".join(sorted(VALID_PLAN_STATUSES))

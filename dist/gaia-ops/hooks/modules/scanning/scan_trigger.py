@@ -2,7 +2,9 @@
 Lightweight scan trigger for SessionStart hook.
 
 Runs a subset of project scanners (e.g., tools + environment) to refresh
-project-context.json without significant startup delay (<3s target).
+project-context rows in ~/.gaia/gaia.db without significant startup delay
+(<3s target). The scanner writes directly to the gaia.db substrate via the
+store API; there is no JSON intermediate.
 
 Uses the scan engine directly (in-process) — no dependency on bin/gaia-scan.py.
 Works in both npm and plugin mode since tools/scan/ is always available.

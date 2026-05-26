@@ -159,7 +159,7 @@ def create_claude_directory(project_root: Path) -> List[str]:
 
     Creates:
     - Symlinks: agents, tools, hooks, commands, templates, config, skills, CHANGELOG.md
-    - Directories: logs, tests, project-context, project-context/workflow-episodic-memory, approvals
+    - Directories: logs, tests, project-context, approvals
 
     Args:
         project_root: Project root directory.
@@ -226,7 +226,6 @@ def create_claude_directory(project_root: Path) -> List[str]:
         "logs",
         "tests",
         "project-context",
-        os.path.join("project-context", "workflow-episodic-memory"),
         "approvals",
     ]:
         (claude_dir / subdir).mkdir(parents=True, exist_ok=True)

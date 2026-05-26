@@ -21,7 +21,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -346,13 +346,8 @@ class TestPluginPreToolUseAgentContextInjection:
             "rules": {},
         }
 
-        mock_subprocess_result = MagicMock()
-        mock_subprocess_result.returncode = 0
-        mock_subprocess_result.stdout = json.dumps(mock_context_payload)
-        mock_subprocess_result.stderr = ""
-
-        with patch("modules.context.context_injector.subprocess.run",
-                    return_value=mock_subprocess_result):
+        with patch("tools.context.context_provider.build_context_payload",
+                    return_value=mock_context_payload):
             result = mod.pre_tool_use_hook(
                 "Agent",
                 {
@@ -419,13 +414,8 @@ class TestPluginNoDoubleContextInjection:
             "rules": {},
         }
 
-        mock_subprocess_result = MagicMock()
-        mock_subprocess_result.returncode = 0
-        mock_subprocess_result.stdout = json.dumps(mock_context_payload)
-        mock_subprocess_result.stderr = ""
-
-        with patch("modules.context.context_injector.subprocess.run",
-                    return_value=mock_subprocess_result):
+        with patch("tools.context.context_provider.build_context_payload",
+                    return_value=mock_context_payload):
             result = mod.pre_tool_use_hook(
                 "Agent",
                 {
@@ -490,13 +480,8 @@ class TestPluginNoDoubleContextInjection:
             "rules": {},
         }
 
-        mock_subprocess_result = MagicMock()
-        mock_subprocess_result.returncode = 0
-        mock_subprocess_result.stdout = json.dumps(mock_context_payload)
-        mock_subprocess_result.stderr = ""
-
-        with patch("modules.context.context_injector.subprocess.run",
-                    return_value=mock_subprocess_result):
+        with patch("tools.context.context_provider.build_context_payload",
+                    return_value=mock_context_payload):
             result = mod.pre_tool_use_hook(
                 "Agent",
                 {
@@ -635,13 +620,8 @@ class TestPluginStateWrittenAfterHook:
             "rules": {},
         }
 
-        mock_subprocess_result = MagicMock()
-        mock_subprocess_result.returncode = 0
-        mock_subprocess_result.stdout = json.dumps(mock_context_payload)
-        mock_subprocess_result.stderr = ""
-
-        with patch("modules.context.context_injector.subprocess.run",
-                    return_value=mock_subprocess_result):
+        with patch("tools.context.context_provider.build_context_payload",
+                    return_value=mock_context_payload):
             result = mod.pre_tool_use_hook(
                 "Agent",
                 {

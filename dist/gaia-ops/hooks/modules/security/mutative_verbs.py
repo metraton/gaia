@@ -673,6 +673,61 @@ def split_camel_case(token: str) -> List[str]:
 
 
 # ============================================================================
+# Subcommand Identifier Predicate
+# ============================================================================
+# A real CLI subcommand identifier is a single word: letters, digits,
+# underscores, and at most internal hyphens (e.g., "delete", "force-delete",
+# "batchDelete", "merge_base"). Tokens that carry path separators, scope
+# separators, dots, colons, equals, commas, or other non-identifier
+# characters are argument values (file paths, test selectors like
+# "tests/x.py::TestStop", URLs, query strings, KV pairs, module names) --
+# never subcommands. Verb splitting (camelCase or hyphen) must NOT be
+# applied to those tokens; otherwise an argument value like
+# "tests/test_install.py::TestStop" gets split as "test", "stop" and the
+# whole command is misclassified as MUTATIVE.
+
+# Characters that, if present in a raw token, mean it is NOT a CLI
+# subcommand identifier. Hyphens and underscores are allowed.
+_NON_SUBCOMMAND_CHARS: FrozenSet[str] = frozenset({
+    "/",  # path separator
+    ".",  # file extension / module path
+    ":",  # pytest scope separator (::) / URL scheme separator
+    "=",  # KV pair
+    ",",  # arg list separator
+    "@",  # ref / module qualifier
+    "?",  # query string
+    "#",  # URL fragment / anchor
+    "(",
+    ")",
+    "[",
+    "]",
+    "{",
+    "}",
+    "*",
+    "%",
+    "$",
+    "\\",
+    "+",  # macro prefix already stripped by the caller; bare '+' tokens are not subcommands
+})
+
+
+def _is_subcommand_identifier(token: str) -> bool:
+    """Return True if ``token`` looks like a CLI subcommand identifier.
+
+    A subcommand identifier is a non-empty word made of letters, digits,
+    underscores, and internal hyphens.  Tokens containing path separators,
+    dots, colons, equals, etc. are argument values, not subcommands, and
+    verb-splitting (camelCase, hyphen) must skip them.
+    """
+    if not token:
+        return False
+    for ch in token:
+        if ch in _NON_SUBCOMMAND_CHARS:
+            return False
+    return True
+
+
+# ============================================================================
 # Main Detection Function
 # ============================================================================
 
@@ -945,6 +1000,13 @@ def detect_mutative_command(command: str) -> MutativeResult:
         # classifies it correctly.
         stripped_token = token.lstrip("+")
 
+        # Tokens carrying path/scope/KV characters are argument values, not
+        # CLI subcommands.  Verb splitting must skip them entirely (see
+        # _is_subcommand_identifier for the principle).  Without this guard,
+        # an argument like ``tests/test_install.py::TestStop`` is hyphen-split
+        # or camelCase-split and the inner fragments match mutative verbs.
+        is_subcmd_shape = _is_subcommand_identifier(stripped_token)
+
         # Split hyphenated tokens: "delete-stack" -> check "delete"
         # IMPORTANT: only apply hyphen-split at subcommand positions
         # (semantic_index <= 2).  At deeper positions (index >= 3), tokens are
@@ -953,7 +1015,7 @@ def detect_mutative_command(command: str) -> MutativeResult:
         # positives -- the first fragment matches a mutative verb even though
         # the token is not a CLI subcommand.  The camelCase guard already applies
         # the same constraint (semantic_index == 1).
-        if semantic_index <= 2 and "-" in stripped_token:
+        if semantic_index <= 2 and "-" in stripped_token and is_subcmd_shape:
             candidate = stripped_token.split("-", 1)[0]
         else:
             candidate = stripped_token
@@ -1036,9 +1098,20 @@ def detect_mutative_command(command: str) -> MutativeResult:
         # them produces false positives — e.g., the literal "SessionStart"
         # passed as a grep pattern would split to ["session", "start"] and
         # incorrectly trigger the mutative verb "start".
+        #
+        # Additional guard: if the raw token carries path/scope/KV characters
+        # (e.g. ``tests/foo.py::TestStop``), it is an argument value -- the
+        # camelCase fragment buried inside it is not a CLI subcommand even at
+        # semantic_index == 1.  Without this guard, ``pytest
+        # tests/test_install.py::TestStop`` splits ``TestStop`` and matches
+        # ``stop``, misclassifying the whole command as MUTATIVE.
         raw_token = semantics.semantic_head_tokens_raw[semantic_index] if semantic_index < len(semantics.semantic_head_tokens_raw) else token
         camel_parts = split_camel_case(raw_token)
-        if semantic_index == 1 and len(camel_parts) > 1:
+        if (
+            semantic_index == 1
+            and len(camel_parts) > 1
+            and _is_subcommand_identifier(raw_token)
+        ):
             for part in camel_parts:
                 if part in MUTATIVE_VERBS:
                     override_key = (family, part)

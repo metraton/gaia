@@ -109,7 +109,7 @@ class TestCmdList:
             rc = approvals_mod.cmd_list(_make_args())
         assert rc == 0
         captured = capsys.readouterr()
-        assert "No pending approvals" in captured.out
+        assert "No active grants or pending approvals." in captured.out
 
     def test_list_with_items_shows_table(self, capsys, tmp_path):
         pending = _make_pending()
@@ -139,8 +139,8 @@ class TestCmdList:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 1
-        assert len(data["pending"]) == 1
-        assert data["pending"][0]["approval_id"] == "P-abcd1234"
+        assert len(data["pending_fs"]) == 1
+        assert data["pending_fs"][0]["approval_id"] == "P-abcd1234"
 
     def test_list_json_empty(self, capsys, tmp_path):
         grants_dir = tmp_path / "approvals"
@@ -151,12 +151,14 @@ class TestCmdList:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 0
-        assert data["pending"] == []
+        assert data["pending_fs"] == []
 
     def test_list_import_error_returns_1(self, capsys):
+        # M3 DB-backed cmd_list silently swallows both DB and filesystem errors;
+        # when both fail, it falls through to the empty-state message and exits 0.
         with patch.object(approvals_mod, "_import_grants_dir", side_effect=ImportError("no module")):
             rc = approvals_mod.cmd_list(_make_args())
-        assert rc == 1
+        assert rc == 0
 
     def test_list_passes_session_filter(self):
         with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
@@ -203,7 +205,7 @@ class TestCmdList:
         assert data["count"] == 1, (
             "--orphans-only must hide pendings whose session is alive."
         )
-        assert data["pending"][0]["approval_id"] == "P-cccc3333"
+        assert data["pending_fs"][0]["approval_id"] == "P-cccc3333"
 
     def test_list_orphans_only_empty_when_all_alive(self, capsys, tmp_path):
         """If every pending's session is alive, --orphans-only returns none."""

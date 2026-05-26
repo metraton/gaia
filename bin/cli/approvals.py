@@ -7,6 +7,7 @@ Subcommands:
                                             (--orphans-only filters to
                                              pendings from dead sessions)
   show APPROVAL_ID [--json]              -- show full detail of one approval
+  revoke APPROVAL_ID                     -- revoke an active command_set grant by approval_id
   reject NONCE [--reason REASON]         -- reject a pending approval
   reject --all [--reason REASON]         -- reject ALL pending approvals in one call
   reject-all [--dry-run] [--workspace W] -- reject all pending approvals (subcommand alias)
@@ -85,6 +86,12 @@ def _import_approval_grants_module():
     """
     import modules.security.approval_grants as ag_mod
     return ag_mod
+
+
+def _import_writer():
+    """Import gaia.store.writer lazily to allow mocking in tests."""
+    from gaia.store import writer
+    return writer
 
 
 # ---------------------------------------------------------------------------
@@ -187,56 +194,126 @@ def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
     return results
 
 
+def _grant_to_display(g: dict) -> dict:
+    """Convert a DB approval_grants row to a display-friendly dict."""
+    approval_id = g.get("approval_id", "")
+    created_at = g.get("created_at", "")
+    # Compute age from ISO8601 created_at
+    age_secs = 0.0
+    try:
+        from datetime import datetime, timezone
+        created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        age_secs = (datetime.now(timezone.utc) - created).total_seconds()
+    except Exception:
+        pass
+
+    command_set = []
+    try:
+        command_set = json.loads(g.get("command_set_json") or "[]")
+    except Exception:
+        pass
+
+    first_cmd = command_set[0].get("command", "") if command_set else ""
+
+    return {
+        "approval_id": approval_id,
+        "status": g.get("status", ""),
+        "scope": g.get("scope", ""),
+        "session_id": g.get("session_id", ""),
+        "agent_id": g.get("agent_id", ""),
+        "created_at": created_at,
+        "expires_at": g.get("expires_at", ""),
+        "age": _format_age(age_secs),
+        "age_seconds": round(age_secs),
+        "command_count": len(command_set),
+        "first_command": first_cmd,
+        "command_set": command_set,
+    }
+
+
 def cmd_list(args) -> int:
-    """List pending approvals.
+    """List approval grants from the DB.
 
-    Without ``--session``, all sessions are shown so the CLI is useful as a
-    cross-session review tool.  With ``--session SESSION_ID``, only that
-    session's approvals are shown.
+    Without ``--session``, all grants are shown.  With ``--session SESSION_ID``,
+    only that session's grants are shown.
 
-    With ``--orphans-only``, only pendings whose owning session is no longer
-    alive (per session_registry) are shown.  This is the operator-facing
-    tool for diagnosing cross-session drift after the T11/T12 liveness
-    plumbing landed.
+    Also supports ``--orphans-only`` (filesystem pending approvals from dead
+    sessions) via the legacy scan path for backward compatibility.
     """
     session_id = getattr(args, "session", None)
     orphans_only = getattr(args, "orphans_only", False)
 
+    # DB-backed grant listing (primary path for COMMAND_SET grants)
     try:
-        if session_id is None:
-            # All sessions -- scan directly so we don't filter by current session.
-            raw = _scan_pending_shared(exclude_live_sessions=orphans_only)
-        else:
-            ag = _import_approval_grants()
-            raw = ag["get_pending_approvals_for_session"](session_id)
-    except Exception as exc:
-        _print_error(f"Failed to load approvals: {exc}", args)
-        return 1
+        writer = _import_writer()
+        db_grants = writer.list_approval_grants(
+            session_id=session_id,
+            limit=200,
+        )
+    except Exception:
+        db_grants = []
 
-    items = [_pending_to_display(p) for p in raw]
+    # Legacy filesystem pending listing (for filesystem-based pending approvals)
+    fs_pending = []
+    if not orphans_only:
+        try:
+            if session_id is None:
+                fs_pending = _scan_pending_shared(exclude_live_sessions=False)
+            else:
+                ag = _import_approval_grants()
+                fs_pending = ag["get_pending_approvals_for_session"](session_id)
+        except Exception:
+            pass
+    else:
+        try:
+            fs_pending = _scan_pending_shared(exclude_live_sessions=True)
+        except Exception:
+            pass
+
+    db_items = [_grant_to_display(g) for g in db_grants]
+    fs_items = [_pending_to_display(p) for p in fs_pending]
 
     if getattr(args, "json", False):
-        print(json.dumps({"pending": items, "count": len(items)}, indent=2))
+        print(json.dumps({
+            "grants": db_items,
+            "pending_fs": fs_items,
+            "count": len(db_items) + len(fs_items),
+        }, indent=2))
         return 0
 
-    if not items:
-        print("No pending approvals.")
+    if not db_items and not fs_items:
+        print("No active grants or pending approvals.")
         return 0
 
-    # Table output
-    print(f"{'ID':<12}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
-    print("-" * 70)
-    for item in items:
-        cmd_preview = item["command"][:40]
-        source = item["source"][:14] if item["source"] else "-"
-        print(
-            f"{item['approval_id']:<12}  "
-            f"{item['age']:<6}  "
-            f"{item['verb']:<10}  "
-            f"{source:<16}  "
-            f"{cmd_preview}"
-        )
-    print(f"\n{len(items)} pending approval(s).")
+    if db_items:
+        print(f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'AGE':<6}  {'CMD_COUNT':<10}  FIRST_COMMAND")
+        print("-" * 80)
+        for item in db_items:
+            cmd_preview = item["first_command"][:30]
+            print(
+                f"{item['approval_id']:<34}  "
+                f"{item['status']:<10}  "
+                f"{item['age']:<6}  "
+                f"{str(item['command_count']):<10}  "
+                f"{cmd_preview}"
+            )
+        print(f"\n{len(db_items)} DB grant(s).")
+
+    if fs_items:
+        print(f"\n{'ID':<12}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
+        print("-" * 70)
+        for item in fs_items:
+            cmd_preview = item["command"][:40]
+            source = item["source"][:14] if item["source"] else "-"
+            print(
+                f"{item['approval_id']:<12}  "
+                f"{item['age']:<6}  "
+                f"{item['verb']:<10}  "
+                f"{source:<16}  "
+                f"{cmd_preview}"
+            )
+        print(f"\n{len(fs_items)} filesystem pending approval(s).")
+
     return 0
 
 
@@ -245,21 +322,64 @@ def cmd_list(args) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_show(args) -> int:
-    """Show full details of a specific pending approval."""
-    approval_id: str = args.approval_id.lstrip("P-").lstrip("p-")
-    # Strip leading 'P-' prefix if present
-    if approval_id.upper().startswith("P-"):
-        approval_id = approval_id[2:]
+    """Show full details of a specific approval grant or pending approval.
 
+    Checks the DB first (COMMAND_SET grants by full approval_id), then falls
+    back to the filesystem scan (pending approvals by nonce prefix).
+    """
+    raw_id: str = args.approval_id.strip()
+    # Strip leading 'P-' prefix if present
+    if raw_id.upper().startswith("P-"):
+        raw_id = raw_id[2:]
+
+    # 1. Try DB lookup by full approval_id
+    db_row = None
+    try:
+        writer = _import_writer()
+        rows = writer.list_approval_grants(limit=1000)
+        for row in rows:
+            if row.get("approval_id") == raw_id:
+                db_row = row
+                break
+    except Exception:
+        pass
+
+    if db_row is not None:
+        item = _grant_to_display(db_row)
+        if getattr(args, "json", False):
+            print(json.dumps(db_row, indent=2))
+            return 0
+        lines = [
+            f"Grant {item['approval_id']}",
+            "",
+            f"  Status    : {item['status']}",
+            f"  Scope     : {item['scope']}",
+            f"  Age       : {item['age']}",
+            f"  Session   : {item['session_id']}",
+            f"  Agent     : {item['agent_id']}",
+            f"  Created   : {item['created_at']}",
+            f"  Expires   : {item['expires_at']}",
+            f"  Commands  : {item['command_count']}",
+        ]
+        for i, cmd_item in enumerate(item["command_set"]):
+            lines.append(f"  [{i}] {cmd_item.get('command', '')}")
+            if cmd_item.get("rationale"):
+                lines.append(f"      rationale: {cmd_item['rationale']}")
+        lines.append("")
+        lines.append(f"  To revoke : gaia approvals revoke {item['approval_id']}")
+        print("\n".join(lines))
+        return 0
+
+    # 2. Fall back to filesystem pending lookup by nonce prefix
     try:
         ag = _import_approval_grants()
-        raw = ag["load_pending_by_nonce_prefix"](approval_id)
+        raw = ag["load_pending_by_nonce_prefix"](raw_id)
     except Exception as exc:
         _print_error(f"Failed to load approval: {exc}", args)
         return 1
 
     if raw is None:
-        _print_error(f"No pending approval found for ID: P-{approval_id}", args)
+        _print_error(f"No approval found for ID: {raw_id}", args)
         return 1
 
     item = _pending_to_display(raw)
@@ -300,9 +420,52 @@ def cmd_show(args) -> int:
     if env:
         lines.append(f"  Env keys  : {', '.join(sorted(env.keys()))}")
     lines.append("")
-    lines.append(f"  To reject : gaia approvals reject {approval_id}")
+    lines.append(f"  To reject : gaia approvals reject {raw_id}")
     print("\n".join(lines))
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: revoke
+# ---------------------------------------------------------------------------
+
+def cmd_revoke(args) -> int:
+    """Revoke an active command_set grant by its approval_id.
+
+    Calls ``writer.revoke_approval_grant(approval_id)`` to mark the grant
+    REVOKED in the DB.  After revocation, any unconsumed commands in the
+    command_set will require fresh approval.
+
+    Exits 0 on success, 1 if the grant is not found or already in a terminal
+    state.
+    """
+    approval_id: str = args.approval_id.strip()
+
+    try:
+        writer = _import_writer()
+        result = writer.revoke_approval_grant(approval_id)
+    except Exception as exc:
+        _print_error(f"Failed to revoke grant: {exc}", args)
+        return 1
+
+    status = result.get("status")
+    if status == "applied":
+        print(f"Revoked approval_id={approval_id}")
+        return 0
+    elif status == "not_found":
+        _print_error(f"No active grant found for approval_id={approval_id}", args)
+        return 1
+    elif status == "no_op":
+        current = result.get("current_status", "unknown")
+        _print_error(
+            f"Grant {approval_id} is already in terminal state: {current}",
+            args,
+        )
+        return 1
+    else:
+        reason = result.get("reason", "unknown error")
+        _print_error(f"Revoke failed: {reason}", args)
+        return 1
 
 
 # ---------------------------------------------------------------------------
@@ -723,9 +886,26 @@ def register(subparsers) -> None:
 
     # show
     p_show = sub.add_parser("show", help="Show detail for a specific approval")
-    p_show.add_argument("approval_id", metavar="APPROVAL_ID", help="P-XXXX identifier or nonce prefix")
+    p_show.add_argument("approval_id", metavar="APPROVAL_ID", help="P-XXXX identifier, nonce prefix, or DB approval_id")
     p_show.add_argument("--json", action="store_true", help="JSON output")
     p_show.set_defaults(func=cmd_show)
+
+    # revoke
+    p_revoke = sub.add_parser(
+        "revoke",
+        help="Revoke an active command_set grant by approval_id",
+        description=(
+            "Revoke a COMMAND_SET grant identified by its approval_id.\n\n"
+            "After revocation, any unconsumed commands in the command_set will\n"
+            "require fresh approval from the user."
+        ),
+    )
+    p_revoke.add_argument(
+        "approval_id",
+        metavar="APPROVAL_ID",
+        help="Full approval_id (32-char hex) of the grant to revoke",
+    )
+    p_revoke.set_defaults(func=cmd_revoke)
 
     # reject
     p_reject = sub.add_parser(
@@ -809,7 +989,8 @@ def cmd_approvals(args) -> int:
 
 def _approvals_default(args) -> int:
     """Default handler when no sub-subcommand is given."""
-    print("Usage: gaia approvals {list,show,reject,reject-all,clean,stats} [options]")
+    print("Usage: gaia approvals {list,show,revoke,reject,reject-all,clean,stats} [options]")
+    print("       gaia approvals revoke APPROVAL_ID              # revoke a command_set grant")
     print("       gaia approvals reject --all [--reason TEXT]   # bulk reject (flag form)")
     print("       gaia approvals reject-all [--dry-run] [--workspace PATH]  # bulk reject (subcommand)")
     print("Run 'gaia approvals --help' for more information.")
@@ -841,6 +1022,10 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_show.add_argument("approval_id", metavar="APPROVAL_ID")
     p_show.add_argument("--json", action="store_true")
     p_show.set_defaults(func=cmd_show)
+
+    p_revoke = subparsers.add_parser("revoke", help="Revoke an active command_set grant")
+    p_revoke.add_argument("approval_id", metavar="APPROVAL_ID")
+    p_revoke.set_defaults(func=cmd_revoke)
 
     p_reject = subparsers.add_parser("reject", help="Reject a pending approval (or all with --all)")
     p_reject.add_argument("nonce", metavar="NONCE", nargs="?")

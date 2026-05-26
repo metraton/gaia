@@ -2,7 +2,6 @@
 
 Handles:
 - build_project_context: builds context string for additionalContext injection
-- check_pending_updates_threshold: warns when pending updates accumulate
 - check_recent_critical_anomalies: surfaces critical anomalies from JSONL log
 - consume_anomaly_flag: reads and deletes anomaly signal flags
 """
@@ -10,8 +9,6 @@ Handles:
 import json
 import logging
 import os
-import shutil
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +19,19 @@ from .anchor_tracker import extract_anchors, save_anchors
 from .contracts_loader import build_context_update_reminder
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_context_provider_importable(hooks_dir: Path) -> None:
+    """Make tools.context.context_provider importable from in-process callers.
+
+    The hooks live under hooks/; the gaia-ops tools package sits as a sibling
+    at the same level. We add the package root (hooks_dir.parent) to sys.path
+    so ``from tools.context.context_provider import ...`` resolves regardless
+    of cwd.
+    """
+    pkg_root = str(hooks_dir.parent)
+    if pkg_root not in sys.path:
+        sys.path.insert(0, pkg_root)
 
 # Inline explanations for every field the investigation brief can contain.
 # Appended as YAML comments when the brief is rendered via _dict_to_yaml_annotated().
@@ -79,20 +89,6 @@ def _dict_to_yaml_annotated(d: dict, descriptions: dict[str, str], indent: int =
     return "\n".join(lines)
 
 
-def _find_python() -> str:
-    """Return the Python 3 command name for this platform.
-
-    Tries ``python3`` first (Linux/macOS), then ``python`` (Windows).
-    Falls back to ``sys.executable`` (the current interpreter) as a
-    last resort -- this always works since hooks are already running
-    under Python.
-    """
-    for cmd in ("python3", "python"):
-        if shutil.which(cmd):
-            return cmd
-    return sys.executable
-
-
 def _dict_to_yaml(d, indent: int = 0) -> str:
     """Convert a dict to indented YAML-like key-value pairs (no external dependency).
 
@@ -145,7 +141,13 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
     project_knowledge = context_payload.get("project_knowledge") or {}
     metadata = context_payload.get("metadata") or {}
     surface_routing = context_payload.get("surface_routing") or {}
-    investigation_brief = context_payload.get("investigation_brief") or {}
+    # T2.1a: renamed from investigation_brief -> agent_contract_handoff
+    # Read from new key first; fall back to legacy key during dual-mode window
+    _brief_raw = (
+        context_payload.get("agent_contract_handoff")
+        or context_payload.get("investigation_brief")
+        or {}
+    )
     write_permissions = context_payload.get("write_permissions") or {}
 
     contract_sections = sorted(project_knowledge.keys())
@@ -171,14 +173,14 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
             "multi_surface": surface_routing.get("multi_surface"),
             "recommended_agents": sorted(surface_routing.get("recommended_agents") or []),
         }),
-        "investigation_brief": _prune_empty_values({
-            "agent_role": investigation_brief.get("agent_role"),
-            "primary_surface": investigation_brief.get("primary_surface"),
-            "adjacent_surfaces": sorted(investigation_brief.get("adjacent_surfaces") or []),
-            "cross_check_required": investigation_brief.get("cross_check_required"),
-            "consolidation_required": investigation_brief.get("consolidation_required"),
-            "required_checks_count": len(investigation_brief.get("required_checks") or []),
-            "evidence_required": sorted(investigation_brief.get("evidence_required") or []),
+        "agent_contract_handoff": _prune_empty_values({
+            "agent_role": _brief_raw.get("agent_role"),
+            "primary_surface": _brief_raw.get("primary_surface"),
+            "adjacent_surfaces": sorted(_brief_raw.get("adjacent_surfaces") or []),
+            "cross_check_required": _brief_raw.get("cross_check_required"),
+            "consolidation_required": _brief_raw.get("consolidation_required"),
+            "required_checks_count": len(_brief_raw.get("required_checks") or []),
+            "evidence_required": sorted(_brief_raw.get("evidence_required") or []),
         }),
         "context_update_scope": _prune_empty_values({
             "readable_sections": readable_sections,
@@ -187,40 +189,6 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
             "writable_sections_count": len(writable_sections),
         }),
     })
-
-
-def check_pending_updates_threshold() -> str:
-    """
-    Check if pending updates count exceeds threshold and return warning text.
-
-    Returns warning string to inject into prompt, or empty string if below threshold.
-    Must NEVER block or slow down context injection (target: <50ms).
-    """
-    try:
-        threshold = int(os.environ.get("PENDING_UPDATE_THRESHOLD", "10"))
-
-        # Fast path: try to read index directly (no module import)
-        index_path = Path(".claude/project-context/pending-updates/pending-index.json")
-        if not index_path.exists():
-            return ""
-
-        with open(index_path, 'r') as f:
-            index_data = json.load(f)
-
-        pending_count = index_data.get("pending_count", 0)
-        if pending_count < threshold:
-            return ""
-
-        logger.info(f"Pending updates threshold reached: {pending_count} >= {threshold}")
-        return (
-            f"\n# Pending Context Updates Warning\n"
-            f"There are {pending_count} pending context update suggestions awaiting review. "
-            f"Run `python3 tools/review/review_engine.py list` to review them.\n\n"
-        )
-
-    except Exception as e:
-        logger.debug(f"Pending updates check failed (non-fatal): {e}")
-        return ""
 
 
 def check_recent_critical_anomalies() -> str:
@@ -374,41 +342,25 @@ def build_project_context(
         return None, {}
 
     try:
-        # Find context_provider.py
-        context_provider_paths = [
-            hooks_dir.parent / "tools" / "context" / "context_provider.py",  # plugin root (works in both modes)
-            Path(".claude/tools/context/context_provider.py"),                # npm symlink fallback
-        ]
-
-        context_provider = None
-        for path in context_provider_paths:
-            if path.exists():
-                context_provider = path
-                break
-
-        if not context_provider:
-            logger.warning("context_provider.py not found, skipping context injection")
-            return None, {}
-
-        # Execute context_provider.py to get filtered context
-        logger.info(f"Building context for {subagent_type}...")
-        result = subprocess.run(
-            [_find_python(), str(context_provider), subagent_type, prompt],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=os.getcwd()
-        )
-
-        if result.returncode != 0:
-            logger.error(f"context_provider.py failed: {result.stderr}")
-            return None, {}
-
-        # Parse context JSON
+        # Build context payload in-process. context_provider lives at
+        # <pkg_root>/tools/context/context_provider.py and is invoked directly
+        # rather than as a subprocess, saving ~100-200ms per dispatch and
+        # removing the stdout/stderr parsing path.
+        _ensure_context_provider_importable(hooks_dir)
         try:
-            context_payload = json.loads(result.stdout)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse context JSON: {e}")
+            from tools.context.context_provider import build_context_payload
+        except ImportError as exc:
+            logger.warning("context_provider import failed, skipping context injection: %s", exc)
+            return None, {}
+
+        logger.info(f"Building context for {subagent_type}...")
+        try:
+            context_payload = build_context_payload(
+                agent_name=subagent_type,
+                user_task=prompt,
+            )
+        except Exception as exc:
+            logger.error("build_context_payload failed: %s", exc, exc_info=True)
             return None, {}
 
         # Extract and save context anchors for hit tracking
@@ -423,9 +375,6 @@ def build_project_context(
         except Exception as exc:
             logger.debug("Anchor extraction failed (non-fatal): %s", exc)
 
-        # Check pending update count (non-blocking, fast path)
-        pending_warning = check_pending_updates_threshold()
-
         # Build context update reminder for empty writable sections
         update_reminder = build_context_update_reminder(
             subagent_type, project_agents, hooks_dir
@@ -434,7 +383,12 @@ def build_project_context(
         # Build context sections from payload
         project_knowledge = context_payload.get("project_knowledge", {})
         write_perms = context_payload.get("write_permissions", {})
-        investigation_brief = context_payload.get("investigation_brief", {})
+        # T2.1a: read from new key first, fall back to legacy key during dual-mode window
+        investigation_brief = (
+            context_payload.get("agent_contract_handoff")
+            or context_payload.get("investigation_brief")
+            or {}
+        )
         rules = context_payload.get("rules", {})
         surface_routing_data = context_payload.get("surface_routing", {})
         metadata = context_payload.get("metadata", {})
@@ -460,7 +414,7 @@ def build_project_context(
         if routing_section:
             orientation_lines.append("- **Surface Routing** -- intent-to-agent mapping; use when delegating or checking ownership")
         if investigation_brief:
-            orientation_lines.append("- **Brief** -- goal, acceptance criteria, and scope for the current task")
+            orientation_lines.append("- **Agent Contract Handoff** -- goal, acceptance criteria, and scope for the current task")
         if write_perms:
             orientation_lines.append("- **Permissions** -- which context sections are writable vs readable; required before emitting CONTEXT_UPDATE")
         if memory_index_section:
@@ -501,14 +455,14 @@ def build_project_context(
 
 # Routing
 {routing_section}
-# Brief
+# Agent Contract Handoff
 
 {brief_mkv}
 
 # Permissions
 
 {write_perms_mkv}
-{memory_index_section}{pending_warning}{update_reminder}{metadata_section}{historical_section}"""
+{memory_index_section}{update_reminder}{metadata_section}{historical_section}"""
 
         # Append anomaly signal flag (consume once)
         context_string = consume_anomaly_flag(context_string)
@@ -548,9 +502,6 @@ def build_project_context(
 
         return context_string, telemetry
 
-    except subprocess.TimeoutExpired:
-        logger.error("context_provider.py timed out (15s)")
-        return None, {}
     except Exception as e:
         logger.error(f"Error building context: {e}", exc_info=True)
         return None, {}

@@ -1,12 +1,13 @@
 """
 Approval scope builders and matching for nonce-based T3 grants.
 
-The approval system supports three explicit scope shapes:
+The approval system supports two explicit scope shapes:
 
 - exact_command: tokenized command must match exactly
 - semantic_signature: same semantic command and normalized flags
-- verb_family: same base_cmd + verb only (ignores arguments and non-dangerous flags).
-  Multi-use within TTL.  Used for batch operations like bulk email triage.
+
+The verb_family scope type has been removed (M3 D7 decision).  Stale DB rows
+with scope='verb_family' are inert -- they will not match any new grants.
 """
 
 from dataclasses import asdict, dataclass
@@ -19,13 +20,11 @@ APPROVAL_SCOPE_VERSION = 2
 
 SCOPE_EXACT_COMMAND = "exact_command"
 SCOPE_SEMANTIC_SIGNATURE = "semantic_signature"
-SCOPE_VERB_FAMILY = "verb_family"
 SCOPE_FILE_PATH = "file_path"
 
 SUPPORTED_SCOPE_TYPES = frozenset({
     SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
-    SCOPE_VERB_FAMILY,
     SCOPE_FILE_PATH,
 })
 
@@ -127,17 +126,6 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     semantics = analyze_command(stripped)
     if semantics.base_cmd != signature.base_cmd:
         return False
-
-    # Verb-family matching: only base_cmd + verb matter.
-    # Skip flag and category checks -- they would reject tier-excepted commands
-    # (e.g. gws modify is CATEGORY_READ_ONLY at runtime but the grant may have
-    # been created with danger_category="MUTATIVE").
-    if signature.scope_type == SCOPE_VERB_FAMILY:
-        if signature.verb:
-            danger = detect_mutative_command(stripped)
-            if danger.verb and danger.verb.lower() != signature.verb:
-                return False
-        return True
 
     danger = detect_mutative_command(stripped)
     incoming_dangerous_flags = _sorted_unique_lower(danger.dangerous_flags)

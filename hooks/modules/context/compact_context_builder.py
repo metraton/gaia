@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-
-from ..core.paths import get_plugin_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -75,97 +73,142 @@ def _build_identity_block() -> str:
 
 
 def _build_activity_block(max_snapshots: int) -> str | None:
-    """Build session activity summary from run-snapshots.jsonl."""
-    snapshots_path = (
-        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "run-snapshots.jsonl"
-    )
-    if not snapshots_path.exists():
+    """Build session activity summary from episodes table in gaia.db.
+
+    T6 migration: reads from episodes table instead of run-snapshots.jsonl.
+    Selects recent episodes ordered by timestamp DESC with agent, plan_status,
+    title/prompt and tier columns (equivalent of run-snapshot data).
+    """
+    try:
+        import sys as _sys
+        _hooks_dir = Path(__file__).resolve().parent.parent.parent
+        _repo_root = _hooks_dir.parent
+        if str(_repo_root) not in _sys.path:
+            _sys.path.insert(0, str(_repo_root))
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
         return None
 
     try:
-        lines = snapshots_path.read_text().splitlines()
-        # Take last N lines
-        recent = lines[-max_snapshots:] if len(lines) > max_snapshots else lines
+        ws = _project_current()
+    except Exception:
+        ws = None
 
-        entries = []
-        for line in recent:
-            if not line.strip():
-                continue
-            try:
-                snap = json.loads(line)
-                agent = snap.get("agent", "unknown")
-                status = snap.get("plan_status", "unknown")
-                prompt = snap.get("prompt", "")[:80]
-                cmd_count = snap.get("commands_executed_count", 0)
-                entries.append(f"- {agent} → {status} ({prompt}, {cmd_count} commands)")
-            except json.JSONDecodeError:
-                continue
-
-        if not entries:
-            return None
-
-        return "## Session Activity\n" + "\n".join(entries)
-
+    try:
+        con = _store_connect()
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT agent, plan_status, title, prompt, tier, "
+                    "output_tokens_approx, timestamp "
+                    "FROM episodes "
+                    "WHERE workspace = ? AND agent IS NOT NULL "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (ws, max_snapshots),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT agent, plan_status, title, prompt, tier, "
+                    "output_tokens_approx, timestamp "
+                    "FROM episodes "
+                    "WHERE agent IS NOT NULL "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (max_snapshots,),
+                ).fetchall()
+        finally:
+            con.close()
     except Exception as e:
         logger.debug("Failed to build activity block (non-fatal): %s", e)
         return None
 
+    if not rows:
+        return None
+
+    entries = []
+    for row in rows:
+        d = dict(row)
+        agent = d.get("agent", "unknown")
+        status = d.get("plan_status", "unknown") or "unknown"
+        title = d.get("title") or d.get("prompt") or ""
+        prompt = title[:80]
+        tier = d.get("tier") or ""
+        tier_str = f" [{tier}]" if tier else ""
+        entries.append(f"- {agent} → {status}{tier_str} ({prompt})")
+
+    return "## Session Activity\n" + "\n".join(entries)
+
 
 def _build_anomalies_block(window_hours: int) -> str | None:
-    """Build active anomalies summary from anomalies.jsonl."""
-    anomaly_path = (
-        get_plugin_data_dir() / "project-context" / "workflow-episodic-memory" / "anomalies.jsonl"
-    )
-    if not anomaly_path.exists():
+    """Build active anomalies summary from episode_anomalies table in gaia.db.
+
+    T6 migration: reads from episode_anomalies table instead of anomalies.jsonl.
+    Queries anomalies within the specified time window by severity.
+    """
+    try:
+        import sys as _sys
+        _hooks_dir = Path(__file__).resolve().parent.parent.parent
+        _repo_root = _hooks_dir.parent
+        if str(_repo_root) not in _sys.path:
+            _sys.path.insert(0, str(_repo_root))
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except ImportError:
         return None
 
     try:
-        lines = anomaly_path.read_text().splitlines()[-20:]
-        cutoff = datetime.now().timestamp() - (window_hours * 3600)
+        ws = _project_current()
+    except Exception:
+        ws = None
 
-        critical_types: list[str] = []
-        warning_types: list[str] = []
+    cutoff_dt = datetime.now() - timedelta(hours=window_hours)
+    cutoff_iso = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-                ts = entry.get("timestamp", "")
-                if ts:
-                    try:
-                        entry_time = datetime.fromisoformat(ts).timestamp()
-                        if entry_time < cutoff:
-                            continue
-                    except (ValueError, TypeError):
-                        continue
-
-                for anomaly in entry.get("anomalies", []):
-                    severity = anomaly.get("severity", "")
-                    atype = anomaly.get("type", "unknown")
-                    if severity == "critical":
-                        critical_types.append(atype)
-                    elif severity == "warning":
-                        warning_types.append(atype)
-            except json.JSONDecodeError:
-                continue
-
-        if not critical_types and not warning_types:
-            return None
-
-        parts = []
-        if critical_types:
-            unique = sorted(set(critical_types))
-            parts.append(f"- {len(critical_types)} critical: {', '.join(unique)}")
-        if warning_types:
-            unique = sorted(set(warning_types))
-            parts.append(f"- {len(warning_types)} warning: {', '.join(unique)}")
-
-        return "## Active Anomalies\n" + "\n".join(parts)
-
+    try:
+        con = _store_connect()
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT severity, type FROM episode_anomalies "
+                    "WHERE workspace = ? AND timestamp >= ? "
+                    "ORDER BY timestamp DESC LIMIT 40",
+                    (ws, cutoff_iso),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT severity, type FROM episode_anomalies "
+                    "WHERE timestamp >= ? "
+                    "ORDER BY timestamp DESC LIMIT 40",
+                    (cutoff_iso,),
+                ).fetchall()
+        finally:
+            con.close()
     except Exception as e:
         logger.debug("Failed to build anomalies block (non-fatal): %s", e)
         return None
+
+    critical_types: list[str] = []
+    warning_types: list[str] = []
+    for row in rows:
+        severity = row[0] or ""
+        atype = row[1] or "unknown"
+        if severity == "critical":
+            critical_types.append(atype)
+        elif severity == "warning":
+            warning_types.append(atype)
+
+    if not critical_types and not warning_types:
+        return None
+
+    parts = []
+    if critical_types:
+        unique = sorted(set(critical_types))
+        parts.append(f"- {len(critical_types)} critical: {', '.join(unique)}")
+    if warning_types:
+        unique = sorted(set(warning_types))
+        parts.append(f"- {len(warning_types)} warning: {', '.join(unique)}")
+
+    return "## Active Anomalies\n" + "\n".join(parts)
 
 
 def _build_events_block(max_events: int) -> str | None:

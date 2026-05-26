@@ -219,7 +219,7 @@ class TestEvidenceRequiredFields:
         assert "OPEN_GAPS" in result.missing
 
     def test_validate_passes_with_all_seven_fields(self):
-        """validate() passes when all 7 evidence fields are provided."""
+        """validate() passes when all 7 evidence fields plus verification are provided."""
         contract = {
             "agent_status": {
                 "plan_status": "COMPLETE",
@@ -235,6 +235,12 @@ class TestEvidenceRequiredFields:
                 "verbatim_outputs": ["output here"],
                 "cross_layer_impacts": ["none"],
                 "open_gaps": ["none"],
+                "verification": {
+                    "method": "test",
+                    "checks": ["all tests pass"],
+                    "result": "pass",
+                    "details": "confirmed working"
+                }
             },
             "consolidation_report": None,
         }

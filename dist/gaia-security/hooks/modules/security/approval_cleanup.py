@@ -4,13 +4,18 @@ Approval file cleanup for the subagent stop hook.
 Cleans up pending approval files after an agent completes, using the current
 per-nonce file layout under .claude/cache/approvals/pending-{nonce}.json.
 
+Also performs DB-backed soft-expire of PENDING approval_grants rows whose
+expires_at timestamp has passed (M3 addition).
+
 Provides:
     - cleanup(): Delete pending approval files that match agent session
+    - expire_db_grants(): Soft-expire PENDING DB grants past their expires_at
     - consume_approval_file(): Backward-compatible alias for cleanup()
 """
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Set
 
@@ -23,6 +28,52 @@ logger = logging.getLogger(__name__)
 def _get_approvals_dir() -> Path:
     """Return the approvals cache directory."""
     return find_claude_dir() / "cache" / "approvals"
+
+
+def expire_db_grants(session_id: Optional[str] = None) -> int:
+    """Soft-expire PENDING approval_grants rows whose expires_at has passed.
+
+    Called at SubagentStop alongside the filesystem cleanup. Marks matching
+    rows as EXPIRED (status='EXPIRED') so `gaia approvals list` reflects
+    accurate state without TTL re-computation in every query.
+
+    Args:
+        session_id: Optional session to scope expiry. When None, expires
+            grants across all sessions (suitable for periodic housekeeping).
+
+    Returns:
+        Number of rows updated to EXPIRED.
+    """
+    try:
+        from gaia.store.writer import list_approval_grants, update_approval_grant_status
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        grants = list_approval_grants(
+            session_id=session_id,
+            status="PENDING",
+            limit=500,
+        )
+
+        expired_count = 0
+        for grant in grants:
+            expires_at = grant.get("expires_at")
+            if expires_at and expires_at < now_iso:
+                result = update_approval_grant_status(
+                    grant["approval_id"], "EXPIRED"
+                )
+                if result.get("status") == "applied":
+                    expired_count += 1
+                    logger.info(
+                        "DB grant soft-expired: approval_id=%s",
+                        grant["approval_id"][:12],
+                    )
+
+        return expired_count
+
+    except Exception as exc:
+        logger.debug("expire_db_grants (non-fatal): %s", exc)
+        return 0
 
 
 def cleanup(

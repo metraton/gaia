@@ -3,23 +3,25 @@
 Context Provider for Claude Agent System
 
 Generates structured context payloads for agents based on:
-1. Agent contracts (context-contracts.json + cloud overlays)
-2. Universal rules (universal-rules.json)
-3. Historical episodes (episodic memory)
+1. Agent contracts (agent_contract_permissions in ~/.gaia/gaia.db)
+2. Project context (project_context_contracts in ~/.gaia/gaia.db)
+3. Universal rules (universal-rules.json)
+4. Historical episodes (episodic memory)
 
 Usage:
-    python3 context_provider.py <agent_name> [user_task] [--context-file PATH]
+    python3 context_provider.py <agent_name> [user_task]
 """
 
 import json
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-# Ensure the package root (gaia-ops-dev/) is on sys.path so that
-# `tools.memory.scoring` and `tools.memory.search_store` resolve when
-# this file runs as a subprocess with cwd=workspace-root.
+# Ensure the package root is on sys.path so that `tools.memory.scoring` and
+# `tools.memory.search_store` resolve when this module is imported in-process
+# by hooks (e.g. context_injector) or invoked via the CLI entry point.
 # Pattern: same as hooks/pre_tool_use.py line 22.
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PACKAGE_ROOT not in sys.path:
@@ -40,20 +42,25 @@ except ImportError:
         load_surface_routing_config,
     )
 
-# Default paths
-DEFAULT_CONTEXT_PATH = Path(".claude/project-context/project-context.json")
-
 
 # ============================================================================
-# CONTRACTS DIRECTORY RESOLUTION
+# DB CONNECTION
 # ============================================================================
 
-def get_contracts_dir():
-    """Determines the correct contracts directory based on execution context."""
-    return resolve_config_dir()
+def _get_db_path() -> Optional[Path]:
+    """Resolve path to ~/.gaia/gaia.db via gaia.paths, or fallback default."""
+    try:
+        from gaia.paths import db_path
+        return db_path()
+    except Exception:
+        return Path.home() / ".gaia" / "gaia.db"
 
 
-DEFAULT_CONTRACTS_DIR = get_contracts_dir()
+def _db_connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    resolved = db_path or _get_db_path()
+    con = sqlite3.connect(str(resolved))
+    con.row_factory = sqlite3.Row
+    return con
 
 
 # ============================================================================
@@ -63,10 +70,17 @@ DEFAULT_CONTRACTS_DIR = get_contracts_dir()
 DEFAULT_RULES_FILE = "universal-rules.json"
 
 
+def _resolve_rules_dir() -> Path:
+    """Resolve the config dir that holds universal-rules.json. JSON-only path
+    -- agent contracts and project context now live in gaia.db; this resolver
+    is kept solely for the rules file that has not yet been migrated."""
+    return resolve_config_dir()
+
+
 def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> Dict[str, Any]:
     """Load universal rules and agent-specific rules from JSON file."""
     if rules_file is None:
-        rules_file = get_contracts_dir() / DEFAULT_RULES_FILE
+        rules_file = _resolve_rules_dir() / DEFAULT_RULES_FILE
 
     if not rules_file.is_file():
         print(f"Warning: Rules file not found: {rules_file}", file=sys.stderr)
@@ -101,26 +115,13 @@ def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> 
 # CLOUD PROVIDER DETECTION
 # ============================================================================
 
-def detect_cloud_provider(project_context: Dict[str, Any]) -> str:
-    """Detects the cloud provider from project-context.json.
+def detect_cloud_provider(sections: Dict[str, Any]) -> str:
+    """Detects the cloud provider from the infrastructure contract payload.
 
     Detection priority:
-      1. metadata.cloud_provider (explicit user/scanner setting)
-      2. infrastructure.cloud_providers[0].name (v2 scanner section)
-      3. metadata.project_id presence -> gcp
-      4. Fallback -> gcp
+      1. infrastructure.cloud_providers[0].name (v2 scanner section)
+      2. Fallback -> gcp
     """
-    metadata = project_context.get("metadata", {})
-    if "cloud_provider" in metadata:
-        provider = metadata["cloud_provider"].lower()
-        if provider == "multi-cloud":
-            print("Multi-cloud detected, using GCP contracts as primary", file=sys.stderr)
-            return "gcp"
-        return provider
-
-    sections = project_context.get("sections", {})
-
-    # v2: read from infrastructure.cloud_providers
     infra = sections.get("infrastructure", {})
     if isinstance(infra, dict):
         cloud_providers = infra.get("cloud_providers", [])
@@ -134,75 +135,84 @@ def detect_cloud_provider(project_context: Dict[str, Any]) -> str:
                         return "gcp"
                     return provider
 
-    if "project_id" in metadata:
-        return "gcp"
-
-    print("Could not detect cloud provider, defaulting to GCP", file=sys.stderr)
+    print("Could not detect cloud provider from infrastructure section, defaulting to GCP", file=sys.stderr)
     return "gcp"
 
 
-def load_provider_contracts(cloud_provider: str, contracts_dir: Path = DEFAULT_CONTRACTS_DIR) -> Dict[str, Any]:
+def load_project_context(workspace: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load project context for a workspace from project_context_contracts in gaia.db.
+
+    Returns a dict shaped as ``{metadata: {}, sections: {contract_name: payload, ...}}``
+    to remain compatible with the rest of the pipeline. Returns an empty context when the
+    workspace has no rows rather than exiting.
     """
-    Loads context contracts using the base+cloud merge strategy.
-
-    Strategy:
-    1. Load base contracts from context-contracts.json (cloud-agnostic)
-    2. Load cloud overrides from cloud/{provider}.json and merge (extend) read/write lists
-    3. If base contracts missing → error (contracts are the single source of truth)
-    """
-    base_file = contracts_dir / "context-contracts.json"
-    cloud_file = contracts_dir / "cloud" / f"{cloud_provider}.json"
-
-    # --- Step 1: Load base contracts ---
-    if not base_file.is_file():
-        print(f"Error: Contract file not found at {base_file}", file=sys.stderr)
-        sys.exit(1)
-
     try:
-        with open(base_file, 'r', encoding='utf-8') as f:
-            base_contracts = json.load(f)
-        print(f"Loaded base contracts from {base_file}", file=sys.stderr)
-    except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in {base_file}: {e}", file=sys.stderr)
-        sys.exit(1)
+        con = _db_connect(db_path)
+        rows = con.execute(
+            "SELECT contract_name, payload, metadata, updated_at "
+            "FROM project_context_contracts WHERE workspace = ?",
+            (workspace,),
+        ).fetchall()
+        con.close()
+    except sqlite3.Error as exc:
+        print(f"Warning: DB error reading project context for '{workspace}': {exc}", file=sys.stderr)
+        rows = []
 
-    # --- Step 2: Merge cloud-specific overrides ---
-    if cloud_file.is_file():
+    sections: Dict[str, Any] = {}
+    last_updated = ""
+    for row in rows:
         try:
-            with open(cloud_file, 'r', encoding='utf-8') as f:
-                cloud_overrides = json.load(f)
-            print(f"Loaded {cloud_provider.upper()} cloud overrides from {cloud_file}", file=sys.stderr)
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        sections[row["contract_name"]] = payload
+        if row["updated_at"] and row["updated_at"] > last_updated:
+            last_updated = row["updated_at"]
 
-            for agent_name, agent_overrides in cloud_overrides.get("agents", {}).items():
-                if agent_name in base_contracts.get("agents", {}):
-                    existing_read = base_contracts["agents"][agent_name].get("read", [])
-                    existing_write = base_contracts["agents"][agent_name].get("write", [])
-                    extra_read = [s for s in agent_overrides.get("read", []) if s not in existing_read]
-                    extra_write = [s for s in agent_overrides.get("write", []) if s not in existing_write]
-                    base_contracts["agents"][agent_name]["read"] = existing_read + extra_read
-                    base_contracts["agents"][agent_name]["write"] = existing_write + extra_write
-                else:
-                    base_contracts["agents"][agent_name] = agent_overrides
-
-        except json.JSONDecodeError as e:
-            print(f"Warning: Invalid JSON in {cloud_file}: {e} — skipping cloud overrides", file=sys.stderr)
-    else:
-        print(f"No cloud overrides found at {cloud_file}, using base contracts only", file=sys.stderr)
+    if not sections:
+        print(f"Warning: No project context found for workspace '{workspace}' in gaia.db", file=sys.stderr)
 
     return {
-        "version": base_contracts.get("version", "unknown"),
-        "provider": cloud_provider,
-        "agents": base_contracts.get("agents", {})
+        "metadata": {"workspace": workspace, "last_updated": last_updated},
+        "sections": sections,
     }
 
 
-def load_project_context(context_path: Path) -> Dict[str, Any]:
-    """Loads the project context from the specified JSON file."""
-    if not context_path.is_file():
-        print(f"Error: Context file not found at {context_path}", file=sys.stderr)
-        sys.exit(1)
-    with open(context_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load agent contract permissions from agent_contract_permissions in gaia.db.
+
+    Returns a shape compatible with the rest of the pipeline:
+    ``{version: str, provider: str, agents: {agent_name: {read: [...], write: [...]}}}``
+
+    cloud_scope=NULL rows match all providers; cloud_scope=<provider> rows match only
+    that provider. Both are included when querying for a specific provider.
+    """
+    try:
+        con = _db_connect(db_path)
+        rows = con.execute(
+            """
+            SELECT contract_name, can_read, can_write
+            FROM agent_contract_permissions
+            WHERE agent_name = ?
+              AND (cloud_scope IS NULL OR cloud_scope = ?)
+            """,
+            (agent_name, cloud_provider),
+        ).fetchall()
+        con.close()
+    except sqlite3.Error as exc:
+        print(f"Warning: DB error reading permissions for '{agent_name}': {exc}", file=sys.stderr)
+        rows = []
+
+    readable = [r["contract_name"] for r in rows if r["can_read"]]
+    writable = [r["contract_name"] for r in rows if r["can_write"]]
+
+    return {
+        "version": "db",
+        "provider": cloud_provider,
+        "agents": {
+            agent_name: {"read": readable, "write": writable},
+        },
+    }
 
 
 # ============================================================================
@@ -218,8 +228,8 @@ def get_relevant_sections(
     """Filter sections by surface relevance, with fallback to all readable sections.
 
     Args:
-        sections: All available sections from project-context.json.
-        contract_keys: The agent's permitted read keys (from context-contracts).
+        sections: All available sections from project_context_contracts (keyed by contract name).
+        contract_keys: The agent's permitted read keys (from agent_contract_permissions).
         surface_routing: The routing result from classify_surfaces().
         routing_config: The full surface-routing.json config (has contract_sections per surface).
 
@@ -290,14 +300,12 @@ def get_contract_context(
     """
     agent_contract = provider_contracts.get("agents", {}).get(agent_name)
     if not agent_contract:
-        print(f"ERROR: Invalid agent '{agent_name}'. Available: {list(provider_contracts.get('agents', {}).keys())}", file=sys.stderr)
-        sys.exit(1)
+        print(f"Warning: No contract found for agent '{agent_name}' in DB; returning empty context.", file=sys.stderr)
+        return {}
 
     contract_keys = agent_contract.get("read", [])
 
     sections = project_context.get("sections", {})
-    if not sections:
-        raise KeyError("project-context.json must contain a 'sections' object.")
 
     return get_relevant_sections(
         sections, contract_keys,
@@ -310,16 +318,13 @@ def get_context_update_contract(
     agent_name: str,
     provider_contracts: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Return the SSOT contract agents should use for CONTEXT_UPDATE decisions."""
-    agent_contract = provider_contracts.get("agents", {}).get(agent_name)
-    if not agent_contract:
-        print(f"ERROR: Invalid agent '{agent_name}'. Available: {list(provider_contracts.get('agents', {}).keys())}", file=sys.stderr)
-        sys.exit(1)
+    """Return the write/read permissions agents should use for CONTEXT_UPDATE decisions."""
+    agent_contract = provider_contracts.get("agents", {}).get(agent_name, {})
 
     return {
         "readable_sections": agent_contract.get("read", []),
         "writable_sections": agent_contract.get("write", []),
-        "source": "config/context-contracts.json + config/cloud/{provider}.json",
+        "source": "agent_contract_permissions in ~/.gaia/gaia.db",
     }
 
 
@@ -616,36 +621,29 @@ def load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, A
 # MAIN FUNCTION
 # ============================================================================
 
-def main():
-    """Main function to generate and print the context payload."""
+def build_context_payload(
+    agent_name: str,
+    user_task: str,
+    workspace: Optional[str] = None,
+    db_path: Optional[Path] = None,
+    memory_token_budget: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build and return a context payload dict for an agent.
+
+    This is the programmatic entry point used by context_injector.py (in-process
+    call, no subprocess). The ``main()`` function wraps this for CLI usage.
+
+    Args:
+        agent_name: The agent being dispatched (e.g. "cloud-troubleshooter").
+        user_task: Free-text task description for surface routing and memory search.
+        workspace: Workspace name to query project_context_contracts. Defaults to
+            gaia.project.current() when None.
+        db_path: Optional explicit path to gaia.db (used in tests).
+        memory_token_budget: Token cap for episodic memory. Falls back to
+            GAIA_MEMORY_TOKEN_BUDGET env var, then 2000.
+    """
     import os as _os
 
-    parser = argparse.ArgumentParser(
-        description="Generates a structured context payload for a Claude agent."
-    )
-    parser.add_argument("agent_name", help="The name of the agent being invoked.")
-    parser.add_argument("user_task", nargs="?", default="General inquiry",
-                        help="The user's task or query for the agent.")
-    parser.add_argument(
-        "--context-file",
-        type=Path,
-        default=DEFAULT_CONTEXT_PATH,
-        help=f"Path to the project-context.json file. Defaults to '{DEFAULT_CONTEXT_PATH}'"
-    )
-    parser.add_argument(
-        "--memory-token-budget",
-        type=int,
-        default=None,
-        help=(
-            "Token budget for episodic memory injection. "
-            "Overrides GAIA_MEMORY_TOKEN_BUDGET env var. Default: 2000."
-        ),
-    )
-
-    args = parser.parse_args()
-
-    # Resolve memory token budget: CLI arg > env var > default
-    memory_token_budget: Optional[int] = args.memory_token_budget
     if memory_token_budget is None:
         env_budget = _os.environ.get("GAIA_MEMORY_TOKEN_BUDGET")
         if env_budget:
@@ -656,44 +654,43 @@ def main():
         else:
             memory_token_budget = 2000
 
-    # Load project context
-    project_context = load_project_context(args.context_file)
+    if workspace is None:
+        try:
+            from gaia.project import current as _project_current
+            workspace = _project_current() or "global"
+        except Exception:
+            workspace = "global"
 
-    # Detect cloud provider and load contracts
-    cloud_provider = detect_cloud_provider(project_context)
-    provider_contracts = load_provider_contracts(cloud_provider)
+    project_context = load_project_context(workspace, db_path=db_path)
+    cloud_provider = detect_cloud_provider(project_context.get("sections", {}))
+    provider_contracts = load_provider_contracts(agent_name, cloud_provider, db_path=db_path)
 
-    # Compute surface routing BEFORE extracting sections so we can gate by surface
     surface_routing_config = load_surface_routing_config()
     surface_routing = classify_surfaces(
-        args.user_task,
-        current_agent=args.agent_name,
+        user_task,
+        current_agent=agent_name,
         routing_config=surface_routing_config,
     )
 
-    # Extract contracted sections (surface-gated when routing is available)
     contract_context = get_contract_context(
-        project_context, args.agent_name, provider_contracts,
+        project_context, agent_name, provider_contracts,
         surface_routing=surface_routing,
         routing_config=surface_routing_config,
     )
-    context_update_contract = get_context_update_contract(args.agent_name, provider_contracts)
+    context_update_contract = get_context_update_contract(agent_name, provider_contracts)
 
-    # Load historical episodes (2-layer progressive disclosure)
-    historical_context = load_relevant_episodes(args.user_task, max_tokens=memory_token_budget)
+    historical_context = load_relevant_episodes(user_task, max_tokens=memory_token_budget)
 
-    # Load universal rules
-    rules_context = load_universal_rules(args.agent_name)
+    rules_context = load_universal_rules(agent_name)
     investigation_brief = build_investigation_brief(
-        args.user_task,
-        args.agent_name,
+        user_task,
+        agent_name,
         contract_context,
         routing_config=surface_routing_config,
         routing=surface_routing,
     )
 
-    # Build final payload
-    final_payload = {
+    final_payload: Dict[str, Any] = {
         "project_knowledge": contract_context,
         "write_permissions": context_update_contract,
         "rules": rules_context,
@@ -707,14 +704,47 @@ def main():
             "surface_routing_version": surface_routing_config.get("version", "unknown"),
             "active_surfaces_count": len(surface_routing.get("active_surfaces", [])),
             "surface_routing_confidence": surface_routing.get("confidence", 0.0),
-        }
+        },
     }
 
-    # Add historical context if episodes found
     if historical_context:
         final_payload["historical_context"] = historical_context
 
-    print(json.dumps(final_payload, indent=2))
+    return final_payload
+
+
+def main():
+    """CLI entry point: generate and print the context payload as JSON."""
+    parser = argparse.ArgumentParser(
+        description="Generates a structured context payload for a Claude agent."
+    )
+    parser.add_argument("agent_name", help="The name of the agent being invoked.")
+    parser.add_argument("user_task", nargs="?", default="General inquiry",
+                        help="The user's task or query for the agent.")
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace name to query (default: resolved from gaia.project.current())",
+    )
+    parser.add_argument(
+        "--memory-token-budget",
+        type=int,
+        default=None,
+        help=(
+            "Token budget for episodic memory injection. "
+            "Overrides GAIA_MEMORY_TOKEN_BUDGET env var. Default: 2000."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    payload = build_context_payload(
+        agent_name=args.agent_name,
+        user_task=args.user_task,
+        workspace=args.workspace,
+        memory_token_budget=args.memory_token_budget,
+    )
+    print(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 """
-Tests for `gaia memory get-relevant` and curated slug validation.
+Tests for `gaia memory get-relevant` (legacy --types= path) and curated slug
+validation.
 
-The `get-relevant` subcommand renders a compact Workspace Memory block for
-SessionStart injection. These tests monkeypatch ``gaia.store.writer`` so
-they do not require a real SQLite substrate.
-
-Slug validation tests cover the new curated taxonomy (atom/decision/negative).
+After T7, `gaia memory get-relevant` (with no --types) selects by class/status
+(v4). The legacy `--types=atom,decision,negative` mode is preserved verbatim
+for back-compat; these tests pin the legacy mode. The v4 default mode is
+covered by test_memory_get_relevant_v4.py.
 """
 
 import argparse
@@ -76,12 +76,18 @@ def _patch_writer(monkeypatch, rows_by_type):
 
 
 def _args_get_relevant(**overrides):
-    """Build a SimpleNamespace for _cmd_get_relevant with defaults."""
+    """Build a SimpleNamespace for _cmd_get_relevant with defaults.
+
+    NOTE: ``types`` defaults to the legacy atom/decision/negative trio so
+    these tests exercise the back-compat code path. The v4 default (no
+    --types) goes through class/status selection -- see
+    test_memory_get_relevant_v4.py.
+    """
     base = {
         "workspace": "qxo",
         "limit": 8,
         "max_chars": 800,
-        "types": None,
+        "types": "atom,decision,negative",
         "json": True,
         "func": memory_mod._cmd_get_relevant,
     }
