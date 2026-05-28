@@ -76,7 +76,7 @@ def _make_agent_output(contract: str, payload: dict) -> str:
         "CONTEXT_UPDATE:\n"
         + json.dumps({"contract": contract, "payload": payload}, indent=2)
         + "\n\n"
-        "```json:contract\n"
+        "```agent_contract_handoff\n"
         '{\n'
         '  "agent_status": {\n'
         '    "plan_status": "COMPLETE",\n'
@@ -448,7 +448,7 @@ class TestStdinHandler:
             timeout=30,
         )
 
-        # Empty transcript means no json:contract block -- selective enforcement rejects (exit 2)
+        # Empty transcript means no agent_contract_handoff block -- selective enforcement rejects (exit 2)
         assert result.returncode == 2, (
             f"subagent_stop.py should reject missing contract (exit 2), got {result.returncode}.\n"
             f"stderr: {result.stderr}"
@@ -507,7 +507,7 @@ class TestStdinHandler:
         })
 
         contract_block = (
-            "```json:contract\n"
+            "```agent_contract_handoff\n"
             '{\n'
             '  "agent_status": {\n'
             '    "plan_status": "COMPLETE",\n'
@@ -698,6 +698,6 @@ class TestBuildTaskInfoFromHookData:
     def test_exit_code_from_agent_output(self):
         mod = _import_subagent_stop()
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a789"}
-        output = 'Checking...\n```json:contract\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a789"}}\n```\nCannot reach cluster'
+        output = 'Checking...\n```agent_contract_handoff\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a789"}}\n```\nCannot reach cluster'
         task_info = mod._build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1

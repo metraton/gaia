@@ -26,30 +26,16 @@ AskUserQuestion(
 Where `approval_id_prefix8` is the first 8 characters of the `approval_id`
 field from the subagent's `approval_request` (after the `P-` prefix).
 
-## Batch Approval (verb_family sweep)
+## No batch template
 
-When `approval_request.batch_scope == "verb_family"`, include both Approve
-options. The word "batch" MUST appear in the first option label -- the
-PostToolUse hook reads it to decide whether to create a verb-family (multi-use)
-grant or a single-use grant.
-
-```
-AskUserQuestion(
-  question=(
-    "APPROVAL REQUIRED (BATCH)\n\n"
-    "OPERACION:  {sealed_payload.operation}\n"
-    "COMANDO:    {sealed_payload.exact_content}\n"
-    "SCOPE:      {sealed_payload.scope}\n"
-    "RIESGO:     {sealed_payload.risk_level} -- {sealed_payload.rationale}\n"
-    "ROLLBACK:   {sealed_payload.rollback_hint or 'NOT REVERSIBLE'}\n"
-  ),
-  options=[
-    "Approve batch -- {sealed_payload.operation} [P-{approval_id_prefix8}]",
-    "Approve single -- {first_command} [P-{approval_id_prefix8}]",
-    "Reject"
-  ]
-)
-```
+There is no batch/multi-use approval in the current code. The `verb_family` grant
+was removed (see the module docstring of
+`hooks/modules/security/approval_grants.py`) and the `COMMAND_SET` replacement
+has no production activation path (`create_command_set_grant` has no production
+caller). The word "batch" in a label and a `batch_scope` field are both ignored.
+For a sweep of N commands, present each command with its own single-command
+approval (the template above), once per `approval_id`. See `reference.md` ->
+"On batch intents".
 
 ## Field Extraction Reference
 

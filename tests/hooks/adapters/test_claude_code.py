@@ -117,7 +117,7 @@ def subagent_stop_payload():
         "agent_type": "cloud-troubleshooter",
         "agent_id": "a1b2c3d",
         "agent_transcript_path": "/tmp/transcripts/a1b2c3d.jsonl",
-        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```json:contract\n{\"plan_status\": \"COMPLETE\", \"agent_id\": \"a1b2c3d\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
+        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```agent_contract_handoff\n{\"plan_status\": \"COMPLETE\", \"agent_id\": \"a1b2c3d\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
         "cwd": "/home/user/project",
         "stop_hook_active": True,
         "permission_mode": "default",

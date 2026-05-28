@@ -2,7 +2,7 @@
 """Tests for approval_cleanup.cleanup() — preserve_nonces hardening.
 
 Phase 2 introduced ``preserve_nonces`` so the SubagentStop cleanup does not
-destroy pending approvals that the agent's final json:contract still
+destroy pending approvals that the agent's final agent_contract_handoff still
 references via APPROVAL_REQUEST. The user needs those files to act on the
 [ACTIONABLE] block surfaced by the orchestrator.
 """

@@ -104,7 +104,7 @@ def build_t3_blocked_denial_message(
         f"T3 command blocked. Load Skill('{_SUBAGENT_APPROVAL_SKILL}') to emit"
         f" the approval payload and await user decision.\n"
         f"Do NOT retry this command. Report APPROVAL_REQUEST with this"
-        f" approval_id in your json:contract.\n"
+        f" approval_id in your agent_contract_handoff.\n"
         f"Command: {command}\n"
         f"Verb: '{verb}' ({category})\n"
         f"approval_id: {approval_id}"

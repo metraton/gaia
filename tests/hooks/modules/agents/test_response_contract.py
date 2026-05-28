@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for runtime agent response contract validation.
 
-All fixtures use the ``json:contract`` fenced-block format parsed by
+All fixtures use the ``agent_contract_handoff`` fenced-block format parsed by
 ``contract_validator.parse_contract()``.
 """
 
@@ -26,9 +26,9 @@ from modules.agents.response_contract import (
 
 
 def _make_contract_output(contract_dict: dict) -> str:
-    """Wrap a dict as a json:contract fenced block inside agent prose."""
+    """Wrap a dict as an agent_contract_handoff fenced block inside agent prose."""
     block = json.dumps(contract_dict, indent=2)
-    return f"## Findings\n\n```json:contract\n{block}\n```\n"
+    return f"## Findings\n\n```agent_contract_handoff\n{block}\n```\n"
 
 
 _BASE_EVIDENCE = {

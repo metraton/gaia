@@ -72,7 +72,7 @@ class TestAllFingerprintsPresent:
 
     def test_single_skill_present(self):
         """A declared skill whose fingerprint appears in transcript -> None."""
-        transcript = "The agent loaded json:contract and plan_status correctly."
+        transcript = "The agent loaded agent_contract_handoff and plan_status correctly."
         result = verify_skill_injection(
             agent_type="developer",
             transcript_text=transcript,
@@ -83,7 +83,7 @@ class TestAllFingerprintsPresent:
     def test_multiple_skills_all_present(self):
         """Multiple declared skills all with fingerprints in transcript -> None."""
         transcript = (
-            "Using json:contract for protocol. "
+            "Using agent_contract_handoff for protocol. "
             "T0_READ_ONLY classification applied. "
             "Start From Injected Context was followed. "
             "ONE COMMAND. ONE RESULT. ONE EXIT CODE enforced."
@@ -144,7 +144,7 @@ class TestMissingSkillAnomaly:
 
     def test_some_present_some_missing(self):
         """When some skills are present and others missing, only missing ones are reported."""
-        transcript = "Agent used json:contract and plan_status. No other skills."
+        transcript = "Agent used agent_contract_handoff and plan_status. No other skills."
         result = verify_skill_injection(
             agent_type="terraform-architect",
             transcript_text=transcript,
@@ -225,7 +225,7 @@ class TestEmptyDeclaredSkills:
     def test_empty_list_returns_none(self):
         result = verify_skill_injection(
             agent_type="developer",
-            transcript_text="Some transcript content with json:contract.",
+            transcript_text="Some transcript content with agent_contract_handoff.",
             declared_skills=[],
         )
         assert result is None

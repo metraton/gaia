@@ -77,7 +77,7 @@ skills/
 ├── reference.md               <- índice de skills con tipo y descripción
 ├── agent-protocol/
 │   ├── SKILL.md               <- protocol: response contract, state machine
-│   └── examples.md            <- filled json:contract examples
+│   └── examples.md            <- filled agent_contract_handoff examples
 ├── security-tiers/
 │   ├── SKILL.md               <- reference: T0-T3 tier definitions
 │   └── reference.md           <- cloud CLI examples, conditional commands

@@ -55,8 +55,8 @@ _BASE_STATUS = {
 
 
 def _wrap(contract_dict: dict) -> str:
-    """Wrap a dict as a json:contract fenced block inside agent prose."""
-    return f"## Findings\n\n```json:contract\n{json.dumps(contract_dict, indent=2)}\n```\n"
+    """Wrap a dict as an agent_contract_handoff fenced block inside agent prose."""
+    return f"## Findings\n\n```agent_contract_handoff\n{json.dumps(contract_dict, indent=2)}\n```\n"
 
 
 class TestMemorializeSuggestionsParser:

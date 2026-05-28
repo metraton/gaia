@@ -419,9 +419,9 @@ def _build_valid_agent_output(
     summary: str = "Task completed successfully.",
     include_consolidation: bool = True,
 ) -> str:
-    """Build a realistic agent output string with json:contract block.
+    """Build a realistic agent output string with agent_contract_handoff block.
 
-    The json:contract block must contain agent_status and evidence_report
+    The agent_contract_handoff block must contain agent_status and evidence_report
     as nested objects -- that is the format contract_validator.parse_contract()
     and response_contract.validate_response_contract() expect.
 
@@ -464,7 +464,7 @@ def _build_valid_agent_output(
     )
     return (
         f"{summary}\n\n"
-        f"{bt}{bt}{bt}json:contract\n"
+        f"{bt}{bt}{bt}agent_contract_handoff\n"
         f"{contract_block}\n"
         f"{bt}{bt}{bt}\n\n"
     )
@@ -641,7 +641,7 @@ class TestScenario3MutativeCommand:
 
 
 class TestScenario4IncompleteContract:
-    """Agent response without json:contract block should flag anomalies."""
+    """Agent response without agent_contract_handoff block should flag anomalies."""
 
     def test_missing_contract_detected(self, tmp_path):
         sim = SessionSimulator(tmp_path)
@@ -686,7 +686,7 @@ class TestScenario4IncompleteContract:
 
 
 class TestScenario5InvalidPlanStatus:
-    """Agent response with json:contract but invalid plan_status should be rejected (exit=2)."""
+    """Agent response with agent_contract_handoff but invalid plan_status should be rejected (exit=2)."""
 
     def test_invalid_plan_status_rejected(self, tmp_path):
         sim = SessionSimulator(tmp_path)
@@ -699,7 +699,7 @@ class TestScenario5InvalidPlanStatus:
         result = sim.invoke_agent("developer", "refactoriza el modulo X")
         assert result["exit_code"] == 0
 
-        # Agent responds with a json:contract block but INVALID plan_status
+        # Agent responds with an agent_contract_handoff block but INVALID plan_status
         agent_output = _build_valid_agent_output(
             plan_status="RANDOM_STATUS",
             agent_id="a5e6f7",
@@ -773,7 +773,7 @@ class TestScenario6EmptyEvidenceAdvisory:
         )
         agent_output = (
             f"Diagnostico completado.\n\n"
-            f"{bt}{bt}{bt}json:contract\n"
+            f"{bt}{bt}{bt}agent_contract_handoff\n"
             f"{contract_block}\n"
             f"{bt}{bt}{bt}\n\n"
         )

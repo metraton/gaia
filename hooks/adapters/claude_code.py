@@ -913,7 +913,7 @@ class ClaudeCodeAdapter(HookAdapter):
         reason = (
             f"[T3_BLOCKED] This file modification requires user approval.\n"
             f"Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
-            f"in your json:contract.\n"
+            f"in your agent_contract_handoff.\n"
             f"File: {file_path}\n"
             f"Tool: {tool_name}\n"
             f"approval_id: {approval_id}"
@@ -1255,8 +1255,8 @@ class ClaudeCodeAdapter(HookAdapter):
         # ----------------------------------------------------------
         # Native agent bypass: agents not defined in agents/ dir
         # (e.g. claude-code-guide, Explore, Plan) do not emit
-        # json:contract. Skip contract validation to avoid an
-        # infinite retry loop (exit_code=2 -> retry -> no contract).
+        # agent_contract_handoff. Skip contract validation to avoid
+        # an infinite retry loop (exit_code=2 -> retry -> no contract).
         # ----------------------------------------------------------
         _native_agent_type = task_info.get("agent", "unknown")
         _gaia_agents = self._get_gaia_agent_names()
@@ -1302,10 +1302,9 @@ class ClaudeCodeAdapter(HookAdapter):
             else:
                 _validation_anomalies = []
 
-            # BUG A fix: use _resolve_status to handle both task_status (new
-            # agent_contract_handoff envelope) and plan_status (legacy json:contract).
+            # Resolve canonical plan_status from the agent_contract_handoff envelope.
             from modules.agents.contract_validator import _resolve_status
-            _resolved_task_status = (
+            _resolved_plan_status = (
                 _resolve_status(parsed_contract.get("agent_status") or {})
                 if isinstance(parsed_contract, dict) else ""
             )
@@ -1315,11 +1314,9 @@ class ClaudeCodeAdapter(HookAdapter):
             # approvals the user is being asked to act on.
             preserved_nonces: set = set()
             if isinstance(parsed_contract, dict):
-                _agent_status = parsed_contract.get("agent_status") or {}
-                _plan_status = _resolved_task_status
                 _approval_req = parsed_contract.get("approval_request") or {}
                 _nonce = _approval_req.get("approval_id") if isinstance(_approval_req, dict) else None
-                if _plan_status == "APPROVAL_REQUEST" and _nonce:
+                if _resolved_plan_status == "APPROVAL_REQUEST" and _nonce:
                     preserved_nonces.add(_nonce)
 
             cleanup_approval(
@@ -1548,7 +1545,7 @@ class ClaudeCodeAdapter(HookAdapter):
             # Write AGENT_COMPLETE event (non-blocking)
             try:
                 from modules.events.event_writer import EventWriter, AGENT_COMPLETE
-                _plan = _resolved_task_status  # BUG A fix: use _resolved_task_status
+                _plan = _resolved_plan_status
                 _key_outputs = []
                 if parsed_contract and isinstance(parsed_contract.get("evidence_report"), dict):
                     _key_outputs = parsed_contract["evidence_report"].get("key_outputs", [])
@@ -1582,11 +1579,10 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
 
             # ----------------------------------------------------------
-            # Extract plan_status for downstream checks
-            # BUG A fix: use _resolved_task_status (from _resolve_status) which
-            # handles both task_status (new envelope) and plan_status (legacy).
+            # Extract plan_status for downstream checks (canonical field
+            # resolved earlier via _resolve_status).
             # ----------------------------------------------------------
-            _plan_status = _resolved_task_status
+            _plan_status = _resolved_plan_status
 
             # ----------------------------------------------------------
             # State transition tracking
@@ -1665,8 +1661,8 @@ class ClaudeCodeAdapter(HookAdapter):
             # ----------------------------------------------------------
             # Option B: Selective enforcement for critical structural failures.
             # Only 3 cases set contract_rejected=True:
-            #   1. json:contract block completely missing
-            #   2. plan_status missing or not one of the 8 valid statuses
+            #   1. agent_contract_handoff block completely missing
+            #   2. plan_status missing or not one of the valid statuses
             #   3. agent_status block missing entirely
             # ----------------------------------------------------------
             contract_rejected = False
@@ -1675,25 +1671,23 @@ class ClaudeCodeAdapter(HookAdapter):
             if parsed_contract is None:
                 contract_rejected = True
                 contract_rejection_reason = (
-                    "[CONTRACT REJECTED] No json:contract block found in agent response.\n"
-                    "The agent must end its response with a ```json:contract``` fenced block.\n"
-                    "Reissue the response with a complete json:contract block."
+                    "[CONTRACT REJECTED] No agent_contract_handoff block found in agent response.\n"
+                    "The agent must end its response with a ```agent_contract_handoff``` fenced block.\n"
+                    "Reissue the response with a complete agent_contract_handoff block."
                 )
             elif not parsed_contract.get("agent_status") or not isinstance(
                 parsed_contract.get("agent_status"), dict
             ):
                 contract_rejected = True
                 contract_rejection_reason = (
-                    "[CONTRACT REJECTED] agent_status block missing from json:contract.\n"
-                    "The json:contract block must include an agent_status object with "
+                    "[CONTRACT REJECTED] agent_status block missing from agent_contract_handoff.\n"
+                    "The agent_contract_handoff block must include an agent_status object with "
                     "plan_status, agent_id, pending_steps, and next_action."
                 )
             else:
                 from modules.agents.response_contract import VALID_PLAN_STATUSES
-                # BUG A fix: use _resolve_status to handle task_status (new) and
-                # plan_status (legacy) uniformly.
-                normalized = _resolved_task_status
-                raw_plan_status = parsed_contract["agent_status"].get("plan_status", "") or parsed_contract["agent_status"].get("task_status", "")
+                normalized = _resolved_plan_status
+                raw_plan_status = parsed_contract["agent_status"].get("plan_status", "")
                 if not normalized or normalized not in VALID_PLAN_STATUSES:
                     contract_rejected = True
                     valid_list = ", ".join(sorted(VALID_PLAN_STATUSES))

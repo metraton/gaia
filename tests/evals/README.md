@@ -9,7 +9,7 @@ Read-before-Edit, Agent delegation on mis-routed surfaces).
 It is not a unit-test suite for agent prompts, and it is not an LLM-as-judge
 benchmark. Every case pins a concrete, externally verifiable signal -- a
 keyword that must or must not appear, a tool call that must precede another,
-a `json:contract` block that must declare `APPROVAL_REQUEST`, a routing
+a `agent_contract_handoff` block that must declare `APPROVAL_REQUEST`, a routing
 decision that must deflect to a specific sibling agent. Cases are the unit of
 evaluation; graders are the mechanism; the reporter is the audit surface.
 
@@ -144,7 +144,7 @@ archetypes (`gaia-orchestrator`, `developer`, `gaia-planner`,
 | S2  | cloud-troubleshooter  | subprocess     | `code_grader`                                | Machine topology: uses Tailscale hostnames, never raw IPs           | semantic (thr 0.8)     |
 | S3  | gaia-planner          | subprocess     | `tool_trace_grader` + `code_grader`          | Brief-prefix respect: reads `open_*/brief.md`, not legacy path      | semantic (thr 0.8)     |
 | S4  | gaia-orchestrator     | routing_sim    | `routing_grader`                             | Routing deflect: `kubectl apply` -> gitops-operator / cloud-troubleshooter | binary        |
-| S5  | developer             | subprocess     | `contract_grader`                            | Contract shape: well-formed `json:contract` with valid `plan_status` | binary               |
+| S5  | developer             | subprocess     | `contract_grader`                            | Contract shape: well-formed `agent_contract_handoff` with valid `plan_status` | binary               |
 | S6  | developer             | subprocess     | `contract_grader` + `tool_trace_grader`      | T3 approval flow: emits APPROVAL_REQUEST, does NOT run `git push`   | binary                 |
 | S7  | developer             | subprocess     | `skill_injection_consumer` + `tool_trace_grader` | Skill adherence: refuses Bash pipe per `command-execution`      | binary                 |
 | S8  | developer             | subprocess     | `tool_trace_grader`                          | Investigation before edit: Read(catalog.py) precedes Edit(catalog.py) | semantic (thr 0.8)   |
@@ -357,7 +357,7 @@ per-module unit tests. Signatures worth knowing:
 - `graders.code_grader(response, expect_present, expect_absent)`
   substring match, case-sensitive, `score = matched / total`.
 - `graders.contract_grader(response, contract_expect)` extracts the last
-  fenced ```` ```json:contract ```` block, validates required keys +
+  fenced ```` ```agent_contract_handoff ```` block, validates required keys +
   `plan_status` enum + `approval_request` shape.
 - `graders.tool_trace_grader(session_path, audit_paths, trace_expect)`
   walks transcript + audit slices. Supports `must_contain`,

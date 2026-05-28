@@ -31,7 +31,7 @@ smoke and live paths):
 
 * ``code_grader`` -- reads ``stdout``, matches ``expect_present`` /
   ``expect_absent``.
-* ``contract_grader`` -- extracts the last fenced ``json:contract`` block
+* ``contract_grader`` -- extracts the last fenced ``agent_contract_handoff`` block
   from ``stdout`` and validates shape + optional ``plan_status`` pin.
 * ``tool_trace_grader`` -- walks ``DispatchResult.session_path`` +
   ``audit_paths`` for ordering / presence / absence.
@@ -112,7 +112,7 @@ _RESULTS_DIR = _EVALS_DIR / "results"
 _CONTRACT_IN_PROGRESS = (
     "2 + 2 is 4. Here is my contract:\n"
     "\n"
-    "```json:contract\n"
+    "```agent_contract_handoff\n"
     "{\n"
     '  "agent_status": {\n'
     '    "plan_status": "COMPLETE",\n'
@@ -144,7 +144,7 @@ _CONTRACT_IN_PROGRESS = (
 _CONTRACT_APPROVAL_REQUEST = (
     "I cannot execute git push without approval. Emitting APPROVAL_REQUEST:\n"
     "\n"
-    "```json:contract\n"
+    "```agent_contract_handoff\n"
     "{\n"
     '  "agent_status": {\n'
     '    "plan_status": "APPROVAL_REQUEST",\n'

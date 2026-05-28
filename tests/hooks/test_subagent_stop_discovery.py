@@ -68,14 +68,14 @@ def structural_task_info():
 # ============================================================================
 
 class TestExtractExitCode:
-    """Test AGENT_STATUS-based exit code extraction via json:contract."""
+    """Test AGENT_STATUS-based exit code extraction via agent_contract_handoff."""
 
     def test_complete_status_returns_zero(self):
-        output = '```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_blocked_status_returns_one(self):
-        output = '```json:contract\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 1
 
     def test_no_status_returns_zero(self):
@@ -83,13 +83,13 @@ class TestExtractExitCode:
         assert _extract_exit_code_from_output(output) == 0
 
     def test_last_status_wins(self):
-        # Only the first json:contract block is parsed, so this tests a single block
-        output = '```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
+        # Only the first agent_contract_handoff block is parsed, so this tests a single block
+        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_no_false_positive_on_error_text(self):
         """Text like 'No errors found' should not trigger exit_code=1."""
-        output = 'No errors found.\n```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = 'No errors found.\n```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
 
@@ -102,13 +102,13 @@ class TestBuildTaskInfoExitCode:
 
     def test_exit_code_from_complete_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = '```json:contract\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a123"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a123"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 0
 
     def test_exit_code_from_blocked_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = '```json:contract\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a123"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a123"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1
 
@@ -127,7 +127,7 @@ class TestExtractCommandsFromEvidence:
 
     def test_extracts_executed_commands(self):
         evidence_text = (
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"evidence_report": {"commands_run": ['
             '{"command": "kubectl get pods", "result": "3 pods running"},'
             '{"command": "terraform plan", "result": "2 to add, 0 to destroy"}'
@@ -141,7 +141,7 @@ class TestExtractCommandsFromEvidence:
     def test_skips_not_run_commands(self):
         """Commands marked as 'not run' should not appear in commands_executed."""
         evidence_text = (
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"evidence_report": {"commands_run": ['
             '{"command": "kubectl get pods", "result": "3 pods running"},'
             '{"command": "not run"},'
@@ -154,7 +154,7 @@ class TestExtractCommandsFromEvidence:
 
     def test_skips_not_executed_commands(self):
         evidence_text = (
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"evidence_report": {"commands_run": ['
             '{"command": "not executed"},'
             '{"command": "kubectl get svc", "result": "2 services found"}'
@@ -166,7 +166,7 @@ class TestExtractCommandsFromEvidence:
 
     def test_skips_na_commands(self):
         evidence_text = (
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"evidence_report": {"commands_run": ['
             '{"command": "n/a"},'
             '{"command": "flux get ks", "result": "1 kustomization reconciled"}'
@@ -178,7 +178,7 @@ class TestExtractCommandsFromEvidence:
 
     def test_skips_literal_none_entries(self):
         evidence_text = (
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"evidence_report": {"commands_run": ["none", "not run"]}}\n```'
         )
         commands = _extract_commands_from_evidence(evidence_text)
@@ -186,7 +186,7 @@ class TestExtractCommandsFromEvidence:
 
     def test_empty_commands_section(self):
         evidence_text = (
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"evidence_report": {"commands_run": []}}\n```'
         )
         commands = _extract_commands_from_evidence(evidence_text)
@@ -202,7 +202,7 @@ class TestSubagentStopHookPostRemoval:
 
     @patch("subagent_stop.write_episode", return_value="ep-hook-001")
     def test_hook_no_longer_returns_discoveries(self, mock_episodic, structural_task_info):
-        output = "All checks passed. No json:contract block."
+        output = "All checks passed. No agent_contract_handoff block."
         result = subagent_stop_hook(structural_task_info, output)
         assert result["success"] is True
         assert "discoveries" not in result
@@ -216,7 +216,7 @@ class TestSubagentStopHookPostRemoval:
         # Contract has agent_status but no evidence_report -> invalid
         output = (
             '## Findings\n\n'
-            '```json:contract\n'
+            '```agent_contract_handoff\n'
             '{"agent_status": {"plan_status": "COMPLETE", "pending_steps": "[]", '
             '"next_action": "Done", "agent_id": "a12345"}}\n'
             '```\n'
@@ -274,7 +274,7 @@ class TestSubagentStopHookPostRemoval:
                 "open_gaps": ["live rollout failure still needs gitops verification"],
             },
         }
-        output = f"## Findings\n\n```json:contract\n{json.dumps(contract, indent=2)}\n```\n"
+        output = f"## Findings\n\n```agent_contract_handoff\n{json.dumps(contract, indent=2)}\n```\n"
         result = subagent_stop_hook(task_info, output)
         assert result["success"] is True
         assert result["response_contract"]["valid"] is False

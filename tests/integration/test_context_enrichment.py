@@ -396,7 +396,7 @@ class TestLLMRealisticOutput:
             "  }\n"
             "}\n"
             "```\n\n"
-            "```json:contract\n"
+            "```agent_contract_handoff\n"
             "{\n"
             '  "agent_status": {\n'
             '    "plan_status": "COMPLETE",\n'

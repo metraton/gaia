@@ -50,7 +50,7 @@ def tmp_db(tmp_path):
 
 
 def _minimal_envelope(plan_status: str = "COMPLETE") -> dict:
-    """Return a minimal json:contract envelope (legacy form for simplicity)."""
+    """Return a minimal agent_contract_handoff envelope (legacy form for simplicity)."""
     return {
         "agent_status": {
             "plan_status": plan_status,
@@ -104,7 +104,7 @@ def test_hook_inserts_handoff_row(tmp_db):
     envelope = _minimal_envelope("COMPLETE")
     agent_output = (
         "Final response\n\n"
-        "```json:contract\n"
+        "```agent_contract_handoff\n"
         + json.dumps(envelope) + "\n"
         "```\n"
     )
@@ -160,7 +160,7 @@ def test_hook_inserts_approval_row_when_approval_request_present(tmp_db):
     envelope = _envelope_with_approval(approval_id)
     agent_output = (
         "Final response\n\n"
-        "```json:contract\n"
+        "```agent_contract_handoff\n"
         + json.dumps(envelope) + "\n"
         "```\n"
     )
@@ -206,7 +206,7 @@ def test_db_write_failure_does_not_crash_hook(tmp_db):
     envelope = _minimal_envelope("COMPLETE")
     agent_output = (
         "Final response\n\n"
-        "```json:contract\n"
+        "```agent_contract_handoff\n"
         + json.dumps(envelope) + "\n"
         "```\n"
     )

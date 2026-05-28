@@ -355,8 +355,8 @@ def audit(
     Checks:
     - execution_failure: exit_code != 0
     - consecutive_failures: 3+ failures in a row for same agent
-    - missing_evidence: COMPLETE but no evidence in json:contract block
-    - empty_evidence: json:contract evidence exists but commands_run empty or all "not run"
+    - missing_evidence: COMPLETE but no evidence in agent_contract_handoff block
+    - empty_evidence: agent_contract_handoff evidence exists but commands_run empty or all "not run"
     - skipped_verification: task has verify command in injected_context but not in commands_run
     - scope_escalation: rejected_sections exist (agent tried to write outside its scope)
 
@@ -417,7 +417,7 @@ def audit(
                     "severity": "warning",
                     "message": (
                         f"Agent {metrics['agent']} completed but "
-                        f"did not include evidence in json:contract block"
+                        f"did not include evidence in agent_contract_handoff block"
                     ),
                 })
 
@@ -441,7 +441,7 @@ def audit(
                             "severity": "warning",
                             "message": (
                                 f"Agent {metrics['agent']} has evidence in "
-                                f"json:contract but commands_run is empty"
+                                f"agent_contract_handoff but commands_run is empty"
                             ),
                         })
                     elif all(
@@ -453,7 +453,7 @@ def audit(
                             "severity": "warning",
                             "message": (
                                 f"Agent {metrics['agent']} has evidence in "
-                                f"json:contract but all commands_run entries "
+                                f"agent_contract_handoff but all commands_run entries "
                                 f"indicate 'not run'"
                             ),
                         })

@@ -2,7 +2,7 @@
 Runtime validation for agent response contracts.
 
 Validates the structured JSON contract block returned by agents
-(``json:contract`` fenced blocks parsed by ``contract_validator.parse_contract``).
+(``agent_contract_handoff`` fenced blocks parsed by ``contract_validator.parse_contract``).
 
 Validated sections:
 - agent_status  (plan_status, agent_id, pending_steps, next_action)
@@ -205,11 +205,9 @@ def _get_list(d: dict, key: str) -> List[str]:
 
 
 def _extract_agent_status(contract: dict) -> AgentStatusBlock:
-    """Build an AgentStatusBlock from the parsed JSON contract dict.
+    """Build an AgentStatusBlock from the parsed ``agent_contract_handoff`` dict.
 
-    Supports dual-mode: ``task_status`` (new ``agent_contract_handoff`` envelope)
-    and ``plan_status`` (legacy ``json:contract`` envelope). ``task_status``
-    takes precedence when both are present.
+    Single-mode: ``plan_status`` is the canonical status field.
     """
     agent_status = contract.get("agent_status")
     if not agent_status or not isinstance(agent_status, dict):
@@ -221,10 +219,8 @@ def _extract_agent_status(contract: dict) -> AgentStatusBlock:
             agent_id="",
         )
 
-    # Dual-mode: prefer task_status, fall back to plan_status
-    task_status_raw = _get_str(agent_status, "task_status")
     plan_status_raw = _get_str(agent_status, "plan_status")
-    effective_status = (task_status_raw or plan_status_raw).upper().rstrip(".,;")
+    effective_status = plan_status_raw.upper().rstrip(".,;")
 
     pending_steps = _get_str(agent_status, "pending_steps")
     next_action = _get_str(agent_status, "next_action")
@@ -356,7 +352,7 @@ def _extract_memorialize_suggestions(contract: dict) -> MemorializeSuggestionsBl
 # ============================================================================
 
 def parse_agent_status(agent_output: str, parsed_contract: Optional[dict] = None) -> AgentStatusBlock:
-    """Parse agent_status from agent output using the json:contract block."""
+    """Parse agent_status from agent output using the agent_contract_handoff block."""
     contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
     if contract is None:
         return AgentStatusBlock(
@@ -367,7 +363,7 @@ def parse_agent_status(agent_output: str, parsed_contract: Optional[dict] = None
 
 
 def parse_evidence_report(agent_output: str, parsed_contract: Optional[dict] = None) -> EvidenceReportBlock:
-    """Parse evidence_report from agent output using the json:contract block."""
+    """Parse evidence_report from agent output using the agent_contract_handoff block."""
     contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
     if contract is None:
         return EvidenceReportBlock(
@@ -378,7 +374,7 @@ def parse_evidence_report(agent_output: str, parsed_contract: Optional[dict] = N
 
 
 def parse_consolidation_report(agent_output: str, parsed_contract: Optional[dict] = None) -> ConsolidationReportBlock:
-    """Parse consolidation_report from agent output using the json:contract block."""
+    """Parse consolidation_report from agent output using the agent_contract_handoff block."""
     contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
     if contract is None:
         return ConsolidationReportBlock(
@@ -438,7 +434,7 @@ def validate_response_contract(
     contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
 
     if contract is None:
-        # No json:contract block found -- everything is missing.
+        # No agent_contract_handoff block found -- everything is missing.
         empty_evidence = EvidenceReportBlock(
             marker_present=False,
             fields={field: [] for field in EVIDENCE_FIELDS},

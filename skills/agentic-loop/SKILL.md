@@ -47,7 +47,7 @@ Iterative improvement through small, reversible changes evaluated against a sing
 
 ## Contract Integration
 
-Include `loop_status` in your `json:contract` agent_status on every response:
+Include `loop_status` in your `agent_contract_handoff` agent_status on every response:
 
 ```json
 "loop_status": {

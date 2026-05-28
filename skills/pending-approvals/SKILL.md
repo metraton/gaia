@@ -1,6 +1,6 @@
 ---
 name: pending-approvals
-description: Use when there are pending approval requests to present — "aprobar", "ver pendientes", "approve P-", "reject P-"
+description: Use when the user invokes approvals directly -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX", "approve P-", "reject P-" -- or when SessionStart injected an [ACTIONABLE] pending approvals block
 metadata:
   user-invocable: true
   type: technique
@@ -8,86 +8,130 @@ metadata:
 
 # Pending Approvals
 
-## When SessionStart injects pending approvals
+`pending-approvals` is the workflow the orchestrator follows when the *user*
+drives an approval -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX" --
+or when `build_pending_approvals_block` (`hooks/modules/session/session_manifest.py`)
+injects an `[ACTIONABLE] Pending approvals` block at SessionStart. The
+orchestrator's role here is to translate user intent into the right `gaia
+approvals` subcommand against the right store.
 
-1. Present the summary to the user (already formatted by the scanner)
-2. Wait for user to say "ver P-XXXX" or "aprobar P-XXXX"
+For the universal envelope of an approval payload see `agent-approval-protocol`;
+for how the orchestrator relays a *subagent-initiated* APPROVAL_REQUEST into
+AskUserQuestion see `orchestrator-present-approval` -- that skill owns the
+verbatim-COMANDO, `[P-{nonce8}]` label, and single-use grant discipline; this
+skill does not restate them.
 
-The scanner formats each entry as:
-```
-P-{nonce_prefix8}  {command}  [{danger_verb}]  {age}
-```
+## The DB / filesystem store gap
+
+There are two stores for pending approvals, and the CLI subcommands do not
+cover them symmetrically. Misreading this surface is what makes the orchestrator
+report "rejected" when nothing actually changed.
+
+| Subcommand | Store | Backed by |
+|------------|-------|-----------|
+| `gaia approvals pending` | DB only | `store.list_pending` |
+| `gaia approvals history` | DB only | `store.list_all` |
+| `gaia approvals approve P-xxx` | DB only | `store.approve` |
+| `gaia approvals revoke P-xxx` | DB only | `store.revoke` (falls back to legacy) |
+| `gaia approvals show P-xxx` | DB first, then filesystem | `cmd_show_v2` in `bin/cli/approvals.py` |
+| `gaia approvals list` | DB grants + filesystem pendings | `cmd_list` (mixed) |
+| `gaia approvals reject NONCE` | filesystem only | `reject_pending` in `hooks/modules/security/approval_grants.py` |
+| `gaia approvals reject-all` | filesystem only | loops `reject_pending` |
+| `gaia approvals clean` | filesystem only | `cleanup_expired_grants` |
+
+The practical consequence: `revoke` is the DB-aware single-id verb; `reject` and
+`reject-all` only touch the legacy filesystem queue. If you need to mark a DB
+row as terminated, use `revoke`. Bulk DB cleanup currently has no first-class
+CLI -- it requires a Python loop over `store.revoke()`.
+
+## When SessionStart injects the [ACTIONABLE] block
+
+1. Present the summary to the user -- the scanner has already formatted each
+   row as `P-{nonce_prefix8}  {command}  [{danger_verb}]  {age}`.
+2. Wait for the user to choose: "ver P-XXXX", "aprobar P-XXXX", "rechazar P-XXXX",
+   or a bulk operation.
+
+Do not silently act on the block. The block is a prompt to the user, not an
+instruction to the orchestrator.
 
 ## When user says "ver P-XXXX"
 
-1. Find the pending file whose nonce starts with the given prefix
-2. Present full details: operation, exact command (verbatim), context, risk, rollback
-3. Ask: "aprobar" or "rechazar"
+1. Run `gaia approvals show P-XXXX` -- `cmd_show_v2` checks the DB row first,
+   then falls back to the filesystem pending. Either path returns the verbatim
+   command and the context fields.
+2. Relay the detail to the user. Do not paraphrase the command.
+3. Ask whether to approve or reject.
 
 ## When user says "aprobar P-XXXX"
 
-1. Find the pending file whose nonce starts with the given prefix
-2. Call AskUserQuestion with ALL mandatory fields visible:
+1. If you have not already, call `gaia approvals show P-XXXX` to load the
+   verbatim command and context fields (`cmd_show_v2` checks the DB then the
+   filesystem).
+2. Present the approval via `AskUserQuestion` following
+   `orchestrator-present-approval` -- 5 labeled fields and the `[P-{nonce8}]`
+   option label. The same presentation works for both stores; the nonce-prefix
+   matcher (`activate_db_pending_by_prefix` in
+   `hooks/modules/security/approval_grants.py`) covers DB rows and the legacy
+   path covers filesystem pendings.
+3. On `"Approve"`, the ElicitationResult hook writes `SHOWN` + `APPROVED`
+   events and the grant activates in the current session.
+4. Dispatch a one-shot agent to execute the command using the dispatch template
+   in `reference.md` (preflight + recovery, `mode` per target).
 
-```
-APPROVAL REQUIRED
+The CLI `gaia approvals approve P-XXXX` is the cross-session admin path: it
+inserts `APPROVED` directly in the DB and does **not** create a hook-side grant.
+Use it only when the user explicitly wants the CLI-only path (audit, marking a
+row from a different session as decided). For any approval that needs to
+execute the blocked command in this session, AskUserQuestion is the only path
+that activates the grant.
 
-OPERATION: {danger_verb} on {base_cmd}
-COMMAND:   {command}  ← verbatim, no paraphrase
-SCOPE:     {scope from context field}
-RISK:      {danger_category}
-ROLLBACK:  {rollback from context field}
-```
+## When user says "rechazar P-XXXX" / "reject P-XXXX"
 
-3. AskUserQuestion options: `["Approve -- {specific_action} [P-{nonce_prefix8}]", "Reject"]`
-   - Label MUST start with "Approve" (PostToolUse grant activation checks for "approve")
-   - Label MUST end with `[P-{nonce_prefix8}]` (PostToolUse hook extracts nonce from label for targeted activation)
-   - Label MUST name the specific action (e.g., "Approve -- kubectl apply -f manifest.yaml [P-8072af80]")
-   - NEVER use vague labels like "Approve -- aplicar cambios" or "Approve -- proceed"
-4a. Cross-session check: if `pending.session_id` != current `CLAUDE_SESSION_ID`:
-    - The nonce is stale (from a prior session) -- do NOT pass it to the agent
-    - The PostToolUse hook will have already activated the grant under the current session
-    - Dispatch a one-shot agent using the dispatch template from `reference.md` (command + cwd + preflight + recovery instructions, no nonce)
-    - The hook will find the pre-activated grant and allow the T3 operation through
-4b. Same-session: dispatch a one-shot agent using the dispatch template from `reference.md` (command + cwd + nonce + preflight + recovery instructions)
-5. On Reject: call `reject_pending(nonce_prefix)` to mark the pending as rejected; confirm to user
+Single rejection has two routes; pick by which store owns the row.
 
-## When user says "rechazar P-XXXX"
+- **DB row**: `gaia approvals revoke P-XXXX --yes` -- `store.revoke` inserts a
+  `REVOKED` event and updates `approvals.status` to `revoked`.
+- **Filesystem pending**: `gaia approvals reject P-XXXX` -- `reject_pending`
+  rewrites the JSON file with `status: "rejected"` (no `rm`, which would itself
+  be T3).
 
-1. The orchestrator dispatches an agent to edit the pending JSON file at `.claude/cache/approvals/pending-{nonce}.json`, setting `"status": "rejected"` and `"rejected_at"` to the current timestamp
-2. Do NOT use `rm` to delete the file -- that triggers T3 approval. The `reject_pending()` function in `approval_grants.py` handles this via file I/O (read JSON, modify, write back)
-3. The pending scanner will clean up rejected files on its next sweep
-4. Confirm: "P-XXXX rechazado"
+Confirm to the user: "P-XXXX rechazado." If `revoke` returns `not_found`, fall
+back to `reject` before declaring failure -- the row may have been a legacy
+filesystem pending.
 
 ## Bulk cleanup
 
-When to offer `gaia approvals reject-all`:
-- The user says "limpia todos los pendings", "borra los pendientes", or similar
-- The pending list contains entries from closed sessions (all have `cross_session: true`) and the user has not asked to review them individually
-- Session-start injects 5 or more stale pendings and the user has not acted on any of them
+Offer bulk cleanup when the user says "limpia todos los pendings", "borra los
+pendientes", or when SessionStart surfaces 5+ orphaned pendings the user has
+not engaged with.
 
-How to invoke:
+- `gaia approvals reject-all` -- bulk reject across the **filesystem** queue.
+  Returns "0 rejected" when the queue is empty.
+- `gaia approvals clean` -- removes expired/stale **filesystem** files.
 
-```
-gaia approvals reject-all
-```
+There is no first-class bulk-revoke for the DB queue. If `gaia approvals
+pending --all-sessions` shows rows that need clearing, either revoke each by id
+or call `store.revoke()` in a short Python loop. Do not report "bulk cleanup
+done" after `reject-all` if the DB queue still has pending rows -- check
+`gaia approvals pending --all-sessions` to confirm.
 
-After running, report the count of rejections and confirm: "X pendings rechazados." If the command returns 0, report "No había pendings activos."
-
-Difference from individual rejection:
-- `reject-all` marks every active pending as rejected in a single pass — no per-item confirmation is shown to the user
-- Individual rejection (`rechazar P-XXXX`) is used when the user wants to review before discarding
-
-Do NOT offer `reject-all` when there are active same-session pendings the user may still want to approve.
+Do not offer `reject-all` when there are active same-session pendings the user
+may still want to approve.
 
 ## Anti-patterns
 
-- Approving without showing the exact command — user needs to see verbatim, not a summary
-- Summarizing command as "the deploy" or "the apply" instead of showing the literal string
-- Asking for approval without AskUserQuestion — the PostToolUse grant hook will not activate
-- Prefixing the approve option with anything other than "Approve" (e.g. "Sí, ejecutar")
-- Dispatching execution before AskUserQuestion confirms approval
-- Omitting the `[P-{nonce_prefix8}]` suffix from the Approve label — the hook cannot do targeted activation without it
-- Fire-and-forget dispatch -- omitting preflight checks and recovery instructions from the dispatch prompt
+- Approving without showing the exact COMANDO -- the user consents on the
+  verbatim string, not a summary. The full presentation discipline lives in
+  `orchestrator-present-approval`; this skill does not restate it.
+- Treating `gaia approvals reject-all` as a DB cleanup -- it operates on the
+  filesystem queue only. DB rows survive the call.
+- Reporting "rechazado" without verifying the store -- `revoke` returns
+  `not_found` for filesystem-only pendings; the inverse happens for `reject` on
+  DB rows. Pick the verb by store, or be ready to fall back.
+- Dispatching execution before AskUserQuestion returns "Approve" -- the grant
+  does not activate until the ElicitationResult hook fires.
+- Using `rm` on a `pending-*.json` file -- deletion itself is T3 and blocks.
+  The legacy soft-reject path rewrites the file in place; use it.
 
-For JSON schema, format templates, flow example, and dispatch template: read `reference.md`.
+For the dispatch template (preflight, recovery, mode selection) and the
+filesystem pending JSON schema, read `reference.md`.

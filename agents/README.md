@@ -1,6 +1,6 @@
 # Agents
 
-Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and a list of skills that get injected at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is a `json:contract` block with findings, changes, and a verification result.
+Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and a list of skills that get injected at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is a `agent_contract_handoff` block with findings, changes, and a verification result.
 
 Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code reads it to know which tools the agent may use, which model to run, and which skills to inject before the first turn. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
 
@@ -31,7 +31,7 @@ Claude Code spawns subagent with:
         |
 [subagent_start.py] fires -> can inject additional context (e.g. persisted memory)
         |
-Agent executes, returns json:contract to orchestrator
+Agent executes, returns agent_contract_handoff to orchestrator
         |
 [subagent_stop.py] fires -> validates contract, records metrics, updates episodic memory
 ```
