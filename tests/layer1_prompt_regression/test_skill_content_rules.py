@@ -69,9 +69,9 @@ class TestAgentProtocolSkill:
         return (skills_dir / "agent-protocol" / "SKILL.md").read_text()
 
     def test_has_agent_status_section(self, content):
-        """Must document json:contract block format."""
-        assert "json:contract" in content, \
-            "agent-protocol must document json:contract block format"
+        """Must document agent_contract_handoff block format."""
+        assert "agent_contract_handoff" in content, \
+            "agent-protocol must document agent_contract_handoff block format"
 
     def test_has_plan_status(self, content):
         """Must document plan_status field."""

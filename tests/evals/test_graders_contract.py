@@ -24,9 +24,9 @@ from tests.evals.graders import GradeResult, contract_grader
 # ---------------------------------------------------------------------------
 
 def _wrap(contract_obj_or_str) -> str:
-    """Wrap a dict (serialized as JSON) or raw string in a json:contract fence.
+    """Wrap a dict (serialized as JSON) or raw string in an agent_contract_handoff fence.
 
-    The grader looks for fenced ``json:contract`` blocks anywhere in the
+    The grader looks for fenced ``agent_contract_handoff`` blocks anywhere in the
     response; we add a short narrative prefix to mimic the way agents frame
     contracts after a reply.
     """
@@ -38,7 +38,7 @@ def _wrap(contract_obj_or_str) -> str:
         f"""\
         Some narrative from the agent about what it just did.
 
-        ```json:contract
+        ```agent_contract_handoff
         {body}
         ```
         """
@@ -170,7 +170,7 @@ def test_no_contract_block_fails():
     result = contract_grader(response, contract_expect={})
     assert result.passed is False
     assert result.score == 0.0
-    assert result.reasons == ["no json:contract fenced block found"]
+    assert result.reasons == ["no agent_contract_handoff fenced block found"]
 
 
 def test_last_contract_block_is_used():
@@ -180,7 +180,7 @@ def test_last_contract_block_is_used():
     first. We seed a malformed early block and a valid late block and assert
     the result is pass.
     """
-    early = "```json:contract\n{ malformed\n```"
+    early = "```agent_contract_handoff\n{ malformed\n```"
     late = _wrap(_well_formed(plan_status="COMPLETE"))
     response = f"Here is an example:\n{early}\n\nAnd here is my real contract:\n{late}"
     result = contract_grader(response, contract_expect={})

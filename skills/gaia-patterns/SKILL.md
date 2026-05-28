@@ -22,7 +22,7 @@ Construction patterns for building Gaia components. Every component type follows
    +-- Load skills from frontmatter
    +-- Validate permissions
    |
-4. Agent executes -> returns json:contract
+4. Agent executes -> returns agent_contract_handoff
    |
 5. Post-Tool Hook -> audit + metrics
    |
@@ -84,7 +84,7 @@ Slash commands live in `commands/<name>.md` -- markdown files that instruct the 
 
 ## Documentation Drift Awareness
 
-When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check if existing reference docs describe that component's behavior. If drift exists, report it via `cross_layer_impacts` in your json:contract. The orchestrator then decides whether to dispatch a documentation update task.
+When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check if existing reference docs describe that component's behavior. If drift exists, report it via `cross_layer_impacts` in your agent_contract_handoff. The orchestrator then decides whether to dispatch a documentation update task.
 
 **Do NOT update docs yourself** -- your job is to flag the drift and let the orchestrator choose the next action.
 

@@ -42,7 +42,7 @@ project-context -- they manage gaia-ops internals and planning respectively.
 
 **Step 2: Build the CONTEXT_UPDATE block**
 
-Place this block after analysis and before the `json:contract` block. The
+Place this block after analysis and before the `agent_contract_handoff` block. The
 required shape is `{contract, payload}` -- one contract per block:
 
 ```

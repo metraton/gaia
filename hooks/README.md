@@ -40,7 +40,7 @@ Tool executes
         |  Audits result, logs to .claude/logs/
         v
 [subagent_stop.py] <- fires on SubagentStop for all agents
-        |  Validates json:contract format
+        |  Validates agent_contract_handoff format
         |  Records workflow metrics
         |  Writes to episodic memory
         v

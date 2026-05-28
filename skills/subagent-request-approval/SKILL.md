@@ -10,142 +10,78 @@ metadata:
 
 ## Overview
 
-This skill teaches the subagent how to **emit** an approval request. It does not
-approve anything -- the orchestrator presents the request verbatim to the user,
-who grants consent. The subagent's job is to stop after the hook blocks, assemble
-the `sealed_payload`, and emit a structured `APPROVAL_REQUEST` the orchestrator
-can relay without re-authoring.
+When the hook blocks your T3 Bash command, it returns a `[T3_BLOCKED]` message
+ending in `approval_id: P-{uuid4hex}`. This skill is how you turn that block into
+an `APPROVAL_REQUEST`: copy the hook's operation fields and `approval_id` into
+your `agent_contract_handoff`, set `plan_status: "APPROVAL_REQUEST"`, and wait for the
+orchestrator to relay the user's decision. The hook authors and fingerprints the sealed_payload; you relay it back in your APPROVAL_REQUEST.
 
-The core rule is **attempt first**: do not pre-ask the user for permission.
-Attempt the T3 command, let the hook block it with an `approval_id`, then emit
-`plan_status: "APPROVAL_REQUEST"` with that `approval_id` in your
-`approval_request`. Pre-asking either approves a speculative plan the hook
-would have rejected anyway or stalls a command that would have passed without
-friction -- both waste a turn and train the agent to second-guess the gate.
+**Attempt first.** Run the T3 command and let the hook block it -- do not pre-ask
+the user for permission. Pre-asking either requests a plan the hook would reject
+anyway or stalls a command that would have passed; either way it wastes a turn
+and trains you to second-guess the gate that exists to make that call.
 
-## Attempt First Flow
+## Flow
 
 ```
-Subagent plans a T3 command
-        |
-Subagent EXECUTES the command (does NOT pre-ask)
-        |
-  +-- hook allows -> command runs -> continue
-  |
-  +-- hook blocks with [T3_BLOCKED] + approval_id
-        |
-Subagent emits APPROVAL_REQUEST with approval_id + sealed_payload
-        |
-Orchestrator loads Skill('orchestrator-present-approval')
-        |
-Orchestrator validates fingerprint, presents to user -> user decides
-        |
-Grant activates -> orchestrator resumes subagent -> subagent retries -> continue
+Subagent EXECUTES the T3 command (no pre-ask)
+   |
+   +-- hook allows -> runs -> continue
+   |
+   +-- hook blocks: [T3_BLOCKED] ... approval_id: P-{uuid4hex}
+          |
+   Emit plan_status APPROVAL_REQUEST + approval_request{...} with that approval_id
+          |
+   Orchestrator validates fingerprint, presents to user, user approves
+          |
+   Grant activates (single-use) -> orchestrator re-dispatches -> retry SAME command
 ```
 
-## sealed_payload Schema
+## What to emit
 
-The `sealed_payload` carries the 7 fields the orchestrator relays verbatim.
-Do not paraphrase, summarize, or merge these fields -- the orchestrator
-copies them byte-for-byte into the AskUserQuestion presentation.
+Add an `approval_request` to your `agent_contract_handoff`, copying the hook's fields
+**verbatim** (do not paraphrase):
 
-```json
-"sealed_payload": {
-  "operation":     "human-readable action description (e.g. 'Delete branch feature/x')",
-  "exact_content": "verbatim command(s) the agent will run, newline-separated if multiple",
-  "scope":         "resource path or identifier the command targets",
-  "risk_level":    "low | medium | high | critical",
-  "rollback_hint": "human-readable inverse; null if not reversible",
-  "rationale":     "why this T3 is needed in this context",
-  "commands":      ["array of discrete command strings to be executed in order"]
-}
-```
+The `approval_request` schema is canonical in `agent-approval-protocol` — relay the sealed_payload fields verbatim (the hook built them) and add `verification` (your own success criteria) + `approval_id` (the literal token from the denial). See `agent-approval-protocol/SKILL.md` for the full field list and types.
 
-Canonicalization for fingerprint: the hook computes
-`SHA-256(json.dumps(payload, sort_keys=True, separators=(',', ':')))`.
-Any mutation to the payload after emission changes the fingerprint and
-causes the orchestrator to reject the relay before it reaches the user.
-Do not touch the payload after constructing it.
+The `approval_id` is the `P-{...}` token the orchestrator uses to find the
+`REQUESTED` row in the DB and validate the fingerprint. Fields written only in
+prose are invisible to the presentation -- the user would approve blind.
 
-## Approval Request Object
+## Non-negotiable rules
 
-Include an `approval_request` object in your `json:contract` with these fields:
+- **Verbatim `exact_content`.** The grant is keyed to the command's semantic
+  signature (base command, verb, and normalized tokens/flags -- see
+  `ApprovalSignature` in `approval_scopes.py`). One drifted flag, path, or
+  argument between approval and retry is a grant miss and an immediate re-block;
+  if the operation genuinely changed, attempt the new command for a fresh
+  `approval_id` rather than rewording the old one.
+- **Do not retry after a block.** Emit `APPROVAL_REQUEST` and stop. Each fresh
+  attempt of a not-yet-pending command mints a new token and churns the audit
+  trail. If you lost the `approval_id`, re-attempt once for a new one.
+- **Never author the payload or fingerprint.** The hook built it; relay, do not recompute.
+- **The grant is single-use.** It is consumed on your first matching retry. A
+  second run within the TTL will not match -- it needs a fresh approval.
 
-```json
-"approval_request": {
-  "operation":     "<from sealed_payload.operation>",
-  "exact_content": "<from sealed_payload.exact_content>",
-  "scope":         "<from sealed_payload.scope>",
-  "risk_level":    "<from sealed_payload.risk_level>",
-  "rollback":      "<from sealed_payload.rollback_hint>",
-  "verification":  "how to confirm success after execution",
-  "approval_id":   "<P-{...} from hook deny response>",
-  "batch_scope":   "verb_family (only for sweeps -- see below)"
-}
-```
+## Batch / many-command intents
 
-The `approval_id` is the `P-{...}` token returned by the hook in the
-`[T3_BLOCKED]` deny message. Include it in the `approval_request`; the
-orchestrator uses it to look up the REQUESTED event in the DB and validate
-the fingerprint before presenting.
+There is **no `batch_scope` field** and no production batch grant: each blocked
+command is one single-use approval, so a sweep of N commands is N approvals.
+The `COMMAND_SET` mechanism exists in code but no path activates it from an
+approval, so emitting `batch_scope` does nothing. See `reference.md` for why.
 
-The orchestrator parses this object directly. Fields written only in prose
-are invisible to the presentation -- the user approves blind.
+## Pointers
 
-## Verbatim Always
-
-`exact_content` is the literal command or file change, not a paraphrase. The
-runtime grant is keyed to the exact command signature: a single argument,
-flag, or path segment that drifts between approval and retry produces a
-grant miss and an immediate re-block. If the operation has genuinely changed,
-emit a new `approval_request` -- do not reword.
-
-## Hook Block Flow
-
-When a hook blocks your command the deny message includes an `approval_id` --
-a `P-{...}` token tied to exactly this command stored in the DB. The instinct
-is to retry. That is wrong: each retry generates a fresh token, the old
-`approval_id` goes stale, and the loop never terminates.
-
-Instead: emit `APPROVAL_REQUEST` with the `approval_id` in your
-`approval_request`, stop, and wait. When the user approves, the grant
-activates and the orchestrator resumes you to retry the same command.
-
-If you lose the `approval_id`, re-attempt the command once for a fresh one.
-
-## Status to Emit
-
-Always emit `plan_status: "APPROVAL_REQUEST"`. Whether `approval_id` is
-present tells the orchestrator which path:
-
-- With `approval_id` -- the hook blocked; orchestrator validates fingerprint and activates the grant
-- Without `approval_id` -- plan-first; orchestrator gates on user consent before any execution
-
-## Batch Approval -- One Grant for Many Commands
-
-When one user intent expands into many commands sharing the same base CLI and
-verb (archive 500 messages, delete 100 stale grants), do not emit a separate
-approval per command -- N nonces produce N user prompts and the session
-stalls. Add `batch_scope: "verb_family"` to your `approval_request`; the
-orchestrator presents both "Approve batch" and "Approve single" options, and
-batch approval creates a multi-use grant for the same `base_cmd + verb` over
-a 10-minute TTL.
-
-Use it only for genuine sweeps. For single commands the standard fields
-suffice; for destructive irreversible operations the per-command audit trail
-of single approvals is the safer default.
-
-For mode/resume runtime rules, see `security-tiers/SKILL.md` -> "Mode runtime rules".
+- Envelope schema, fingerprint canonicalization, event chain: `agent-approval-protocol/SKILL.md`.
+- Mode / SendMessage-resume runtime rules: `security-tiers/SKILL.md` -> "Mode runtime rules" (R3).
+- Deep mechanics, where the payload comes from, grant lifecycle, examples: `reference.md`.
 
 ## Anti-Patterns
 
-- **Pre-asking before attempting** -- the hook is the gate; the agent's guess is not.
-- **Retrying after T3_BLOCKED** -- each retry generates a new token; the old `approval_id` goes stale and the loop never closes.
-- **Approval fields in prose only** -- the orchestrator parses the JSON; prose is invisible.
-- **Paraphrased `exact_content`** -- grants match the literal command signature; one drifted argument is a re-block.
-- **Modifying sealed_payload after construction** -- the hook fingerprinted it; any byte change fails the orchestrator's verify_fingerprint check.
-- **Reusing prior approvals** -- grants are scoped to a specific token and command.
-- **Fabricating an approval_id** -- the hook validates against the DB; an invented token never matches.
-- **Single approval for a sweep** -- N commands without `batch_scope` produce N prompts and re-blocks.
-- **Using `batch_scope` for one command** -- the multi-use grant adds presentation noise the user does not need.
-- **Assuming `mode` survives a resume** -- it does not; pack steps in one turn or accept the re-dispatch. See `security-tiers/SKILL.md` -> "Mode runtime rules" R3.
+- **Pre-asking before attempting** -- the hook is the gate; your guess is not.
+- **Retrying after T3_BLOCKED** -- emit `APPROVAL_REQUEST` and wait; looping hopes for a different result.
+- **Approval fields in prose only** -- the orchestrator parses JSON; prose is invisible and the user approves blind.
+- **Paraphrased `exact_content`** -- one drifted token is a re-block.
+- **Fabricating `approval_id`, fingerprint, or `sealed_payload`** -- the orchestrator validates against the DB; invented values never match.
+- **Reusing a prior approval** -- single-use, consumed on first retry.
+- **Emitting `batch_scope`** -- the field does not exist; it is ignored.

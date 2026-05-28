@@ -46,7 +46,7 @@ BRIEF_FIELD_DESCRIPTIONS: dict[str, str] = {
     "patterns_required": "true means load the domain skill for this surface before executing",
     "contract_sections_to_anchor": "project-context sections to cite as evidence in your contract",
     "required_checks": "mandatory verifications before declaring COMPLETE",
-    "evidence_required": "fields that must appear in your evidence_report json:contract block",
+    "evidence_required": "fields that must appear in your evidence_report agent_contract_handoff block",
     "consolidation_required": "true when cross_check_required; fill consolidation_report with ownership_assessment and conflicts",
     "consolidation_fields": "fields required inside consolidation_report when consolidation_required is true",
     "recommended_peer_agents": "agents to delegate to or coordinate with for non-primary surfaces",

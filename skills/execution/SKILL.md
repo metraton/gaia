@@ -8,6 +8,8 @@ metadata:
 
 # Execution
 
+`execution` governs the post-approval phase of a T3 operation: how to verify the grant is still actionable, run the approved command, detect environment drift, and confirm the result against the plan's verification criteria before declaring success. For the approval handoff that precedes this phase, see `agent-approval-protocol`. For the re-dispatch decision that delivered this command, see `orchestrator-present-approval` Rule 4.
+
 ```
 Commands finishing is not success.
 Verification criteria passing is success.
@@ -25,7 +27,8 @@ not the exit code, not the absence of errors.
 
 Before executing an approved operation:
 
-- [ ] Grant is active — the hook activated the nonce via `APPROVE:<nonce>` user approval
+- [ ] Grant is active — the user selected an `Approve [P-xxxxxxxx]` label and `activate_db_pending_by_prefix` (in `hooks/modules/security/approval_grants.py`) wrote a `SCOPE_SEMANTIC_SIGNATURE` grant against the approved command. The runtime matches semantically — `matches_approval_signature` (in `hooks/modules/security/approval_scopes.py`) evaluates the approved signature (base_cmd, verb, dangerous flags, semantic tokens), not byte-for-byte string equality. **Even so, the discipline is verbatim**: relay and execute the approved `exact_content` as literal. Do not reason about what variations the runtime tolerates — wrappers, `cd` prefixes, redirects, or extra flags create a statement the grant may not cover. The semantic tolerance is a runtime safety net, not a license to deviate.
+- [ ] Single-use awareness — the grant is consumed on first match by `consume_db_semantic_grant` (in `gaia/store/writer.py`). A retry after success or after a drifted variant re-blocks; the orchestrator must dispatch fresh, not loop.
 - [ ] Current state captured — without a rollback baseline, partial failure is unrecoverable
 - [ ] Plan still valid — state drifts between planning and execution; re-run dry-run if stale
 - [ ] No interactive prompts — agent sessions cannot provide stdin; commands that prompt will hang
@@ -75,25 +78,28 @@ your domain skill defines the specific rollback strategy.
 
 | If you're thinking... | The reality is... |
 |---|---|
-| "The plan just ran, no drift possible" | State can change between planning and execution |
-| "Dry-run passed during planning" | Stale dry-run ≠ current state — re-run |
-| "All commands exited 0, I'm done" | Exit 0 ≠ desired state — run verification criteria |
+| "Approval-time evidence (plan, dry-run, preconditions) still holds at execution" | State drifts between approval and execution; every precondition you relied on must be re-verified against current state, snapshot or no snapshot |
+| "All commands exited 0, I'm done" | Exit 0 ≠ desired state — run the verification criteria from the plan |
 | "It's only dev, fewer checks needed" | Irreversibility is irreversibility regardless of env |
-| "Preconditions held during planning" | State changes between approval and execution -- verify again |
-| "No environment snapshot, no drift check" | Verify observable state regardless of whether a snapshot exists |
-| "Half the bundle ran, I can finish after a SendMessage resume" | `mode` dies on resume; if the remaining steps touch `.claude/` writes, CC native re-blocks. Emit BLOCKED, let orchestrator re-dispatch fresh with the same mode. |
+| "The grant matched once, I can retry the same shape" | The grant is consumed on first match (`consume_db_semantic_grant`); a second invocation re-blocks even if the command looks identical |
+| "Half the bundle ran, I can finish after a SendMessage resume" | `mode` dies on resume; if the remaining steps touch `.claude/` writes, CC native re-blocks. Emit BLOCKED, let orchestrator re-dispatch fresh with the same mode (`security-tiers/SKILL.md` R3) |
 
 ## Bundled Multi-Step Execution on Protected Paths
 
-When the approved operation is a **bundle** of steps on `.claude/` paths (e.g., mv directory + 4 Edits across `.claude/project-context/`), execute every step in the SAME turn the dispatch started. Splitting the bundle across dispatch + SendMessage resume fails because `mode` is per-dispatch and does not survive a SendMessage resume -- CC native re-blocks the later Edits in `default` mode.
+When the approved operation is a **bundle** of steps on `.claude/` paths (e.g.,
+mv directory + 4 Edits across `.claude/project-context/`), execute every step in
+the SAME turn the dispatch started -- `mode` is per-dispatch and dies on a
+SendMessage resume, so split bundles re-block the later steps in `default` mode
+(`security-tiers/SKILL.md` R3).
 
-If a hook blocks a step mid-bundle, emit BLOCKED and stop. Do NOT emit APPROVAL_REQUEST mid-bundle hoping to continue after resume. The orchestrator's correct recovery is a fresh dispatch (same mode, bundle re-packed) after any required approval, not a SendMessage back into the same subagent.
+If a hook blocks a step mid-bundle, emit BLOCKED and stop -- do NOT emit
+APPROVAL_REQUEST mid-bundle hoping to resume. The orchestrator's correct recovery
+is a fresh dispatch (same mode, bundle re-packed), not a SendMessage back in.
 
 ## Anti-Patterns
 
-- **COMPLETE without verification** — the most common failure mode; exit 0 is not evidence
-- **Execute on approximate approval** — "user approved something like this" does not activate the grant; the hook checks exact nonces
+- **COMPLETE without verification** — the most common failure mode; exit 0 is not evidence and the agent stops one step before the only evidence that matters
+- **Execute on approximate approval** — the grant is keyed to the approved command's semantic signature (`matches_approval_signature` in `hooks/modules/security/approval_scopes.py`); a drifted argument, an added flag, or a wrapper CLI re-blocks. "Close enough" is rejected by the hook, not the agent
 - **Mutate without a rollback path** — if you cannot describe how to undo it, partial failure becomes permanent damage
-- **Skipping precondition verification because the user already approved** — approval reflects state at approval time; state may have changed
-- **Looping on failed recovery instead of reporting after one attempt** — attempt recovery once, then report; do not retry in a loop
+- **Looping on failed recovery instead of reporting after one attempt** — attempt local recovery once, then report; retry loops compound the broken state
 - **Splitting a `.claude/` bundle across a SendMessage resume** — `mode` is per-dispatch; the resume runs in `default` and CC native re-blocks the remaining steps

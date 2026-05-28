@@ -14,118 +14,87 @@ Every AskUserQuestion shows the literal command, every option label
 names the specific action. No exceptions. No brevity shortcuts.
 ```
 
+`orchestrator-present-approval` is the discipline the orchestrator follows when
+a subagent emits `APPROVAL_REQUEST` with an `approval_id`: relay the
+`sealed_payload` into AskUserQuestion -- fingerprint check, mandatory fields in
+the question, mandatory nonce in the option label. For the subagent side that
+produced the payload see `subagent-request-approval`; for the data contract
+itself see `agent-approval-protocol`.
+
 ## Mental Model
 
 The orchestrator sits between the subagent and the user. The user cannot make
-an informed decision on information they have not seen. A summary, a reference
-to "the plan above", or an offer to show details on request -- all push the
-decision without the data needed to decide.
+an informed decision on data they have not seen -- a summary, a reference to
+"the plan above", or an offer to show details on request all push the decision
+without the data needed to decide. The job is **verbatim relay, not
+re-authoring**: rewriting any of the 7 sealed fields breaks the fingerprint and
+`verify_fingerprint` (`gaia/approvals/chain.py`) raises `ChainTamperError`.
 
-**Verbatim relay, not re-authoring.** When the subagent emits a `sealed_payload`,
-the orchestrator's job is to relay it byte-for-byte into the AskUserQuestion
-presentation. Rewriting, summarizing, or paraphrasing any field breaks the
-fingerprint contract and constitutes a false consent surface.
+## Step 0 -- Fingerprint validation (mandatory before SHOWN)
 
-**Scope:** This skill applies when a subagent emits `APPROVAL_REQUEST` with an
-`approval_id` in its `approval_request`.
+Before AskUserQuestion, call `verify_fingerprint(approval_id, payload_json, con) -> bool` from `gaia/approvals/chain.py`. It raises `ChainTamperError` if the payload was modified between subagent emission and your relay (security boundary, do not present), and `ValueError` if no REQUESTED event exists for this `approval_id`. Either case: **do not present**, report the failure, stop.
 
-## Step 0 — Fingerprint Validation (mandatory before SHOWN)
+## Mandatory presentation -- 5 labeled fields + nonce-suffixed label
 
-Before calling AskUserQuestion, validate the payload integrity:
-
-```python
-from gaia.approvals.chain import verify_fingerprint
-
-# Raises ChainTamperError if fingerprint does not match the REQUESTED row.
-# Raises ValueError if no REQUESTED event exists for this approval_id.
-verify_fingerprint(approval_id, payload_json, con)
-```
-
-If `verify_fingerprint` raises, **do not present the approval to the user.**
-Report the error to the user as a tamper-detection failure and stop. A
-`ChainTamperError` means the payload was modified between the subagent emission
-and your relay -- this is a security boundary, not a recoverable UX issue.
-
-## Pre-Flight Checklist
-
-After fingerprint validation, verify ALL of the following. If any check fails,
-go back to the subagent's `approval_request` and extract the missing field.
-
-1. Does the question text contain the VERBATIM command from `exact_content`? Not summarized, not paraphrased -- the literal string.
-2. Does the question text contain all 5 labeled fields (OPERATION, COMMAND, SCOPE, RISK, ROLLBACK)?
-3. Does the "Approve" option label name the SPECIFIC action (e.g., "Approve -- push 2 commits to origin/main"), not a generic phrase?
-4. Is the command/content complete? No "..." truncation, no "the above changes".
-5. Does the "Approve" option label end with `[P-{nonce_prefix8}]`? The nonce comes from `approval_request.approval_id` (first 8 chars after the `P-` prefix).
-
-## Mandatory Presentation Format
-
-Every AskUserQuestion `question` parameter must contain these 5 labeled fields,
-extracted verbatim from the subagent's `sealed_payload`:
+The AskUserQuestion `question` MUST contain these 5 labeled fields, extracted
+verbatim from `sealed_payload`:
 
 ```
 APPROVAL REQUIRED
 
 OPERACION:  {sealed_payload.operation}
-COMANDO:    {sealed_payload.exact_content}  <-- verbatim, never paraphrased
+COMANDO:    {sealed_payload.exact_content}     <-- verbatim, never paraphrased
 SCOPE:      {sealed_payload.scope}
-RIESGO:     {sealed_payload.risk_level} + why (from sealed_payload.rationale)
-ROLLBACK:   {sealed_payload.rollback_hint}
+RIESGO:     {sealed_payload.risk_level} -- {sealed_payload.rationale}
+ROLLBACK:   {sealed_payload.rollback_hint or "NOT REVERSIBLE"}
 ```
 
-See `template.md` for the canonical AskUserQuestion text layout.
+The Approve option label MUST follow `"Approve -- {specific_action} [P-{nonce8}]"`,
+where `nonce8` is the first 8 hex chars of `approval_id` after `P-`. The label
+regex in `extract_nonce_from_label` (`hooks/modules/security/approval_grants.py`)
+requires the leading `Approve` and the `[P-<hex>]` tag;
+`activate_db_pending_by_prefix` matches the captured prefix against pending rows
+whose `id` starts with `P-{prefix}`. Without the suffix no grant is created.
 
-## Option Label Rules
+See `template.md` for the canonical layout and `reference.md` -> "GOOD vs BAD
+Examples" for full presentations.
 
-The "Approve" option MUST name the specific action. The PostToolUse hook
-activates grants by checking for "approve" in the answer value.
-
-- Format: `"Approve -- {specific_action_description} [P-{nonce_prefix8}]"`
-- The action description comes from `sealed_payload.operation`
-- The nonce comes from `approval_request.approval_id` (first 8 chars after `P-`)
+Fields above are extracted from the DB-stored canonical payload (`payload_json` on the REQUESTED row), not from the subagent's relayed `approval_request` — that's why `rollback_hint` is the field name here while the subagent contract uses `rollback`.
 
 ## Rules
 
-1. **Every APPROVAL_REQUEST is single-use per sub-agent invocation.** A grant is
-   created when the user approves, matched once by the agent's retry, marked
-   consumed at SubagentStop, and never re-issued. Re-approve on each surfaced
-   request; do not assume any grant transfers across the turn boundary.
+1. **Copy `exact_content` byte-for-byte.** Grants match by statement signature.
+   A redirect, a `cd` prefix, a `time` wrapper, or an unapproved flag is a
+   different statement and an immediate re-block on the retry. The runtime grant match is semantic (see `execution`), but the discipline at presentation is verbatim — any drift you tolerate at relay can become a re-block at retry.
 
-2. **For batch operations, request a verb-family grant.** When `approval_request`
-   contains `batch_scope: "verb_family"`, present with "batch" in the Approve
-   option label so the PostToolUse hook creates a multi-use verb-family grant.
-   See `reference.md` -> "Batch Approval Flow".
+2. **Single-use, no carry-over.** Approval inserts one `SCOPE_SEMANTIC_SIGNATURE`
+   grant consumed by the first retry (`consume_db_semantic_grant` in
+   `gaia/store/writer.py`). A second invocation is a new APPROVAL_REQUEST.
 
-3. **Scope guard -- copy `exact_content` byte-for-byte into the next attempt.**
-   The grant is keyed to the exact statement signature. Anything added on top
-   (a redirect, a `cd` prefix, a flag the user did not approve) creates a
-   different statement that the grant does not cover. Copy
-   `approval_request.exact_content` literally into the next prompt.
+3. **No batch grant.** Legacy `verb_family` was removed; the `COMMAND_SET`
+   replacement has only the CHECK side wired (`match_command_set_grant` is
+   called by `bash_validator`, but `create_command_set_grant` has no production
+   caller). `batch_scope` is ignored. For N commands, expect N approvals.
+   See `reference.md` -> "On batch intents".
 
-4. **Fresh presentation every time.** Each hook-blocked APPROVAL_REQUEST requires
-   its own presentation with all mandatory fields. Prior approvals do not carry
-   forward.
-
-5. **`mode` does NOT survive a SendMessage resume.** See `security-tiers/SKILL.md`
-   -> "Mode runtime rules" R3. Prefer a **fresh re-dispatch** carrying the same
-   `mode` and the `exact_content` of the approved command, over a SendMessage
-   resume that would run in `default` and re-block on the next protected
-   operation outside the grant.
+4. **Re-dispatch, do not resume.** `mode` does not survive a SendMessage resume:
+   the resume runs in `default` and re-blocks the next protected operation even
+   after the Gaia grant activated. Prefer a fresh re-dispatch with the same
+   `mode` and the verbatim `exact_content`; the DB grant lives in the session
+   and is found by the re-dispatched subagent. See `security-tiers` R3 for the
+   underlying mechanism (mode is per-dispatch).
 
 ## Traps
 
+Each row names a distinct way the consent surface goes false. For BAD-vs-GOOD
+wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
+"Cosmetic drift", and "Scope Mismatch".
+
 | If you're thinking... | The reality is... |
 |---|---|
-| "The subagent already showed the details" | Show them again -- the user needs them at the decision point |
-| "It's a small change, I can summarize" | Size does not change the contract -- show the exact command |
-| "I'll offer to show details if they want" | The user needs the data BEFORE the question, not after |
-| "The option label 'Approve' is enough" | Without the action, the user clicks blind -- label must say WHAT is approved |
-| "'Approve -- aplicar cambios' describes it" | That is a paraphrase in another language -- name the actual operation |
-| "The command is long, I'll shorten it" | Show it complete -- truncation hides what the user is approving |
-| "Same operation, slightly different path" | Grants match by command signature -- different path = grant miss = immediate re-block |
-| "I'll add anything around the approved command" | The grant matches the statement byte-for-byte; anything added is a different statement and a fresh re-block |
-| "I'll skip the [P-...] suffix, it's cosmetic" | The hook extracts the nonce from the label -- without it, targeted activation fails |
-| "The same command emitted a new approval_id" | Single-use per sub-agent invocation is intentional; SubagentStop consumed the previous grant. Re-approve. |
-| "Approving 500 commands one by one is the only safe path" | When the intent legitimately covers a verb family, emit `batch_scope: "verb_family"` and present one batch approval |
-| "I can relay the payload after paraphrasing rationale" | Any field change invalidates the fingerprint; verify_fingerprint will raise ChainTamperError |
-
-For GOOD vs BAD examples, batch flow, grant mechanics, and the dispatch mode checklist, see `reference.md`.
+| **Show specifics on both surfaces** -- "I can summarize / the label is enough" | The COMANDO field in the question body must be the verbatim command (not a summary, not "the above"); the option label must name the specific action (not just "Approve"). The user sees both surfaces; missing specificity on either is a blind-consent failure. |
+| "I'll skip the [P-...] suffix, it's cosmetic" | The hook extracts the nonce from the label to find the right pending row; without it, targeted activation fails and no grant is created. |
+| "Similar command, slightly different path -- I'll reuse / wrap it" | Grants match the statement signature byte-for-byte. Any wrapper, redirect, flag, or path drift is a different signature and a fresh re-block. |
+| "The same command emitted a new approval_id" | Grants are single-use and consumed on the first retry. A second run is a new APPROVAL_REQUEST -- approve again. |
+| "I'll set batch_scope to approve many at once" | No batch activation exists in current code -- the field is ignored. Each blocked command needs its own approval. |
+| "I can paraphrase a field before relaying" | The fingerprint covers all 7 sealed fields; any modification raises `ChainTamperError` in Step 0 and the presentation is refused. |

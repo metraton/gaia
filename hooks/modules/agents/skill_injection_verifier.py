@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # in the transcript for the skill to be considered present.
 SKILL_FINGERPRINTS: Dict[str, List[str]] = {
     "agent-protocol": [
-        "json:contract",
+        "agent_contract_handoff",
         "plan_status",
         "evidence_report",
     ],

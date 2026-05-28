@@ -33,7 +33,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_injector`, `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Project-context injection, freshness checks, contract loading |
-| `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | json:contract validation, skill verification, transcript analysis |
+| `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | agent_contract_handoff validation, skill verification, transcript analysis |
 | `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders, pending-approval scanner |
 | `orchestrator/` | `delegate_mode` | Delegation mode detection |
 | `validation/` | `commit_validator` | Git commit validation |

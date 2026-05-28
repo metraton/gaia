@@ -385,7 +385,7 @@ CONTEXT_UPDATE:
   }
 }
 
-```json:contract
+```agent_contract_handoff
 {
   "agent_status": {
     "plan_status": "COMPLETE",
@@ -422,7 +422,7 @@ CONTEXT_UPDATE:
 
 No new data found.
 
-```json:contract
+```agent_contract_handoff
 {
   "agent_status": {
     "plan_status": "COMPLETE",
@@ -507,7 +507,7 @@ CONTEXT_UPDATE:
             "}\n"
             "```\n"
             "\n"
-            "```json:contract\n"
+            "```agent_contract_handoff\n"
             "{\n"
             '  "agent_status": {\n'
             '    "plan_status": "COMPLETE",\n'
@@ -770,7 +770,7 @@ class TestPhase5SubagentStopHook:
                     }
                 }, indent=2)
                 + "\n\n"
-                "```json:contract\n"
+                "```agent_contract_handoff\n"
                 '{\n'
                 '  "agent_status": {\n'
                 '    "plan_status": "COMPLETE",\n'
@@ -849,7 +849,7 @@ class TestPhase5SubagentStopHook:
 ## Report
 Everything looks fine. No changes needed.
 
-```json:contract
+```agent_contract_handoff
 {
   "agent_status": {
     "plan_status": "COMPLETE",

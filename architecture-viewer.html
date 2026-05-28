@@ -847,7 +847,7 @@ const data = {
       "private_functions": ["_validate_from_json_contract"],
       "classes": ["ValidationResult"],
       "aliases": ["extract_plan_status", "extract_exit_code"],
-      "description": "Contract validation for agent output: parses json:contract fenced blocks, validates structural completeness (agent_status, evidence_report, consolidation_report)",
+      "description": "Contract validation for agent output: parses agent_contract_handoff fenced blocks, validates structural completeness (agent_status, evidence_report, consolidation_report)",
       "calls": ["modules/agents/transcript_reader.py:extract_injected_context_payload_from_transcript"],
       "called_by": ["adapters/claude_code.py:adapt_subagent_stop", "modules/audit/workflow_auditor.py", "modules/agents/response_contract.py", "modules/agents/task_info_builder.py"]
     },

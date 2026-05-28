@@ -92,7 +92,7 @@ def cleanup(
         agent_type: The agent type that just completed (for logging).
         session_id: Session ID to scope cleanup (defaults to CLAUDE_SESSION_ID).
         preserve_nonces: Optional set of nonce strings to skip during cleanup.
-            Used when an agent's final json:contract still carries an
+            Used when an agent's final agent_contract_handoff still carries an
             APPROVAL_REQUEST so that the pending file remains available for
             the user to approve or reject. When None or empty, all session
             pendings are eligible for deletion (legacy behaviour).

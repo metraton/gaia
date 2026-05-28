@@ -209,7 +209,7 @@ class TestEvidenceRequiredFields:
             },
             "consolidation_report": None,
         }
-        output = f"Some analysis.\n\n```json:contract\n{json.dumps(contract)}\n```"
+        output = f"Some analysis.\n\n```agent_contract_handoff\n{json.dumps(contract)}\n```"
         # Non-empty injected_context prevents fallback to filesystem cache
         task_info = {"injected_context": {"investigation_brief": {}}}
         result = validate(output, task_info)
@@ -244,7 +244,7 @@ class TestEvidenceRequiredFields:
             },
             "consolidation_report": None,
         }
-        output = f"Some analysis.\n\n```json:contract\n{json.dumps(contract)}\n```"
+        output = f"Some analysis.\n\n```agent_contract_handoff\n{json.dumps(contract)}\n```"
         # Non-empty injected_context prevents fallback to filesystem cache
         task_info = {"injected_context": {"investigation_brief": {}}}
         result = validate(output, task_info)

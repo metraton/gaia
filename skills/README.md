@@ -51,7 +51,7 @@ Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) ar
 skills/
 ├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
 ├── agent-protocol/        # Response contract format, state machine, error handling
-├── agent-response/        # Orchestrator: interpret agent json:contract responses
+├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning

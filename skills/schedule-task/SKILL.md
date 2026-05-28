@@ -50,7 +50,7 @@ When the user wants recurring execution ("cada noche", "cron", "schedule"):
 
 ## Reading loop_status
 
-When an agent returns `loop_status` in its `json:contract`:
+When an agent returns `loop_status` in its `agent_contract_handoff`:
 - `"iterating"` -- agent still working, wait
 - `"threshold_reached"` / `"complete"` -- present: baseline -> final in N iterations
 - `"stopped"` -- present what was achieved + why it stopped

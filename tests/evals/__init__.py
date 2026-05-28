@@ -9,7 +9,7 @@ Structure:
 - :mod:`tests.evals.runner` dispatches a task to an agent and captures the
   response (stdout + optional session transcript + audit log slice).
 - :mod:`tests.evals.graders` validates responses: keyword match
-  (``code_grader``), ``json:contract`` block shape (``contract_grader``),
+  (``code_grader``), ``agent_contract_handoff`` block shape (``contract_grader``),
   and tool-call trace assertions (``tool_trace_grader``).
 - :mod:`tests.evals.reporter` persists grading results as JSON artifacts
   under ``tests/evals/results/`` with a timestamped filename.

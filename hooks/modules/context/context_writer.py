@@ -14,7 +14,7 @@ Legacy CONTEXT_UPDATE format (single block)::
       "payload": { ... }
     }
 
-New update_contracts format (array inside json:contract/agent_contract_handoff)::
+New update_contracts format (array inside agent_contract_handoff)::
 
     "update_contracts": [
       { "contract": "<contract_name>", "payload": { ... } },

@@ -8,7 +8,7 @@ Full flow integration: adapter parse SubagentStop -> extract AgentCompletion
 Tests that the ClaudeCodeAdapter correctly parses SubagentStop events and
 that the response contract validator detects valid/invalid agent outputs.
 
-All fixtures use the ``json:contract`` fenced-block format.
+All fixtures use the ``agent_contract_handoff`` fenced-block format.
 
 Modules under test:
   - hooks/adapters/claude_code.py (ClaudeCodeAdapter.parse_agent_completion, format_completion_response)
@@ -50,9 +50,9 @@ from modules.agents.response_contract import (
 # ---------------------------------------------------------------------------
 
 def _make_contract_output(contract_dict: dict) -> str:
-    """Wrap a dict as a json:contract fenced block inside agent prose."""
+    """Wrap a dict as an agent_contract_handoff fenced block inside agent prose."""
     block = json.dumps(contract_dict, indent=2)
-    return f"## Findings\n\n```json:contract\n{block}\n```\n"
+    return f"## Findings\n\n```agent_contract_handoff\n{block}\n```\n"
 
 
 # ---------------------------------------------------------------------------

@@ -10,12 +10,12 @@
 
 Gaia is event-driven. Every capability in the codebase is attached to a moment in the Claude Code lifecycle — a prompt arriving, a tool being called, an agent completing. Reading the folder structure without that lens makes it look like a collection of files. Reading it with that lens, everything clicks into place.
 
-The flow is this: a user sends a prompt, the `UserPromptSubmit` hook fires and injects the orchestrator's identity and a routing recommendation. The orchestrator picks a specialist agent and dispatches it. Before that agent's first tool call lands, the `PreToolUse` hook intercepts it — injecting context, validating permissions, blocking dangerous commands. The agent does its work and returns a `json:contract`. The `SubagentStop` hook fires, validates the contract, records metrics, and writes to episodic memory.
+The flow is this: a user sends a prompt, the `UserPromptSubmit` hook fires and injects the orchestrator's identity and a routing recommendation. The orchestrator picks a specialist agent and dispatches it. Before that agent's first tool call lands, the `PreToolUse` hook intercepts it — injecting context, validating permissions, blocking dangerous commands. The agent does its work and returns a `agent_contract_handoff`. The `SubagentStop` hook fires, validates the contract, records metrics, and writes to episodic memory.
 
 ```
 UserPromptSubmit  ->  routing  ->  PreToolUse  ->  agent  ->  PostToolUse  ->  SubagentStop
       |                  |               |              |             |               |
-  identity           surface-        security       json:contract  audit log     metrics +
+  identity           surface-        security       agent_contract_handoff  audit log     metrics +
   injection          routing.json    gate +                                      memory
                                      context
                                      injection

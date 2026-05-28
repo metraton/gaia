@@ -38,7 +38,7 @@ pre_tool_use.py  (PreToolUse hook)
     |  4. Validate SendMessage (agent resumption)
     v
 Agent executes
-    |  Uses tools, follows skills, emits json:contract
+    |  Uses tools, follows skills, emits agent_contract_handoff
     v
 subagent_stop.py  (SubagentStop hook)
     |  1. Read transcript, extract task description
@@ -48,7 +48,7 @@ subagent_stop.py  (SubagentStop hook)
     |  5. Store episodic memory
     |  6. Process CONTEXT_UPDATE blocks
     v
-Orchestrator processes json:contract (via agent-response skill)
+Orchestrator processes agent_contract_handoff (via agent-response skill)
     |  COMPLETE -> summarize to user
     |  APPROVAL_REQUEST (with approval_id) -> get approval -> resume via SendMessage
     |  NEEDS_INPUT -> ask user -> resume via SendMessage
@@ -182,7 +182,7 @@ Nonce-based T3 approval lifecycle:
 
 ## Response Contract Validation
 
-Every agent response must end with a `json:contract` block containing `agent_status`. The contract validator (`hooks/modules/agents/contract_validator.py`) enforces:
+Every agent response must end with a `agent_contract_handoff` block containing `agent_status`. The contract validator (`hooks/modules/agents/contract_validator.py`) enforces:
 
 - **AGENT_STATUS**: PLAN_STATUS (from 5 valid states: COMPLETE, NEEDS_INPUT, APPROVAL_REQUEST, BLOCKED, IN_PROGRESS), PENDING_STEPS, NEXT_ACTION, AGENT_ID
 - **EVIDENCE_REPORT**: required for all valid states. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS

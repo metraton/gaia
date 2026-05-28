@@ -46,7 +46,7 @@ def _make_complete_output(
     with_approval_request: bool = False,
     approval_rollback: bool = True,
     approval_verification: bool = True,
-    tag: str = "json:contract",
+    tag: str = "agent_contract_handoff",
     status_field: str = "plan_status",
 ) -> str:
     """Build a minimal contract output string."""
@@ -115,7 +115,7 @@ def _make_approval_request_output(
         fields.append('"verification": "confirm no drift"')
     approval_json = "{" + ", ".join(fields) + "}"
     return f"""\
-```json:contract
+```agent_contract_handoff
 {{
   "agent_status": {{
     "plan_status": "APPROVAL_REQUEST",
@@ -172,7 +172,7 @@ class TestBlockingPromotions:
     def test_in_progress_without_verification_is_valid(self):
         """IN_PROGRESS does not require verification.result."""
         output = """\
-```json:contract
+```agent_contract_handoff
 {
   "agent_status": {
     "plan_status": "IN_PROGRESS",
@@ -470,7 +470,7 @@ class TestLoopStateBlockingCheck:
     def test_loop_state_blocking_propagates_to_validate(self):
         """validate() must reject COMPLETE when loop_state blocking condition holds."""
         output = f"""\
-```json:contract
+```agent_contract_handoff
 {{
   "agent_status": {{
     "plan_status": "COMPLETE",

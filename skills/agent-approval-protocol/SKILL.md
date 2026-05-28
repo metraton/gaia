@@ -8,53 +8,31 @@ metadata:
 
 # Agent Approval Protocol
 
-The approval handoff envelope is the data contract that flows from a subagent
-through the hook layer to the orchestrator. This skill documents the exact shape
-of that envelope: the `sealed_payload` fields, the `approval_id` format, the
-`APPROVAL_REQUEST` contract, and how to confirm that a grant is active before
-proceeding.
+`agent-approval-protocol` is the data contract that flows from a subagent,
+through the hook layer, to the orchestrator when a T3 command is blocked: the
+`sealed_payload` fields, the `approval_id` format, the `APPROVAL_REQUEST` shape,
+the status and event vocabularies, and how to confirm a grant is active. The
+tables below are the canonical schema -- relay them verbatim, do not author them.
 
-This skill is NOT `agent-protocol`. That skill documents the universal response
-contract (`json:contract`, plan_status states, evidence_report). This skill
-documents only the approval-specific handoff.
+For the universal response envelope (`plan_status` states, `evidence_report`),
+see `agent-protocol`. For the deep mechanics -- fingerprint canonicalization,
+the hash chain, grant activation, reading a granted approval from Python -- see
+`reference.md`.
 
-## sealed_payload — 7 Required Fields
+## approval_id format
 
-```json
-{
-  "operation":     "string — human-readable action description",
-  "exact_content": "string — verbatim command(s), newline-separated if multiple",
-  "scope":         "string — resource path or identifier targeted",
-  "risk_level":    "string — one of: low | medium | high | critical",
-  "rollback_hint": "string | null — human-readable inverse; null if not reversible",
-  "rationale":     "string — why this T3 is needed in this context",
-  "commands":      ["array of strings — discrete command strings in execution order"]
-}
-```
+`store._generate_approval_id()` returns `P-{uuid4().hex}` (e.g.
+`P-b1bdfbb0b9474bf5b3f86b1f6a213f7a`). The `P-` prefix is mandatory: without it
+the PostToolUse hook cannot do targeted grant activation. The first 8 hex chars
+after `P-` are the nonce prefix shown in option labels: `[P-b1bdfbb0]`.
 
-**Canonicalization rule:** `json.dumps(payload, sort_keys=True, separators=(',', ':'))`.
-The hook computes `SHA-256(canonical_bytes)` and stores the hex string as the
-fingerprint. The orchestrator MUST re-compute this fingerprint via
-`verify_fingerprint(approval_id, payload_json, con)` before presenting the
-approval. Any field mutation between emission and relay changes the fingerprint
-and causes `ChainTamperError` -- the approval is aborted.
+## APPROVAL_REQUEST contract shape
 
-## approval_id Format
-
-The hook returns approval IDs in the format `P-{uuid4_hex}`. Example:
-`P-b1bdfbb0b9474bf5b3f86b1f6a213f7a`.
-
-The `P-` prefix is mandatory for the PostToolUse hook to perform targeted grant
-activation. An `approval_id` without the `P-` prefix will not trigger grant
-activation when the user selects "Approve".
-
-The first 8 characters after `P-` are the nonce prefix used in option labels:
-`[P-b1bdfbb0]`.
-
-## APPROVAL_REQUEST Contract Shape
-
-When the hook blocks a T3 command, the subagent emits this shape in its
-`json:contract`:
+`bash_validator._build_sealed_payload()` builds 7 fields and passes them to
+`store.insert_requested()`. The agent relays them verbatim into `approval_request`
+-- it never authors them. Note the key rename: `rollback_hint` in the hook
+becomes `rollback` in the contract; `commands` (`[exact_content]`) and
+`verification`/`approval_id` exist only at the contract level.
 
 ```json
 {
@@ -65,64 +43,56 @@ When the hook blocks a T3 command, the subagent emits this shape in its
     "next_action": "awaiting user approval"
   },
   "approval_request": {
-    "operation":     "<from sealed_payload.operation>",
-    "exact_content": "<from sealed_payload.exact_content>",
-    "scope":         "<from sealed_payload.scope>",
-    "risk_level":    "<from sealed_payload.risk_level>",
-    "rollback":      "<from sealed_payload.rollback_hint>",
-    "rationale":     "<from sealed_payload.rationale>",
+    "operation":     "string -- e.g. 'MUTATIVE command intercepted: push'",
+    "exact_content": "string -- the verbatim blocked command",
+    "scope":         "string -- command.split()[0]: the leading CLI/resource token",
+    "risk_level":    "string -- 'high' (DESTRUCTIVE) or 'medium' -- never low/critical",
+    "rollback":      "null -- hook hardcodes this; it computes no inverse (sealed_payload field: rollback_hint)",
+    "rationale":     "string -- why this T3 needs approval (built from agent + verb)",
     "verification":  "how to confirm success after execution",
-    "approval_id":   "P-{uuid4_hex}",
-    "batch_scope":   "verb_family (only for sweeps)"
+    "approval_id":   "P-{uuid4_hex}"
   }
 }
 ```
 
-Fields in `approval_request` MUST be copied from `sealed_payload` without
-modification. The orchestrator uses these to relay verbatim to the user via
-AskUserQuestion after fingerprint validation. See
+There is no `batch_scope` field: the `verb_family` grant was removed, so each
+blocked command gets its own single-use grant. See
 `Skill('orchestrator-present-approval')` for the orchestrator side.
 
-## Reading a Granted Approval
+## Status vocabularies -- distinct columns, opposite casing, never collapse
 
-After the user approves and the grant activates, the subagent receives a resume
-from the orchestrator. The subagent MUST re-attempt the original command using
-the exact `exact_content` string -- no modifications. The hook reads the grant
-from the DB and allows the command through.
+| Table | Column | Values | Source |
+|-------|--------|--------|--------|
+| `approvals` | `status` | lowercase: `pending` `approved` `rejected` `revoked` `expired` | schema.sql `CREATE TABLE approvals` CHECK |
+| `approval_grants` | `status` | UPPERCASE: `PENDING` `CONSUMED` `REVOKED` `EXPIRED` | schema.sql `CREATE TABLE approval_grants` |
 
-If the retry is blocked again (new `approval_id` issued), it means one of:
+## Event chain
 
-1. The grant was consumed by a prior attempt -- emit a new `APPROVAL_REQUEST`.
-2. The command drifted from the approved `exact_content` -- use the literal.
-3. The approval was rejected or revoked -- stop and report to the orchestrator.
-
-To check grant status directly:
-
-```python
-from gaia.approvals.store import list_pending
-
-# Returns approvals with status='pending' or 'approved' for this session
-pending = list_pending(all_sessions=False)
-```
-
-## Event Chain
-
-Each approval flows through these event types in sequence:
+The `approval_events.event_type` CHECK admits nine values: `REQUESTED` `SHOWN`
+`APPROVED` `REJECTED` `EXECUTED` `FAILED` `NOOP` `REVOKED` `REVERTED`. Only these
+are written by production code today:
 
 | Event | Who writes it | When |
 |-------|--------------|------|
-| `REQUESTED` | Hook (pre_tool_use) | Hook intercepts T3 command |
-| `SHOWN` | Orchestrator | After fingerprint validation, before AskUserQuestion |
-| `APPROVED` or `REJECTED` | Orchestrator | After user answers |
-| `EXECUTED` or `FAILED` | Hook (post_tool_use) | After the approved command runs |
+| `REQUESTED` | `bash_validator` via `store.insert_requested()` | Hook intercepts a T3 Bash command in subagent context |
+| `SHOWN` | ElicitationResult hook via `activate_db_pending_by_prefix()` | User selects an Approve `[P-xxx]` label |
+| `APPROVED` | ElicitationResult hook (same call as `SHOWN`) | Immediately after `SHOWN` |
+| `REJECTED` / `REVOKED` | `gaia approvals` CLI via `store.reject()` / `store.revoke()` | User rejects or admin cancels |
 
-The hash chain links each event to the previous via `prev_hash` -> `this_hash`.
-`verify_fingerprint` validates the chain integrity for the REQUESTED row.
-`ChainTamperError` means any event in the chain was modified post-write.
+`EXECUTED` `FAILED` `NOOP` `REVERTED` are valid in the CHECK and are *read* by
+`store.get_executed_payload()` and `revert.py`, but no production hook *writes*
+them today -- treat them as a designed extension point, not a live invariant. Do
+not assume an `EXECUTED` event exists after a command runs.
 
-## Key Invariants
+## Key invariants
 
-- One `REQUESTED` event per `approval_id`. The hook never issues the same token twice.
-- A `SHOWN` event MUST precede `APPROVED` or `REJECTED`. The orchestrator writes it.
-- `EXECUTED` or `FAILED` require a prior `APPROVED` event. The hook enforces this.
-- `REVERTED` events carry the original `event_id` in `metadata_json.original_event_id`.
+- One `REQUESTED` event per `approval_id`; the hook never reuses one.
+- `SHOWN` precedes `APPROVED`; the activation path writes them together.
+- `approval_events` is append-only -- the `bu_approval_events_immutable` and
+  `bd_approval_events_immutable` triggers `RAISE(ABORT)` on UPDATE/DELETE.
+- The orchestrator MUST re-verify a relayed payload via
+  `chain.verify_fingerprint(approval_id, payload_json, con)` before presenting;
+  a mismatch raises `ChainTamperError` and the approval aborts.
+
+For the grant activation walk-through, fingerprint internals, reading a granted
+approval from Python, and the retry-blocked-again diagnosis, see `reference.md`.

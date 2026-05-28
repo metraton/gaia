@@ -57,7 +57,7 @@ Only the orchestrator and `gaia-operator` mutate memory directly via
 the CLI. Subagents dispatched into a task do **not** call
 `gaia memory add` -- the writer hook rejects mutation from a dispatch
 context. Subagents instead propose new memory by emitting a
-`memorialize_suggestions` block in their `json:contract`; the
+`memorialize_suggestions` block in their `agent_contract_handoff`; the
 orchestrator presents the proposal to the user and persists on
 confirmation.
 

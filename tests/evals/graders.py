@@ -5,7 +5,7 @@ Three graders are planned:
 - :func:`code_grader` -- v1-style keyword match (``expect_present`` /
   ``expect_absent``). Implemented here for T1 so downstream tasks
   (T3a tests) can exercise it immediately.
-- :func:`contract_grader` -- parses the fenced ``json:contract`` block
+- :func:`contract_grader` -- parses the fenced ``agent_contract_handoff`` block
   and validates shape. Implemented in T3b.
 - :func:`tool_trace_grader` -- inspects session JSONL and audit slices
   for tool-call ordering / presence / absence. **Stub** in T1;
@@ -104,7 +104,7 @@ def code_grader(
 # in the response (agents sometimes show example contracts earlier in their
 # narrative; the operative one is always at the tail).
 _CONTRACT_BLOCK_RE = re.compile(
-    r"```json:contract\s*\n(.*?)```",
+    r"```agent_contract_handoff\s*\n(.*?)```",
     re.DOTALL,
 )
 
@@ -126,7 +126,7 @@ _APPROVAL_REQUEST_REQUIRED_FIELDS = ("operation", "exact_content", "risk_level")
 
 
 def _extract_last_contract_block(response: str) -> Optional[str]:
-    """Return the raw JSON text of the LAST ```json:contract fenced block.
+    """Return the raw JSON text of the LAST ```agent_contract_handoff fenced block.
 
     Returns ``None`` when no fenced block is present. The returned string is
     the payload between the opening fence and the closing ``` (trailing
@@ -142,11 +142,11 @@ def contract_grader(
     response: str,
     contract_expect: Optional[dict] = None,
 ) -> GradeResult:
-    """Validate the fenced ``json:contract`` block shape.
+    """Validate the fenced ``agent_contract_handoff`` block shape.
 
     Binary grader -- every check must pass. Checks performed in order:
 
-    1. A fenced ``json:contract`` block exists in ``response``.
+    1. A fenced ``agent_contract_handoff`` block exists in ``response``.
     2. Its body parses as JSON.
     3. All four required top-level keys are present: ``agent_status``,
        ``evidence_report``, ``consolidation_report``, ``approval_request``
@@ -180,9 +180,9 @@ def contract_grader(
         return GradeResult(
             passed=False,
             score=0.0,
-            reasons=["no json:contract fenced block found"],
+            reasons=["no agent_contract_handoff fenced block found"],
         )
-    reasons.append("json:contract fenced block found")
+    reasons.append("agent_contract_handoff fenced block found")
 
     try:
         contract = json.loads(raw)
@@ -190,15 +190,15 @@ def contract_grader(
         return GradeResult(
             passed=False,
             score=0.0,
-            reasons=reasons + [f"json:contract body is not valid JSON: {exc.msg}"],
+            reasons=reasons + [f"agent_contract_handoff body is not valid JSON: {exc.msg}"],
         )
-    reasons.append("json:contract body parses as JSON")
+    reasons.append("agent_contract_handoff body parses as JSON")
 
     if not isinstance(contract, dict):
         return GradeResult(
             passed=False,
             score=0.0,
-            reasons=reasons + [f"json:contract body is not an object (got {type(contract).__name__})"],
+            reasons=reasons + [f"agent_contract_handoff body is not an object (got {type(contract).__name__})"],
         )
 
     missing_top = [k for k in _REQUIRED_TOP_KEYS if k not in contract]

@@ -169,7 +169,7 @@ class TestVerbatimRelayMatchesFingerprint:
         )
 
         # Step 2: Orchestrator receives the payload object (via agent-protocol
-        # json:contract APPROVAL_REQUEST field) and re-canonicalizes it.
+        # agent_contract_handoff APPROVAL_REQUEST field) and re-canonicalizes it.
         # Using canonical_payload() mirrors what the orchestrator-present-approval
         # skill will do: json.dumps(payload, sort_keys=True, separators=(',', ':'))
         relayed_canonical_json = canonical_payload(_SEALED_PAYLOAD)

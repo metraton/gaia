@@ -32,6 +32,6 @@ skills, hooks, or system architecture.
 
 This command delegates to the `gaia-system` agent, which is the meta-agent
 specialized in the orchestration system. It follows the standard agent protocol
-and returns a `json:contract` block with findings and status.
+and returns a `agent_contract_handoff` block with findings and status.
 
 $ARGUMENTS

@@ -1,6 +1,6 @@
 ---
 name: agent-response
-description: Use when an agent returns a json:contract response that needs to be interpreted and presented to the user
+description: Use when an agent returns an agent_contract_handoff response that needs to be interpreted and presented to the user
 metadata:
   user-invocable: false
   type: protocol
@@ -15,7 +15,7 @@ each represents a different kind of decision point for the user.
 ## State Machine
 
 ```
-Agent returns json:contract
+Agent returns agent_contract_handoff
   |- COMPLETE            -> Summarize key_outputs (3-5 bullets)
   |- NEEDS_INPUT         -> AskUserQuestion, then SendMessage answer back
   |- APPROVAL_REQUEST    -> Load Skill("orchestrator-present-approval") if approval_id present,
