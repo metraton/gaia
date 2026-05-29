@@ -21,7 +21,7 @@ The scanner runs 6 independent modules in parallel:
 - **tools** -- installed CLI tools (kubectl, terraform, gcloud, etc.)
 - **environment** -- OS info, language runtimes, .env file patterns
 
-It preserves agent-enriched sections (data added by agents via CONTEXT_UPDATE)
+It preserves agent-enriched sections (data added by agents via update_contracts)
 and merges new scan data with existing context using section-ownership rules.
 
 ## How to run

@@ -83,18 +83,18 @@ class TestHookStateDataclass:
         """Test creation from dictionary."""
         data = {
             "tool_name": "task",
-            "command": "Task:terraform-architect",
+            "command": "Task:platform-architect",
             "tier": "T3",
             "start_time": "2024-01-01T10:00:00",
             "session_id": "sess-456",
             "pre_hook_result": "blocked",
-            "metadata": {"agent": "terraform-architect"},
+            "metadata": {"agent": "platform-architect"},
         }
         state = HookState.from_dict(data)
         assert state.tool_name == "task"
-        assert state.command == "Task:terraform-architect"
+        assert state.command == "Task:platform-architect"
         assert state.tier == "T3"
-        assert state.metadata["agent"] == "terraform-architect"
+        assert state.metadata["agent"] == "platform-architect"
 
     def test_from_dict_with_missing_keys(self):
         """Test from_dict handles missing keys gracefully."""

@@ -17,12 +17,12 @@ the set drifts.
 
 ## Mental model
 
-Two ortogonal axes describe every memory row:
+Two orthogonal axes describe every memory row:
 
 | Axis | Values | What it captures |
 |------|--------|------------------|
-| `class` (rol) | `anchor` / `thread` / `log` | The role the note plays in the session. Anchors are stable knowledge that survives across sessions; threads are work-in-progress that needs handoff; logs are append-only history kept for traceability. |
-| `type` (forma) | `atom` / `decision` / `negative` / `project` / `user` / `feedback` | The discipline of the body -- how the row is shaped and validated. Internal taxonomy: never surface `atom`/`decision`/`negative` to the user as the way to think about memory. |
+| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. Anchors are stable knowledge that survives across sessions; threads are work-in-progress that needs handoff; logs are append-only history kept for traceability. |
+| `type` | `atom` / `decision` / `negative` / `project` / `user` / `feedback` | The discipline of the body -- how the row is shaped and validated. Internal taxonomy: never surface `atom`/`decision`/`negative` to the user as the way to think about memory. |
 
 `status` only applies when `class=thread`. Its values form the thread
 lifecycle: `open` (in progress) -> `carry_forward` (must reach the
@@ -43,11 +43,11 @@ the user, translate to plain labels that describe the role:
 
 | Internal | Surface as |
 |----------|------------|
-| `class=thread`, `status=open` | "Hilos abiertos" |
-| `class=thread`, `status=carry_forward` | "Para esta sesión" |
-| `class=anchor` (user/identity body) | "Sobre ti" |
-| `class=anchor` (project/system body) | "Lo que sabemos del proyecto" |
-| `class=log` | "Bitácora" |
+| `class=thread`, `status=open` | "Open threads" |
+| `class=thread`, `status=carry_forward` | "For this session" |
+| `class=anchor` (user/identity body) | "About you" |
+| `class=anchor` (project/system body) | "What we know about the project" |
+| `class=log` | "Log" |
 
 The user sees what the note *is for*, not which bucket it lives in.
 
@@ -61,6 +61,14 @@ context. Subagents instead propose new memory by emitting a
 orchestrator presents the proposal to the user and persists on
 confirmation.
 
+Subagents do receive memory -- a **read-only copy** of the curated
+block is appended to their dispatch context, the same sections the
+orchestrator saw at SessionStart. They read it to ground their work in
+prior knowledge; they cannot write it back. The split is deliberate:
+every curated entry enters the substrate as a named, user-confirmed
+choice, never as a side effect of an investigation that happened to
+touch a topic.
+
 `memory_fts` is the FTS5 mirror; triggers keep it in sync after any
 write.
 
@@ -68,12 +76,15 @@ write.
 
 ### Trust the injected block first
 
-At SessionStart the orchestrator receives a `## Workspace Memory`
-block listing the top notes for the current workspace
-(`gaia memory get-relevant`, bounded). When the user's question can
-be answered from what is already in your context, do **not** re-query
--- the injected block is already the relevance-ranked top, with
-`carry_forward` threads sorted first.
+At SessionStart the orchestrator receives the curated memory block
+listing the top notes for the current workspace
+(`gaia memory get-relevant`, bounded). It is emitted as up to three
+sections: `## Memory — For this session` (carry-forward threads),
+`## Memory — About you / What I know` (anchors), and
+`## Memory — Open threads` (open threads). When the user's question
+can be answered from what is already in your context, do **not**
+re-query -- the injected block is already the relevance-ranked top,
+with `carry_forward` threads sorted first.
 
 ### Query for depth
 
@@ -100,36 +111,74 @@ Always pass `--json` when output feeds a follow-up step.
 
 ## Write flow (curated)
 
-Memory growth requires deliberation. Not every observation is worth
-persisting -- a bounded curation forces prioritisation, and an
-overstuffed memory loses signal to noise. Propose a save **only when
-one of these triggers fires**:
+This flow runs once a save is already warranted -- the orchestrator
+decides *what* earns a place in memory; this skill defines *how* the
+row is shaped, named, normalized, and persisted. Every write begins by
+searching for what already exists, because the substrate is a set, not
+an append log: a new row that duplicates an old one splits the signal
+across two slugs instead of strengthening one.
 
-| Trigger | Type | Class default | Slug shape |
-|---------|------|---------------|------------|
-| A decision was closed (with rationale) | `decision` | `anchor` | `decision_<topic>` |
-| A reusable fact was discovered | `atom` | `anchor` | `atom_<topic>` |
-| A path was tried, abandoned, and should not recur | `negative` | `anchor` | `negative_<topic>` |
-| Cross-cutting repo / system knowledge | `project` | `anchor` | `project_<topic>` |
-| User preference or identity update | `user` | `anchor` | `user_<topic>` |
-| Post-mortem / correction the system must remember | `feedback` | `log` | `feedback_<topic>` |
-| Work-in-progress that must survive the session | any | `thread` (`--status=carry_forward`) | `<type>_<topic>` |
+### Search before you write
 
-The CLI enforces `^<type>_[a-z0-9_]+$` for `atom`, `decision`, and
-`negative` slugs; the legacy types (`project`, `user`, `feedback`)
-keep historical naming freedom.
+Before any `add`, run `gaia memory search "<topic>" --scope=memory`.
+Three outcomes, three actions:
+
+| Search reveals | Action |
+|----------------|--------|
+| Nothing related | Write the new row -- it is genuinely new knowledge. |
+| A row on the same topic, narrower or stale | UPSERT the broader content into the existing slug; do not create a parallel slug. |
+| A row that contradicts the new fact | Resolve before writing -- see Conflict resolution. Writing both leaves the substrate self-contradictory. |
+
+Skipping the search is how the substrate accumulates near-duplicates
+that each carry a fraction of the weight one consolidated row would.
+The search is always-on; the deeper consolidation it can trigger is
+proportional -- a trivial new fact with no overlap writes directly,
+and only an overlap pulls in dedup or supersede work.
+
+### The slug is the single source of truth for type
+
+**The slug prefix and the type are the same thing.** When you pick a
+slug, you have picked the type -- there is no independent `--type` to
+choose separately. The CLI and the store both enforce this: a
+`(slug, type)` pair that disagrees is always an error, never silently
+reclassified. Choose the slug first; derive `--type` from its prefix.
+
+Once a save is warranted, the *shape* of what you are saving picks the
+slug prefix, and the prefix is the type. This table maps the shape of
+the body to its slug -- it is the form a row takes, not a checklist of
+when to write:
+
+| Body shape | Slug prefix → type | Class default |
+|------------|-------------------|---------------|
+| A closed decision with its rationale | `decision_<topic>` → `--type=decision` | `anchor` |
+| A stable reusable fact | `atom_<topic>` → `--type=atom` | `anchor` |
+| A closed path that should not recur | `negative_<topic>` → `--type=negative` | `anchor` |
+| Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` |
+| User preference or identity | `user_<topic>` → `--type=user` | `anchor` |
+| Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` |
+| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) |
+
+The CLI enforces `^{type}_[a-z0-9_]+$` with type-specific matching: a
+`decision_*` slug is only valid with `--type=decision`, not with
+`--type=atom`. The store also rejects legacy-type calls
+(`--type=project`) that use a curated slug prefix (`atom_*`,
+`decision_*`, `negative_*`). Both directions of mismatch fail loudly.
 
 The flow:
 
-1. Propose to the user: "Discovery worth saving as `atom_<slug>` -- ok?"
-2. On confirmation, persist:
+1. Match the body shape above → pick the slug `<prefix>_<topic>`.
+2. Derive `--type` directly from the slug prefix (they are the same thing).
+3. Search first (see Search before you write); if a related row exists,
+   UPSERT into it rather than minting a new slug.
+4. Persist:
 
 ```bash
 # Primary path -- use --body-file for any body longer than one line or
-# containing special characters, code blocks, or template syntax:
+# containing special characters, code blocks, or template syntax.
+# --type is derived from the slug prefix; they must match:
 gaia memory add \
-  --name="<slug matching the pattern>" \
-  --type="atom|decision|negative|project|user|feedback" \
+  --name="decision_my_topic" \
+  --type=decision \
   --class="anchor|thread|log" \
   [--status="open|carry_forward|graduated|closed"] \
   --body-file=/tmp/body.md \
@@ -212,13 +261,23 @@ derivation (`derived_from`), and a thread-to-anchor promotion path
 
 ### Deduplication
 
+Trigger this only when a search (or `gaia memory conflicts`) reveals an
+actual overlap -- it is not a step every save runs. Consolidation is
+**additive**: you merge forward and link, you do not erase.
+
 1. `gaia memory search "<topic>" --scope=memory` to find overlaps.
 2. Read both bodies; identify the broader scope.
 3. UPSERT the merged content into the broader slug.
-4. Link the narrower to the broader with `--kind=supersedes`, then
-   `gaia memory delete <narrower-slug> --yes` if it adds no value to
-   keep. Prefer `supersedes` over delete when the historical
-   reasoning is worth preserving.
+4. Link the narrower to the broader with `--kind=supersedes`. The
+   `supersedes` link retires the obsolete row while keeping its
+   reasoning reachable -- that is the additive path. Delete the
+   narrower slug only when it was always pure noise with no history
+   worth preserving; superseding is the default, deletion the
+   exception.
+
+For periodic sweeps rather than per-save checks, run
+`gaia memory conflicts` to surface overlapping pairs across the whole
+set at once, then resolve each as above.
 
 ### Conflict resolution
 
@@ -274,8 +333,8 @@ gaia memory reclassify <slug> --class=thread --status=carry_forward
 ```
 
 The SessionStart injector sorts threads in `carry_forward` ahead of
-everything else when building the Workspace Memory block, so the next
-orchestrator instance sees it immediately. When the work concludes,
+everything else, placing them in the `## Memory — For this session`
+section, so the next orchestrator instance sees it immediately. When the work concludes,
 move the same row to `graduated` (or `closed`), or promote it to
 `class=anchor` if it became stable knowledge.
 
@@ -298,7 +357,7 @@ decisions can be navigated visually outside the CLI.
 | Confirm before pruning | Report what will be removed and get user confirmation. |
 | Read before overwriting | `add` is UPSERT -- the prior body is gone. Always `show` first when re-using a slug. |
 | Use UPSERT, not delete-then-insert | Preserves `origin_session_id` provenance and avoids FTS5 churn. |
-| Curated slugs must match `^<type>_[a-z0-9_]+$` | The CLI rejects mismatched slugs; the convention is what makes the taxonomy queryable. |
+| The slug prefix IS the type -- they are the same thing | Do not choose a slug and then pick `--type` independently. Pick the slug; derive `--type` from its prefix. A `(slug, type)` pair that disagrees is always an error -- the CLI and store reject it in both directions (curated-slug-with-wrong-type and curated-prefix-with-legacy-type). |
 | Subagents propose, the orchestrator persists | Direct `gaia memory add` from a dispatch is rejected -- use `memorialize_suggestions` instead. |
 
 ## Anti-patterns
@@ -320,6 +379,13 @@ decisions can be navigated visually outside the CLI.
 - **Saving trivial observations** -- "tested locally and it worked"
   is conversational filler, not memory. Memory is the bounded set of
   facts, decisions, and closed paths that anchor *future* sessions.
+- **Treating `--type` and `--name` as two independent parameters** --
+  they are the same thing expressed twice. Choose the slug; read
+  `--type` from its prefix. Passing `--name=decision_foo --type=atom`
+  or `--name=atom_foo --type=project` both produce an error from the
+  CLI -- the store rejects mismatches in both directions. If you find
+  yourself wondering which type to pass for a given slug, the answer
+  is always the prefix of the slug.
 - **Slug discipline violations on curated types** -- `atom_*`,
   `decision_*`, `negative_*` slugs that do not match the pattern get
   rejected at the CLI. The pattern is not bureaucracy; it is what

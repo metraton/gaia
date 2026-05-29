@@ -45,7 +45,7 @@ class TestIsOrchestratorContext(unittest.TestCase):
             "tool_name": "Bash",
             "tool_input": {"command": "ls"},
             "agent_id": "a12345f",
-            "agent_type": "terraform-architect",
+            "agent_type": "platform-architect",
         }
         self.assertFalse(is_orchestrator_context(payload))
 
@@ -71,7 +71,7 @@ class TestCheckDelegateMode(unittest.TestCase):
             "tool_name": tool_name,
             "tool_input": {},
             "agent_id": "a12345f",
-            "agent_type": "terraform-architect",
+            "agent_type": "platform-architect",
         }
 
     # -- Orchestrator context: blocked tools --

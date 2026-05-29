@@ -52,26 +52,24 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | developer | `agents/developer.md` | Application code (Node/TS, Python) | `acceptEdits` |
 | cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics | (not set) |
 | gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux | `acceptEdits` |
-| terraform-architect | `agents/terraform-architect.md` | Terraform/Terragrunt IaC | `acceptEdits` |
+| platform-architect | `agents/platform-architect.md` | Terraform/Terragrunt IaC | `acceptEdits` |
 | gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition | `acceptEdits` |
 
-### Skills (24 directories + 1 top-level reference)
+### Skills (21 directories + 1 top-level reference)
 
 | Skill | Type | Injection |
 |-------|------|-----------|
+| `agent-contract-handoff/` | Reference | On-demand |
 | `agent-protocol/` | Protocol | Injected (all agents) |
 | `agent-response/` | Protocol | Injected (orchestrator) |
 | `approval/` | Technique | On-demand |
 | `blog-writing/` | Technique | Injected (gaia-operator) |
 | `command-execution/` | Discipline | Injected |
-| `context-updater/` | Protocol | Injected |
-| `developer-patterns/` | Domain | Injected (developer) |
 | `execution/` | Discipline | On-demand |
 | `fast-queries/` | Reference | Injected |
 | `gaia-patterns/` | Domain | Injected (gaia-system) |
 | `gaia-release/` | Technique | Injected (gaia-system) |
 | `git-conventions/` | Reference | On-demand |
-| `gitops-patterns/` | Domain | Injected (gitops-operator) |
 | `gmail-policy/` | Reference | Injected (orchestrator) |
 | `gmail-triage/` | Technique | Injected (gaia-operator) |
 | `gws-setup/` | Technique | On-demand |
@@ -80,7 +78,6 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `orchestrator-present-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
-| `terraform-patterns/` | Domain | Injected (terraform-architect) |
 | `skills/reference.md` | Reference | On-demand (shared security-tiers ref) |
 
 ### Commands (slash commands)

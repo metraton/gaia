@@ -32,7 +32,7 @@ import cli.status as status_mod
 
 _FAKE_EPISODES = [
     {"agent": "developer", "timestamp": "2026-04-15T09:00:00Z", "plan_status": "COMPLETE"},
-    {"agent": "terraform-architect", "timestamp": "2026-04-15T09:30:00Z", "plan_status": "BLOCKED"},
+    {"agent": "platform-architect", "timestamp": "2026-04-15T09:30:00Z", "plan_status": "BLOCKED"},
 ]
 
 _FAKE_EPISODIC_INDEX = {
@@ -66,7 +66,7 @@ def project_dir(tmp_path):
     (em_dir / "index.json").write_text(json.dumps({
         "episodes": [
             {"agent": "developer", "timestamp": "2026-04-15T09:00:00Z", "plan_status": "COMPLETE"},
-            {"agent": "terraform-architect", "timestamp": "2026-04-15T09:30:00Z", "plan_status": "BLOCKED"},
+            {"agent": "platform-architect", "timestamp": "2026-04-15T09:30:00Z", "plan_status": "BLOCKED"},
         ],
     }))
 
@@ -125,7 +125,7 @@ class TestCollectStatus:
 
         last = status["last_agent"]
         assert last is not None
-        assert last["agent"] == "terraform-architect"
+        assert last["agent"] == "platform-architect"
         assert last["plan_status"] == "BLOCKED"
 
     def test_empty_project(self, empty_project):
@@ -165,7 +165,7 @@ class TestCmdStatusHuman:
 
         assert "Gaia System Status" in out
         assert "Last agent:" in out
-        assert "terraform-architect" in out
+        assert "platform-architect" in out
         assert "Pending:" in out
         assert "3 context updates" in out
         assert "Anomalies:" in out

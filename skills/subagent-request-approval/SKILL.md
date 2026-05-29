@@ -73,7 +73,6 @@ approval, so emitting `batch_scope` does nothing. See `reference.md` for why.
 ## Pointers
 
 - Envelope schema, fingerprint canonicalization, event chain: `agent-approval-protocol/SKILL.md`.
-- Mode / SendMessage-resume runtime rules: `security-tiers/SKILL.md` -> "Mode runtime rules" (R3).
 - Deep mechanics, where the payload comes from, grant lifecycle, examples: `reference.md`.
 
 ## Anti-Patterns

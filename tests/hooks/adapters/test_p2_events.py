@@ -214,7 +214,7 @@ class TestAdaptSubagentStart:
 
     def test_missing_task_description(self, adapter):
         """Missing task_description does not raise."""
-        payload = {"agent_type": "terraform-architect"}
+        payload = {"agent_type": "platform-architect"}
         result = adapter.adapt_subagent_start(payload)
 
         assert isinstance(result, ContextResult)

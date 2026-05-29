@@ -21,7 +21,7 @@ Type determines structure. Choose before writing anything.
 | **Discipline** | Enforces rules the agent will rationalize around under pressure | command-execution, execution |
 | **Technique** | How to think about or approach a class of problem | investigation, approval |
 | **Reference** | Lookup tables, classifications, format specifications | security-tiers, fast-queries, git-conventions |
-| **Domain** | Project-specific patterns for a technical area | terraform-patterns, gitops-patterns |
+| **Domain** | Project-specific patterns for a technical area | gaia-patterns |
 | **Protocol** | System operating contract -- state machines, mandatory formats | agent-protocol |
 
 ## Step 2: Apply the type structure

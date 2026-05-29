@@ -82,19 +82,21 @@ your domain skill defines the specific rollback strategy.
 | "All commands exited 0, I'm done" | Exit 0 ≠ desired state — run the verification criteria from the plan |
 | "It's only dev, fewer checks needed" | Irreversibility is irreversibility regardless of env |
 | "The grant matched once, I can retry the same shape" | The grant is consumed on first match (`consume_db_semantic_grant`); a second invocation re-blocks even if the command looks identical |
-| "Half the bundle ran, I can finish after a SendMessage resume" | `mode` dies on resume; if the remaining steps touch `.claude/` writes, CC native re-blocks. Emit BLOCKED, let orchestrator re-dispatch fresh with the same mode (`security-tiers/SKILL.md` R3) |
+| "Half the bundle ran, I can finish after a SendMessage resume" | `mode` dies on resume; if the remaining steps touch `.claude/` writes, CC native re-blocks. Emit BLOCKED, let orchestrator re-dispatch fresh with the same mode (`agents/gaia-orchestrator.md` -> "Dispatch -> Re-dispatch vs SendMessage") |
 
 ## Bundled Multi-Step Execution on Protected Paths
 
 When the approved operation is a **bundle** of steps on `.claude/` paths (e.g.,
 mv directory + 4 Edits across `.claude/project-context/`), execute every step in
 the SAME turn the dispatch started -- `mode` is per-dispatch and dies on a
-SendMessage resume, so split bundles re-block the later steps in `default` mode
-(`security-tiers/SKILL.md` R3).
+SendMessage resume, so split bundles re-block the later steps in `default` mode.
+See `agents/gaia-orchestrator.md` -> "Dispatch -> Re-dispatch vs SendMessage".
 
 If a hook blocks a step mid-bundle, emit BLOCKED and stop -- do NOT emit
 APPROVAL_REQUEST mid-bundle hoping to resume. The orchestrator's correct recovery
 is a fresh dispatch (same mode, bundle re-packed), not a SendMessage back in.
+See `agents/gaia-orchestrator.md` -> "Dispatch -> Re-dispatch vs SendMessage" for
+the dispatch-vs-resume decision that governs protected-path bundles.
 
 ## Anti-Patterns
 

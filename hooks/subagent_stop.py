@@ -77,7 +77,7 @@ from modules.agents.task_info_builder import build_task_info_from_hook_data
 from modules.agents.transcript_reader import read_transcript
 from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
 from modules.audit.workflow_recorder import record as record_workflow
-from modules.context.context_writer import process_context_updates, process_update_contracts
+from modules.context.context_writer import process_update_contracts
 from modules.memory.episode_writer import write as write_episode
 from modules.security.approval_cleanup import cleanup as cleanup_approval
 from modules.session.session_manager import get_or_create_session_id
@@ -94,7 +94,6 @@ _extract_commands_from_evidence = extract_commands_from_evidence
 from modules.agents.handoff_persister import persist_handoff as _persist_handoff
 _extract_exit_code_from_output = extract_exit_code_from_output
 _read_transcript = read_transcript
-_process_context_updates = process_context_updates
 _process_update_contracts = process_update_contracts
 
 
@@ -158,9 +157,8 @@ def subagent_stop_hook(task_info, agent_output):
             session_id=session_id,
         )
 
-        context_update_result = process_context_updates(agent_output, task_info)
-
-        # T2.3: also process update_contracts array from the new envelope
+        # Process update_contracts array from the agent_contract_handoff envelope.
+        context_update_result = None
         if parsed_contract is not None:
             update_contracts_task_info = {
                 "agent": agent_type,
@@ -171,8 +169,7 @@ def subagent_stop_hook(task_info, agent_output):
             update_contracts_result = process_update_contracts(
                 parsed_contract, update_contracts_task_info
             )
-            # Merge results: if legacy path had no update but new path did, record it
-            if update_contracts_result.get("updated") and not (context_update_result or {}).get("updated"):
+            if update_contracts_result.get("updated"):
                 context_update_result = {
                     "updated": True,
                     "contract": ", ".join(update_contracts_result.get("contracts", [])),
@@ -304,7 +301,7 @@ def main():
         test_task_info = {
             "task_id": "T006",
             "description": "Terraform plan for infrastructure",
-            "agent": "terraform-architect",
+            "agent": "platform-architect",
             "tier": "T1",
             "tags": ["#terraform", "#infrastructure"],
         }

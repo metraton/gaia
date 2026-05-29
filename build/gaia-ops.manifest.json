@@ -52,7 +52,7 @@
     "agents/developer.md",
     "agents/cloud-troubleshooter.md",
     "agents/gitops-operator.md",
-    "agents/terraform-architect.md",
+    "agents/platform-architect.md",
     "agents/gaia-planner.md"
   ],
   "skills": "all",

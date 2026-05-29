@@ -727,7 +727,7 @@
       "functions": ["process_context_updates", "process_agent_output", "parse_context_update", "validate_permissions", "apply_update", "load_contracts"],
       "private_functions": ["_import_deep_merge", "_merge_base_and_cloud", "_load_contracts_with_dir"],
       "aliases": ["update"],
-      "description": "Progressive context enrichment: parses CONTEXT_UPDATE blocks, validates write permissions against contracts, applies deep-merge updates to project-context.json",
+      "description": "Progressive context enrichment: parses the update_contracts array from the agent_contract_handoff envelope (process_update_contracts), validates write permissions against contracts, and persists rows to the project_context_contracts tables in gaia.db",
       "calls": ["modules/core/paths.py:find_claude_dir"],
       "called_by": ["adapters/claude_code.py:adapt_subagent_stop"]
     },

@@ -75,7 +75,7 @@ echo "[bootstrap] Schema applied (${TABLE_COUNT} tables, ${TRIGGER_COUNT} trigge
 # permiso de escritura).
 #
 # Lista de agentes (5):
-#   developer, terraform-architect, gitops-operator, gaia-system, cloud-troubleshooter.
+#   developer, platform-architect, gitops-operator, gaia-system, cloud-troubleshooter.
 # Source of truth para el nombre del 4º agente: tools/scan/migrate_workspace.py
 # constante _SCANNER_AGENTS -> "gaia-system".
 #
@@ -96,7 +96,7 @@ echo "[bootstrap] Schema applied (${TABLE_COUNT} tables, ${TRIGGER_COUNT} trigge
 #
 # Mapping del brief (B3 M2, sección Approach + AC-2):
 #   developer            -> apps, libraries, services, features        (4)
-#   terraform-architect  -> tf_modules, tf_live, clusters              (3)
+#   platform-architect   -> tf_modules, tf_live, clusters              (3)
 #   gitops-operator      -> releases, workloads, clusters_defined      (3)
 #   gaia-system          -> integrations, gaia_installations           (2)
 #   cloud-troubleshooter -> clusters                                   (1)
@@ -123,10 +123,10 @@ INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VA
 INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('releases',         'gitops-operator', 1);
 INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('workloads',        'gitops-operator', 1);
 
--- terraform-architect: capa IaC (tf_modules, tf_live, clusters declarativos)
-INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('clusters',   'terraform-architect', 1);
-INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('tf_live',    'terraform-architect', 1);
-INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('tf_modules', 'terraform-architect', 1);
+-- platform-architect: capa IaC (tf_modules, tf_live, clusters declarativos)
+INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('clusters',   'platform-architect', 1);
+INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('tf_live',    'platform-architect', 1);
+INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VALUES ('tf_modules', 'platform-architect', 1);
 EOF
 
 echo "[bootstrap] agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)"
@@ -649,7 +649,7 @@ else
     ALL_OK=0
 fi
 
-# Check 2: at least 5 distinct agents (developer, terraform-architect,
+# Check 2: at least 5 distinct agents (developer, platform-architect,
 # gitops-operator, gaia-system, cloud-troubleshooter). Uses -ge for the same
 # reason Checks 1, 3, 5 do: the seed is INSERT OR IGNORE (idempotent), so a
 # DB carrying rows from prior Gaia versions may legitimately have additional

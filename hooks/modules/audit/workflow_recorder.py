@@ -17,6 +17,7 @@ Provides:
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -96,6 +97,32 @@ def _parse_tools_field(value: Any) -> List[str]:
     return []
 
 
+# Matches the inline `write: [a, b, c]` line nested under the
+# `project_context_contracts:` block in an agent's frontmatter.
+_CONTRACT_WRITE_RE = re.compile(
+    r"project_context_contracts\s*:.*?^\s*write\s*:\s*\[(?P<items>[^\]]*)\]",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def _parse_context_write_contracts(text: str) -> List[str]:
+    """Extract the ``project_context_contracts.write`` list from frontmatter.
+
+    The flat frontmatter parser cannot descend into the nested
+    ``project_context_contracts`` block, so this dedicated regex reads the
+    inline ``write: [...]`` list. A non-empty result is the live signal that an
+    agent is expected to be able to emit an ``update_contracts`` clause.
+    Returns an empty list when the block or the write key is absent.
+    """
+    if not text:
+        return []
+    m = _CONTRACT_WRITE_RE.search(text)
+    if not m:
+        return []
+    items = m.group("items")
+    return [item.strip() for item in items.split(",") if item.strip()]
+
+
 def _resolve_agent_file(agent_type: str) -> Optional[Path]:
     """Resolve the markdown definition for a project agent."""
     if not agent_type:
@@ -121,9 +148,11 @@ def load_agent_runtime_profile(agent_type: str) -> Dict[str, Any]:
             "tools": [],
             "skills": [],
             "skills_count": 0,
+            "context_write_contracts": [],
         }
 
-    frontmatter = _parse_frontmatter(agent_file.read_text())
+    text = agent_file.read_text()
+    frontmatter = _parse_frontmatter(text)
     skills = frontmatter.get("skills", [])
     if not isinstance(skills, list):
         skills = []
@@ -134,6 +163,7 @@ def load_agent_runtime_profile(agent_type: str) -> Dict[str, Any]:
         "tools": _parse_tools_field(frontmatter.get("tools", [])),
         "skills": skills,
         "skills_count": len(skills),
+        "context_write_contracts": _parse_context_write_contracts(text),
     }
 
 

@@ -18,7 +18,6 @@ skills:
   - skill-creation
   - agent-creation
   - gaia-verify
-  - context-updater
 ---
 
 ## Identity
@@ -35,7 +34,7 @@ Every question about Gaia maps to one of these. The glosa tells you what the pil
 
 | Pillar | What it means | Source of truth |
 |--------|---------------|-----------------|
-| **Routing surfaces** | The problem space splits into N surfaces (live_runtime, terraform_iac, gitops, app_ci, planning, gaia_system, workspace); each has a primary specialist. The orchestrator matches prompt -> surface -> agent. | `config/surface-routing.json` |
+| **Routing surfaces** | The problem space splits into N surfaces (live_runtime, iac, gitops, app_ci, planning, gaia_system, workspace); each has a primary specialist. The orchestrator matches prompt -> surface -> agent. | `config/surface-routing.json` |
 | **Unified CLI** | All of Gaia's operation (install, diagnose, scan, manage memory / briefs / plans / approvals) passes through one binary `gaia` that dispatches to plug-in subcommands. No loose scripts: the CLI is the door. | `bin/gaia` + `bin/cli/*.py` |
 | **Hooks as security + audit contract** | Every operation an agent attempts cycles through PreToolUse (classifies T1/T2/T3, blocks when consent is needed), execution, PostToolUse (nonce extraction, audit, persistence), plus session-lifecycle events. This is what makes delegation governable. | `hooks/hooks.json` + `hooks/modules/` |
 | **Skills as reusable techniques** | Each skill is a "how something is done" loadable on demand by description match. Agents do not memorize procedures; they load them when the moment activates. | `skills/` |
@@ -77,7 +76,7 @@ If the request is about *what the user wants to build with* Gaia (apps, infra, g
 
 | Need | Agent |
 |------|-------|
-| Terraform / cloud infrastructure | `terraform-architect` |
+| Infrastructure / IaC (Terraform, Pulumi, CloudFormation, OpenTofu, CDK) | `platform-architect` |
 | Kubernetes / Flux / GitOps | `gitops-operator` |
 | Live cloud diagnostics (kubectl, gcloud, aws) | `cloud-troubleshooter` |
 | Application code (Node, TypeScript, Python apps) | `developer` |

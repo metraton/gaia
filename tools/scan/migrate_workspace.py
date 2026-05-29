@@ -41,7 +41,7 @@ if str(_GAIA_ROOT) not in sys.path:
 
 _SCANNER_AGENTS = [
     "developer",
-    "terraform-architect",
+    "platform-architect",
     "gitops-operator",
     "gaia-system",
     "cloud-troubleshooter",  # B3 M2: read+write declarativo sobre estado observado (clusters, tf_live)
@@ -186,7 +186,7 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
             workspace=identity,
             project=project_name,
             project_path=project_path,
-            agent="terraform-architect",
+            agent="platform-architect",
             db_path=db_path,
         )
         populate_orchestration(

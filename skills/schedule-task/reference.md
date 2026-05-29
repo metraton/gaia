@@ -93,7 +93,7 @@ Match by the FILES the agent will modify, not by the topic of conversation.
 | `hooks/`, `modules/`, `adapters/`, `skills/`, `agents/`, `config/surface-routing.json` | gaia-system |
 | `src/`, `lib/`, `tests/`, `package.json`, `Dockerfile`, `.github/workflows/` | developer |
 | Kubernetes manifests, `HelmRelease`, `Kustomization`, Flux configs | gitops-operator |
-| `.tf`, `.hcl`, `terragrunt.hcl`, Terraform modules | terraform-architect |
+| `.tf`, `.hcl`, `terragrunt.hcl`, Terraform modules | platform-architect |
 | Nothing -- inspect logs, pods, cloud resources | cloud-troubleshooter |
 
 When files span two domains (e.g., app code + K8s manifest), dispatch to both agents in parallel with separate prompts.

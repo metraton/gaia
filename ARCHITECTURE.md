@@ -46,7 +46,7 @@ subagent_stop.py  (SubagentStop hook)
     |  3. Validate response contract
     |  4. Detect anomalies
     |  5. Store episodic memory
-    |  6. Process CONTEXT_UPDATE blocks
+    |  6. Process update_contracts from the agent_contract_handoff envelope
     v
 Orchestrator processes agent_contract_handoff (via agent-response skill)
     |  COMPLETE -> summarize to user
@@ -108,7 +108,7 @@ Fires after every agent tool completes:
 4. Detect anomalies          --> execution failures, consecutive failures
    |  If anomalies found -> create needs_analysis.flag for Gaia
 5. Capture episodic memory   --> store episode via tools/memory/episodic.py
-6. Process context updates   --> apply CONTEXT_UPDATE blocks via context_writer.py
+6. Process context updates   --> apply update_contracts entries from the agent_contract_handoff envelope via context_writer.py (process_update_contracts)
 ```
 
 ## Surface Routing: surface_router.py
@@ -119,7 +119,7 @@ Classifies user tasks into surfaces using signal matching against `config/surfac
 |---------|--------------|-----------------|
 | `live_runtime` | cloud-troubleshooter | pods, services, logs, kubectl, gcloud |
 | `gitops_desired_state` | gitops-operator | manifests, Flux, Helm, Kustomize |
-| `terraform_iac` | terraform-architect | Terraform, Terragrunt, IAM, modules |
+| `iac` | platform-architect | Terraform, Terragrunt, IAM, modules |
 | `app_ci_tooling` | developer | CI/CD, Docker, package tooling |
 | `planning_specs` | gaia-planner | briefs, plans (materializados cuando una conversación alcanza Cerrar) |
 | `gaia_system` | gaia-system | hooks, skills, agents/, CLAUDE.md |
@@ -244,9 +244,9 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 |-----------|-------|
 | **File** | `hooks/subagent_stop.py` |
 | **Hook event** | SubagentStop |
-| **What it does** | Fires after every agent completes. Consumes approval files, captures workflow metrics, validates the response contract (AGENT_STATUS, EVIDENCE_REPORT, CONSOLIDATION_REPORT), detects anomalies, stores episodic memory, and processes CONTEXT_UPDATE blocks. |
+| **What it does** | Fires after every agent completes. Consumes approval files, captures workflow metrics, validates the response contract (AGENT_STATUS, EVIDENCE_REPORT, CONSOLIDATION_REPORT), detects anomalies, stores episodic memory, and processes the update_contracts array from the agent_contract_handoff envelope. |
 | **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_agent_completion()` |
-| **Business logic modules** | `agents/response_contract.py` (`validate_response_contract`, `save_pending_repair`, `clear_pending_repair`), `tools/memory/episodic.py` (`EpisodicMemory.store_episode`), `context/context_writer.py` (`process_agent_output`) |
+| **Business logic modules** | `agents/response_contract.py` (`validate_response_contract`, `save_pending_repair`, `clear_pending_repair`), `tools/memory/episodic.py` (`EpisodicMemory.store_episode`), `context/context_writer.py` (`process_update_contracts`) |
 
 ### CP-4: `hooks/modules/tools/hook_response.py` -- Response Formatting
 

@@ -135,7 +135,7 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
 {
   "agent_status": {
     "plan_status": "COMPLETE",
-    "agent_id": "b2e8c14",
+    "agent_id": "a2e8c14",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -218,7 +218,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 {
   "agent_status": {
     "plan_status": "COMPLETE",
-    "agent_id": "c19a3d7",
+    "agent_id": "a19a3d7",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -256,7 +256,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 {
   "agent_status": {
     "plan_status": "COMPLETE",
-    "agent_id": "c4e8b21",
+    "agent_id": "a4e8b21",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -281,6 +281,48 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
     "metric": 1.0,
     "threshold": 0.98
   },
+  "consolidation_report": null,
+  "approval_request": null
+}
+```
+
+## 8. COMPLETE with `update_contracts` (index a discovery into project-context)
+
+The agent discovered a project fact a section it owns did not yet hold, and writes it back so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; `contract` must be a name from the INPUT `write_permissions.writable_sections`, and `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
+
+```agent_contract_handoff
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "a7c1d93",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": ["service entrypoints under services/"],
+    "files_checked": ["services/graphql-server/package.json"],
+    "commands_run": [],
+    "key_outputs": ["graphql-server runs on port 3000 in namespace common"],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": [],
+    "verification": {
+      "method": "self-review",
+      "checks": ["port and namespace confirmed against package.json and manifest"],
+      "result": "pass",
+      "details": "Service identifiers read directly from source; no live-state cached."
+    }
+  },
+  "update_contracts": [
+    {
+      "contract": "application_services",
+      "payload": {
+        "services": [
+          {"name": "graphql-server", "port": 3000, "namespace": "common"}
+        ]
+      }
+    }
+  ],
   "consolidation_report": null,
   "approval_request": null
 }

@@ -8,93 +8,92 @@ metadata:
 
 # Investigation
 
-Every codebase is a record of accumulated decisions. Investigation
-is not a prerequisite you rush through — it is the most important part.
-The first 2-3 files you read define whether your solution fits or
-fights the project.
+Investigation is the universal method every agent runs before acting: an
+optimal, context-anchored search that turns the task into understanding. It is
+not a checklist of phases — it is the discipline of searching FROM what you
+were given, with the tools you already have, only as far as your scope reaches,
+separating what you have confirmed from what you are still assuming.
 
-## Phase 1: Start From Injected Context
+## Core principle
 
-Before your first tool call, extract anchors from your injected
-Project Context: paths, service names, resource IDs. These are
-your starting point — go directly to them.
+Three forces shape every good investigation:
 
-Define what you need to know that the context does NOT answer.
-Those are your unknowns.
+- **Context is the map.** Your injected context — Project Context, Surface
+  Routing, and the **Agent Contract Handoff** (goal, acceptance criteria,
+  scope) — names the resources, identifiers, and surface that matter, and is
+  where your environment defines which tools you have. Search outward from
+  those anchors with those tools; enumerating the whole space when the context
+  already names what matters wastes calls and buries the signal. When the
+  context also carries a **Memory Index / Historical Context** section, read
+  the relevant prior episodes before searching — they may already hold
+  findings, sparing you from re-investigating what is known.
+- **Scope decides what matters.** Your handoff defines the surface you own, and
+  your injected **rules** define what you own and may change — consult them for
+  your boundaries before investigating, and respect them when proposing.
+  Searching beyond your surface yields findings you cannot act on or verify;
+  narrow to scope first, and name anything beyond it as a dependency.
+- **Confirmed beats assumed.** The most valuable output is a clean line between
+  what you *observed* (confirmed) and what you *inferred* (assumed). Propose
+  only on the confirmed; carry the assumed forward as an open gap, never fact.
 
-## Phase 2: Explore Known Paths
+Use this when starting any task that touches existing state — source,
+configuration, or live state — before planning, proposing, or mutating.
 
-For each path or name from context:
-- Read the file or directory directly — no Glob needed
-- Read 2-3 similar existing resources to understand conventions
-- Extract: naming patterns, directory structure, dependencies
-
-If context includes an `investigation_brief`, use it to prioritize
-your surface, adjacent surfaces, and required checks.
-
-## Phase 3: Discover Unknowns
-
-Search only for things NOT covered by context. Use Glob and Grep.
-
-After initial evidence, check adjacency:
-- **Neighbors:** Files next to your target often explain constraints
-- **References:** What references this resource? What does it reference?
-- **Breadth:** Find 2-3 instances of the same pattern. One example is
-  anecdote; three are convention.
-
-Stop when new files confirm what you already know.
-
-## Phase 4: Live State
-
-Only if drift is suspected or the task needs runtime data. Use `fast-queries` triage first.
-
-## Phase 5: Pattern Hierarchy
-
-Apply in order — do not skip levels:
-
-1. **Codebase first** — Find 2-3 existing resources of the same type.
-   If found, follow them. Consistency beats preference.
-   This applies to every resource your plan touches — including
-   prerequisites and dependencies, not just your primary deliverable.
-2. **Domain skill** — If no codebase pattern, use your domain skill
-   (terraform-patterns, gitops-patterns, etc.)
-3. **Training knowledge** — Last resort. Mark explicitly:
-   *"No existing pattern found — applying best practices."*
-
-When following patterns: **COPY** names/paths exactly.
-When a pattern is problematic: **ALERT** as DEVIATION, propose alternative.
-
-## Phase 6: Validate Before Proposing
-
-Before proposing, test your plan against what you found: for each
-action that creates, modifies, or deletes a resource, did your
-investigation reveal how the project manages that resource type?
-If so, your action must use the same mechanism. If a prerequisite
-falls outside your scope, report it as a dependency rather than
-solving it yourself.
-
-- Does code agree with project-context? If not → investigate drift
-- Uncertain about correctness? → one more read-only validation
-- Multiple valid approaches? → list options, set status `NEEDS_INPUT`
-
-Separate what is **confirmed** (seen in code, validated) from what
-is **assumed** (inferred). Never propose on assumptions.
+## Process
+1. **Anchor in the handoff.** Read the **Agent Contract Handoff** for goal,
+   acceptance criteria, and scope, and the context for the identifiers already
+   known. List the unknowns it does *not* answer — those, within your scope,
+   are the only things worth searching for.
+2. **Investigate with your tools, scoped to your anchors.** Use whatever tools
+   your environment gives you to observe, query, or examine the specific
+   anchors the context named, rather than scanning the whole space. Examine
+   2-3 comparable existing instances to learn the conventions in play — one is
+   anecdote, three are a pattern.
+3. **Search only the gaps, only in your scope.** Direct your tools at what the
+   context did not answer. Follow adjacency: what sits next to your target
+   explains its constraints; what references it reveals its coupling. Do not
+   expand into a surface another scope owns — name that as a dependency.
+4. **Your surface may be source, configuration, or live state — the method is
+   the same.** When the task depends on current runtime state, that is not an
+   exception; it is one more surface you observe read-only, scoped to your
+   anchors. See `command-execution` for running a query safely and
+   `security-tiers` for why a read-only (T0) query needs no approval. Do not
+   retain runtime values as if they were stable facts.
+5. **Apply the pattern hierarchy, in order.** (a) Existing pattern — if 2-3
+   comparable instances exist, follow them; consistency beats preference, for
+   prerequisites and dependencies too. (b) Your domain skill when none is
+   found. (c) Prior knowledge as last resort, marked: *"No existing pattern
+   found — applying best practices."* Following a pattern, copy its identifiers
+   exactly; finding one problematic, surface it as a deviation with an
+   alternative.
+6. **Validate before proposing.** For each action that creates, modifies, or
+   deletes something, confirm your investigation revealed how the project
+   *manages* that kind of thing — your action must use that mechanism. A
+   divergence between observed state and the context is either real drift or
+   stale context to correct (see `agent-contract-handoff`). Multiple valid approaches
+   → list them, set status `NEEDS_INPUT`. Carry findings into the
+   `evidence_report` of your handoff (schema in `agent-protocol`), confirmed
+   and assumed kept distinct.
+7. **Stop when the remaining unknowns are not actionable.** Investigation ends
+   not when everything is known, but when nothing more you could learn would
+   change what you do next. Unknowns beyond that boundary are open gaps, not
+   reasons to keep searching.
 
 ## Anti-Patterns
-
-- **Searching before reading context.** Your injected context already has
-  paths and names. Searching for what you have wastes tool calls.
-- **Planning before resolving unknowns.** A plan built on assumptions
-  collapses when reality disagrees. Find contradictions early.
-- **Treating training knowledge as codebase convention.** The codebase
-  says "we do Y" -- consistency within the project matters more than
-  abstract best practice from your training.
+- **Searching for what context already holds.** The map names the resources and
+  identifiers — re-enumerating to rediscover them wastes calls. Read anchors
+  first.
+- **Searching outside your scope.** A surface you do not own yields findings
+  you cannot verify or act on. Scope first; report the rest as a dependency.
+- **Proposing on the assumed.** A plan built on inference collapses when reality
+  disagrees. Propose only on the confirmed; everything else is an open gap.
+- **Treating prior knowledge as project convention.** The project's own "we do
+  Y" outweighs abstract best practice. Consistency within the project wins.
 - **Skipping investigation because the prompt is specific.** The orchestrator
-  does not see the codebase. When instructions contradict code, code wins.
-- **Creating files before reading existing examples.** Without seeing how
-  the project structures similar resources, your output looks foreign.
-- **Solving prerequisites by the fastest path instead of the project's
-  path.** When your task needs a resource that doesn't exist yet, the
-  temptation is to create it with whatever tool is quickest. But if
-  investigation showed the project manages that resource type through a
-  specific mechanism, bypassing it creates drift. Report the dependency.
+  does not see the actual state. When instructions contradict what you observe,
+  observed reality wins.
+- **Solving a prerequisite by the fastest path instead of the project's.** If
+  the project manages that kind of thing through a specific mechanism,
+  bypassing it creates drift. Report the dependency.
+- **Over-investigating.** Searching after the remaining unknowns can no longer
+  change your next action spends budget without changing the outcome.

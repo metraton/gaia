@@ -121,10 +121,17 @@ class TestContextIgnored:
 
 
 class TestContextUpdateMissing:
-    def test_triggers_when_skill_injected_but_no_update_block(self):
-        ta = _base_analysis(skills_injected=["context-updater", "investigation"])
+    def test_triggers_when_writable_contracts_but_no_update_block(self):
+        ta = _base_analysis(skills_injected=["investigation"])
+        metrics = _base_metrics(
+            default_skills_snapshot={
+                "model": "",
+                "skills": [],
+                "context_write_contracts": ["application_services"],
+            }
+        )
         anomalies = audit(
-            _base_metrics(),
+            metrics,
             agent_output="some output without context update",
             transcript_analysis=ta,
         )
@@ -133,20 +140,37 @@ class TestContextUpdateMissing:
         match = next(a for a in anomalies if a["type"] == "context_update_missing")
         assert match["severity"] == "info"
 
-    def test_no_anomaly_when_context_update_present(self):
-        ta = _base_analysis(skills_injected=["context-updater"])
+    def test_no_anomaly_when_update_contracts_present(self):
+        ta = _base_analysis(skills_injected=["investigation"])
+        metrics = _base_metrics(
+            default_skills_snapshot={
+                "model": "",
+                "skills": [],
+                "context_write_contracts": ["application_services"],
+            }
+        )
         anomalies = audit(
-            _base_metrics(),
-            agent_output="blah CONTEXT_UPDATE: {} blah",
+            metrics,
+            agent_output=(
+                'blah "update_contracts": [{"contract": "application_services", '
+                '"payload": {}}] blah'
+            ),
             transcript_analysis=ta,
         )
         types = [a["type"] for a in anomalies]
         assert "context_update_missing" not in types
 
-    def test_no_anomaly_when_skill_not_injected(self):
+    def test_no_anomaly_when_no_writable_contracts(self):
         ta = _base_analysis(skills_injected=["investigation"])
+        metrics = _base_metrics(
+            default_skills_snapshot={
+                "model": "",
+                "skills": [],
+                "context_write_contracts": [],
+            }
+        )
         anomalies = audit(
-            _base_metrics(),
+            metrics,
             agent_output="no update here",
             transcript_analysis=ta,
         )

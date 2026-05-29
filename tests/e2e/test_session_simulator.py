@@ -993,7 +993,7 @@ class TestScenario8FullApprovalCycle:
         sim.start_session()
 
         # Invoke agent
-        result = sim.invoke_agent("terraform-architect", "apply the plan")
+        result = sim.invoke_agent("platform-architect", "apply the plan")
         assert result["exit_code"] == 0
 
         # Try terraform apply -- returns "deny" (subagent context)

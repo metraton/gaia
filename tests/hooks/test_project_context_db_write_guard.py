@@ -93,5 +93,5 @@ def test_rejection_message_constant():
     """The exact message string is exposed for downstream consumers."""
     msg = rejection_message()
     assert "Direct SQL writes to gaia.db are not allowed" in msg
-    assert "Use `gaia context` CLI or emit CONTEXT_UPDATE" in msg
+    assert "Use `gaia context` CLI or emit update_contracts" in msg
     assert "Raw SQL bypasses agent_permissions enforcement" in msg

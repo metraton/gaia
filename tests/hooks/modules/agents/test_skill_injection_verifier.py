@@ -89,7 +89,7 @@ class TestAllFingerprintsPresent:
             "ONE COMMAND. ONE RESULT. ONE EXIT CODE enforced."
         )
         result = verify_skill_injection(
-            agent_type="terraform-architect",
+            agent_type="platform-architect",
             transcript_text=transcript,
             declared_skills=[
                 "agent-protocol",
@@ -112,11 +112,11 @@ class TestAllFingerprintsPresent:
 
     def test_fingerprint_as_substring(self):
         """Fingerprints found as substrings of larger text still match."""
-        transcript = "Before doing anything, the agent invoked CONTEXT_UPDATE to enrich data."
+        transcript = "Before doing anything, the agent emitted an agent_contract_handoff block."
         result = verify_skill_injection(
             agent_type="developer",
             transcript_text=transcript,
-            declared_skills=["context-updater"],
+            declared_skills=["agent-protocol"],
         )
         assert result is None
 
@@ -146,7 +146,7 @@ class TestMissingSkillAnomaly:
         """When some skills are present and others missing, only missing ones are reported."""
         transcript = "Agent used agent_contract_handoff and plan_status. No other skills."
         result = verify_skill_injection(
-            agent_type="terraform-architect",
+            agent_type="platform-architect",
             transcript_text=transcript,
             declared_skills=["agent-protocol", "investigation"],
         )

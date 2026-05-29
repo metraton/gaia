@@ -161,7 +161,7 @@ def test_upsert_memory_rejects_terraform_architect(tmp_db, clear_dispatch, monke
     """A second non-curator dispatch is rejected the same way."""
     from gaia.store.writer import upsert_memory, MemoryWriteForbidden
 
-    monkeypatch.setenv("GAIA_DISPATCH_AGENT", "terraform-architect")
+    monkeypatch.setenv("GAIA_DISPATCH_AGENT", "platform-architect")
     with pytest.raises(MemoryWriteForbidden):
         upsert_memory(
             "me",

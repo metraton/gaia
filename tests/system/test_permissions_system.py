@@ -884,7 +884,7 @@ class TestSecurityTiers:
     def test_agent_tier_constraints(self):
         """Agents should have tier constraints."""
         agent_config = {
-            "terraform-architect": {
+            "platform-architect": {
                 "allowed_tiers": ["T0", "T1", "T2", "T3"],
                 "default_tier": "T2"
             },
@@ -894,8 +894,8 @@ class TestSecurityTiers:
             }
         }
         
-        # terraform-architect can do T3 (apply changes)
-        assert "T3" in agent_config["terraform-architect"]["allowed_tiers"]
+        # platform-architect can do T3 (apply changes)
+        assert "T3" in agent_config["platform-architect"]["allowed_tiers"]
         
         # cloud-troubleshooter cannot do T3 (read-only diagnostics)
         assert "T3" not in agent_config["cloud-troubleshooter"]["allowed_tiers"]

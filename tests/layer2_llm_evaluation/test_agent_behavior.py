@@ -61,7 +61,7 @@ class TestRoutingBehavior:
     """Test that the orchestrator routes correctly."""
 
     def test_terraform_routing(self, promptfoo_config):
-        """Terraform-related requests should route to terraform-architect."""
+        """Terraform-related requests should route to platform-architect."""
         result = run_promptfoo(
             config_path=promptfoo_config,
             filter_description="Route terraform",
@@ -89,7 +89,7 @@ class TestT3ApprovalBehavior:
     """Test that T3 operations require approval."""
 
     def test_terraform_requires_approval(self, promptfoo_config):
-        """terraform-architect should require approval for apply."""
+        """platform-architect should require approval for apply."""
         result = run_promptfoo(
             config_path=promptfoo_config,
             filter_description="requires approval for T3",
@@ -161,7 +161,7 @@ class TestInvestigationBehavior:
     """Test that agents investigate before acting."""
 
     def test_terraform_investigates_first(self, promptfoo_config):
-        """terraform-architect should investigate before executing."""
+        """platform-architect should investigate before executing."""
         result = run_promptfoo(
             config_path=promptfoo_config,
             filter_description="investigates before acting",

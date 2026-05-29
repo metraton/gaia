@@ -3,13 +3,13 @@
 End-to-end integration tests for subagent_stop hook.
 
 Validates the FULL flow:
-  1. Agent output with CONTEXT_UPDATE -> subagent_stop processes it
-     -> gaia.db project_context_contracts updated -> result success
+  1. Agent output with an update_contracts envelope clause -> subagent_stop
+     processes it -> gaia.db project_context_contracts updated -> result success
   2. Stdin handler (Claude Code SubagentStop) -> processes correctly -> exit 0
 
 Modules under test:
-  - hooks/subagent_stop.py (subagent_stop_hook, _process_context_updates, stdin handler)
-  - hooks/modules/context/context_writer.py (used internally)
+  - hooks/subagent_stop.py (subagent_stop_hook, stdin handler)
+  - hooks/modules/context/context_writer.py (used internally via the envelope path)
 """
 
 import sys
@@ -69,33 +69,39 @@ def _clear_writer_cache():
 # ---------------------------------------------------------------------------
 
 def _make_agent_output(contract: str, payload: dict) -> str:
-    """Build agent output with CONTEXT_UPDATE in the current {contract, payload} format."""
+    """Build agent output with an update_contracts clause in the envelope.
+
+    The contract enrichment travels inside the ``agent_contract_handoff``
+    block as a top-level ``update_contracts`` array (one ``{contract, payload}``
+    entry), which is the live envelope path consumed by process_update_contracts.
+    """
+    envelope = {
+        "agent_status": {
+            "plan_status": "COMPLETE",
+            "agent_id": "cloud-troubleshooter",
+            "pending_steps": [],
+            "next_action": "done",
+        },
+        "evidence_report": {
+            "patterns_checked": [],
+            "files_checked": [],
+            "commands_run": [],
+            "key_outputs": [],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
+        },
+        "consolidation_report": None,
+        "update_contracts": [
+            {"contract": contract, "payload": payload},
+        ],
+    }
     return (
         "## Namespace Validation Report\n\n"
         "20 namespaces found across all categories.\n\n"
-        "CONTEXT_UPDATE:\n"
-        + json.dumps({"contract": contract, "payload": payload}, indent=2)
-        + "\n\n"
         "```agent_contract_handoff\n"
-        '{\n'
-        '  "agent_status": {\n'
-        '    "plan_status": "COMPLETE",\n'
-        '    "agent_id": "cloud-troubleshooter",\n'
-        '    "pending_steps": [],\n'
-        '    "next_action": "done"\n'
-        '  },\n'
-        '  "evidence_report": {\n'
-        '    "patterns_checked": [],\n'
-        '    "files_checked": [],\n'
-        '    "commands_run": [],\n'
-        '    "key_outputs": [],\n'
-        '    "verbatim_outputs": [],\n'
-        '    "cross_layer_impacts": [],\n'
-        '    "open_gaps": []\n'
-        '  },\n'
-        '  "consolidation_report": null\n'
-        '}\n'
-        "```\n"
+        + json.dumps(envelope, indent=2)
+        + "\n```\n"
     )
 
 
@@ -185,15 +191,16 @@ def project_env(tmp_path, monkeypatch):
 
 
 # ============================================================================
-# Test Suite 1: _process_context_updates E2E
+# Test Suite 1: update_contracts envelope path E2E
 # ============================================================================
 
 class TestProcessContextUpdatesE2E:
-    """Test that _process_context_updates correctly updates gaia.db
-    when called with agent output containing a CONTEXT_UPDATE block."""
+    """Test that the envelope update_contracts path correctly updates gaia.db
+    when the agent output carries an update_contracts clause."""
 
-    def test_context_update_applied_to_db(self, project_env):
-        """Full flow: agent output with CONTEXT_UPDATE -> gaia.db updated."""
+    @patch("subagent_stop.write_episode", return_value=None)
+    def test_context_update_applied_to_db(self, mock_episodic, project_env):
+        """Full flow: agent output with update_contracts -> gaia.db updated."""
         mod = _import_subagent_stop()
         db_path = project_env["db_path"]
 
@@ -203,14 +210,13 @@ class TestProcessContextUpdatesE2E:
             "workspace": "global",
         }
 
-        result = mod._process_context_updates(
-            AGENT_OUTPUT_WITH_CONTEXT_UPDATE,
+        result = mod.subagent_stop_hook(
             task_info,
+            AGENT_OUTPUT_WITH_CONTEXT_UPDATE,
         )
 
-        assert result is not None, "Expected non-None result from _process_context_updates"
-        assert result["updated"] is True
-        assert result["contract"] == "cluster_details"
+        assert result is not None
+        assert result["context_updated"] is True
 
         stored = read_contract(db_path, "global", "cluster_details")
         assert stored is not None
@@ -221,7 +227,8 @@ class TestProcessContextUpdatesE2E:
         assert "kube-system" in namespaces["system"]
         assert stored["total_namespace_count"] == 20
 
-    def test_config_dir_db_path_propagated(self, project_env):
+    @patch("subagent_stop.write_episode", return_value=None)
+    def test_config_dir_db_path_propagated(self, mock_episodic, project_env):
         """Verify db_path in task_info is used for the write operation."""
         mod = _import_subagent_stop()
         db_path = project_env["db_path"]
@@ -232,25 +239,49 @@ class TestProcessContextUpdatesE2E:
             "workspace": "global",
         }
 
-        result = mod._process_context_updates(
-            AGENT_OUTPUT_WITH_CONTEXT_UPDATE,
+        result = mod.subagent_stop_hook(
             task_info,
+            AGENT_OUTPUT_WITH_CONTEXT_UPDATE,
         )
 
         assert result is not None
-        assert result["updated"] is True
+        assert result["context_updated"] is True
         # Verify data landed in the correct DB
         stored = read_contract(db_path, "global", "cluster_details")
         assert stored is not None
 
-    def test_no_context_update_in_output(self, project_env):
-        """Agent output without CONTEXT_UPDATE should not modify gaia.db."""
+    @patch("subagent_stop.write_episode", return_value=None)
+    def test_no_context_update_in_output(self, mock_episodic, project_env):
+        """Agent output without update_contracts should not modify gaia.db."""
         mod = _import_subagent_stop()
         db_path = project_env["db_path"]
 
         agent_output_no_update = (
             "## Agent Execution Complete\n\n"
-            "Checked all pods. Everything looks healthy.\n"
+            "Checked all pods. Everything looks healthy.\n\n"
+            "```agent_contract_handoff\n"
+            + json.dumps(
+                {
+                    "agent_status": {
+                        "plan_status": "COMPLETE",
+                        "agent_id": "cloud-troubleshooter",
+                        "pending_steps": [],
+                        "next_action": "done",
+                    },
+                    "evidence_report": {
+                        "patterns_checked": [],
+                        "files_checked": [],
+                        "commands_run": [],
+                        "key_outputs": [],
+                        "verbatim_outputs": [],
+                        "cross_layer_impacts": [],
+                        "open_gaps": [],
+                    },
+                    "consolidation_report": None,
+                },
+                indent=2,
+            )
+            + "\n```\n"
         )
         task_info = {
             **TASK_INFO_CLOUD_TROUBLESHOOTER,
@@ -258,16 +289,16 @@ class TestProcessContextUpdatesE2E:
             "workspace": "global",
         }
 
-        result = mod._process_context_updates(
-            agent_output_no_update,
+        result = mod.subagent_stop_hook(
             task_info,
+            agent_output_no_update,
         )
 
         stored = read_contract(db_path, "global", "cluster_details")
         assert stored is None
 
-        if result is not None:
-            assert result["updated"] is False
+        assert result is not None
+        assert result["context_updated"] is False
 
 
 # ============================================================================

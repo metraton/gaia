@@ -320,7 +320,7 @@ Contracts now fully control what context each agent receives. Removed the progre
 #### Changed
 - **context_provider.py**: Contracts are the single source of truth -- removed progressive disclosure filtering that overrode contract-defined sections
 - **context_provider.py**: Simplified output payload -- removed `enrichment` and `progressive_disclosure` keys from response
-- **contracts/terraform-architect.json**: Now reads `cluster_details` and `application_services` sections
+- **contracts/platform-architect.json**: Now reads `cluster_details` and `application_services` sections
 - **contracts/gitops-operator.json**: Now reads `gcp_services` section (GCP overlay)
 - **pre_tool_use.py**: Updated log message to show sections count and rules count
 - **templates/CLAUDE.template.md**: Synced agent routing descriptions with CLAUDE.md
@@ -413,8 +413,8 @@ Major redesign of skills and agents. Skills now teach principles instead of enum
 - **`skills/reference.md`** - Agent template and npm release checklist (moved from gaia agent)
 - **`skills/terraform-patterns/reference.md`** - Full HCL examples
 - **`skills/gitops-patterns/reference.md`** - Full YAML examples
-- **`investigation` skill** assigned to cloud-troubleshooter, terraform-architect, gitops-operator, devops-developer, gaia
-- **`git-conventions` skill** assigned to terraform-architect, gitops-operator, devops-developer
+- **`investigation` skill** assigned to cloud-troubleshooter, platform-architect, gitops-operator, devops-developer, gaia
+- **`git-conventions` skill** assigned to platform-architect, gitops-operator, devops-developer
 - **`agent-protocol` + `security-tiers` skills** assigned to speckit-planner
 
 #### Metrics
@@ -711,7 +711,7 @@ Inspired by [memory-graph](https://github.com/gregorydickson/memory-graph) analy
 ### Changed - Agent Optimization
 
 - **agents/*.md** - All 6 agents reduced by 78%
-  - terraform-architect: 916 → 183 lines
+  - platform-architect: 916 → 183 lines
   - gitops-operator: 1,238 → 217 lines
   - gcp-troubleshooter: 600 → 156 lines
   - aws-troubleshooter: 565 → 142 lines
@@ -795,7 +795,7 @@ Inspired by [memory-graph](https://github.com/gregorydickson/memory-graph) analy
   - Better Flux CD integration guidance
   - Enhanced troubleshooting protocols
 
-- **agents/terraform-architect.md** - Enhanced with 47 new lines
+- **agents/platform-architect.md** - Enhanced with 47 new lines
   - Improved Terragrunt support
   - Better module design guidance
   - Enhanced security scanning protocols

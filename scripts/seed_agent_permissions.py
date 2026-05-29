@@ -8,7 +8,7 @@ the table does not exist (B1 not applied).
 
 Mapping (B3 M3 -- agreed state):
   developer           -> apps, libraries, services, features
-  terraform-architect -> tf_modules, tf_live, releases, clusters
+  platform-architect -> tf_modules, tf_live, releases, clusters
   gitops-operator     -> workloads, clusters_defined
   gaia-operator       -> integrations, gaia_installations, machines
   cloud-troubleshooter -> clusters
@@ -36,12 +36,12 @@ AGENT_TABLE_MAPPING: list[tuple[str, str]] = [
     ("developer", "libraries"),
     ("developer", "services"),
     ("developer", "features"),
-    # terraform-architect: IaC layer + releases lifecycle
+    # platform-architect: IaC layer + releases lifecycle
     # NOTE: clusters write is declarative (IaC) only, not runtime state.
-    ("terraform-architect", "tf_modules"),
-    ("terraform-architect", "tf_live"),
-    ("terraform-architect", "releases"),
-    ("terraform-architect", "clusters"),
+    ("platform-architect", "tf_modules"),
+    ("platform-architect", "tf_live"),
+    ("platform-architect", "releases"),
+    ("platform-architect", "clusters"),
     # gitops-operator: desired state (workloads, clusters_defined only)
     ("gitops-operator", "workloads"),
     ("gitops-operator", "clusters_defined"),

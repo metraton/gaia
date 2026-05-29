@@ -218,7 +218,7 @@ Once installed, you have access to **complete documentation** in each directory:
 
 ```
 .claude/
-├── agents/               6 agents (terraform-architect, gitops-operator, etc.)
+├── agents/               6 agents (platform-architect, gitops-operator, etc.)
 ├── skills/README.md      20 skill modules
 ├── commands/README.md    Slash commands (gaia-plan, scan-project)
 ├── config/README.md      Contracts, git standards, universal rules

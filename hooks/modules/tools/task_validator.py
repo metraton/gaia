@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Available agents for Task invocation — both bare and plugin-namespaced forms
 _BASE_AGENTS = [
-    "terraform-architect",
+    "platform-architect",
     "gitops-operator",
     "cloud-troubleshooter",
     "developer",

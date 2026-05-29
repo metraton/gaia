@@ -68,7 +68,7 @@ do not write any file under `<workspace>/.claude/project-context/briefs/`.
 | Brief/spec creation | Orchestrator (brief-spec skill) |
 | Task execution and dispatch | Orchestrator (dispatch execution) |
 | Brief status transitions | Orchestrator (`gaia brief set-status`) |
-| Terraform / cloud infrastructure | `terraform-architect` |
+| Infrastructure / IaC (tool-agnostic) | `platform-architect` |
 | Kubernetes / GitOps | `gitops-operator` |
 | Live cloud diagnostics | `cloud-troubleshooter` |
 | Application code | `developer` |

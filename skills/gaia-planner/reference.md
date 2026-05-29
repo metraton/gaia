@@ -42,7 +42,7 @@ Each task MUST:
 
 - **Fit in one context window.** If you need to say "see also", split it.
 - **Name its agent target.** Route by domain: terraform keywords ->
-  `terraform-architect`, k8s/helm -> `gitops-operator`, code/test/build ->
+  `platform-architect`, k8s/helm -> `gitops-operator`, code/test/build ->
   `developer`, gaia internals -> `gaia-system`.
 - **Carry its own context slice.** The agent receives the task description,
   not the brief. Inline relevant constraints, file paths, and tech stack.
@@ -150,7 +150,7 @@ assignments when dispatching.
 
 | Domain Signal | Agent |
 |---------------|-------|
-| Terraform, IaC, cloud resources | `terraform-architect` |
+| Terraform, IaC, cloud resources | `platform-architect` |
 | Kubernetes, Helm, Flux, manifests | `gitops-operator` |
 | Live cluster, pods, logs, diagnostics | `cloud-troubleshooter` |
 | App code, tests, CI/CD, Docker | `developer` |

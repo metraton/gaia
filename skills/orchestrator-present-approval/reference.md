@@ -168,7 +168,7 @@ hook-driven by the label the user selected.
 ## Re-dispatch instead of resume
 
 `mode` is per-dispatch of the Agent tool and does **not** survive a SendMessage
-resume (see `security-tiers/SKILL.md` -> R3). A subagent dispatched with
+resume. A subagent dispatched with
 `acceptEdits` / `bypassPermissions` that emits APPROVAL_REQUEST ends its turn; a
 SendMessage resume runs in `default`, so CC native re-blocks the next protected
 operation even after the Gaia grant activated.
@@ -238,7 +238,7 @@ to SendMessage resume and to fresh Agent re-dispatch.
 - Dispatch writes any file under `.claude/` that is NOT hooks/ or settings files
 
 **When NOT to use `acceptEdits`:**
-- Dispatch requires mutative Bash (acceptEdits does not cover Bash -- the Gaia T3 flow still fires; see `security-tiers/SKILL.md` -> R1, R2)
+- Dispatch requires mutative Bash (acceptEdits does not cover Bash -- the Gaia T3 flow still fires regardless of mode)
 - Dispatch is exploratory/read-only (use `default` or omit mode)
 - Dispatch touches `.claude/hooks/` or `settings.json` -- Gaia blocks these regardless of mode
 
@@ -246,7 +246,7 @@ to SendMessage resume and to fresh Agent re-dispatch.
 Default is foreground and rarely needs to be set explicitly. The decision that
 shapes runtime behavior is dispatch-vs-resume (see "Re-dispatch instead of
 resume"), because SendMessage resumes always run in the background literal where
-AskUserQuestion auto-denies. See `security-tiers/SKILL.md` -> R3, R4.
+AskUserQuestion auto-denies.
 
 **The mode is not inherited.** Set `mode` per dispatch -- subagents receive
 `default` unless you pass `mode` explicitly.
@@ -259,5 +259,6 @@ AskUserQuestion auto-denies. See `security-tiers/SKILL.md` -> R3, R4.
 | T3 with bounded scope, pre-satisfied permissions | `acceptEdits` or `bypassPermissions` | foreground or background |
 | Edits `.claude/hooks/` or settings | never dispatch directly | n/a -- requires Gaia approval flow |
 
-Cross-reference: for what each mode does and the 4 runtime rules, see
-`security-tiers/SKILL.md` -> "Mode runtime rules" and "permissionMode comparison".
+Cross-reference: for how `mode` is chosen at dispatch time and why it does not
+survive a resume, see the `gaia-orchestrator` agent identity ->
+"Re-dispatch vs SendMessage".

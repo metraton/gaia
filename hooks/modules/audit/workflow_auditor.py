@@ -73,18 +73,32 @@ def _check_context_ignored(
 def _check_context_update_missing(
     analysis: TranscriptAnalysis,
     agent_output: str,
+    metrics: Dict[str, Any],
 ) -> Optional[Dict[str, str]]:
-    """Info if context-updater skill was injected but no CONTEXT_UPDATE emitted."""
-    if "context-updater" in analysis.skills_injected:
-        if "CONTEXT_UPDATE" not in agent_output:
-            return {
-                "type": "context_update_missing",
-                "severity": "info",
-                "message": (
-                    "context-updater skill was injected but agent did not "
-                    "emit a CONTEXT_UPDATE block"
-                ),
-            }
+    """Info if the agent can write context but emitted no update_contracts clause.
+
+    The trigger is the live signal that the agent owns at least one writable
+    project-context contract (``project_context_contracts.write`` non-empty),
+    captured in the runtime snapshot as ``context_write_contracts``. Such an
+    agent is expected to be able to emit an ``update_contracts`` clause when it
+    discovers indexable state. The prior trigger keyed on the deleted
+    ``context-updater`` skill being injected; that skill no longer exists.
+    """
+    snapshot = metrics.get("default_skills_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    write_contracts = snapshot.get("context_write_contracts") or []
+    if not write_contracts:
+        return None
+    if "update_contracts" not in agent_output:
+        return {
+            "type": "context_update_missing",
+            "severity": "info",
+            "message": (
+                "agent owns writable project-context contracts but did not "
+                "emit an update_contracts clause"
+            ),
+        }
     return None
 
 
@@ -363,7 +377,7 @@ def audit(
     Transcript-analysis checks (only when transcript_analysis is provided):
     - investigation_skip: first tool was Bash
     - context_ignored: first tool call has no project-context paths
-    - context_update_missing: context-updater injected but no CONTEXT_UPDATE emitted
+    - context_update_missing: agent owns writable contracts but no update_contracts emitted
     - excessive_tool_calls: tool_call_count > 75
     - token_budget: cache_creation_tokens > 200000
     - token_explosion: total tokens (input+cache_creation+output) > 10M
@@ -511,8 +525,10 @@ def audit(
             if result is not None:
                 anomalies.append(result)
 
-        # Checks that need agent_output
-        result = _check_context_update_missing(transcript_analysis, agent_output)
+        # Checks that need agent_output and metrics
+        result = _check_context_update_missing(
+            transcript_analysis, agent_output, metrics
+        )
         if result is not None:
             anomalies.append(result)
 

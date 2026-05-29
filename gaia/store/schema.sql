@@ -16,7 +16,7 @@
 --
 -- Ownership annotations per column:
 --   -- scanner-owned: written by the reconciler/scanner on each scan cycle
---   -- agent-owned:   written by domain agents (developer, terraform-architect, etc.)
+--   -- agent-owned:   written by domain agents (developer, platform-architect, etc.)
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -292,7 +292,7 @@ CREATE INDEX IF NOT EXISTS idx_machines_workspace ON machines(workspace);
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS agent_permissions (
     table_name  TEXT NOT NULL,   -- name of the target table
-    agent_name  TEXT NOT NULL,   -- agent identifier (e.g. 'developer', 'terraform-architect')
+    agent_name  TEXT NOT NULL,   -- agent identifier (e.g. 'developer', 'platform-architect')
     allow_write INTEGER NOT NULL DEFAULT 0,  -- 1 = allow, 0 = deny (BOOLEAN)
     PRIMARY KEY (table_name, agent_name)
 );

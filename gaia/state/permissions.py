@@ -3,7 +3,7 @@ gaia.state.permissions -- Permission matrix for state-machine transitions.
 
 Implements D1 (permission matrix) from the state-machine-completion brief:
 
-* Subagents (developer, terraform-architect, gitops-operator, gaia-system,
+* Subagents (developer, platform-architect, gitops-operator, gaia-system,
   and any agent outside the orchestrator/operator group) may transition
   ``tasks`` and ``acceptance_criteria`` status.
 * Only orchestrator/operator may transition ``milestones``, ``briefs``,

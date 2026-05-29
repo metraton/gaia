@@ -8,13 +8,10 @@
         "rule": "context_map: Project context is stored in the Gaia SQLite substrate (~/.gaia/gaia.db). Each domain agent writes to its own set of tables via the store API. Reading a table that does not belong to your domain wastes tokens and produces stale assumptions; writing to a foreign table is rejected by the permission enforcement layer."
       },
       {
-        "rule": "substrate: The Gaia SQLite substrate (~/.gaia/gaia.db) contains the following domain tables: apps, libraries, services, features (developer), tf_modules, tf_live, clusters (terraform-architect/cloud-troubleshooter), releases, workloads, clusters_defined (gitops-operator), integrations, gaia_installations (gaia-operator). Each agent can read all tables but write only its own domain tables."
+        "rule": "substrate: The Gaia SQLite substrate (~/.gaia/gaia.db) contains the following domain tables: apps, libraries, services, features (developer), tf_modules, tf_live, clusters (platform-architect/cloud-troubleshooter), releases, workloads, clusters_defined (gitops-operator), integrations, gaia_installations (gaia-operator). Each agent can read all tables but write only its own domain tables."
       },
       {
         "rule": "cross_repo_refs: When referencing a resource in another repository, use the format 'host/owner/repo:table/name' (e.g. 'github/org/bildwiz-iac:tf_modules/gcp-gke'). This ensures unambiguous cross-workspace identification in multi-repo setups."
-      },
-      {
-        "rule": "context_update_schema: Agents emit CONTEXT_UPDATE blocks using the new table/rows schema: { \"table\": \"<table_name>\", \"rows\": [{...}] }. Agents do NOT pass 'workspace' — the store derives it via gaia.project.current(). The legacy dot-path schema (seccion.subseccion: {...}) is retired."
       }
     ],
     "agent_specific": {
@@ -44,7 +41,7 @@
           }
         ]
       },
-      "terraform-architect": {
+      "platform-architect": {
         "rules": [
           {
             "rule": "La tabla 'tf_modules' contiene versiones activas y sus fuentes (módulo, versión, repo origen). Planificar sin leer esta tabla genera un diff que reemplaza en vez de actualizar, y puede destruir recursos live que no estaban en scope."

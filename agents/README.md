@@ -47,7 +47,7 @@ agents/
 ├── developer.md           # Application code: Node.js, Python, TypeScript
 ├── cloud-troubleshooter.md # Live cloud diagnostics: GCP, AWS, Azure
 ├── gitops-operator.md     # Kubernetes, Flux, HelmReleases, GitOps
-└── terraform-architect.md # Terraform, Terragrunt, cloud infrastructure
+└── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Pulumi, CloudFormation, OpenTofu, CDK
 ```
 
 ## Convenciones

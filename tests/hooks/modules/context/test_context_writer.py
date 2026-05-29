@@ -12,15 +12,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 
 from hooks.modules.context.context_writer import (
     _permissions_cache,
     apply_update,
-    parse_context_update,
-    process_agent_output,
     validate_permission,
 )
 
@@ -105,73 +101,7 @@ def _clear_cache():
 
 
 # ---------------------------------------------------------------------------
-# 1. parse_context_update
-# ---------------------------------------------------------------------------
-
-class TestParseContextUpdate:
-    def test_valid_block(self):
-        agent_output = (
-            "Investigation complete.\n"
-            "CONTEXT_UPDATE:\n"
-            '{"contract": "application_services", "payload": {"name": "api"}}'
-        )
-        result = parse_context_update(agent_output)
-        assert result == {
-            "contract": "application_services",
-            "payload": {"name": "api"},
-        }
-
-    def test_no_marker(self):
-        assert parse_context_update("No marker here.") is None
-
-    def test_malformed_json(self):
-        agent_output = "CONTEXT_UPDATE:\n{not valid json"
-        assert parse_context_update(agent_output) is None
-
-    def test_non_dict_root(self):
-        agent_output = "CONTEXT_UPDATE:\n[1, 2, 3]"
-        assert parse_context_update(agent_output) is None
-
-    def test_missing_contract_key(self):
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            '{"payload": {"foo": "bar"}}'
-        )
-        assert parse_context_update(agent_output) is None
-
-    def test_missing_payload_key(self):
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            '{"contract": "stack"}'
-        )
-        assert parse_context_update(agent_output) is None
-
-    def test_json_fenced(self):
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            "```json\n"
-            '{"contract": "stack", "payload": {"languages": ["python"]}}\n'
-            "```"
-        )
-        result = parse_context_update(agent_output)
-        assert result is not None
-        assert result["contract"] == "stack"
-        assert result["payload"]["languages"] == ["python"]
-
-    def test_plain_fenced(self):
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            "```\n"
-            '{"contract": "stack", "payload": {"languages": []}}\n'
-            "```"
-        )
-        result = parse_context_update(agent_output)
-        assert result is not None
-        assert result["contract"] == "stack"
-
-
-# ---------------------------------------------------------------------------
-# 2. validate_permission
+# 1. validate_permission
 # ---------------------------------------------------------------------------
 
 class TestValidatePermission:
@@ -325,120 +255,3 @@ class TestApplyUpdate:
         assert "gaia.db not found" in audit["error"]
 
 
-# ---------------------------------------------------------------------------
-# 4. process_agent_output -- end-to-end
-# ---------------------------------------------------------------------------
-
-class TestProcessAgentOutput:
-    def test_happy_path_allowed_agent_writes(self, tmp_db: Path):
-        """developer with can_write=1 on application_services -> row in DB."""
-        _seed_permission(tmp_db, "developer", "application_services", can_write=1)
-
-        agent_output = (
-            "Investigation complete.\n"
-            "CONTEXT_UPDATE:\n"
-            '{"contract": "application_services", "payload": '
-            '{"services": [{"name": "api", "kind": "service"}]}}'
-        )
-        result = process_agent_output(
-            agent_output,
-            {"agent_type": "developer", "db_path": tmp_db, "workspace": "me"},
-        )
-
-        assert result["updated"] is True
-        assert result["contract"] == "application_services"
-        assert result["rejected"] == []
-        assert result["error"] is None
-
-        con = sqlite3.connect(str(tmp_db))
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace='me' AND contract_name='application_services'"
-        ).fetchone()
-        con.close()
-        assert row is not None
-        assert json.loads(row[0])["services"][0]["name"] == "api"
-
-    def test_unauthorized_agent_rejected_with_clear_message(self, tmp_db: Path):
-        """cloud-troubleshooter with no can_write=1 rows -> blocked, no DB row."""
-        # Seed only read permissions (can_write=0) so writable set is empty.
-        _seed_permission(tmp_db, "cloud-troubleshooter", "cluster_details", can_write=0)
-        _seed_permission(tmp_db, "cloud-troubleshooter", "infrastructure", can_write=0)
-
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            '{"contract": "application_services", "payload": {"x": 1}}'
-        )
-        result = process_agent_output(
-            agent_output,
-            {"agent_type": "cloud-troubleshooter", "db_path": tmp_db, "workspace": "me"},
-        )
-
-        assert result["updated"] is False
-        assert result["rejected"] == ["application_services"]
-        assert result["error"] is not None
-        assert "cloud-troubleshooter" in result["error"]
-        assert "application_services" in result["error"]
-        assert "(none)" in result["error"]
-
-        # Confirm nothing was written.
-        con = sqlite3.connect(str(tmp_db))
-        count = con.execute(
-            "SELECT COUNT(*) FROM project_context_contracts"
-        ).fetchone()[0]
-        con.close()
-        assert count == 0
-
-    def test_malformed_block_is_silent_noop(self, tmp_db: Path):
-        """A block missing 'contract' or 'payload' parses to None -> no-op."""
-        _seed_permission(tmp_db, "developer", "stack", can_write=1)
-
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            '{"section_name": {"foo": "bar"}}'  # legacy schema, no longer accepted
-        )
-        result = process_agent_output(
-            agent_output,
-            {"agent_type": "developer", "db_path": tmp_db, "workspace": "me"},
-        )
-
-        assert result["updated"] is False
-        assert result["rejected"] == []
-        assert result["error"] is None
-
-    def test_no_marker_is_silent_noop(self, tmp_db: Path):
-        result = process_agent_output(
-            "Investigation summary, no updates emitted.",
-            {"agent_type": "developer", "db_path": tmp_db, "workspace": "me"},
-        )
-        assert result == {
-            "updated": False,
-            "contract": None,
-            "rejected": [],
-            "error": None,
-        }
-
-    def test_workspace_defaults_to_derive_when_absent(self, tmp_db: Path):
-        """When task_info has no 'workspace', _derive_workspace() is used."""
-        _seed_permission(tmp_db, "developer", "stack", can_write=1)
-
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            '{"contract": "stack", "payload": {"languages": ["go"]}}'
-        )
-        with patch(
-            "hooks.modules.context.context_writer._derive_workspace",
-            return_value="derived-ws",
-        ):
-            result = process_agent_output(
-                agent_output,
-                {"agent_type": "developer", "db_path": tmp_db},  # no workspace
-            )
-
-        assert result["updated"] is True
-        con = sqlite3.connect(str(tmp_db))
-        row = con.execute(
-            "SELECT workspace FROM project_context_contracts WHERE contract_name='stack'"
-        ).fetchone()
-        con.close()
-        assert row[0] == "derived-ws"

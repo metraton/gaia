@@ -7,7 +7,7 @@
       "primary_agent": "cloud-troubleshooter",
       "adjacent_surfaces": [
         "gitops_desired_state",
-        "terraform_iac"
+        "iac"
       ],
       "contract_sections": [
         "project_identity",
@@ -75,7 +75,7 @@
       "primary_agent": "gitops-operator",
       "adjacent_surfaces": [
         "live_runtime",
-        "terraform_iac",
+        "iac",
         "app_ci_tooling"
       ],
       "contract_sections": [
@@ -130,9 +130,9 @@
         ]
       }
     },
-    "terraform_iac": {
-      "intent": "The user needs to create, modify, review, or validate Infrastructure as Code — Terraform modules, Terragrunt configs, cloud resource definitions (IAM, VPC, buckets), state files, or plan/apply workflows.",
-      "primary_agent": "terraform-architect",
+    "iac": {
+      "intent": "The user needs to create, modify, review, or validate Infrastructure as Code with any declarative tool — Terraform, Terragrunt, Pulumi, CloudFormation, OpenTofu, or CDK — including cloud resource definitions (IAM, VPC, buckets, service accounts), state files, and plan/apply workflows.",
+      "primary_agent": "platform-architect",
       "adjacent_surfaces": [
         "gitops_desired_state",
         "app_ci_tooling",
@@ -160,7 +160,14 @@
         "keywords": [
           "terraform",
           "terragrunt",
+          "pulumi",
+          "cloudformation",
+          "opentofu",
+          "tofu",
+          "cdk",
           "iac",
+          "infrastructure as code",
+          "provision",
           "iam",
           "bucket",
           "state",
@@ -175,7 +182,12 @@
         "commands": [
           "terraform",
           "terragrunt",
-          "tflint"
+          "tflint",
+          "pulumi",
+          "tofu",
+          "cdk",
+          "cdktf",
+          "aws cloudformation"
         ],
         "artifacts": [
           ".tf",
@@ -183,7 +195,10 @@
           "module",
           "terragrunt.hcl",
           "provider",
-          "backend"
+          "backend",
+          "Pulumi.yaml",
+          "template.yaml",
+          "cdk.json"
         ]
       }
     },
@@ -191,7 +206,7 @@
       "intent": "The user needs to write, modify, test, or build application code — Node.js/TypeScript or Python, Docker images, CI/CD pipelines, package management, testing frameworks, linting, or developer tooling.",
       "primary_agent": "developer",
       "adjacent_surfaces": [
-        "terraform_iac",
+        "iac",
         "gitops_desired_state"
       ],
       "contract_sections": [

@@ -40,11 +40,12 @@ from tests.fixtures.db_helpers import (
 # Lazy import
 # ---------------------------------------------------------------------------
 
-def _import_process_agent_output():
-    import context_writer as _cw
+def _import_process_update_contracts():
+    # Full package path so the module's ..agents relative import resolves.
+    from hooks.modules.context import context_writer as _cw
     _cw._permissions_cache.clear()
-    from context_writer import process_agent_output
-    return process_agent_output
+    from hooks.modules.context.context_writer import process_update_contracts
+    return process_update_contracts
 
 
 def _import_deep_merge():
@@ -483,14 +484,17 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
     return context
 
 
-def _make_agent_output(contract: str, payload: dict) -> str:
-    """Build an agent output string with a CONTEXT_UPDATE block (new format)."""
-    return (
-        "## Agent Execution Complete\n\n"
-        "Task completed successfully.\n\n"
-        "CONTEXT_UPDATE:\n"
-        + json.dumps({"contract": contract, "payload": payload}, indent=2)
-    )
+def _make_contract(contract: str, payload: dict) -> dict:
+    """Build a parsed contract dict carrying a one-entry update_contracts clause."""
+    return {
+        "agent_status": {"plan_status": "COMPLETE"},
+        "update_contracts": [{"contract": contract, "payload": payload}],
+    }
+
+
+def _first_contract(result: dict):
+    contracts = result.get("contracts") or []
+    return contracts[0] if contracts else None
 
 
 def _build_task_info(agent_type: str, db_path: Path, workspace: str = "global") -> dict:
@@ -582,44 +586,44 @@ class TestContextGeneration:
 # ============================================================================
 
 class TestNFR001ProcessAgentOutputLatency:
-    """NFR-001: end-to-end process_agent_output must complete in < 200 ms."""
+    """NFR-001: end-to-end process_update_contracts must complete in < 200 ms."""
 
     def test_two_section_update_under_200ms(self, setup_perf):
-        """Time process_agent_output writing a ~50 KB payload to the DB.
+        """Time process_update_contracts writing a ~50 KB payload to the DB.
 
         Uses cluster_details and infrastructure_topology contracts.
         """
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
         db_path, large_payload = setup_perf
 
         cluster_payload = large_payload["sections"]["cluster_details"].copy()
         cluster_payload["clusters"][0]["node_count"] = 12
         cluster_payload["clusters"][0]["kubernetes_version"] = "1.30.0"
 
-        agent_output = _make_agent_output("cluster_details", cluster_payload)
+        contract = _make_contract("cluster_details", cluster_payload)
         task_info = _build_task_info("cloud-troubleshooter", db_path)
 
         def run_once():
-            process_agent_output(agent_output, task_info)
+            process_update_contracts(contract, task_info)
 
         elapsed_ms = _median_time_ms(run_once)
 
         assert elapsed_ms < NFR_001_MAX_MS, (
-            f"NFR-001 FAILED: process_agent_output took {elapsed_ms:.1f} ms "
+            f"NFR-001 FAILED: process_update_contracts took {elapsed_ms:.1f} ms "
             f"(budget: {NFR_001_MAX_MS} ms)"
         )
 
     def test_single_section_scalar_update_under_200ms(self, setup_perf):
         """Simpler case: update a single compact payload in infrastructure_topology."""
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
         db_path, _ = setup_perf
 
         payload = {"vpc": {"name": "main-vpc-v2"}}
-        agent_output = _make_agent_output("infrastructure_topology", payload)
+        contract = _make_contract("infrastructure_topology", payload)
         task_info = _build_task_info("cloud-troubleshooter", db_path)
 
         def run_once():
-            process_agent_output(agent_output, task_info)
+            process_update_contracts(contract, task_info)
 
         elapsed_ms = _median_time_ms(run_once)
 
@@ -701,29 +705,29 @@ class TestNFR002DeepMergeScalability:
 
 
 # ============================================================================
-# Correctness under load: verify process_agent_output results are accurate
+# Correctness under load: verify process_update_contracts results are accurate
 # ============================================================================
 
 class TestCorrectnessUnderLoad:
-    """Ensure that process_agent_output produces correct DB writes, not just fast ones."""
+    """Ensure that process_update_contracts produces correct DB writes, not just fast ones."""
 
     def test_large_payload_written_correctly(self, setup_perf):
         """Writing a large cluster_details payload stores it exactly in the DB."""
         import sqlite3
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
         db_path, large_payload = setup_perf
 
         cluster_payload = large_payload["sections"]["cluster_details"].copy()
         # Modify one field so we can verify the write
         cluster_payload["clusters"][0]["node_count"] = 99
 
-        agent_output = _make_agent_output("cluster_details", cluster_payload)
+        contract = _make_contract("cluster_details", cluster_payload)
         task_info = _build_task_info("cloud-troubleshooter", db_path)
 
-        result = process_agent_output(agent_output, task_info)
+        result = process_update_contracts(contract, task_info)
 
         assert result["updated"] is True
-        assert result["contract"] == "cluster_details"
+        assert _first_contract(result) == "cluster_details"
         assert result["rejected"] == []
 
         con = sqlite3.connect(str(db_path))
@@ -744,16 +748,16 @@ class TestCorrectnessUnderLoad:
 
     def test_permission_rejection_on_large_payload(self, setup_perf):
         """cloud-troubleshooter cannot write gitops_configuration."""
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
         db_path, large_payload = setup_perf
 
         gitops_payload = large_payload["sections"]["gitops_configuration"].copy()
         gitops_payload["repo_url"] = "https://evil.example.com/gitops"
 
-        agent_output = _make_agent_output("gitops_configuration", gitops_payload)
+        contract = _make_contract("gitops_configuration", gitops_payload)
         task_info = _build_task_info("cloud-troubleshooter", db_path)
 
-        result = process_agent_output(agent_output, task_info)
+        result = process_update_contracts(contract, task_info)
 
         assert result["updated"] is False
         assert "gitops_configuration" in result["rejected"]

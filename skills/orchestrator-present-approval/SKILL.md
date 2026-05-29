@@ -81,8 +81,9 @@ Fields above are extracted from the DB-stored canonical payload (`payload_json` 
    the resume runs in `default` and re-blocks the next protected operation even
    after the Gaia grant activated. Prefer a fresh re-dispatch with the same
    `mode` and the verbatim `exact_content`; the DB grant lives in the session
-   and is found by the re-dispatched subagent. See `security-tiers` R3 for the
-   underlying mechanism (mode is per-dispatch).
+   and is found by the re-dispatched subagent. See `reference.md` ->
+   "Re-dispatch instead of resume" for the underlying mechanism (mode is
+   per-dispatch).
 
 ## Traps
 

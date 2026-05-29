@@ -90,7 +90,7 @@ trace. Event Context is high-level operational events. Different granularity.
 ### 3.1 JSONL Record Format
 
 ```jsonl
-{"ts":"2026-03-25T14:30:00Z","type":"agent.complete","source":"hook:subagent_stop","agent":"terraform-architect","result":"COMPLETE","summary":"Applied 12 resources to staging","meta":{"plan_status":"COMPLETE","tier":"T3","episode_id":"ep_abc123"}}
+{"ts":"2026-03-25T14:30:00Z","type":"agent.complete","source":"hook:subagent_stop","agent":"platform-architect","result":"COMPLETE","summary":"Applied 12 resources to staging","meta":{"plan_status":"COMPLETE","tier":"T3","episode_id":"ep_abc123"}}
 {"ts":"2026-03-25T14:35:00Z","type":"trigger.scheduled","source":"cron:drift-check","agent":"","result":"fired","summary":"Drift check cron triggered","meta":{"schedule":"0 9 * * *","trigger_id":"tr_001"}}
 {"ts":"2026-03-25T14:36:00Z","type":"git.commit","source":"hook:post_tool_use","agent":"developer","result":"ok","summary":"fix: resolve login redirect loop","meta":{"hash":"a1b2c3d","branch":"fix/login"}}
 ```
@@ -140,7 +140,7 @@ Sources use a `namespace:identifier` format:
 | Hook-generated | `hook:post_tool_use`, `hook:subagent_stop`, `hook:stop` |
 | Cron-generated | `cron:drift-check`, `cron:email-scan` |
 | Loop-generated | `loop:monitor-30m` |
-| Agent self-report | `agent:terraform-architect` |
+| Agent self-report | `agent:platform-architect` |
 | CLI/manual | `cli:user`, `cli:gaia-events` |
 | System | `system:scanner`, `system:session` |
 
@@ -323,7 +323,7 @@ def build_event_context(agent_type: str, max_events: int = 15) -> str | None:
 
 ```python
 AGENT_EVENT_FILTERS = {
-    "terraform-architect": ["agent.complete", "git.*", "infra.*", "context.*", "trigger.*"],
+    "platform-architect": ["agent.complete", "git.*", "infra.*", "context.*", "trigger.*"],
     "gitops-operator":     ["agent.complete", "git.*", "infra.*", "trigger.*"],
     "developer":    ["agent.complete", "git.*", "context.*"],
     "cloud-troubleshooter": "*",

@@ -28,9 +28,9 @@ _B3_PERMISSIONS: list[tuple[str, str]] = [
     ("developer", "libraries"),
     ("developer", "services"),
     ("developer", "features"),
-    ("terraform-architect", "tf_modules"),
-    ("terraform-architect", "tf_live"),
-    ("terraform-architect", "clusters"),
+    ("platform-architect", "tf_modules"),
+    ("platform-architect", "tf_live"),
+    ("platform-architect", "clusters"),
     ("gitops-operator", "releases"),
     ("gitops-operator", "workloads"),
     ("gitops-operator", "clusters_defined"),
@@ -47,10 +47,10 @@ _AGENT_MATRIX = [
     (
         "developer",
         ["apps", "libraries", "services", "features"],
-        "clusters",  # foreign: belongs to terraform-architect/cloud-troubleshooter
+        "clusters",  # foreign: belongs to platform-architect/cloud-troubleshooter
     ),
     (
-        "terraform-architect",
+        "platform-architect",
         ["tf_modules", "tf_live", "clusters"],
         "apps",  # foreign: belongs to developer
     ),

@@ -235,7 +235,7 @@ class TestSubagentStartFlow:
     def test_subagent_start_exit_zero(self):
         """SubagentStart response has exit code 0."""
         _, _, response = _run_subagent_start_flow({
-            "agent_type": "terraform-architect",
+            "agent_type": "platform-architect",
         })
 
         assert response.exit_code == 0

@@ -73,14 +73,14 @@ class TestSubagentPermissions:
     """Non-curator subagents allowed on leaf tables, blocked on curator-only tables."""
 
     @pytest.mark.parametrize("subagent", [
-        "developer", "terraform-architect", "gitops-operator", "gaia-system",
+        "developer", "platform-architect", "gitops-operator", "gaia-system",
     ])
     def test_subagent_allowed_on_tasks(self, monkeypatch, subagent):
         monkeypatch.setenv("GAIA_DISPATCH_AGENT", subagent)
         _assert_dispatch_can_advance_state("tasks")
 
     @pytest.mark.parametrize("subagent", [
-        "developer", "terraform-architect", "gitops-operator", "gaia-system",
+        "developer", "platform-architect", "gitops-operator", "gaia-system",
     ])
     def test_subagent_allowed_on_acceptance_criteria(self, monkeypatch, subagent):
         monkeypatch.setenv("GAIA_DISPATCH_AGENT", subagent)

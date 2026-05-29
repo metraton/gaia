@@ -264,7 +264,7 @@ def _run_verification(claude_dir: Path) -> dict:
 
     # 5. Agent definitions
     agent_files = [
-        "gaia-orchestrator.md", "gaia-operator.md", "terraform-architect.md",
+        "gaia-orchestrator.md", "gaia-operator.md", "platform-architect.md",
         "gitops-operator.md", "cloud-troubleshooter.md", "developer.md",
         "gaia-system.md", "gaia-planner.md",
     ]

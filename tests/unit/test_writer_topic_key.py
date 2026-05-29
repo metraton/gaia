@@ -2,9 +2,9 @@
 
 This file replaces coverage previously provided by
 tests/unit/test_context_writer_topic_key.py, which exercised the deprecated
-{table, rows} CONTEXT_UPDATE schema. The topic_key feature lives in
+{table, rows} context-update schema. The topic_key feature lives in
 gaia.store.writer.upsert_app and is exercised here directly, not through
-the CONTEXT_UPDATE pipeline.
+the update_contracts pipeline.
 """
 
 from __future__ import annotations

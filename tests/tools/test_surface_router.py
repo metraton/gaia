@@ -17,8 +17,8 @@ def test_load_surface_routing_config():
     config = load_surface_routing_config()
 
     assert config["version"] == "1.0"
-    assert "terraform_iac" in config["surfaces"]
-    assert config["surfaces"]["terraform_iac"]["primary_agent"] == "terraform-architect"
+    assert "iac" in config["surfaces"]
+    assert config["surfaces"]["iac"]["primary_agent"] == "platform-architect"
 
 
 def test_classify_single_surface_task():
@@ -26,14 +26,14 @@ def test_classify_single_surface_task():
 
     routing = classify_surfaces(
         "Review terraform state drift in the shared module and IAM policy.",
-        current_agent="terraform-architect",
+        current_agent="platform-architect",
         routing_config=config,
     )
 
-    assert routing["primary_surface"] == "terraform_iac"
-    assert routing["active_surfaces"] == ["terraform_iac"]
+    assert routing["primary_surface"] == "iac"
+    assert routing["active_surfaces"] == ["iac"]
     assert routing["dispatch_mode"] == "single_surface"
-    assert routing["recommended_agents"] == ["terraform-architect"]
+    assert routing["recommended_agents"] == ["platform-architect"]
 
 
 def test_classify_multi_surface_task():

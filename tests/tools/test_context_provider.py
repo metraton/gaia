@@ -63,8 +63,8 @@ def mock_routing_config() -> dict:
                     "operational_guidelines", "architecture_overview",
                 ],
             },
-            "terraform_iac": {
-                "primary_agent": "terraform-architect",
+            "iac": {
+                "primary_agent": "platform-architect",
                 "contract_sections": [
                     "project_identity", "stack", "git", "environment",
                     "infrastructure", "orchestration",
@@ -168,7 +168,7 @@ class TestGetRelevantSections:
             "operational_guidelines",
         ]
         routing = {
-            "active_surfaces": ["app_ci_tooling", "terraform_iac"],
+            "active_surfaces": ["app_ci_tooling", "iac"],
             "primary_surface": "app_ci_tooling",
         }
 
@@ -178,8 +178,8 @@ class TestGetRelevantSections:
             routing_config=mock_routing_config,
         )
 
-        # Union of app_ci_tooling + terraform_iac should include:
-        # terraform_infrastructure (from terraform_iac)
+        # Union of app_ci_tooling + iac should include:
+        # terraform_infrastructure (from iac)
         # operational_guidelines (from app_ci_tooling)
         # But NOT monitoring_observability (neither surface)
         assert "terraform_infrastructure" in result

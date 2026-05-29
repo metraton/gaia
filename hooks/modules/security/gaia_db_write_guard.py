@@ -44,7 +44,7 @@ _WRITE_VERBS = re.compile(
 
 REJECTION_MESSAGE = (
     "Direct SQL writes to gaia.db are not allowed. "
-    "Use `gaia context` CLI or emit CONTEXT_UPDATE. "
+    "Use `gaia context` CLI or emit update_contracts. "
     "Raw SQL bypasses agent_permissions enforcement."
 )
 

@@ -280,12 +280,71 @@ class TestCuratedSlugValidation:
         _validate_curated_slug("negative_helm_inline_charts", "negative")
 
     def test_legacy_types_skip_slug_check(self):
-        """Legacy types (project/user/feedback) should not be validated."""
+        """Legacy types (project/user/feedback) accept any non-curated slug."""
         from gaia.store.writer import _validate_curated_slug
-        # Legacy types accept any name (back-compat).
+        # Legacy types accept names that do not start with a curated prefix.
         _validate_curated_slug("anything_goes", "project")
         _validate_curated_slug("Mixed-Case-OK", "user")
         _validate_curated_slug("free form", "feedback")
+
+    # ---- new mismatch tests (AC2) -------------------------------------------
+
+    def test_cross_curated_type_mismatch_is_rejected(self):
+        """atom_* slug with --type=decision must fail loudly, not silently pass."""
+        from gaia.store.writer import _validate_curated_slug
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_curated_slug("atom_my_fact", "decision")
+        msg = str(excinfo.value)
+        assert "atom_my_fact" in msg
+        assert "decision" in msg
+
+    def test_decision_slug_with_atom_type_is_rejected(self):
+        """decision_* slug with --type=atom must fail loudly."""
+        from gaia.store.writer import _validate_curated_slug
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_curated_slug("decision_arch", "atom")
+        msg = str(excinfo.value)
+        assert "decision_arch" in msg
+        assert "atom" in msg
+
+    def test_curated_prefix_with_legacy_type_is_rejected(self):
+        """atom_* slug with --type=project must fail loudly (not silently store as project)."""
+        from gaia.store.writer import _validate_curated_slug
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_curated_slug("atom_my_fact", "project")
+        msg = str(excinfo.value)
+        assert "atom" in msg
+        assert "project" in msg
+
+    def test_decision_prefix_with_feedback_type_is_rejected(self):
+        """decision_* slug with --type=feedback must fail loudly."""
+        from gaia.store.writer import _validate_curated_slug
+
+        with pytest.raises(ValueError):
+            _validate_curated_slug("decision_arch", "feedback")
+
+    def test_negative_prefix_with_user_type_is_rejected(self):
+        """negative_* slug with --type=user must fail loudly."""
+        from gaia.store.writer import _validate_curated_slug
+
+        with pytest.raises(ValueError):
+            _validate_curated_slug("negative_tried_helm", "user")
+
+    def test_project_slug_with_project_type_still_passes(self):
+        """project_* slug with --type=project is a valid legacy combination."""
+        from gaia.store.writer import _validate_curated_slug
+        # No curated prefix involved -- this remains valid.
+        _validate_curated_slug("project_my_system", "project")
+
+    def test_matching_curated_types_still_pass(self):
+        """Correct slug-type pairs for all curated types continue to work."""
+        from gaia.store.writer import _validate_curated_slug
+        _validate_curated_slug("atom_stable_fact", "atom")
+        _validate_curated_slug("decision_chose_postgres", "decision")
+        _validate_curated_slug("negative_no_helm_inline", "negative")
 
 
 # ---------------------------------------------------------------------------

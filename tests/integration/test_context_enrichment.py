@@ -3,10 +3,10 @@
 TDD integration tests for context enrichment pipeline.
 
 Validates the full flow:
-  Agent output with CONTEXT_UPDATE -> process_agent_output -> gaia.db updated
+  Parsed contract with update_contracts -> process_update_contracts -> gaia.db updated
 
 Modules under test:
-  - hooks/modules/context/context_writer.py (process_agent_output)
+  - hooks/modules/context/context_writer.py (process_update_contracts)
 
 DB helpers (from tests.fixtures.db_helpers):
   - bootstrap_gaia_schema, seed_workspace, seed_workspace_contracts, seed_agent_perms
@@ -44,25 +44,42 @@ from tests.fixtures.db_helpers import (
 # Lazy import: context_writer
 # ---------------------------------------------------------------------------
 
-def _import_process_agent_output():
-    """Import process_agent_output at call time so pytest can collect tests."""
+def _import_process_update_contracts():
+    """Import process_update_contracts at call time so pytest can collect tests.
+
+    Imported via the full package path so the module's ``..agents`` relative
+    import (parse_update_contracts) resolves; the bare ``context_writer`` path
+    breaks that relative import and silently yields zero entries.
+    """
     # Clear the permissions cache so each test gets a fresh DB read.
-    import context_writer as _cw
+    from hooks.modules.context import context_writer as _cw
     _cw._permissions_cache.clear()
-    from context_writer import process_agent_output
-    return process_agent_output
+    from hooks.modules.context.context_writer import process_update_contracts
+    return process_update_contracts
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_agent_output(contract_name: str, payload: dict) -> str:
-    """Build agent output with a CONTEXT_UPDATE block using the new format."""
-    output = "## Agent Execution Complete\n\nTask completed successfully.\n\n"
-    output += "CONTEXT_UPDATE:\n"
-    output += json.dumps({"contract": contract_name, "payload": payload}, indent=2)
-    return output
+def make_contract(contract_name: str, payload: dict) -> dict:
+    """Build a parsed contract dict carrying a one-entry update_contracts clause.
+
+    This is the live envelope shape consumed by process_update_contracts:
+    ``update_contracts`` is an array of ``{contract, payload}`` objects.
+    """
+    return {
+        "agent_status": {"plan_status": "COMPLETE"},
+        "update_contracts": [
+            {"contract": contract_name, "payload": payload},
+        ],
+    }
+
+
+def first_contract(result: dict):
+    """Return the single applied contract name from a process result, or None."""
+    contracts = result.get("contracts") or []
+    return contracts[0] if contracts else None
 
 
 def _build_task_info(agent_type: str, db_path: Path, workspace: str = "test-ws") -> dict:
@@ -117,7 +134,7 @@ class TestFreshInstallFirstEnrichment:
     """Scenario 1: agent discovers namespaces and writes them for the first time."""
 
     def test_fresh_install_first_enrichment(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
         payload = {
             "namespaces": {
@@ -126,15 +143,15 @@ class TestFreshInstallFirstEnrichment:
                 "system": ["kube-system", "kube-public"]
             }
         }
-        agent_output = make_agent_output("cluster_details", payload)
+        contract = make_contract("cluster_details", payload)
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
         assert result["updated"] is True
-        assert result["contract"] == "cluster_details"
+        assert first_contract(result) == "cluster_details"
         assert result["rejected"] == []
 
         stored = read_contract(ctx_db, "test-ws", "cluster_details")
@@ -153,7 +170,7 @@ class TestIncrementalEnrichment:
     """Scenario 2: writing to a contract that already has data replaces it."""
 
     def test_incremental_enrichment_new_data(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
         # Seed initial contract value
         seed_workspace_contracts(ctx_db, "test-ws", {
@@ -172,15 +189,15 @@ class TestIncrementalEnrichment:
                 "application": ["adm", "dev", "test", "nova-auth-dev"]
             }
         }
-        agent_output = make_agent_output("cluster_details", new_payload)
+        contract = make_contract("cluster_details", new_payload)
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
         assert result["updated"] is True
-        assert result["contract"] == "cluster_details"
+        assert first_contract(result) == "cluster_details"
 
         stored = read_contract(ctx_db, "test-ws", "cluster_details")
         assert stored is not None
@@ -198,7 +215,7 @@ class TestDriftDetection:
     """Scenario 3: agent writes a new payload for a section with existing data."""
 
     def test_drift_detection_version_update(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
         seed_workspace_contracts(ctx_db, "test-ws", {
             "cluster_details": {
@@ -214,15 +231,15 @@ class TestDriftDetection:
                 {"name": "orders-service", "chart_version": "0.54.0"}
             ]
         }
-        agent_output = make_agent_output("cluster_details", update_payload)
+        contract = make_contract("cluster_details", update_payload)
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
         assert result["updated"] is True
-        assert result["contract"] == "cluster_details"
+        assert first_contract(result) == "cluster_details"
 
         stored = read_contract(ctx_db, "test-ws", "cluster_details")
         assert stored is not None
@@ -237,17 +254,17 @@ class TestPermissionRejection:
     """Scenario 4: agent tries to write a section it has no write access to."""
 
     def test_permission_rejection(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
         # cloud-troubleshooter cannot write gitops_configuration
         update_payload = {
             "repo_url": "https://evil.example.com/gitops",
             "tool": "evil-tool"
         }
-        agent_output = make_agent_output("gitops_configuration", update_payload)
+        contract = make_contract("gitops_configuration", update_payload)
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
@@ -260,23 +277,22 @@ class TestPermissionRejection:
 
 
 # ============================================================================
-# Scenario 5: No CONTEXT_UPDATE - backward compatibility
+# Scenario 5: No update_contracts clause - backward compatibility
 # ============================================================================
 
 class TestBackwardCompatibility:
-    """Scenario 5: agent output contains no CONTEXT_UPDATE marker."""
+    """Scenario 5: contract dict carries no update_contracts clause."""
 
     def test_no_context_update_backward_compat(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
-        agent_output = (
-            "## Agent Execution Complete\n\n"
-            "Checked all pods. Everything looks healthy.\n"
-            "No issues found.\n"
-        )
+        contract = {
+            "agent_status": {"plan_status": "COMPLETE"},
+            "evidence_report": {"key_outputs": ["Everything healthy"]},
+        }
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
@@ -284,25 +300,26 @@ class TestBackwardCompatibility:
 
 
 # ============================================================================
-# Scenario 6: Malformed JSON - graceful handling
+# Scenario 6: Malformed update_contracts entry - graceful handling
 # ============================================================================
 
 class TestMalformedJson:
-    """Scenario 6: agent output has CONTEXT_UPDATE with invalid JSON."""
+    """Scenario 6: an update_contracts entry missing required keys is skipped."""
 
     def test_malformed_json_graceful(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
-        agent_output = (
-            "## Agent Execution Complete\n\n"
-            "Task completed.\n\n"
-            "CONTEXT_UPDATE:\n"
-            '{invalid json, "missing": brackets'
-        )
+        # Entry lacks the required 'payload' key -> parse_update_contracts skips it.
+        contract = {
+            "agent_status": {"plan_status": "COMPLETE"},
+            "update_contracts": [
+                {"contract": "cluster_details"},
+            ],
+        }
 
         # Must not raise an exception
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
@@ -310,30 +327,36 @@ class TestMalformedJson:
 
 
 # ============================================================================
-# Scenario 7: Multi-section update (two CONTEXT_UPDATE blocks sequentially)
+# Scenario 7: Multi-section update (two update_contracts entries in one clause)
 # ============================================================================
 
 class TestMultiSectionUpdate:
-    """Scenario 7: agent updates two sections via two successive calls
-    (the new DB-backed API is single-contract-per-call)."""
+    """Scenario 7: the envelope path applies N atomic entries in a single call."""
 
     def test_two_contract_updates(self, ctx_db):
-        process_agent_output = _import_process_agent_output()
+        process_update_contracts = _import_process_update_contracts()
 
-        output_cluster = make_agent_output("cluster_details", {
-            "namespaces": {"application": ["dev", "staging"]}
-        })
-        output_topology = make_agent_output("infrastructure_topology", {
-            "subnets": ["10.0.0.0/24", "10.0.1.0/24"]
-        })
+        contract = {
+            "agent_status": {"plan_status": "COMPLETE"},
+            "update_contracts": [
+                {
+                    "contract": "cluster_details",
+                    "payload": {"namespaces": {"application": ["dev", "staging"]}},
+                },
+                {
+                    "contract": "infrastructure_topology",
+                    "payload": {"subnets": ["10.0.0.0/24", "10.0.1.0/24"]},
+                },
+            ],
+        }
 
-        r1 = process_agent_output(output_cluster, _build_task_info("cloud-troubleshooter", ctx_db))
-        r2 = process_agent_output(output_topology, _build_task_info("cloud-troubleshooter", ctx_db))
+        result = process_update_contracts(
+            contract, _build_task_info("cloud-troubleshooter", ctx_db)
+        )
 
-        assert r1["updated"] is True
-        assert r1["contract"] == "cluster_details"
-        assert r2["updated"] is True
-        assert r2["contract"] == "infrastructure_topology"
+        assert result["updated"] is True
+        assert "cluster_details" in result["contracts"]
+        assert "infrastructure_topology" in result["contracts"]
 
         stored_cluster = read_contract(ctx_db, "test-ws", "cluster_details")
         stored_topology = read_contract(ctx_db, "test-ws", "infrastructure_topology")
@@ -347,111 +370,74 @@ class TestMultiSectionUpdate:
 # ============================================================================
 
 class TestSkillFileExists:
-    """Scenario 8: verify the context-updater skill exists and documents
-    the CONTEXT_UPDATE format agents must follow."""
+    """Scenario 8: verify the agent-contract-handoff skill exists and documents
+    the update_contracts clause agents use to enrich project-context.
+
+    The retired context-updater skill was replaced by agent-contract-handoff as
+    the source of truth for the update_contracts envelope clause.
+    """
 
     def test_skill_loaded_correctly(self):
-        skill_file = SKILLS_DIR / "context-updater" / "SKILL.md"
+        skill_file = SKILLS_DIR / "agent-contract-handoff" / "SKILL.md"
 
         assert skill_file.exists(), (
             f"Skill file not found at {skill_file}. "
-            "This file must be created as part of the context enrichment feature."
+            "This file documents the update_contracts envelope clause."
         )
 
         content = skill_file.read_text()
 
-        # Must document the CONTEXT_UPDATE format
-        assert "CONTEXT_UPDATE" in content, (
-            "SKILL.md must document the CONTEXT_UPDATE format "
+        # Must document the update_contracts clause
+        assert "update_contracts" in content, (
+            "SKILL.md must document the update_contracts clause "
             "that agents use to emit context updates."
         )
 
 
 # ============================================================================
-# Scenario 9: LLM-realistic output with markdown code fences
+# Scenario 9: Multi-entry envelope variants
 # ============================================================================
 
 class TestLLMRealisticOutput:
-    """Scenario 9: LLMs wrap CONTEXT_UPDATE JSON in markdown code fences."""
+    """Scenario 9: nested payloads and scalar payloads travel through the
+    envelope path intact."""
 
-    def test_markdown_json_fence_enrichment(self, ctx_db):
-        """CONTEXT_UPDATE with ```json fence must be parsed and applied."""
-        process_agent_output = _import_process_agent_output()
+    def test_nested_payload_enrichment(self, ctx_db):
+        """A deeply-nested payload is persisted verbatim under the contract."""
+        process_update_contracts = _import_process_update_contracts()
 
-        # Real LLM output format with ```json fence
-        agent_output = (
-            "## Investigation Complete\n\n"
-            "Found 1 pod in test namespace.\n\n"
-            "CONTEXT_UPDATE:\n"
-            "```json\n"
-            "{\n"
-            '  "contract": "cluster_details",\n'
-            '  "payload": {\n'
-            '    "cluster_name": "oci-pos-dev-cluster-01",\n'
-            '    "namespaces_inspected": {\n'
-            '      "test": {\n'
-            '        "pod_count": 1\n'
-            "      }\n"
-            "    }\n"
-            "  }\n"
-            "}\n"
-            "```\n\n"
-            "```agent_contract_handoff\n"
-            "{\n"
-            '  "agent_status": {\n'
-            '    "plan_status": "COMPLETE",\n'
-            '    "agent_id": "cloud-troubleshooter",\n'
-            '    "pending_steps": [],\n'
-            '    "next_action": "done"\n'
-            "  },\n"
-            '  "evidence_report": {\n'
-            '    "patterns_checked": [],\n'
-            '    "files_checked": [],\n'
-            '    "commands_run": [],\n'
-            '    "key_outputs": [],\n'
-            '    "verbatim_outputs": [],\n'
-            '    "cross_layer_impacts": [],\n'
-            '    "open_gaps": []\n'
-            "  },\n"
-            '  "consolidation_report": null\n'
-            "}\n"
-            "```\n"
+        contract = make_contract(
+            "cluster_details",
+            {
+                "cluster_name": "oci-pos-dev-cluster-01",
+                "namespaces_inspected": {"test": {"pod_count": 1}},
+            },
         )
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        assert result["updated"] is True, (
-            "CONTEXT_UPDATE with ```json fence must be parsed — "
-            "this is the actual format LLMs produce"
-        )
-        assert result["contract"] == "cluster_details"
+        assert result["updated"] is True
+        assert first_contract(result) == "cluster_details"
 
         stored = read_contract(ctx_db, "test-ws", "cluster_details")
         assert stored["cluster_name"] == "oci-pos-dev-cluster-01"
         assert stored["namespaces_inspected"]["test"]["pod_count"] == 1
 
-    def test_markdown_plain_fence_enrichment(self, ctx_db):
-        """CONTEXT_UPDATE with plain ``` fence must also be handled."""
-        process_agent_output = _import_process_agent_output()
+    def test_scalar_payload_enrichment(self, ctx_db):
+        """A flat scalar payload is persisted through the envelope path."""
+        process_update_contracts = _import_process_update_contracts()
 
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            "```\n"
-            '{"contract": "cluster_details", "payload": {"status": "RUNNING"}}\n'
-            "```\n"
-        )
+        contract = make_contract("cluster_details", {"status": "RUNNING"})
 
-        result = process_agent_output(
-            agent_output,
+        result = process_update_contracts(
+            contract,
             _build_task_info("cloud-troubleshooter", ctx_db),
         )
 
-        assert result["updated"] is True, (
-            "CONTEXT_UPDATE with plain ``` fence must be parsed"
-        )
+        assert result["updated"] is True
 
         stored = read_contract(ctx_db, "test-ws", "cluster_details")
         assert stored["status"] == "RUNNING"

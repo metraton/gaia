@@ -901,9 +901,9 @@ _RELEVANT_CARRY_FORWARD_UNLIMITED = True
 # three explicit user-facing sections. Empty sections drop their header;
 # if all three are empty the whole block is empty.
 _SECTION_HEADERS = {
-    "carry_forward": "## Memory — Para esta sesión",
-    "anchor":        "## Memory — Sobre ti / Lo que sé",
-    "thread_open":   "## Memory — Hilos abiertos",
+    "carry_forward": "## Memory — For this session",
+    "anchor":        "## Memory — About you / What I know",
+    "thread_open":   "## Memory — Open threads",
 }
 
 
@@ -911,11 +911,11 @@ def _cmd_get_relevant(args) -> int:
     """Emit a compact memory block for SessionStart injection (v4).
 
     Selection model (T7, schema v4):
-      * Section 1 (Para esta sesión): all rows with class=thread, status=
+      * Section 1 (For this session): all rows with class=thread, status=
         carry_forward. Injected first, NO quota -- user-explicit hand-off.
-      * Section 2 (Sobre ti / Lo que sé): rows with class=anchor, ordered
+      * Section 2 (About you / What I know): rows with class=anchor, ordered
         by updated_at DESC, quota 4.
-      * Section 3 (Hilos abiertos): rows with class=thread, status=open,
+      * Section 3 (Open threads): rows with class=thread, status=open,
         ordered by updated_at DESC, quota 2.
       * class=log rows are NEVER injected (closed-bitácora).
       * class=NULL rows (legacy, pre-v4): treated as anchor for backward

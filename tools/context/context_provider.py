@@ -318,7 +318,7 @@ def get_context_update_contract(
     agent_name: str,
     provider_contracts: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Return the write/read permissions agents should use for CONTEXT_UPDATE decisions."""
+    """Return the write/read permissions agents should use for update_contracts decisions."""
     agent_contract = provider_contracts.get("agents", {}).get(agent_name, {})
 
     return {

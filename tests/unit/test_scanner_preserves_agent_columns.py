@@ -57,7 +57,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
 
     con = _connect(tmp_db)
     _grant_all(con, "developer")
-    _grant_all(con, "terraform-architect")
+    _grant_all(con, "platform-architect")
     con.close()
 
     # Seed: project + app with agent-owned `description`
@@ -74,7 +74,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
         name="orchestrator",
         fields={
             "kind": "service",
-            "description": "hand-written by terraform-architect",
+            "description": "hand-written by platform-architect",
             "status": "active",
         },
         agent="developer",
@@ -88,7 +88,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
         (workspace, "bildwiz-iac", "orchestrator"),
     ).fetchone()
     con.close()
-    assert before["description"] == "hand-written by terraform-architect"
+    assert before["description"] == "hand-written by platform-architect"
 
     # Run the infrastructure populator (mock a project path with a tf file)
     repo_path = tmp_path / "bildwiz-iac"
@@ -107,7 +107,7 @@ def test_infrastructure_preserves_notes(tmp_db, tmp_path, monkeypatch):
         workspace=workspace,
         project="bildwiz-iac",
         project_path=repo_path,
-        agent="terraform-architect",
+        agent="platform-architect",
         db_path=tmp_db,
     )
 
