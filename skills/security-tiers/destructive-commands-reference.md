@@ -245,7 +245,6 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 |---|---|
 | `git push --force` / `git push -f` | Rewrites remote history, loses others' commits |
 | `git push --force` to `main`/`master` | Especially catastrophic on default branch |
-| `git reset --hard` | Permanently discards uncommitted changes |
 
 ### MUTATIVE (approvable T3)
 
@@ -261,6 +260,7 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 | `git branch -d` / `git branch -D` | Branch deletion |
 | `git branch -m` / `git branch -M` | Branch rename |
 | `git tag -d` | Tag deletion |
+| `git reset --hard` | Discards uncommitted changes -- T3 approvable (NOT permanently blocked) |
 | `git reset --soft` / `git reset --mixed` | Safe resets |
 | `git revert` | Creates new commit to undo |
 | `git clean -f` / `git clean -fd` | Removes untracked files (local-only) |
@@ -274,7 +274,7 @@ git does not use `delete` or `destroy` as subcommands -- it uses flags (`-D`, `-
 | `--force` / `-f` (on push) | DESTRUCTIVE -- rewrites remote history |
 | `--force-with-lease` (on push) | MUTATIVE -- checks remote state first |
 | `-D` (on branch) | Force-deletes unmerged branch |
-| `--hard` (on reset) | DESTRUCTIVE -- permanently blocked by blocked_commands.py |
+| `--hard` (on reset) | T3 (approvable) -- routed through `mutative_verbs.py`; NOT in `blocked_commands.py` |
 | `-f` / `-d` (on clean) | Removes untracked files/directories |
 
 ---
@@ -590,7 +590,7 @@ Commands where the same verb is DESTRUCTIVE in one context and MUTATIVE in anoth
 | `docker rm` | N/A (always mutative per-container) | Single container |
 | `terraform destroy` | Without `-target` (whole state) | With `-target=<resource>` |
 | `git push` | + `--force` / `-f` | Without force, or with `--force-with-lease` |
-| `git reset` | + `--hard` (permanently blocked) | + `--soft` / `--mixed` |
+| `git reset` | N/A (no reset variant is permanently blocked) | + `--hard`, `--soft`, `--mixed` (all T3 approvable) |
 | `aws s3 rm` | + `--recursive` on bucket root | Single object |
 | `gsutil rm` | + `-r` (recursive) | Single object |
 | `npm unpublish` | Entire package (no version) | Specific `@version` |
@@ -612,7 +612,8 @@ The following commands were identified as candidates for permanent blocking and 
 - `gh repo delete`, `glab project delete`
 - `terraform destroy` (without `-target`), `terragrunt run-all destroy`
 - `npm unpublish` (without `@version`)
-- `git reset --hard`
+
+Note: `git reset --hard` is **NOT** permanently blocked. It is intentionally absent from `blocked_commands.py` and is routed through the T3 approval flow (`mutative_verbs.py`) so the user can confirm or decline interactively. See `GIT_HARD_RESET_FLAGS` in `mutative_verbs.py` and the test `test_git_reset_hard_is_t3_approvable`.
 
 ### Dangerous flag combinations: OPEN
 

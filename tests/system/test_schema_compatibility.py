@@ -63,7 +63,7 @@ class TestSchemaCompatibility:
         for surface in [
             "live_runtime",
             "gitops_desired_state",
-            "terraform_iac",
+            "iac",
             "app_ci_tooling",
             "planning_specs",
             "gaia_system",
@@ -77,7 +77,7 @@ class TestSchemaCompatibility:
         surfaces = surface_routing_config.get("surfaces", {})
         agents_found = {cfg.get("primary_agent") for cfg in surfaces.values()}
         for agent in [
-            "terraform-architect",
+            "platform-architect",
             "gitops-operator",
             "cloud-troubleshooter",
             "developer",

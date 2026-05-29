@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Agent-to-event-type mapping: which events each agent should see
 AGENT_EVENT_FILTERS = {
-    "terraform-architect": ["git_commit", "infrastructure_change"],
+    "platform-architect": ["git_commit", "infrastructure_change"],
     "gitops-operator": ["git_commit", "git_push", "infrastructure_change"],
     "developer": ["git_commit", "file_modifications"],
     "cloud-troubleshooter": "*",  # All events (needs full history for diagnosis)

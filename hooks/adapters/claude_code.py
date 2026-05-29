@@ -46,10 +46,11 @@ def _append_workspace_memory(context: str) -> str:
 
     Calls the same primitive the orchestrator uses at SessionStart --
     ``session_manifest.build_workspace_memory_block`` -- so subagents see the
-    identical ``## Workspace Memory`` section. Joins with a blank-line
-    separator when context is non-empty. Returns the original context
-    unchanged on any error (fail-safe: dispatch must never fail because
-    memory injection misbehaved).
+    identical curated memory sections (``## Memory — For this session``,
+    ``## Memory — About you / What I know``, ``## Memory — Open threads``).
+    Joins with a blank-line separator when context is non-empty. Returns the
+    original context unchanged on any error (fail-safe: dispatch must never
+    fail because memory injection misbehaved).
     """
     try:
         from modules.session.session_manifest import build_workspace_memory_block
@@ -692,7 +693,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
 
         # Append curated workspace memory (atoms, decisions, negatives) so
-        # subagents receive the same ## Workspace Memory block the orchestrator
+        # subagents receive the same curated memory sections the orchestrator
         # gets at SessionStart. Reuses session_manifest.build_workspace_memory_block
         # as the single source of truth for the primitive. Fail-safe.
         additional = _append_workspace_memory(additional)
@@ -1209,7 +1210,7 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.agents.transcript_reader import read_transcript
         from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
         from modules.audit.workflow_recorder import record as record_workflow
-        from modules.context.context_writer import process_context_updates, process_update_contracts
+        from modules.context.context_writer import process_update_contracts
         from modules.memory.episode_writer import write as write_episode
         from modules.security.approval_cleanup import cleanup as cleanup_approval
         from modules.session.session_manager import get_or_create_session_id
@@ -1339,14 +1340,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.debug("Grant consumption at SubagentStop failed (non-fatal): %s", exc)
 
             commands_executed = extract_commands_from_evidence(agent_output)
-            context_update_result = process_context_updates(agent_output, task_info)
 
             # ----------------------------------------------------------
-            # BUG B fix: Process update_contracts array (M3/T2.3 envelope path).
+            # Process update_contracts array (agent_contract_handoff envelope path).
             # Handles evidence routing to the evidence table and any
-            # project_context entries in the new envelope format.
+            # project_context entries in the envelope format.
             # Non-blocking: errors caught inside process_update_contracts.
             # ----------------------------------------------------------
+            context_update_result = None
             if isinstance(parsed_contract, dict):
                 _update_contracts_task_info = {
                     "agent": agent_type,
@@ -1357,8 +1358,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 _update_contracts_result = process_update_contracts(
                     parsed_contract, _update_contracts_task_info
                 )
-                # Merge: if legacy path had no update but envelope path did, record it
-                if _update_contracts_result.get("updated") and not (context_update_result or {}).get("updated"):
+                if _update_contracts_result.get("updated"):
                     context_update_result = {
                         "updated": True,
                         "contract": ", ".join(_update_contracts_result.get("contracts", [])),
@@ -1671,9 +1671,12 @@ class ClaudeCodeAdapter(HookAdapter):
             if parsed_contract is None:
                 contract_rejected = True
                 contract_rejection_reason = (
-                    "[CONTRACT REJECTED] No agent_contract_handoff block found in agent response.\n"
-                    "The agent must end its response with a ```agent_contract_handoff``` fenced block.\n"
-                    "Reissue the response with a complete agent_contract_handoff block."
+                    "[CONTRACT REJECTED] No parseable agent_contract_handoff block found in agent response.\n"
+                    "The agent must end its response with a ```agent_contract_handoff``` fenced block "
+                    "whose body is VALID JSON (it is parsed with json.loads). A block written in YAML, "
+                    "with comments, trailing commas, or unquoted keys will fail to parse and is treated "
+                    "as missing.\n"
+                    "Reissue the response with a complete agent_contract_handoff block whose body is valid JSON."
                 )
             elif not parsed_contract.get("agent_status") or not isinstance(
                 parsed_contract.get("agent_status"), dict

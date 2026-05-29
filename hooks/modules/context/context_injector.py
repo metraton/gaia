@@ -399,7 +399,7 @@ def build_project_context(
         if investigation_brief:
             orientation_lines.append("- **Agent Contract Handoff** -- goal, acceptance criteria, and scope for the current task")
         if write_perms:
-            orientation_lines.append("- **Permissions** -- which context sections are writable vs readable; required before emitting CONTEXT_UPDATE")
+            orientation_lines.append("- **Permissions** -- which context sections are writable vs readable; required before emitting update_contracts")
         if memory_index_section:
             orientation_lines.append("- **Memory Index** -- ranked memory documents relevant to this session; read high-score entries first")
         if historical_section:

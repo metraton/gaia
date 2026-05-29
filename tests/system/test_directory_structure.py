@@ -70,7 +70,7 @@ class TestAgentsDirectory:
         required_agents = [
             "gitops-operator.md",
             "cloud-troubleshooter.md",
-            "terraform-architect.md",
+            "platform-architect.md",
             "developer.md",
             "gaia-operator.md",
             "gaia-orchestrator.md"

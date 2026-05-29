@@ -215,7 +215,7 @@ commands: same pattern as agents
 | Componente | Tipo | Inconsistencia | Fix propuesto | Target |
 |------------|------|----------------|---------------|--------|
 | `skills/gaia-ops/SKILL.md` | Skill | `name: gaia_ops` en frontmatter, directorio es `gaia-ops` | Cambiar `name` a `gaia-ops` en el frontmatter | repo |
-| `agents/terraform.md` | Agent | `name: terraform-architect` en frontmatter, archivo es `terraform.md` | Renombrar archivo a `terraform-architect.md` o corregir `name` | repo |
+| `agents/terraform.md` | Agent | `name: platform-architect` en frontmatter, archivo es `terraform.md` | Renombrar archivo a `platform-architect.md` o corregir `name` | repo |
 
 ---
 
@@ -769,10 +769,11 @@ When a single fix expands into multiple file writes (e.g., updating
 `gaia-system.md` AND adding the missing ST file AND wiring it into a
 hook), the dispatch behavior across the bundle is governed by:
 
-- `security-tiers/SKILL.md` -> "R3 -- `mode` does NOT survive a
-  SendMessage resume". If any step in the bundle emits APPROVAL_REQUEST,
-  the resume runs in `default` and the next protected operation
-  re-blocks even though the original dispatch was `acceptEdits`.
+- `agents/gaia-orchestrator.md` -> "Dispatch -> Re-dispatch vs SendMessage":
+  `mode` does NOT survive a SendMessage resume. If any step in the bundle
+  emits APPROVAL_REQUEST, the resume runs in `default` and the next
+  protected operation re-blocks even though the original dispatch was
+  `acceptEdits`.
 - `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume".
   For bundles that span an approval, the orchestrator must re-dispatch
   fresh with the same mode rather than resuming.

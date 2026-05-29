@@ -143,8 +143,8 @@ class TestAnchorPersistence:
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
         anchors = {"qxo-monorepo/terraform", "oci-pos-dev-cluster", "us-east4"}
-        save_anchors("session-123", "terraform-architect", anchors)
-        loaded = load_anchors("session-123", "terraform-architect")
+        save_anchors("session-123", "platform-architect", anchors)
+        loaded = load_anchors("session-123", "platform-architect")
         assert loaded == anchors
 
     def test_load_nonexistent_returns_empty(self, tmp_path, monkeypatch):
@@ -462,7 +462,7 @@ class TestSaveLoadCompareFlow:
 
         # 3. Save with a specific session_id (simulating injection time)
         session_id = "session-143025-a1b2c3d4"
-        agent_type = "terraform-architect"
+        agent_type = "platform-architect"
         save_anchors(session_id, agent_type, anchors)
 
         # 4. Load with the SAME session_id (simulating subagent_stop time)
@@ -491,10 +491,10 @@ class TestSaveLoadCompareFlow:
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
         anchors = {"qxo-monorepo/terraform", "oci-pos-dev-cluster"}
-        save_anchors("session-A", "terraform-architect", anchors)
+        save_anchors("session-A", "platform-architect", anchors)
 
         # Load with a different session_id -- simulates the original bug
-        loaded = load_anchors("session-B", "terraform-architect")
+        loaded = load_anchors("session-B", "platform-architect")
         assert loaded == set(), "Mismatched session_id must return empty anchors"
 
         # Compute hits with empty anchors -> no data

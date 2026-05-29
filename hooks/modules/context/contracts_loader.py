@@ -137,8 +137,8 @@ def build_context_update_reminder(
 
     empty_list = ", ".join(f"`{s}`" for s in empty)
     return (
-        f"\n**CONTEXT_UPDATE REQUIRED:** Your writable contracts {empty_list} "
-        f"are currently EMPTY. After completing your task, you MUST emit a "
-        f"CONTEXT_UPDATE block with any data you discovered. "
-        f"See \"Context Updater Protocol\" above for the format.\n\n"
+        f"\n**CONTEXT UPDATE REQUIRED:** Your writable contracts {empty_list} "
+        f"are currently EMPTY. After completing your task, you MUST include an "
+        f"`update_contracts` clause in your agent_contract_handoff with any data "
+        f"you discovered. See the agent-contract-handoff skill for the format.\n\n"
     )

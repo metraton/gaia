@@ -100,9 +100,9 @@ class TestProjectAgents:
         return agents.resolve() if agents.is_symlink() else agents
 
     def test_terraform_architect_exists(self, agents_dir):
-        """terraform-architect.md must exist"""
-        tf_agent = agents_dir / "terraform-architect.md"
-        assert tf_agent.exists(), "terraform-architect.md not found"
+        """platform-architect.md must exist"""
+        tf_agent = agents_dir / "platform-architect.md"
+        assert tf_agent.exists(), "platform-architect.md not found"
 
     def test_gitops_operator_exists(self, agents_dir):
         """gitops-operator.md must exist"""

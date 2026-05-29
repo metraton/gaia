@@ -115,7 +115,7 @@ def _scan_and_snapshot(
     from gaia.store.writer import _connect
     con = _connect(tmp_db)
     _grant_all(con, "developer")
-    _grant_all(con, "terraform-architect")
+    _grant_all(con, "platform-architect")
     _grant_all(con, "gitops-operator")
     con.close()
 
@@ -145,7 +145,7 @@ def _scan_and_snapshot(
             workspace=workspace,
             project=project_dir.name,
             project_path=project_dir,
-            agent="terraform-architect",
+            agent="platform-architect",
             db_path=tmp_db,
         )
         populate_orchestration(

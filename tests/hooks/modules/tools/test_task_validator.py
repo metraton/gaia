@@ -72,7 +72,7 @@ class TestAgentExistence:
     def test_project_agents_registered(self):
         """Test that all project agents are in the registry."""
         project_agents = [
-            "terraform-architect",
+            "platform-architect",
             "gitops-operator",
             "cloud-troubleshooter",
             "developer",
@@ -128,7 +128,7 @@ class TestContextProvisioning:
 
     def test_project_agents_always_have_context(self, validator):
         """Project agents always report has_context=True regardless of prompt."""
-        for agent in ["terraform-architect", "gitops-operator", "developer", "cloud-troubleshooter"]:
+        for agent in ["platform-architect", "gitops-operator", "developer", "cloud-troubleshooter"]:
             params = {
                 "subagent_type": agent,
                 "prompt": "Any prompt without context markers",
@@ -163,7 +163,7 @@ class TestT3ApprovalRequirement:
     def test_detects_t3_keywords(self, validator, keyword):
         """Test detection of T3 keywords in prompt."""
         params = {
-            "subagent_type": "terraform-architect",
+            "subagent_type": "platform-architect",
             "prompt": f"Execute {keyword} operation",
         }
         result = validator.validate(params)
@@ -181,7 +181,7 @@ class TestT3ApprovalRequirement:
     def test_marks_t3_without_blocking_task(self, validator):
         """New Task invocations can describe T3 work; Bash remains the execution gate."""
         params = {
-            "subagent_type": "terraform-architect",
+            "subagent_type": "platform-architect",
             "prompt": "Run terraform apply to deploy changes",
         }
         result = validator.validate(params)
@@ -198,7 +198,7 @@ class TestT3ApprovalRequirement:
     def test_prompt_tokens_do_not_short_circuit_task_validation(self, validator, prompt):
         """TaskValidator no longer treats prompt strings as executable approval."""
         params = {
-            "subagent_type": "terraform-architect",
+            "subagent_type": "platform-architect",
             "prompt": prompt,
         }
         result = validator.validate(params)
@@ -208,7 +208,7 @@ class TestT3ApprovalRequirement:
     def test_allows_non_t3_without_approval(self, validator):
         """Test that non-T3 operations don't require approval."""
         params = {
-            "subagent_type": "terraform-architect",
+            "subagent_type": "platform-architect",
             "prompt": "Run terraform plan to preview changes",
         }
         result = validator.validate(params)
@@ -219,7 +219,7 @@ class TestT3ApprovalRequirement:
         """Test that T3 keywords trigger T3 detection."""
         # Test terraform apply
         params1 = {
-            "subagent_type": "terraform-architect",
+            "subagent_type": "platform-architect",
             "prompt": "Please run terraform apply for infrastructure changes",
         }
         result1 = validator.validate(params1)
@@ -374,7 +374,7 @@ class TestEdgeCases:
     def test_case_insensitive_t3_detection(self, validator):
         """Test that T3 keywords are detected case-insensitively."""
         params = {
-            "subagent_type": "terraform-architect",
+            "subagent_type": "platform-architect",
             "prompt": "Run TERRAFORM APPLY now",
         }
         result = validator.validate(params)

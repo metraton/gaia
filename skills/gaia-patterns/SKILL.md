@@ -59,7 +59,6 @@ skills:
   - security-tiers        # always second
   - command-execution     # if agent runs commands
   - domain-skill          # agent's domain patterns
-  - context-updater       # if agent modifies project state
 ---
 ```
 

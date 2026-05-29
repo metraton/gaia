@@ -141,18 +141,23 @@ class TestAgentProtocolSkill:
 
 
 class TestContextUpdaterSkill:
-    """context-updater SKILL.md specific rules."""
+    """agent-contract-handoff SKILL.md context-enrichment rules.
+
+    The context-updater skill was retired; the update_contracts envelope clause
+    is now documented in agent-contract-handoff, which is the live source of
+    truth for how an agent enriches project-context.
+    """
 
     @pytest.fixture
     def content(self, skills_dir):
-        return (skills_dir / "context-updater" / "SKILL.md").read_text()
+        return (skills_dir / "agent-contract-handoff" / "SKILL.md").read_text()
 
     def test_has_context_update_format(self, content):
-        """Must document CONTEXT_UPDATE format and write_permissions field."""
-        assert "CONTEXT_UPDATE" in content, \
-            "context-updater must document CONTEXT_UPDATE format"
-        assert "write_permissions" in content, \
-            "context-updater should reference injected write_permissions as SSOT"
+        """Must document the update_contracts clause and writable contracts."""
+        assert "update_contracts" in content, \
+            "agent-contract-handoff must document the update_contracts clause"
+        assert ("write_permissions" in content or "writable" in content), \
+            "agent-contract-handoff should reference writable contracts as SSOT"
 
 
 if __name__ == "__main__":

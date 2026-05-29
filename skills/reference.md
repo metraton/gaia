@@ -14,7 +14,6 @@ permissionMode: acceptEdits  # standard for most agents; omit for orchestrator a
 skills:
   - security-tiers
   - agent-protocol
-  - context-updater
   - investigation
   - command-execution
 ---

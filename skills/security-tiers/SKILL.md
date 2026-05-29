@@ -8,109 +8,56 @@ metadata:
 
 # Security Tiers
 
-## Classification Principle
+security-tiers classifies every operation into four tiers so an agent knows whether it can run freely or must request the user's consent.
 
-Before executing any command, classify it by asking:
+## The four tiers
 
-1. **Does it modify live state?** (create, update, delete, apply, push) -- **T3**
-2. **Does it simulate changes?** (plan, diff, dry-run) -- **T2**
+| Tier | What it is | Approval? | Example verbs |
+|------|------------|:---:|---------------|
+| **T0** | Read-only; observes state, changes nothing | No | get, list, describe, show, logs, status |
+| **T1** | Local validation; no remote calls, no state | No | validate, lint, fmt, check |
+| **T2** | Simulation / dry-run; may read remote, never writes | No | plan, diff, dry-run, template |
+| **T3** | State-mutating; creates, updates, or destroys | **Yes** | apply, create, delete, commit, push, deploy |
+
+## Classification heuristic
+
+Ask, in order -- the first "yes" wins:
+
+1. **Does it mutate live state?** (create, update, delete, apply, push, deploy) -- **T3**
+2. **Does it only simulate?** (plan, diff, dry-run, template) -- **T2**
 3. **Does it validate locally?** (validate, lint, fmt, check) -- **T1**
 4. **Is it read-only?** (get, list, describe, show, logs) -- **T0**
 
-## Tier Definitions
+This mirrors `_classify_command_tier_cached` in `hooks/modules/security/tiers.py`: blocked patterns and mutative verbs resolve to T3 first, then simulation to T2, then validation to T1, and everything left over defaults to T0 -- safe by elimination, never by an allow-list.
 
-| Tier | Name | Side Effects | Approval |
-|------|------|-------------|----------|
-| **T0** | Read-Only | None | No |
-| **T1** | Validation | None (local only) | No |
-| **T2** | Simulation | None (dry-run) | No |
-| **T3** | Realization | **Modifies state** | **Yes** |
+Conditional commands depend on flags: `git branch` is T0 for listing but T3 with `-D`, `-d`, `-m`. For cloud-specific verb patterns (kubectl, terraform, gcloud, helm, flux), see `reference.md`.
 
-## Examples (anchors, not exhaustive)
+## Enforcement anchors
 
-Classify using your own tools. Common verb patterns:
+The runtime, not this skill, enforces tiers. Three modules layer the decision:
 
-- **T0**: read, get, list, describe, show, logs, status
-- **T1**: validate, lint, fmt, check, build (local)
-- **T2**: plan, diff, dry-run
-- **T3**: apply, create, delete, commit, push, deploy
+- `tiers.py` -- the `SecurityTier` enum (`T0_READ_ONLY`, `T1_VALIDATION`, `T2_DRY_RUN`, `T3_BLOCKED`) and `_classify_command_tier_cached` assign every command a tier.
+- `blocked_commands.py` -- pattern-matches irreversible commands and permanently denies them (exit 2, never approvable).
+- `mutative_verbs.py` -- CLI-agnostic detection of mutative verbs; drives the nonce / approval flow for T3.
 
-For cloud-specific command examples (kubectl, terraform, gcloud, helm, flux), see `reference.md` in this skill directory.
+Safe by elimination, with no allow-list: anything not blocked and not mutative is T0. Runtime is the single source of truth for nonce handling, grant scope, and approval enforcement -- this skill teaches how to think about the tier; it does not enforce it.
 
-## Hook Enforcement
+## The `.claude` rule
 
-The pre_tool_use hook is the primary security gate. With `Bash(*)` in the allow list, all commands reach the hook. Two modules, elimination logic:
+**Do not touch anything under `.claude/` -- ever, by any mechanism.** By Gaia core policy it is a hard security boundary. This is not a guideline to weigh against convenience; it is a precondition that must be satisfied before any operation begins.
 
-1. **blocked_commands.py** -- pattern-matched irreversible commands, permanently denied (exit 2)
-2. **mutative_verbs.py** -- CLI-agnostic verb detection, nonce-based approval flow
+**The rule applies to every execution path, not only deliberate edits.** A `sed -i`, `find -exec`, `xargs`, glob expansion, or any script that sweeps a directory tree is bound by exactly the same policy as a targeted `Edit` call. The mechanism does not change the obligation. If a bulk operation's scope *could* include a path whose components contain `.claude/` -- even deeply nested, such as `tests/fixtures/repo/.claude/settings.json` -- the correct sequence is:
 
-Everything that is not blocked and not mutative is safe by elimination. There is no separate safe-commands list.
+1. Exclude those paths explicitly before running (e.g., `find . -path '*/.claude/*' -prune -o ...`), **or**
+2. Do not run the operation at all, **or**
+3. Ask the user first.
 
-Runtime is the single source of truth for nonce handling, grant scope, and
-approval enforcement. This skill teaches classification and decision-making; it
-does not replace the hook contract.
+There is no fourth option. The policy is not "run it and let the hook decide" -- it is "do not attempt it." An agent that launches a bulk operation hoping the hook will catch `.claude/` paths has already violated the policy, regardless of whether the hook fires.
 
-When a T3 command is denied with an `approval_id`, the agent must report the
-block back to the orchestrator via the response contract defined in
-`agent-protocol/SKILL.md` -- specifically by emitting `plan_status:
-APPROVAL_REQUEST` with the `approval_id` in `approval_request`. See
-`subagent-request-approval/SKILL.md` for the full approval request schema and
-`agent-protocol/SKILL.md` for the surrounding response envelope.
+A second, deterministic layer backs the policy: even if attempted, the write cannot succeed. `_is_protected()` in `hooks/adapters/claude_code.py` hard-protects the most critical paths -- the Gaia hooks directory (which `.claude/hooks/` resolves into) and `settings.json` / `settings.local.json` anywhere under a `.claude/` path -- and it fires regardless of `permissionMode`. An agent running with `acceptEdits` is still blocked. The enforcement is unconditional and does not depend on the agent's intent or the operation's surface area.
 
-Conditional commands like `git branch` are safe for listing but T3 with mutative flags (`-D`, `-d`, `-m`). See `reference.md`.
+Why state it here, at the top of tier classification: an agent that ignores the policy and tries anyway collides with the deterministic block. That surfaces as drift and confusing failures with no clear cause -- wasted cycles that do not produce a recoverable state. The policy is the prevention; the hook is the backstop. Knowing the rule before forming the intention spares that path entirely.
 
-### File Write Protection
+## T3 approval handoff
 
-The pre_tool_use hook also gates Edit and Write tools via `_is_protected()` in `adapters/claude_code.py`. This is a separate enforcement path from Bash command protection.
-
-**Protected paths:**
-- `.claude/hooks/` -- resolved via `Path.resolve().relative_to()` to catch symlinks (exception: `.md` files are exempt since documentation does not execute code; see `_is_protected()` in `hooks/adapters/claude_code.py`)
-- `.claude/settings.json` and `.claude/settings.local.json` -- matched by filename within a `.claude/` path
-
-**Why this matters:** `_is_protected()` fires regardless of `permissionMode`. An agent with `permissionMode: acceptEdits` can still be blocked from writing to hooks/ or settings files. In headless/cron mode where Claude Code native prompts cannot display, hooks remain the real security boundary.
-
-**Write tool creates parent directories implicitly.** Writing a file to a path whose parent does not yet exist creates the parent. Use this to avoid an explicit `mkdir` Bash step when creating new files under `.claude/` -- one Write tool call instead of mkdir (T3 Bash) + Write.
-
-**Permission model:**
-
-| Path | Parent session | Subagents | Enforced by |
-|------|:---:|:---:|---|
-| Normal code (src/, etc.) | auto-accept | auto-accept | `permissionMode: acceptEdits` in agent frontmatter |
-| `.claude/skills/`, `agents/`, `commands/` | auto-accept | CC native prompt | CC hardcoded `.claude/` protection |
-| `.claude/hooks/` | T3 BLOCKED | T3 BLOCKED | Gaia `_is_protected()` hook |
-| `settings.json`, `settings.local.json` | T3 BLOCKED | T3 BLOCKED | Gaia `_is_protected()` hook |
-
-Note: `bypassPermissions` does not propagate to subagents (CC limitation). `acceptEdits` requires `permissionMode` in the agent frontmatter -- it does not flow through settings to subagents.
-
-## Mode runtime rules
-
-Four rules govern how `mode` and `run_in_background` interact with the Gaia hooks. Classification rules (R1, R2) tell you what each layer covers; runtime rules (R3, R4) tell you how those layers behave across turn boundaries.
-
-### R1 -- `acceptEdits` covers Edit/Write, not Bash mutativo
-
-`mode: acceptEdits` in the Agent dispatch satisfies CC native for Edit and Write tools. It does NOT cover Bash mutativo (`rm`, `mv`, `cp`, `chmod`) even when the target lives under `.claude/`. Bundles that need both Edit/Write and mutative Bash on protected paths require either `mode: bypassPermissions` or per-command Gaia grants -- `acceptEdits` alone is insufficient.
-
-### R2 -- Gaia bash_validator is orthogonal to `mode`
-
-The `mutative_verbs.py` hook classifies Bash verbs as MUTATIVE and emits an `approval_id` regardless of which `mode` the dispatch carried. `bypassPermissions` covers the CC native side (Edit/Write/Bash without prompt) but does NOT disable the bash_validator. The two layers are independent and both must pass for a mutative Bash to execute. Design every bundle assuming the Gaia hook will classify and possibly block each mutative Bash, even under `bypassPermissions`.
-
-### R3 -- `mode` does NOT survive a SendMessage resume
-
-The `mode` parameter is per-dispatch of the Agent tool. If a subagent dispatched with `acceptEdits` or `bypassPermissions` emits APPROVAL_REQUEST mid-task, the SendMessage resume runs in `default` -- CC native re-blocks the next protected operation even after the Gaia grant has activated. For multi-step bundles on protected paths, either pack every step into the same turn the dispatch started, or accept that the orchestrator must re-dispatch fresh with the same mode. See `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume".
-
-### R4 -- `run_in_background` default is foreground
-
-`run_in_background` is exposed by the Agent tool and is orthogonal to `mode`. **The default in interactive sessions is foreground and rarely needs to be set explicitly** -- almost every dispatch runs with `run_in_background=None` (foreground). Setting `run_in_background: false` explicitly is defensive, rarely necessary. The "background" case that actually matters is the SendMessage resume, which always runs in the background literal -- AskUserQuestion auto-denies and the original `mode` is gone (R3). The decision that shapes runtime behavior on protected-path bundles is dispatch-vs-resume, not foreground-vs-background.
-
-### permissionMode comparison
-
-| Modo | Qué hace | Cuándo usar | Cuándo NO usar |
-|------|----------|-------------|----------------|
-| `default` | Todas las operaciones requieren prompt nativo de CC | Operaciones destructivas irreversibles, read-only, o cuando explícitamente quieres prompt por operación | Dispatches headless o background -- CC no puede mostrar prompts, result: auto-deny |
-| `acceptEdits` | Edit y Write pasan sin prompt nativo; Bash y herramientas destructivas siguen requiriendo aprobación | Edit/Write sobre `.claude/` o `gaia-ops-dev/` (briefs, plans, docs, skills, runtime code); Bash mutativo seguirá disparando grants file-scoped | Operaciones que requieren Bash mutativo sin supervisión; nunca como sustituto de `bypassPermissions` |
-| `bypassPermissions` | Todos los permisos de CC skipeados -- Edit, Write, Bash, todo | Bash atómico single-command de housekeeping (mv dir, bulk cleanup) cuando el scope ya está aprobado conceptualmente por el usuario y hooks `PreToolUse` están hardened | Multi-file refactor -- bypass en background pre-aprueba el bundle entero, por lo que hooks `PreToolUse` no se re-invocan por operación; se pierde audit per-file |
-| `plan` | El agente propone un plan y requiere aprobación explícita antes de ejecutar cualquier herramienta | Revisar plan antes de ejecutar sin side effects -- útil para validar goals ambiguos | Tareas operativas rutinarias donde la aprobación por cada herramienta crea fricción innecesaria |
-
-For the goal->mode decision tree (Spanish), foreground/background examples, and notes on hooks under background, see `reference.md` -> "Mode decision tree" and "Foreground vs background detail".
-
-For the dispatch-vs-resume operational rule, see `orchestrator-present-approval/SKILL.md` -> "Re-dispatch instead of resume".
+When a T3 command is blocked with an `approval_id`, emit `plan_status: APPROVAL_REQUEST` with the `approval_id` in `approval_request`, per the response envelope in `agent-protocol/SKILL.md`. See `subagent-request-approval/SKILL.md` for the full request schema.

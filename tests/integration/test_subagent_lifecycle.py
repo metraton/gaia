@@ -5,7 +5,7 @@ Integration test: Full subagent lifecycle.
 Validates the complete hook-driven lifecycle:
   1. pre_tool_use hook injects project context into Task prompt
   2. Skills are injected natively by Claude from agent frontmatter (`skills:`)
-  3. Subagent produces output with CONTEXT_UPDATE block
+  3. Subagent produces output with an update_contracts envelope clause
   4. subagent_stop hook processes the output and updates gaia.db
 
 This tests the REAL hook code (no mocks) against a temporary project
@@ -98,7 +98,7 @@ def test_project(tmp_path):
             "git": {"platform": "github"},
             "environment": {"runtimes": []},
             "infrastructure": {"cloud_providers": [{"name": "gcp", "region": "us-east4"}]},
-            # These are empty - agents should fill them via CONTEXT_UPDATE
+            # These are empty - agents should fill them via update_contracts
             "cluster_details": {},
             "infrastructure_topology": {},
             "terraform_infrastructure": {},
@@ -115,7 +115,7 @@ def test_project(tmp_path):
 
 @pytest.fixture
 def lifecycle_db(tmp_path):
-    """Isolated gaia.db with cloud-troubleshooter and terraform-architect permissions."""
+    """Isolated gaia.db with cloud-troubleshooter and platform-architect permissions."""
     db_path = tmp_path / "gaia_lifecycle.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, "global")
@@ -129,7 +129,7 @@ def lifecycle_db(tmp_path):
     )
     seed_agent_perms(
         db_path,
-        "terraform-architect",
+        "platform-architect",
         reads=["terraform_infrastructure", "infrastructure_topology", "cluster_details",
                "application_services", "architecture_overview"],
         writes=["terraform_infrastructure", "infrastructure_topology"],
@@ -223,18 +223,6 @@ class TestPhase1SkillsInjection:
             "cloud-troubleshooter must declare skills in frontmatter"
         assert "security-tiers" in skills
         assert "agent-protocol" in skills
-
-    def test_terraform_architect_declares_terraform_patterns_skill(self, test_project):
-        """terraform-architect frontmatter must include terraform-patterns."""
-        _, claude_dir = test_project
-
-        agent_file = claude_dir / "agents" / "terraform-architect.md"
-        assert agent_file.exists(), "terraform-architect.md must exist"
-
-        fm = self._parse_frontmatter(agent_file.read_text())
-        skills = fm.get("skills", [])
-        assert "terraform-patterns" in skills, \
-            "terraform-architect should reference terraform-patterns skill"
 
     def test_all_project_agents_reference_existing_skill_files(self, test_project):
         """
@@ -360,30 +348,29 @@ class TestPhase1SkillsInjection:
 
 
 # ============================================================================
-# PHASE 2: CONTEXT_UPDATE Parsing (context_writer)
+# PHASE 2: update_contracts clause parsing (contract envelope)
 # ============================================================================
 
 class TestPhase2ContextUpdateParsing:
-    """Validate that context_writer correctly parses CONTEXT_UPDATE blocks."""
+    """Validate that the envelope path extracts update_contracts entries.
+
+    The legacy CONTEXT_UPDATE text marker was retired; enrichment now travels
+    as a top-level ``update_contracts`` array inside the agent_contract_handoff
+    envelope. parse_contract() extracts the envelope and parse_update_contracts()
+    returns its entries.
+    """
 
     def test_parse_valid_context_update(self):
-        """A well-formed CONTEXT_UPDATE block (contract/payload) should be parsed."""
-        from context_writer import parse_context_update
+        """A well-formed update_contracts entry should be parsed from the envelope."""
+        from modules.agents.contract_validator import (
+            parse_contract,
+            parse_update_contracts,
+        )
 
         agent_output = """
 ## Investigation Complete
 
 Found the cluster details.
-
-CONTEXT_UPDATE:
-{
-  "contract": "cluster_details",
-  "payload": {
-    "node_count": 3,
-    "node_type": "e2-standard-4",
-    "kubernetes_version": "1.28.5-gke.1200"
-  }
-}
 
 ```agent_contract_handoff
 {
@@ -402,20 +389,34 @@ CONTEXT_UPDATE:
     "cross_layer_impacts": [],
     "open_gaps": []
   },
-  "consolidation_report": null
+  "consolidation_report": null,
+  "update_contracts": [
+    {
+      "contract": "cluster_details",
+      "payload": {
+        "node_count": 3,
+        "node_type": "e2-standard-4",
+        "kubernetes_version": "1.28.5-gke.1200"
+      }
+    }
+  ]
 }
 ```
 """
-        result = parse_context_update(agent_output)
+        entries = parse_update_contracts(parse_contract(agent_output) or {})
 
-        assert result is not None, "Should parse CONTEXT_UPDATE block"
-        assert result["contract"] == "cluster_details"
-        assert result["payload"]["node_count"] == 3
-        assert result["payload"]["kubernetes_version"] == "1.28.5-gke.1200"
+        assert len(entries) == 1, "Should parse one update_contracts entry"
+        entry = entries[0]
+        assert entry["contract"] == "cluster_details"
+        assert entry["payload"]["node_count"] == 3
+        assert entry["payload"]["kubernetes_version"] == "1.28.5-gke.1200"
 
     def test_parse_no_context_update(self):
-        """Output without CONTEXT_UPDATE should return None."""
-        from context_writer import parse_context_update
+        """Envelope without update_contracts yields no entries."""
+        from modules.agents.contract_validator import (
+            parse_contract,
+            parse_update_contracts,
+        )
 
         agent_output = """
 ## Investigation Complete
@@ -443,100 +444,80 @@ No new data found.
 }
 ```
 """
-        result = parse_context_update(agent_output)
-        assert result is None
+        entries = parse_update_contracts(parse_contract(agent_output) or {})
+        assert entries == []
 
     def test_parse_malformed_json(self):
-        """Malformed JSON after CONTEXT_UPDATE should return None."""
-        from context_writer import parse_context_update
+        """An entry missing required keys is skipped, not raised."""
+        from modules.agents.contract_validator import parse_update_contracts
 
-        agent_output = """
-CONTEXT_UPDATE:
-{not valid json}
-"""
-        result = parse_context_update(agent_output)
-        assert result is None
+        # contract dict with a structurally-broken entry (no payload key)
+        contract = {"update_contracts": [{"contract": "cluster_details"}]}
+        entries = parse_update_contracts(contract)
+        assert entries == []
 
-    def test_parse_context_update_with_markdown_code_fence(self):
-        """Real LLM output: CONTEXT_UPDATE JSON wrapped in ```json fence.
+    def test_parse_context_update_with_nested_payload(self):
+        """A deeply-nested payload survives the envelope parse intact.
 
-        This test reproduces the exact bug observed in production on 2026-02-17.
-        The cloud-troubleshooter agent emitted CONTEXT_UPDATE with markdown
-        code fences, causing parse_context_update() to fail with:
-          'Malformed JSON in CONTEXT_UPDATE block: Expecting value: line 1 column 1 (char 0)'
+        Reproduces the real cloud-troubleshooter enrichment shape, now carried
+        as an update_contracts entry rather than the retired text marker.
         """
-        from context_writer import parse_context_update
+        from modules.agents.contract_validator import (
+            parse_contract,
+            parse_update_contracts,
+        )
 
-        # Format from a real transcript, now wrapped in {contract, payload}.
+        envelope = {
+            "agent_status": {
+                "plan_status": "COMPLETE",
+                "agent_id": "cloud-troubleshooter",
+                "pending_steps": [],
+                "next_action": "done",
+            },
+            "evidence_report": {
+                "patterns_checked": [],
+                "files_checked": [],
+                "commands_run": [],
+                "key_outputs": [],
+                "verbatim_outputs": [],
+                "cross_layer_impacts": [],
+                "open_gaps": [],
+            },
+            "consolidation_report": None,
+            "update_contracts": [
+                {
+                    "contract": "cluster_details",
+                    "payload": {
+                        "cluster_name": "oci-pos-dev-cluster-01",
+                        "namespaces_inspected": {
+                            "test": {
+                                "pod_count": 1,
+                                "pods": [
+                                    {
+                                        "name": "nginx-deployment-6fbb6bcf74-8g9gn",
+                                        "ready": "2/2",
+                                        "status": "Running",
+                                        "restarts": 0,
+                                    }
+                                ],
+                                "last_checked": "2026-02-17",
+                            }
+                        },
+                    },
+                }
+            ],
+        }
         agent_output = (
-            "INVESTIGATION COMPLETE\n"
-            "\n"
-            "**Cluster:** oci-pos-dev-cluster-01\n"
-            "**Namespace:** test\n"
-            "\n"
-            "**Pod Count:** 1\n"
-            "\n"
-            "| Pod Name | Ready | Status | Restarts | Age |\n"
-            "|----------|-------|--------|----------|-----|\n"
-            "| nginx-deployment-6fbb6bcf74-8g9gn | 2/2 | Running | 0 | 8h |\n"
-            "\n"
-            "**Summary:**\n"
-            "- There is **1 pod** running in the `test` namespace.\n"
-            "\n"
-            "CONTEXT_UPDATE:\n"
-            "```json\n"
-            "{\n"
-            '  "contract": "cluster_details",\n'
-            '  "payload": {\n'
-            '    "cluster_name": "oci-pos-dev-cluster-01",\n'
-            '    "namespaces_inspected": {\n'
-            '      "test": {\n'
-            '        "pod_count": 1,\n'
-            '        "pods": [\n'
-            "          {\n"
-            '            "name": "nginx-deployment-6fbb6bcf74-8g9gn",\n'
-            '            "ready": "2/2",\n'
-            '            "status": "Running",\n'
-            '            "restarts": 0\n'
-            "          }\n"
-            "        ],\n"
-            '        "last_checked": "2026-02-17"\n'
-            "      }\n"
-            "    }\n"
-            "  }\n"
-            "}\n"
-            "```\n"
-            "\n"
-            "```agent_contract_handoff\n"
-            "{\n"
-            '  "agent_status": {\n'
-            '    "plan_status": "COMPLETE",\n'
-            '    "agent_id": "cloud-troubleshooter",\n'
-            '    "pending_steps": [],\n'
-            '    "next_action": "done"\n'
-            "  },\n"
-            '  "evidence_report": {\n'
-            '    "patterns_checked": [],\n'
-            '    "files_checked": [],\n'
-            '    "commands_run": [],\n'
-            '    "key_outputs": [],\n'
-            '    "verbatim_outputs": [],\n'
-            '    "cross_layer_impacts": [],\n'
-            '    "open_gaps": []\n'
-            "  },\n"
-            '  "consolidation_report": null\n'
-            "}\n"
-            "```"
+            "INVESTIGATION COMPLETE\n\n"
+            "```agent_contract_handoff\n" + json.dumps(envelope, indent=2) + "\n```"
         )
-        result = parse_context_update(agent_output)
+        entries = parse_update_contracts(parse_contract(agent_output) or {})
 
-        assert result is not None, (
-            "parse_context_update must handle ```json fenced code blocks — "
-            "this is the exact format from a real cloud-troubleshooter transcript"
-        )
-        assert result["contract"] == "cluster_details"
-        assert result["payload"]["cluster_name"] == "oci-pos-dev-cluster-01"
-        pods = result["payload"]["namespaces_inspected"]["test"]["pods"]
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["contract"] == "cluster_details"
+        assert entry["payload"]["cluster_name"] == "oci-pos-dev-cluster-01"
+        pods = entry["payload"]["namespaces_inspected"]["test"]["pods"]
         assert len(pods) == 1
         assert pods[0]["name"] == "nginx-deployment-6fbb6bcf74-8g9gn"
 
@@ -571,15 +552,15 @@ class TestPhase3PermissionValidation:
         assert "gitops_configuration" in msg
 
     def test_terraform_architect_can_write_infrastructure(self, lifecycle_db):
-        """terraform-architect should be able to write terraform_infrastructure and infrastructure_topology."""
+        """platform-architect should be able to write terraform_infrastructure and infrastructure_topology."""
         _clear_writer_cache()
         from context_writer import validate_permission
 
         update_tf = {"contract": "terraform_infrastructure", "payload": {"modules_count": 12}}
         update_topo = {"contract": "infrastructure_topology", "payload": {"vpc_id": "vpc-123"}}
 
-        allowed_tf, _ = validate_permission(update_tf, "terraform-architect", db_path=lifecycle_db)
-        allowed_topo, _ = validate_permission(update_topo, "terraform-architect", db_path=lifecycle_db)
+        allowed_tf, _ = validate_permission(update_tf, "platform-architect", db_path=lifecycle_db)
+        allowed_topo, _ = validate_permission(update_topo, "platform-architect", db_path=lifecycle_db)
 
         assert allowed_tf is True
         assert allowed_topo is True
@@ -590,31 +571,31 @@ class TestPhase3PermissionValidation:
 # ============================================================================
 
 class TestPhase4FullLifecycle:
-    """End-to-end: process_agent_output writes to gaia.db."""
+    """End-to-end: process_update_contracts writes to gaia.db via the envelope."""
+
+    @staticmethod
+    def _make_contract(contract_name, payload):
+        """Build a parsed contract dict carrying one update_contracts entry."""
+        return {
+            "agent_status": {"plan_status": "COMPLETE"},
+            "update_contracts": [{"contract": contract_name, "payload": payload}],
+        }
 
     def test_context_update_applied_to_db(self, lifecycle_db):
         """
         Simulate the complete lifecycle:
-        1. Process agent output containing a CONTEXT_UPDATE block
+        1. Process a contract dict carrying an update_contracts entry
         2. Verify gaia.db project_context_contracts was updated
         """
         _clear_writer_cache()
-        from context_writer import process_agent_output
+        from hooks.modules.context.context_writer import process_update_contracts
 
-        agent_output = (
-            "## Cloud Troubleshooter Report\n\n"
-            "Investigated cluster `test-cluster` in GCP us-east4.\n\n"
-            "CONTEXT_UPDATE:\n"
-            + json.dumps({
-                "contract": "cluster_details",
-                "payload": {
-                    "kubernetes_version": "1.28.5-gke.1200",
-                    "node_count": 3,
-                    "node_type": "e2-standard-4",
-                    "status": "RUNNING",
-                }
-            }, indent=2)
-        )
+        contract = self._make_contract("cluster_details", {
+            "kubernetes_version": "1.28.5-gke.1200",
+            "node_count": 3,
+            "node_type": "e2-standard-4",
+            "status": "RUNNING",
+        })
 
         task_info = {
             "agent_type": "cloud-troubleshooter",
@@ -622,10 +603,10 @@ class TestPhase4FullLifecycle:
             "workspace": "global",
         }
 
-        result = process_agent_output(agent_output, task_info)
+        result = process_update_contracts(contract, task_info)
 
         assert result["updated"] is True, f"Context should be updated, got: {result}"
-        assert result["contract"] == "cluster_details"
+        assert "cluster_details" in result["contracts"]
         assert result["rejected"] == []
 
         stored = read_contract(lifecycle_db, "global", "cluster_details")
@@ -640,14 +621,10 @@ class TestPhase4FullLifecycle:
         cloud-troubleshooter writing to operational_guidelines → rejected.
         """
         _clear_writer_cache()
-        from context_writer import process_agent_output
+        from hooks.modules.context.context_writer import process_update_contracts
 
-        agent_output = (
-            "CONTEXT_UPDATE:\n"
-            + json.dumps({
-                "contract": "operational_guidelines",
-                "payload": {"commit_standards": "HIJACKED"}
-            })
+        contract = self._make_contract(
+            "operational_guidelines", {"commit_standards": "HIJACKED"}
         )
 
         task_info = {
@@ -656,7 +633,7 @@ class TestPhase4FullLifecycle:
             "workspace": "global",
         }
 
-        result = process_agent_output(agent_output, task_info)
+        result = process_update_contracts(contract, task_info)
 
         assert result["updated"] is False
         assert "operational_guidelines" in result["rejected"]
@@ -667,18 +644,11 @@ class TestPhase4FullLifecycle:
     def test_second_write_replaces_contract(self, lifecycle_db):
         """Second write to the same contract replaces the payload (upsert)."""
         _clear_writer_cache()
-        from context_writer import process_agent_output
+        from hooks.modules.context.context_writer import process_update_contracts
 
         def write(node_count):
-            output = (
-                "CONTEXT_UPDATE:\n"
-                + json.dumps({
-                    "contract": "cluster_details",
-                    "payload": {"node_count": node_count}
-                })
-            )
-            return process_agent_output(
-                output,
+            return process_update_contracts(
+                self._make_contract("cluster_details", {"node_count": node_count}),
                 {"agent_type": "cloud-troubleshooter", "db_path": lifecycle_db, "workspace": "global"}
             )
 
@@ -692,16 +662,12 @@ class TestPhase4FullLifecycle:
         assert stored["node_count"] == 5
 
     def test_audit_record_written_on_success(self, lifecycle_db):
-        """A successful CONTEXT_UPDATE is reflected in the DB contract row."""
+        """A successful update_contracts write is reflected in the DB contract row."""
         _clear_writer_cache()
-        from context_writer import process_agent_output
+        from hooks.modules.context.context_writer import process_update_contracts
 
-        output = (
-            "CONTEXT_UPDATE:\n"
-            + json.dumps({
-                "contract": "infrastructure_topology",
-                "payload": {"vpc_name": "main-vpc"}
-            })
+        contract = self._make_contract(
+            "infrastructure_topology", {"vpc_name": "main-vpc"}
         )
         task_info = {
             "agent_type": "cloud-troubleshooter",
@@ -709,10 +675,10 @@ class TestPhase4FullLifecycle:
             "workspace": "global",
         }
 
-        result = process_agent_output(output, task_info)
+        result = process_update_contracts(contract, task_info)
 
         assert result["updated"] is True
-        assert result["contract"] == "infrastructure_topology"
+        assert "infrastructure_topology" in result["contracts"]
 
         con = sqlite3.connect(str(lifecycle_db))
         rows = con.execute(
@@ -731,13 +697,13 @@ class TestPhase4FullLifecycle:
 # ============================================================================
 
 class TestPhase5SubagentStopHook:
-    """Test the subagent_stop_hook processes CONTEXT_UPDATE end-to-end."""
+    """Test the subagent_stop_hook processes update_contracts end-to-end."""
 
     def test_subagent_stop_processes_context_update(self, test_project, lifecycle_db):
         """
         subagent_stop_hook should:
         1. Capture metrics
-        2. Process CONTEXT_UPDATE via context_writer (DB write)
+        2. Process update_contracts via context_writer (DB write)
         3. Return context_updated=True
         """
         _clear_writer_cache()
@@ -757,39 +723,40 @@ class TestPhase5SubagentStopHook:
             os.environ["WORKFLOW_MEMORY_BASE_PATH"] = str(claude_dir)
             os.environ["GAIA_WRITE_WORKFLOW_METRICS"] = "1"
 
+            envelope = {
+                "agent_status": {
+                    "plan_status": "COMPLETE",
+                    "agent_id": "test-agent",
+                    "pending_steps": [],
+                    "next_action": "done",
+                },
+                "evidence_report": {
+                    "patterns_checked": [],
+                    "files_checked": [],
+                    "commands_run": [],
+                    "key_outputs": [],
+                    "verbatim_outputs": [],
+                    "cross_layer_impacts": [],
+                    "open_gaps": [],
+                },
+                "consolidation_report": None,
+                "update_contracts": [
+                    {
+                        "contract": "cluster_details",
+                        "payload": {
+                            "kubernetes_version": "1.28.5-gke.1200",
+                            "health_status": "HEALTHY",
+                            "node_count": 3,
+                        },
+                    }
+                ],
+            }
             agent_output = (
                 "## Cluster Health Report\n\n"
                 "All nodes healthy. Cluster version: 1.28.5-gke.1200\n\n"
-                "CONTEXT_UPDATE:\n"
-                + json.dumps({
-                    "contract": "cluster_details",
-                    "payload": {
-                        "kubernetes_version": "1.28.5-gke.1200",
-                        "health_status": "HEALTHY",
-                        "node_count": 3,
-                    }
-                }, indent=2)
-                + "\n\n"
                 "```agent_contract_handoff\n"
-                '{\n'
-                '  "agent_status": {\n'
-                '    "plan_status": "COMPLETE",\n'
-                '    "agent_id": "test-agent",\n'
-                '    "pending_steps": [],\n'
-                '    "next_action": "done"\n'
-                '  },\n'
-                '  "evidence_report": {\n'
-                '    "patterns_checked": [],\n'
-                '    "files_checked": [],\n'
-                '    "commands_run": [],\n'
-                '    "key_outputs": [],\n'
-                '    "verbatim_outputs": [],\n'
-                '    "cross_layer_impacts": [],\n'
-                '    "open_gaps": []\n'
-                '  },\n'
-                '  "consolidation_report": null\n'
-                '}\n'
-                "```\n"
+                + json.dumps(envelope, indent=2)
+                + "\n```\n"
             )
 
             task_info = {
@@ -821,7 +788,7 @@ class TestPhase5SubagentStopHook:
             os.environ.pop("GAIA_WRITE_WORKFLOW_METRICS", None)
 
     def test_subagent_stop_without_context_update(self, test_project):
-        """When agent output has no CONTEXT_UPDATE, context_updated should be False."""
+        """When agent output has no update_contracts, context_updated should be False."""
         tmp_path, claude_dir = test_project
 
         original_cwd = os.getcwd()

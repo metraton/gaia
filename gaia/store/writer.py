@@ -680,7 +680,7 @@ def _assert_dispatch_can_write_memory() -> None:
     * Set to anything else -> raises ``MemoryWriteForbidden``.
 
     Curated memory is the orchestrator-operator pair's substrate. Subagents
-    (developer, terraform-architect, gitops-operator, ...) record episodic
+    (developer, platform-architect, gitops-operator, ...) record episodic
     events via the audit pipeline; they do not author the curated layer.
     """
     raw = os.environ.get("GAIA_DISPATCH_AGENT")
@@ -695,29 +695,57 @@ def _assert_dispatch_can_write_memory() -> None:
     )
 
 # Curated slug taxonomy: when the type is one of the new curated types
-# (atom / decision / negative), the `name` must start with the matching prefix
-# and use snake_case slug discipline. The legacy types (project / user /
-# feedback) keep their historical naming freedom.
+# (atom / decision / negative), the `name` must start with the MATCHING prefix
+# for that specific type, and use snake_case slug discipline. The legacy types
+# (project / user / feedback) keep their historical naming freedom, but are
+# NOT allowed to use a curated prefix -- that combination is a mismatch that
+# must fail loudly.
+#
+# Single-source-of-truth rule: the slug prefix IS the type. (slug, type) pairs
+# that disagree are always an error -- never silently reclassified.
 import re as _re_for_slug
 _CURATED_SLUG_TYPES = ("atom", "decision", "negative")
-_CURATED_SLUG_PATTERN = _re_for_slug.compile(
-    r"^(atom|decision|negative)_[a-z0-9_]+$"
+_LEGACY_SLUG_TYPES = ("project", "user", "feedback")
+
+# Pre-computed per-type patterns for precise prefix enforcement.
+_CURATED_TYPE_PATTERNS = {
+    t: _re_for_slug.compile(rf"^{t}_[a-z0-9_]+$")
+    for t in _CURATED_SLUG_TYPES
+}
+# Used to detect when a legacy-type call uses a curated prefix (cross-direction mismatch).
+_CURATED_PREFIX_PATTERN = _re_for_slug.compile(
+    r"^(atom|decision|negative)_"
 )
 
 
 def _validate_curated_slug(name: str, type: str) -> None:
-    """Raise ValueError if name does not match the curated slug convention.
+    """Raise ValueError when the slug and type disagree, in either direction.
 
-    Only enforced for the three new curated types. Legacy types skip the
-    check to preserve back-compat with existing rows.
+    Rules (single source of truth: the slug prefix IS the type):
+      * type in (atom, decision, negative): name must match '^{type}_[a-z0-9_]+$'
+        exactly -- not just any curated prefix, the SPECIFIC one for this type.
+      * type in (project, user, feedback): name must NOT start with any curated
+        prefix (atom_, decision_, negative_). If it does, caller is expressing
+        an impossible pair; fail loudly instead of reclassifying silently.
     """
-    if type not in _CURATED_SLUG_TYPES:
-        return
-    if not _CURATED_SLUG_PATTERN.match(name):
-        raise ValueError(
-            f"invalid slug {name!r} for type={type!r}: must match "
-            f"'^{type}_[a-z0-9_]+$' (e.g. '{type}_my_topic')"
-        )
+    if type in _CURATED_SLUG_TYPES:
+        pattern = _CURATED_TYPE_PATTERNS[type]
+        if not pattern.match(name):
+            raise ValueError(
+                f"slug {name!r} does not match type={type!r}: "
+                f"expected '^{type}_[a-z0-9_]+$' (e.g. '{type}_my_topic'). "
+                f"The slug prefix must match the type -- they are the same thing."
+            )
+    elif type in _LEGACY_SLUG_TYPES:
+        if _CURATED_PREFIX_PATTERN.match(name):
+            # Extract the conflicting prefix so the error is actionable.
+            conflicting_prefix = name.split("_")[0]
+            raise ValueError(
+                f"slug {name!r} starts with '{conflicting_prefix}_' but type={type!r}: "
+                f"the slug prefix and the type must agree. "
+                f"Either use --type={conflicting_prefix} to match the slug prefix, "
+                f"or rename the slug to start with '{type}_'."
+            )
 
 
 def upsert_memory(

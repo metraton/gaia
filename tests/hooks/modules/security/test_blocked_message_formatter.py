@@ -77,8 +77,8 @@ class TestFormatBlockedMessageKnownCategories:
     """Test format_blocked_message() with categories from CATEGORY_AGENT_MAP."""
 
     @pytest.mark.parametrize("category,expected_agent", [
-        ("aws_critical", "terraform-architect"),
-        ("gcp_critical", "terraform-architect"),
+        ("aws_critical", "platform-architect"),
+        ("gcp_critical", "platform-architect"),
         ("kubernetes_critical", "gitops-operator"),
         ("flux_critical", "gitops-operator"),
         ("git_destructive", "developer"),

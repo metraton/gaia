@@ -212,7 +212,8 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
         error_message = (
             f"Contract incomplete. Missing: {fields_str}.\n"
             f"\n"
-            f"Repair: reissue your response ending with an agent_contract_handoff block:\n"
+            f"Repair: reissue your response ending with an agent_contract_handoff block "
+            f"whose body is valid JSON (parsed with json.loads -- not YAML):\n"
             f"\n"
             f"```agent_contract_handoff\n"
             f'{{\n'
@@ -281,9 +282,12 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     fields_str = ", ".join(all_missing)
     error_message = (
         f"Contract incomplete. Missing: {fields_str}. "
-        f"No agent_contract_handoff fenced block found.\n"
+        f"No parseable agent_contract_handoff fenced block found "
+        f"(the block body must be VALID JSON parsed with json.loads -- "
+        f"YAML, comments, trailing commas, or unquoted keys will fail to parse "
+        f"and the block is treated as missing).\n"
         f"\n"
-        f"Repair: your response MUST end with a contract block:\n"
+        f"Repair: your response MUST end with a contract block whose body is valid JSON:\n"
         f"\n"
         f"```agent_contract_handoff\n"
         f'{{\n'

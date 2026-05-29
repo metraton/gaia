@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 # Category-to-agent mapping: which specialist handles remediation
 CATEGORY_AGENT_MAP = {
-    "aws_critical": "terraform-architect",
-    "gcp_critical": "terraform-architect",
-    "terraform_destroy": "terraform-architect",
+    "aws_critical": "platform-architect",
+    "gcp_critical": "platform-architect",
+    "terraform_destroy": "platform-architect",
     "kubernetes_critical": "gitops-operator",
     "flux_critical": "gitops-operator",
     "git_destructive": "developer",

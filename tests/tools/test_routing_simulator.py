@@ -124,8 +124,8 @@ class TestRoutingSimulator:
 
     def test_terraform_routes_to_terraform_architect(self, simulator):
         result = simulator.simulate("terraform plan")
-        assert result.primary_agent == "terraform-architect"
-        assert "terraform_iac" in result.surfaces_active
+        assert result.primary_agent == "platform-architect"
+        assert "iac" in result.surfaces_active
 
     def test_dockerfile_routes_to_devops_developer(self, simulator):
         result = simulator.simulate("fix the Dockerfile")
@@ -145,7 +145,7 @@ class TestRoutingSimulator:
 
     def test_context_sections_match_surface_config(self, simulator):
         result = simulator.simulate("terraform plan")
-        # terraform_iac surface should include terraform-related sections
+        # iac surface should include terraform-related sections
         assert len(result.context_sections) > 0
 
     @pytest.mark.skip(
@@ -194,7 +194,7 @@ class TestRoutingSimulator:
     def test_compare_routing(self, simulator):
         events = [
             {"prompt": "kubectl get pods", "agent": "cloud-troubleshooter"},
-            {"prompt": "terraform plan", "agent": "terraform-architect"},
+            {"prompt": "terraform plan", "agent": "platform-architect"},
             {"prompt": "fix Dockerfile", "agent": "developer"},
         ]
         comparison = simulator.compare_routing(events)
@@ -240,7 +240,7 @@ class TestSkillsMapper:
         assert "cloud-troubleshooter" in names
         assert "developer" in names
         assert "gitops-operator" in names
-        assert "terraform-architect" in names
+        assert "platform-architect" in names
         assert "gaia-system" in names
         assert "gaia-planner" in names
 

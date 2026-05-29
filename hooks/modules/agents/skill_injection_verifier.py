@@ -40,25 +40,9 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
         "NO PIPES. NO CHAINS. NO REDIRECTS",
         "cloud_pipe_validator",
     ],
-    "context-updater": [
-        "CONTEXT_UPDATE",
-        "context-updater",
-    ],
     "fast-queries": [
         "fast-queries",
         "triage",
-    ],
-    "terraform-patterns": [
-        "terraform-patterns",
-        "Terragrunt",
-    ],
-    "gitops-patterns": [
-        "gitops-patterns",
-        "Flux",
-        "HelmRelease",
-    ],
-    "developer-patterns": [
-        "developer-patterns",
     ],
 }
 

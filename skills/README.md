@@ -49,6 +49,7 @@ Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) ar
 
 ```
 skills/
+├── agent-contract-handoff/ # Reference: full field dictionary for the agent_contract_handoff envelope (input + output)
 ├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
 ├── agent-protocol/        # Response contract format, state machine, error handling
 ├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
@@ -57,9 +58,6 @@ skills/
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
-├── context-updater/       # CONTEXT_UPDATE format and writable sections contract
-│   └── examples.md
-├── developer-patterns/    # Application code patterns (Node.js, Python)
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Quick diagnostic scripts for cloud/system state
 ├── gaia-compact/          # Orchestrator: structured /compact prompt with preservation contract
@@ -70,8 +68,6 @@ skills/
 ├── gaia-self-check/       # Validate internal consistency of the .claude/ installation
 ├── gaia-verify/           # Verify a Gaia installation across delivery surfaces
 ├── git-conventions/       # Conventional Commits (on-demand workflow skill)
-├── gitops-patterns/       # GitOps/Flux/Kubernetes patterns
-│   └── reference.md
 ├── gmail-policy/          # Gmail domain policy (label-only, no delete)
 ├── gmail-triage/          # Interactive Gmail inbox triage
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
@@ -91,8 +87,6 @@ skills/
 │   └── reference.md
 ├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
-├── terraform-patterns/    # Terraform/Terragrunt patterns
-│   └── reference.md
 └── reference.md           # Cross-skill reference index
 ```
 
@@ -102,13 +96,13 @@ skills/
 
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
-| cloud-troubleshooter | agent-protocol, security-tiers, investigation, command-execution | context-updater, fast-queries |
-| terraform-architect | agent-protocol, security-tiers, investigation, command-execution, terraform-patterns | context-updater, fast-queries |
-| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, gitops-patterns | context-updater, fast-queries |
-| developer | agent-protocol, security-tiers, investigation, command-execution, developer-patterns | context-updater, fast-queries |
+| cloud-troubleshooter | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
+| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions | — |
+| gitops-operator | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
+| developer | agent-protocol, security-tiers, investigation, command-execution | git-conventions |
 | gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, gaia-release, skill-creation | gaia-verify |
 | gaia-planner | agent-protocol, security-tiers | gaia-planner |
-| gaia-operator | agent-protocol, security-tiers, command-execution, context-updater, memory, gmail-triage, gws-setup | blog-writing |
+| gaia-operator | agent-protocol, security-tiers, command-execution, memory, gmail-triage, gws-setup | blog-writing |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
@@ -116,6 +110,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 - `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
 
 Workflow skills (on-demand injection, not in any agent frontmatter):
+- `agent-contract-handoff` — reference field dictionary for the contract envelope (input + output); loaded on demand by producers and the orchestrator when field/trigger precision is needed
 - `agent-approval-protocol` — unified approval protocol combining request + present flows
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system, `user-invocable: false`
 - `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt, `user-invocable: false`
@@ -132,8 +127,8 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 | Type | Injection | Examples |
 |------|-----------|---------|
 | Core | Always via `skills:` frontmatter | agent-protocol, security-tiers |
-| Common | Most agents via `skills:` frontmatter | command-execution, context-updater |
-| Domain | Per-agent via `skills:` frontmatter | terraform-patterns, gaia-patterns |
+| Common | Most agents via `skills:` frontmatter | command-execution, investigation |
+| Domain | Per-agent via `skills:` frontmatter | gaia-patterns |
 | Workflow | On-demand (agent reads from disk) | subagent-request-approval, execution, git-conventions |
 | Orchestrator | On-demand via Skill tool | agent-response, orchestrator-present-approval |
 

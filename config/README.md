@@ -55,7 +55,7 @@ config/
 
 ## Convenciones
 
-**context-contracts.json schema:** Each entry is keyed by agent name. Each agent has `read` (list of project-context section names the agent receives) and `write` (list of sections the agent can update via CONTEXT_UPDATE). `core_sections` is a top-level list of sections injected into every agent regardless of per-agent config. This schema is mirrored in the DB tables `project_context_contracts` (one row per agent) and `agent_contract_permissions` (permission grants).
+**context-contracts.json schema:** Each entry is keyed by agent name. Each agent has `read` (list of project-context section names the agent receives) and `write` (list of sections the agent can update via an `update_contracts` clause). `core_sections` is a top-level list of sections injected into every agent regardless of per-agent config. This schema is mirrored in the DB tables `project_context_contracts` (one row per agent) and `agent_contract_permissions` (permission grants).
 
 **Adding a new cloud:** Create `cloud/azure.json` following the same schema as `cloud/gcp.json`. Define agent-specific sections for that cloud. No code changes needed — `context_provider.py` detects the file automatically by matching `cloud_provider` from project-context.
 

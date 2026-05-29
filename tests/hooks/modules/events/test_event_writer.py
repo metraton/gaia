@@ -79,7 +79,7 @@ class TestEventWriter:
     def test_write_event_creates_jsonl(self, writer, events_dir):
         """write_event should create a valid JSONL line."""
         writer.write_event(
-            AGENT_DISPATCH, "hook", "terraform-architect",
+            AGENT_DISPATCH, "hook", "platform-architect",
             "dispatched for: plan staging",
         )
         events_file = events_dir / "events.jsonl"
@@ -91,7 +91,7 @@ class TestEventWriter:
         record = json.loads(lines[0])
         assert record["type"] == "agent.dispatch"
         assert record["source"] == "hook"
-        assert record["agent"] == "terraform-architect"
+        assert record["agent"] == "platform-architect"
         assert record["result"] == "dispatched for: plan staging"
         assert record["severity"] == "info"
         assert "ts" in record

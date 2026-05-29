@@ -10,8 +10,10 @@ metadata:
 
 ```
 ONE COMMAND. ONE RESULT. ONE EXIT CODE.
-NO PIPES. NO CHAINS. NO REDIRECTS.
+Reach for the native flag before the pipe; the file tool before the shell.
 ```
+
+The runtime hard-blocks pipes, redirects, and chaining for cloud CLIs (gcloud kubectl aws terraform helm flux) and blocks redirects and background `&` for every command — but the discipline applies to everything you run, not only what the hook catches.
 
 ## Mental Model
 
@@ -32,6 +34,8 @@ For file I/O, always use Claude Code tools over Bash:
 | `grep -r`, `rg` | Grep |
 | `find` | Glob |
 
+The agent cwd resets between Bash calls, so a relative path resolves against an unknown directory — pass absolute paths or the CLI's `-chdir`.
+
 ## Rules
 
 1. **No pipes** — find the CLI's native flag first.
@@ -39,20 +43,17 @@ For file I/O, always use Claude Code tools over Bash:
 3. **Tools over Bash** — for file I/O, always.
 4. **Absolute paths** — agent cwd resets between calls; relative paths break silently.
 5. **Quote variables** — unquoted `${VAR}` with spaces becomes multiple arguments.
+6. **No redirects or background** — `>`/`>>` and trailing `&` are the part the runtime enforces on every command; redirects bypass the Write tool, `&` hides the exit code.
 
 ## Traps
 
 | If you're thinking... | The reality is... |
 |---|---|
-| "I'll pipe to grep/awk/jq to filter" | Find `--filter` or `--format` flag |
-| "I'll chain with && for efficiency" | Run separately, verify each exit code |
-| "Let me cat/head this file" | Use the Read tool |
-| "Let me cd first, then run" | Use absolute path or `-chdir` |
-| "I need jq to parse JSON" | Use `--format json` at source |
-| "A heredoc is cleanest for multi-line" | Use Write tool. Heredocs fail in batch. |
-| "This pipe is read-only, it's safe" | Pipes still hide exit codes |
-
-**Exception:** `git commit -m "$(cat <<'EOF' ...)"` heredocs are allowed.
+| "I'll pipe to filter / parse / it's read-only so it's safe" | The flag exists: `--filter`, `--format`, `-o jsonpath`. A pipe hides the exit code regardless of intent |
+| "I'll chain with && for efficiency" | Chaining collapses two exit codes into one — run separately and verify each |
+| "Let me cat/head this file (or use a heredoc)" | File I/O is a tool, not a shell call — use Read/Write; heredocs also break in batch |
+| "Let me cd first, then run" | The cwd resets between calls — use an absolute path or `-chdir` |
+| "Redirect output to a file / run it in background" | Redirect and `&` are the universal wall — use the Write tool; `&` hides the exit code, blocked for every command |
 
 ## Anti-Patterns
 
@@ -60,5 +61,4 @@ For file I/O, always use Claude Code tools over Bash:
 - `cd dir && terraform plan` → `terraform -chdir=/absolute/path plan`
 - `cat file | wc -l` → Read tool
 
-The `cloud_pipe_validator.py` hook enforces no-pipes at runtime.
-For mutation rules and cloud CLI examples, see `reference.md`.
+Enforced at runtime by `validate_cloud_pipe` (`cloud_pipe_validator.py`): pipes/redirects/chaining are blocked for cloud CLIs; redirects and background `&` are blocked for every command. A quoted `git commit -m "$(cat <<'EOF' …)"` passes because the body is quote-stripped before scanning and `git` is non-cloud — not a special case. See `reference.md` for mutation rules and cloud examples.

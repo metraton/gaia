@@ -1,20 +1,11 @@
 """
-ContextWriter: validates and persists CONTEXT_UPDATE blocks from agent output.
+ContextWriter: validates and persists update_contracts clauses from agent output.
 
-Parses CONTEXT_UPDATE blocks (legacy text path) and update_contracts arrays
-(new envelope path, T2.3), enforces write permissions via
-agent_contract_permissions in ~/.gaia/gaia.db, and upserts to
-project_context_contracts.
+Parses the ``update_contracts`` array from the agent_contract_handoff envelope,
+enforces write permissions via agent_contract_permissions in ~/.gaia/gaia.db,
+and upserts to project_context_contracts.
 
-Legacy CONTEXT_UPDATE format (single block)::
-
-    CONTEXT_UPDATE:
-    {
-      "contract": "<contract_name>",
-      "payload": { ... }
-    }
-
-New update_contracts format (array inside agent_contract_handoff)::
+update_contracts format (array inside agent_contract_handoff)::
 
     "update_contracts": [
       { "contract": "<contract_name>", "payload": { ... } },
@@ -22,11 +13,8 @@ New update_contracts format (array inside agent_contract_handoff)::
     ]
 
 Public API:
-    - parse_context_update(agent_output) -> Optional[dict]
     - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
     - apply_update(update, agent_name, workspace, db_path) -> dict
-    - process_agent_output(agent_output, task_info) -> dict
-    - process_context_updates(agent_output, task_info, find_claude_dir_fn=None) -> Optional[dict]
     - process_update_contracts(contract_dict, task_info) -> dict
 """
 
@@ -48,79 +36,7 @@ _permissions_cache: dict = {}
 
 
 # ============================================================================
-# 1. parse_context_update
-# ============================================================================
-
-def parse_context_update(agent_output: str) -> Optional[dict]:
-    """Extract and parse a CONTEXT_UPDATE block from agent output.
-
-    Accepts the contract/payload schema only::
-
-        CONTEXT_UPDATE:
-        { "contract": "application_services", "payload": { ... } }
-
-    Returns None when:
-    - No marker is found
-    - The JSON is malformed
-    - The parsed value is not a dict
-    - Required keys ``contract`` and ``payload`` are absent
-    """
-    marker = "CONTEXT_UPDATE:"
-    lines = agent_output.split("\n")
-
-    marker_idx = None
-    for i, line in enumerate(lines):
-        if line.strip() == marker:
-            marker_idx = i
-            break
-
-    if marker_idx is None:
-        return None
-
-    remaining = "\n".join(lines[marker_idx + 1:]).strip()
-    if not remaining:
-        return None
-
-    remaining = _strip_code_fence(remaining)
-    if not remaining:
-        return None
-
-    decoder = json.JSONDecoder()
-    try:
-        parsed, _ = decoder.raw_decode(remaining)
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Malformed JSON in CONTEXT_UPDATE block: %s", exc)
-        return None
-
-    if not isinstance(parsed, dict):
-        return None
-
-    if "contract" not in parsed or "payload" not in parsed:
-        logger.warning(
-            "CONTEXT_UPDATE block missing required keys 'contract' and 'payload'. "
-            "Got keys: %s",
-            list(parsed.keys()),
-        )
-        return None
-
-    return parsed
-
-
-def _strip_code_fence(text: str) -> str:
-    """Remove leading/trailing markdown code fences (``` or ```json)."""
-    if not text.startswith("```"):
-        return text
-    fence_lines = text.split("\n")
-    fence_lines.pop(0)  # opening ```[lang]
-    for i in range(len(fence_lines) - 1, -1, -1):
-        if fence_lines[i].strip() == "```":
-            fence_lines.pop(i)
-            break
-    return "\n".join(fence_lines).strip()
-
-
-# ============================================================================
-# 2. validate_permission
+# 1. validate_permission
 # ============================================================================
 
 def _get_db_path() -> Optional[Path]:
@@ -187,7 +103,7 @@ def _format_rejection_message(
 ) -> str:
     allowed_list = ", ".join(sorted(writable)) if writable else "(none)"
     return (
-        f"CONTEXT_UPDATE rejected: agent '{agent_name}' has no write permission "
+        f"update_contracts rejected: agent '{agent_name}' has no write permission "
         f"for contract '{contract_name}'. "
         f"Writable contracts for this agent: {allowed_list}."
     )
@@ -216,7 +132,7 @@ def validate_permission(
 
 
 # ============================================================================
-# 3. apply_update
+# 2. apply_update
 # ============================================================================
 
 def _derive_workspace() -> str:
@@ -234,7 +150,7 @@ def apply_update(
     workspace: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> dict:
-    """Upsert a validated CONTEXT_UPDATE into project_context_contracts.
+    """Upsert a validated update_contracts entry into project_context_contracts.
 
     ``workspace`` defaults to gaia.project.current() when not provided.
 
@@ -307,114 +223,7 @@ def apply_update(
 
 
 # ============================================================================
-# 4. process_agent_output
-# ============================================================================
-
-def process_agent_output(agent_output: str, task_info: dict) -> dict:
-    """Orchestrate parse -> validate -> apply for one agent output string.
-
-    Parameters
-    ----------
-    agent_output : str
-        Full output text from the agent.
-    task_info : dict
-        Required: ``agent_type`` (str).
-        Optional: ``db_path`` (Path), ``cloud_scope`` (str), ``workspace`` (str).
-
-    Returns
-    -------
-    dict
-        ``{updated, contract, rejected, error}``
-    """
-    result = {
-        "updated": False,
-        "contract": None,
-        "rejected": [],
-        "error": None,
-    }
-
-    update = parse_context_update(agent_output)
-    if update is None:
-        return result
-
-    agent_name = task_info.get("agent_type", "unknown")
-    db_path = task_info.get("db_path")
-    cloud_scope = task_info.get("cloud_scope")
-    workspace = task_info.get("workspace")
-
-    allowed, rejection_msg = validate_permission(update, agent_name, cloud_scope, db_path)
-    if not allowed:
-        result["rejected"] = [update.get("contract", "")]
-        result["error"] = rejection_msg
-        logger.warning(rejection_msg)
-        return result
-
-    audit = apply_update(update, agent_name, workspace=workspace, db_path=db_path)
-
-    if audit["success"]:
-        result["updated"] = True
-        result["contract"] = audit["contract"]
-    else:
-        result["error"] = audit["error"]
-
-    return result
-
-
-# ============================================================================
-# 5. process_context_updates (thin adapter for subagent_stop integration)
-# ============================================================================
-
-def process_context_updates(
-    agent_output: str,
-    task_info: dict,
-    find_claude_dir_fn=None,
-) -> Optional[dict]:
-    """Process CONTEXT_UPDATE blocks from agent output.
-
-    Validates write permission via agent_contract_permissions and writes to
-    project_context_contracts in ~/.gaia/gaia.db.
-
-    All errors are caught and logged; returns None on unexpected failure so
-    the hook flow is never interrupted.
-
-    Args:
-        agent_output: Complete output from agent execution.
-        task_info: Task metadata (agent, description, task_id).
-        find_claude_dir_fn: Unused -- kept for API compatibility.
-    """
-    try:
-        agent_name = task_info.get("agent", "unknown")
-        writer_task_info = {
-            "agent_type": agent_name,
-            "db_path": task_info.get("db_path"),
-            "cloud_scope": task_info.get("cloud_scope"),
-            "workspace": task_info.get("workspace"),
-        }
-
-        result = process_agent_output(agent_output, writer_task_info)
-
-        if result.get("updated"):
-            logger.info(
-                "Context updated by %s: contract=%s",
-                agent_name,
-                result.get("contract"),
-            )
-        if result.get("rejected"):
-            logger.warning(
-                "Context write rejected for %s: %s",
-                agent_name,
-                result.get("error", ""),
-            )
-
-        return result
-
-    except Exception as exc:
-        logger.debug("Context update processing failed (non-fatal): %s", exc)
-        return None
-
-
-# ============================================================================
-# 6. process_update_contracts (T2.3 -- new envelope path)
+# 3. process_update_contracts (envelope path)
 # ============================================================================
 
 def process_update_contracts(
@@ -423,9 +232,8 @@ def process_update_contracts(
 ) -> dict:
     """Process the ``update_contracts`` array from a parsed contract dict.
 
-    This is the new envelope path (T2.3) that replaces the single-block
-    ``CONTEXT_UPDATE:`` text path.  It supports N atomic updates per turn,
-    removing the "first-block-only" limitation of the legacy path.
+    This is the agent_contract_handoff envelope path. It supports N atomic
+    updates per turn, each entry being a ``{contract, payload}`` object.
 
     Each entry in ``update_contracts`` must be ``{contract, payload}``.
     Permission is checked per entry via ``validate_permission``.  Entries

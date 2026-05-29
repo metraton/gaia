@@ -93,7 +93,7 @@ def save_anchors(session_id: str, agent_type: str, anchors: Set[str]) -> Optiona
 
     Args:
         session_id: Current session identifier.
-        agent_type: Agent name (e.g. "terraform-architect").
+        agent_type: Agent name (e.g. "platform-architect").
         anchors: Set of anchor strings to save.
 
     Returns:

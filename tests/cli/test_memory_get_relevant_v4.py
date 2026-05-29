@@ -319,9 +319,9 @@ class TestEmptySectionsOmitHeader:
         assert rc == 0
         payload = json.loads(out)
         block = payload["block"]
-        assert "Sobre ti" in block
-        assert "Para esta sesión" not in block
-        assert "Hilos abiertos" not in block
+        assert "About you" in block
+        assert "For this session" not in block
+        assert "Open threads" not in block
 
     def test_all_empty_returns_empty_block(self, tmp_db, capsys):
         rc = memory_mod._cmd_get_relevant(_args())
@@ -347,6 +347,6 @@ class TestHeaderStructure:
         out = capsys.readouterr().out
         payload = json.loads(out)
         block = payload["block"]
-        assert "## Memory — Para esta sesión" in block
-        assert "## Memory — Sobre ti / Lo que sé" in block
-        assert "## Memory — Hilos abiertos" in block
+        assert "## Memory — For this session" in block
+        assert "## Memory — About you / What I know" in block
+        assert "## Memory — Open threads" in block

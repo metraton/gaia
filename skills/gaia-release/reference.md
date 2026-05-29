@@ -122,7 +122,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix. 
 | `Permission denied` invoking `session_end_hook.py`, `pre_compact.py`, etc. | Exec bit lost on cross-platform checkout | Update to `>= rc.4` (`b45304a` switched the invoker to `python3 <script>`, so exec bit no longer matters). |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired | Re-install. If persists, file a bug. |
 | Bash command unexpectedly blocked despite looking innocuous | Bash tokenization bug in `mutative_verbs.py` (pre-Round-2) | Update to `>= rc.4` post-Round-2 (`fd47a74` fundamental tokenization fix). |
-| Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. For batch operations, the agent should emit `approval_request.batch_scope: "verb_family"`. See `orchestrator-present-approval/SKILL.md` -> Rule 1. |
+| Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. Each blocked command produces its own approval; there is no batch grant. See `orchestrator-present-approval/SKILL.md` -> Rule 3. |
 
 ## Schema Migration Protocol
 

@@ -23,17 +23,17 @@ Gets the specific context needed for an agent based on its contract. Contracts a
 from tools.context.context_provider import get_contract_context
 contract_context = get_contract_context(
     project_context,
-    "terraform-architect",
+    "platform-architect",
     provider_contracts
 )
 ```
 
 ### `get_context_update_contract(agent_name, provider_contracts)`
-Gets the readable/writable section contract that governs `CONTEXT_UPDATE`. The source of truth is `agent_contract_permissions` in `~/.gaia/gaia.db`.
+Gets the readable/writable section contract that governs `update_contracts` clauses. The source of truth is `agent_contract_permissions` in `~/.gaia/gaia.db`.
 
 ```python
 from tools.context.context_provider import get_context_update_contract
-update_contract = get_context_update_contract("terraform-architect", provider_contracts)
+update_contract = get_context_update_contract("platform-architect", provider_contracts)
 ```
 
 ### `load_provider_contracts(cloud_provider)`
@@ -64,7 +64,7 @@ brief = build_investigation_brief("Review hook/skill drift", "gaia-system", cont
 
 Agent contracts live in `~/.gaia/gaia.db` (`project_context_contracts` + `agent_contract_permissions` tables). `config/context-contracts.json` is the seeding source applied by `gaia install`; the DB is the runtime SSOT. Each agent receives specific sections:
 
-**terraform-architect:**
+**platform-architect:**
 - project_identity, stack, git, environment, infrastructure, orchestration
 - terraform_infrastructure, infrastructure_topology
 - operational_guidelines, cluster_details, application_services, architecture_overview
@@ -84,12 +84,12 @@ The same contracts are exposed under `write_permissions`:
 - `writable_sections`
 
 Agents should use the injected `write_permissions`, not a hardcoded table in a skill,
-when deciding whether a `CONTEXT_UPDATE` is allowed.
+when deciding whether an `update_contracts` clause is allowed.
 
 ## Command Line Usage
 
 ```bash
-python3 tools/context/context_provider.py terraform-architect "Create a VPC" \
+python3 tools/context/context_provider.py platform-architect "Create a VPC" \
   --context-file .claude/project-context/project-context.json
 ```
 
