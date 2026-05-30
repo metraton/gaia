@@ -346,18 +346,59 @@ class TestCheckProjectContext:
 
 
 class TestCheckMemoryDirs:
-    """Test memory directories check."""
+    """Test the memory store check.
 
-    def test_all_present(self, healthy_project):
-        """Should pass when all memory dirs exist."""
-        r = doctor_mod.check_memory_dirs(healthy_project)
+    Episodic memory is DB-canonical (brief ``episodic-workflow-to-db``): the
+    check validates the ``episodes`` table in gaia.db, not the legacy
+    filesystem dirs that the canonical path no longer creates.
+    """
+
+    def test_episodes_table_present_passes(self, tmp_path, monkeypatch):
+        """Pass when the episodes table exists in gaia.db."""
+        import sqlite3
+        import gaia.store.writer as _writer_mod
+
+        db_file = tmp_path / "gaia.db"
+        con = sqlite3.connect(str(db_file))
+        con.execute("CREATE TABLE episodes (episode_id TEXT PRIMARY KEY)")
+        con.commit()
+        con.close()
+
+        monkeypatch.setattr(
+            _writer_mod, "_connect", lambda *a, **k: sqlite3.connect(str(db_file))
+        )
+        r = doctor_mod.check_memory_dirs(tmp_path)
+        assert r["name"] == "Memory store"
         assert r["severity"] == "pass"
 
-    def test_workflow_missing(self, healthy_project):
-        """Should warn when workflow-episodic-memory is missing."""
-        import shutil
-        shutil.rmtree(healthy_project / ".claude" / "project-context" / "workflow-episodic-memory")
-        r = doctor_mod.check_memory_dirs(healthy_project)
+    def test_episodes_table_missing_warns(self, tmp_path, monkeypatch):
+        """Warn when the episodes table is absent from gaia.db."""
+        import sqlite3
+        import gaia.store.writer as _writer_mod
+
+        db_file = tmp_path / "gaia.db"
+        con = sqlite3.connect(str(db_file))
+        con.execute("CREATE TABLE other (id TEXT)")
+        con.commit()
+        con.close()
+
+        monkeypatch.setattr(
+            _writer_mod, "_connect", lambda *a, **k: sqlite3.connect(str(db_file))
+        )
+        r = doctor_mod.check_memory_dirs(tmp_path)
+        assert r["name"] == "Memory store"
+        assert r["severity"] == "warning"
+
+    def test_store_unavailable_warns(self, tmp_path, monkeypatch):
+        """Warn when gaia.db cannot be reached."""
+        import gaia.store.writer as _writer_mod
+
+        def _raise_connect(*a, **k):
+            raise Exception("simulated store unavailable")
+
+        monkeypatch.setattr(_writer_mod, "_connect", _raise_connect)
+        r = doctor_mod.check_memory_dirs(tmp_path)
+        assert r["name"] == "Memory store"
         assert r["severity"] == "warning"
 
 

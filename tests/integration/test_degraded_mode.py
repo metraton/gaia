@@ -103,16 +103,6 @@ class TestContextProviderDegradedMode:
         assert "sections" in result
         assert result["sections"] == {}
 
-    def test_load_universal_rules_returns_empty_on_missing(self, tmp_path):
-        """load_universal_rules returns empty rule sets when file is missing."""
-        from context_provider import load_universal_rules
-
-        result = load_universal_rules(
-            "developer",
-            rules_file=tmp_path / "nonexistent-rules.json",
-        )
-        assert result == {"universal": [], "agent_specific": []}
-
     def test_detect_cloud_provider_defaults_to_gcp_on_empty(self):
         """detect_cloud_provider returns gcp when context has no provider info."""
         from context_provider import detect_cloud_provider

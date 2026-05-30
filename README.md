@@ -187,7 +187,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 - [agents/](./agents/) - Agent definitions and lifecycle
 - [skills/](./skills/) - Skill modules and assignment matrix
 - [hooks/](./hooks/) - Hook pipeline and security architecture
-- [config/](./config/) - Configuration (contracts, git standards, universal rules)
+- [config/](./config/) - Configuration (contracts, git standards, surface routing)
 - [commands/](./commands/) - Slash commands
 - [build/](./build/) - Plugin manifests
 - [bin/](./bin/) - CLI utilities

@@ -128,7 +128,6 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 
 | File | Purpose |
 |------|---------|
-| `config/universal-rules.json` | Rules shared by both plugin modes |
 | `config/context-contracts.json` | Seeding source for per-agent context contracts (applied to gaia.db on install; runtime SSOT is DB) |
 | `config/surface-routing.json` | Surface routing table (intent to agent mapping) |
 | `config/git_standards.json` | Git commit and branch standards |
@@ -142,7 +141,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | Mode | Package | What ships |
 |------|---------|-----------|
 | `gaia-ops` | `@jaguilar87/gaia` (full) | All hooks, all modules, all agents, all skills, all commands, all tools, all config |
-| `gaia-security` | `@jaguilar87/gaia` (security dist) | 6 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`, `session_end_hook`), all modules, no agents, no skills, `config/universal-rules.json` only |
+| `gaia-security` | `@jaguilar87/gaia` (security dist) | 6 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`, `session_end_hook`), all modules, no agents, no skills, no config |
 
 ### Detection Cascade (`hooks/modules/core/plugin_mode.py`)
 

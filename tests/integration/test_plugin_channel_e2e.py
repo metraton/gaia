@@ -327,7 +327,6 @@ class TestPluginPreToolUseAgentContextInjection:
             "metadata": {
                 "cloud_provider": "gcp",
                 "contract_version": "3.0",
-                "rules_count": 0,
             },
             "write_permissions": {
                 "readable_sections": ["cluster_details", "infrastructure"],
@@ -343,7 +342,6 @@ class TestPluginPreToolUseAgentContextInjection:
                 "dispatch_mode": "single_surface",
                 "recommended_agents": ["cloud-troubleshooter"],
             },
-            "rules": {},
         }
 
         with patch("tools.context.context_provider.build_context_payload",
@@ -411,7 +409,6 @@ class TestPluginNoDoubleContextInjection:
             },
             "investigation_brief": {},
             "surface_routing": {},
-            "rules": {},
         }
 
         with patch("tools.context.context_provider.build_context_payload",
@@ -477,7 +474,6 @@ class TestPluginNoDoubleContextInjection:
             },
             "investigation_brief": {},
             "surface_routing": {},
-            "rules": {},
         }
 
         with patch("tools.context.context_provider.build_context_payload",
@@ -617,7 +613,6 @@ class TestPluginStateWrittenAfterHook:
             },
             "investigation_brief": {},
             "surface_routing": {},
-            "rules": {},
         }
 
         with patch("tools.context.context_provider.build_context_payload",

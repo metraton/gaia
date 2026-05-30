@@ -50,9 +50,7 @@
   ],
   "agents": [],
   "skills": [],
-  "config": [
-    "config/universal-rules.json"
-  ],
+  "config": [],
   "settings": {
     "permissions": {
       "allow": [

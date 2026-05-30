@@ -5,8 +5,7 @@ Context Provider for Claude Agent System
 Generates structured context payloads for agents based on:
 1. Agent contracts (agent_contract_permissions in ~/.gaia/gaia.db)
 2. Project context (project_context_contracts in ~/.gaia/gaia.db)
-3. Universal rules (universal-rules.json)
-4. Historical episodes (episodic memory)
+3. Historical episodes (episodic memory)
 
 Usage:
     python3 context_provider.py <agent_name> [user_task]
@@ -28,14 +27,12 @@ if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
 
 try:
-    from ._paths import resolve_config_dir
     from .surface_router import (
         build_investigation_brief,
         classify_surfaces,
         load_surface_routing_config,
     )
 except ImportError:
-    from _paths import resolve_config_dir
     from surface_router import (
         build_investigation_brief,
         classify_surfaces,
@@ -61,54 +58,6 @@ def _db_connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     con = sqlite3.connect(str(resolved))
     con.row_factory = sqlite3.Row
     return con
-
-
-# ============================================================================
-# UNIVERSAL RULES SYSTEM
-# ============================================================================
-
-DEFAULT_RULES_FILE = "universal-rules.json"
-
-
-def _resolve_rules_dir() -> Path:
-    """Resolve the config dir that holds universal-rules.json. JSON-only path
-    -- agent contracts and project context now live in gaia.db; this resolver
-    is kept solely for the rules file that has not yet been migrated."""
-    return resolve_config_dir()
-
-
-def load_universal_rules(agent_name: str, rules_file: Optional[Path] = None) -> Dict[str, Any]:
-    """Load universal rules and agent-specific rules from JSON file."""
-    if rules_file is None:
-        rules_file = _resolve_rules_dir() / DEFAULT_RULES_FILE
-
-    if not rules_file.is_file():
-        print(f"Warning: Rules file not found: {rules_file}", file=sys.stderr)
-        return {"universal": [], "agent_specific": []}
-
-    try:
-        with open(rules_file, 'r', encoding='utf-8') as f:
-            rules_data = json.load(f)
-
-        universal = [r["rule"] for r in rules_data.get("rules", {}).get("universal", [])]
-        # agent_specific values may be a flat list [{rule:...}] or a nested
-        # dict {"rules": [{rule:...}]} -- handle both formats.
-        agent_raw = rules_data.get("rules", {}).get("agent_specific", {}).get(agent_name, [])
-        if isinstance(agent_raw, dict):
-            agent_raw = agent_raw.get("rules", [])
-        agent_specific = [r["rule"] for r in agent_raw]
-
-        total_rules = len(universal) + len(agent_specific)
-        if total_rules > 0:
-            print(f"Loaded {len(universal)} universal rules, {len(agent_specific)} agent-specific", file=sys.stderr)
-
-        return {
-            "universal": universal,
-            "agent_specific": agent_specific
-        }
-    except Exception as e:
-        print(f"Warning: Could not load rules: {e}", file=sys.stderr)
-        return {"universal": [], "agent_specific": []}
 
 
 # ============================================================================
@@ -681,7 +630,6 @@ def build_context_payload(
 
     historical_context = load_relevant_episodes(user_task, max_tokens=memory_token_budget)
 
-    rules_context = load_universal_rules(agent_name)
     investigation_brief = build_investigation_brief(
         user_task,
         agent_name,
@@ -693,14 +641,12 @@ def build_context_payload(
     final_payload: Dict[str, Any] = {
         "project_knowledge": contract_context,
         "write_permissions": context_update_contract,
-        "rules": rules_context,
         "surface_routing": surface_routing,
         "investigation_brief": investigation_brief,
         "metadata": {
             "cloud_provider": cloud_provider,
             "contract_version": provider_contracts.get("version", "unknown"),
             "historical_episodes_count": len(historical_context.get("episodes", [])),
-            "rules_count": len(rules_context.get("universal", [])) + len(rules_context.get("agent_specific", [])),
             "surface_routing_version": surface_routing_config.get("version", "unknown"),
             "active_surfaces_count": len(surface_routing.get("active_surfaces", [])),
             "surface_routing_confidence": surface_routing.get("confidence", 0.0),

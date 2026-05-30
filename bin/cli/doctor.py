@@ -17,8 +17,8 @@ Checks (in order):
   80. hook-files         - all hook scripts present
   90. project-context    - project-context.json valid
  100. project-dirs       - paths declared in context exist
- 110. memory-dirs        - episodic memory dirs present
- 120. memory_fts5_db     - FTS5 search.db present
+ 110. memory-store       - episodes table present in gaia.db (DB-canonical)
+ 120. memory_fts5_db     - episodes_fts present in gaia.db
  130. memory_fts5_count  - FTS5 index complete
  140. memory_scoring     - scoring module importable
 
@@ -1196,48 +1196,57 @@ def _apply_fts5_backfill(project_root: Path) -> dict:
         return {"name": "fts5_backfill", "status": "failed", "detail": f"Backfill error: {exc}"}
 
 
-@register_check("Memory dirs", order=110)
+@register_check("Memory store", order=110)
 def check_memory_dirs(project_root: Path) -> dict:
-    """Check episodic memory directories are present."""
-    checks = [
-        (
-            project_root / ".claude" / "project-context" / "workflow-episodic-memory",
-            "workflow-episodic-memory",
+    """Check the episodic memory store is present in gaia.db.
+
+    Episodic memory is DB-canonical (brief ``episodic-workflow-to-db``): every
+    agent turn is written as a row in the ``episodes`` table of ``~/.gaia/gaia.db``
+    via ``gaia.store.writer.insert_episode``, and the schema's INSERT trigger
+    indexes it into ``episodes_fts``. The legacy filesystem layout
+    (``.claude/project-context/episodic-memory/`` and
+    ``workflow-episodic-memory/``) was superseded by these DB writers and is no
+    longer created on the canonical path, so this check validates the DB table
+    rather than the absence/presence of those directories.
+    """
+    try:
+        import sys as _sys
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        from gaia.store.writer import _connect as _store_connect
+    except ImportError:
+        return _result(
+            "Memory store",
             "warning",
-            "Run `gaia scan` to create workflow memory directory",
-        ),
-        (
-            project_root / ".claude" / "project-context" / "episodic-memory",
-            "episodic-memory",
-            "info",
-            "Created automatically on first agent run",
-        ),
-    ]
+            "gaia.store.writer not importable — cannot verify episodes table",
+            "Check gaia installation",
+        )
 
-    warnings = []
-    infos = []
-    found = 0
+    try:
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
+            ).fetchone()
+        finally:
+            con.close()
+    except Exception as exc:
+        return _result(
+            "Memory store",
+            "warning",
+            f"episodes table not accessible in gaia.db: {exc}",
+            "Run: gaia doctor --fix",
+        )
 
-    for path, label, severity, fix in checks:
-        if path.is_dir():
-            found += 1
-        elif severity == "info":
-            infos.append({"label": label, "fix": fix})
-        else:
-            warnings.append({"label": label, "fix": fix})
-
-    total = len(checks)
-
-    if warnings:
-        detail = "; ".join(f"{w['label']} missing" for w in warnings)
-        return _result("Memory dirs", "warning", detail, warnings[0]["fix"])
-
-    if infos:
-        info_parts = ["{}: {}".format(i["label"], i["fix"]) for i in infos]
-        detail = "{}/{} present ({})".format(found, total, "; ".join(info_parts))
-        return _result("Memory dirs", "info", detail)
-
-    return _result("Memory dirs", "pass", f"{found}/{total} present")
+    if row is not None:
+        return _result("Memory store", "pass", "episodes table present in gaia.db")
+    return _result(
+        "Memory store",
+        "warning",
+        "episodes table missing from gaia.db",
+        "Run: bash scripts/bootstrap_database.sh",
+    )
 
 
 # ============================================================================

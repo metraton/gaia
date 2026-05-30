@@ -65,7 +65,7 @@ skills/
 │   └── reference.md
 ├── gaia-planner/          # Feature planning, briefs, task decomposition
 ├── gaia-release/          # Gaia release pipeline: live, dry-run, beta, stable
-├── gaia-self-check/       # Validate internal consistency of the .claude/ installation
+├── gaia-audit/            # Audit one component (agent or skill) against its standard + live implementation
 ├── gaia-verify/           # Verify a Gaia installation across delivery surfaces
 ├── git-conventions/       # Conventional Commits (on-demand workflow skill)
 ├── gmail-policy/          # Gmail domain policy (label-only, no delete)
@@ -100,7 +100,7 @@ skills/
 | platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions | — |
 | gitops-operator | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
 | developer | agent-protocol, security-tiers, investigation, command-execution | git-conventions |
-| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, gaia-release, skill-creation | gaia-verify |
+| gaia-system | agent-protocol, security-tiers, investigation, gaia-patterns | gaia-audit (on-demand: agent-creation, skill-creation, gaia-release, gaia-verify) |
 | gaia-planner | agent-protocol, security-tiers | gaia-planner |
 | gaia-operator | agent-protocol, security-tiers, command-execution, memory, gmail-triage, gws-setup | blog-writing |
 

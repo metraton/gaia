@@ -4,7 +4,7 @@ Configuration lives here, separate from hooks, because these are data files — 
 
 `context-contracts.json` is the seeding source for agent contracts. During `gaia install`, its contents are loaded into the `project_context_contracts` and `agent_contract_permissions` tables in `~/.gaia/gaia.db`. At runtime, the DB is the SSOT — the hook layer reads contracts from the DB, not from this file. Editing `context-contracts.json` without re-running `gaia install` (or manually applying the SQL) has no effect. The cloud extension files in `cloud/` extend these contracts for cloud-specific sections without modifying the base file, so adding a new cloud provider is a new file, not an edit to the core.
 
-The other files — routing, git standards, universal rules — are each consumed by a specific module and do exactly what their names say. There is no magic here: the files are loaded, parsed, and applied by the module that reads them.
+The other files — routing and git standards — are each consumed by a specific module and do exactly what their names say. There is no magic here: the files are loaded, parsed, and applied by the module that reads them.
 
 ## Cuándo se activa
 
@@ -17,7 +17,6 @@ This component does not activate as a runtime process. Each file is read on-dema
 | `surface-routing.json` | `hooks/user_prompt_submit.py` | Every prompt — determines routing recommendation injected into orchestrator context |
 | `context-contracts.json` | `gaia install` / `gaia update` | One-time at install; populates `~/.gaia/gaia.db` tables. Runtime reads come from DB. |
 | `git_standards.json` | `hooks/modules/validation/commit_validator.py` | Every `git commit` call intercepted by PreToolUse |
-| `universal-rules.json` | `tools/context/context_provider.py` | Every agent dispatch — injected into all agents alongside project context |
 | `cloud/gcp.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = gcp` in project-context.json |
 | `cloud/aws.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = aws` in project-context.json |
 
@@ -46,7 +45,6 @@ config/
 ├── context-contracts.json   # Seeding source for per-agent read/write contracts (applied on install to gaia.db)
 ├── surface-routing.json     # Intent classification and agent routing signals
 ├── git_standards.json       # Commit type allowlist, footer rules, Conventional Commits config
-├── universal-rules.json     # Behavior rules injected into all agents at dispatch time
 ├── cloud/
 │   ├── gcp.json             # GCP-specific context sections (extends base contracts)
 │   └── aws.json             # AWS-specific context sections (extends base contracts)
@@ -61,12 +59,10 @@ config/
 
 **surface-routing.json format:** Each surface entry has `intent`, `primary_agent`, `adjacent_surfaces`, and `signals` (with `high` and `medium` confidence keyword lists). High-confidence signals are checked first; medium signals act as tie-breakers.
 
-**universal-rules.json:** Changes here affect every agent in every session. Add only rules that are truly universal — constraints that apply regardless of domain. Domain-specific rules belong in the relevant skill (`security-tiers`, `command-execution`, etc.).
-
 ## Ver también
 
 - [`~/.gaia/gaia.db`](../gaia/store/schema.sql) — `project_context_contracts` + `agent_contract_permissions` tables (runtime SSOT for contracts)
 - [`hooks/user_prompt_submit.py`](../hooks/user_prompt_submit.py) — reads `surface-routing.json` on every prompt
 - [`hooks/modules/validation/`](../hooks/modules/validation/) — reads `git_standards.json` on commit validation
-- [`tools/context/`](../tools/context/) — reads contracts (from DB) and universal-rules at agent dispatch time
+- [`tools/context/`](../tools/context/) — reads contracts (from DB) at agent dispatch time
 - [`agents/README.md`](../agents/README.md) — agent names that must match context-contracts.json keys

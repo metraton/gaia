@@ -59,6 +59,7 @@ from ..security.approval_messages import (
     build_t3_blocked_denial_message,
 )
 from ..security.shell_unwrapper import ShellUnwrapper
+from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
@@ -399,6 +400,26 @@ class BashValidator:
             command = self._strip_claude_footers(command)
             command_was_modified = True
             logger.info("Auto-stripped Claude Code footer from commit command")
+
+        # ================================================================
+        # GAIA DB WRITE GUARD
+        # Reject direct sqlite3 writes to ~/.gaia/gaia.db that bypass the
+        # store API / agent_permissions enforcement.  Runs on the full
+        # (footer-normalized) command BEFORE unwrap/decompose so heredocs
+        # and bash -c wrappers are inspected intact -- decomposition would
+        # otherwise split the sqlite3 invocation from its write verb.
+        # ================================================================
+        db_write_allowed, db_write_reason = check_gaia_db_write(command)
+        if not db_write_allowed:
+            logger.warning("BLOCKED gaia.db direct write: %s", command[:100])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=db_write_reason,
+                suggestions=[
+                    "Use the `gaia context` CLI or emit update_contracts.",
+                ],
+            )
 
         # ================================================================
         # PHASE 1: UNWRAP
