@@ -146,7 +146,6 @@ context_provider.py <agent_name> <user_task>
     +--> Load base contracts (config/context-contracts.json)
     +--> Merge cloud overrides (config/cloud/{provider}.json)
     +--> Extract contracted sections for this agent (read permissions)
-    +--> Load universal rules (config/universal-rules.json)
     +--> Load relevant episodic memory (similarity match)
     +--> Classify surfaces (surface_router.py)
     +--> Build investigation brief (surface_router.py)
@@ -328,7 +327,6 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `tools/context/surface_router.py` | Surface classification and investigation briefs |
 | `tools/memory/episodic.py` | Episodic memory storage |
 | `config/context-contracts.json` | Agent read/write section permissions |
-| `config/universal-rules.json` | Universal and agent-specific rules |
 | `config/surface-routing.json` | Surface signals and routing config |
 | `agents/*.md` | Agent identity definitions |
 | `skills/*/SKILL.md` | Injected procedural knowledge |

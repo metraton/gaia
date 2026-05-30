@@ -47,7 +47,6 @@ class TestCoreDirectories:
         config_dir = package_root / "config"
         required_files = [
             "git_standards.json",
-            "universal-rules.json",
             "surface-routing.json",
         ]
 

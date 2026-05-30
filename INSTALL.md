@@ -221,7 +221,7 @@ Once installed, you have access to **complete documentation** in each directory:
 ├── agents/               6 agents (platform-architect, gitops-operator, etc.)
 ├── skills/README.md      20 skill modules
 ├── commands/README.md    Slash commands (gaia-plan, scan-project)
-├── config/README.md      Contracts, git standards, universal rules
+├── config/README.md      Contracts, git standards, surface routing
 ├── hooks/README.md       8 hook scripts (4 primary + 4 event handlers)
 ├── tools/                Context, memory, validation, review
 ├── templates/README.md   Installation templates

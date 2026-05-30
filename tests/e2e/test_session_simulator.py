@@ -105,7 +105,7 @@ class SessionSimulator:
         # Copy real config files so context_provider.py can resolve them
         # from the temp project's .claude/config/ directory.
         real_config = WORKTREE / "config"
-        for cfg_name in ("context-contracts.json", "surface-routing.json", "universal-rules.json"):
+        for cfg_name in ("context-contracts.json", "surface-routing.json"):
             src = real_config / cfg_name
             if src.exists():
                 shutil.copy2(str(src), str(config_dir / cfg_name))
@@ -1128,9 +1128,6 @@ class TestScenario9ContextInjection:
         )
         assert "# Permissions" in additional_context, (
             "Expected '# Permissions' header in additionalContext"
-        )
-        assert "## Rules" in additional_context, (
-            "Expected '## Rules' header in additionalContext"
         )
         assert "project_identity" in additional_context, (
             "Expected 'project_identity' data in additionalContext"

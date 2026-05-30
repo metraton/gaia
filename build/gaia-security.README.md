@@ -66,8 +66,6 @@ reject P-<id>      # deny a pending request
 
 **No agents. No skills. No commands.** This plugin is hooks + deny list by design.
 
-**Config**: `config/universal-rules.json` — shared rule set that governs tier classification.
-
 ## Permissions
 
 - `Bash(*)` allowed — the pre-tool-use hook is the real security gate.

@@ -130,6 +130,8 @@ Each entry is one `{contract, payload}` pair (`parse_update_contracts`). The `co
 
 **Well-formed payload (index, not snapshot).** A payload indexes what statically exists in the project -- identifiers, names, relationships, semi-stable metadata. It must not carry live-state: cloud runtime status (pod counts, instance status, VPC IDs), API-discovered facts that change without a rescan (load-balancer DNS, IP addresses, OIDC-derived IAM bindings), or any field whose scanner needs a live cloud API call. Stale live-state in context gives the next agent false confidence; obtain it on demand via the cloud CLI instead. For the produce-side judgment of *when* to emit and *what* to prioritize, see `agent-protocol`.
 
+**Cross-repo resource references.** When a payload value points at a resource living in *another* repository, reference it as `host/owner/repo:table/name` (e.g. `github.com/org/bildwiz-iac:tf_modules/gcp-gke`). The `host/owner/repo` prefix is the canonical workspace identity (normalized by `normalize_remote_url` in `gaia/project.py`); the `:table/name` suffix names the domain table and resource within that workspace. Use this form so the reference is unambiguous in multi-repo setups instead of a bare local name.
+
 ## plan_status enum + state machine
 
 The five canonical values (`VALID_PLAN_STATUSES` in `gaia.state`, re-exported by `response_contract.py`):

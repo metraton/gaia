@@ -52,7 +52,6 @@ def test_build_context_telemetry_snapshot_compacts_injected_payload():
         "metadata": {
             "cloud_provider": "gcp",
             "contract_version": "3.0",
-            "rules_count": 7,
             "historical_episodes_count": 3,
             "surface_routing_version": "1.0",
             "active_surfaces_count": 2,
@@ -111,7 +110,6 @@ def test_record_returns_metrics_dict_without_jsonl_side_effects(tmp_path):
             "metadata": {
                 "cloud_provider": "gcp",
                 "contract_version": "3.0",
-                "rules_count": 5,
                 "surface_routing_version": "1.0",
                 "active_surfaces_count": 1,
             },

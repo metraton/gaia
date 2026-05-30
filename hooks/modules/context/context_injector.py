@@ -160,7 +160,6 @@ def build_context_telemetry_snapshot(context_payload: dict) -> dict:
         "metadata": _prune_empty_values({
             "cloud_provider": metadata.get("cloud_provider"),
             "contract_version": metadata.get("contract_version"),
-            "rules_count": metadata.get("rules_count"),
             "historical_episodes_count": metadata.get("historical_episodes_count"),
             "surface_routing_version": metadata.get("surface_routing_version"),
             "active_surfaces_count": metadata.get("active_surfaces_count"),
@@ -372,7 +371,6 @@ def build_project_context(
             or context_payload.get("investigation_brief")
             or {}
         )
-        rules = context_payload.get("rules", {})
         surface_routing_data = context_payload.get("surface_routing", {})
         metadata = context_payload.get("metadata", {})
         historical = context_payload.get("historical_context", {})
@@ -382,7 +380,6 @@ def build_project_context(
         memory_index_section = f"\n### Memory Index\n\n{memory_index_text}\n" if memory_index_text else ""
 
         # Optional sections
-        rules_section = f"\n## Rules\n\n{json.dumps(rules, indent=2)}\n" if rules.get("universal") or rules.get("agent_specific") else ""
         routing_section = f"\n## Surface Routing\n\n{json.dumps(surface_routing_data, indent=2)}\n" if surface_routing_data else ""
         metadata_section = f"\n## Metadata\n\n{json.dumps(metadata, indent=2)}\n" if metadata else ""
         historical_section = f"\n## Historical Context\n\n{json.dumps(historical, indent=2)}\n" if historical else ""
@@ -392,8 +389,6 @@ def build_project_context(
         orientation_lines.append("Sections present in this payload:\n")
         if project_knowledge:
             orientation_lines.append("- **Project Context** -- structured knowledge about the current project; guides scope and conventions")
-        if rules_section:
-            orientation_lines.append("- **Rules** -- universal and agent-specific constraints that override default behavior")
         if routing_section:
             orientation_lines.append("- **Surface Routing** -- intent-to-agent mapping; use when delegating or checking ownership")
         if investigation_brief:
@@ -431,7 +426,7 @@ def build_project_context(
         }
         write_perms_mkv = _dict_to_yaml(write_perms_dict)
 
-        context_string = f"""{orientation_section}{rules_section}
+        context_string = f"""{orientation_section}
 # Project Context
 
 {_dict_to_yaml(project_knowledge)}
@@ -476,11 +471,10 @@ def build_project_context(
         telemetry = build_context_telemetry_snapshot(context_payload)
 
         sections_count = len(context_payload.get("project_knowledge", {}))
-        rules_count = context_payload.get("metadata", {}).get("rules_count", 0)
 
         logger.info(
             f"Context built for {subagent_type} "
-            f"(sections={sections_count}, rules={rules_count})"
+            f"(sections={sections_count})"
         )
 
         return context_string, telemetry

@@ -9,26 +9,42 @@ metadata:
 # Gaia Planner
 
 Plan creation from briefs. The planner reads a brief from the substrate DB,
-decomposes it into tasks, and persists the plan back into the brief. The
-orchestrator owns task dispatch and execution.
+decomposes it into tasks defined by outcome and verification, and persists the
+plan back through the `gaia plan` CLI. The orchestrator owns task dispatch and
+execution.
 
-## DB is the source of truth (read this first)
+## The altitude principle (read this first)
 
-Briefs and plans live in the Gaia substrate database (`~/.gaia/gaia.db`).
-The planner reads briefs through the `gaia brief` CLI and persists plan
-content back through the same CLI. **Do not** read `brief.md` from disk.
-**Do not** write `plan.md` to disk. **Do not** create or rename
-`open_<feature>/` directories.
+A plan defines each task by its **outcome plus how that outcome is verified** --
+never by implementation nomenclature. Reference areas of the codebase loosely
+("the brief CLI", "the approval module"); do not pin exact symbol names, file
+paths, or function signatures inside a task.
 
-The filesystem layout `<workspace>/.claude/project-context/briefs/<status>_<slug>/`
-with `brief.md` and `plan.md` inside it is **legacy** and is being removed in
-the `legacy-cleanup` brief. If a previous version of this skill, a stale
-reference, or an older agent prompt instructs you to read or write files
-under that path, ignore it. The migration to DB-canonical is in progress
-(session 2026-05-06, brief `gaia-state-machines`).
+This is deliberate. Execution surfaces discoveries the planner cannot see:
+an approval gate fires and changes the command, byte-coding or a refactor moves
+a symbol, a downstream task lands a file somewhere the plan did not predict. A
+task that pins `hooks/modules/security/approval_grants.py:activate_db_pending_by_prefix`
+breaks the moment that symbol moves -- and worse, every downstream task that
+referenced the pinned name breaks with it. A task that says "the approval
+grant activation path" survives the move, because the executing agent resolves
+the specific against the live codebase.
 
-When in doubt: there is no file to read or write -- there is a CLI command
-to run.
+The unit of planning is the **task with a testable outcome**, not the micro-step.
+This diverges on purpose from "2-5 minute steps with exact content" patterns:
+over-specifying the *how* at plan time transfers a guess into a contract the
+downstream cannot keep. Plan the *what* and the *proof*; let execution own the
+specifics.
+
+## DB is the source of truth
+
+Briefs and plans live in the Gaia substrate database (`~/.gaia/gaia.db`). The
+planner reads briefs through `gaia brief show` and persists plan content through
+`gaia plan save`. Briefs and plans are **separate rows in separate tables**
+(`briefs`, `plans`); the `plans` row has `brief_id UNIQUE`, so there is exactly
+one plan per brief. There is no `plan.md` on disk and no `open_<feature>/`
+directory -- status is the `plans.status` column, not a directory name.
+
+When in doubt: there is no file to read or write -- there is a CLI command to run.
 
 ## When to Activate
 
@@ -43,91 +59,102 @@ to run.
 gaia brief show <name> --workspace=<ws> --json
 ```
 
-`--workspace` defaults to the current workspace; pass it explicitly when
-the orchestrator gives you a workspace context. The JSON output exposes
-the body and frontmatter (objectives, ACs with id/description/evidence/artifact,
-constraints, out-of-scope) -- everything you need to plan.
+`--workspace` defaults to the current workspace; pass it explicitly when the
+orchestrator gives you a workspace context. The JSON exposes objectives, ACs
+(id/description/evidence/artifact), constraints, and out-of-scope.
 
-If the brief does not exist, return BLOCKED and tell the orchestrator to
-create one first via `brief-spec`. Do not search the filesystem -- the DB
-is authoritative.
+If the brief does not exist, return BLOCKED and tell the orchestrator to create
+one first via `brief-spec`. Do not search the filesystem -- the DB is authoritative.
 
-### Step 2: Decompose into tasks
+### Step 2: Survey before you decompose
 
-For decomposition rules (task sizing, AC citation, agent routing, context
-slices), see `reference.md`. The contract: each task fits in one context
-window, names its agent target, carries its own context slice, cites the
-brief AC-ids it satisfies, and has a task-level AC with a verify command.
+Two checks come before sizing tasks. Skipping them produces a plan that
+re-builds what exists or specifies what cannot be built.
 
-### Step 3: Persist the plan -- interim flow
+- **Overlap detection.** Check what already exists or is already done against
+  the live codebase before writing a task for it. A task that re-creates a
+  component that ships today is waste the orchestrator will dispatch in good
+  faith. Plan only the delta between the brief and what is built.
+- **Technical feasibility.** Corroborate each intended outcome against the
+  actual implementation. A brief AC that assumes an extension point, a CLI flag,
+  or a table column that does not exist is not plannable as written -- it is a
+  question for the user (see Step 5), not a task.
 
-`gaia plan save` does not exist yet (it is on the `cli-completion` brief).
-Until then, the plan content is persisted in the brief itself, in the
-`approach` field:
+### Step 3: Decompose into tasks
+
+For sizing rules, AC citation, agent routing, and the plan structure, see
+`reference.md`. The contract per task:
+
+- **Defined by outcome + verification**, at task altitude (see the altitude
+  principle): a single unit of change with a testable outcome and the evidence
+  that proves it. Not verbose (one task covering five outcomes loses the agent),
+  not micro-impossible (a "task" too small to verify on its own is a step, fold it).
+- **Carries its own context slice.** The agent receives the task, not the brief.
+  Inline the constraints and the loosely-referenced area it touches.
+- **Cites the brief AC-ids it satisfies** (`satisfies: [AC-1, AC-3]`). A task
+  citing nothing is unverifiable against the product goal -- split or delete it.
+- **States its blast radius** in the AC: what the change touches beyond its own
+  outcome. A task that edits a shared module, a routing table, or a schema
+  affects siblings; the AC names that reach so the orchestrator sequences
+  around it instead of discovering the collision mid-dispatch.
+- **Carries a parallelizable label** (`parallel: yes|no`). A task with no
+  unfinished dependency and no overlapping blast radius runs concurrently; one
+  that does not, says so. This is what lets the orchestrator optimize dispatch
+  instead of serializing defensively.
+
+### Step 4: Persist the plan
 
 ```bash
-gaia brief edit <name> --workspace=<ws>
+gaia plan save --brief=<name> --content="..." --workspace=<ws>
 ```
 
-This opens `$EDITOR` against the brief body. Replace the existing
-`## Approach` section with the planning content (Approach + Tasks +
-Execution Order, structured per `reference.md`). Save and quit; the CLI
-writes the row back to the DB.
+This upserts the plan row in the `plans` table: first call inserts (status
+`draft`), later calls update `status` and `content` without touching child
+tasks. It is the only supported writer. If the content is too large to pass
+inline, source it from a file: `--content="$(cat /tmp/plan.md)"`.
 
-After the edit, run `gaia brief show <name>` to confirm the plan content
-is in the body.
+Lifecycle is `draft -> active -> closed` via `gaia plan set-status <name> <status>`.
 
-**Future flow** (when `gaia plan save` ships under the `cli-completion`
-brief): plans will move to a dedicated `plans` table with `plans.status`
-in `{draft, active, closed}`. The CLI will own the lifecycle. This skill
-will be updated then. Treat the future flow as informational -- today,
-use the interim flow above.
+Confirm with `gaia plan show <name>` that the content is stored.
 
-### Step 4: Task list checkpoint
+### Step 5: Resolve blocking ambiguity before persisting
 
-Before the orchestrator dispatches anything, present the task list
-(numbers, titles, target agents, dependencies, execution order) and wait
-for user confirmation. The orchestrator drives this round-trip; you
+When the brief and the implementation diverge in a way that changes the plan --
+the brief asks for X, the codebase already does Y, and you cannot tell which the
+user wants -- do not assume. Emit `NEEDS_INPUT` with a **simple-selection
+questionnaire**: the decision framed as a short list of concrete options. The
+planner does not pick; the orchestrator presents the options to the user and
+returns the choice. Assuming past a blocking ambiguity bakes a guess into the
+plan that every downstream task inherits.
+
+Reserve this for ambiguity that blocks the plan. Routine sizing or routing
+calls are yours to make.
+
+### Step 6: Task list checkpoint
+
+Before the orchestrator dispatches anything, present the task list (numbers,
+titles, target agents, dependencies, parallelizable labels, execution order)
+and wait for user confirmation. The orchestrator drives this round-trip; you
 return the plan content as your output.
 
 ## Anti-Patterns
 
-- **Writing `plan.md` to disk** -- the DB is the source of truth. Any
-  `plan.md` you create is either build output or stale legacy that
-  `legacy-cleanup` will delete. Edits there are silently ignored by the
-  runtime.
-- **Creating an `open_<feature>/` directory** -- there are no directories;
-  status is a column. Status transitions happen via `gaia brief set-status`,
-  not by renaming directories.
-- **Reading `brief.md` from the filesystem** -- the DB row is authoritative.
-  A stale `brief.md` on disk can drift from the DB row silently; reading
-  the wrong source makes the plan wrong from line one.
-- **Renaming directories for status sync** -- the legacy `gaia plans rename`
-  command exists to sync directory prefixes to frontmatter status; it
-  belongs to the legacy cleanup path, not to the planning flow.
+- **Persisting via `gaia brief edit`** -- this writes the `briefs` table and
+  opens `$EDITOR` interactively, which a subagent cannot drive. Content put
+  there never appears in `gaia plan show` because plans and briefs are
+  different rows in different tables. Persist with `gaia plan save`.
+- **Pinning implementation nomenclature** -- a task that names exact symbols or
+  paths breaks when execution discoveries move them, and takes its downstream
+  tasks with it. Reference areas loosely; let the executing agent resolve the
+  specific. This is the altitude principle, and it is the central one.
+- **Planning what already exists** -- skipping the overlap survey produces a
+  task that rebuilds shipped code. Diff the brief against the codebase first.
+- **Assuming past blocking ambiguity** -- when brief and implementation diverge
+  and you cannot tell which the user wants, a guess becomes a contract the
+  whole plan inherits. Emit NEEDS_INPUT with options.
 - **Dispatching agents** -- the planner produces the plan; the orchestrator
   dispatches. If you have `Agent` in your tools, something is wrong.
-- **Fat tasks** -- a task needing more than one context window forces the
-  agent to lose track. Split it.
-- **Thin tasks** -- a task without its own context slice forces the agent
-  to read the full brief. Inline the slice.
-- **Vague ACs** -- every task needs a verify command the orchestrator can
-  run post-dispatch. No verify command = no way to confirm completion.
-
-## Filesystem behavior (DEPRECATED)
-
-The directory layout `<workspace>/.claude/project-context/briefs/open_<slug>/`
-with a `plan.md` inside it is **legacy**. It will be removed in the
-`legacy-cleanup` brief. Reasons it is being retired:
-
-- Plan status lived in the directory name -- renaming was the transition.
-  That made transitions unverifiable, racy across agents, and impossible
-  to query with anything other than `find`.
-- Two writers (filesystem + DB after the substrate refactor) drift apart
-  silently; only one can be the source of truth.
-- Cascade semantics across briefs, plans, and tasks require FK
-  relationships, which a directory tree cannot provide.
-
-If you find code, docs, or other skills that still describe the directory
-convention, flag them in `cross_layer_impacts` -- do not edit them as a
-side effect of a planning task.
+- **Fat or micro tasks** -- a task spanning many outcomes loses the agent; a
+  "task" too small to verify on its own is a step. Size to one testable outcome.
+- **Tasks without verification** -- an outcome with no evidence the orchestrator
+  can check post-dispatch cannot be confirmed complete. Every task carries its proof.
