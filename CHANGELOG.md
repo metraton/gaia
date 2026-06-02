@@ -7,7 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
+## [5.0.0] - 2026-06-02
+
+### Stable Release: Scan Overhaul, Zero-Dep Install, Soft-Delete, DB-Canonical Context
+
+Fifth major release of Gaia. Promotes the rc.7 release candidate to stable after passing the full dry-run, CI, and live-install gate. The headline work is a ground-up rewrite of the workspace scanner, a zero-dependency NPM install path, a soft-delete model for projects and workspaces, and the retirement of `project-context.json` in favour of the DB as the single canonical source of project context.
+
+#### Added
+
+- **Scan overhaul — taxonomy and recursive discovery** — `gaia scan` now classifies
+  discovered items across three orthogonal dimensions: *workspace* (the Claude Code
+  working environment), *project* (the user's source tree), and *installation* (the
+  Gaia artefacts wired into `.claude/`). Discovery walks recursively so nested
+  monorepo structures and workspace-within-workspace layouts are captured correctly.
+  Taxonomy is defined in `tools/scan/` and tested independently of the CLI.
+
+- **On-demand `gaia scan <path>`** — the scan subcommand now accepts an explicit
+  target path, enabling agents to scan a directory that is not the current working
+  directory without changing cwd. Useful for multi-root workspaces and cross-project
+  context enrichment.
+
+- **Scan/install separation + scan-core** — the scan pipeline is now split into a
+  pure discovery core (`scan-core`) with no install-time side effects, and a
+  separate install phase that consumes core output. This makes scan deterministic
+  and testable without triggering postinstall hooks, and lets the install phase be
+  skipped when scanning for context only.
+
+- **Pure-NPM zero-dependency install** — `postinstall` now completes with zero
+  runtime npm dependencies. All install-time logic runs through `python3 bin/gaia
+  install --postinstall` (Python stdlib only). The devDependencies remain for build
+  tooling (`chalk`, `eslint`) but consumers take no transitive runtime deps.
+
+- **Soft-delete for projects and workspaces** — `gaia scan` handles pruning
+  automatically: when a previously-registered project path is no longer found on
+  disk, the prune pass marks it missing; scanning a directory that has no Gaia
+  installation demotes the workspace (marks it missing) and tombstones its
+  projects. No explicit remove or demote commands exist — lifecycle state flows
+  from the scanner. Soft-deleted rows are hidden from list views. Schema migrated
+  from v12 to v17 to carry the new columns and the `project_workspace_archive`
+  table.
+
+- **`project-context.json` retired — DB is canonical** — the on-disk
+  `project-context.json` file is no longer written or read by any Gaia component.
+  Project context lives exclusively in `~/.gaia/gaia.db` (tables `projects`,
+  `workspaces`, `project_resources`). The context provider and all CLI subcommands
+  read directly from the DB. Existing `project-context.json` files are ignored on
+  upgrade; run `gaia scan` to populate the DB.
+
+#### Fixed
+
+- **`gaia approvals list` crash** — `bin/cli/approvals.py` raised an unhandled
+  exception when the `approval_grants` table contained rows with a `None` nonce
+  (rows inserted by older schema versions). Added a null-guard before nonce
+  formatting; the command now lists all rows cleanly and marks legacy rows as
+  `(no nonce)`.
+
+#### Changed
+
+- **Schema v12 → v17** — five incremental migrations applied in lockstep with
+  `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py` and the bootstrap insert in
+  `scripts/bootstrap_database.sh`. The `test_schema_version_lockstep.py` test
+  confirms all three agree.
+
+- **CI hardening** — `ci.yml` now runs the full pytest suite on Python 3.9, 3.11,
+  and 3.12 in parallel, blocks merges on any failure, and verifies `build:plugins`
+  produces valid `dist/` artefacts. The `validate-sandbox.sh` harness is wired
+  into the publish gate.
+
+- **Suite green** — all Layer 1 tests pass on the three supported Python versions.
+  The scan-core and soft-delete paths are covered by dedicated test modules.
+
+- **`bin/validate-sandbox.sh`** -- harness now drives `gaia` subcommands end
+  to end (no `gaia-X.js` callers remain). The 8-check matrix is unchanged.
+  Sandbox DB is now isolated via `GAIA_DATA_DIR` so memory checks run against
+  a seeded fixture DB rather than the global `~/.gaia/gaia.db`.
+
+- **CLI docstrings** -- `bin/cli/*.py` modules dropped the
+  "Mirrors gaia-X.js" parity comments now that there is no JS counterpart on
+  disk to mirror.
+
+#### Removed
+
 - **Legacy JS CLI binaries** -- `bin/gaia-doctor.js`, `bin/gaia-status.js`,
   `bin/gaia-history.js`, `bin/gaia-metrics.js`, `bin/gaia-cleanup.js`,
   `bin/gaia-update.js`, `bin/gaia-uninstall.js`, `bin/gaia-skills-diagnose.js`,
@@ -22,12 +102,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gaia-evidence` had no Python successor and are not migrated; for general
   health checks use `gaia doctor`.
 
-### Changed
-- **`bin/validate-sandbox.sh`** -- harness now drives `gaia` subcommands end
-  to end (no `gaia-X.js` callers remain). The 8-check matrix is unchanged.
-- **CLI docstrings** -- `bin/cli/*.py` modules dropped the
-  "Mirrors gaia-X.js" parity comments now that there is no JS counterpart on
-  disk to mirror.
+#### Internal
+
+- Regenerated `dist/gaia-ops/` and `dist/gaia-security/` for 5.0.0.
+- `pyproject.toml` version aligned with `package.json` at `5.0.0`.
+
+---
 
 ## [5.0.0-rc.3] - 2026-04-26
 
