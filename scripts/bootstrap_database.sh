@@ -551,6 +551,29 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 fi
                 # Otherwise: existing v15 DB -- fall through to default v15_to_v16.sql.
                 ;;
+            17)
+                # v16 -> v17: add status + missing_since columns to workspaces
+                # table (DEMOTE case: soft-delete support for demoted workspaces
+                # whose Gaia install footprint disappeared).
+                #
+                # Target state fingerprint: workspaces.status column exists.
+                # We probe pragma_table_info for the column name.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates workspaces WITH status -> it exists
+                #   - Existing v16 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> status does NOT exist -> falls through to the full migration
+                WORKSPACES_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('workspaces') WHERE name='status';")"
+                if [ "$WORKSPACES_HAS_STATUS" = "status" ]; then
+                    # Fresh install: schema.sql already created workspaces with status column.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v16_to_v17_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v16->v17 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v16 DB -- fall through to default v16_to_v17.sql.
+                ;;
             *)
                 # Future migrations: each new N must add a case here with a
                 # fingerprint of the post-migration state.

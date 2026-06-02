@@ -59,13 +59,15 @@ def get_context(
     Args:
         workspace: Workspace name (matches workspaces.name).
         db_path: Optional explicit DB path (used by tests).
-        include_missing: When False (default), projects with
-            ``status='missing'`` are filtered out, AND the child rows
-            (apps/services/features/...) of those missing projects are filtered
-            out too, so a soft-deleted project never contaminates the normal
-            active view. When True, every row is returned regardless of status
-            -- the "existed but no longer on disk" view, which keeps soft-deleted
-            data consultable (AC-4, soft-delete).
+        include_missing: When False (default), workspaces with
+            ``status='missing'`` are hidden from the active view (returns
+            None), AND projects with ``status='missing'`` are filtered out,
+            AND the child rows (apps/services/features/...) of those missing
+            projects are filtered out too, so a soft-deleted workspace or
+            project never contaminates the normal active view. When True,
+            every row is returned regardless of status -- the "existed but no
+            longer on disk" view, which keeps soft-deleted data consultable
+            (AC-4, soft-delete).
 
     Returns:
         Dict with top-level keys ``identity``, ``stack``, ``environment``,
@@ -73,18 +75,25 @@ def get_context(
         type filtered by the workspace; ``workspace.projects`` holds the
         git-bearing projects under the workspace.
 
-        Returns None when the workspace has no row in `workspaces`.
+        Returns None when the workspace has no row in `workspaces`, OR when
+        the workspace has ``status='missing'`` and ``include_missing=False``.
     """
     con = _connect(db_path)
     try:
-        # Resolve identity from workspaces table
+        # Resolve identity from workspaces table (include status for filtering)
         ws_row = con.execute(
-            "SELECT name, identity, created_at FROM workspaces WHERE name = ?",
+            "SELECT name, identity, created_at, status FROM workspaces WHERE name = ?",
             (workspace,),
         ).fetchone()
 
         if ws_row is None:
             return None  # workspace not found -- caller emits exit 1
+
+        # Workspace-level soft-delete filter (AC-4, v17): a demoted workspace
+        # (status='missing') is hidden from the active view by default, mirroring
+        # the project-level filter below. Pass include_missing=True to expose it.
+        if not include_missing and ws_row["status"] == "missing":
+            return None
 
         identity = ws_row["name"]
         created_at = ws_row["created_at"]
