@@ -24,38 +24,46 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: pip install pytest>=7.0
+        run: pip install pytest==8.3.5
 
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
 
   lint-js:
-    name: ESLint
+    name: ESLint (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["18", "20", "22"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run ESLint
         run: npm run lint
 
   build-plugins:
-    name: Build Plugins
+    name: Build Plugins (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: ${{ matrix.python-version }}
 
       - name: Build gaia-security
         run: python3 scripts/build-plugin.py gaia-security
@@ -72,3 +80,20 @@ jobs:
           test -f dist/gaia-ops/hooks/hooks.json
           test -f dist/gaia-ops/settings.json
           echo "All plugin artifacts verified"
+
+  validate-manifests:
+    name: Validate Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate manifests (version drift check)
+        run: npm run pre-publish:validate
