@@ -236,11 +236,83 @@ def set_workspace_last_scan_at(
     con = _connect(db_path)
     try:
         _ensure_workspace_row(con, workspace)
+        # A successful scan of an installed workspace means the workspace IS
+        # live: stamp last_scan_at AND reactivate it (status='active',
+        # missing_since=NULL). This mirrors project reactivation (v16) at the
+        # workspace level (v17 DEMOTE) -- a workspace that was previously
+        # demoted but is installed again on re-scan recovers cleanly.
         con.execute(
-            "UPDATE workspaces SET last_scan_at = ? WHERE name = ?",
+            "UPDATE workspaces SET last_scan_at = ?, status = 'active', "
+            "missing_since = NULL WHERE name = ?",
             (ts, workspace),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def mark_workspace_demoted(
+    workspace: str,
+    *,
+    ts: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Soft-delete a workspace whose Gaia install footprint disappeared (DEMOTE).
+
+    Sets ``status='missing'`` and ``missing_since=<now>`` on the workspaces row
+    instead of deleting it, mirroring :func:`mark_missing_in` for projects (v16)
+    at the workspace level (v17). The row, its projects, and all historical
+    context survive; the workspace is simply no longer treated as live.
+
+    Crucially this does NOT touch ``last_scan_at`` -- a demoted workspace must
+    not receive a fresh scan timestamp (that is the BUG-3 symptom: persisting a
+    demoted workspace as if it were freshly scanned).
+
+    Only a row that is not ALREADY missing is touched -- a row already
+    ``status='missing'`` keeps its original ``missing_since`` (first-seen-gone),
+    so repeated re-scans of a still-demoted directory do not keep bumping it.
+
+    The workspace row is NOT created if it does not exist: marking a never-seen
+    directory demoted is meaningless. Returns True only when an existing,
+    previously-active row was transitioned to missing.
+
+    Args:
+        workspace: Workspace name (workspaces.name PK).
+        ts:        ISO8601 UTC timestamp for missing_since. Defaults to now.
+        db_path:   Optional explicit DB path (used by tests).
+
+    Returns:
+        True when an existing active row was marked missing; False otherwise
+        (no such row, or already missing).
+    """
+    if ts is None:
+        ts = _now_iso()
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            row = con.execute(
+                "SELECT status FROM workspaces WHERE name = ?",
+                (workspace,),
+            ).fetchone()
+            if row is None:
+                con.commit()
+                return False
+            if row["status"] == "missing":
+                # Already demoted -> keep original missing_since intact.
+                con.commit()
+                return False
+            con.execute(
+                "UPDATE workspaces SET status = 'missing', missing_since = ? "
+                "WHERE name = ?",
+                (ts, workspace),
+            )
+            con.commit()
+            return True
+        except Exception:
+            con.rollback()
+            raise
     finally:
         con.close()
 

@@ -188,11 +188,23 @@ def _run_scan(project_root: Path, scan_config, args: argparse.Namespace,
     duration_s = output.duration_ms / 1000
     ui.done(duration_s)
     ui.updated(len(output.sections_updated), len(output.sections_preserved))
-    ui.footer("gaia.db updated")
+
+    # DEMOTE case (v17): the target is not an installed Gaia workspace. scan-core
+    # marked it demoted (workspaces.status='missing') and tombstoned its own
+    # projects instead of re-affirming them. Surface that clearly rather than
+    # implying a normal workspace sync.
+    if getattr(result, "demoted", False):
+        ui.footer(
+            f"{workspace} is not a Gaia workspace (demoted): marked missing, "
+            "not scanned as a workspace"
+        )
+    else:
+        ui.footer("gaia.db updated")
 
     summary = _build_summary(output, scanner_version)
     summary["status"] = "error" if output.errors else "success"
     summary["marked_missing"] = result.marked_missing
+    summary["demoted"] = bool(getattr(result, "demoted", False))
     if getattr(args, "json", False):
         print(json.dumps(summary, indent=2))
     return 1 if output.errors else 0
@@ -302,6 +314,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
         if not target.is_dir():
             return _emit_error(args, f"target not found: {target}")
         project_root = target
+        # BUG-1: the on-demand target is validated as an INSTALLED Gaia
+        # workspace authoritatively inside scan-core (tools.scan.core.
+        # scan_workspace via is_gaia_workspace). A target that is NOT a Gaia
+        # workspace -- e.g. a directory whose `.claude` install was removed
+        # ("demoted") -- is NOT scanned as a live workspace: scan-core's DEMOTE
+        # path marks it demoted and its projects missing instead of re-affirming
+        # them, and the CLI footer reports the demote (see _run_scan).
     else:
         # No target: scan the CURRENT workspace -- but only if we are inside
         # one. Outside a workspace with no target is a clean error, NOT an

@@ -179,7 +179,12 @@ class RailUI:
         """
         self._write(f"{self._rail()}  Updated: {sections_updated} sections")
         self._write(f"{self._rail()}  Preserved: {sections_preserved} agent-enriched sections")
-        self._write(f"{self._rail()}  Synced: settings.json, settings.local.json")
+        # NOTE: scan NEVER writes settings.json / settings.local.json (or any
+        # .claude/ file) -- that is install/update territory (cli/install.py +
+        # cli/_install_helpers.py). The previous "Synced: settings.json,
+        # settings.local.json" line here was a false claim that the scan touched
+        # .claude/; removed as part of the DEMOTE fix (BUG-2). scan syncs only
+        # gaia.db; the footer already states "gaia.db updated".
         self._write(self._rail())
 
     def footer(self, message: str) -> None:
