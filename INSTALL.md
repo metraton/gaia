@@ -55,7 +55,7 @@ User runs: npm install @jaguilar87/gaia
 postinstall script → gaia install --postinstall
         ↓
 [Bootstrap] runs scripts/bootstrap_database.sh
-   - Seeds ~/.gaia/gaia.db with current schema (v16)
+   - Seeds ~/.gaia/gaia.db with current schema (v17)
    - Seeds agent rows and permissions
         ↓
 [Install] creates .claude/ structure
@@ -89,7 +89,7 @@ Example: Install + scan in a project with GitOps and Terraform
 1. User: npm install @jaguilar87/gaia
    ↓
 2. postinstall runs gaia install --postinstall:
-   ✅ ~/.gaia/gaia.db bootstrapped (schema v16)
+   ✅ ~/.gaia/gaia.db bootstrapped (schema v17)
    ✅ .claude/ created
    ✅ 7 symlinks created (agents, tools, hooks, commands, templates, config, skills)
    ✅ settings.local.json merged
@@ -181,7 +181,7 @@ your-project/
     └── @jaguilar87/gaia/          ← npm package
 
 ~/.gaia/
-└── gaia.db                        ← Canonical context + memory store (SQLite, schema v16)
+└── gaia.db                        ← Canonical context + memory store (SQLite, schema v17)
 ```
 
 Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. Run `gaia scan` to populate it and `gaia context show` to inspect it.
