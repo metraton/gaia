@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS projects (
     primary_language TEXT,           -- detected primary language; scanner-owned
     scanner_ts       TEXT,           -- ISO8601 timestamp of last scan; scanner-owned
     topic_key        TEXT,           -- optional dimension key for upsert disambiguation; scanner-owned
+    group_name       TEXT,           -- optional group/team within the workspace (workspace->group->repo, AC-2); scanner-owned
+    path             TEXT,           -- absolute path on disk to the project root; scanner-owned (findability: project -> path + workspace)
+    status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete)
+    missing_since    TEXT,           -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
