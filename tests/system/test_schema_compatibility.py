@@ -132,5 +132,13 @@ class TestSchemaCompatibility:
             assert "metadata" in ctx, f"{name}: missing metadata"
             assert "sections" in ctx, f"{name}: missing sections"
 
-    def test_gaia_scan_writes_project_context(self, gaia_scan_content):
-        assert "project-context" in gaia_scan_content
+    def test_gaia_scan_persists_workspace_state_to_db(self, gaia_scan_content):
+        """`gaia scan` syncs workspace state into gaia.db.
+
+        The legacy ``project-context.json`` artifact was retired (context now
+        lives exclusively in gaia.db); scan-core populates the store and the
+        CLI delegates to it. Assert the CLI references the gaia.db sync path
+        rather than the retired JSON file.
+        """
+        assert "gaia.db" in gaia_scan_content
+        assert "scan_workspace" in gaia_scan_content

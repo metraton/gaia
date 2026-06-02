@@ -36,7 +36,7 @@ class _MockArgs:
     def __init__(self, **kwargs):
         # Defaults matching the parser
         defaults = {
-            "fresh": False,
+            "path": None,
             "workspace": None,
             "dry_run": False,
             "json": False,
@@ -45,7 +45,6 @@ class _MockArgs:
             "full": False,
             "no_color": True,
             "verbose": False,
-            "skip_claude_install": False,
             "npm_postinstall": False,
         }
         defaults.update(kwargs)
@@ -73,23 +72,26 @@ class TestRegister:
         parser = self._build_parser()
         ns = parser.parse_args(["scan"])
         assert ns.subcommand == "scan"
-        assert ns.fresh is False
+        assert ns.path is None
         assert ns.dry_run is False
         assert ns.json is False
         assert ns.workspace is None
+
+    def test_scan_subcommand_accepts_positional_target(self):
+        parser = self._build_parser()
+        ns = parser.parse_args(["scan", "/tmp/target"])
+        assert ns.path == "/tmp/target"
 
     def test_scan_subcommand_accepts_flags(self):
         parser = self._build_parser()
         ns = parser.parse_args([
             "scan",
-            "--fresh",
             "--dry-run",
             "--json",
             "--workspace", "/tmp/wsx",
             "--scanners", "stack,git",
             "--no-color",
         ])
-        assert ns.fresh is True
         assert ns.dry_run is True
         assert ns.json is True
         assert ns.workspace == "/tmp/wsx"
@@ -119,7 +121,6 @@ class TestHelpSmoke:
             f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
         # Help text must mention key flags so future regressions are visible
-        assert "--fresh" in result.stdout
         assert "--workspace" in result.stdout
         assert "--dry-run" in result.stdout
         assert "--json" in result.stdout
@@ -176,41 +177,129 @@ class TestDryRun:
             f"{[p.name for p in gaia_dir.iterdir()]}"
         )
 
-    def test_dry_run_with_existing_context_reports_metadata(self, tmp_path, capsys):
-        """--dry-run reports DB-backed metadata; last_scan comes from workspaces table.
-
-        T1.3: project context is in gaia.db, not project-context.json. When the
-        workspaces row is absent (no prior scan), last_scan falls back to "unknown".
-        """
+    def test_dry_run_is_pure_preview(self, tmp_path, capsys):
+        """--dry-run is a pure preview: it reports the target and what would
+        run, and (post scan/install split) does NOT read or touch the DB."""
         args = _MockArgs(workspace=str(tmp_path), dry_run=True, json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["dry_run"] is True
         assert data["project_root"] == str(tmp_path)
-        # last_scan is DB-backed; "unknown" when workspace row is absent
-        assert "last_scan" in data
         assert "would_scan" in data
 
 
 # ---------------------------------------------------------------------------
-# Workspace resolution
+# Target resolution (explicit entry points)
 # ---------------------------------------------------------------------------
 
-class TestWorkspaceResolution:
-    def test_resolve_workspace_explicit(self, tmp_path):
-        result = scan_mod._resolve_workspace(str(tmp_path))
+class TestTargetResolution:
+    def test_resolve_positional_path(self, tmp_path):
+        args = _MockArgs(path=str(tmp_path))
+        result = scan_mod._resolve_target(args)
         assert result == tmp_path.resolve()
 
-    def test_resolve_workspace_defaults_to_cwd(self):
-        result = scan_mod._resolve_workspace(None)
-        assert result == Path.cwd().resolve()
+    def test_resolve_workspace_flag(self, tmp_path):
+        args = _MockArgs(workspace=str(tmp_path))
+        result = scan_mod._resolve_target(args)
+        assert result == tmp_path.resolve()
 
-    def test_invalid_workspace_returns_1(self, tmp_path, capsys):
+    def test_positional_wins_over_flag(self, tmp_path):
+        other = tmp_path / "other"
+        args = _MockArgs(path=str(tmp_path), workspace=str(other))
+        result = scan_mod._resolve_target(args)
+        assert result == tmp_path.resolve()
+
+    def test_no_target_resolves_none(self):
+        args = _MockArgs()
+        assert scan_mod._resolve_target(args) is None
+
+    def test_invalid_target_returns_1(self, tmp_path, capsys):
         bogus = tmp_path / "does-not-exist"
-        args = _MockArgs(workspace=str(bogus), dry_run=False, json=True)
+        args = _MockArgs(path=str(bogus), dry_run=False, json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
         assert data["status"] == "error"
         assert "not found" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# Explicit entry points: outside-a-workspace + no target -> clean error
+# ---------------------------------------------------------------------------
+
+class TestOutsideWorkspaceError:
+    def test_no_target_outside_workspace_is_clean_error(self, tmp_path, monkeypatch, capsys):
+        """`gaia scan` with no target, run outside any Gaia workspace, errors
+        cleanly -- it must NOT fall back to an install/bootstrap mode."""
+        # cwd is a plain dir with no Gaia install -> not a workspace.
+        monkeypatch.chdir(tmp_path)
+        args = _MockArgs(json=True)  # no path, no workspace
+        rc = scan_mod.cmd_scan(args)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "error"
+        assert "not in a Gaia workspace" in data["error"]
+
+    def test_no_target_inside_workspace_proceeds(self, tmp_path, monkeypatch):
+        """Inside a workspace (plugin-registry signal), no-target scan proceeds
+        past the workspace guard (reaches the scan-core call)."""
+        claude = tmp_path / ".claude"
+        claude.mkdir()
+        (claude / "plugin-registry.json").write_text(
+            '{"installed": [{"name": "gaia-ops"}]}'
+        )
+        monkeypatch.chdir(tmp_path)
+
+        # Stub scan-core so we only verify the guard let us through.
+        reached = {}
+        def _fake_run_scan(project_root, cfg, args, version):
+            reached["called"] = True
+            return 0
+        monkeypatch.setattr(scan_mod, "_run_scan", _fake_run_scan)
+
+        args = _MockArgs()
+        rc = scan_mod.cmd_scan(args)
+        assert rc == 0
+        assert reached.get("called") is True
+
+    def test_npm_postinstall_bypasses_workspace_guard(self, tmp_path, monkeypatch):
+        """--npm-postinstall scans the cwd without requiring the workspace
+        signal (install owns the just-created workspace identity)."""
+        monkeypatch.chdir(tmp_path)
+        reached = {}
+        def _fake_run_scan(project_root, cfg, args, version):
+            reached["called"] = True
+            return 0
+        monkeypatch.setattr(scan_mod, "_run_scan", _fake_run_scan)
+
+        args = _MockArgs(npm_postinstall=True)
+        rc = scan_mod.cmd_scan(args)
+        assert rc == 0
+        assert reached.get("called") is True
+
+
+# ---------------------------------------------------------------------------
+# Install-decoupling: scan must not import install setup functions
+# ---------------------------------------------------------------------------
+
+class TestScanDoesNotInstall:
+    def test_scan_module_has_no_install_symbols(self):
+        """The removed install-mode functions must be gone from cli.scan."""
+        for removed in ("_mode_fresh", "_mode_existing", "_mode_scan_only"):
+            assert not hasattr(scan_mod, removed), (
+                f"cli.scan still exposes removed install-mode function {removed!r}"
+            )
+
+    def test_scan_source_does_not_reference_setup_install(self):
+        """cli/scan.py must not import the install-layer setup functions."""
+        src = (Path(scan_mod.__file__)).read_text()
+        for forbidden in (
+            "ensure_gaia_ops_package",
+            "create_claude_directory",
+            "install_git_hooks",
+            "ensure_claude_code",
+        ):
+            assert forbidden not in src, (
+                f"cli/scan.py still references install-layer symbol {forbidden!r}"
+            )

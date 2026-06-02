@@ -462,14 +462,20 @@ class TestScanWorkspaceWiring:
 
         results = scan_workspace_to_store("ws-test", ws_root, "developer", db_path=tmp_db)
 
-        # Sanity: per-repo result has new keys
-        assert "platform" in results
-        assert "apps" in results["platform"]
-        assert "services" in results["platform"]
-        assert "libraries" in results["platform"]
-        # Workspace-scoped result
+        # Per-repo results are keyed "<workspace>/<project>" (canonical rule:
+        # a scan may populate several workspaces, so keys are disambiguated).
+        # No installed sub-workspace here -> the repo is attributed to the
+        # CLI-root workspace "ws-test".
+        repo_key = "ws-test/platform"
+        assert repo_key in results
+        assert "apps" in results[repo_key]
+        assert "services" in results[repo_key]
+        assert "libraries" in results[repo_key]
+        # Workspace-scoped result: keyed by workspace name; the CLI root
+        # ("ws-test") is always present as an anchor.
         assert "__workspace__" in results
-        assert "gaia_installations" in results["__workspace__"]
+        assert "ws-test" in results["__workspace__"]
+        assert "gaia_installations" in results["__workspace__"]["ws-test"]
 
         con = _connect(tmp_db)
         try:
