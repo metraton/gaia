@@ -22,9 +22,9 @@ npm install @jaguilar87/gaia
 
 After install, `gaia doctor` verifies the result. If postinstall fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
 
-### Option 2: Project Scanner (project-context)
+### Option 2: Project Scanner (on-demand)
 
-To detect or refresh your project context (stack, GitOps directory, Terraform layout, GCP project, etc.) -- this is **not** the installer, it populates `project-context.json`:
+To detect or refresh your project context (stack, GitOps directory, Terraform layout, GCP project, etc.) -- this is **not** the installer, it writes scan results to `~/.gaia/gaia.db`:
 
 ```bash
 gaia scan
@@ -41,7 +41,7 @@ gaia scan --non-interactive \
   --cluster my-gke-cluster
 ```
 
-Pass `--fresh` to wipe `.claude/` first and re-run a clean install + scan.
+**Important:** `gaia scan` and `gaia install` are separate flows. `gaia install` (run automatically by `npm install` postinstall) bootstraps the database and `.claude/` structure. `gaia scan` detects your project stack and writes the results to the DB. Running `gaia scan` never installs or creates symlinks; running `gaia install` never scans. To bootstrap from scratch, use `gaia install` (or `npm install @jaguilar87/gaia`), not `gaia scan`.
 
 ---
 
@@ -50,96 +50,71 @@ Pass `--fresh` to wipe `.claude/` first and re-run a clean install + scan.
 ### Installation Flow
 
 ```
-User runs: gaia scan
+User runs: npm install @jaguilar87/gaia
         ↓
-[Detector] scans your project
+postinstall script → gaia install --postinstall
         ↓
-   Finds automatically:
-   - GitOps directory
-   - Terraform directory
-   - Apps directory
+[Bootstrap] runs scripts/bootstrap_database.sh
+   - Seeds ~/.gaia/gaia.db with current schema (v16)
+   - Seeds agent rows and permissions
         ↓
-[Installer] asks for missing data:
-   - GCP Project ID
-   - Region
-   - Cluster name
+[Install] creates .claude/ structure
+   Creates symlinks to gaia package:
+     .claude/agents    → node_modules/.../agents
+     .claude/tools     → node_modules/.../tools
+     .claude/hooks     → node_modules/.../hooks
+     .claude/commands  → node_modules/.../commands
+     .claude/config    → node_modules/.../config
+     .claude/skills    → node_modules/.../skills
+     .claude/templates → node_modules/.../templates
         ↓
-[Installer] checks Claude Code
+[Install] merges config files:
+   - settings.local.json (hooks + permissions, union merge)
+   - plugin-registry.json (installed[].name = "gaia-ops")
         ↓
-    Already installed?
-    ┌────┴────┐
-    ↓         ↓
-  YES        NO
-    ↓         ↓
-  Use     Install
- existing    new
-    ↓         ↓
-    └────┬────┘
-         ↓
-Creates .claude/ structure
-         ↓
-Creates symlinks to gaia package:
-  .claude/agents → node_modules/.../agents
-  .claude/tools → node_modules/.../tools
-  .claude/hooks → node_modules/.../hooks
-  .claude/commands → node_modules/.../commands
-  .claude/config → node_modules/.../config
-  .claude/skills → node_modules/.../skills
-  .claude/templates → node_modules/.../templates
-         ↓
-Generates config files:
-  - project-context.json
-  - settings.json
-         ↓
 Validates installation:
   ✅ Symlinks correct
-  ✅ Claude Code available
+  ✅ DB bootstrapped
   ✅ Valid configuration
-         ↓
-Ready! You can use: claude
+        ↓
+Ready! Run: gaia doctor
+Then optionally scan your project stack: gaia scan
 ```
 
 ### Real Installation Example
 
 ```
-Example: Installation in project with GitOps and Terraform
+Example: Install + scan in a project with GitOps and Terraform
 
-1. User: gaia scan
+1. User: npm install @jaguilar87/gaia
    ↓
-2. Detector finds:
+2. postinstall runs gaia install --postinstall:
+   ✅ ~/.gaia/gaia.db bootstrapped (schema v16)
+   ✅ .claude/ created
+   ✅ 7 symlinks created (agents, tools, hooks, commands, templates, config, skills)
+   ✅ settings.local.json merged
+   ✅ plugin-registry.json written (name: gaia-ops)
+   ↓
+3. User: gaia scan (optional -- detects project stack)
+   ↓
+4. Detector finds:
    ✅ ./gitops (52 YAML files detected)
    ✅ ./terraform (15 .tf files detected)
    ❌ ./app-services (not found)
    ↓
-3. Installer asks:
-   ? GCP Project ID: → my-gcp-project
-   ? Primary region: → us-central1
-   ? Cluster name: → my-gke-cluster
-   ↓
-4. Checks Claude Code:
-   ✅ Claude Code already installed at /usr/local/bin/claude
-   ⏭️  Skipping reinstall
-   ↓
-5. Creates structure:
-   ✅ .claude/ created
-   ✅ 7 symlinks created (agents, tools, hooks, commands, templates, config, skills)
-   ✅ project-context.json created
-   ✅ settings.local.json merged
-   ✅ plugin-registry.json written
+5. Scanner writes to ~/.gaia/gaia.db:
+   ✅ project_identity, stack, git, infrastructure sections recorded
+   ✅ No project-context.json file generated (DB is canonical)
    ↓
 6. Result:
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ✅ Gaia installed successfully!
+   ✅ Gaia installed and project scanned!
    
-   📚 Documentation available:
-   - .claude/agents/README.md
-   - .claude/config/README.md
-   - .claude/commands/README.md
-   
-   🚀 Next steps:
-   1. Run: claude
-   2. Ask: "Show me GKE clusters"
-   3. Or use: /scan-project to detect your project stack
+   Next steps:
+   1. Run: gaia doctor
+   2. Run: claude
+   3. Ask: "Show me GKE clusters"
+   4. Or use: /scan-project to re-scan your project stack
 ```
 
 ---
@@ -148,7 +123,7 @@ Example: Installation in project with GitOps and Terraform
 
 ### Environment Variables
 
-Configure before installing to avoid questions:
+Configure before scanning to avoid prompts:
 
 ```bash
 # Configure paths
@@ -161,16 +136,18 @@ export CLAUDE_PROJECT_ID="my-gcp-project"
 export CLAUDE_REGION="us-central1"
 export CLAUDE_CLUSTER_NAME="my-gke-cluster"
 
-# Install without questions
+# Scan without questions
 gaia scan --non-interactive
 ```
 
 ### Complete CLI Options
 
 ```
-gaia scan [options]
+gaia install [options]          # Bootstrap DB + .claude/ structure (also: npm postinstall)
 
-Options:
+gaia scan [options]             # Detect project stack, write to ~/.gaia/gaia.db
+
+gaia scan options:
   --non-interactive          Skip prompts, use provided values or defaults
   --gitops <path>           GitOps directory path
   --terraform <path>        Terraform directory path
@@ -178,7 +155,6 @@ Options:
   --project-id <id>         GCP project ID
   --region <region>         Primary region (default: us-central1)
   --cluster <name>          Cluster name
-  --skip-claude-install     Skip Claude Code installation
 ```
 
 ---
@@ -189,7 +165,7 @@ Options:
 
 ```
 your-project/
-├── .claude/                       ← Created by postinstall
+├── .claude/                       ← Created by gaia install (npm postinstall)
 │   ├── agents/ (symlink)          → Agent definitions
 │   ├── skills/ (symlink)          → Skill modules
 │   ├── tools/ (symlink)           → Orchestration tools
@@ -197,14 +173,18 @@ your-project/
 │   ├── commands/ (symlink)        → Slash commands
 │   ├── config/ (symlink)          → Configuration (contracts, rules)
 │   ├── templates/ (symlink)       → Installation templates
-│   ├── project-context/           ← Your project context (SSOT)
 │   ├── logs/                      ← Audit logs
 │   ├── approvals/                 ← Pending T3 approval files
 │   ├── plugin-registry.json       ← installed[].name = "gaia-ops"
 │   └── settings.local.json        ← Merged hooks + permissions + env
 └── node_modules/
     └── @jaguilar87/gaia/          ← npm package
+
+~/.gaia/
+└── gaia.db                        ← Canonical context + memory store (SQLite, schema v16)
 ```
+
+Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. Run `gaia scan` to populate it and `gaia context show` to inspect it.
 
 **Wire-up verification:** after install, the same checklist applies to every install mode (live, dry-run, RC, stable). See `skills/gaia-release/SKILL.md` -> "Wire-up Verification Checklist".
 
@@ -246,11 +226,11 @@ ls -la .claude/
 ### 2. Review Generated Configuration
 
 ```bash
-# View project-context.json
-cat .claude/project-context/project-context.json
+# View project context (stored in DB)
+gaia context show
 
-# View settings.json
-cat .claude/settings.json
+# View settings
+cat .claude/settings.local.json
 ```
 
 ### 3. Start Claude Code
@@ -278,10 +258,10 @@ claude
 
 When you update `@jaguilar87/gaia`, these files are **regenerated from templates**:
 
-| File | Behavior | Recommended Action |
+| File / Store | Behavior | Recommended Action |
 |------|----------|-------------------|
-| `.claude/settings.json` | ⚠️ **Replaced** from template (source of truth) | Safe |
-| `.claude/project-context/project-context.json` | ✅ **Preserved** | Safe |
+| `.claude/settings.local.json` | ✅ **Union merged** -- never removes user config | Safe |
+| `~/.gaia/gaia.db` | ✅ **Migrated in place** -- schema bumped, data preserved | Safe |
 | `.claude/logs/` | ✅ **Preserved** | Safe |
 | Other `.claude/` files | ✅ **Auto-updated via symlinks** | Safe |
 
@@ -438,7 +418,7 @@ Gaia is designed with these principles:
 ### Frequently Asked Questions
 
 **Q: Can I use Gaia in multiple projects?**  
-A: Yes. Install in each project and each will have its own `project-context.json`.
+A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. Run `gaia scan` inside each project directory to populate its context. The DB is shared but context is per-workspace.
 
 **Q: Do symlinks work on Windows?**  
 A: Yes, but you need to enable developer mode or run as administrator.

@@ -44,11 +44,12 @@ Append `--fresh` to either form. The harness will delete `node_modules/`, `packa
 **What postinstall does:**
 1. Ships `scripts/` (bootstrap_database.sh) -- failed silently in pre-rc.4 builds; verified in `npm pack --dry-run`.
 2. Creates `.claude/` if missing.
-3. Runs `bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fails loud on any error (writes `~/.gaia/last-install-error.json` and exits non-zero).
+3. Runs `bootstrap_database.sh` -- seeds the schema (v16), agent rows, and `schema_version`. Fails loud on any error (writes `~/.gaia/last-install-error.json` and exits non-zero).
 4. Merges hooks into `settings.local.json` via the consolidated `merge_hooks` step.
 5. Creates 7 symlinks under `.claude/` to `node_modules/@jaguilar87/gaia/<dir>/`.
 6. Writes `plugin-registry.json` with `installed[].name == "gaia-ops"`.
-7. Writes `project-context.json`.
+
+No `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` in the workspace to populate it after install.
 
 **Revert:** `npm install @jaguilar87/gaia@rc` (or `@latest`) over the same workspace -- the next install wins. The `--fresh` flag is the more aggressive lever.
 
@@ -115,7 +116,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix. 
 |---|---|---|
 | Install reports PASS, `~/.gaia/gaia.db` migrated, but `.claude/hooks` symlink still points to old rc version after restart | `detect_local_workspace()` matched the gaia repo itself (which has `node_modules/@jaguilar87/gaia/` as a self-referencing dep) instead of the consumer workspace. Symlinks got wired to the repo's `node_modules`, not the consumer workspace's. | Always pass `--workspace /home/jorge/ws/me` explicitly. The harness now guards against this with `is_gaia_repo_root()` but explicit `--workspace` is the safest path. Verify with `readlink /home/jorge/ws/me/.claude/hooks` -- it must resolve to `../node_modules/@jaguilar87/gaia/hooks` relative to the workspace, not the repo. |
 | `.claude/` not created after `npm install` | Bootstrap script not shipped, or bootstrap exited non-zero | `cat ~/.gaia/last-install-error.json`. Re-install with `npm install @jaguilar87/gaia@latest`. If persists, file a bug. |
-| `gaia doctor` walks up to user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --workspace <path>` or `gaia scan --fresh`. |
+| `gaia doctor` walks up to user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --workspace <path>`. To start completely fresh: `npm install @jaguilar87/gaia` in the workspace directory. |
 | `mode: security` when it should be `ops` | `plugin-registry.json` not created with `name: gaia-ops` -- bootstrap failed silently in an older build | Check `~/.gaia/last-install-error.json`. Re-install with current rc. |
 | `bootstrap exited 1: table projects has no column named identity` | Schema/bootstrap drift (pre-rc.4 seed SQL) | Update to `@jaguilar87/gaia >= 5.0.0-rc.4` (`33b68b4` synced the seed). |
 | `[bootstrap] check: distinct agents == 5 (got 6) -- FAIL` | Legacy `gaia-operator` row in DB from an older schema | Update to `>= rc.4` (`174cf62` includes the cleanup migration + lenient count check). |

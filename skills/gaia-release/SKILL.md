@@ -27,10 +27,10 @@ For step-by-step commands per mode (including version-bump syntax, `--stay` for 
 
 After any install (live, dry-run, RC, stable), the same checklist applies. If any check fails, jump to `reference.md` -> "Diagnostic guide".
 
-1. `ls -la <workspace>/.claude/` -- 7 symlinks (agents, hooks, skills, commands, config, templates, tools) + `project-context/`, `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`.
+1. `ls -la <workspace>/.claude/` -- 7 symlinks (agents, hooks, skills, commands, config, templates, tools) + `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`.
 2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` includes `gaia-ops` (or `gaia-security`) at the expected version.
 3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- 12 hook events registered.
-4. `ls <workspace>/.claude/project-context/` -- `project-context.json` present.
+4. `ls ~/.gaia/gaia.db` -- DB file exists (bootstrapped by postinstall).
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist (postinstall completed cleanly; the marker is written on any bootstrap or wire-up failure).
 6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, 17+ checks pass, 0 errors.
 

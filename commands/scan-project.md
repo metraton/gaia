@@ -1,15 +1,17 @@
 ---
 name: scan-project
-description: Scan the current project to detect stack, infrastructure, tools, and generate/update project-context.json
+description: Scan the current project to detect stack, infrastructure, tools, and update the project context in ~/.gaia/gaia.db
 allowed-tools:
   - Bash(*)
   - Read
 ---
 
 Run the gaia modular project scanner to detect the project stack, infrastructure,
-git setup, CLI tools, orchestration, and runtime environment. The scanner produces
-(or updates) `.claude/project-context/project-context.json` with structured,
-machine-readable context that agents consume.
+git setup, CLI tools, orchestration, and runtime environment. The scanner writes
+structured, machine-readable context to `~/.gaia/gaia.db` that agents consume.
+
+No `project-context.json` file is generated. The DB is the canonical source of
+truth. Use `gaia context show` to inspect the stored context.
 
 ## What this does
 
@@ -23,26 +25,25 @@ The scanner runs 6 independent modules in parallel:
 
 It preserves agent-enriched sections (data added by agents via update_contracts)
 and merges new scan data with existing context using section-ownership rules.
+Projects that temporarily disappear are soft-deleted (`status='missing'`) and
+reactivated when they reappear -- data is never purged.
 
 ## How to run
 
-Run the scanner CLI:
-
 ```bash
-python3 bin/gaia scan
+gaia scan
 ```
 
 Optional flags:
 - `--verbose` -- show scanner-by-scanner progress
 - `--scanners stack,git` -- run only specific scanners
-- `--output /path/to/output.json` -- custom output path
 - `--check-staleness` -- skip scan if context is already fresh (<24h old)
 
 $ARGUMENTS
 
 ## Expected output
 
-The CLI writes project-context.json and prints a JSON summary to stdout:
+The CLI prints a JSON summary to stdout:
 
 ```
 {
@@ -60,8 +61,14 @@ section count, warnings, and elapsed time.
 
 ## After scanning
 
-Read the generated context to verify:
+Inspect the stored context:
 
 ```bash
-python3 -c "import json; d=json.load(open('.claude/project-context/project-context.json')); print(json.dumps(list(d.get('sections',{}).keys()), indent=2))"
+gaia context show
+```
+
+Or query a specific section:
+
+```bash
+gaia context get stack
 ```

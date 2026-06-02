@@ -18,7 +18,7 @@ Construction patterns for building Gaia components. Every component type follows
 2. Orchestrator routes to agent (surface-routing.json)
    |
 3. Pre-Tool Hook (pre_tool_use.py)
-   +-- Inject project-context.json
+   +-- Inject project context (from ~/.gaia/gaia.db via context_provider.py)
    +-- Load skills from frontmatter
    +-- Validate permissions
    |

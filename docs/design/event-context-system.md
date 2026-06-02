@@ -124,7 +124,7 @@ system.session_start -- New GAIA session began
 system.session_end   -- Session ended (stop hook)
 system.anomaly       -- Workflow auditor detected anomaly
 
-context.updated      -- project-context.json was enriched by an agent
+context.updated      -- project context (~/.gaia/gaia.db) was enriched by an agent
 context.stale        -- Scanner detected staleness
 
 infra.change         -- Infrastructure mutation detected

@@ -85,7 +85,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | Command | File | Purpose |
 |---------|------|---------|
 | `/gaia` | `commands/gaia.md` | Invoke gaia meta-agent |
-| `/scan-project` | `commands/scan-project.md` | Scan project, generate project-context.json |
+| `/scan-project` | `commands/scan-project.md` | Scan project, update project context in ~/.gaia/gaia.db |
 | `/gaia-plan` | `commands/gaia-plan.md` | Plan a feature, create brief, decompose into tasks |
 
 ### Tools (7 subsystems)
@@ -109,7 +109,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 |------------|------|---------|
 | `gaia approvals` | `bin/cli/approvals.py` | Approval system v2: list, show, accept, reject pending T3 grants |
 | `gaia brief` | `bin/cli/brief.py` | Brief CRUD against the Gaia DB substrate (new, edit, show, status, close) |
-| `gaia cleanup` | `bin/cli/cleanup.py` | Remove temporary caches, old logs, and `__pycache__`; preserves project-context.json and .claude/ symlinks |
+| `gaia cleanup` | `bin/cli/cleanup.py` | Remove temporary caches, old logs, and `__pycache__`; preserves .claude/ symlinks and ~/.gaia/gaia.db |
 | `gaia context` | `bin/cli/context.py` | Display, refresh, and inspect project context (legacy JSON + DB-backed sections) |
 | `gaia doctor` | `bin/cli/doctor.py` | System health checks: schema, FTS5 sync, agent_permissions, symlinks, settings.local.json |
 | `gaia history` | `bin/cli/history.py` | Recent agent sessions: list, show, search |
@@ -119,7 +119,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
 | `gaia plans` | `bin/cli/plans.py` | List and display briefs/plans with status info |
 | `gaia workspace` | `bin/cli/workspace.py` | Workspace identity and consolidate operations |
-| `gaia scan` | `bin/cli/scan.py` | In-process project scan: detect stack, sync to DB and project-context.json |
+| `gaia scan` | `bin/cli/scan.py` | In-process project scan: detect stack, sync results to ~/.gaia/gaia.db (DB-canonical; no project-context.json written) |
 | `gaia status` | `bin/cli/status.py` | Quick installation snapshot: version, mode, DB path, registered workspace, last scan |
 | `gaia uninstall` | `bin/cli/uninstall.py` | Disconnect Gaia from the current workspace (wraps cleanup + preuninstall mode) |
 | `gaia update` | `bin/cli/update.py` | Refresh DB schema, .claude/ config, and symlinks after a package upgrade |
@@ -204,13 +204,14 @@ npm publish                    # publishes @jaguilar87/gaia
 **First install** (no `.claude/`):
 1. Check Python 3 available.
 2. Create `.claude/` if missing (created early so subsequent steps can write into it).
-3. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
+3. Run `scripts/bootstrap_database.sh` -- seeds the schema (v16), agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
 4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
 5. Merge hooks from `hooks.json` into `settings.local.json` via the consolidated `merge_hooks` step.
 6. Create `.claude/{agents, tools, hooks, commands, templates, config, skills}` symlinks (7) plus `CHANGELOG.md` file link.
 7. Write `plugin-registry.json` with `installed[].name == "gaia-ops"` (or `gaia-security`).
-8. Write `project-context.json`.
-9. Verification.
+8. Verification.
+
+Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it.
 
 **Update** (`.claude/` exists):
 1. Show version transition.
@@ -219,7 +220,7 @@ npm publish                    # publishes @jaguilar87/gaia
 4. Merge hooks from `hooks.json` into `settings.local.json`.
 5. Recreate/fix broken symlinks.
 6. Run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`.
-7. Verify hooks, Python, project-context, config.
+7. Verify hooks, Python, DB schema, config.
 
 The hook invoker is `python3 <script>` rather than executing the script directly, so missing exec bits on cross-platform checkouts do not break the install.
 
@@ -304,7 +305,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia context` | Display and refresh project context | Audit context state |
 | `gaia paths` | Print resolved storage paths | Path debugging |
 | `gaia workspace` | Workspace identity and consolidate operations | Multi-workspace setups |
-| `gaia scan` | In-process project scanner | Refresh project-context.json |
+| `gaia scan` | In-process project scanner | Refresh project context in ~/.gaia/gaia.db |
 | `gaia install` | Bootstrap DB + workspace (also npm postinstall) | Fresh setup, manual repair |
 | `gaia update` | Re-sync after a package upgrade | After bumping the version |
 | `gaia cleanup` | Remove temp caches, old logs, `__pycache__` | Housekeeping |

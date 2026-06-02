@@ -141,9 +141,9 @@ Assembles the context payload injected into agent prompts by pre_tool_use.py.
 ```
 context_provider.py <agent_name> <user_task>
     |
-    +--> Load project-context.json
-    +--> Detect cloud provider (GCP/AWS)
-    +--> Load base contracts (config/context-contracts.json)
+    +--> Load project context from ~/.gaia/gaia.db (project_context_contracts table)
+    +--> Detect cloud provider (GCP/AWS) from DB workspace record
+    +--> Load base contracts from DB (agent_contract_permissions table)
     +--> Merge cloud overrides (config/cloud/{provider}.json)
     +--> Extract contracted sections for this agent (read permissions)
     +--> Load relevant episodic memory (similarity match)
