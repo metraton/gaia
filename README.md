@@ -60,26 +60,34 @@ That pipeline is the spine. Everything else in this repo is either a component o
 ### Via npm (advanced setup)
 ```bash
 npm install @jaguilar87/gaia
-gaia scan
 ```
+
+The `npm install` postinstall script bootstraps the database, creates `.claude/`, writes symlinks, and registers the plugin. Run `gaia doctor` afterward to verify.
 
 ### Quick Start (npm)
 
 ```bash
-# Scan and bootstrap project-context.json
-gaia scan
+# Install and bootstrap (postinstall does the rest)
+npm install @jaguilar87/gaia
 
 # Or install globally
 npm install -g @jaguilar87/gaia
+```
+
+The postinstall hook does everything automatically. To scan your project stack after install:
+```bash
 gaia scan
 ```
 
-This will:
-1. Auto-detect your project structure (GitOps, Terraform, AppServices)
+`gaia install` (run by postinstall) will:
+1. Bootstrap the DB (`~/.gaia/gaia.db`) with the current schema
 2. Create `.claude/` directory with symlinks to this package
-3. Generate `project-context.json`
-4. Create `settings.json` with hooks only (no permissions in settings.json)
-5. Merge deny rules + allow permissions into `settings.local.json` (preserves existing user config)
+3. Merge hooks and permissions into `settings.local.json` (preserves existing user config)
+4. Write `plugin-registry.json`
+
+`gaia scan` (run separately, on-demand) will:
+1. Auto-detect your project structure (GitOps, Terraform, AppServices, stack)
+2. Write scan results to `~/.gaia/gaia.db` (DB is canonical; no `project-context.json` file is generated)
 
 No `CLAUDE.md` is generated -- orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated via `settings.json: { "agent": "gaia-orchestrator" }`.
 
@@ -202,11 +210,10 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
 ## Project Context Management
 
-Gaia uses a versioned project context as SSOT:
+Gaia uses `~/.gaia/gaia.db` (SQLite) as the canonical store for project context. Run `gaia scan` inside a workspace to detect and record the project stack, GitOps layout, Terraform layout, and other structural facts. Context is scoped per-workspace and survives reinstalls. View it with:
 
 ```bash
-cd .claude
-git clone git@bitbucket.org:yourorg/your-project-context.git project-context
+gaia context show
 ```
 
 ## Support

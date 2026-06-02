@@ -30,7 +30,7 @@ No subagent is spawned. No new identity is loaded. The orchestrator handles exec
 ```
 commands/
 ├── gaia.md           # /gaia — invoke the Gaia meta-agent (gaia-system) for system work
-└── scan-project.md   # /scan-project — scan codebase, detect stack, update project-context.json
+└── scan-project.md   # /scan-project — scan codebase, detect stack, update ~/.gaia/gaia.db
 ```
 
 Note: a `/gaia-plan` command is referenced in some older documentation but the file does not exist here. Planning is handled conversationally through the orchestrator and the `gaia-planner` agent — not via a slash command.

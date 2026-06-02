@@ -19,7 +19,7 @@ bin/cli/scan.py reads templates/ directory
         |
 For each template:
   managed-settings.template.json   -> NOT consumed by `gaia scan` (enterprise only)
-  governance.template.md           -> interpolated with project-context.json values
+  governance.template.md           -> interpolated with project context values (from ~/.gaia/gaia.db; no project-context.json file)
   (any other *.template.* files)   -> interpolated or copied per install logic
         |
 Generated files written to project .claude/ or project root

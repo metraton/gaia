@@ -17,10 +17,9 @@ Use this plugin when you want the complete Gaia experience — orchestrator, spe
 
 ```bash
 npm install @jaguilar87/gaia
-gaia scan
 ```
 
-The `gaia scan` subcommand detects your project stack, creates the `.claude/` structure via symlinks, and generates a starter `project-context.json`.
+The `npm install` postinstall hook bootstraps `~/.gaia/gaia.db`, creates the `.claude/` structure via symlinks, and registers the plugin. Run `gaia doctor` to verify, then `gaia scan` to detect your project stack (writes to DB, no `project-context.json` file generated).
 
 ## Quick start
 
@@ -28,7 +27,7 @@ The `gaia scan` subcommand detects your project stack, creates the `.claude/` st
 # Verify installation
 gaia doctor
 
-# Detect stack and seed project-context.json
+# Detect stack and record in ~/.gaia/gaia.db
 gaia scan
 
 # List queued approvals
@@ -67,7 +66,7 @@ Edit and Write tools are open for normal code paths. Writes to `.claude/hooks/` 
 
 ## Troubleshooting
 
-- **Symlinks missing after install**: `gaia scan` rebuilds them.
+- **Symlinks missing after install**: `gaia install` rebuilds them (or re-run `npm install @jaguilar87/gaia`).
 - **Multiple Claude Code installations**: `gaia cleanup` removes duplicates.
 - **Hook not firing**: `gaia doctor` validates every manifest entry against disk.
 - **Full uninstall**: `gaia uninstall --force --remove-all`.

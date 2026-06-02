@@ -1,7 +1,16 @@
 # tools/migration
 
 Scripts de migración one-shot para absorber datos locales del workspace `me`
-desde el filesystem hacia `~/.gaia/gaia.db` (substrate v6).
+desde el filesystem hacia `~/.gaia/gaia.db`.
+
+> **Histórico.** Estos converters leían artefactos de filesystem que el modelo
+> actual ya retiró: `.claude/project-context/episodic-memory/episodes.jsonl` y
+> `.claude/project-context/project-context.json`. En el modelo nuevo,
+> `~/.gaia/gaia.db` es canónico — `gaia scan` no genera `project-context.json`,
+> y la memoria episódica se persiste directamente vía el hook `subagent_stop`.
+> Las rutas de origen en la tabla de abajo describen el filesystem legacy tal
+> como existía cuando estos scripts one-shot corrieron; se conservan como
+> registro histórico de la absorción, no como fuentes vivas.
 
 ## Dominios
 

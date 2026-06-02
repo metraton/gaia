@@ -17,8 +17,8 @@ This component does not activate as a runtime process. Each file is read on-dema
 | `surface-routing.json` | `hooks/user_prompt_submit.py` | Every prompt — determines routing recommendation injected into orchestrator context |
 | `context-contracts.json` | `gaia install` / `gaia update` | One-time at install; populates `~/.gaia/gaia.db` tables. Runtime reads come from DB. |
 | `git_standards.json` | `hooks/modules/validation/commit_validator.py` | Every `git commit` call intercepted by PreToolUse |
-| `cloud/gcp.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = gcp` in project-context.json |
-| `cloud/aws.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = aws` in project-context.json |
+| `cloud/gcp.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = gcp` in workspace DB record |
+| `cloud/aws.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = aws` in workspace DB record |
 
 **Base + cloud merge flow:**
 
@@ -27,7 +27,7 @@ Agent dispatch triggered
         |
 hooks/modules/context/contracts_loader.py reads project_context_contracts from DB
         |
-Detects cloud_provider from project-context.json
+Detects cloud_provider from workspace record in ~/.gaia/gaia.db
         |
 Reads cloud/{provider}.json                         <- cloud extensions (still file-based)
         |

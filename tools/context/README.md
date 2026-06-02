@@ -8,12 +8,12 @@ This module manages the project knowledge agents receive at dispatch time. It re
 
 ## Core Functions
 
-### `load_project_context(path)`
-Loads the project-context.json file. Used by `gaia scan` to hydrate the on-disk artifact alongside DB writes.
+### `load_project_context(workspace, db_path=None)`
+Loads project context for a workspace from the `project_context_contracts` table in `~/.gaia/gaia.db`. The DB is the canonical source of truth; the legacy `project-context.json` file on disk is no longer written or read by `gaia scan`.
 
 ```python
 from tools.context.context_provider import load_project_context
-context = load_project_context(Path(".claude/project-context/project-context.json"))
+context = load_project_context("me")
 ```
 
 ### `get_contract_context(project_context, agent_name, provider_contracts)`
@@ -90,7 +90,7 @@ when deciding whether an `update_contracts` clause is allowed.
 
 ```bash
 python3 tools/context/context_provider.py platform-architect "Create a VPC" \
-  --context-file .claude/project-context/project-context.json
+  --workspace me
 ```
 
 ## Files

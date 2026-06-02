@@ -33,7 +33,7 @@ npm uninstall @jaguilar87/gaia
         |
 preuninstall script -> python3 bin/gaia uninstall --preuninstall
         |
-Cleans temporary caches, old logs, __pycache__, preserves project-context.json
+Cleans temporary caches, old logs, __pycache__, preserves .claude/ symlinks
 ```
 
 No Claude Code session is involved in either case. The subcommands run in a normal Python process and interact with the filesystem directly.
@@ -53,7 +53,7 @@ bin/
     ├── approvals.py           # gaia approvals  — list/show/reject/clean/stats T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
-    ├── context.py             # gaia context    — show / scan / diff project-context.json
+    ├── context.py             # gaia context    — show / scan / get / query / wipe project context from gaia.db
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — postinstall: bootstrap DB, settings, symlinks
@@ -62,7 +62,7 @@ bin/
     ├── paths.py               # Shared path resolution helpers
     ├── plans.py               # gaia plans      — list/show feature plans
     ├── workspace.py           # gaia workspace  — workspace identity / consolidate operations
-    ├── scan.py                # gaia scan       — project scanner; refreshes project-context.json
+    ├── scan.py                # gaia scan       — project scanner; writes scan results to gaia.db (DB-canonical)
     ├── status.py              # gaia status     — quick installation snapshot
     ├── uninstall.py           # gaia uninstall  — full or preuninstall removal
     └── update.py              # gaia update     — re-sync after npm install bumped the version
@@ -92,7 +92,7 @@ Modules whose name starts with `_` (e.g. `_install_helpers.py`) are private help
 
 **Exit codes:** `0` on success, `1` on warnings, `2` on errors. The release pipeline's sandbox harness relies on these -- do not print a success line and exit non-zero, or vice versa.
 
-**Preserved on cleanup:** `project-context.json` and `.claude/` symlinks are never touched by `gaia cleanup`. Anything the user relies on across reinstalls must be on that preservation list, which lives in `cli/cleanup.py`.
+**Preserved on cleanup:** `.claude/` symlinks are never touched by `gaia cleanup`. Project context is canonical in `~/.gaia/gaia.db` and persists across reinstalls independently of the filesystem. The preservation list for legacy filesystem artifacts lives in `cli/cleanup.py`.
 
 **`package.json` `bin` field:**
 
