@@ -44,7 +44,7 @@ Append `--fresh` to either form. The harness will delete `node_modules/`, `packa
 **What postinstall does:**
 1. Ships `scripts/` (bootstrap_database.sh) -- failed silently in pre-rc.4 builds; verified in `npm pack --dry-run`.
 2. Creates `.claude/` if missing.
-3. Runs `bootstrap_database.sh` -- seeds the schema (v16), agent rows, and `schema_version`. Fails loud on any error (writes `~/.gaia/last-install-error.json` and exits non-zero).
+3. Runs `bootstrap_database.sh` -- seeds the schema (v17), agent rows, and `schema_version`. Fails loud on any error (writes `~/.gaia/last-install-error.json` and exits non-zero).
 4. Merges hooks into `settings.local.json` via the consolidated `merge_hooks` step.
 5. Creates 7 symlinks under `.claude/` to `node_modules/@jaguilar87/gaia/<dir>/`.
 6. Writes `plugin-registry.json` with `installed[].name == "gaia-ops"`.

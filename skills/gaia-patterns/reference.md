@@ -97,7 +97,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | gaia_simulator | `tools/gaia_simulator/` | Routing simulator: `cli`, `extractor`, `reporter`, `routing_simulator`, `runner`, `skills_mapper` |
 | memory | `tools/memory/` | `episodic` -- episodic memory store |
 | review | `tools/review/` | (deprecated; `review_engine` removed -- review logic lives in skills/code-review) |
-| scan | `tools/scan/` | Project scanner: `orchestrator`, `registry`, `scanners/`, `config`, `merge`, `verify`, `walk`, `workspace`, `ui` |
+| scan | `tools/scan/` | Project scanner: `core` (single nucleus -- all entry points call `scan_workspace`), `orchestrator`, `registry`, `scanners/`, `config`, `merge`, `verify`, `walk`, `workspace`, `ui` |
 | validation | `tools/validation/` | `approval_gate`, `validate_skills` |
 | (top-level) | `tools/persist_transcript_analysis.py` | Transcript persistence utility |
 
@@ -204,7 +204,7 @@ npm publish                    # publishes @jaguilar87/gaia
 **First install** (no `.claude/`):
 1. Check Python 3 available.
 2. Create `.claude/` if missing (created early so subsequent steps can write into it).
-3. Run `scripts/bootstrap_database.sh` -- seeds the schema (v16), agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
+3. Run `scripts/bootstrap_database.sh` -- seeds the schema (v17), agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
 4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
 5. Merge hooks from `hooks.json` into `settings.local.json` via the consolidated `merge_hooks` step.
 6. Create `.claude/{agents, tools, hooks, commands, templates, config, skills}` symlinks (7) plus `CHANGELOG.md` file link.
