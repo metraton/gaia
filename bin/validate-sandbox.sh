@@ -427,6 +427,116 @@ sha256() {
 }
 
 # ---------------------------------------------------------------------------
+# Sandbox DB isolation + fixture seeding (sandbox target only)
+# ---------------------------------------------------------------------------
+#
+# Problem: without GAIA_DATA_DIR, `gaia memory search` and `gaia memory stats`
+# hit the global ~/.gaia/gaia.db, which is scoped by the ephemeral sandbox
+# workspace-id (directory basename). The sandbox workspace never has episodes
+# there, so check 6 (deploy search) returns 0 hits (FAIL) and check 5 counts
+# global episodes instead of sandbox-local ones.
+#
+# Fix: create a sandbox-local data dir, export GAIA_DATA_DIR before running
+# any check, run bootstrap to initialize the schema, then seed the episodes
+# from the fixture file into the sandbox-local DB with the sandbox workspace-id.
+# The episodes_fts FTS5 table is populated automatically via the INSERT trigger.
+
+seed_sandbox_db() {
+  local sandbox_data_dir="${WORKSPACE}/.gaia-sandbox"
+  mkdir -p "${sandbox_data_dir}"
+
+  # Export GAIA_DATA_DIR so every subsequent gaia CLI call (including installed
+  # node_modules/.bin/gaia) resolves db_path() to the sandbox-local DB.
+  export GAIA_DATA_DIR="${sandbox_data_dir}"
+
+  local sandbox_db="${sandbox_data_dir}/gaia.db"
+
+  echo "[sandbox-db] initializing sandbox-local DB at ${sandbox_db}"
+
+  # Run bootstrap to apply the full schema (tables, triggers, FTS5 mirrors).
+  # We pass GAIA_DB so bootstrap_database.sh writes to the sandbox DB.
+  # WORKSPACE override points bootstrap at the sandbox dir for project registration.
+  local bootstrap_script="${REPO_ROOT}/scripts/bootstrap_database.sh"
+  if [[ -f "${bootstrap_script}" ]]; then
+    GAIA_DB="${sandbox_db}" WORKSPACE="${WORKSPACE}" \
+      bash "${bootstrap_script}" >/dev/null
+  else
+    # Fallback: create the schema directly from the installed package's schema.sql
+    local schema_sql="${WORKSPACE}/node_modules/@jaguilar87/gaia/gaia/store/schema.sql"
+    if [[ -f "${schema_sql}" ]]; then
+      sqlite3 "${sandbox_db}" < "${schema_sql}"
+    else
+      echo "[sandbox-db] WARN: schema.sql not found; memory checks may fail" >&2
+      return 0
+    fi
+  fi
+
+  # Determine sandbox workspace_id: the directory basename (no git remote in
+  # an ephemeral /tmp dir, so gaia.project.current() falls back to basename).
+  local sandbox_ws_id
+  sandbox_ws_id="$(basename "${WORKSPACE}")"
+
+  # Ensure the workspace row exists (FK required by episodes).
+  sqlite3 "${sandbox_db}" \
+    "INSERT OR IGNORE INTO workspaces(name, status) VALUES('${sandbox_ws_id}', 'active');"
+
+  # Seed episodes from the fixture's episodes.jsonl into the sandbox DB.
+  # Each JSONL line is a complete episode object. We extract the fields that
+  # match the episodes table columns and INSERT them. The episodes_fts FTS5
+  # table is populated automatically by the AFTER INSERT trigger.
+  local episodes_jsonl="${FIXTURE_DIR}/.claude/project-context/episodic-memory/episodes.jsonl"
+  if [[ -f "${episodes_jsonl}" ]]; then
+    local seeded=0
+    while IFS= read -r line; do
+      [[ -z "${line}" ]] && continue
+      python3 - "${sandbox_db}" "${sandbox_ws_id}" "${line}" <<'PYEOF'
+import json, sqlite3, sys
+
+db_path, workspace_id, line = sys.argv[1], sys.argv[2], sys.argv[3]
+ep = json.loads(line)
+
+con = sqlite3.connect(db_path)
+try:
+    con.execute(
+        "INSERT OR IGNORE INTO episodes("
+        "  episode_id, workspace, timestamp, session_id, task_id,"
+        "  agent, type, title, prompt, enriched_prompt,"
+        "  keywords, tags, relevance_score, outcome,"
+        "  exit_code, plan_status, output_length"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            ep.get("episode_id", ""),
+            workspace_id,
+            ep.get("timestamp", ""),
+            ep.get("session_id"),
+            ep.get("task_id"),
+            ep.get("agent"),
+            ep.get("type"),
+            ep.get("title"),
+            ep.get("prompt"),
+            ep.get("enriched_prompt"),
+            json.dumps(ep.get("keywords", [])),
+            json.dumps(ep.get("tags", [])),
+            ep.get("relevance_score"),
+            ep.get("outcome"),
+            ep.get("exit_code"),
+            ep.get("plan_status"),
+            ep.get("output_length"),
+        ),
+    )
+    con.commit()
+finally:
+    con.close()
+PYEOF
+      seeded=$(( seeded + 1 ))
+    done < "${episodes_jsonl}"
+    echo "[sandbox-db] seeded ${seeded} episodes (workspace=${sandbox_ws_id})"
+  else
+    echo "[sandbox-db] WARN: episodes.jsonl not found at ${episodes_jsonl}" >&2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Execute
 # ---------------------------------------------------------------------------
 
@@ -445,6 +555,13 @@ install_package
 # Put installed bin at head of PATH so we can call `gaia` directly
 # (runtime check: node-independent invocation, no npx indirection).
 export PATH="${WORKSPACE}/node_modules/.bin:${PATH}"
+
+# Sandbox: isolate the DB from the global ~/.gaia/gaia.db and seed it
+# with fixture episodes so checks 5 (FTS5 stats) and 6 (deploy search)
+# validate against sandbox-local data, not the user's global state.
+if [[ "${TARGET}" == "sandbox" ]]; then
+  seed_sandbox_db
+fi
 
 echo
 echo "=== Running checks ==="
@@ -537,9 +654,13 @@ else
   record "memory stats (FTS5 backfill)" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
 fi
 
-# 6. gaia memory search "deploy" --limit 3 --json
+# 6. gaia memory search "deploy" --limit 3 --json --scope=episodes
+# Use --scope=episodes so the JSON output carries a top-level "results" key
+# ({"scope":"episodes","results":[...]}) that the hit-count extractor below
+# can parse. The default scope "both" produces {"episodes":[...],"curated":[]}
+# which the extractor would misread as 0 hits even when episodes are present.
 t0="$(now_ms)"
-if out="$(gaia memory search deploy --limit 3 --json 2>&1)"; then
+if out="$(gaia memory search deploy --limit 3 --json --scope=episodes 2>&1)"; then
   ms=$(( $(now_ms) - t0 ))
   hits=$(python3 -c "
 import json,sys
