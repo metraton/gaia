@@ -436,6 +436,7 @@ class TestAdaptSubagentStopSessionId:
                 ),
                 "validate_approval_request": lambda *_a, **_k: None,
                 "validate_verbatim_outputs_consistency": lambda *_a, **_k: None,
+                "_resolve_status": lambda *_a, **_k: "COMPLETE",
             },
         )
         _install_stub(

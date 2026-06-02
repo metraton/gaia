@@ -44,6 +44,12 @@ _BASE_EVIDENCE = {
     "verbatim_outputs": ["ok"],
     "cross_layer_impacts": ["none"],
     "open_gaps": ["none"],
+    "verification": {
+        "method": "test",
+        "checks": ["pytest -q passed for the contract parser"],
+        "result": "pass",
+        "details": "parser exposes suggestions as intended",
+    },
 }
 
 _BASE_STATUS = {

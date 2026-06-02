@@ -99,10 +99,17 @@ class TestAgentProtocolSkill:
             assert field in content, \
                 f"agent-protocol should document evidence field '{field}'"
 
-    def test_has_consolidation_report_section(self, content):
-        """Must document consolidation_report object with required fields."""
-        assert '"consolidation_report"' in content or "consolidation_report" in content, \
-            "agent-protocol must document consolidation_report object"
+    def test_has_consolidation_report_section(self, skills_dir):
+        """consolidation_report object + fields are documented in the owning skill.
+
+        The full field schema migrated out of agent-protocol (produce-side
+        judgment only) into agent-contract-handoff, which now OWNS the
+        consolidation_report sub-field table. Assert the tokens where they
+        actually live.
+        """
+        handoff = (skills_dir / "agent-contract-handoff" / "SKILL.md").read_text()
+        assert "consolidation_report" in handoff, \
+            "agent-contract-handoff must document consolidation_report object"
         for field in [
             "ownership_assessment",
             "confirmed_findings",
@@ -110,13 +117,19 @@ class TestAgentProtocolSkill:
             "conflicts",
             "next_best_agent",
         ]:
-            assert field in content, \
-                f"agent-protocol should document consolidation field '{field}'"
+            assert field in handoff, \
+                f"agent-contract-handoff should document consolidation field '{field}'"
 
-    def test_has_approval_request_section(self, content):
-        """Must document approval_request object with required fields."""
-        assert '"approval_request"' in content or "approval_request" in content, \
-            "agent-protocol must document approval_request object"
+    def test_has_approval_request_section(self, skills_dir):
+        """approval_request object + fields are documented in the owning skill.
+
+        The approval payload schema migrated out of agent-protocol into
+        agent-approval-protocol, which now OWNS the sealed_payload /
+        approval_request field set. Assert the tokens where they actually live.
+        """
+        approval = (skills_dir / "agent-approval-protocol" / "SKILL.md").read_text()
+        assert "approval_request" in approval, \
+            "agent-approval-protocol must document approval_request object"
         for field in [
             "operation",
             "exact_content",
@@ -125,8 +138,8 @@ class TestAgentProtocolSkill:
             "rollback",
             "verification",
         ]:
-            assert field in content, \
-                f"agent-protocol should document approval_request field '{field}'"
+            assert field in approval, \
+                f"agent-approval-protocol should document approval_request field '{field}'"
 
     def test_documents_all_valid_statuses(self, content):
         """Must document all active PLAN_STATUS values.

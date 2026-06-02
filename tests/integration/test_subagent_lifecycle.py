@@ -298,8 +298,22 @@ class TestPhase1SkillsInjection:
         finally:
             os.chdir(original_cwd)
 
-    def test_subagent_start_records_runtime_skill_history(self, test_project):
-        """SubagentStart should persist the agent's default skills snapshot."""
+    def test_subagent_start_does_not_persist_skill_history_jsonl(self, test_project):
+        """SubagentStart no longer writes a file-based skill-history snapshot.
+
+        The legacy ``agent-skills.jsonl`` writer was retired by the
+        ``episodic-workflow-to-db`` brief. SubagentStart now only injects the
+        cached project context and logs the dispatch; the agent's default
+        skills snapshot (``default_skills_snapshot``) is built later by
+        ``workflow_recorder.record()`` and persisted on the ``episodes`` table
+        in gaia.db via ``episode_writer.write()`` -> ``store_episode()`` at
+        SubagentStop, not as a JSONL file at SubagentStart.
+
+        This test pins the current contract: SubagentStart exits cleanly and
+        the retired JSONL file is never produced. The skills snapshot source
+        (``load_agent_runtime_profile``) is still asserted directly so the
+        test continues to guard that the agent's declared skills resolve.
+        """
         tmp_path, claude_dir = test_project
 
         original_cwd = os.getcwd()
@@ -330,19 +344,23 @@ class TestPhase1SkillsInjection:
 
             assert exc.value.code == 0
 
+            # The retired file-based snapshot must NOT be produced anymore.
             skills_path = (
                 claude_dir
                 / "project-context"
                 / "workflow-episodic-memory"
                 / "agent-skills.jsonl"
             )
-            assert skills_path.exists(), "SubagentStart should persist agent-skills.jsonl"
+            assert not skills_path.exists(), (
+                "agent-skills.jsonl is retired; SubagentStart must not write it. "
+                "The skills snapshot now lives on the episodes table in gaia.db."
+            )
 
-            skill_entry = json.loads(skills_path.read_text().strip().splitlines()[-1])
-            assert skill_entry["agent"] == "cloud-troubleshooter"
-            assert skill_entry["session_id"] == "sess-subagent-start-001"
-            assert "agent-protocol" in skill_entry["skills"]
-            assert skill_entry["skills_count"] >= 1
+            # The snapshot source still resolves the agent's declared skills.
+            from modules.audit.workflow_recorder import load_agent_runtime_profile
+            profile = load_agent_runtime_profile("cloud-troubleshooter")
+            assert "agent-protocol" in profile["skills"]
+            assert profile["skills_count"] >= 1
         finally:
             os.chdir(original_cwd)
 
