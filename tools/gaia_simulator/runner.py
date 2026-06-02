@@ -307,37 +307,11 @@ class HookRunner:
         session_dir = claude_dir / "session" / "active"
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        # Project context directory
-        pc_dir = claude_dir / "project-context"
-        pc_dir.mkdir(parents=True, exist_ok=True)
-
-        # Minimal project-context.json
-        minimal_context = {
-            "metadata": {
-                "version": "2.0",
-                "last_updated": "2026-01-01T00:00:00Z",
-                "scan_config": {
-                    "last_scan": "2026-01-01T00:00:00Z",
-                    "scanner_version": "0.1.0",
-                    "staleness_hours": 24,
-                },
-            },
-            "paths": {},
-            "sections": {
-                "project_identity": {
-                    "name": "replay-test",
-                    "type": "application",
-                },
-            },
-        }
-        (pc_dir / "project-context.json").write_text(
-            json.dumps(minimal_context, indent=2)
-        )
-
-        # Workflow episodic memory dir
-        wem_dir = pc_dir / "workflow-episodic-memory"
-        wem_dir.mkdir(parents=True, exist_ok=True)
-        (wem_dir / "signals").mkdir(exist_ok=True)
+        # NOTE: project-context/ and project-context.json are intentionally NOT
+        # created. That artifact was retired (agent-contract-handoff M1 /
+        # episodic-workflow-to-db T1.3, T6): project context now lives
+        # exclusively in gaia.db (project_context_contracts), and the replayed
+        # hooks read from the DB, not from a JSON file or signals/ flag dir.
 
         # Config, memory, metrics directories
         (claude_dir / "config").mkdir(exist_ok=True)

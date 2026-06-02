@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
 import re
 from dataclasses import dataclass, asdict, field
-import hashlib
 
 try:
     from tools.memory.search_store import index_episode as _fts5_index
