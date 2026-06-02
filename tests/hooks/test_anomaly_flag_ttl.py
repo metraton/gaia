@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Tests for context_injector.consume_anomaly_flag() TTL behavior.
+"""Tests for context_injector.consume_anomaly_flag().
 
-Validates:
-- Flag is consumed when fresh (within TTL)
-- Flag is NOT consumed when expired (past TTL)
-- Flag file doesn't exist
-- Edge cases around TTL boundary
+T4 retired the needs_analysis.flag mechanism: anomaly signals now live in the
+episode_anomalies table in gaia.db and are surfaced via
+check_recent_critical_anomalies(), not by injecting warning text into the
+prompt. consume_anomaly_flag() is therefore a no-op stub that:
+
+- always returns the enriched prompt unchanged (no warning is ever appended),
+- silently deletes any stale pre-T4 flag file it happens to find.
+
+These tests pin that current contract. The legacy "fresh flag appends a
+warning / expired flag is suppressed" behavior is dead and is no longer
+asserted -- any flag file present is treated identically: cleaned up, prompt
+returned verbatim.
 """
 
 import json
@@ -78,27 +85,34 @@ def _expired_flag(anomalies=None, ttl_hours=1, expired_by_hours=2) -> dict:
 
 
 # ============================================================================
-# FLAG CONSUMED WHEN FRESH
+# NO-OP STUB CONTRACT (T4+): ANY FLAG FILE IS CLEANED UP, PROMPT UNCHANGED
 # ============================================================================
 
 class TestFreshFlagConsumed:
-    """A fresh flag (within TTL) should append a warning and delete the file."""
+    """Post-T4 contract: a fresh flag is no longer surfaced as a warning.
+
+    The flag file is silently cleaned up and the prompt is returned verbatim;
+    anomalies are routed through the episode_anomalies table instead.
+    """
 
     def test_fresh_flag_appends_anomaly_warning(self, tmp_path):
         flag_path = _write_flag(tmp_path, _fresh_flag())
 
         result = consume_anomaly_flag("base prompt")
 
-        assert "Anomaly Alert" in result
-        assert "Unexpected T3 without approval" in result
-        assert not flag_path.exists(), "Flag should be deleted after consumption"
+        # No warning is injected anymore; the prompt is returned unchanged
+        # and the stale flag file is cleaned up.
+        assert result == "base prompt"
+        assert "Anomaly Alert" not in result
+        assert "Unexpected T3 without approval" not in result
+        assert not flag_path.exists(), "Stale flag should be cleaned up"
 
     def test_fresh_flag_preserves_original_prompt(self, tmp_path):
         _write_flag(tmp_path, _fresh_flag())
 
         result = consume_anomaly_flag("original context here")
 
-        assert result.startswith("original context here")
+        assert result == "original context here"
 
     def test_multiple_anomalies_are_joined(self, tmp_path):
         anomalies = [
@@ -109,11 +123,13 @@ class TestFreshFlagConsumed:
 
         result = consume_anomaly_flag("prompt")
 
-        assert "High error rate" in result
-        assert "Missing service account" in result
+        # No anomaly text is injected into the prompt anymore.
+        assert result == "prompt"
+        assert "High error rate" not in result
+        assert "Missing service account" not in result
 
     def test_custom_short_ttl_still_fresh(self, tmp_path):
-        """A 5-minute TTL flag created now is still fresh."""
+        """Any flag file -- regardless of TTL -- is cleaned up without a warning."""
         data = {
             "created_at": datetime.now().isoformat(),
             "ttl_hours": 0.0833,  # ~5 minutes
@@ -123,7 +139,8 @@ class TestFreshFlagConsumed:
 
         result = consume_anomaly_flag("base")
 
-        assert "Short-lived signal" in result
+        assert result == "base"
+        assert "Short-lived signal" not in result
         assert not flag_path.exists()
 
 
@@ -194,18 +211,20 @@ class TestTTLBoundary:
     """Behavior at and near the TTL boundary."""
 
     def test_flag_exactly_at_ttl_boundary_is_fresh(self, tmp_path):
-        """A flag whose age equals TTL minus 1 second should still be consumed."""
+        """Post-T4: a near-fresh flag is cleaned up without a warning, like any other."""
         almost_expired = datetime.now() - timedelta(hours=1) + timedelta(seconds=5)
         data = {
             "created_at": almost_expired.isoformat(),
             "ttl_hours": 1,
             "anomalies": [{"message": "Boundary signal"}],
         }
-        _write_flag(tmp_path, data)
+        flag_path = _write_flag(tmp_path, data)
 
         result = consume_anomaly_flag("base")
 
-        assert "Boundary signal" in result
+        assert result == "base"
+        assert "Boundary signal" not in result
+        assert not flag_path.exists()
 
     def test_flag_just_past_ttl_is_expired(self, tmp_path):
         """A flag 1 second past TTL should be expired."""
@@ -247,7 +266,7 @@ class TestTTLBoundary:
         assert not flag_path.exists()
 
     def test_flag_with_anomaly_missing_message_key(self, tmp_path):
-        """Anomaly entry without 'message' key should be skipped in summary."""
+        """Post-T4: anomaly entries are never rendered into the prompt."""
         data = {
             "created_at": datetime.now().isoformat(),
             "ttl_hours": 1,
@@ -257,10 +276,11 @@ class TestTTLBoundary:
 
         result = consume_anomaly_flag("base")
 
-        assert "Real warning" in result
+        assert result == "base"
+        assert "Real warning" not in result
 
     def test_flag_with_timestamp_field_instead_of_created_at(self, tmp_path):
-        """Falls back to 'timestamp' when 'created_at' is missing."""
+        """Post-T4: any flag file is cleaned up, prompt returned verbatim."""
         data = {
             "timestamp": datetime.now().isoformat(),
             "ttl_hours": 1,
@@ -270,11 +290,12 @@ class TestTTLBoundary:
 
         result = consume_anomaly_flag("base")
 
-        assert "Via timestamp field" in result
+        assert result == "base"
+        assert "Via timestamp field" not in result
         assert not flag_path.exists()
 
     def test_default_ttl_is_one_hour(self, tmp_path):
-        """When ttl_hours is absent, default is 1 hour."""
+        """Post-T4: TTL is irrelevant -- no warning is ever injected."""
         created_30_min_ago = datetime.now() - timedelta(minutes=30)
         data = {
             "created_at": created_30_min_ago.isoformat(),
@@ -284,4 +305,5 @@ class TestTTLBoundary:
 
         result = consume_anomaly_flag("base")
 
-        assert "Default TTL signal" in result
+        assert result == "base"
+        assert "Default TTL signal" not in result

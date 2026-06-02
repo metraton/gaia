@@ -129,9 +129,7 @@ class TestStoreEpisode:
 
     def test_does_not_append_to_index(self, memory):
         memory.store_episode(prompt="No index", episode_id="ep_no_index")
-        with open(memory.index_file) as f:
-            data = json.load(f)
-        assert data.get("episodes", []) == []
+        assert not memory.index_file.exists()
 
     def test_auto_generated_id(self, memory):
         ep_id = memory.store_episode(prompt="Auto ID test")

@@ -213,7 +213,18 @@ def _grant_to_display(g: dict) -> dict:
     except Exception:
         pass
 
-    first_cmd = command_set[0].get("command", "") if command_set else ""
+    # Normalize command_set shape. SCOPE_SEMANTIC_SIGNATURE grants (the dominant
+    # case) store a single command as a dict; COMMAND_SET grants store a list of
+    # command dicts. A dict indexed as command_set[0] raises KeyError: 0.
+    if isinstance(command_set, dict):
+        first_cmd = command_set.get("command", "")
+        command_count = 1
+    elif isinstance(command_set, list):
+        first_cmd = command_set[0].get("command", "") if command_set else ""
+        command_count = len(command_set)
+    else:
+        first_cmd = ""
+        command_count = 0
 
     return {
         "approval_id": approval_id,
@@ -225,7 +236,7 @@ def _grant_to_display(g: dict) -> dict:
         "expires_at": g.get("expires_at", ""),
         "age": _format_age(age_secs),
         "age_seconds": round(age_secs),
-        "command_count": len(command_set),
+        "command_count": command_count,
         "first_command": first_cmd,
         "command_set": command_set,
     }

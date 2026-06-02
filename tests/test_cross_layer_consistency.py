@@ -367,15 +367,22 @@ class TestTaskValidatorConsistency:
             f"T3 operations from security-tiers skill missing in T3_KEYWORDS: {missing}"
         )
 
-    def test_approval_mechanism_in_execution_skill(self):
-        """The execution skill must reference the approval mechanism."""
-        execution_skill = SKILLS_DIR / "execution" / "SKILL.md"
-        if not execution_skill.exists():
-            pytest.skip("execution/SKILL.md not found")
+    def test_approval_mechanism_in_approval_protocol_skill(self):
+        """The approval mechanism is documented in the skill that now OWNS it.
 
-        content = execution_skill.read_text().lower()
+        The mechanism (ElicitationResult / AskUserQuestion / canonical
+        APPROVE:<nonce> token) migrated out of the execution skill into
+        agent-approval-protocol; execution now delegates the pre-execution
+        handoff to it ("For the approval handoff that precedes this phase,
+        see agent-approval-protocol"). Assert the token where it lives.
+        """
+        approval_skill = SKILLS_DIR / "agent-approval-protocol" / "SKILL.md"
+        if not approval_skill.exists():
+            pytest.skip("agent-approval-protocol/SKILL.md not found")
+
+        content = approval_skill.read_text().lower()
         assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "Execution skill must reference the approval mechanism "
+            "agent-approval-protocol must reference the approval mechanism "
             "(ElicitationResult, AskUserQuestion, or canonical token)"
         )
 
@@ -404,11 +411,16 @@ class TestSkillsCrossReferences:
                 f"Available: {sorted(all_skills)}"
             )
 
-    def test_execution_skill_references_approval_mechanism(self):
-        """Execution skill must reference the approval mechanism."""
-        content = (SKILLS_DIR / "execution" / "SKILL.md").read_text().lower()
+    def test_approval_protocol_skill_references_approval_mechanism(self):
+        """The approval mechanism lives in agent-approval-protocol, not execution.
+
+        execution delegates the approval handoff to agent-approval-protocol;
+        the mechanism token (ElicitationResult / AskUserQuestion / canonical
+        APPROVE:<nonce>) is owned there. Assert against the owning skill.
+        """
+        content = (SKILLS_DIR / "agent-approval-protocol" / "SKILL.md").read_text().lower()
         assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "Execution skill must reference the approval mechanism "
+            "agent-approval-protocol must reference the approval mechanism "
             "(ElicitationResult, AskUserQuestion, or canonical token)"
         )
 

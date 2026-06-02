@@ -73,6 +73,12 @@ _VALID_EVIDENCE = {
     ],
     "cross_layer_impacts": ["none"],
     "open_gaps": ["none"],
+    "verification": {
+        "method": "test",
+        "checks": ["kubectl get confirmed all 3 pods Running with 0 restarts"],
+        "result": "pass",
+        "details": "observed live pod state matches the intended healthy outcome",
+    },
 }
 
 _VALID_STATUS = {
@@ -111,6 +117,12 @@ _VERBATIM_EVIDENCE = {
     ],
     "cross_layer_impacts": ["GitOps desired state matches live runtime"],
     "open_gaps": ["none"],
+    "verification": {
+        "method": "self-review",
+        "checks": ["helm list and kubectl get confirm 5 releases and pods Running"],
+        "result": "pass",
+        "details": "release inventory and pod state match the intended deployed outcome",
+    },
 }
 
 AGENT_OUTPUT_WITH_VERBATIM = _make_contract_output({
@@ -320,6 +332,12 @@ class TestConsolidationRequired:
             "verbatim_outputs": ["none"],
             "cross_layer_impacts": ["GitOps manifests are aligned with Terraform state"],
             "open_gaps": ["none"],
+            "verification": {
+                "method": "dry-run",
+                "checks": ["terraform plan reports no changes vs desired state"],
+                "result": "pass",
+                "details": "infrastructure matches desired state; no drift",
+            },
         },
         "consolidation_report": {
             "ownership_assessment": "owned_here",

@@ -1,12 +1,14 @@
 """
 T4.4 — Audit: legacy approval skill names are resolved.
 
-Asserts that any reference to Load Skill('request-approval') or
-Load Skill('orchestrator-approval') in ACTIVE skill or agent content
-only appears inside the stub files themselves (not propagating to non-stub
-content).
+Asserts that no ACTIVE skill or agent content references the legacy names
+Load Skill('request-approval') or Load Skill('orchestrator-approval').
 
-The two stub files are the ONLY allowed locations for these legacy names.
+Gaia 5 decision: the legacy skills were renamed to
+'subagent-request-approval' / 'orchestrator-present-approval' and the old
+directories were deleted outright -- there are no forward-pointer stubs.
+ALLOWED_LEGACY_STUBS is retained only as a (now-empty in practice) skip-set
+guarding against a stub being re-introduced; the directories no longer exist.
 """
 
 import re
@@ -109,27 +111,28 @@ def test_no_agent_invokes_legacy_names():
     )
 
 
-def test_stub_files_exist_and_are_stubs():
+def test_legacy_approval_skills_are_fully_removed():
     """
-    The two stub files exist and contain a forward pointer to the new names.
-    This confirms the stubs are properly in place (not accidentally deleted).
+    The legacy approval skills are deleted outright -- not even as stubs.
+
+    User decision (Gaia 5): ``request-approval`` and ``orchestrator-approval``
+    were renamed to ``subagent-request-approval`` and
+    ``orchestrator-present-approval`` and the old directories were removed
+    entirely. There is no forward-pointer stub to maintain; the skill
+    resolver and routing now reference only the new names. This test pins
+    that the legacy directories do not exist (and must not be re-created as
+    stubs).
     """
-    for stub_path in ALLOWED_LEGACY_STUBS:
-        assert stub_path.exists(), f"Stub file missing: {stub_path}"
-        content = stub_path.read_text(encoding="utf-8")
-        assert "DEPRECATED" in content or "deprecated" in content, (
-            f"Stub file {stub_path} does not contain deprecation marker"
+    legacy_dirs = [
+        SKILLS_DIR / "request-approval",
+        SKILLS_DIR / "orchestrator-approval",
+    ]
+    for legacy_dir in legacy_dirs:
+        assert not legacy_dir.exists(), (
+            f"Legacy approval skill {legacy_dir.relative_to(REPO_ROOT)} must be "
+            "fully removed (renamed to the 'subagent-'/'present-' variant); "
+            "do not re-create it as a stub."
         )
-
-    request_approval_stub = SKILLS_DIR / "request-approval" / "SKILL.md"
-    assert "subagent-request-approval" in request_approval_stub.read_text(), (
-        "request-approval stub must forward to subagent-request-approval"
-    )
-
-    orchestrator_approval_stub = SKILLS_DIR / "orchestrator-approval" / "SKILL.md"
-    assert "orchestrator-present-approval" in orchestrator_approval_stub.read_text(), (
-        "orchestrator-approval stub must forward to orchestrator-present-approval"
-    )
 
 
 def test_new_skills_exist():

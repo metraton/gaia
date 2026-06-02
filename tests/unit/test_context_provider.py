@@ -73,6 +73,36 @@ def test_get_context_nonexistent_workspace_returns_none(tmp_db):
     assert ctx is None
 
 
+def test_get_context_missing_workspace_hidden_by_default(tmp_db):
+    """A workspace with status='missing' is invisible in the active view (include_missing=False).
+    With include_missing=True it is returned normally.
+    This mirrors the project-level soft-delete filter at the workspace level (v17)."""
+    from gaia.store import get_context
+    from gaia.store.writer import _connect, mark_workspace_demoted, _ensure_workspace_row
+
+    # Create a workspace row and then demote it.
+    con = _connect(tmp_db)
+    _ensure_workspace_row(con, "demoted-ws", workspace_path=None)
+    con.commit()
+    con.close()
+
+    demoted = mark_workspace_demoted("demoted-ws", db_path=tmp_db)
+    assert demoted is True, "mark_workspace_demoted should return True for a previously-active row"
+
+    # Active view (default): demoted workspace must be hidden.
+    ctx_default = get_context("demoted-ws", db_path=tmp_db)
+    assert ctx_default is None, (
+        "get_context should return None for a missing workspace when include_missing=False"
+    )
+
+    # include_missing=True: demoted workspace must be returned.
+    ctx_all = get_context("demoted-ws", db_path=tmp_db, include_missing=True)
+    assert ctx_all is not None, (
+        "get_context should return context for a missing workspace when include_missing=True"
+    )
+    assert ctx_all["identity"] == "demoted-ws"
+
+
 def test_get_context_identity_is_workspace_name(tmp_db):
     """identity field is workspaces.name, not a git remote URL (Fix #4)."""
     from gaia.store import get_context, upsert_project

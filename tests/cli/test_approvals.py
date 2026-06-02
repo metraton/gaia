@@ -100,7 +100,24 @@ class TestCmdList:
     exclude_live_sessions=True to the scanner, which filters out pendings
     whose session_id is currently registered as alive in session_registry.
     Tests for that path additionally patch get_live_sessions().
+
+    All tests in this class also patch _import_writer so cmd_list never
+    touches the real gaia.db DB-backed grant listing; the DB path returns
+    an empty grant list and only the filesystem path under test is exercised.
     """
+
+    @pytest.fixture(autouse=True)
+    def _no_db_writer(self):
+        """Stub the DB-backed writer so cmd_list's grant listing returns [].
+
+        Without this, cmd_list calls writer.list_approval_grants() against the
+        real gaia.db, which can return SCOPE_SEMANTIC_SIGNATURE grants whose
+        command_set is a dict -- unrelated to the filesystem path under test.
+        """
+        stub_writer = MagicMock()
+        stub_writer.list_approval_grants = MagicMock(return_value=[])
+        with patch.object(approvals_mod, "_import_writer", return_value=stub_writer):
+            yield
 
     def test_list_empty_returns_0(self, capsys, tmp_path):
         grants_dir = tmp_path / "approvals"

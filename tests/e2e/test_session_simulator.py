@@ -456,6 +456,12 @@ def _build_valid_agent_output(
                 "verbatim_outputs": ["none"],
                 "cross_layer_impacts": ["none"],
                 "open_gaps": ["none"],
+                "verification": {
+                    "method": "test",
+                    "checks": ["kubectl get pods confirms the diagnosed pod state"],
+                    "result": "pass",
+                    "details": "observed pod state matches the reported diagnosis",
+                },
             },
             "consolidation_report": consolidation,
             "approval_request": None,

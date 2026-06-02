@@ -12,7 +12,13 @@
     "key_outputs": ["schema v4 applies cleanly; live DB still at v3"],
     "verbatim_outputs": ["8 passed in 1.23s"],
     "cross_layer_impacts": ["orchestrator presentation flow extended (gaia-orchestrator.md)"],
-    "open_gaps": ["live gaia.db migration pending T9"]
+    "open_gaps": ["live gaia.db migration pending T9"],
+    "verification": {
+      "method": "test",
+      "checks": ["pytest tests/cli/test_schema_v4_memory_refactor.py -q -> 8 passed"],
+      "result": "pass",
+      "details": "schema v4 applies cleanly and the migration test suite passes"
+    }
   },
   "consolidation_report": null,
   "approval_request": null,

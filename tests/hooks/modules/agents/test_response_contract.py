@@ -39,6 +39,12 @@ _BASE_EVIDENCE = {
     "verbatim_outputs": ["none"],
     "cross_layer_impacts": ["app_ci_tooling needs TURBO cache env vars updated"],
     "open_gaps": ["none"],
+    "verification": {
+        "method": "dry-run",
+        "checks": ["terraform plan exited 0 with the intended single-add diff"],
+        "result": "pass",
+        "details": "plan adds one bucket and no destroys; matches the intended change",
+    },
 }
 
 _BASE_STATUS = {
