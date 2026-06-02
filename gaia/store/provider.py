@@ -32,12 +32,40 @@ def _row_to_dict(row: sqlite3.Row, *, drop_workspace: bool = True) -> dict:
     return d
 
 
-def get_context(workspace: str, *, db_path: Path | None = None) -> dict[str, Any]:
+# Child tables whose rows belong to a project (PK = (workspace, project, name))
+# and therefore must be filtered through the parent project's status so that a
+# missing project's children never contaminate active queries (AC-4, soft-delete).
+_PROJECT_CHILD_TABLES = frozenset({
+    "apps",
+    "libraries",
+    "services",
+    "features",
+    "tf_modules",
+    "tf_live",
+    "releases",
+    "workloads",
+    "clusters_defined",
+})
+
+
+def get_context(
+    workspace: str,
+    *,
+    db_path: Path | None = None,
+    include_missing: bool = False,
+) -> dict[str, Any]:
     """Return the JSON-shaped context for a workspace.
 
     Args:
         workspace: Workspace name (matches workspaces.name).
         db_path: Optional explicit DB path (used by tests).
+        include_missing: When False (default), projects with
+            ``status='missing'`` are filtered out, AND the child rows
+            (apps/services/features/...) of those missing projects are filtered
+            out too, so a soft-deleted project never contaminates the normal
+            active view. When True, every row is returned regardless of status
+            -- the "existed but no longer on disk" view, which keeps soft-deleted
+            data consultable (AC-4, soft-delete).
 
     Returns:
         Dict with top-level keys ``identity``, ``stack``, ``environment``,
@@ -65,13 +93,41 @@ def get_context(workspace: str, *, db_path: Path | None = None) -> dict[str, Any
             "gaia_installations": "machine",
         }
 
+        # Names of projects in this workspace that are soft-deleted (missing).
+        # Used to filter child rows of missing projects out of the active view.
+        missing_projects: set[str] = set()
+        if not include_missing:
+            missing_projects = {
+                r["name"]
+                for r in con.execute(
+                    "SELECT name FROM projects "
+                    "WHERE workspace = ? AND status = 'missing'",
+                    (workspace,),
+                ).fetchall()
+            }
+
         def _select(table: str) -> list[dict]:
             order_col = _ORDER_COL.get(table, "name")
             cur = con.execute(
                 f"SELECT * FROM {table} WHERE workspace = ? ORDER BY {order_col}",
                 (workspace,),
             )
-            return [_row_to_dict(r) for r in cur.fetchall()]
+            rows = cur.fetchall()
+            if include_missing:
+                return [_row_to_dict(r) for r in rows]
+            # Active view: drop missing projects, and drop child rows whose
+            # parent project is missing (filter through the parent status).
+            out: list[dict] = []
+            for r in rows:
+                keys = r.keys()
+                if table == "projects":
+                    if "status" in keys and r["status"] == "missing":
+                        continue
+                elif table in _PROJECT_CHILD_TABLES and "project" in keys:
+                    if r["project"] in missing_projects:
+                        continue
+                out.append(_row_to_dict(r))
+            return out
 
         # workspace.* lists, keyed by entity type.
         workspace_data: dict[str, Any] = {

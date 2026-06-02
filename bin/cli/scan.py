@@ -1,23 +1,28 @@
 """
-gaia scan -- Sync workspace state into Gaia DB.
+gaia scan -- Sync workspace state into the Gaia DB.
 
-Imports `tools.scan` directly instead of spawning a subprocess, so callers
-(CLI, hooks, tests) share a single process and a single import path.
+Scan and install are separate flows. This command NEVER installs: it does not
+create ``package.json``, run ``npm``, build ``.claude/``, or install git hooks.
+Installation is owned by ``gaia install`` (bin/cli/install.py). All scan work
+goes through one núcleo: ``tools.scan.core.scan_workspace``.
 
-Modes:
-  gaia scan                       -> existing workspace: rescan + sync
-  gaia scan --fresh               -> fresh workspace: bootstrap .claude/, hooks, settings
-  gaia scan --workspace PATH      -> point at a specific project root
-  gaia scan --dry-run             -> report what would change without writing
-  gaia scan --json                -> structured JSON output (scan-only, no setup/sync)
-  gaia scan --scanners A,B,C      -> subset of scanners
-  gaia scan --check-staleness     -> exit 0 if context is fresh, else scan
-  gaia scan --no-color            -> disable ANSI color
-  gaia scan --verbose / -v        -> per-scanner progress
+Entry points (explicit, single core):
+  gaia scan                 -> scan the CURRENT workspace (must be inside one)
+  gaia scan <path>          -> scan the named TARGET path
+  gaia scan --workspace P   -> same as <path> (kept for back-compat)
+  gaia scan --dry-run       -> report what would change without writing
+  gaia scan --json          -> structured JSON summary
+  gaia scan --scanners A,B  -> subset of scanners
+  gaia scan --check-staleness -> exit 0 if context is fresh, else scan
+  gaia scan --no-color / --verbose / -v
+
+Outside a Gaia workspace AND with no target path, the command fails cleanly
+("not in a Gaia workspace; enter one or pass a target") -- it does NOT fall
+back to an install/bootstrap mode.
 
 Exit codes:
   0  Success (or fresh-by-staleness)
-  1  Error (scan failure, bad workspace, etc.)
+  1  Error (scan failure, bad target, not in a workspace)
 """
 
 from __future__ import annotations
@@ -27,7 +32,6 @@ import json
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -52,18 +56,24 @@ def _get_version() -> str:
         return "unknown"
 
 
-def _resolve_workspace(workspace: Optional[str]) -> Path:
-    """Resolve the workspace path: explicit --workspace wins, else cwd."""
-    if workspace:
-        return Path(workspace).resolve()
-    return Path.cwd().resolve()
+def _resolve_target(args: argparse.Namespace) -> Optional[Path]:
+    """Resolve the scan target path.
+
+    Precedence: positional ``path`` arg, then ``--workspace`` flag, else
+    ``None`` (meaning "scan the current workspace"). A returned path is
+    resolved to absolute but NOT validated here.
+    """
+    explicit = getattr(args, "path", None) or getattr(args, "workspace", None)
+    if explicit:
+        return Path(explicit).resolve()
+    return None
 
 
 def _is_context_fresh(project_root: Path, staleness_hours: int) -> bool:
-    """Return True if last_scan_at in DB is younger than staleness_hours.
+    """Return True if workspaces.last_scan_at is younger than staleness_hours.
 
-    T1.3: reads from workspaces.last_scan_at instead of project-context.json.
-    Returns False when the workspace row is absent or last_scan_at is NULL.
+    Reads from the DB workspace row. Returns False when the row is absent or
+    last_scan_at is NULL.
     """
     try:
         from gaia.project import current as _project_current
@@ -109,48 +119,24 @@ def _use_color(args: argparse.Namespace) -> bool:
     return True
 
 
+def _emit_error(args: argparse.Namespace, msg: str) -> int:
+    """Emit an error in the active output format and return exit code 1."""
+    if getattr(args, "json", False):
+        print(json.dumps({"status": "error", "error": msg}))
+    else:
+        print(f"Error: {msg}", file=sys.stderr)
+    return 1
+
+
 # ---------------------------------------------------------------------------
-# Mode implementations -- in-process imports of tools.scan
+# Dry-run -- pure preview, never touches the DB
 # ---------------------------------------------------------------------------
-
-def _run_scan(project_root: Path, scan_config) -> Any:
-    """Run scanners and return ScanOutput. Used by all non-dry-run modes."""
-    from tools.scan.orchestrator import ScanOrchestrator
-    from tools.scan.registry import ScannerRegistry
-
-    registry = ScannerRegistry()
-    orchestrator = ScanOrchestrator(registry=registry, config=scan_config)
-    return orchestrator.run(project_root=project_root)
-
 
 def _mode_dry_run(project_root: Path, args: argparse.Namespace) -> int:
-    """Report what would change without writing.
-
-    Does NOT touch the SQLite DB -- pure preview.
-    T1.3: reads last_scan_at from workspaces DB row instead of project-context.json.
-    """
-    last_scan = None
-    try:
-        from gaia.project import current as _project_current
-        from gaia.store.writer import _connect as _store_connect
-        ws = _project_current(cwd=project_root)
-        con = _store_connect()
-        try:
-            row = con.execute(
-                "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
-            ).fetchone()
-            if row:
-                last_scan = row[0]
-        finally:
-            con.close()
-    except Exception:
-        pass
-
+    """Report what would change without writing. Does NOT touch the DB."""
     result: Dict[str, Any] = {
         "dry_run": True,
         "project_root": str(project_root),
-        "fresh": getattr(args, "fresh", False),
-        "last_scan": last_scan or "unknown",
         "would_scan": (
             "all scanners (stack, git, infrastructure, environment, "
             "orchestration, architecture)"
@@ -162,38 +148,34 @@ def _mode_dry_run(project_root: Path, args: argparse.Namespace) -> int:
     else:
         print("[dry-run] gaia scan would execute:")
         print(f"  project_root  : {result['project_root']}")
-        print(f"  fresh         : {result['fresh']}")
-        if result.get("last_scan") and result["last_scan"] != "unknown":
-            print(f"  last_scan     : {result['last_scan']}")
         print(f"  would_scan    : {result['would_scan']}")
     return 0
 
 
-def _mode_fresh(project_root: Path, scan_config, args: argparse.Namespace,
-                scanner_version: str) -> int:
-    """Bootstrap a fresh workspace: scan + create .claude/, hooks, settings."""
-    from tools.scan.setup import (
-        copy_claude_md,
-        copy_settings_json,
-        create_claude_directory,
-        ensure_claude_code,
-        ensure_gaia_ops_package,
-        install_git_hooks,
-        merge_hooks_to_settings_local,
-    )
-    from tools.scan.ui import (
-        RailUI,
-        collect_created_summary,
-        collect_warnings,
-        format_scanner_results,
-    )
-    from tools.scan.verify import run_verification
+# ---------------------------------------------------------------------------
+# The scan run -- delegates to scan-core (tools.scan.core.scan_workspace)
+# ---------------------------------------------------------------------------
+
+def _run_scan(project_root: Path, scan_config, args: argparse.Namespace,
+              scanner_version: str) -> int:
+    """Scan ``project_root`` via scan-core and render results. No install.
+
+    Single execution path for every non-dry-run entry point: scanning the
+    current workspace, scanning a named target, and the npm-postinstall scan
+    all land here.
+    """
+    from tools.scan.core import scan_workspace
+    from tools.scan.ui import RailUI, collect_warnings, format_scanner_results
+
+    from gaia.project import current as _project_current
+    workspace = _project_current(cwd=project_root)
 
     ui = RailUI(version=scanner_version, color=_use_color(args))
     ui.start()
     ui.scanning()
 
-    output = _run_scan(project_root, scan_config)
+    result = scan_workspace(project_root, workspace, config=scan_config)
+    output = result.output
 
     display_sections = format_scanner_results(output, project_root=project_root)
     for sec in display_sections:
@@ -203,143 +185,14 @@ def _mode_fresh(project_root: Path, scan_config, args: argparse.Namespace,
     if warnings:
         ui.warning(len(warnings), warnings)
 
-    skip_claude = getattr(args, "skip_claude_install", False)
-    npm_postinstall = getattr(args, "npm_postinstall", False)
-    ensure_claude_code(skip_install=skip_claude)
-    if not npm_postinstall:
-        ensure_gaia_ops_package(project_root)
-    create_claude_directory(project_root)
-    copy_claude_md(project_root)
-    copy_settings_json(project_root)
-    merge_hooks_to_settings_local(project_root)
-    install_git_hooks(project_root)
-
-    run_verification(project_root)
-
     duration_s = output.duration_ms / 1000
     ui.done(duration_s)
-
-    created_items = collect_created_summary(project_root, output)
-    if created_items:
-        ui.created(created_items)
-
-    ui.footer("Run claude to start. Context will enrich automatically.")
-
-    # Record scan timestamp in DB (T1.2: D8).
-    try:
-        from gaia.project import current as _project_current
-        from gaia.store.writer import set_workspace_last_scan_at
-        _ws = _project_current(cwd=project_root)
-        set_workspace_last_scan_at(_ws)
-    except Exception:  # pragma: no cover -- non-fatal
-        pass
-
-    summary = _build_summary(output, scanner_version)
-    summary["status"] = "success"
-    summary["mode"] = "fresh"
-    if getattr(args, "json", False):
-        print(json.dumps(summary, indent=2))
-    return 0
-
-
-def _mode_existing(project_root: Path, scan_config, args: argparse.Namespace,
-                   scanner_version: str) -> int:
-    """Re-sync an existing workspace: scan + refresh .claude/ contents."""
-    from tools.scan.setup import (
-        copy_claude_md,
-        copy_settings_json,
-        create_claude_directory,
-        install_git_hooks,
-        merge_hooks_to_settings_local,
-    )
-    from tools.scan.ui import (
-        RailUI,
-        collect_warnings,
-        format_scanner_results,
-    )
-    from tools.scan.verify import run_verification
-
-    ui = RailUI(version=scanner_version, color=_use_color(args))
-    ui.start()
-    ui.scanning()
-
-    output = _run_scan(project_root, scan_config)
-
-    display_sections = format_scanner_results(output, project_root=project_root)
-    for sec in display_sections:
-        ui.section(sec["name"], sec["lines"])
-
-    warnings = collect_warnings(output)
-    if warnings:
-        ui.warning(len(warnings), warnings)
-
-    copy_claude_md(project_root)
-    copy_settings_json(project_root)
-    merge_hooks_to_settings_local(project_root)
-    create_claude_directory(project_root)
-    install_git_hooks(project_root)
-
-    run_verification(project_root)
-
-    duration_s = output.duration_ms / 1000
-    ui.done(duration_s)
-
-    sections_updated = len(output.sections_updated)
-    sections_preserved = len(output.sections_preserved)
-    ui.updated(sections_updated, sections_preserved)
-    ui.footer("Ready.")
-
-    # Record scan timestamp in DB (T1.2: D8).
-    if not output.errors:
-        try:
-            from gaia.project import current as _project_current
-            from gaia.store.writer import set_workspace_last_scan_at
-            _ws = _project_current(cwd=project_root)
-            set_workspace_last_scan_at(_ws)
-        except Exception:  # pragma: no cover -- non-fatal
-            pass
-
-    summary = _build_summary(output, scanner_version)
-    summary["status"] = "error" if output.errors else "success"
-    summary["mode"] = "existing"
-    if getattr(args, "json", False):
-        print(json.dumps(summary, indent=2))
-    return 1 if output.errors else 0
-
-
-def _mode_scan_only(project_root: Path, scan_config, args: argparse.Namespace,
-                    scanner_version: str) -> int:
-    """Scan-only: run scanners, write context, emit JSON summary. No setup."""
-    from tools.scan.ui import RailUI, format_scanner_results
-
-    ui = RailUI(version=scanner_version, color=_use_color(args))
-    ui.start()
-
-    output = _run_scan(project_root, scan_config)
-
-    display_sections = format_scanner_results(output, project_root=project_root)
-    section_names = [sec["name"] for sec in display_sections]
-    if section_names:
-        ui.section_compact(section_names)
-
-    duration_s = output.duration_ms / 1000
-    sections_count = len(output.sections_updated)
-    ui.done(duration_s, suffix=f"{sections_count} sections updated")
+    ui.updated(len(output.sections_updated), len(output.sections_preserved))
     ui.footer("gaia.db updated")
 
-    # Record scan timestamp in DB (T1.2: D8).
-    if not output.errors:
-        try:
-            from gaia.project import current as _project_current
-            from gaia.store.writer import set_workspace_last_scan_at
-            _ws = _project_current(cwd=project_root)
-            set_workspace_last_scan_at(_ws)
-        except Exception:  # pragma: no cover -- non-fatal
-            pass
-
     summary = _build_summary(output, scanner_version)
     summary["status"] = "error" if output.errors else "success"
-    summary["mode"] = "scan_only"
+    summary["marked_missing"] = result.marked_missing
     if getattr(args, "json", False):
         print(json.dumps(summary, indent=2))
     return 1 if output.errors else 0
@@ -353,24 +206,24 @@ def register(subparsers) -> argparse.ArgumentParser:
     """Register the `scan` subcommand with the root parser."""
     p = subparsers.add_parser(
         "scan",
-        help="Sync workspace state into the Gaia DB",
+        help="Sync workspace state into the Gaia DB (scan only -- never installs)",
         description=(
-            "Scan the current workspace and sync state into Gaia DB. "
-            "With --fresh, bootstraps .claude/, hooks, and settings for a new "
-            "workspace. Without flags, re-syncs an existing workspace."
+            "Scan a Gaia workspace and sync its state into gaia.db. With no "
+            "target, scans the current workspace (you must be inside one). "
+            "Pass a path to scan a named target. This command never installs."
         ),
     )
     p.add_argument(
-        "--fresh",
-        action="store_true",
-        default=False,
-        help="Bootstrap a fresh workspace (.claude/, hooks, settings)",
+        "path",
+        nargs="?",
+        default=None,
+        help="Target path to scan (default: current workspace)",
     )
     p.add_argument(
         "--workspace",
         metavar="PATH",
         default=None,
-        help="Workspace root path (default: current working directory)",
+        help="Target path to scan (back-compat alias for the positional path)",
     )
     p.add_argument(
         "--dry-run",
@@ -417,20 +270,16 @@ def register(subparsers) -> argparse.ArgumentParser:
         default=False,
         help="Print scanner-by-scanner progress",
     )
-    # Backward-compat / fresh-mode helpers
-    p.add_argument(
-        "--skip-claude-install",
-        action="store_true",
-        default=False,
-        dest="skip_claude_install",
-        help="Skip Claude Code CLI installation during --fresh",
-    )
+    # Internal: used by `gaia install` Step 7 to run scan-core during npm
+    # postinstall. It does NOT change what scan does (scan never installs); it
+    # only relaxes the "must be inside a workspace" guard, because install has
+    # just created the workspace and resolved its identity.
     p.add_argument(
         "--npm-postinstall",
         action="store_true",
         default=False,
         dest="npm_postinstall",
-        help="Called from npm postinstall: skip Claude install + npm bootstrap",
+        help=argparse.SUPPRESS,
     )
     return p
 
@@ -445,15 +294,33 @@ def cmd_scan(args: argparse.Namespace) -> int:
     )
 
     scanner_version = _get_version()
-    project_root = _resolve_workspace(getattr(args, "workspace", None))
+    target = _resolve_target(args)
 
-    if not project_root.is_dir():
-        msg = f"workspace not found: {project_root}"
-        if getattr(args, "json", False):
-            print(json.dumps({"status": "error", "error": msg}))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
-        return 1
+    # Resolve the project root + enforce the explicit-entry-point contract.
+    if target is not None:
+        # On-demand: scan the named target.
+        if not target.is_dir():
+            return _emit_error(args, f"target not found: {target}")
+        project_root = target
+    else:
+        # No target: scan the CURRENT workspace -- but only if we are inside
+        # one. Outside a workspace with no target is a clean error, NOT an
+        # install fallback. The npm-postinstall path is exempt: install has
+        # just created the workspace and owns its identity.
+        project_root = Path.cwd().resolve()
+        if not getattr(args, "npm_postinstall", False):
+            try:
+                from tools.scan.core import is_gaia_workspace
+                inside_workspace = is_gaia_workspace(project_root)
+            except Exception:
+                inside_workspace = False
+            if not inside_workspace:
+                return _emit_error(
+                    args,
+                    "not in a Gaia workspace -- enter one (cd into a directory "
+                    "with a Gaia install) or pass a target path: "
+                    "`gaia scan <path>`",
+                )
 
     # Dry-run short-circuits before any tools.scan import / DB activity.
     if getattr(args, "dry_run", False):
@@ -464,12 +331,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         from tools.scan.config import load_scan_config
         from tools.scan.scanners.tools import ToolScanner
     except Exception as exc:
-        msg = f"failed to import tools.scan: {exc}"
-        if getattr(args, "json", False):
-            print(json.dumps({"status": "error", "error": msg}))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
-        return 1
+        return _emit_error(args, f"failed to import tools.scan: {exc}")
 
     if getattr(args, "full", False):
         ToolScanner.scan_extended = True
@@ -495,43 +357,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 print(result["message"])
             return 0
 
-    # --npm-postinstall implies --skip-claude-install and forces fresh mode.
-    if getattr(args, "npm_postinstall", False):
-        args.skip_claude_install = True
-        try:
-            return _mode_fresh(project_root, scan_config, args, scanner_version)
-        except Exception as exc:
-            msg = str(exc)
-            if getattr(args, "json", False):
-                print(json.dumps({"status": "error", "error": msg}))
-            else:
-                print(f"Error: {msg}", file=sys.stderr)
-            logging.exception("gaia scan failed")
-            return 1
-
-    # --json without --fresh: scan-only mode (no setup, no sync).
-    if getattr(args, "json", False) and not getattr(args, "fresh", False):
-        try:
-            return _mode_scan_only(project_root, scan_config, args, scanner_version)
-        except Exception as exc:
-            print(json.dumps({"status": "error", "error": str(exc)}))
-            logging.exception("gaia scan failed")
-            return 1
-
     try:
-        if getattr(args, "fresh", False):
-            return _mode_fresh(project_root, scan_config, args, scanner_version)
-        # Detect mode based on .claude/ presence
-        claude_dir = project_root / ".claude"
-        if claude_dir.is_dir():
-            return _mode_existing(project_root, scan_config, args, scanner_version)
-        # No --fresh and no .claude/: implicitly fresh
-        return _mode_fresh(project_root, scan_config, args, scanner_version)
+        return _run_scan(project_root, scan_config, args, scanner_version)
     except Exception as exc:
-        msg = str(exc)
-        if getattr(args, "json", False):
-            print(json.dumps({"status": "error", "error": msg}))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
         logging.exception("gaia scan failed")
-        return 1
+        return _emit_error(args, str(exc))

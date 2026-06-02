@@ -19,7 +19,8 @@ Responsibilities (in order):
      symlinks pointing at the installed package.
   7. Write `.claude/plugin-registry.json` with the installed version.
   8. (Optional) When `--postinstall` is set on a fresh workspace, invoke
-     `gaia scan --fresh --npm-postinstall` to seed `project-context.json`.
+     `gaia scan --npm-postinstall` to seed workspace state into gaia.db. Scan
+     is a separate flow and never installs -- Steps 1-7 own all install work.
 
 Idempotent: re-running over a populated workspace + DB never destroys
 state -- bootstrap.sh uses IF NOT EXISTS / INSERT OR IGNORE, the helpers
@@ -32,7 +33,7 @@ so `gaia install` and `gaia update` share a single source of truth.
 Flags:
   --postinstall      Mark this invocation as the npm postinstall path
                      (adjusts output, never returns non-zero so npm install
-                     does not abort, and triggers `gaia scan --fresh` on a
+                     does not abort, and triggers `gaia scan` on a
                      fresh workspace).
   --quiet            Suppress informational output; only errors print.
   --verbose          Stream bootstrap.sh output verbatim and report each
@@ -471,16 +472,44 @@ def _clear_install_error_marker() -> None:
 # Optional fresh scan (postinstall path only)
 # ---------------------------------------------------------------------------
 
-def _maybe_run_fresh_scan(workspace: Path, verbose: bool, quiet: bool) -> dict:
-    """Invoke `gaia scan --fresh --npm-postinstall` for fresh workspaces.
+def _workspace_already_scanned(workspace: Path) -> bool:
+    """Return True when gaia.db records a prior scan for this workspace.
 
-    Detection: a workspace is "fresh" when project-context.json does not
-    exist yet. On scan failure we report but never raise -- the postinstall
-    flow must remain non-fatal.
+    Reads workspaces.last_scan_at (the canonical freshness signal, mirroring
+    bin/cli/scan.py:_is_context_fresh). Any failure (DB absent, import error,
+    no row, NULL timestamp) resolves to False -- treat the workspace as fresh
+    and let the scan run. This keeps the postinstall path non-fatal.
     """
-    ctx_path = workspace / ".claude" / "project-context" / "project-context.json"
-    if ctx_path.exists():
-        return {"action": "noop", "details": "project-context.json already present"}
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
+
+        ws = _project_current(cwd=workspace)
+        con = _store_connect()
+        try:
+            row = con.execute(
+                "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
+            ).fetchone()
+        finally:
+            con.close()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _maybe_run_fresh_scan(workspace: Path, verbose: bool, quiet: bool) -> dict:
+    """Invoke `gaia scan --npm-postinstall` (scan-core) for fresh workspaces.
+
+    Detection (DB-backed): a workspace is "fresh" when it has no recorded
+    scan timestamp in gaia.db (workspaces.last_scan_at is absent/NULL). The
+    legacy project-context.json file is retired (agent-contract-handoff M1 /
+    episodic-workflow-to-db T1.3) -- project context lives exclusively in
+    gaia.db, so the scan timestamp is the authoritative freshness signal.
+    On scan failure we report but never raise -- the postinstall flow must
+    remain non-fatal.
+    """
+    if _workspace_already_scanned(workspace):
+        return {"action": "noop", "details": "workspace already scanned (gaia.db)"}
 
     gaia_entry = _PACKAGE_ROOT / "bin" / "gaia"
     if not gaia_entry.is_file():
@@ -488,7 +517,12 @@ def _maybe_run_fresh_scan(workspace: Path, verbose: bool, quiet: bool) -> dict:
 
     # Use the same Python interpreter the postinstall uses.
     py = sys.executable or "python3"
-    cmd = [py, str(gaia_entry), "scan", "--fresh", "--npm-postinstall"]
+    # Scan-core only: install already configured .claude/, hooks, symlinks,
+    # and the plugin registry in Steps 2-6. Step 7 just needs the scan to seed
+    # workspace state into gaia.db. ``--npm-postinstall`` relaxes the
+    # "must be inside a workspace" guard (install owns the just-created
+    # workspace's identity); scan still never installs anything.
+    cmd = [py, str(gaia_entry), "scan", "--npm-postinstall"]
 
     try:
         result = subprocess.run(
@@ -504,7 +538,7 @@ def _maybe_run_fresh_scan(workspace: Path, verbose: bool, quiet: bool) -> dict:
         return {"action": "error", "details": f"scan invocation failed: {exc}"}
 
     if result.returncode == 0:
-        return {"action": "created", "details": "project-context.json seeded via gaia scan"}
+        return {"action": "created", "details": "workspace scanned and synced to gaia.db"}
 
     if not quiet and not verbose:
         # On failure surface stderr so user has a hint

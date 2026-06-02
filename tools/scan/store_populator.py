@@ -65,6 +65,7 @@ def populate_project(
     *,
     db_path: Path | None = None,
     project_name: str | None = None,
+    group_name: str | None = None,
 ) -> dict:
     """Detect role + remote of a project and persist to the `projects` table.
 
@@ -75,10 +76,13 @@ def populate_project(
         db_path: Optional explicit DB path (test override).
         project_name: Override for the project basename. When None, uses
             project_path.name.
+        group_name: Container directory name when the repo is nested under a
+            grouping directory (e.g. ``"github-repos"``, ``"bildwiz"``).
+            Pass ``None`` when the repo sits directly at the workspace root.
 
     Returns:
         Dict with keys ``applied`` (1|0), ``rejected`` (1|0), ``role``,
-        ``identity``, and ``name``. Never raises.
+        ``identity``, ``name``, and ``group_name``. Never raises.
     """
     from gaia.store import upsert_project
 
@@ -97,6 +101,17 @@ def populate_project(
             "remote_url": remote_url,
             "platform": platform,
             "primary_language": primary_language,
+            "group_name": group_name,
+            # Persist the on-disk path so the project is directly findable
+            # (project -> path + workspace). The value is the project root
+            # itself; ``upsert_project`` accepts it via ``fields["path"]``.
+            "path": str(project_path),
+            # Reactivation (soft-delete, AC-4): a project discovered on disk is
+            # LIVE. Set status='active' and missing_since=NULL explicitly so a
+            # previously-missing project is reactivated on reappearance, rather
+            # than relying on the writer's defaults.
+            "status": "active",
+            "missing_since": None,
         },
         agent=agent,
         db_path=db_path,
@@ -109,6 +124,7 @@ def populate_project(
         "role": role,
         "identity": identity,
         "name": name,
+        "group_name": group_name,
     }
 
 
@@ -566,35 +582,108 @@ def scan_workspace_to_store(
         agent: Agent name for permission enforcement.
         db_path: Optional explicit DB path (test override).
 
+    Canonical classification rule (gaia-scan-overhaul):
+
+    * A **project** is a dir with ``.git`` (discovered by :func:`_list_repos`).
+    * A **workspace** is a dir with a Gaia installation, detected by the
+      mode-agnostic ``.claude/plugin-registry.json`` signal
+      (:func:`_is_installed_gaia_workspace`). The CLI ``root`` is always a
+      workspace too (the caller resolved its identity).
+    * Intermediate folders (no ``.git``, no install) are NOT entities; their
+      projects are attributed to the **nearest installed-ancestor workspace**
+      within the scanned tree, with ``group_name`` = the container directory
+      between that workspace and the project. Depth is variable.
+    * A dir may be BOTH a project and a workspace -> it produces a ``projects``
+      row (under its nearest installed ANCESTOR, or ``root`` as fallback) AND
+      a ``workspaces`` / ``gaia_installations`` row of its own.
+    * When no installed ancestor exists in the tree, the project falls back to
+      the CLI-``root`` workspace (previous behaviour).
+
     Returns:
-        Dict mapping repo names to per-repo result dicts, plus a
-        ``__workspace__`` key for workspace-scoped populators
-        (``gaia_installations``).
+        Dict mapping ``"<workspace>/<project>"`` keys to per-repo result dicts,
+        plus a ``__workspace__`` key for workspace-scoped populators
+        (``gaia_installations``) of every detected installed workspace, plus a
+        ``__failures__`` key holding a list of per-project failure dicts
+        (``{"workspace", "project", "path", "error"}``) for repos whose
+        population raised -- the scan isolates each repo so one failure does not
+        abort the whole scan (AC-4, soft-delete).
     """
     project_dirs = _list_repos(root)
-    results = {}
+
+    # Detect installed sub-workspaces in the tree (root included). Each becomes
+    # an attribution anchor: a project is owned by the nearest one above it.
+    installed_workspaces = _list_installed_workspaces(root)
+    installed_set: set[Path] = set(installed_workspaces)
+    # The CLI root is always a workspace anchor even if it lacks the registry
+    # signal (the caller already resolved/owns its identity).
+    installed_set.add(root)
+
+    # Map each installed-workspace path -> its workspace identity. The root
+    # uses the caller-provided ``workspace`` name verbatim; detected children
+    # resolve identity from their own path (git remote or basename).
+    ws_name_by_path: dict[Path, str] = {root: workspace}
+    for ws_path in installed_workspaces:
+        if ws_path == root:
+            continue
+        ws_name_by_path[ws_path] = resolve_identity(ws_path)
+
+    results: dict = {}
+    # Per-project isolation (AC-4): a single problematic repo (bad column,
+    # permissions, malformed content) must NOT abort the whole scan. Each
+    # project is populated inside its own try/except; failures are collected
+    # here and reported at the end via the reserved ``__failures__`` key, while
+    # the loop continues with the remaining projects.
+    failures: list[dict] = []
     for project_path in project_dirs:
         project_name = project_path.name
-        project_res = populate_project(workspace, project_path, agent, db_path=db_path)
-        infra_res = populate_infrastructure(
-            workspace, project_name, project_path, agent, db_path=db_path
-        )
-        orch_res = populate_orchestration(
-            workspace, project_name, project_path, agent, db_path=db_path
-        )
-        feat_res = populate_features(
-            workspace, project_name, project_path, agent, db_path=db_path
-        )
-        apps_res = populate_apps(
-            workspace, project_name, project_path, agent, db_path=db_path
-        )
-        services_res = populate_services(
-            workspace, project_name, project_path, agent, db_path=db_path
-        )
-        libs_res = populate_libraries(
-            workspace, project_name, project_path, agent, db_path=db_path
-        )
-        results[project_name] = {
+
+        # Attribution: nearest installed STRICT ancestor wins; else the root.
+        anchor = _nearest_installed_ancestor(project_path, installed_set, root)
+        if anchor is None:
+            anchor = root
+        target_workspace = ws_name_by_path.get(anchor, workspace)
+
+        # group_name = container directory between the anchor workspace and the
+        # project. When the project sits directly under the anchor, there is no
+        # intermediate container -> group_name stays None.
+        container = project_path.parent
+        group_name: str | None = container.name if container != anchor else None
+
+        try:
+            project_res = populate_project(
+                target_workspace, project_path, agent, db_path=db_path,
+                group_name=group_name,
+            )
+            infra_res = populate_infrastructure(
+                target_workspace, project_name, project_path, agent, db_path=db_path
+            )
+            orch_res = populate_orchestration(
+                target_workspace, project_name, project_path, agent, db_path=db_path
+            )
+            feat_res = populate_features(
+                target_workspace, project_name, project_path, agent, db_path=db_path
+            )
+            apps_res = populate_apps(
+                target_workspace, project_name, project_path, agent, db_path=db_path
+            )
+            services_res = populate_services(
+                target_workspace, project_name, project_path, agent, db_path=db_path
+            )
+            libs_res = populate_libraries(
+                target_workspace, project_name, project_path, agent, db_path=db_path
+            )
+        except Exception as exc:  # isolate the bad repo; keep scanning the rest
+            failures.append({
+                "workspace": target_workspace,
+                "project": project_name,
+                "path": str(project_path),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            continue
+        # Key by workspace/project so two workspaces with same-named projects
+        # do not collide, and the CLI soft-delete can scope per workspace.
+        results[f"{target_workspace}/{project_name}"] = {
+            "workspace": target_workspace,
             "project": project_res,
             "infrastructure": infra_res,
             "orchestration": orch_res,
@@ -604,11 +693,40 @@ def scan_workspace_to_store(
             "libraries": libs_res,
         }
 
-    # Workspace-scoped populator: gaia_installations runs once per workspace.
-    gaia_inst_res = populate_gaia_installations(workspace, root, agent, db_path=db_path)
-    results["__workspace__"] = {
-        "gaia_installations": gaia_inst_res,
-    }
+    # Workspace-scoped populator: gaia_installations runs once per detected
+    # installed workspace (and the root). Registering installations through
+    # ``bulk_upsert`` also ensures the ``workspaces`` row exists for each
+    # detected child workspace (canonical rule 2 + 4).
+    from gaia.store.writer import set_workspace_last_scan_at
+
+    workspace_results: dict = {}
+    for ws_path in sorted(installed_set):
+        ws_name = ws_name_by_path.get(ws_path)
+        if ws_name is None:
+            ws_name = resolve_identity(ws_path)
+            ws_name_by_path[ws_path] = ws_name
+        # Ensure the workspaces row exists for every detected workspace,
+        # independent of whether an installation row is emitted (canonical
+        # rule 2 + 4: a registry-detected dir is a workspace regardless of the
+        # node_modules / skills+agents footprint). The CLI root is also marked
+        # here for child anchors; the CLI separately records its own root.
+        try:
+            set_workspace_last_scan_at(ws_name, db_path=db_path)
+        except Exception:  # pragma: no cover -- non-fatal
+            pass
+        gaia_inst_res = populate_gaia_installations(
+            ws_name, ws_path, agent, db_path=db_path
+        )
+        workspace_results[ws_name] = {
+            "path": str(ws_path),
+            "gaia_installations": gaia_inst_res,
+        }
+    results["__workspace__"] = workspace_results
+    # Per-project isolation (AC-4): collected failures, empty when all repos
+    # populated cleanly. Callers (bin/cli/scan.py:_populate_store) consume this
+    # to keep failed-but-on-disk projects out of the soft-delete pass and to
+    # report the failures.
+    results["__failures__"] = failures
     return results
 
 
@@ -674,33 +792,243 @@ def _detect_primary_language(project_path: Path) -> str | None:
     return None
 
 
-def _list_repos(root: Path) -> list[Path]:
-    """Return the list of repo directories under root.
+def _list_repos(root: Path, max_depth: int = 4) -> list[Path]:
+    """Return git repositories discovered under root via bounded recursive walk.
 
-    A repo is a depth-1 subdirectory. If root itself contains marker files
-    suggesting it is a single repo (e.g. .git, package.json, *.tf), it is
-    returned as the only repo.
+    A directory is a repo if it contains a ``.git`` entry (directory or
+    file -- the file form covers git worktrees).  Container directories that
+    are not themselves repos are descended into so that layouts like::
+
+        ~/ws/github-repos/        <- container, no .git
+            repo-a/               <- repo, has .git
+            repo-b/               <- repo, has .git
+        ~/ws/aaxis/               <- container, no .git
+            bildwiz/              <- sub-container, no .git
+                platform-repo/    <- repo, has .git
+
+    are handled correctly.  Plain directories without ``.git`` anywhere in
+    their subtree are **not** returned as repos (AC-3: ``briefs/``,
+    ``plans/``, and similar sidecar folders are excluded).
+
+    The walk is bounded at ``max_depth`` levels below ``root`` to avoid
+    runaway traversal on deep trees.  Directories whose basename appears in
+    ``_REPO_WALK_SKIP`` are never descended into.
+
+    The returned paths are sorted for deterministic output.  Their
+    ``.parent`` attribute gives the immediate container directory, which
+    T2.2 can consume to infer ``group_name``.
+
+    Args:
+        root: Workspace root to search from.
+        max_depth: Maximum directory depth to descend (default 4).
+
+    Returns:
+        Sorted list of absolute ``Path`` objects, each pointing to the root
+        of a git repository.
     """
     if not root.is_dir():
         return []
 
+    # Root itself is a repo -- return it directly without recursing into it.
     if (root / ".git").exists():
         return [root]
 
-    children = []
-    skip = {"node_modules", "__pycache__", "vendor", "dist", "build",
-            ".terraform", ".venv", "venv"}
+    repos: list[Path] = []
+    _walk_for_repos(root, root, current_depth=0, max_depth=max_depth, repos=repos)
+    return sorted(repos)
+
+
+# Directories that are never git repos and that the walk must not descend into.
+_REPO_WALK_SKIP: frozenset[str] = frozenset({
+    "node_modules",
+    "__pycache__",
+    "vendor",
+    "dist",
+    "build",
+    ".terraform",
+    ".terragrunt-cache",
+    ".venv",
+    "venv",
+    ".cache",
+    ".npm",
+    ".next",
+    ".nuxt",
+    "target",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    # Gaia sidecar directories -- not projects (AC-3)
+    ".git",
+    ".claude",
+    "briefs",
+    "plans",
+})
+
+
+def _is_installed_gaia_workspace(directory: Path) -> bool:
+    """Return True if `directory` carries a Gaia installation footprint.
+
+    Canonical, MODE-AGNOSTIC signal (see hooks/modules/core/plugin_mode.py):
+    a ``.claude/plugin-registry.json`` whose ``installed[*].name`` list
+    includes ``"gaia-ops"`` OR ``"gaia-security"``.
+
+    This deliberately does NOT use ``.plugin-initialized`` and does NOT treat a
+    bare ``.claude`` directory as a Gaia install. A repo that was cloned with
+    its own third-party ``.claude`` (no Gaia plugin registry, or a registry
+    that lists other plugins) therefore returns False -- avoiding the false
+    positive called out in the canonical rule.
+
+    Read-only; never raises.
+    """
+    import json
+
+    registry = directory / ".claude" / "plugin-registry.json"
+    if not registry.is_file():
+        return False
     try:
-        for c in sorted(root.iterdir()):
-            if not c.is_dir():
-                continue
-            if c.name.startswith(".") or c.name in skip:
-                continue
-            if (c / ".git").exists():
-                children.append(c)
-    except OSError:
+        data = json.loads(registry.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    installed = data.get("installed")
+    if not isinstance(installed, list):
+        return False
+    names = {
+        p.get("name")
+        for p in installed
+        if isinstance(p, dict) and isinstance(p.get("name"), str)
+    }
+    return "gaia-ops" in names or "gaia-security" in names
+
+
+def _list_installed_workspaces(root: Path, max_depth: int = 4) -> list[Path]:
+    """Return directories under `root` (inclusive) that carry a Gaia install.
+
+    A directory qualifies when :func:`_is_installed_gaia_workspace` returns
+    True. The walk uses the SAME bounding (``max_depth``) and the SAME
+    skip-dir set (:data:`_REPO_WALK_SKIP`, which includes ``.claude`` and
+    ``node_modules``) as :func:`_list_repos`, so we never descend into a child
+    workspace's installation tree (canonical rule 5).
+
+    Unlike :func:`_list_repos`, this walk does NOT stop at git repos -- a dir
+    can be both a project and a workspace, and a workspace may contain nested
+    installed workspaces. The signal is tested on the directory itself; we
+    never descend into ``.claude`` to find it (we read ``dir/.claude/...``).
+
+    Returns:
+        Sorted list of absolute ``Path`` objects, each an installed workspace.
+    """
+    if not root.is_dir():
         return []
-    return children
+
+    installed: list[Path] = []
+    if _is_installed_gaia_workspace(root):
+        installed.append(root)
+    _walk_for_installs(root, current_depth=0, max_depth=max_depth, installed=installed)
+    return sorted(installed)
+
+
+def _walk_for_installs(
+    current: Path,
+    current_depth: int,
+    max_depth: int,
+    installed: list[Path],
+) -> None:
+    """Recursive helper for :func:`_list_installed_workspaces`.
+
+    Descends into every non-skipped child directory (depth-bounded), testing
+    each for the Gaia installation signal. Does not stop at git repos.
+    """
+    if current_depth >= max_depth:
+        return
+    try:
+        entries = sorted(current.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if name.startswith(".") or name in _REPO_WALK_SKIP:
+            continue
+        if _is_installed_gaia_workspace(entry):
+            installed.append(entry)
+        _walk_for_installs(entry, current_depth + 1, max_depth, installed)
+
+
+def _nearest_installed_ancestor(
+    project_path: Path,
+    installed: set[Path],
+    scan_root: Path,
+) -> Path | None:
+    """Return the deepest installed workspace that is a STRICT ancestor.
+
+    Walks ``project_path``'s parents from nearest to farthest, stopping at
+    ``scan_root`` (inclusive), and returns the first parent present in
+    ``installed``. Excludes ``project_path`` itself: a dir that is both a
+    project and a workspace is attributed to the workspace ABOVE it, not to
+    itself (its own workspace row is registered separately).
+
+    Returns:
+        The nearest installed-ancestor path, or ``None`` when no installed
+        workspace sits between the project and ``scan_root``.
+    """
+    try:
+        parents = list(project_path.parents)
+    except (OSError, ValueError):
+        return None
+    for parent in parents:
+        if parent in installed:
+            return parent
+        if parent == scan_root:
+            break
+    return None
+
+
+def _walk_for_repos(
+    root: Path,
+    current: Path,
+    current_depth: int,
+    max_depth: int,
+    repos: list[Path],
+) -> None:
+    """Recursive helper for :func:`_list_repos`.
+
+    Descends into ``current`` looking for git repos.  Stops at
+    ``max_depth`` levels below ``root``.  Any directory that has a
+    ``.git`` entry is treated as a repo leaf and is NOT descended into
+    (nested repos inside a repo are the repo's own concern).
+
+    Args:
+        root: The original workspace root (used only for depth reference).
+        current: Directory to examine at this recursion level.
+        current_depth: How many levels below ``root`` we are now.
+        max_depth: Maximum depth; when reached, stop descending.
+        repos: Accumulator list of repo paths found so far.
+    """
+    if current_depth > max_depth:
+        return
+
+    try:
+        entries = sorted(current.iterdir())
+    except OSError:
+        return
+
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        # Skip hidden dirs and explicitly excluded names.
+        if name.startswith(".") or name in _REPO_WALK_SKIP:
+            continue
+        if (entry / ".git").exists():
+            # This directory is a git repo -- collect it, do not recurse.
+            repos.append(entry)
+        else:
+            # Container directory: recurse to find repos inside it.
+            _walk_for_repos(root, entry, current_depth + 1, max_depth, repos)
 
 
 def _scan_tf_modules(project_path: Path) -> list[dict]:
@@ -718,7 +1046,7 @@ def _scan_tf_modules(project_path: Path) -> list[dict]:
         return modules
     try:
         for tf in project_path.rglob("*.tf"):
-            if any(p in tf.parts for p in (".terraform", "node_modules", ".git")):
+            if any(p in tf.parts for p in (".terraform", "node_modules", ".git", "tests", "fixtures", "templates", "examples")):
                 continue
             try:
                 content = tf.read_text(encoding="utf-8", errors="replace")
@@ -779,7 +1107,7 @@ def _scan_clusters_defined(project_path: Path) -> list[dict]:
         return out
     try:
         for tf in project_path.rglob("*.tf"):
-            if any(p in tf.parts for p in (".terraform", "node_modules", ".git")):
+            if any(p in tf.parts for p in (".terraform", "node_modules", ".git", "tests", "fixtures", "templates", "examples")):
                 continue
             try:
                 content = tf.read_text(encoding="utf-8", errors="replace")
@@ -814,7 +1142,7 @@ def _scan_releases(project_path: Path) -> list[dict]:
         return out
     try:
         for yml in project_path.rglob("*.y*ml"):
-            if any(p in yml.parts for p in ("node_modules", ".git", "__pycache__")):
+            if any(p in yml.parts for p in ("node_modules", ".git", "__pycache__", "tests", "fixtures", "templates", "examples")):
                 continue
             try:
                 content = yml.read_text(encoding="utf-8", errors="replace")
@@ -844,7 +1172,7 @@ def _scan_workloads(project_path: Path) -> list[dict]:
         return out
     try:
         for yml in project_path.rglob("*.y*ml"):
-            if any(p in yml.parts for p in ("node_modules", ".git", "__pycache__")):
+            if any(p in yml.parts for p in ("node_modules", ".git", "__pycache__", "tests", "fixtures", "templates", "examples")):
                 continue
             try:
                 content = yml.read_text(encoding="utf-8", errors="replace")
@@ -930,7 +1258,7 @@ def _scan_features(project_path: Path) -> list[dict]:
 
     out: list[dict] = []
     seen: set[str] = set()
-    _SKIP = {"node_modules", "__pycache__", ".git", ".terraform", "dist", "build", ".venv", "venv"}
+    _SKIP = {"node_modules", "__pycache__", ".git", ".terraform", "dist", "build", ".venv", "venv", "tests", "fixtures", "templates", "examples"}
 
     def _add(name: str) -> None:
         key = name.strip().lower()
@@ -1360,6 +1688,35 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
                 "version": version,
                 "install_mode": install_mode,
             })
+            return out
+
+    # Marker 3: canonical plugin-registry.json signal (mode-agnostic). This is
+    # the signal the canonical classification rule uses to call a dir a
+    # workspace; record the installation so the workspaces row is anchored even
+    # when the npm / skills+agents markers are absent (e.g. plugin-managed
+    # installs where the footprint lives in the plugin data dir, not under
+    # ./.claude/). Version comes from the registry entry when present.
+    if _is_installed_gaia_workspace(workspace_root):
+        version = None
+        try:
+            registry = json.loads(
+                (claude_dir / "plugin-registry.json").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            )
+            for p in registry.get("installed", []):
+                if isinstance(p, dict) and p.get("name") in ("gaia-ops", "gaia-security"):
+                    v = p.get("version")
+                    if isinstance(v, str):
+                        version = v
+                        break
+        except (OSError, ValueError):
+            version = None
+        out.append({
+            "machine": machine,
+            "version": version,
+            "install_mode": "plugin",
+        })
 
     return out
 
