@@ -457,6 +457,100 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 fi
                 # Otherwise: existing v11 DB -- fall through to default v11_to_v12.sql.
                 ;;
+            13)
+                # v12 -> v13: add group_name column to projects table
+                # (gaia-scan-overhaul: workspace->group->repo model, AC-2).
+                #
+                # Target state fingerprint: projects.group_name column exists.
+                # We probe pragma_table_info for the column name.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates projects WITH group_name -> it exists
+                #   - Existing v12 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> group_name does NOT exist -> falls through to the full migration
+                GROUP_NAME_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='group_name';")"
+                if [ "$GROUP_NAME_EXISTS" = "group_name" ]; then
+                    # Fresh install: schema.sql already created projects with group_name column.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v12_to_v13_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v12->v13 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v12 DB -- fall through to default v12_to_v13.sql.
+                ;;
+            14)
+                # v13 -> v14: add path column to projects table
+                # (gaia-scan-overhaul: findability, project -> path + workspace).
+                #
+                # Target state fingerprint: projects.path column exists.
+                # We probe pragma_table_info for the column name.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates projects WITH path -> it exists
+                #   - Existing v13 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> path does NOT exist -> falls through to the full migration
+                PATH_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='path';")"
+                if [ "$PATH_EXISTS" = "path" ]; then
+                    # Fresh install: schema.sql already created projects with path column.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v13_to_v14_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v13->v14 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v13 DB -- fall through to default v13_to_v14.sql.
+                ;;
+            15)
+                # v14 -> v15: rename the per-project child-table FK column
+                # repo -> project on apps, libraries, services, features,
+                # tf_modules, tf_live, releases, workloads, clusters_defined
+                # (substrate rename catch-up; closes "no such column: project").
+                #
+                # Target state fingerprint: apps.project column exists.
+                # We probe pragma_table_info for the column name on `apps`
+                # (representative of all nine child tables, which are renamed
+                # together in the same migration).
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates apps WITH `project` -> it exists
+                #   - Existing v14 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     so apps still has the legacy `repo` column -> `project` does
+                #     NOT exist -> falls through to the full rename migration.
+                APPS_HAS_PROJECT="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('apps') WHERE name='project';")"
+                if [ "$APPS_HAS_PROJECT" = "project" ]; then
+                    # Fresh install: schema.sql already created child tables with
+                    # the `project` column. Run the fresh-install variant (no-op
+                    # SELECT) to stamp the ledger without attempting the rename.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v14_to_v15_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v14->v15 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v14 DB -- fall through to default v14_to_v15.sql.
+                ;;
+            16)
+                # v15 -> v16: add status + missing_since columns to projects table
+                # (gaia-scan-overhaul: soft-delete support for missing projects).
+                #
+                # Target state fingerprint: projects.status column exists.
+                # We probe pragma_table_info for the column name.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates projects WITH status -> it exists
+                #   - Existing v15 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> status does NOT exist -> falls through to the full migration
+                PROJECTS_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='status';")"
+                if [ "$PROJECTS_HAS_STATUS" = "status" ]; then
+                    # Fresh install: schema.sql already created projects with status column.
+                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v15_to_v16_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v15->v16 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v15 DB -- fall through to default v15_to_v16.sql.
+                ;;
             *)
                 # Future migrations: each new N must add a case here with a
                 # fingerprint of the post-migration state.

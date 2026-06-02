@@ -249,7 +249,7 @@ def set_workspace_last_scan_at(
 # Public API: upsert_project
 # ---------------------------------------------------------------------------
 
-_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language")
+_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language", "group_name", "path", "status", "missing_since")
 
 
 def upsert_project(
@@ -268,7 +268,13 @@ def upsert_project(
         workspace: Workspace name (matches workspaces.name / projects.workspace).
         name: Project name (basename).
         fields: Dict of column->value pairs. Recognized keys:
-            ``role``, ``remote_url``, ``platform``, ``primary_language``.
+            ``role``, ``remote_url``, ``platform``, ``primary_language``,
+            ``group_name``, ``path``, ``status``, ``missing_since``.
+            ``status`` defaults to 'active' when not provided. ``missing_since``
+            defaults to NULL. On re-upsert of a live project (status='active')
+            the scanner should pass status='active' and missing_since=None to
+            reactivate a previously-missing project; default values handle this
+            when the caller omits both fields.
         agent: Agent name. Must have allow_write=1 for table 'projects' in
             agent_permissions.
         topic_key: Optional dimension key.
@@ -290,23 +296,34 @@ def upsert_project(
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
             data = {k: fields.get(k) for k in _PROJECT_FIELDS}
+            # Default status to 'active' when not explicitly provided.
+            # This ensures newly-inserted rows and re-upserted live projects
+            # always carry an explicit status value.
+            status_val = data["status"] if data["status"] is not None else "active"
             con.execute(
                 """
                 INSERT INTO projects (workspace, name, role, remote_url, platform,
-                                      primary_language, scanner_ts, topic_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                      primary_language, scanner_ts, topic_key,
+                                      group_name, path, status, missing_since)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     role = excluded.role,
                     remote_url = excluded.remote_url,
                     platform = excluded.platform,
                     primary_language = excluded.primary_language,
                     scanner_ts = excluded.scanner_ts,
-                    topic_key = excluded.topic_key
+                    topic_key = excluded.topic_key,
+                    group_name = excluded.group_name,
+                    path = excluded.path,
+                    status = excluded.status,
+                    missing_since = excluded.missing_since
                 """,
                 (
                     workspace, name,
                     data["role"], data["remote_url"], data["platform"],
                     data["primary_language"], _now_iso(), topic_key,
+                    data["group_name"], data["path"],
+                    status_val, data["missing_since"],
                 ),
             )
             con.commit()
@@ -465,6 +482,94 @@ def delete_missing_in(
                 con.execute(
                     f"DELETE FROM {table} WHERE workspace = ? AND {placeholders}",
                     (workspace, *key),
+                )
+                count += 1
+            con.commit()
+            return count
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: mark_missing_in (soft-delete; mirror of delete_missing_in)
+# ---------------------------------------------------------------------------
+
+def mark_missing_in(
+    table: str,
+    workspace: str,
+    surviving_keys: Iterable[Sequence[Any]],
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Soft-delete rows in `table` (filtered by workspace) whose primary key is
+    NOT in surviving_keys: set ``status='missing'`` and ``missing_since=<now>``
+    instead of DELETEing them.
+
+    This is the mirror of :func:`delete_missing_in` but UPDATEs instead of
+    DELETEs. A scan that only partially discovers projects (a partial walk, a
+    permissions hiccup, a transient error) must never destroy real rows; it
+    marks them missing so the data survives and remains consultable.
+
+    Only rows that are not ALREADY missing are touched -- a row already
+    ``status='missing'`` keeps its original ``missing_since`` timestamp (the
+    moment it first disappeared), so repeated re-scans do not keep bumping it.
+
+    Args:
+        table: Target table name. Must be ``"projects"`` -- it is the only
+            table carrying the ``status`` / ``missing_since`` soft-delete
+            columns. Any other table raises ValueError because marking it
+            missing has no column to write.
+        workspace: Workspace name (workspace FK value). Scoping is strict;
+            rows in other workspaces are never touched.
+        surviving_keys: Iterable of tuples representing the PK fragments to
+            keep active. For ``projects`` use ``[(name,), ...]``.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        Number of rows newly marked missing.
+
+    Raises:
+        ValueError: if `table` is not whitelisted or does not carry the
+            soft-delete columns.
+    """
+    if table not in _KNOWN_TABLES:
+        raise ValueError(f"unknown table: {table!r}")
+    # Only `projects` carries status/missing_since. Marking any other table
+    # missing is a programming error -- fail loudly instead of writing to a
+    # column that does not exist.
+    if table != "projects":
+        raise ValueError(
+            f"mark_missing_in only supports the 'projects' table "
+            f"(soft-delete columns status/missing_since); got {table!r}"
+        )
+
+    surviving = list(surviving_keys)
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            existing = con.execute(
+                "SELECT name, status FROM projects WHERE workspace = ?",
+                (workspace,),
+            ).fetchall()
+            surviving_set = {tuple(s) for s in surviving}
+
+            now = _now_iso()
+            count = 0
+            for row in existing:
+                key = (row["name"],)
+                if key in surviving_set:
+                    continue
+                # Already missing -> leave missing_since intact (first-seen-gone).
+                if row["status"] == "missing":
+                    continue
+                con.execute(
+                    "UPDATE projects SET status = 'missing', missing_since = ? "
+                    "WHERE workspace = ? AND name = ?",
+                    (now, workspace, row["name"]),
                 )
                 count += 1
             con.commit()
