@@ -7,6 +7,7 @@ Public API::
         upsert_project,
         upsert_app,
         delete_missing_in,
+        mark_missing_in,
         bulk_upsert,
         wipe_workspace,
     )
@@ -19,6 +20,7 @@ No runtime dependency on engram; patterns lifted with attribution (see NOTICE.md
 from gaia.store.writer import (
     bulk_upsert,
     delete_missing_in,
+    mark_missing_in,
     save_integration,
     upsert_app,
     upsert_project,
@@ -30,6 +32,7 @@ __all__ = [
     "upsert_project",
     "upsert_app",
     "delete_missing_in",
+    "mark_missing_in",
     "bulk_upsert",
     "wipe_workspace",
     "save_integration",

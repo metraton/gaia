@@ -78,11 +78,9 @@
     "preuninstall": "python3 bin/gaia uninstall --preuninstall"
   },
   "_postinstall_note": "postinstall: settings.json replaced (hooks only), permissions merged into settings.local.json (union, user config preserved)",
-  "dependencies": {
-    "@jaguilar87/gaia": "file:jaguilar87-gaia-5.0.0-rc.7.tgz",
-    "chalk": "^5.3.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "chalk": "^5.3.0",
     "eslint": "^8.50.0"
   },
   "engines": {
