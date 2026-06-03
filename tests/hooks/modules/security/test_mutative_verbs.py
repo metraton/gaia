@@ -1424,3 +1424,157 @@ class TestSlugAndFlagFalsePositives:
         This test documents current behavior (not a regression)."""
         result = detect_mutative_command("gaia approvals reject P-XXXX")
         assert result.is_mutative is False
+
+
+class TestGaiaPlanningBookkeepingException:
+    """Anchored command+subcommand exception for local planning bookkeeping.
+
+    `gaia brief <verb>` and `gaia ac <verb>` edit rows in the local planning
+    store (briefs, acceptance criteria).  They are reversible and have no
+    external side effects, so the generic MUTATIVE_VERBS gate (which catches
+    edit/set/remove/add) would force needless T3 approval on subagents.
+
+    The exception is anchored EXPLICITLY to (base_cmd, subcommand) so it does
+    NOT leak into sibling groups -- `gaia approvals approve/revoke` and
+    `gaia memory save` stay gated, and generic verbs (kubectl edit, git push)
+    are untouched.
+    """
+
+    # ---- gaia brief: every verb in the group classifies non-mutative ----
+
+    def test_gaia_brief_edit_not_mutative(self):
+        result = detect_mutative_command("gaia brief edit my-brief")
+        assert result.is_mutative is False, (
+            f"gaia brief edit must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_brief_set_status_not_mutative(self):
+        result = detect_mutative_command("gaia brief set-status my-brief done")
+        assert result.is_mutative is False, (
+            f"gaia brief set-status must be local-only bookkeeping. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_brief_set_field_not_mutative(self):
+        result = detect_mutative_command("gaia brief set-field my-brief title X")
+        assert result.is_mutative is False
+
+    def test_gaia_brief_new_not_mutative(self):
+        result = detect_mutative_command("gaia brief new my-brief")
+        assert result.is_mutative is False
+
+    def test_gaia_brief_show_not_mutative(self):
+        result = detect_mutative_command("gaia brief show my-brief")
+        assert result.is_mutative is False
+
+    def test_gaia_brief_list_not_mutative(self):
+        result = detect_mutative_command("gaia brief list")
+        assert result.is_mutative is False
+
+    # ---- gaia ac: every verb in the group classifies non-mutative ----
+
+    def test_gaia_ac_edit_not_mutative(self):
+        result = detect_mutative_command("gaia ac edit my-brief 1")
+        assert result.is_mutative is False, (
+            f"gaia ac edit must be local-only bookkeeping. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_ac_set_status_not_mutative(self):
+        result = detect_mutative_command("gaia ac set-status my-brief 1 done")
+        assert result.is_mutative is False
+
+    def test_gaia_ac_add_not_mutative(self):
+        result = detect_mutative_command("gaia ac add my-brief 'criterion text'")
+        assert result.is_mutative is False, (
+            f"gaia ac add must be local-only bookkeeping. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_ac_remove_not_mutative(self):
+        result = detect_mutative_command("gaia ac remove my-brief 1")
+        assert result.is_mutative is False, (
+            f"gaia ac remove must be local-only bookkeeping. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_ac_show_not_mutative(self):
+        result = detect_mutative_command("gaia ac show my-brief")
+        assert result.is_mutative is False
+
+    # ---- Anchoring: the consent layer and memory writes stay gated ----
+
+    def test_gaia_approvals_revoke_still_mutative(self):
+        """gaia approvals revoke: 'revoke' is in MUTATIVE_VERBS and 'approvals'
+        is NOT an excepted group -- the consent layer must stay T3."""
+        result = detect_mutative_command("gaia approvals revoke P-XXXX")
+        assert result.is_mutative is True, (
+            f"gaia approvals revoke must stay T3 (consent layer). "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+        assert result.verb == "revoke"
+
+    def test_gaia_approvals_approve_still_mutative(self):
+        """gaia approvals approve: 'approve' is in MUTATIVE_VERBS -- gated."""
+        result = detect_mutative_command("gaia approvals approve P-XXXX")
+        assert result.is_mutative is True, (
+            f"gaia approvals approve must stay T3 (consent layer). "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+        assert result.verb == "approve"
+
+    def test_gaia_approvals_reject_unchanged(self):
+        """gaia approvals reject: 'reject' is not in MUTATIVE_VERBS, so it was
+        already non-mutative -- the exception must not change that behavior."""
+        result = detect_mutative_command("gaia approvals reject P-XXXX")
+        assert result.is_mutative is False
+
+    def test_gaia_memory_save_still_mutative(self):
+        """gaia memory save: 'memory' is not an excepted group; 'save'..."""
+        # 'save' is not in MUTATIVE_VERBS, so exercise a real write verb.
+        result = detect_mutative_command("gaia memory write some-note")
+        assert result.is_mutative is True, (
+            f"gaia memory write must stay gated (not an excepted group). "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_memory_delete_still_mutative(self):
+        """gaia memory delete: 'memory' is not an excepted group -- stays T3."""
+        result = detect_mutative_command("gaia memory delete some-note")
+        assert result.is_mutative is True
+
+    # ---- Generic verbs across other CLIs are untouched ----
+
+    def test_kubectl_edit_still_mutative(self):
+        result = detect_mutative_command("kubectl edit deployment myapp")
+        assert result.is_mutative is True
+        assert result.verb == "edit"
+
+    def test_git_push_still_mutative(self):
+        result = detect_mutative_command("git push origin main")
+        assert result.is_mutative is True
+        assert result.verb == "push"
+
+    # ---- Dangerous-flag escape hatch: anchoring does not override --force ----
+
+    def test_gaia_brief_with_force_flag_re_gates(self):
+        """A dangerous flag (--force) under an excepted group re-gates to T3."""
+        result = detect_mutative_command("gaia brief edit my-brief --force")
+        assert result.is_mutative is True, (
+            f"--force under an excepted group must re-gate to T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    # ---- Destructive verbs stay gated even within an excepted group ----
+
+    def test_gaia_brief_delete_still_mutative(self):
+        """Whole-record destruction is irreversible -- the exception does not
+        cover 'delete' (pinned also by test_gaia_brief_delete_still_blocks)."""
+        result = detect_mutative_command("gaia brief delete my-brief")
+        assert result.is_mutative is True, (
+            f"gaia brief delete is irreversible and must stay T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+        assert result.verb == "delete"

@@ -256,6 +256,45 @@ CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
 
 
 # ============================================================================
+# Command+Subcommand Tier Exceptions (anchored, not family-wide)
+# ============================================================================
+# Some project-CLI subcommand GROUPS are local-only bookkeeping: they edit a
+# row in the local planning store (briefs, acceptance criteria) and have no
+# external/remote side effects.  Any verb under such a group (edit, set-status,
+# add, remove, ...) would otherwise trip MUTATIVE_VERBS and demand T3 approval
+# from subagents, even though the operation is reversible and purely local.
+#
+# This is anchored EXPLICITLY to (base_cmd, subcommand-group) -- NOT a generic
+# `gaia *` exemption.  A family-wide exemption would also un-gate
+# `gaia approvals approve` / `gaia approvals revoke`, which must stay T3
+# because they ARE the consent layer itself.  Anchoring keeps the gate intact
+# everywhere except the two named planning groups.
+#
+# Key:   (base_cmd, subcommand)  — base_cmd is the resolved (pathless) CLI name,
+#        subcommand is non_flag_tokens[0] (the group token right after `gaia`).
+# Value: target category constant (CATEGORY_READ_ONLY or CATEGORY_SIMULATION).
+#
+# NOTE: treated exactly like git "commit" (local-only operation, trust system):
+# local planning bookkeeping, reversible, no external effects.
+COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
+    # `gaia brief <verb>` (new/edit/show/list/set-status/set-field): local
+    # planning bookkeeping in the brief store — reversible, no external effects.
+    ("gaia", "brief"): CATEGORY_READ_ONLY,
+    # `gaia ac <verb>` (add/remove/edit/show/list/set-status): local acceptance-
+    # criteria bookkeeping — reversible, no external effects.
+    ("gaia", "ac"): CATEGORY_READ_ONLY,
+}
+
+# Verbs that stay gated even under an excepted group above.  The exception
+# covers REVERSIBLE bookkeeping (edit, set-*, add, remove a single AC row);
+# whole-record DESTRUCTION (`gaia brief delete <id>`) is irreversible and must
+# keep its T3 contract — pinned by test_gaia_brief_delete_still_blocks.
+COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS: FrozenSet[str] = frozenset({
+    "delete", "destroy", "purge", "wipe", "drop", "shred", "erase",
+})
+
+
+# ============================================================================
 # Inline Code Detection — Language-Agnostic 3-Layer Approach
 # ============================================================================
 # When the base command is a runtime interpreter with an inline code flag
@@ -972,6 +1011,46 @@ def detect_mutative_command(command: str) -> MutativeResult:
                 confidence="high",
                 reason=f"Git local-only subcommand '{git_subcmd}' is safe",
             )
+
+    # --- Step 3e: Command+subcommand tier exception (anchored) ---
+    # Some project-CLI subcommand groups (e.g., `gaia brief`, `gaia ac`) are
+    # local-only planning bookkeeping: edit/set-status/add/remove only touch a
+    # row in the local store and have no external side effects.  Treated like
+    # git "commit" (local-only operation, trust system).  Anchored EXPLICITLY to
+    # (base_cmd, subcommand) so the gate stays intact for sibling groups such as
+    # `gaia approvals approve/revoke`, which are the consent layer and must stay
+    # T3.  Dangerous flags are still scanned so a slip like `--force` re-gates.
+    if semantics.non_flag_tokens:
+        subcommand_key = (base_cmd, semantics.non_flag_tokens[0])
+        group_verb = (
+            semantics.non_flag_tokens[1]
+            if len(semantics.non_flag_tokens) > 1 else ""
+        )
+        # Whole-record destruction (delete/destroy/...) stays gated even within
+        # an excepted group; only reversible bookkeeping is exempted.
+        verb_is_destructive = (
+            group_verb.split("-", 1)[0] in COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS
+            or group_verb in COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS
+        )
+        if (
+            subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
+            and not verb_is_destructive
+        ):
+            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+            if not dangerous_flags:
+                target_category = COMMAND_SUBCOMMAND_TIER_EXCEPTIONS[subcommand_key]
+                return MutativeResult(
+                    is_mutative=False,
+                    category=target_category,
+                    verb=semantics.non_flag_tokens[0],
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Local-only planning bookkeeping "
+                        f"'{base_cmd} {semantics.non_flag_tokens[0]}' "
+                        f"excepted to {target_category.lower()} by config"
+                    ),
+                )
 
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
