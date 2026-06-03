@@ -39,6 +39,8 @@ The runtime, not this skill, enforces tiers. Three modules layer the decision:
 - `tiers.py` -- the `SecurityTier` enum (`T0_READ_ONLY`, `T1_VALIDATION`, `T2_DRY_RUN`, `T3_BLOCKED`) and `_classify_command_tier_cached` assign every command a tier.
 - `blocked_commands.py` -- pattern-matches irreversible commands and permanently denies them (exit 2, never approvable).
 - `mutative_verbs.py` -- CLI-agnostic detection of mutative verbs; drives the nonce / approval flow for T3.
+- `composition_rules.py` -- `check_composition` / `classify_stage` classify pipe compositions (FILE_READ→EXEC_SINK, network→exec, decode→exec); triggers T3 on dangerous pipelines such as `file_to_exec`.
+- `flag_classifiers.py` -- `_classify_curl` / `classify_by_flags` detect flag-dependent mutations; triggers T3 on commands whose flags make them mutative (e.g., `curl -X POST`).
 
 Safe by elimination, with no allow-list: anything not blocked and not mutative is T0. Runtime is the single source of truth for nonce handling, grant scope, and approval enforcement -- this skill teaches how to think about the tier; it does not enforce it.
 

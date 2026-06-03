@@ -157,6 +157,59 @@ def _is_sensitive_path(command: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Local data-file detection (for file_to_exec false-positive reduction)
+# ---------------------------------------------------------------------------
+
+# Extensions whose content is *data*, not *program*.  A pipe that feeds one of
+# these into an exec sink (e.g. `cat config.json | python3 -c '...json.load...'`)
+# is consuming structured data on stdin, not executing file content as code --
+# so it is benign and should ALLOW rather than ESCALATE.
+_DATA_FILE_EXTENSIONS = frozenset({
+    ".json", ".yaml", ".yml", ".csv", ".txt",
+})
+
+
+def _file_read_is_local_data_file(command: str) -> bool:
+    """Return True if a FILE_READ stage reads ONLY local workspace data file(s).
+
+    A "local data file" is an argument with a data extension
+    (.json/.yaml/.yml/.csv/.txt) that is not a remote URL.  The predicate is
+    deliberately conservative: it requires at least one data-file argument and
+    rejects the stage if any non-flag argument looks like a script or a file
+    without a data extension, so scripts (`cat deploy.sh`) and extension-less
+    files still ESCALATE.
+    """
+    tokens = _tokenize_safe(command)
+    if not tokens:
+        return False
+    tokens = _strip_transparent_prefixes(tokens)
+    if not tokens:
+        return False
+
+    # Inspect the file arguments (everything after the executable that is not a flag).
+    file_args = [t for t in tokens[1:] if not t.startswith("-")]
+    if not file_args:
+        return False
+
+    saw_data_file = False
+    for arg in file_args:
+        # Reject remote sources outright -- those are not local workspace files.
+        if "://" in arg:
+            return False
+        lower = arg.lower()
+        # Strip a trailing extension and test membership.
+        dot = lower.rfind(".")
+        ext = lower[dot:] if dot != -1 else ""
+        if ext in _DATA_FILE_EXTENSIONS:
+            saw_data_file = True
+        else:
+            # Any non-data-file argument (script, extension-less file, etc.)
+            # disqualifies the benign classification -> keep ESCALATE.
+            return False
+    return saw_data_file
+
+
+# ---------------------------------------------------------------------------
 # Executable sets for stage typing
 # ---------------------------------------------------------------------------
 
@@ -529,6 +582,22 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
 
         # Rule 6 (formerly 4): File-to-exec -- file_read | exec_sink (escalate, not block)
         if src_type == StageType.FILE_READ and dst_type == StageType.EXEC_SINK:
+            # False-positive reduction: when the FILE_READ side reads only local
+            # workspace data file(s) (.json/.yaml/.yml/.csv/.txt), the exec sink
+            # is consuming structured DATA on stdin, not executing file content
+            # as a program (e.g. `cat config.json | python3 -c '...json.load...'`).
+            # That is benign -> ALLOW.  Scripts and extension-less files still
+            # ESCALATE, and network/decode/network_write -> exec still BLOCK above.
+            if _file_read_is_local_data_file(src.command):
+                return CompositionResult(
+                    decision=CompositionDecision.ALLOW,
+                    reason=(
+                        f"File-to-exec with local data file: '{src.command[:60]}' "
+                        f"feeds data to '{dst.command[:60]}' -- benign data consumption"
+                    ),
+                    matched_stages=[src_idx, dst_idx],
+                    stage_types=all_types,
+                )
             return CompositionResult(
                 decision=CompositionDecision.ESCALATE,
                 pattern="file_to_exec",

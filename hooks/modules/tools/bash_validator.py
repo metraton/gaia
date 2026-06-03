@@ -58,6 +58,7 @@ from ..security.approval_messages import (
     build_t3_approval_instructions,
     build_t3_blocked_denial_message,
 )
+from ..core.plugin_mode import is_ops_mode
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.composition_rules import (
@@ -535,7 +536,12 @@ class BashValidator:
         #   - File-to-exec: file_read      | exec_sink  (escalate)
         # Only pipe-connected stages are checked; &&/; are independent.
         # ================================================================
-        _composition_result = self._phase4_check_composition(decomposed)
+        _composition_result = self._phase4_check_composition(
+            decomposed,
+            is_subagent=is_subagent,
+            session_id=session_id,
+            agent_type=agent_type,
+        )
         if _composition_result is not None:
             return _composition_result
 
@@ -705,89 +711,26 @@ class BashValidator:
                         reason="Grant active, pending confirmation",
                     )
             else:
-                if is_subagent:
-                    # Subagent context: check DB for an existing pending
-                    # approval first (retry scenario). If found, reuse
-                    # the same approval_id to prevent infinite generation
-                    # loops while the user reviews.
-                    approval_id = _find_pending_in_db(session_id or "", command)
-                    if approval_id:
-                        logger.info(
-                            "Reusing pending approval_id=%s for retry: %s",
-                            approval_id, command[:80],
-                        )
-                        reason = build_t3_blocked_denial_message(
-                            approval_id=approval_id,
-                            command=command,
-                            verb=result.verb,
-                            category=result.category,
-                        )
-                        hook_deny = build_hook_permission_response("deny", reason)
-                        return BashValidationResult(
-                            allowed=False,
-                            tier=SecurityTier.T3_BLOCKED,
-                            reason=f"T3 {result.category.lower()} command: {result.reason}",
-                            block_response=hook_deny,
-                        )
-                    # No existing pending -- insert via DB (D16: exclusive path).
-                    sealed_payload = _build_sealed_payload(
-                        command=command,
-                        verb=result.verb,
-                        category=result.category,
-                        agent_type=agent_type,
-                    )
-                    try:
-                        from gaia.approvals.store import insert_requested
-                        approval_id = insert_requested(
-                            sealed_payload,
-                            agent_id=agent_type or None,
-                            session_id=session_id or None,
-                        )
-                    except Exception as _store_err:
-                        # Persistence failure — fall back to ask
-                        logger.warning(
-                            "DB insert_requested failed for subagent; "
-                            "falling back to ask: %s -- %s",
-                            command[:80], _store_err,
-                        )
-                        reason = build_pending_approval_unavailable_message()
-                        hook_ask = build_hook_permission_response("ask", reason)
-                        return BashValidationResult(
-                            allowed=False,
-                            tier=SecurityTier.T3_BLOCKED,
-                            reason="Pending approval persistence failed",
-                            block_response=hook_ask,
-                        )
-                    reason = build_t3_blocked_denial_message(
-                        approval_id=approval_id,
-                        command=command,
-                        verb=result.verb,
-                        category=result.category,
-                    )
-                    hook_deny = build_hook_permission_response("deny", reason)
-                    return BashValidationResult(
-                        allowed=False,
-                        tier=SecurityTier.T3_BLOCKED,
-                        reason=f"T3 {result.category.lower()} command: {result.reason}",
-                        block_response=hook_deny,
-                    )
-                else:
-                    # Orchestrator context: route through native 'ask' dialog.
-                    # The user sees the native permission prompt and approves
-                    # directly. No approval_id is generated.
-                    reason = (
-                        f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
-                        f"Command: {command}\n"
-                        f"Verb: '{result.verb}' ({result.category})\n"
-                        f"Reason: {result.reason}"
-                    )
-                    hook_ask = build_hook_permission_response("ask", reason)
-                    return BashValidationResult(
-                        allowed=False,
-                        tier=SecurityTier.T3_BLOCKED,
-                        reason=f"Dangerous {result.category.lower()} command: {result.reason}",
-                        block_response=hook_ask,
-                    )
+                # Converge on the single T3 decision point.  When there is an
+                # orchestrator above (subagent context), it denies with a
+                # persisted approval_id; otherwise it falls back to native ask.
+                # The ops-vs-security mode gate is enforced downstream by the
+                # Claude Code adapter.
+                native_ask_reason = (
+                    f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
+                    f"Command: {command}\n"
+                    f"Verb: '{result.verb}' ({result.category})\n"
+                    f"Reason: {result.reason}"
+                )
+                return decide_t3_outcome(
+                    command,
+                    verb=result.verb,
+                    category=result.category,
+                    has_orchestrator_above=is_subagent and is_ops_mode(),
+                    native_ask_reason=native_ask_reason,
+                    session_id=session_id,
+                    agent_type=agent_type,
+                )
 
         # Check GitOps policy for kubectl/helm/flux commands
         if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
@@ -824,18 +767,24 @@ class BashValidator:
                 if flag_result.command_family.startswith("git_"):
                     pass  # Fall through to safe-by-elimination
                 else:
-                    reason = (
+                    # Converge on the single T3 decision point so a flag-
+                    # dependent mutation in a subagent routes to deny+approval_id
+                    # (Gaia approval flow) instead of escaping to the native
+                    # ask dialog.  Orchestrator context still falls back to ask.
+                    native_ask_reason = (
                         f"[T3_APPROVAL_REQUIRED] Flag-dependent mutation detected.\n"
                         f"Command: {command}\n"
                         f"Flag: {flag_result.matched_pattern} ({flag_result.command_family})\n"
                         f"Reason: {flag_result.reason}"
                     )
-                    hook_ask = build_hook_permission_response("ask", reason)
-                    return BashValidationResult(
-                        allowed=False,
-                        tier=SecurityTier.T3_BLOCKED,
-                        reason=f"Mutative flag detected: {flag_result.reason}",
-                        block_response=hook_ask,
+                    return decide_t3_outcome(
+                        command,
+                        verb=flag_result.matched_pattern or flag_result.command_family,
+                        category="MUTATIVE",
+                        has_orchestrator_above=is_subagent and is_ops_mode(),
+                        native_ask_reason=native_ask_reason,
+                        session_id=session_id,
+                        agent_type=agent_type,
                     )
 
         # Not blocked, not mutative -> SAFE by elimination
@@ -891,7 +840,11 @@ class BashValidator:
         )
 
     def _phase4_check_composition(
-        self, decomposed: DecomposedCommand,
+        self,
+        decomposed: DecomposedCommand,
+        is_subagent: bool = False,
+        session_id: str = "",
+        agent_type: str = "",
     ) -> Optional[BashValidationResult]:
         """Check cross-stage composition patterns (Phase 4).
 
@@ -927,17 +880,23 @@ class BashValidator:
             )
 
         if result.decision == CompositionDecision.ESCALATE:
-            reason = (
+            # Converge on the single T3 decision point.  A file_to_exec
+            # composition in a subagent must route to deny+approval_id (Gaia
+            # approval flow) rather than escaping to the native ask dialog;
+            # orchestrator context still falls back to ask.
+            native_ask_reason = (
                 f"[T3_APPROVAL_REQUIRED] Potentially dangerous pipe composition.\n"
                 f"Pattern: {result.pattern}\n"
                 f"Reason: {result.reason}"
             )
-            hook_ask = build_hook_permission_response("ask", reason)
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=f"Pipe composition requires approval: {result.reason}",
-                block_response=hook_ask,
+            return decide_t3_outcome(
+                decomposed.raw,
+                verb=result.pattern,
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent and is_ops_mode(),
+                native_ask_reason=native_ask_reason,
+                session_id=session_id,
+                agent_type=agent_type,
             )
 
         # No composition rule fired — continue to Phase 5.
@@ -1151,6 +1110,128 @@ def _build_sealed_payload(
         ),
         "commands": [command],
     }
+
+
+def decide_t3_outcome(
+    command: str,
+    verb: str,
+    category: str,
+    *,
+    has_orchestrator_above: bool,
+    native_ask_reason: str,
+    session_id: str = "",
+    agent_type: str = "",
+) -> BashValidationResult:
+    """Single decision point for the outcome of a T3 (state-mutating) command.
+
+    Every T3 classifier -- mutative verbs, pipe composition (file_to_exec), and
+    flag-dependent mutations -- converges here so the deny-vs-ask policy is
+    expressed in ONE place instead of being re-decided (and diverging) per
+    classifier.
+
+    Routing dimension: ``has_orchestrator_above`` -- True when there is an
+    orchestrator above this turn that owns the Gaia approval flow (a subagent
+    running under the orchestrator).  In that case the command is DENIED with a
+    persisted ``approval_id`` so the orchestrator can drive the approval cycle.
+
+    When there is no orchestrator above (the orchestrator itself, which cannot
+    hand off a T3 approval to itself), the command falls back to the native
+    Claude Code ``ask`` dialog -- a deliberate, correct defensive fallback.
+
+    The ops-vs-security mode gate is enforced DOWNSTREAM in the Claude Code
+    adapter (``_is_protected`` / the ``is_ops_mode()`` check): in security mode
+    the adapter downgrades any T3 ``deny`` to a native ``ask``; in ops mode it
+    passes this ``block_response`` through verbatim.  So this function only
+    decides deny-with-approval-id vs native-ask; it does not consult the mode.
+
+    Args:
+        command: Full Bash command being classified.
+        verb: Detected mutative verb (or a classifier-specific label).
+        category: Verb category ("MUTATIVE", "DESTRUCTIVE", ...).
+        has_orchestrator_above: True when a subagent runs under the orchestrator.
+        native_ask_reason: Reason text for the native-ask fallback branch.
+        session_id: Session ID for pending-approval scoping.
+        agent_type: Originating agent name (for the sealed payload).
+
+    Returns:
+        A blocked BashValidationResult (allowed=False, tier T3) whose
+        block_response is either a "deny" (with approval_id) or an "ask".
+    """
+    if has_orchestrator_above:
+        # Subagent-under-orchestrator: deny + persisted approval_id so the
+        # orchestrator can run the approval cycle.  Reuse an existing pending
+        # approval on retry to avoid generating duplicates while the user reviews.
+        approval_id = _find_pending_in_db(session_id or "", command)
+        if approval_id:
+            logger.info(
+                "Reusing pending approval_id=%s for retry: %s",
+                approval_id, command[:80],
+            )
+            reason = build_t3_blocked_denial_message(
+                approval_id=approval_id,
+                command=command,
+                verb=verb,
+                category=category,
+            )
+            hook_deny = build_hook_permission_response("deny", reason)
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=f"T3 {category.lower()} command: {command[:60]}",
+                block_response=hook_deny,
+            )
+
+        # No existing pending -- insert via DB (D16: exclusive path).
+        sealed_payload = _build_sealed_payload(
+            command=command,
+            verb=verb,
+            category=category,
+            agent_type=agent_type,
+        )
+        try:
+            from gaia.approvals.store import insert_requested
+            approval_id = insert_requested(
+                sealed_payload,
+                agent_id=agent_type or None,
+                session_id=session_id or None,
+            )
+        except Exception as _store_err:
+            logger.warning(
+                "DB insert_requested failed for subagent; "
+                "falling back to ask: %s -- %s",
+                command[:80], _store_err,
+            )
+            reason = build_pending_approval_unavailable_message()
+            hook_ask = build_hook_permission_response("ask", reason)
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason="Pending approval persistence failed",
+                block_response=hook_ask,
+            )
+        reason = build_t3_blocked_denial_message(
+            approval_id=approval_id,
+            command=command,
+            verb=verb,
+            category=category,
+        )
+        hook_deny = build_hook_permission_response("deny", reason)
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=f"T3 {category.lower()} command: {command[:60]}",
+            block_response=hook_deny,
+        )
+
+    # No orchestrator above (orchestrator itself, or security context): the
+    # native Claude Code 'ask' dialog handles approval.  No approval_id.
+    hook_ask = build_hook_permission_response("ask", native_ask_reason)
+    return BashValidationResult(
+        allowed=False,
+        tier=SecurityTier.T3_BLOCKED,
+        reason=f"Dangerous {category.lower()} command requires approval: {command[:60]}",
+        block_response=hook_ask,
+    )
 
 
 def validate_bash_command(

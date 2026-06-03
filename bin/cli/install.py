@@ -264,8 +264,8 @@ _create_path_symlink = _install_path_launcher
 def _detect_plugin_mode() -> str:
     """Return 'ops', 'security', or 'unknown'. Never raises."""
     try:
-        from hooks.modules.core.plugin_mode import detect_mode  # type: ignore
-        return detect_mode() or "unknown"
+        from hooks.modules.core.plugin_mode import get_plugin_mode  # type: ignore
+        return get_plugin_mode() or "unknown"
     except Exception:
         return os.environ.get("GAIA_PLUGIN_MODE", "unknown")
 
