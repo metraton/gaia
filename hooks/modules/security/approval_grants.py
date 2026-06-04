@@ -87,10 +87,37 @@ from .approval_scopes import (
 
 logger = logging.getLogger(__name__)
 
-# Default grant TTL in minutes
-DEFAULT_GRANT_TTL_MINUTES = 5
 
-# Default pending TTL in minutes (24 hours)
+def _grant_ttl_minutes() -> int:
+    """Resolve the active-grant TTL default from gaia.store.writer.
+
+    The single source of truth for the GRANT lifetime is
+    gaia.store.writer.APPROVAL_GRANT_TTL_MINUTES (Brief 71, Change 3a) -- the
+    dependency leaf both the DB grant plane and this filesystem plane import
+    without a circular import (writer never imports this module back). We resolve
+    it lazily here, mirroring every other gaia.store import in this file, because
+    the hooks package can be imported before the `gaia` package is on sys.path;
+    a module-level import would crash hook load in that window. The 60-minute
+    fallback equals the canonical value, so the two never disagree even if the
+    lazy import is briefly unavailable.
+    """
+    try:
+        from gaia.store.writer import APPROVAL_GRANT_TTL_MINUTES as _ttl
+        return _ttl
+    except Exception:
+        return 60
+
+
+# Default GRANT TTL in minutes -- the active-grant retry window. Moved 5 -> 60
+# (Change 3a) so a cross-session human-in-the-loop approval does not expire
+# before it is consumed; sourced from APPROVAL_GRANT_TTL_MINUTES in writer.
+DEFAULT_GRANT_TTL_MINUTES = _grant_ttl_minutes()
+
+# Default PENDING TTL in minutes (24 hours). DELIBERATELY distinct from the grant
+# TTL: this is how long an UNANSWERED approval waits for the user, so the human
+# can return the next day. It is NOT unified with DEFAULT_GRANT_TTL_MINUTES --
+# conflating the approval-wait window with the post-approval grant window would
+# be a regression. See tests/hooks/test_pending_scanner_cleanup.py::TestTTLConstants.
 DEFAULT_PENDING_TTL_MINUTES = 1440
 
 # Cleanup throttle: only run cleanup if 60+ seconds since last run
@@ -990,48 +1017,29 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
     # If the DB shows the grant was consumed (e.g. by bash_validator in a
     # prior call), the filesystem grant must NOT be returned -- it is a
     # stale copy that would bypass replay protection.
+    #
+    # This guard now delegates to the consolidated, session-agnostic
+    # _consumed_grant_exists() in gaia.store.writer (Brief 71, Change 4). The
+    # previous inline copy here was session-locked (`AND session_id=?`), which
+    # reintroduced the cross-session bug: a grant CONSUMED under one session went
+    # unseen by a retry in another, letting a stale filesystem copy bypass replay
+    # protection. The single helper is queried session-agnostic, so a consumed
+    # command stays consumed across every session.
     # ------------------------------------------------------------------ #
 
     # Check DB for a CONSUMED grant matching this command (replay guard).
     try:
-        from gaia.store.writer import check_db_semantic_grant as _chk_consumed
         import gaia.store.writer as _sw
-        # We need to check consumed grants, not just pending ones.
-        # Query approval_grants directly for a CONSUMED row matching signature.
-        from datetime import datetime, timezone as _tz
-        _now_iso_val = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _con = _sw._connect()
         try:
-            from ..security.approval_scopes import (
-                ApprovalSignature as _AS,
-                matches_approval_signature as _match,
-            )
-            _con = _sw._connect()
-            try:
-                _rows = _con.execute(
-                    "SELECT command_set_json FROM approval_grants "
-                    "WHERE scope='SCOPE_SEMANTIC_SIGNATURE' AND status='CONSUMED' "
-                    "AND session_id=? ORDER BY created_at DESC LIMIT 50",
-                    (session_id,),
-                ).fetchall()
-                for _r in _rows:
-                    try:
-                        _gd = json.loads(_r[0] or "{}")
-                        _sd = _gd.get("scope_signature")
-                        if not _sd:
-                            continue
-                        _sig = _AS.from_dict(_sd)
-                        if _match(_sig, command):
-                            logger.info(
-                                "Filesystem fallback suppressed: DB shows grant already "
-                                "CONSUMED for command='%s'", command[:80],
-                            )
-                            return None
-                    except Exception:
-                        continue
-            finally:
-                _con.close()
-        except Exception:
-            pass
+            if _sw._consumed_grant_exists(command, _con):
+                logger.info(
+                    "Filesystem fallback suppressed: DB shows grant already "
+                    "CONSUMED for command='%s'", command[:80],
+                )
+                return None
+        finally:
+            _con.close()
     except Exception:
         pass
 

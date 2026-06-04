@@ -243,28 +243,51 @@ class TestT3InterceptInsertsRequestedWithChain:
         assert fp1 == fp2
 
     def test_genesis_approval_id_has_p_prefix(self):
-        """insert_requested() always returns a P-prefixed approval_id."""
+        """insert_requested() returns a P-prefixed id and is fingerprint-idempotent.
+
+        Brief 71, Change 2b: an identical sealed_payload while a pending approval
+        already exists must REUSE that approval id (fingerprint idempotency), so a
+        cross-session retry of the same blocked command does not mint a fresh P-
+        on every pass. A genuinely different payload still mints a new id.
+        """
         con = _make_v12_db()
         payload = {"operation": "test", "commands": ["echo hi"]}
         approval_id = insert_requested(
             payload, agent_id="a1", session_id="s1", con=con
         )
         assert approval_id.startswith("P-")
-        # Each call generates a unique id.
-        approval_id2 = insert_requested(
+
+        # Same payload again -> SAME id (idempotent), no fresh mint.
+        approval_id_same = insert_requested(
             payload, agent_id="a1", session_id="s1", con=con
         )
-        assert approval_id != approval_id2
+        assert approval_id_same == approval_id
+
+        # A different payload -> a new id.
+        other_payload = {"operation": "test", "commands": ["echo bye"]}
+        approval_id_other = insert_requested(
+            other_payload, agent_id="a1", session_id="s1", con=con
+        )
+        assert approval_id_other.startswith("P-")
+        assert approval_id_other != approval_id
 
     def test_cross_session_pending_visibility(self):
-        """get_pending(all_sessions=True) returns approvals from different sessions."""
+        """get_pending(all_sessions=True) returns approvals from different sessions.
+
+        Each session creates a DISTINCT approval (distinct payloads) -- with
+        fingerprint idempotency (Change 2b), two IDENTICAL payloads would instead
+        collapse to one id, so distinct payloads are required to exercise the
+        cross-session visibility mechanic.
+        """
         con = _make_v12_db()
-        payload = {"operation": "op", "commands": ["rm /tmp/x"]}
+        payload_a = {"operation": "op", "commands": ["rm /tmp/a"]}
+        payload_b = {"operation": "op", "commands": ["rm /tmp/b"]}
 
         # Session A creates an approval.
-        id_a = insert_requested(payload, agent_id="ag", session_id="session-A", con=con)
-        # Session B creates another approval.
-        id_b = insert_requested(payload, agent_id="ag", session_id="session-B", con=con)
+        id_a = insert_requested(payload_a, agent_id="ag", session_id="session-A", con=con)
+        # Session B creates another (distinct) approval.
+        id_b = insert_requested(payload_b, agent_id="ag", session_id="session-B", con=con)
+        assert id_a != id_b
 
         # Single-session view: each session only sees its own.
         pending_a = get_pending(session_id="session-A", all_sessions=False, con=con)

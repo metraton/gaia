@@ -767,10 +767,103 @@ class BashValidator:
                 if flag_result.command_family.startswith("git_"):
                     pass  # Fall through to safe-by-elimination
                 else:
-                    # Converge on the single T3 decision point so a flag-
-                    # dependent mutation in a subagent routes to deny+approval_id
-                    # (Gaia approval flow) instead of escaping to the native
-                    # ask dialog.  Orchestrator context still falls back to ask.
+                    # Check for an approved grant BEFORE deciding T3 -- mirroring
+                    # the mutative-verb branch above.  A flag-classified command
+                    # (e.g. `curl -X POST`) is just as T3 as a mutative verb, so
+                    # it must consult the same approval grant the block-approve-
+                    # retry flow minted; otherwise an approved+activated grant is
+                    # never honoured and the command re-blocks unconditionally on
+                    # every retry (the flag path never reaches the matcher).  The
+                    # consume + return semantics replicate the verb branch exactly.
+                    cs_match = match_command_set_grant(command, session_id=session_id)
+                    if cs_match is not None:
+                        cs_approval_id, cs_index = cs_match
+                        try:
+                            from gaia.store.writer import mark_command_set_item_consumed
+                            mark_command_set_item_consumed(cs_approval_id, cs_index)
+                        except Exception as _cs_err:
+                            logger.warning(
+                                "command_set item consumption failed (non-fatal): %s",
+                                _cs_err,
+                            )
+                        logger.info(
+                            "T3 flag-path command allowed via command_set grant: %s "
+                            "(approval_id=%s, index=%d)",
+                            command[:80], cs_approval_id[:12], cs_index,
+                        )
+                        return BashValidationResult(
+                            allowed=True,
+                            tier=SecurityTier.T3_BLOCKED,
+                            reason="Command-set grant matched",
+                        )
+
+                    grant = check_approval_grant(command, session_id=session_id)
+                    if grant is not None:
+                        # Consume the DB semantic grant immediately (replay
+                        # protection) -- identical to the verb branch.
+                        db_approval_id = getattr(grant, "_db_approval_id", None)
+                        if db_approval_id:
+                            try:
+                                from gaia.store.writer import consume_db_semantic_grant
+                                consumed = consume_db_semantic_grant(db_approval_id)
+                                if consumed:
+                                    logger.info(
+                                        "DB semantic grant consumed (replay "
+                                        "protection): approval_id=%s, command='%s'",
+                                        db_approval_id[:16], command[:80],
+                                    )
+                                else:
+                                    logger.warning(
+                                        "DB semantic grant consume returned False "
+                                        "(may already be consumed): approval_id=%s",
+                                        db_approval_id[:16],
+                                    )
+                            except Exception as _cg_err:
+                                logger.warning(
+                                    "DB semantic grant consume failed (non-fatal): %s",
+                                    _cg_err,
+                                )
+                            # Also mark the companion filesystem grant as used so
+                            # the filesystem fallback path cannot replay it.
+                            try:
+                                from ..security.approval_grants import (
+                                    consume_grant as _consume_fs_grant,
+                                )
+                                _consume_fs_grant(command, session_id=session_id)
+                            except Exception as _fs_cg_err:
+                                logger.debug(
+                                    "Filesystem grant consume (companion cleanup) "
+                                    "failed (non-fatal): %s", _fs_cg_err
+                                )
+
+                        if grant.confirmed:
+                            logger.info(
+                                "T3 flag-path command allowed via confirmed grant: "
+                                "%s (scope='%s')",
+                                command[:80], grant.approved_scope,
+                            )
+                            return BashValidationResult(
+                                allowed=True,
+                                tier=SecurityTier.T3_BLOCKED,
+                                reason="Grant confirmed",
+                            )
+                        else:
+                            logger.info(
+                                "T3 flag-path command passthrough via active grant: "
+                                "%s (scope='%s')",
+                                command[:80], grant.approved_scope,
+                            )
+                            return BashValidationResult(
+                                allowed=True,
+                                tier=SecurityTier.T3_BLOCKED,
+                                reason="Grant active, pending confirmation",
+                            )
+
+                    # No grant matched -- converge on the single T3 decision
+                    # point so a flag-dependent mutation in a subagent routes to
+                    # deny+approval_id (Gaia approval flow) instead of escaping to
+                    # the native ask dialog.  Orchestrator context still falls
+                    # back to ask.
                     native_ask_reason = (
                         f"[T3_APPROVAL_REQUIRED] Flag-dependent mutation detected.\n"
                         f"Command: {command}\n"
@@ -1051,6 +1144,8 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
 
     Args:
         session_id: Current session identifier (empty string if unknown).
+            Retained for signature compatibility; NOT used to scope the query
+            (see cross-session note below).
         command: The Bash command that was blocked.
 
     Returns:
@@ -1059,7 +1154,15 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
     try:
         from gaia.approvals.store import get_pending
         import json as _json
-        rows = get_pending(session_id=session_id or None, all_sessions=False)
+        # Dedup MUST be cross-session (all_sessions=True). A T3 command can be
+        # blocked under the subagent session and a pending row minted there;
+        # if this lookup were scoped to the current session it would miss that
+        # row on any cross-session retry, and insert_requested() would mint a
+        # fresh P- on every miss -- a new approval conjured "from thin air" each
+        # time. Matching on exact_content below keeps the reuse pinned to THIS
+        # command's pending, so widening the session scope does not collapse
+        # distinct commands together.
+        rows = get_pending(all_sessions=True)
         for row in rows:
             payload_str = row.get("payload_json")
             if not payload_str:

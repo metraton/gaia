@@ -651,12 +651,16 @@ class TestConsumeGrant:
 
 
 class TestDefaultTTL:
-    """Test 10: DEFAULT_GRANT_TTL_MINUTES is 5."""
+    """Test 10: DEFAULT_GRANT_TTL_MINUTES is 60 (Brief 71, Change 3a).
 
-    def test_default_ttl_is_five_minutes(self):
-        """DEFAULT_GRANT_TTL_MINUTES should be 5."""
-        assert DEFAULT_GRANT_TTL_MINUTES == 5, (
-            f"Expected TTL=5, got {DEFAULT_GRANT_TTL_MINUTES}"
+    The active-grant retry window moved 5 -> 60 so a cross-session
+    human-in-the-loop approval does not expire before it is consumed.
+    """
+
+    def test_default_ttl_is_sixty_minutes(self):
+        """DEFAULT_GRANT_TTL_MINUTES should be 60."""
+        assert DEFAULT_GRANT_TTL_MINUTES == 60, (
+            f"Expected grant TTL=60 (Change 3a), got {DEFAULT_GRANT_TTL_MINUTES}"
         )
 
 

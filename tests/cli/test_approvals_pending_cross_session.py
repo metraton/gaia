@@ -111,6 +111,31 @@ _SAMPLE_PAYLOAD = {
     "commands": ["git branch -D feature/stale"],
 }
 
+# A DISTINCT payload for the second session in cross-session visibility tests.
+# With fingerprint idempotency (Brief 71, Change 2b) two IDENTICAL payloads
+# collapse to ONE approval id regardless of session, so exercising the
+# cross-session visibility mechanic requires distinct payloads (distinct
+# fingerprints) -> distinct approval ids.
+_SAMPLE_PAYLOAD_B = {
+    "operation": "Delete other stale branch",
+    "exact_content": "git branch -D feature/other-stale",
+    "scope": "feature/other-stale",
+    "risk_level": "medium",
+    "rollback_hint": "git branch feature/other-stale <sha>",
+    "rationale": "Branch is merged and stale",
+    "commands": ["git branch -D feature/other-stale"],
+}
+
+_SAMPLE_PAYLOAD_C = {
+    "operation": "Delete third stale branch",
+    "exact_content": "git branch -D feature/third-stale",
+    "scope": "feature/third-stale",
+    "risk_level": "medium",
+    "rollback_hint": "git branch feature/third-stale <sha>",
+    "rationale": "Branch is merged and stale",
+    "commands": ["git branch -D feature/third-stale"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Cross-session visibility
@@ -127,8 +152,9 @@ class TestCrossSessionVisibility:
             _SAMPLE_PAYLOAD, agent_id="agent-1", session_id="session-A", con=con
         )
         id_b = insert_requested(
-            _SAMPLE_PAYLOAD, agent_id="agent-2", session_id="session-B", con=con
+            _SAMPLE_PAYLOAD_B, agent_id="agent-2", session_id="session-B", con=con
         )
+        assert id_a != id_b
 
         # Cross-session view returns both.
         all_pending = list_pending(all_sessions=True, con=con)
@@ -144,8 +170,9 @@ class TestCrossSessionVisibility:
             _SAMPLE_PAYLOAD, agent_id="agent-1", session_id="session-A", con=con
         )
         id_b = insert_requested(
-            _SAMPLE_PAYLOAD, agent_id="agent-2", session_id="session-B", con=con
+            _SAMPLE_PAYLOAD_B, agent_id="agent-2", session_id="session-B", con=con
         )
+        assert id_a != id_b
 
         # Session-A scoped view: only id_a.
         pending_a = list_pending(all_sessions=False, session_id="session-A", con=con)
@@ -399,14 +426,16 @@ class TestOrderingAndMultiplePending:
         """list_pending(all_sessions=True) returns rows oldest-first."""
         con = _make_v12_db()
 
+        # Distinct payloads -> distinct approvals (fingerprint idempotency would
+        # collapse identical payloads to one id; see Brief 71, Change 2b).
         id_first = insert_requested(
             _SAMPLE_PAYLOAD, agent_id="ag", session_id="s1", con=con
         )
         id_second = insert_requested(
-            _SAMPLE_PAYLOAD, agent_id="ag", session_id="s2", con=con
+            _SAMPLE_PAYLOAD_B, agent_id="ag", session_id="s2", con=con
         )
         id_third = insert_requested(
-            _SAMPLE_PAYLOAD, agent_id="ag", session_id="s3", con=con
+            _SAMPLE_PAYLOAD_C, agent_id="ag", session_id="s3", con=con
         )
 
         rows = list_pending(all_sessions=True, con=con)
@@ -420,11 +449,13 @@ class TestOrderingAndMultiplePending:
         """Approving one pending approval does not remove others from list_pending."""
         con = _make_v12_db()
 
+        # Distinct payloads -> distinct approvals (idempotency would otherwise
+        # collapse identical payloads to one id; see Brief 71, Change 2b).
         id_a = insert_requested(
             _SAMPLE_PAYLOAD, agent_id="ag", session_id="s1", con=con
         )
         id_b = insert_requested(
-            _SAMPLE_PAYLOAD, agent_id="ag", session_id="s2", con=con
+            _SAMPLE_PAYLOAD_B, agent_id="ag", session_id="s2", con=con
         )
 
         approve(id_a, approver_session="s-approver", con=con)
