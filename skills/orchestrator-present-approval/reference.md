@@ -218,7 +218,7 @@ harmless. The matcher sees a different statement and re-blocks.
 
 | Approved | What the orchestrator typed | Why it missed |
 |---|---|---|
-| `gaia brief set-status X closed` | `gaia brief set-status X closed 2>&1` | Trailing redirect added a token |
+| `gaia brief set-status X closed` | `gaia brief set-status X closed 2>&1` | No longer misses -- shell redirects (`2>&1`, `> file`, `2> file`) are normalized OUT of the signature, so a bare redirect reuses the grant. Pipes, `cd` prefixes, wrappers, and added flags still miss. |
 | `rm /path/to/file` | `cd /path && rm to/file` | `cd && ` prefix turned one statement into a chain |
 | `terraform apply` | `bash -c "terraform apply"` | Wrapper turned the verb from `terraform` to `bash` |
 | `git push origin main` | `git push origin main --verbose` | Flag added that was not in the approved scope |

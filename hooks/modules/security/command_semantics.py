@@ -11,6 +11,7 @@ Key properties:
 """
 
 import functools
+import re
 import shlex
 from dataclasses import dataclass
 from typing import Iterable, Tuple
@@ -43,15 +44,69 @@ class CommandSemantics:
 
 
 def tokenize_command(command: str) -> Tuple[str, ...]:
-    """Tokenize a shell command safely, preserving quoted substrings."""
+    """Tokenize a shell command safely, preserving quoted substrings.
+
+    Shell redirect tokens (``2>&1``, ``>foo``, ``2>foo``, ``>> log``, ...) are
+    stripped here so they never bind into downstream semantic analysis or the
+    approval signature.  A redirect is a side-effect on the command's I/O, not
+    part of its identity: ``git push`` and ``git push 2>&1`` are the SAME
+    operation and MUST produce the same signature, so a grant minted for one
+    matches the other (double-approval fix, A).  Pipes (``|``), chaining
+    (``&&``, ``;``), and command substitution (``$(...)``) are NOT redirects --
+    they change the command's identity and are deliberately left intact so a
+    decorated form re-triggers T3.
+    """
     if not command or not command.strip():
         return ()
     try:
-        return tuple(shlex.split(command.strip()))
+        raw = list(shlex.split(command.strip()))
     except ValueError:
         # Fall back to a simple split for malformed quoting. This keeps the
         # security layer best-effort instead of crashing on parse errors.
-        return tuple(command.strip().split())
+        raw = command.strip().split()
+    return strip_redirect_tokens(raw)
+
+
+# An OUTPUT redirect operator token carrying an attached target or fd-duplication:
+#   2>&1  1>&2  >&  >foo  2>foo  >>append  2>>append  &>out  &>>out
+# Leading group: optional fd digits or '&'; operator: >>|>&|>; optional attached
+# target (an fd like &1, or a filename that is not itself an operator).
+# INPUT redirects (`<`, `<&`, `<<`) are deliberately NOT matched: they feed data
+# INTO the command (e.g. `sqlite3 db < migration.sql`), which materially changes
+# what the command does -- that is identity, not a side-effect, so it must bind.
+_REDIRECT_ATTACHED_RE = re.compile(r"^(?:\d+|&)?(?:>>|>&|>)(?:&\d+|[^|;&<>(){}].*)?$")
+# A bare OUTPUT redirect operator with no attached target -- consumes the NEXT
+# token as its target:  >  2>  >>  2>>  &>
+_REDIRECT_BARE_OP_RE = re.compile(r"^(?:\d+|&)?(?:>>|>&|>)$")
+
+
+def strip_redirect_tokens(tokens: Iterable[str]) -> Tuple[str, ...]:
+    """Drop shell OUTPUT redirect tokens (and their detached targets) from a list.
+
+    Handles three shapes of OUTPUT redirection:
+      - fd-duplication:        ``2>&1``, ``1>&2``, ``>&``  (single token)
+      - attached target:       ``>foo``, ``2>foo``, ``>>log``, ``&>out``
+      - detached operator+arg: ``>`` ``foo``  /  ``2>`` ``foo`` (two tokens)
+
+    INPUT redirects (``<``, ``<&``), pipes, ``&&``, ``;``, and ``$(...)`` are
+    intentionally preserved -- only OUTPUT redirections are removed, because only
+    they are pure side-effects that do not change which operation the command
+    performs. An input redirect feeds data into the command and is part of its
+    identity (e.g. the migration file in ``sqlite3 db < file.sql``).
+    """
+    out: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if _REDIRECT_BARE_OP_RE.match(token):
+            skip_next = True  # the following token is the redirect target
+            continue
+        if _REDIRECT_ATTACHED_RE.match(token):
+            continue
+        out.append(token)
+    return tuple(out)
 
 
 @functools.lru_cache(maxsize=128)

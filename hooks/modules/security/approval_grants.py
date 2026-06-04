@@ -32,32 +32,43 @@ Security properties:
 - A nonce can only be activated ONCE (pending file deleted on activation)
 
 =============================================================================
-Grant lifetime and the "same intent, new approval_id" pattern
+Grant lifetime (DB-backed model -- Brief 71 cutover)
 =============================================================================
-Operators frequently observe that two attempts of "the same command" produce
-two different approval_id values.  This is **by design**, not a bug:
+The authoritative grant plane is the DB (``approval_grants`` in gaia.db), not
+the filesystem files this module also maintains for the legacy fallback path.
+The current model is:
 
-1.  A single-use SCOPE_SEMANTIC_SIGNATURE grant is bound to one sub-agent
-    invocation. It is created (confirmed=True) when the user approves a
-    pending file, matched once by check_approval_grant() during the
-    sub-agent's lifetime, marked ``used=True`` by consume_session_grants()
-    at SubagentStop, and never re-issued.
+1.  A SCOPE_SEMANTIC_SIGNATURE grant is created when the user approves a
+    pending approval via AskUserQuestion. It carries a semantic signature
+    (base command + semantic tokens + normalized flags), is **session-agnostic**
+    (see check_db_semantic_grant in gaia.store.writer), and lives for
+    ``APPROVAL_GRANT_TTL_MINUTES`` (60 minutes, the value reflected by
+    DEFAULT_GRANT_TTL_MINUTES above).
 
-2.  A SendMessage resume of an agent that already returned (e.g. because it
-    emitted APPROVAL_REQUEST and ended its turn) is effectively a fresh
-    sub-agent invocation: the previous SubagentStop already consumed any
-    confirmed grants from that session. The retried command must therefore
-    produce a fresh approval_id -- there is nothing left to reuse.
+2.  The grant is **consumed on the matching retry**, NOT at SubagentStop and
+    NOT when a sub-agent ends. The first time a command whose signature matches
+    the grant runs, bash_validator marks the DB row CONSUMED
+    (consume_db_semantic_grant) for replay protection. Because the grant is
+    session-agnostic, the consuming retry may run under a different session than
+    the one that was blocked -- the block-approve-retry flow legitimately spans
+    sessions (block under the subagent session, approve under the orchestrator
+    session, retry under the subagent session).
 
-3.  Each fresh approval_id provides a fresh audit trail entry tying one
-    consent action to one execution. Persisting grants across sub-agent
-    boundaries would weaken that link: a stolen / leaked grant could be
-    reused beyond the intent the user actually approved.
+3.  The semantic signature normalizes shell redirects out (``2>&1``, ``> file``)
+    so a retry that only appends a redirect REUSES the existing grant rather
+    than minting a new approval_id (the double-approval fix). Identity-bearing
+    tokens -- including the ``-C <path>`` working directory -- still bind, so a
+    genuinely different operation does NOT match the same grant.
 
 Operators who want one consent to cover a batch of related commands should
 use the COMMAND_SET grant mechanism (see ``create_command_set_grant()``).
 Each command in the set is approved explicitly by the user and consumed
 individually.  The legacy verb_family path has been removed.
+
+NOTE: the filesystem helpers below (write_pending_approval, the
+grant-{session}-*.json scanners, consume_session_grants) are the DEPRECATED
+fallback plane retained for grants created before the DB cutover. The active
+flow runs through the DB plane in gaia.store.writer.
 """
 
 import json
