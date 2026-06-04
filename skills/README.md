@@ -72,6 +72,8 @@ skills/
 ├── gmail-triage/          # Interactive Gmail inbox triage
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
 ├── investigation/         # Diagnosis methodology and pattern analysis
+├── jira-ticket-writing/   # Formula for human-readable Jira Stories and Subtasks (technique, user-invocable)
+│   └── examples.md
 ├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
 ├── orchestrator-approval/ # DEPRECATED — see orchestrator-present-approval
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
@@ -121,6 +123,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
 - `schedule-task` — dispatch parameter templates
 - `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
+- `jira-ticket-writing` — formula for Jira Stories and Subtasks; user-invocable, `user-invocable: true`
 
 **Skill types:**
 
