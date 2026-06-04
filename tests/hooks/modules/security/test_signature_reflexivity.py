@@ -100,15 +100,30 @@ def test_terraform_still_matches_own_grant():
 # ---------------------------------------------------------------------------
 
 def test_curl_decoration_does_not_match():
-    """Wrapping the approved curl in a pipe, redirect, or capture must not match.
+    """Wrapping the approved curl in a pipe or capture must not match.
 
-    The grant authorizes ONE exact operation; a decorated form is a different
-    command that could exfiltrate or redirect output, so it must re-trigger T3.
+    The grant authorizes ONE operation; a pipe or command substitution is a
+    different command that could exfiltrate or transform output, so it must
+    re-trigger T3. A BARE shell redirect (``2>&1``) is the deliberate exception
+    -- it is a pure I/O side-effect, normalized out of the signature (Fix A),
+    and is covered by test_curl_redirect_matches below.
     """
     sig = _build(_CURL_PUT, danger_verb="-X PUT")
     assert matches_approval_signature(sig, _CURL_PUT + " | jq .") is False
-    assert matches_approval_signature(sig, _CURL_PUT + " 2>&1") is False
     assert matches_approval_signature(sig, "RESP=$(" + _CURL_PUT + ")") is False
+
+
+def test_curl_redirect_matches():
+    """A bare shell redirect appended to the approved curl MUST match (Fix A).
+
+    Redirects (``2>&1``, ``> out``, ``2> err``) are pure I/O side-effects, not
+    part of the command's identity. The signature normalizes them out so the
+    block-approve-retry flow does not double-prompt when the agent appends a
+    redirect on the retry. Pipes and substitutions (above) still do NOT match.
+    """
+    sig = _build(_CURL_PUT, danger_verb="-X PUT")
+    assert matches_approval_signature(sig, _CURL_PUT + " 2>&1") is True
+    assert matches_approval_signature(sig, _CURL_PUT + " > out.json") is True
 
 
 def test_curl_different_url_does_not_match():

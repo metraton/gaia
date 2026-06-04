@@ -1140,7 +1140,21 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
 
     Replaces find_pending_for_command() (filesystem) as part of the T2.1
     cutover. Looks up approvals with status='pending' in the DB and matches
-    the exact_content field of their payload_json against the command.
+    each pending's stored command against the incoming command using the SAME
+    semantic matcher the consumption path uses (check_db_semantic_grant /
+    matches_approval_signature), instead of a byte-exact comparison (Fix B).
+
+    Why semantic, not byte-exact (double-approval fix, B):
+        The block-approve-retry flow can present the same operation under
+        cosmetically different strings -- most commonly a shell redirect that
+        the agent appends on the retry (``git push`` blocked, retried as
+        ``git push 2>&1``). A byte-exact dedup would MISS the existing pending
+        on that retry and mint a fresh approval_id, so the user is asked to
+        approve "the same command" twice. Matching on the semantic signature
+        makes the retry reuse the existing pending: the signature already
+        normalizes redirects out (Fix A) while still binding every
+        identity-bearing token (incl. the ``-C <path>`` directory, per the
+        keep-path policy), so distinct operations are NOT collapsed together.
 
     Args:
         session_id: Current session identifier (empty string if unknown).
@@ -1153,17 +1167,24 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
     """
     try:
         from gaia.approvals.store import get_pending
+        from ..security.approval_scopes import (
+            SCOPE_SEMANTIC_SIGNATURE,
+            build_approval_signature,
+            matches_approval_signature,
+        )
         import json as _json
         # Dedup MUST be cross-session (all_sessions=True). A T3 command can be
         # blocked under the subagent session and a pending row minted there;
         # if this lookup were scoped to the current session it would miss that
         # row on any cross-session retry, and insert_requested() would mint a
         # fresh P- on every miss -- a new approval conjured "from thin air" each
-        # time. Matching on exact_content below keeps the reuse pinned to THIS
-        # command's pending, so widening the session scope does not collapse
+        # time. The semantic match below keeps the reuse pinned to THIS
+        # command's operation, so widening the session scope does not collapse
         # distinct commands together.
         rows = get_pending(all_sessions=True)
-        for row in rows:
+        # Newest-first so a retry reuses the most recent matching pending,
+        # mirroring check_db_semantic_grant()'s ORDER BY created_at DESC.
+        for row in reversed(rows):
             payload_str = row.get("payload_json")
             if not payload_str:
                 continue
@@ -1171,8 +1192,26 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
                 payload = _json.loads(payload_str)
             except Exception:
                 continue
-            if payload.get("exact_content") == command:
+            pending_command = payload.get("exact_content")
+            if not pending_command:
+                continue
+            # Fast path: byte-exact still reuses (covers the common no-decoration
+            # retry without building a signature).
+            if pending_command == command:
                 return row.get("id")
+            # Semantic path: rebuild the pending's signature and compare against
+            # the incoming command with the same matcher the grant plane uses.
+            try:
+                pending_sig = build_approval_signature(
+                    pending_command,
+                    scope_type=SCOPE_SEMANTIC_SIGNATURE,
+                )
+                if pending_sig is not None and matches_approval_signature(
+                    pending_sig, command
+                ):
+                    return row.get("id")
+            except Exception:
+                continue
     except Exception as _err:
         logger.debug("_find_pending_in_db query failed (non-fatal): %s", _err)
     return None
