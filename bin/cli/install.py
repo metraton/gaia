@@ -522,7 +522,16 @@ def _maybe_run_fresh_scan(workspace: Path, verbose: bool, quiet: bool) -> dict:
     # workspace state into gaia.db. ``--npm-postinstall`` relaxes the
     # "must be inside a workspace" guard (install owns the just-created
     # workspace's identity); scan still never installs anything.
-    cmd = [py, str(gaia_entry), "scan", "--npm-postinstall"]
+    #
+    # M1-T3 (AC-3): pass --workspace-name so the scan triggered by install uses
+    # path-based naming (workspace directory basename) instead of the remote-first
+    # derivation. This aligns install and scan: both "name by where you point", not
+    # by the git remote of a workspace that may not have a remote yet (fresh clone
+    # or freshly initialized repo). The override is scoped to this scan invocation
+    # only and does NOT change gaia.project.current() globally.
+    workspace_name_by_path = workspace.name.lower()
+    cmd = [py, str(gaia_entry), "scan", "--npm-postinstall",
+           "--workspace-name", workspace_name_by_path]
 
     try:
         result = subprocess.run(

@@ -1,0 +1,8 @@
+AC-4: install.py ya no importa el simbolo inexistente detect_mode; _detect_plugin_mode resuelve via get_plugin_mode
+
+Command: grep -rn 'import detect_mode' bin/
+Result:  exit=1 (sin match -- simbolo fantasma eliminado)
+Confirmation: _detect_plugin_mode() resuelve via 'security' (modo real, get_plugin_mode)
+Status:  PASS
+
+Verified: 2026-06-03 post-commit 7d51737

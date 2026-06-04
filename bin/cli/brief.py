@@ -219,6 +219,7 @@ def _cmd_new(args) -> int:
         fields = {
             "title": title,
             "status": status,
+            "surface_type": getattr(args, "surface_type", None),
             "objective": objective,
             "context": context_val,
             "approach": approach,
@@ -627,6 +628,9 @@ def register(subparsers) -> None:
     new_p.add_argument("--status", default=None,
                        choices=("draft", "open", "in-progress", "closed", "archived"),
                        help="Initial status. Default: draft.")
+    new_p.add_argument("--surface-type", dest="surface_type", default=None,
+                       choices=("ui", "api", "job", "cli"),
+                       help="Surface type the brief targets. One of ui|api|job|cli.")
     new_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON. bool.")
 
@@ -652,8 +656,9 @@ def register(subparsers) -> None:
     edit_p.add_argument(
         "--field", default=None,
         choices=("objective", "context", "approach", "out_of_scope",
-                 "description", "title"),
-        help="Column to patch. Required with --headless.",
+                 "description", "title", "surface_type"),
+        help="Column to patch. Required with --headless. surface_type accepts "
+             "ui|api|job|cli.",
     )
     _edit_content_group = edit_p.add_mutually_exclusive_group()
     _edit_content_group.add_argument(
@@ -799,6 +804,83 @@ def register(subparsers) -> None:
     verify_p.add_argument("--json", action="store_true", default=False,
                           help="Emit JSON.")
 
+    # -- milestone <add|remove> --------------------------------------------
+    milestone_p = actions.add_parser(
+        "milestone",
+        help="Add or remove a milestone row (DB-only)",
+        description="Manage milestones for a brief (milestones table).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia brief milestone add my-brief --name=M1 "
+            "--description='...'\n"
+            "  gaia brief milestone remove my-brief --name=M1\n"
+        ),
+    )
+    m_actions = milestone_p.add_subparsers(
+        dest="milestone_action", metavar="<add|remove>"
+    )
+    m_add = m_actions.add_parser("add", help="Add a milestone")
+    m_add.add_argument("brief", help="Brief slug.")
+    m_add.add_argument("--name", required=True, help="Milestone name (e.g. M1).")
+    m_add.add_argument("--description", default=None, help="Milestone description.")
+    m_add.add_argument("--order", type=int, default=None,
+                       help="Order number. Auto-assigned (MAX+1) if omitted.")
+    m_add.add_argument("--workspace", default=None, metavar="W",
+                       help="Workspace identity.")
+    m_add.add_argument("--json", action="store_true", default=False,
+                       help="Emit JSON.")
+    m_rm = m_actions.add_parser("remove", help="Remove a milestone")
+    m_rm.add_argument("brief", help="Brief slug.")
+    m_rm.add_argument("--name", required=True, help="Milestone name to remove.")
+    m_rm.add_argument("--workspace", default=None, metavar="W",
+                      help="Workspace identity.")
+    m_rm.add_argument("--json", action="store_true", default=False,
+                      help="Emit JSON.")
+
+    # -- ac <add|remove> ----------------------------------------------------
+    ac_p = actions.add_parser(
+        "ac",
+        help="Add or remove an acceptance criterion (DB-only)",
+        description="Manage acceptance criteria for a brief "
+                    "(acceptance_criteria table).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia brief ac add my-brief --id=AC-1 --description='...' "
+            "--evidence-type=command --artifact=evidence/AC-1.txt\n"
+            "  gaia brief ac remove my-brief --id=AC-1\n"
+        ),
+    )
+    ac_actions = ac_p.add_subparsers(dest="ac_action", metavar="<add|remove>")
+    ac_add = ac_actions.add_parser("add", help="Add an acceptance criterion")
+    ac_add.add_argument("brief", help="Brief slug.")
+    ac_add.add_argument("--id", required=True, help="AC id (e.g. AC-1).")
+    ac_add.add_argument("--description", default=None, help="AC description.")
+    ac_add.add_argument(
+        "--evidence-type", dest="evidence_type", default=None,
+        help="Evidence type (e.g. command, file, url, screenshot).",
+    )
+    ac_add.add_argument(
+        "--evidence-shape", dest="evidence_shape", default=None,
+        help="Evidence shape hint (free-form string or JSON).",
+    )
+    ac_add.add_argument(
+        "--artifact", dest="artifact", default=None,
+        help="Relative artifact path (e.g. evidence/AC-1.txt).",
+    )
+    ac_add.add_argument("--workspace", default=None, metavar="W",
+                        help="Workspace identity.")
+    ac_add.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON.")
+    ac_rm = ac_actions.add_parser("remove", help="Remove an acceptance criterion")
+    ac_rm.add_argument("brief", help="Brief slug.")
+    ac_rm.add_argument("--id", required=True, help="AC id to remove.")
+    ac_rm.add_argument("--workspace", default=None, metavar="W",
+                       help="Workspace identity.")
+    ac_rm.add_argument("--json", action="store_true", default=False,
+                       help="Emit JSON.")
+
 
 def _cmd_verify(args) -> int:
     from gaia.briefs.store import verify_brief
@@ -826,6 +908,94 @@ def _cmd_verify(args) -> int:
     return 0 if result["pass"] else 2
 
 
+def _cmd_milestone(args) -> int:
+    """Dispatch `gaia brief milestone <add|remove>` -- milestones table writes.
+
+    Local planning bookkeeping (reversible, DB-only), covered by the
+    ("gaia","brief") tier exemption -- no T3 approval. `remove` is a single-row
+    delete (not whole-record destruction), so it stays exempt too.
+    """
+    from gaia.briefs import add_milestone, remove_milestone
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    sub = getattr(args, "milestone_action", None)
+    brief_name = getattr(args, "brief", None)
+    m_name = getattr(args, "name", None)
+
+    if sub not in ("add", "remove"):
+        return _err("usage: gaia brief milestone <add|remove>", as_json=as_json)
+    if not brief_name:
+        return _err("brief slug is required", as_json=as_json)
+    if not m_name:
+        return _err("--name is required", as_json=as_json)
+
+    try:
+        if sub == "add":
+            res = add_milestone(
+                workspace, brief_name, m_name,
+                description=getattr(args, "description", None),
+                order_num=getattr(args, "order", None),
+            )
+        else:
+            res = remove_milestone(workspace, brief_name, m_name)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+    except PermissionError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Milestone '{m_name}' {res['action']} in brief '{brief_name}'")
+    return 0
+
+
+def _cmd_ac(args) -> int:
+    """Dispatch `gaia brief ac <add|remove>` -- acceptance_criteria table writes.
+
+    Local planning bookkeeping (reversible, DB-only), covered by the
+    ("gaia","brief") tier exemption -- no T3 approval. `remove` is a single-row
+    delete, so it stays exempt.
+    """
+    from gaia.briefs import add_ac, remove_ac
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    sub = getattr(args, "ac_action", None)
+    brief_name = getattr(args, "brief", None)
+    ac_id = getattr(args, "id", None)
+
+    if sub not in ("add", "remove"):
+        return _err("usage: gaia brief ac <add|remove>", as_json=as_json)
+    if not brief_name:
+        return _err("brief slug is required", as_json=as_json)
+    if not ac_id:
+        return _err("--id is required", as_json=as_json)
+
+    try:
+        if sub == "add":
+            res = add_ac(
+                workspace, brief_name, ac_id,
+                description=getattr(args, "description", None),
+                evidence_type=getattr(args, "evidence_type", None),
+                evidence_shape=getattr(args, "evidence_shape", None),
+                artifact_path=getattr(args, "artifact", None),
+            )
+        else:
+            res = remove_ac(workspace, brief_name, ac_id)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+    except PermissionError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"AC '{ac_id}' {res['action']} in brief '{brief_name}'")
+    return 0
+
+
 def cmd_brief(args) -> int:
     """Dispatch handler for `gaia brief`."""
     action = getattr(args, "brief_action", None)
@@ -840,13 +1010,16 @@ def cmd_brief(args) -> int:
         "search": _cmd_search,
         "delete": _cmd_delete,
         "verify": _cmd_verify,
+        "milestone": _cmd_milestone,
+        "ac": _cmd_ac,
     }
     if action in handlers:
         return handlers[action](args)
 
     print(
         "Usage: gaia brief "
-        "<new|edit|show|list|close|set-status|deps|search|delete|verify>",
+        "<new|edit|show|list|close|set-status|deps|search|delete|verify|"
+        "milestone|ac>",
         file=sys.stderr,
     )
     return 0

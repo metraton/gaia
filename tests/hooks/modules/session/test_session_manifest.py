@@ -250,6 +250,9 @@ class TestBuildSessionContext:
             session_manifest, "build_environment_block", lambda: "ENV BLOCK"
         )
         monkeypatch.setattr(
+            session_manifest, "build_projects_context_block", lambda: "PROJ BLOCK"
+        )
+        monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: "LOOP BLOCK"
         )
         monkeypatch.setattr(
@@ -260,15 +263,21 @@ class TestBuildSessionContext:
         )
 
         result = build_session_context("ops")
-        assert result == "ENV BLOCK\n\nLOOP BLOCK\n\nPEND BLOCK\n\nMEM BLOCK", (
+        assert result == (
+            "ENV BLOCK\n\nPROJ BLOCK\n\nLOOP BLOCK\n\nPEND BLOCK\n\nMEM BLOCK"
+        ), (
             "Blocks must be joined with exactly one blank line separator -- "
-            "markdown convention; agents render this as paragraph breaks."
+            "markdown convention; agents render this as paragraph breaks. "
+            "Project Context — Projects sits right after Environment."
         )
 
     def test_skips_empty_blocks_in_join(self, monkeypatch):
         """Empty blocks must not leave dangling blank lines in the output."""
         monkeypatch.setattr(
             session_manifest, "build_environment_block", lambda: "ENV BLOCK"
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_projects_context_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: ""
@@ -289,6 +298,9 @@ class TestBuildSessionContext:
     def test_returns_empty_when_all_blocks_empty(self, monkeypatch):
         monkeypatch.setattr(
             session_manifest, "build_environment_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_projects_context_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: ""

@@ -1,0 +1,7 @@
+AC-3: Regresion: los verbos mutativos siguen produciendo approval_id en subagente; el contexto orquestador sigue cayendo al native-ask defensivo
+
+Command: python3 -m pytest tests/ -k bash_validator -q
+Result:  98 passed, 1 skipped, 4417 deselected in 1.23s
+Status:  PASS (exit 0)
+
+Verified: 2026-06-03 post-commit 7d51737

@@ -674,3 +674,129 @@ def test_edit_headless_description_alias(tmp_db, tmp_path, monkeypatch, capsys):
     assert rc == 0, capsys.readouterr()
     brief = get_brief("me", "alias-brief", db_path=tmp_db)
     assert brief["objective"] == "aliased value"
+
+
+# ---------------------------------------------------------------------------
+# surface_type + milestone + ac headless setters (CLI-gap closure)
+# ---------------------------------------------------------------------------
+
+def _new_args(**over):
+    import argparse
+    base = dict(
+        headless=True, name=None, workspace="me", title=None,
+        objective=None, objective_file=None, context=None, context_file=None,
+        approach=None, approach_file=None, out_of_scope=None,
+        out_of_scope_file=None, status="draft", surface_type=None, json=False,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_new_headless_sets_surface_type(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief new --headless --surface-type=cli` persists surface_type."""
+    from cli.brief import _cmd_new
+    from gaia.briefs import get_brief
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_new(_new_args(
+        title="Surface Typed Brief", surface_type="cli", objective="x",
+    ))
+    assert rc == 0, capsys.readouterr()
+    brief = get_brief("me", "surface-typed-brief", db_path=tmp_db)
+    assert brief is not None
+    assert brief["surface_type"] == "cli"
+
+
+def test_milestone_add_and_show_roundtrip(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief milestone add` writes a milestones row readable via get_brief."""
+    import argparse
+    from cli.brief import _cmd_new, _cmd_milestone
+    from gaia.briefs import get_brief
+
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_new(_new_args(title="MS Brief", surface_type="cli")) == 0
+
+    rc = _cmd_milestone(argparse.Namespace(
+        milestone_action="add", brief="ms-brief", workspace="me",
+        name="M1", description="first milestone", order=None, json=False,
+    ))
+    assert rc == 0, capsys.readouterr()
+
+    brief = get_brief("me", "ms-brief", db_path=tmp_db)
+    names = [m.get("name") for m in brief["milestones"]]
+    assert "M1" in names
+
+
+def test_ac_add_and_show_roundtrip(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief ac add` writes an acceptance_criteria row readable via get_brief."""
+    import argparse
+    from cli.brief import _cmd_new, _cmd_ac
+    from gaia.briefs import get_brief
+
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_new(_new_args(title="AC Brief", surface_type="cli")) == 0
+
+    rc = _cmd_ac(argparse.Namespace(
+        ac_action="add", brief="ac-brief", workspace="me",
+        id="AC-1", description="first criterion", evidence_type="command",
+        evidence_shape=None, artifact="evidence/AC-1.txt", json=False,
+    ))
+    assert rc == 0, capsys.readouterr()
+
+    brief = get_brief("me", "ac-brief", db_path=tmp_db)
+    acs = {a.get("ac_id"): a for a in brief["acceptance_criteria"]}
+    assert "AC-1" in acs
+    assert acs["AC-1"]["evidence_type"] == "command"
+    assert acs["AC-1"]["artifact_path"] == "evidence/AC-1.txt"
+
+
+def test_milestone_and_ac_duplicate_rejected(tmp_db, tmp_path, monkeypatch, capsys):
+    """Adding a duplicate milestone/AC id returns a non-zero rc with a message."""
+    import argparse
+    from cli.brief import _cmd_new, _cmd_milestone, _cmd_ac
+
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_new(_new_args(title="Dup Brief", surface_type="cli")) == 0
+
+    add_m = argparse.Namespace(
+        milestone_action="add", brief="dup-brief", workspace="me",
+        name="M1", description=None, order=None, json=False,
+    )
+    assert _cmd_milestone(add_m) == 0, capsys.readouterr()
+    assert _cmd_milestone(add_m) == 1  # duplicate
+    capsys.readouterr()
+
+    add_ac = argparse.Namespace(
+        ac_action="add", brief="dup-brief", workspace="me",
+        id="AC-1", description=None, evidence_type=None,
+        evidence_shape=None, artifact=None, json=False,
+    )
+    assert _cmd_ac(add_ac) == 0, capsys.readouterr()
+    assert _cmd_ac(add_ac) == 1  # duplicate
+
+
+def test_new_brief_setters_are_not_t3():
+    """The new brief setters classify READ_ONLY (no T3), while delete/approvals stay gated.
+
+    Anchored to the ("gaia","brief") exemption in mutative_verbs; the new verbs
+    inherit it because they live under `gaia brief`.
+    """
+    _hooks = _REPO_ROOT / "hooks"
+    if str(_hooks) not in sys.path:
+        sys.path.insert(0, str(_hooks))
+    from modules.security.mutative_verbs import detect_mutative_command
+
+    exempt = [
+        "gaia brief milestone add b --name=M1",
+        "gaia brief milestone remove b --name=M1",
+        "gaia brief ac add b --id=AC-1 --evidence-type=command",
+        "gaia brief ac remove b --id=AC-1",
+        "gaia brief new --headless --title=x --surface-type=cli",
+        "gaia brief edit b --headless --field=surface_type --content=cli",
+    ]
+    for c in exempt:
+        assert detect_mutative_command(c).is_mutative is False, c
+
+    # Controls: destruction + the consent layer must stay gated.
+    assert detect_mutative_command("gaia brief delete b").is_mutative is True
+    assert detect_mutative_command("gaia approvals approve P-x").is_mutative is True
