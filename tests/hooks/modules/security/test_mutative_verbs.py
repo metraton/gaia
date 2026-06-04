@@ -16,6 +16,7 @@ from modules.security.mutative_verbs import (
     SIMULATION_FLAGS,
     MUTATIVE_VERBS,
     GIT_LOCAL_SAFE_SUBCOMMANDS,
+    MKDIR_SENSITIVE_PATH_PREFIXES,
 )
 
 
@@ -93,24 +94,163 @@ class TestCommandAliases:
 
 
 class TestMkdir:
-    """mkdir creates directories -- MUTATIVE via COMMAND_ALIASES."""
+    """mkdir path-sensitive tier override (T3 for sensitive paths, T0 otherwise).
+
+    Working-tree mkdir (relative or absolute non-sensitive paths) classifies as
+    T0 (non-mutative).  mkdir targeting a kernel pseudo-filesystem or privileged
+    OS directory retains T3.  See MKDIR_SENSITIVE_PATH_PREFIXES for the full set.
+    """
 
     def test_mkdir_basic(self):
+        """mkdir with a relative path is T0: working-tree, non-destructive."""
         result = detect_mutative_command("mkdir foo")
-        assert result.is_mutative is True
-        assert result.verb == "mkdir"
-        assert result.category == "MUTATIVE"
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
 
     def test_mkdir_p(self):
-        """mkdir -p is still mutative: it creates directories even if idempotent.
+        """mkdir -p with a relative nested path is T0.
 
-        The -p flag makes mkdir idempotent on existing directories, but it can
-        still create new state (nested directories). Approval is still required.
+        The -p flag makes mkdir idempotent on existing directories.  With all
+        working-tree paths the command is safe by elimination, so T0 applies.
         """
         result = detect_mutative_command("mkdir -p foo/bar/baz")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+
+class TestMkdirPathSensitive:
+    """mkdir must remain T3 when any argument targets a sensitive system path."""
+
+    def test_sensitive_prefixes_constant_present(self):
+        """MKDIR_SENSITIVE_PATH_PREFIXES is exported and contains exactly the mandated set.
+
+        Set = full system namespace MINUS scratch space (/tmp, /run) = 11 prefixes.
+        """
+        assert MKDIR_SENSITIVE_PATH_PREFIXES == frozenset({
+            "/dev", "/sys", "/proc",
+            "/etc", "/boot", "/usr",
+            "/bin", "/sbin",
+            "/lib", "/lib64",
+            "/root",
+        })
+
+    # --- T3 cases (sensitive paths) ---
+
+    def test_mkdir_dev(self):
+        result = detect_mutative_command("mkdir /dev/foo")
         assert result.is_mutative is True
-        assert result.verb == "mkdir"
         assert result.category == "MUTATIVE"
+
+    def test_mkdir_sys(self):
+        result = detect_mutative_command("mkdir -p /sys/x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_proc(self):
+        result = detect_mutative_command("mkdir /proc/y")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_etc(self):
+        """/etc is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /etc/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_boot(self):
+        """/boot is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /boot/grub/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_usr(self):
+        """/usr is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /usr/local/myapp")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_bin(self):
+        """/bin is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /bin/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_sbin(self):
+        """/sbin is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /sbin/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_lib(self):
+        """/lib is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /lib/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_lib64(self):
+        """/lib64 is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /lib64/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_root(self):
+        """/root is in the sensitive set -- classifies as T3."""
+        result = detect_mutative_command("mkdir /root/custom")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_tmp_is_t0(self):
+        """/tmp is NOT in the sensitive set (scratch) -- classifies as T0."""
+        result = detect_mutative_command("mkdir /tmp/workdir")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_mkdir_run_is_t0(self):
+        """/run is NOT in the sensitive set (scratch) -- classifies as T0."""
+        result = detect_mutative_command("mkdir /run/myservice")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_mkdir_mixed_one_sensitive(self):
+        """If even one path is sensitive, the whole command is T3."""
+        result = detect_mutative_command("mkdir foo /dev/mydev")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_mkdir_home_jorge_is_t0(self):
+        """Absolute path under /home is NOT sensitive -- classifies as T0."""
+        result = detect_mutative_command("mkdir /home/jorge/projects/new")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    # --- T0 cases (working-tree paths) ---
+
+    def test_mkdir_relative_simple(self):
+        result = detect_mutative_command("mkdir foo")
+        assert result.is_mutative is False
+
+    def test_mkdir_p_nested_relative(self):
+        result = detect_mutative_command("mkdir -p a/b/c")
+        assert result.is_mutative is False
+
+    def test_mkdir_dotslash(self):
+        result = detect_mutative_command("mkdir ./skills/x")
+        assert result.is_mutative is False
+
+    def test_mkdir_home_relative(self):
+        """Home-relative paths (~/...) are always working-tree -- T0."""
+        result = detect_mutative_command("mkdir ~/projects/new")
+        assert result.is_mutative is False
+
+    def test_mkdir_no_args_is_t3(self):
+        """No path arguments: conservative fallback is T3 (cannot confirm safety)."""
+        result = detect_mutative_command("mkdir")
+        assert result.is_mutative is True
+
+    def test_mkdir_only_flags_no_paths_is_t3(self):
+        """Flags but no path arguments: conservative fallback is T3."""
+        result = detect_mutative_command("mkdir -p")
+        assert result.is_mutative is True
 
 
 class TestMutativeVerbScanning:

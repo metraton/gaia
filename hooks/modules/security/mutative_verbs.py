@@ -471,6 +471,107 @@ _FIND_MUTATIVE_FLAGS: FrozenSet[str] = frozenset({"-delete"})
 
 
 # ============================================================================
+# mkdir -- path-sensitive tier override (T3 for sensitive paths, T0 otherwise)
+# ============================================================================
+# `mkdir` within the working tree (relative paths, home-relative paths, or
+# absolute paths that are not system directories) is non-destructive and
+# idempotent with `-p`.  It creates new directories but cannot corrupt existing
+# files or system state, so working-tree use is classified as T0.
+#
+# HOWEVER: directing `mkdir` at kernel pseudo-filesystems or privileged OS
+# directories is a signal of unusual intent and keeps T3 classification.
+# The chosen set of sensitive prefixes is the complete system namespace MINUS
+# scratch space (/tmp, /run):
+#
+#   /dev    -- device nodes; creating here can override device files.
+#   /sys    -- kernel parameter tree (sysfs); writing can alter kernel state.
+#   /proc   -- kernel process/memory interfaces; structurally read-only but
+#               creating entries here has caused kernel panics in edge cases.
+#   /etc    -- system-wide configuration; writes affect all users and services.
+#   /boot   -- bootloader and kernel images; corruption bricks the system.
+#   /usr    -- system binaries and libraries; tampering affects all users.
+#   /bin    -- essential user binaries; modifying can break basic shell tools.
+#   /sbin   -- essential system binaries; modifying can break boot/recovery.
+#   /lib    -- shared libraries for /bin and /sbin; modifying breaks executables.
+#   /lib64  -- 64-bit shared libraries; same risk profile as /lib.
+#   /root   -- root user's home directory; any write here is privileged access.
+#
+# Scratch space (/tmp, /run) is explicitly excluded: these directories are
+# ephemeral, world-writable by design, and creating subdirectories there is
+# routine working-tree activity with no system-state risk.
+MKDIR_SENSITIVE_PATH_PREFIXES: FrozenSet[str] = frozenset({
+    "/dev",
+    "/sys",
+    "/proc",
+    "/etc",
+    "/boot",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/root",
+})
+
+
+def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
+    """Return True if any path argument to mkdir falls under a sensitive prefix.
+
+    Scans all non-flag tokens after the base command (skipping `--` separators
+    and flag values).  A path is sensitive when it is absolute and its first
+    component matches MKDIR_SENSITIVE_PATH_PREFIXES.
+
+    Conservative by design: if there are no path arguments at all (ambiguous),
+    the caller treats the command as T3.  Relative paths and home-relative
+    paths (~/...) are not sensitive; they resolve inside the user's working
+    tree and are always safe.
+
+    Args:
+        tokens: Full token tuple from tokenize_command (includes base cmd).
+
+    Returns:
+        True  -> at least one path argument is under a sensitive prefix (T3).
+        False -> all path arguments are working-tree paths (T0 eligible).
+    """
+    import os
+    seen_end_of_opts = False
+    i = 1  # skip base_cmd at index 0
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+
+        if token == "--":
+            seen_end_of_opts = True
+            continue
+
+        if not seen_end_of_opts and token.startswith("-"):
+            # Consume the value of known value-taking flags (-m/--mode needs a value).
+            if token in ("-m", "--mode"):
+                i += 1  # skip the mode value
+            continue
+
+        # token is a path argument (positional, or after --)
+        # Expand a leading ~ conservatively (no env var expansion).
+        if token.startswith("~/") or token == "~":
+            # Home-relative paths are always safe -- they resolve under $HOME.
+            continue
+
+        if not os.path.isabs(token):
+            # Relative path -> working-tree, not sensitive.
+            continue
+
+        # Absolute path: check whether it starts with any sensitive prefix.
+        # Normalise the token to eliminate // or trailing slashes.
+        norm = os.path.normpath(token)
+        for prefix in MKDIR_SENSITIVE_PATH_PREFIXES:
+            # Match /etc exactly or /etc/<something> (not /etc_custom).
+            if norm == prefix or norm.startswith(prefix + "/"):
+                return True
+
+    return False
+
+
+# ============================================================================
 # Simulation Flags (--dry-run and equivalents)
 # ============================================================================
 
@@ -814,6 +915,32 @@ def detect_mutative_command(command: str) -> MutativeResult:
     if base_cmd in COMMAND_ALIASES:
         alias_category = COMMAND_ALIASES[base_cmd]
         dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+
+        # mkdir path-sensitive override: classify as T0 when all path arguments
+        # are inside the working tree (relative, or absolute non-sensitive).
+        # Keeps T3 when any path targets a kernel or privileged OS directory.
+        # Conservative fallback: if there are no path arguments (no positional
+        # tokens after flags), remain T3 -- cannot confirm safety without a
+        # known destination.
+        if base_cmd == "mkdir":
+            path_tokens = [
+                t for t in tokens[1:]
+                if not t.startswith("-") and t != "--"
+            ]
+            if path_tokens and not _mkdir_targets_sensitive_path(tokens):
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=base_cmd,
+                    cli_family="system",
+                    confidence="high",
+                    reason=(
+                        "mkdir targeting working-tree paths only "
+                        "(no sensitive system prefix)"
+                    ),
+                )
+            # No path arguments or sensitive path detected -> fall through to T3.
+
         return MutativeResult(
             is_mutative=True,
             category=alias_category,
