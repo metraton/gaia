@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.2] - 2026-06-03
+
+### Approval-Flow Hardening, mkdir Reclassification, Jira Skill
+
+Patch release accumulating security and approval-flow fixes, one new skill, and a quality-of-life exemption for Gaia's own planning bookkeeping commands. All 4575 tests pass on a clean install.
+
+#### Fixed
+
+- **Stop double-approval on re-dispatched T3 grants** — a T3 command that was
+  re-dispatched after approval could be blocked a second time with a fresh nonce,
+  forcing the user to approve the same operation twice. Two gaps caused the grant miss:
+  `command_semantics` was not normalizing output-redirect tokens out of the semantic
+  signature (causing the retry signature to drift from the approved one), and
+  `bash_validator._find_pending_in_db` was matching too narrowly and minting a new
+  nonce instead of reusing the granted one. Both gaps are closed; a regression test
+  reproduces the redirect-normalization grant miss.
+
+- **Flag-classifier grants + cross-session grant matching** — the flag-classifier
+  branch in `bash_validator` was never consulting approval grants, so curl-family T3
+  commands that had been approved were blocked again on retry. `check_db_semantic_grant`
+  is now session-agnostic (session is audit-only); `_find_pending_in_db` accepts
+  `all_sessions=True`; grant insert is fingerprint-idempotent so cross-session
+  block→approve→retry converges. `matches_approval_signature` derives identity from
+  `analyze_command` only; `_normalize_flag_token` binds long `--flag=value` tokens to
+  fix a critical over-match. Grant TTL raised from 5 to 60 minutes
+  (`APPROVAL_GRANT_TTL_MINUTES`), kept distinct from the 1440-minute pending TTL.
+
+- **Unify T3 decision across bash validator classifiers** — mutative-verb,
+  `file_to_exec` composition, and flag-mutation classifiers now all route through a
+  single `decide_t3_outcome()` keyed on `has_orchestrator_above` (is_subagent AND
+  is_ops_mode). `file_to_exec` and curl flag-mutations no longer hardcode the native
+  CC approval dialog; in ops+subagent mode they produce `deny+approval_id` like
+  mutative verbs, keeping them inside the Gaia approval/audit trail. Local workspace
+  data files (`.json`/`.yaml`/`.csv`/`.txt`) are degraded to ALLOW for the
+  `file_to_exec` composition; network/decode→exec pipelines still BLOCK.
+
+- **`mkdir` reclassified as T0 for non-sensitive working-tree paths** — `mkdir` on
+  relative, home-relative, or absolute non-system paths is non-destructive and
+  idempotent with `-p`; it no longer triggers T3. `mkdir` targeting kernel
+  pseudo-filesystems or privileged OS directories (`/dev`, `/sys`, `/proc`, `/etc`,
+  `/boot`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/root`) retains T3. Scratch
+  space (`/tmp`, `/run`) is excluded — ephemeral, world-writable by design. Adds
+  `MKDIR_SENSITIVE_PATH_PREFIXES` (11 prefixes) and `_mkdir_targets_sensitive_path()`
+  in `mutative_verbs.py`.
+
+#### Added
+
+- **Schema v18 — stable project identity** — `project_identity` column and a partial
+  unique index on the `projects` table collapse the same physical repo scanned from
+  different vantages into one row. `store_populator.resolve_project_identity()` derives
+  stable identity from git-common-dir → normalized remote → realpath. Migration files:
+  `scripts/migrations/v17_to_v18.sql` and `v17_to_v18_fresh.sql`.
+
+- **Skill `jira-ticket-writing`** — technique skill for writing human-readable Jira
+  Stories and Subtasks following Atlassian conventions: structured title formula,
+  acceptance criteria, story points, label taxonomy, and worked examples. User-invocable
+  (`user-invocable: true`); not injected into any agent frontmatter by default.
+
+#### Changed
+
+- **`gaia brief` / `gaia ac` exempted from T3 gate** — `gaia brief <verb>` and
+  `gaia ac <verb>` (`edit`/`set-status`/`set-field`/`add`/`remove`/`new`/`show`/`list`)
+  now classify as non-mutative. Local planning bookkeeping that is reversible and has no
+  external side effects is treated like `git commit`. The exemption is anchored to
+  `(base_cmd, subcommand)` — not a generic `gaia *` pattern — so the consent layer
+  (`gaia approvals approve/revoke`) and other groups (`gaia memory`) remain T3.
+  Whole-record destruction (`gaia brief delete`) and dangerous flags (`--force`) still
+  re-gate.
+
 ## [5.0.0] - 2026-06-02
 
 ### Stable Release: Scan Overhaul, Zero-Dep Install, Soft-Delete, DB-Canonical Context
