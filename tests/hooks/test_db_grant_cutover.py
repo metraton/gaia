@@ -475,3 +475,155 @@ class TestFullCycleViaValidator:
             # the filesystem grants too.
             # The key assertion is that the DB row is CONSUMED.
             assert row2[0] == "CONSUMED", "DB grant must be CONSUMED after first use"
+
+
+# ---------------------------------------------------------------------------
+# Test 6: full cycle via bash_validator THROUGH THE FLAG-CLASSIFIER BRANCH
+# ---------------------------------------------------------------------------
+
+class TestFlagPathFullCycleViaValidator:
+    """The flag-classifier branch (curl -X POST) must honour an approved grant.
+
+    This is the KEYSTONE regression. ``curl -X POST`` is NOT a mutative verb and
+    is NOT blocked -- it reaches ``_validate_single_command`` and falls past the
+    mutative-verb branch into the flag-classifier branch (classify_by_flags ->
+    FLAG_MUTATIVE, command_family='curl'). The bug: that branch called
+    ``decide_t3_outcome`` directly with NO preceding ``check_approval_grant``, so
+    an approved+activated grant was never consulted and the command re-blocked
+    unconditionally on every retry. This is why all the prior matcher fixes
+    (session demotion, signature reflexivity, fingerprint idempotency, TTL) had
+    zero effect on curl: that path never reached the matcher.
+
+    Verb commands (terraform/git) converge because the verb branch DOES check the
+    grant -- see TestFullCycleViaValidator above, which uses the same harness.
+    """
+
+    _CURL_CMD = 'curl -X POST https://api.example.com/data -d {"key":"val"}'
+
+    def test_flag_path_routes_through_flag_branch_only(self):
+        """Guard: the test command is genuinely a flag-path command, not a verb
+        command and not blocked -- otherwise the test would not exercise the bug.
+        """
+        from modules.security.mutative_verbs import detect_mutative_command
+        from modules.security.flag_classifiers import (
+            classify_by_flags,
+            OUTCOME_MUTATIVE,
+        )
+        from modules.security.blocked_commands import is_blocked_command
+
+        assert detect_mutative_command(self._CURL_CMD).is_mutative is False, (
+            "command must NOT be a mutative verb, else it hits the verb branch"
+        )
+        assert is_blocked_command(self._CURL_CMD).is_blocked is False, (
+            "command must NOT be blocked, else it never reaches the flag branch"
+        )
+        fr = classify_by_flags(self._CURL_CMD)
+        assert fr is not None and fr.outcome == OUTCOME_MUTATIVE, (
+            "command must be FLAG_MUTATIVE so it routes through the flag branch"
+        )
+        assert fr.command_family == "curl"
+
+    def test_validator_allows_and_consumes_flag_path_cross_session(self, file_db):
+        """block (S_sub) -> activate grant (S_orch != S_sub via real activation)
+        -> retry (S_sub) MUST be allowed and consume the grant.
+
+        Against the current code this FAILS at the retry assertion: the flag
+        branch never consults the grant, so result2.allowed is False. After the
+        fix it passes, mirroring TestFullCycleViaValidator (the verb path).
+        """
+        db_path, assert_con = file_db
+        command = self._CURL_CMD
+        session_sub = "session-subagent-B"
+        session_orch = "session-orchestrator-A"
+
+        import gaia.approvals.store as astore
+        from modules.tools.bash_validator import validate_bash_command
+
+        # Step 1: subagent issues the command -> blocked, REQUESTED persisted.
+        result1 = validate_bash_command(
+            command, is_subagent=True, session_id=session_sub
+        )
+        assert not result1.allowed, "flag-path T3 command must block on first attempt"
+
+        # Step 2: extract approval_id from the deny reason.
+        import re
+        hook_output = result1.block_response.get("hookSpecificOutput", {})
+        reason = hook_output.get("permissionDecisionReason", "")
+        m = re.search(r"approval_id:\s*(P-[0-9a-f-]+)", reason)
+        assert m, f"must find approval_id in deny reason: {reason}"
+        approval_id = m.group(1)
+
+        # Step 3: user approves -> activate the grant under the orchestrator
+        # session (cross-session: S_orch != S_sub), via the real activation path.
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+
+        act_result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_orch,
+        )
+        assert act_result.success, f"activation must succeed: {act_result.reason}"
+
+        grant_row = assert_con.execute(
+            "SELECT status FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        assert grant_row is not None and grant_row[0] == "PENDING", (
+            "approval_grants must have a PENDING row after activation"
+        )
+
+        # Step 4: subagent retries under its own session -> MUST be allowed.
+        result2 = validate_bash_command(
+            command, is_subagent=True, session_id=session_sub
+        )
+        assert result2.allowed, (
+            "flag-path retry after activation MUST be allowed (grant honoured); "
+            f"got allowed={result2.allowed} reason={result2.reason!r}"
+        )
+
+        # Step 5: the grant is consumed (single-use replay protection).
+        consumed_row = assert_con.execute(
+            "SELECT status FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        assert consumed_row is not None and consumed_row[0] == "CONSUMED", (
+            f"grant must be CONSUMED after the allowed retry, got: {consumed_row}"
+        )
+
+    def test_flag_path_retry_does_not_mint_duplicate_pendings(self, file_db):
+        """Secondary defect: identical flag-path retries must reuse the same
+        pending approval, never mint a fresh P- on each blocked retry.
+
+        Drives three consecutive blocked retries of the identical curl command
+        (no approval in between) and asserts exactly ONE pending row exists with
+        a single stable approval_id.
+        """
+        db_path, assert_con = file_db
+        command = self._CURL_CMD
+        session_sub = "session-subagent-B"
+
+        from modules.tools.bash_validator import validate_bash_command
+        import re
+
+        ids = []
+        for _ in range(3):
+            res = validate_bash_command(
+                command, is_subagent=True, session_id=session_sub
+            )
+            assert not res.allowed, "each retry must block while unapproved"
+            reason = res.block_response.get("hookSpecificOutput", {}).get(
+                "permissionDecisionReason", ""
+            )
+            m = re.search(r"approval_id:\s*(P-[0-9a-f-]+)", reason)
+            assert m, f"each blocked retry must carry an approval_id: {reason}"
+            ids.append(m.group(1))
+
+        assert len(set(ids)) == 1, (
+            f"identical flag-path retries must reuse one approval_id, got: {ids}"
+        )
+
+        n_pending = assert_con.execute(
+            "SELECT COUNT(*) FROM approvals WHERE status = 'pending'"
+        ).fetchone()[0]
+        assert n_pending == 1, (
+            f"identical flag-path retries must keep ONE pending row, found {n_pending}"
+        )

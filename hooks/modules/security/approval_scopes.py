@@ -123,27 +123,25 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
     if signature.scope_type not in SUPPORTED_SCOPE_TYPES:
         return False
 
+    # Identity for a semantic-signature grant is derived ENTIRELY from
+    # analyze_command (base_cmd + semantic_tokens + normalized_flags) -- the
+    # SAME source used at build time (build_approval_signature) and here at
+    # match time, so the comparison is symmetric and reflexive for EVERY command
+    # class, including curl (which reaches T3 via the flag classifier, not
+    # detect_mutative_command). The previous verb/dangerous_flags guards re-ran
+    # detect_mutative_command at match time, which is NOT the verb source used at
+    # build for flag-classified commands: curl's grant verb is '-x put' but
+    # detect_mutative_command(curl) returns the URL -> the verb-equality guard
+    # rejected curl against its OWN grant on every retry. Byte-binding is fully
+    # preserved: semantic_tokens captures every non-flag token (incl. the URL and
+    # positional args) and normalized_flags captures every flag token (incl. the
+    # -d JSON body, -H auth header, -X method).
     semantics = analyze_command(stripped)
     if semantics.base_cmd != signature.base_cmd:
         return False
 
-    danger = detect_mutative_command(stripped)
-    incoming_dangerous_flags = _sorted_unique_lower(danger.dangerous_flags)
-    if incoming_dangerous_flags != signature.dangerous_flags:
-        return False
-
-    if signature.verb and danger.verb and danger.verb.lower() != signature.verb:
-        return False
-
-    if (
-        signature.danger_category != CATEGORY_UNKNOWN
-        and danger.category != CATEGORY_UNKNOWN
-        and danger.category != signature.danger_category
-    ):
-        return False
-
-    incoming_semantic_tokens = tuple(semantics.semantic_tokens)
     if signature.scope_type == SCOPE_SEMANTIC_SIGNATURE:
+        incoming_semantic_tokens = tuple(semantics.semantic_tokens)
         incoming_flags = _sorted_unique_lower(semantics.flag_tokens)
         return (
             incoming_semantic_tokens == signature.semantic_tokens

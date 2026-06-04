@@ -168,11 +168,38 @@ def _is_short_value_flag(token: str) -> bool:
 
 
 def _normalize_flag_token(token: str) -> Tuple[str, ...]:
-    """Normalize flag tokens for matching while preserving exact variants."""
+    """Normalize flag tokens for matching while preserving exact variants.
+
+    For a long flag carrying an inline value (``--data=amount=10``), this emits
+    BOTH forms:
+      * the bare key ``--data`` -- so membership/classification checks in
+        blocked_commands.py and mutative_verbs.py (e.g. ``flag in flag_set`` or
+        ``override_flags & set(flag_tokens)``) keep matching regardless of value;
+      * the whole ``--data=amount=10`` token -- so the VALUE is bound into the
+        flag set and feeds into the approval signature.
+
+    Binding the value is security-critical (Brief 71 over-match fix): the
+    approval signature is derived from the full flag set, so without the whole
+    token two commands differing only in a ``--flag=value`` value would collapse
+    to the same signature and one grant would authorize the other (e.g.
+    ``--data=amount=10`` vs ``--data=amount=1000000``). The space-form value
+    (``-d '{...}'``) is already safe because it lands as a separate non-flag
+    semantic token; only the inline ``--flag=value`` form was unbound.
+
+    Build (approval_scopes.build_approval_signature) and match
+    (approval_scopes.matches_approval_signature) both derive flag_tokens from
+    this same function via analyze_command, so the two paths stay symmetric --
+    a command still matches its own grant (reflexivity preserved).
+    """
     token_lower = token.lower()
 
     if token_lower.startswith("--"):
-        return (token_lower.split("=", 1)[0],)
+        key = token_lower.split("=", 1)[0]
+        if "=" in token_lower:
+            # Emit both the bare key (for classification membership) and the
+            # whole key=value token (to bind the value into the signature).
+            return (key, token_lower)
+        return (key,)
 
     normalized = [token_lower]
     short_body = token_lower[1:]

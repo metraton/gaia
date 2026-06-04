@@ -65,12 +65,18 @@ class TestTTLConstants:
             f"legitimate cross-session approval workflows."
         )
 
-    def test_default_grant_ttl_is_5(self):
-        """Grant TTL is 5 min by design — short re-execution window."""
-        assert DEFAULT_GRANT_TTL_MINUTES == 5, (
-            f"DEFAULT_GRANT_TTL_MINUTES must be 5 minutes. "
-            f"Got {DEFAULT_GRANT_TTL_MINUTES}. Increasing this would let "
-            f"approved grants survive beyond the intended re-try window."
+    def test_default_grant_ttl_is_60(self):
+        """Grant TTL is 60 min by design (Brief 71, Change 3a).
+
+        The active-grant retry window was widened 5 -> 60 so a cross-session
+        human-in-the-loop approval (block under subagent, approve under
+        orchestrator, retry under subagent) does not silently expire before it
+        can be consumed. It remains SHORT relative to the 24h pending TTL -- the
+        two stay distinct (see test_pending_and_grant_ttls_are_distinct).
+        """
+        assert DEFAULT_GRANT_TTL_MINUTES == 60, (
+            f"DEFAULT_GRANT_TTL_MINUTES must be 60 minutes (Change 3a). "
+            f"Got {DEFAULT_GRANT_TTL_MINUTES}."
         )
 
     def test_pending_and_grant_ttls_are_distinct(self):

@@ -58,6 +58,36 @@ _KNOWN_TABLES = {
 
 
 # ---------------------------------------------------------------------------
+# Semantic-grant lifetime (Brief 71, Change 3a)
+# ---------------------------------------------------------------------------
+#
+# APPROVAL_GRANT_TTL_MINUTES is the default lifetime of an ACTIVE semantic grant
+# -- the window in which an already-approved command may be retried and consumed.
+# It is consumed by insert_semantic_grant() here and by the hooks-layer grant
+# default (DEFAULT_GRANT_TTL_MINUTES in modules/security/approval_grants.py).
+#
+# It is DELIBERATELY a distinct concept from DEFAULT_PENDING_TTL_MINUTES (1440 /
+# 24h), which is how long an UNANSWERED approval waits for the user. The two must
+# not be conflated: a 24h pending window lets a human come back the next day,
+# while the grant window is the short, post-approval execution horizon. Collapsing
+# them would either shrink the approval wait to 1h (a regression) or stretch the
+# grant lifetime to 24h (a security weakening). See the regression guards in
+# tests/hooks/test_pending_scanner_cleanup.py::TestTTLConstants.
+#
+# The value moved 5 -> 60 (Change 3a) so that a human-in-the-loop approval which
+# crosses a session boundary (block under the subagent session, approve under the
+# orchestrator, retry under the subagent) does not silently expire before it can
+# be consumed. 60 aligns with the 1-hour staleness horizon.
+#
+# It lives HERE, in gaia.store.writer, because writer is the dependency leaf of
+# the approval planes: gaia.approvals.store already imports from this module
+# (_connect) and the hooks approval_grants module already imports
+# insert_semantic_grant from here, while writer imports neither -- so any consumer
+# can read this constant without a circular import.
+APPROVAL_GRANT_TTL_MINUTES = 60
+
+
+# ---------------------------------------------------------------------------
 # Connection management
 # ---------------------------------------------------------------------------
 
@@ -321,7 +351,19 @@ def mark_workspace_demoted(
 # Public API: upsert_project
 # ---------------------------------------------------------------------------
 
-_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language", "group_name", "path", "status", "missing_since")
+_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language", "group_name", "path", "status", "missing_since", "project_identity")
+
+
+def _projects_has_identity_column(con: sqlite3.Connection) -> bool:
+    """Return True iff the live ``projects`` table carries ``project_identity``.
+
+    Guards the identity-collapse path against a DB that predates the v18
+    migration (column added by scripts/migrations/v17_to_v18.sql). When the
+    column is absent, :func:`upsert_project` degrades to the historical
+    ``(workspace, name)`` UPSERT so an un-migrated DB keeps working.
+    """
+    rows = con.execute("PRAGMA table_info(projects)").fetchall()
+    return any(r[1] == "project_identity" for r in rows)
 
 
 def upsert_project(
@@ -341,7 +383,12 @@ def upsert_project(
         name: Project name (basename).
         fields: Dict of column->value pairs. Recognized keys:
             ``role``, ``remote_url``, ``platform``, ``primary_language``,
-            ``group_name``, ``path``, ``status``, ``missing_since``.
+            ``group_name``, ``path``, ``status``, ``missing_since``,
+            ``project_identity``. When ``project_identity`` is non-null and the
+            live schema carries the column (v18+), the UPSERT collapses on that
+            stable identity: the SAME physical repo scanned from different
+            workspaces/roots updates the existing row IN PLACE (preserving its
+            original (workspace, name) PK) instead of inserting a duplicate.
             ``status`` defaults to 'active' when not provided. ``missing_since``
             defaults to NULL. On re-upsert of a live project (status='active')
             the scanner should pass status='active' and missing_since=None to
@@ -364,6 +411,7 @@ def upsert_project(
     try:
         if not _is_authorized(con, "projects", agent):
             return _rejected()
+        has_identity_col = _projects_has_identity_column(con)
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
@@ -372,32 +420,108 @@ def upsert_project(
             # This ensures newly-inserted rows and re-upserted live projects
             # always carry an explicit status value.
             status_val = data["status"] if data["status"] is not None else "active"
-            con.execute(
-                """
-                INSERT INTO projects (workspace, name, role, remote_url, platform,
-                                      primary_language, scanner_ts, topic_key,
-                                      group_name, path, status, missing_since)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(workspace, name) DO UPDATE SET
-                    role = excluded.role,
-                    remote_url = excluded.remote_url,
-                    platform = excluded.platform,
-                    primary_language = excluded.primary_language,
-                    scanner_ts = excluded.scanner_ts,
-                    topic_key = excluded.topic_key,
-                    group_name = excluded.group_name,
-                    path = excluded.path,
-                    status = excluded.status,
-                    missing_since = excluded.missing_since
-                """,
-                (
-                    workspace, name,
-                    data["role"], data["remote_url"], data["platform"],
-                    data["primary_language"], _now_iso(), topic_key,
-                    data["group_name"], data["path"],
-                    status_val, data["missing_since"],
-                ),
-            )
+            now = _now_iso()
+            project_identity = data["project_identity"]
+
+            # Identity-collapse path (M1-T2): when a stable project_identity is
+            # supplied AND the live schema carries the column, the SAME physical
+            # repo must map to ONE row regardless of the workspace/root it was
+            # scanned from. We look up any existing row keyed by that identity
+            # (the partial unique index idx_projects_identity guarantees at most
+            # one) and UPDATE it IN PLACE, preserving its original (workspace,
+            # name) PK -- the first-seen vantage wins, later scans only refresh
+            # the row's scanner-owned columns. This is what makes the
+            # "same repo from two roots -> 0 duplicates" query hold.
+            if has_identity_col and project_identity:
+                existing = con.execute(
+                    "SELECT workspace, name FROM projects WHERE project_identity = ?",
+                    (project_identity,),
+                ).fetchone()
+                if existing is not None:
+                    con.execute(
+                        """
+                        UPDATE projects SET
+                            role = ?,
+                            remote_url = ?,
+                            platform = ?,
+                            primary_language = ?,
+                            scanner_ts = ?,
+                            topic_key = ?,
+                            group_name = ?,
+                            path = ?,
+                            status = ?,
+                            missing_since = ?,
+                            project_identity = ?
+                        WHERE workspace = ? AND name = ?
+                        """,
+                        (
+                            data["role"], data["remote_url"], data["platform"],
+                            data["primary_language"], now, topic_key,
+                            data["group_name"], data["path"],
+                            status_val, data["missing_since"], project_identity,
+                            existing["workspace"], existing["name"],
+                        ),
+                    )
+                    con.commit()
+                    return _applied()
+
+            if has_identity_col:
+                con.execute(
+                    """
+                    INSERT INTO projects (workspace, name, role, remote_url, platform,
+                                          primary_language, scanner_ts, topic_key,
+                                          group_name, path, status, missing_since,
+                                          project_identity)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workspace, name) DO UPDATE SET
+                        role = excluded.role,
+                        remote_url = excluded.remote_url,
+                        platform = excluded.platform,
+                        primary_language = excluded.primary_language,
+                        scanner_ts = excluded.scanner_ts,
+                        topic_key = excluded.topic_key,
+                        group_name = excluded.group_name,
+                        path = excluded.path,
+                        status = excluded.status,
+                        missing_since = excluded.missing_since,
+                        project_identity = excluded.project_identity
+                    """,
+                    (
+                        workspace, name,
+                        data["role"], data["remote_url"], data["platform"],
+                        data["primary_language"], now, topic_key,
+                        data["group_name"], data["path"],
+                        status_val, data["missing_since"], project_identity,
+                    ),
+                )
+            else:
+                # Backward-compat: un-migrated DB without project_identity.
+                con.execute(
+                    """
+                    INSERT INTO projects (workspace, name, role, remote_url, platform,
+                                          primary_language, scanner_ts, topic_key,
+                                          group_name, path, status, missing_since)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workspace, name) DO UPDATE SET
+                        role = excluded.role,
+                        remote_url = excluded.remote_url,
+                        platform = excluded.platform,
+                        primary_language = excluded.primary_language,
+                        scanner_ts = excluded.scanner_ts,
+                        topic_key = excluded.topic_key,
+                        group_name = excluded.group_name,
+                        path = excluded.path,
+                        status = excluded.status,
+                        missing_since = excluded.missing_since
+                    """,
+                    (
+                        workspace, name,
+                        data["role"], data["remote_url"], data["platform"],
+                        data["primary_language"], now, topic_key,
+                        data["group_name"], data["path"],
+                        status_val, data["missing_since"],
+                    ),
+                )
             con.commit()
         except Exception:
             con.rollback()
@@ -2725,7 +2849,7 @@ def insert_semantic_grant(
     *,
     agent_id: str | None = None,
     session_id: str | None = None,
-    ttl_minutes: int = 5,
+    ttl_minutes: int = APPROVAL_GRANT_TTL_MINUTES,
     db_path: Path | None = None,
 ) -> dict:
     """Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants (status=PENDING).
@@ -2741,7 +2865,14 @@ def insert_semantic_grant(
             command_set_json so check_db_semantic_grant() can match semantically.
         agent_id: Requesting agent identifier.
         session_id: CLAUDE_SESSION_ID of the subagent that will execute.
-        ttl_minutes: Grant lifetime in minutes (default 5, matches filesystem TTL).
+            Retained for audit only -- check_db_semantic_grant() matches
+            cross-session (Brief 71), so this is NOT used to scope lookup.
+        ttl_minutes: Grant lifetime in minutes. Defaults to
+            APPROVAL_GRANT_TTL_MINUTES (60), aligning the grant lifetime with the
+            1-hour staleness horizon so a human-in-the-loop approval crossing a
+            session boundary does not silently expire before the subagent can
+            consume it. This is the GRANT window, distinct from the 24h pending
+            window (DEFAULT_PENDING_TTL_MINUTES).
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
@@ -2810,12 +2941,19 @@ def check_db_semantic_grant(
     - Have scope='SCOPE_SEMANTIC_SIGNATURE'
     - Have status='PENDING'
     - Not be past its expires_at timestamp
-    - Belong to session_id (when provided)
+
+    session_id is audit metadata only, NOT a match constraint (cross-session
+    per Brief 71). The block-approve-retry flow legitimately spans sessions: a
+    command is blocked under the subagent session, the user approves under the
+    orchestrator session, and the subagent retries under its own session. If
+    session_id constrained the match, the retry would never find the grant the
+    approval created.
 
     Args:
         command: The command string to check.
-        session_id: CLAUDE_SESSION_ID to scope lookup.  When None, all sessions
-            are searched -- useful for cross-session grant lookup.
+        session_id: CLAUDE_SESSION_ID. Accepted for signature compatibility and
+            passed through by callers, but IGNORED for matching -- the lookup is
+            session-agnostic (see security-boundary note below).
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
@@ -2845,14 +2983,22 @@ def check_db_semantic_grant(
 
     con = _connect(db_path)
     try:
+        # Security boundary is preserved WITHOUT a session_id constraint. The
+        # grant is authorized by the conjunction of three session-agnostic
+        # facts, each closing one attack surface:
+        #   * the semantic signature match (below) binds the grant to THIS
+        #     command's byte-level intent (Brief 71 signature binding);
+        #   * status='PENDING' is the single-use replay guard -- once consumed
+        #     the row flips to CONSUMED and no longer matches;
+        #   * expires_at is the TTL -- a stale grant past its window is skipped.
+        # None of these depend on which session is asking, so dropping the
+        # session_id filter widens nothing the three checks above do not already
+        # gate. It only lets the legitimate cross-session retry succeed.
         clauses = [
             "scope = 'SCOPE_SEMANTIC_SIGNATURE'",
             "status = 'PENDING'",
         ]
         params: list = []
-        if session_id is not None:
-            clauses.append("session_id = ?")
-            params.append(session_id)
 
         where = " AND ".join(clauses)
         rows = con.execute(
@@ -2889,6 +3035,79 @@ def check_db_semantic_grant(
         return None
     finally:
         con.close()
+
+
+def _consumed_grant_exists(command: str, con) -> bool:
+    """Return True if a CONSUMED semantic grant already matches ``command``.
+
+    Single, session-agnostic replay guard shared by both planes (Brief 71,
+    Change 4):
+      * check_approval_grant()'s DB path, and
+      * its DEPRECATED filesystem fallback,
+    which previously each carried their own copy of this query -- and the
+    filesystem copy was session-locked (``AND session_id=?``), reintroducing the
+    very cross-session bug the CHECK side was fixed for. Consolidating here keeps
+    the guard in one place and session-agnostic: once a command's grant is
+    CONSUMED, no later retry -- in ANY session -- may slip past via a stale
+    filesystem copy.
+
+    Matching mirrors check_db_semantic_grant(): the stored scope_signature is
+    rehydrated and compared semantically, so the guard recognizes the same
+    byte-bound command that consumed the grant.
+
+    Args:
+        command: The command string being re-checked.
+        con: An OPEN sqlite3 connection (caller owns its lifecycle). Passed in
+            rather than opened here so the caller can reuse its own connection.
+
+    Returns:
+        True when a CONSUMED SCOPE_SEMANTIC_SIGNATURE grant matches ``command``.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        # Lazy import of the hooks matching utilities (same approach as
+        # check_db_semantic_grant) -- they live in the hooks package, not
+        # gaia.store, so importing them at module scope would couple the store
+        # to the hooks layer and risk a circular import.
+        import sys as _sys
+        _hooks_root = str(_Path(__file__).resolve().parents[2] / "hooks")
+        if _hooks_root not in _sys.path:
+            _sys.path.insert(0, _hooks_root)
+        from modules.security.approval_scopes import (
+            ApprovalSignature,
+            matches_approval_signature,
+        )
+    except ImportError:
+        # Matching utilities unavailable -- cannot evaluate the guard. Treat as
+        # "no consumed grant found" (return False) so the caller falls through to
+        # its other checks rather than spuriously suppressing a legitimate grant.
+        return False
+
+    try:
+        rows = con.execute(
+            "SELECT command_set_json FROM approval_grants "
+            "WHERE scope='SCOPE_SEMANTIC_SIGNATURE' AND status='CONSUMED' "
+            "ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+        for row in rows:
+            raw = row[0] if not hasattr(row, "keys") else row["command_set_json"]
+            try:
+                grant_data = _json.loads(raw or "{}")
+            except Exception:
+                continue
+            sig_dict = grant_data.get("scope_signature")
+            if not sig_dict:
+                continue
+            try:
+                signature = ApprovalSignature.from_dict(sig_dict)
+                if matches_approval_signature(signature, command):
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
 
 
 def consume_db_semantic_grant(

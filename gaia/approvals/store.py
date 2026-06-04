@@ -135,14 +135,42 @@ def insert_requested(
             connection to ~/.gaia/gaia.db is opened, committed, and closed.
 
     Returns:
-        The P-{uuid4} approval_id string.
+        The P-{uuid4} approval_id string. When an existing pending approval
+        already carries the same fingerprint, that existing id is returned
+        unchanged (fingerprint idempotency -- see below).
     """
-    approval_id = _generate_approval_id()
+    # Compute the fingerprint FIRST so we can check for an existing pending with
+    # the same byte-binding before minting anything.
     fp = fingerprint_payload(sealed_payload)
     canon_json = canonical_payload(sealed_payload)
 
     _con, owned = _get_con(con)
     try:
+        # Fingerprint idempotency (Brief 71 byte-binding, session-agnostic):
+        # if a pending approval with this exact fingerprint already exists, reuse
+        # it instead of minting a new P-. The fingerprint is SHA-256 of the
+        # canonical sealed_payload, so an identical payload -- regardless of which
+        # session requests it -- maps to one approval. Without this, a
+        # cross-session retry of the same blocked command would mint a fresh P-
+        # on every pass, and the user would face an endless stream of duplicate
+        # approvals for the same operation. We deliberately do NOT emit a second
+        # REQUESTED event for the reused id: the append-only hash chain (D15)
+        # records each approval's REQUESTED exactly once, and a duplicate
+        # REQUESTED would break the one-REQUESTED-per-approval invariant.
+        existing = _con.execute(
+            "SELECT id FROM approvals "
+            "WHERE status = 'pending' AND fingerprint = ? "
+            "ORDER BY created_at ASC LIMIT 1",
+            (fp,),
+        ).fetchone()
+        if existing is not None:
+            existing_id = existing[0] if not hasattr(existing, "keys") else existing["id"]
+            # No INSERT and no REQUESTED event: the chain already holds this
+            # approval's REQUESTED from when it was first minted.
+            return existing_id
+
+        approval_id = _generate_approval_id()
+
         # Insert the parent approval row.
         _con.execute(
             "INSERT INTO approvals "
@@ -287,7 +315,10 @@ def list_pending(
     can display human-readable ages without needing to recompute them.
 
     Staleness threshold: approvals older than 3600 seconds (1 hour) are marked
-    with ``stale=True`` in the returned dict.
+    with ``stale=True`` in the returned dict. This is a cosmetic display hint for
+    the CLI -- it is deliberately NOT tied to either TTL constant (the 24h pending
+    window or the 60-min grant window); it only flags "this has been waiting a
+    while" so the list can surface aging approvals.
 
     Args:
         all_sessions: When True, return pending approvals from all sessions

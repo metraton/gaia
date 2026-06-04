@@ -32,7 +32,16 @@ from modules.core.paths import clear_path_cache
 
 @pytest.fixture(autouse=True)
 def clean_grants_dir(tmp_path, monkeypatch):
-    """Use a temporary directory for grants and clean up after each test."""
+    """Use a temporary directory for grants and an isolated writer DB.
+
+    Test isolation note (Brief 71, Change 4): the session-agnostic CONSUMED
+    replay guard in check_approval_grant() calls gaia.store.writer._connect(); we
+    patch it to a per-test SQLite file so the guard cannot read the real
+    ~/.gaia/gaia.db and spuriously suppress a legitimate test grant.
+    """
+    import sqlite3
+    import hashlib
+
     import modules.security.approval_grants as ag
 
     clear_path_cache()
@@ -49,6 +58,42 @@ def clean_grants_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_SESSION_ID", "test-elicitation-session")
     ag._last_cleanup_time = 0.0
     ag._grants_dir_created = False
+
+    writer_db_path = tmp_path / "writer_isolation.db"
+
+    def _make_writer_db() -> sqlite3.Connection:
+        con = sqlite3.connect(str(writer_db_path))
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = ON")
+        con.create_function(
+            "gaia_sha256", 1,
+            lambda v: hashlib.sha256((v or "").encode()).hexdigest(),
+            deterministic=True,
+        )
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS approval_grants (
+                approval_id           TEXT PRIMARY KEY,
+                agent_id              TEXT,
+                session_id            TEXT,
+                command_set_json      TEXT NOT NULL,
+                scope                 TEXT NOT NULL DEFAULT 'COMMAND_SET',
+                created_at            TEXT NOT NULL
+                    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                expires_at            TEXT,
+                status                TEXT NOT NULL DEFAULT 'PENDING',
+                consumed_indexes_json TEXT,
+                consumed_at           TEXT,
+                revoked_at            TEXT
+            );
+            """
+        )
+        con.commit()
+        return con
+
+    import gaia.store.writer as _swriter
+    monkeypatch.setattr(_swriter, "_connect", lambda db_path_arg=None: _make_writer_db())
+
     yield grants_dir
     clear_path_cache()
 
