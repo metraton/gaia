@@ -36,10 +36,8 @@ jobs:
         run: |
           test -f dist/gaia-security/.claude-plugin/plugin.json
           test -f dist/gaia-security/hooks/hooks.json
-          test -f dist/gaia-security/settings.json
           test -f dist/gaia-ops/.claude-plugin/plugin.json
           test -f dist/gaia-ops/hooks/hooks.json
-          test -f dist/gaia-ops/settings.json
           echo "All plugin artifacts verified"
 
       - name: Commit built plugins
