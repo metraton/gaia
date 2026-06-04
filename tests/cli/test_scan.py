@@ -303,3 +303,220 @@ class TestScanDoesNotInstall:
             assert forbidden not in src, (
                 f"cli/scan.py still references install-layer symbol {forbidden!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# M1-T1: --workspace-name flag (AC-1)
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceNameFlag:
+    """AC-1: --workspace-name overrides the remote-first identity derivation.
+
+    With the flag the workspace written to the DB (and passed to scan-core) is
+    the explicit NAME, NOT the git-remote-derived canonical form.
+    Without the flag the existing remote-first behaviour is unchanged.
+    """
+
+    def test_register_exposes_workspace_name_flag(self):
+        """Parser must accept --workspace-name."""
+        parser = argparse.ArgumentParser(prog="gaia")
+        subparsers = parser.add_subparsers(dest="subcommand")
+        scan_mod.register(subparsers)
+        ns = parser.parse_args(["scan", "--workspace-name", "my-explicit-ws"])
+        assert ns.workspace_name == "my-explicit-ws"
+
+    def test_workspace_name_default_is_none(self):
+        """Without --workspace-name the attribute is None (no override)."""
+        parser = argparse.ArgumentParser(prog="gaia")
+        subparsers = parser.add_subparsers(dest="subcommand")
+        scan_mod.register(subparsers)
+        ns = parser.parse_args(["scan"])
+        assert ns.workspace_name is None
+
+    def test_run_scan_uses_workspace_name_override(self, tmp_path, monkeypatch):
+        """When workspace_name is set, _run_scan passes that value to scan_workspace
+        instead of calling gaia.project.current()."""
+        captured = {}
+
+        import tools.scan.core as _core
+        monkeypatch.setattr(
+            _core,
+            "scan_workspace",
+            lambda root, workspace, config=None, db_path=None: (
+                captured.__setitem__("workspace", workspace)
+                or _make_stub_result()
+            ),
+        )
+
+        # Ensure gaia.project.current() is NOT called by patching it to raise.
+        import gaia.project as _proj
+        def _should_not_be_called(cwd=None):
+            raise AssertionError(
+                "gaia.project.current() must NOT be called when --workspace-name is set"
+            )
+        monkeypatch.setattr(_proj, "current", _should_not_be_called)
+
+        args = _MockArgs(
+            path=str(tmp_path),
+            workspace_name="path-derived-name",
+            json=True,
+        )
+        rc = scan_mod._run_scan(tmp_path, _DummyScanConfig(), args, "test")
+        assert rc == 0
+        assert captured.get("workspace") == "path-derived-name", (
+            f"scan_workspace received workspace={captured.get('workspace')!r}, "
+            "expected 'path-derived-name'"
+        )
+
+    def test_run_scan_without_flag_calls_project_current(self, tmp_path, monkeypatch):
+        """Without --workspace-name, _run_scan falls back to gaia.project.current()
+        (remote-first derivation) -- no-regression test."""
+        captured = {}
+
+        import tools.scan.core as _core
+        monkeypatch.setattr(
+            _core,
+            "scan_workspace",
+            lambda root, workspace, config=None, db_path=None: (
+                captured.__setitem__("workspace", workspace)
+                or _make_stub_result()
+            ),
+        )
+
+        import gaia.project as _proj
+        monkeypatch.setattr(_proj, "current", lambda cwd=None: "remote-first-identity")
+
+        args = _MockArgs(
+            path=str(tmp_path),
+            # workspace_name intentionally absent -- tests getattr default of None
+            json=True,
+        )
+        rc = scan_mod._run_scan(tmp_path, _DummyScanConfig(), args, "test")
+        assert rc == 0
+        assert captured.get("workspace") == "remote-first-identity", (
+            f"expected remote-first-identity, got {captured.get('workspace')!r}"
+        )
+
+    def test_workspace_name_flag_end_to_end_with_json(self, tmp_path, monkeypatch):
+        """End-to-end: cmd_scan with --workspace-name writes the named workspace
+        into the scan summary (json output) rather than a git-remote derivation.
+
+        This is the AC-1 evidence path: the workspace reported in the scan result
+        matches the --workspace-name value, NOT a remote-derived identity.
+        """
+        captured = {}
+
+        import tools.scan.core as _core
+        monkeypatch.setattr(
+            _core,
+            "scan_workspace",
+            lambda root, workspace, config=None, db_path=None: (
+                captured.__setitem__("workspace", workspace)
+                or _make_stub_result()
+            ),
+        )
+
+        # Minimal git repo with a remote URL so that WITHOUT --workspace-name
+        # the remote would win over the directory name.
+        import subprocess
+        subprocess.run(["git", "init", "--quiet"], cwd=str(tmp_path), check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/org/my-service.git"],
+            cwd=str(tmp_path),
+            check=True,
+        )
+        # Make the path look like an installed workspace.
+        claude = tmp_path / ".claude"
+        claude.mkdir()
+        import json as _json
+        (claude / "plugin-registry.json").write_text(
+            _json.dumps({"installed": [{"name": "gaia-ops"}]})
+        )
+
+        args = _MockArgs(
+            path=str(tmp_path),
+            workspace_name="my-local-monorepo",
+            json=True,
+        )
+        rc = scan_mod.cmd_scan(args)
+        assert rc == 0
+
+        # The workspace passed to scan_workspace must be the override, not
+        # "github.com/org/my-service" (what current() would derive).
+        assert captured.get("workspace") == "my-local-monorepo", (
+            f"--workspace-name override not honoured: "
+            f"scan_workspace received {captured.get('workspace')!r}, "
+            "expected 'my-local-monorepo'"
+        )
+
+    def test_workspace_name_no_flag_uses_remote_first(self, tmp_path, monkeypatch):
+        """No-regression: without --workspace-name the remote-first identity is used."""
+        captured = {}
+
+        import tools.scan.core as _core
+        monkeypatch.setattr(
+            _core,
+            "scan_workspace",
+            lambda root, workspace, config=None, db_path=None: (
+                captured.__setitem__("workspace", workspace)
+                or _make_stub_result()
+            ),
+        )
+
+        # Repo with a clear remote -- remote-first should win.
+        import subprocess
+        subprocess.run(["git", "init", "--quiet"], cwd=str(tmp_path), check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/org/my-service.git"],
+            cwd=str(tmp_path),
+            check=True,
+        )
+        claude = tmp_path / ".claude"
+        claude.mkdir()
+        import json as _json
+        (claude / "plugin-registry.json").write_text(
+            _json.dumps({"installed": [{"name": "gaia-ops"}]})
+        )
+
+        args = _MockArgs(path=str(tmp_path), json=True)
+        rc = scan_mod.cmd_scan(args)
+        assert rc == 0
+
+        ws = captured.get("workspace")
+        assert ws == "github.com/org/my-service", (
+            f"expected remote-first identity 'github.com/org/my-service', got {ws!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for TestWorkspaceNameFlag stubs
+# ---------------------------------------------------------------------------
+
+class _DummyScanConfig:
+    """Minimal scan config stub for unit-level _run_scan tests."""
+    project_root = None
+    verbose = False
+    scanners = None
+    staleness_hours = 24
+
+
+def _make_stub_result():
+    """Return a minimal ScanResult-like object that _run_scan can consume."""
+    from tools.scan.orchestrator import ScanOutput
+    output = ScanOutput(
+        sections_updated=[],
+        sections_preserved=[],
+        warnings=[],
+        errors=[],
+        duration_ms=1.0,
+        scanner_results={},
+    )
+
+    class _StubResult:
+        pass
+
+    r = _StubResult()
+    r.output = output
+    r.demoted = False
+    r.marked_missing = []
+    return r

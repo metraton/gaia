@@ -93,6 +93,54 @@ def _git_remote_origin(cwd: Path) -> str | None:
     return url or None
 
 
+def git_common_dir(cwd: Path | str | None = None) -> str | None:
+    """Return the realpath of the git common directory for ``cwd``, or None.
+
+    ``git rev-parse --git-common-dir`` resolves to the SHARED ``.git`` directory
+    of a repository -- the same path whether invoked from the repo root, a
+    nested subdirectory, or a linked worktree. This makes it a stable,
+    vantage-independent fingerprint of a physical repository: the same repo
+    scanned from two different roots yields the same common dir.
+
+    Unlike ``--git-dir`` (which differs per worktree), ``--git-common-dir`` is
+    identical across the main checkout and all its worktrees, so it collapses
+    worktrees of the same repo to one identity.
+
+    The returned path is the absolute, symlink-resolved (``realpath``) form so
+    that two paths reaching the same directory via different symlinks compare
+    equal.
+
+    Uses subprocess with a short timeout. Never raises -- returns None on any
+    failure (no git, not a repo, timeout).
+    """
+    if shutil.which("git") is None:
+        return None
+    target = Path(cwd) if cwd is not None else Path.cwd()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(target), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = (result.stdout or "").strip()
+    if not raw:
+        return None
+    # git may return a path relative to `target` (e.g. ".git"); resolve it
+    # against the target directory, then realpath to canonicalize symlinks.
+    p = Path(raw)
+    if not p.is_absolute():
+        p = target / p
+    try:
+        return str(p.resolve())
+    except (OSError, RuntimeError):
+        return None
+
+
 def current(cwd: Path | str | None = None) -> str:
     """Return the workspace identity for the given directory.
 

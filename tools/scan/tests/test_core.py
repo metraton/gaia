@@ -148,6 +148,19 @@ class TestScanWorkspaceIsPure:
         monkeypatch.setattr(scan_core, "run_scanners", lambda r, c: _dummy_output())
         _init_git_repo(tmp_path / "repo")
 
+        # The CLI-root must be an INSTALLED Gaia workspace for scan_workspace to
+        # take the normal populate path. Since the v17 demote/soft-delete change,
+        # a directory with no install footprint is demoted (populated=None)
+        # rather than populated. Mount the canonical install signal -- a
+        # .claude/plugin-registry.json listing "gaia-ops" -- the same fixture
+        # TestIsGaiaWorkspace uses. This is scoped to THIS test only: the
+        # no-side-effect tests above must NOT carry a .claude/ footprint.
+        claude = tmp_path / ".claude"
+        claude.mkdir()
+        (claude / "plugin-registry.json").write_text(
+            json.dumps({"installed": [{"name": "gaia-ops"}]})
+        )
+
         from gaia.project import current as _current
         ws = _current(cwd=tmp_path)
         result = scan_core.scan_workspace(
@@ -156,6 +169,7 @@ class TestScanWorkspaceIsPure:
 
         assert isinstance(result, scan_core.ScanResult)
         assert result.has_errors is False
+        assert result.demoted is False
         assert result.populated is not None
 
     def test_scan_skips_populate_on_errors(self, tmp_db, tmp_path, monkeypatch):

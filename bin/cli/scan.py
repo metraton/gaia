@@ -119,6 +119,56 @@ def _use_color(args: argparse.Namespace) -> bool:
     return True
 
 
+def _find_workspace_root(cwd: Path) -> Path:
+    """Walk up from ``cwd`` to find the nearest installed Gaia workspace ancestor.
+
+    Walks parent directories from ``cwd`` upward, testing each one with the
+    canonical Gaia installation signal (``_is_installed_gaia_workspace``).  The
+    FIRST (nearest) ancestor that carries the installation signal is the workspace
+    root to scan from; the scan should always anchor there, not in a nested
+    subdirectory.
+
+    When no installed ancestor is found above ``cwd`` the function falls back to
+    ``cwd`` itself (preserving the historical behaviour for the rare case where
+    ``cwd`` IS the workspace root but ``is_gaia_workspace`` already confirmed it
+    above -- see the call site in ``cmd_scan``).
+
+    Args:
+        cwd: The resolved current working directory.
+
+    Returns:
+        The nearest installed Gaia workspace ancestor path (or ``cwd`` when none
+        is found above it).
+    """
+    try:
+        from tools.scan.store_populator import _is_installed_gaia_workspace
+    except Exception:
+        return cwd
+
+    # Walk from cwd upward (inclusive of cwd itself) looking for the HIGHEST
+    # installed ancestor we can find.  We collect all installed ancestors and
+    # return the deepest one (nearest to cwd) that is still an installed workspace
+    # -- i.e. the lowest common workspace root enclosing cwd.
+    #
+    # Strategy: walk from cwd upward; the first installed dir we hit IS the
+    # nearest workspace root.  We stop there because a workspace that contains
+    # cwd is always the canonical anchor (the scan must start where Gaia is
+    # installed, not one level deeper inside it).
+    try:
+        parents = [cwd] + list(cwd.parents)
+    except (OSError, ValueError):
+        return cwd
+
+    for candidate in parents:
+        try:
+            if _is_installed_gaia_workspace(candidate):
+                return candidate
+        except Exception:
+            continue
+
+    return cwd
+
+
 def _emit_error(args: argparse.Namespace, msg: str) -> int:
     """Emit an error in the active output format and return exit code 1."""
     if getattr(args, "json", False):
@@ -163,12 +213,20 @@ def _run_scan(project_root: Path, scan_config, args: argparse.Namespace,
     Single execution path for every non-dry-run entry point: scanning the
     current workspace, scanning a named target, and the npm-postinstall scan
     all land here.
+
+    When ``args.workspace_name`` is set, that value is used directly as the
+    workspace identity instead of the remote-first derivation in
+    ``gaia.project.current()``.  Without the flag the behaviour is unchanged.
     """
     from tools.scan.core import scan_workspace
     from tools.scan.ui import RailUI, collect_warnings, format_scanner_results
 
-    from gaia.project import current as _project_current
-    workspace = _project_current(cwd=project_root)
+    workspace_name_override = getattr(args, "workspace_name", None)
+    if workspace_name_override:
+        workspace = workspace_name_override
+    else:
+        from gaia.project import current as _project_current
+        workspace = _project_current(cwd=project_root)
 
     ui = RailUI(version=scanner_version, color=_use_color(args))
     ui.start()
@@ -282,6 +340,20 @@ def register(subparsers) -> argparse.ArgumentParser:
         default=False,
         help="Print scanner-by-scanner progress",
     )
+    p.add_argument(
+        "--workspace-name",
+        metavar="NAME",
+        default=None,
+        dest="workspace_name",
+        help=(
+            "Override the workspace identity used when writing to the DB. "
+            "By default the identity is derived from the git remote URL "
+            "(remote-first). Pass this flag to name the workspace by the "
+            "scanned path or any explicit string instead. "
+            "Does NOT change the global current() derivation -- this override "
+            "is scoped to this scan invocation only."
+        ),
+    )
     # Internal: used by `gaia install` Step 7 to run scan-core during npm
     # postinstall. It does NOT change what scan does (scan never installs); it
     # only relaxes the "must be inside a workspace" guard, because install has
@@ -326,8 +398,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
         # one. Outside a workspace with no target is a clean error, NOT an
         # install fallback. The npm-postinstall path is exempt: install has
         # just created the workspace and owns its identity.
-        project_root = Path.cwd().resolve()
+        cwd = Path.cwd().resolve()
         if not getattr(args, "npm_postinstall", False):
+            # Walk up from cwd to find the nearest installed Gaia workspace
+            # ancestor (AC-3: scan anchors at workspace root, not at the
+            # subdirectory from which the command was invoked).
+            project_root = _find_workspace_root(cwd)
             try:
                 from tools.scan.core import is_gaia_workspace
                 inside_workspace = is_gaia_workspace(project_root)
@@ -340,6 +416,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     "with a Gaia install) or pass a target path: "
                     "`gaia scan <path>`",
                 )
+        else:
+            # npm-postinstall: install already created the workspace at cwd;
+            # scan from there directly (no ancestor walk needed).
+            project_root = cwd
 
     # Dry-run short-circuits before any tools.scan import / DB activity.
     if getattr(args, "dry_run", False):

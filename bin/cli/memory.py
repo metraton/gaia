@@ -896,6 +896,17 @@ _RELEVANT_PER_CLASS_QUOTA = {
 }
 _RELEVANT_CARRY_FORWARD_UNLIMITED = True
 
+# P2a recoverable-pointer footer. Each injected line shows a slug + one-line
+# description; the full body (the actionable detail) is recoverable on demand.
+# State that explicitly so the orchestrator / a subagent fetches the depth
+# instead of treating the one-liner as all there is. Its length is RESERVED
+# from the char budget before trimming, so block + pointer respects max_chars.
+_MEMORY_POINTER = (
+    "> Detail of any item above is recoverable: "
+    "`gaia memory show <slug>` (the slug is the name shown after `- `)."
+)
+_MEMORY_POINTER_RESERVE = len(_MEMORY_POINTER) + 2  # +2 for the "\n\n" join
+
 # Section headers (T7). Coordinated with T6 (skills/memory/SKILL.md):
 # the legacy "## Workspace Memory (<ws>)" block is retired in favor of
 # three explicit user-facing sections. Empty sections drop their header;
@@ -943,6 +954,11 @@ def _cmd_get_relevant(args) -> int:
     if types_arg:
         # Legacy type-based selection -- keep verbatim for back-compat.
         return _cmd_get_relevant_by_type(args, workspace, max_chars)
+
+    # Reserve room for the recoverable-pointer footer (appended after trimming)
+    # so the final block + pointer respects the caller's char budget. Floor at
+    # a small positive value so a pathologically tiny budget still renders.
+    max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
 
     try:
         from gaia.store.writer import _connect, get_memory  # noqa: F401
@@ -1153,6 +1169,11 @@ def _cmd_get_relevant(args) -> int:
             )
             if len(block) + len(footer) <= max_chars:
                 block = block + footer
+
+    # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
+    # pointer is never the line that gets dropped; its length was reserved from
+    # max_chars above, so block + pointer still respects the caller's budget.
+    block = block + "\n\n" + _MEMORY_POINTER
 
     if as_json:
         payload = {

@@ -1,0 +1,59 @@
+AC-2 (brief workspace-identity, plan_id=9, task M1-T2)
+Stable project identity collapses the SAME physical repo scanned from
+different workspaces/roots into ONE projects row (same-path-multi-workspace
+-> 0 duplicates), without over-collapsing distinct repos.
+
+NOTE ON PATH: the brief named artifact evidence/AC-2.txt, but that path was
+already occupied by an UNRELATED brief (security T3 routing). To avoid
+clobbering unrelated evidence, this artifact lives at
+evidence/workspace-identity/AC-2.txt. Flagged in the handoff.
+
+Evidence type: command
+Verified: 2026-06-03, against a TEMPORAL fixture DB (GAIA_DATA_DIR=mktemp).
+Production DB ~/.gaia/gaia.db was NOT touched.
+
+--- Reproduction A: pytest (AC-2 + no-over-collapse) ---
+Command: python3 -m pytest tests/unit/test_project_identity_collapse.py -v
+Result:
+  test_git_common_dir_is_vantage_independent ............ PASSED
+  test_distinct_repos_get_distinct_identities ........... PASSED
+  test_falls_back_to_realpath_when_no_git ............... PASSED
+  test_same_repo_two_roots_collapses_to_one_row ......... PASSED   (AC-2)
+  test_distinct_repos_remain_distinct_rows .............. PASSED   (no over-collapse)
+  test_rescan_same_root_is_idempotent ................... PASSED
+  6 passed in 0.15s
+Status: PASS (exit 0)
+
+--- Reproduction B: end-to-end demo against a temporal fixture DB ---
+Command: PYTHONPATH=<repo> python3 ac2_demo.py   (script populates the store,
+         then runs the same-path-multi-workspace duplicate query)
+Output:
+
+Stable project_identity (git-common-dir realpath):
+   /tmp/.../repo/.git
+
+Scan #1 (workspace root):  workspace=ws-root   name=repo   identity=/tmp/.../repo/.git
+Scan #2 (repo subdir)   :  workspace=ws-nested name=core   identity=/tmp/.../repo/.git
+
+AC-2 query (same-path-multi-workspace -> duplicates for canonical path):
+  rows for canonical identity = 1   -> duplicates = 0
+  surviving row keeps first-seen PK: workspace=ws-root name=repo
+
+No-over-collapse guard:
+  total project rows = 2  distinct identities = 2
+
+All rows:
+  workspace=ws-root   name=repo   identity=/tmp/.../repo/.git
+  workspace=ws-root   name=repo-b identity=/tmp/.../repo-b/.git
+
+AC-2 RESULT: PASS  (same repo from two roots -> 1 row; distinct repos -> 2 rows)
+
+--- Interpretation ---
+* Scan #1 and scan #2 are the SAME physical repo reached from two vantages
+  (workspace root vs the repo's own subdir). They resolve DIFFERENT
+  (workspace, name) PKs (ws-root/repo vs ws-nested/core) but the SAME stable
+  project_identity (the realpath of the shared .git common dir). The writer's
+  identity-collapse path updates the first-seen row in place instead of
+  inserting a second -> exactly one row for the canonical path -> 0 duplicates.
+* repo-b is a genuinely different repo (different .git) -> its own identity ->
+  remains a distinct row. The collapse does not over-merge.

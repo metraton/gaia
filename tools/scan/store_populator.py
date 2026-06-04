@@ -54,6 +54,57 @@ def resolve_identity(project_path: Path) -> str:
     return current(cwd=project_path)
 
 
+def resolve_project_identity(project_path: Path) -> str:
+    """Resolve a STABLE, vantage-independent identity for a physical project.
+
+    Unlike :func:`resolve_identity` (which derives a *workspace* identity from
+    the git remote and is intentionally vantage-independent at the WORKSPACE
+    level), this resolves a *project* identity that pins the SAME physical repo
+    to one value regardless of which root it was scanned from -- so a repo
+    scanned from the workspace root and again from its own subdirectory
+    collapses to a single ``projects`` row instead of duplicating.
+
+    Resolution order (first non-empty wins):
+
+      1. ``git rev-parse --git-common-dir`` (realpath). The shared ``.git``
+         directory is identical from the repo root, any nested subdir, and any
+         linked worktree -- the strongest vantage-independent fingerprint.
+      2. Normalized git remote (``host/owner/repo``) via
+         :func:`gaia.project._normalize_remote`. Survives fresh clones of the
+         same remote on different machines/paths.
+      3. ``realpath`` of ``project_path``. Last-resort fallback for a repo with
+         no usable git metadata and no remote: the canonical on-disk path is at
+         least stable across symlinked vantages of the same directory.
+
+    The function never raises and never returns an empty string.
+
+    Args:
+        project_path: Absolute path to the project root being populated.
+
+    Returns:
+        A stable identity string. Never empty, never raises.
+    """
+    from gaia.project import git_common_dir, _normalize_remote
+
+    # 1. git-common-dir (realpath) -- strongest vantage-independent fingerprint.
+    common = git_common_dir(project_path)
+    if common:
+        return common
+
+    # 2. Normalized remote.
+    remote = _git_remote_origin(project_path)
+    if remote:
+        normalized = _normalize_remote(remote)
+        if normalized:
+            return normalized
+
+    # 3. Realpath of the project path.
+    try:
+        return str(Path(project_path).resolve())
+    except (OSError, RuntimeError):
+        return str(project_path)
+
+
 # ---------------------------------------------------------------------------
 # Repo-level populator
 # ---------------------------------------------------------------------------
@@ -89,6 +140,7 @@ def populate_project(
     name = project_name or project_path.name
     role = detect_role(project_path)
     identity = resolve_identity(project_path)
+    project_identity = resolve_project_identity(project_path)
     remote_url = _git_remote_origin(project_path)
     platform = _platform_from_remote(remote_url)
     primary_language = _detect_primary_language(project_path)
@@ -102,6 +154,11 @@ def populate_project(
             "platform": platform,
             "primary_language": primary_language,
             "group_name": group_name,
+            # Stable, vantage-independent project identity (M1-T2). The writer
+            # keys its UPSERT on this value (partial unique index
+            # idx_projects_identity) so the SAME physical repo scanned from
+            # different workspaces/roots collapses into ONE projects row.
+            "project_identity": project_identity,
             # Persist the on-disk path so the project is directly findable
             # (project -> path + workspace). The value is the project root
             # itself; ``upsert_project`` accepts it via ``fields["path"]``.
@@ -123,6 +180,7 @@ def populate_project(
         "rejected": 1 - applied,
         "role": role,
         "identity": identity,
+        "project_identity": project_identity,
         "name": name,
         "group_name": group_name,
     }

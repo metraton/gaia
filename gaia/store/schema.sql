@@ -53,12 +53,22 @@ CREATE TABLE IF NOT EXISTS projects (
     path             TEXT,           -- absolute path on disk to the project root; scanner-owned (findability: project -> path + workspace)
     status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete)
     missing_since    TEXT,           -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned
+    project_identity TEXT,           -- stable, vantage-independent project identity (git-common-dir realpath > normalized remote > realpath path); scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace);
 CREATE INDEX IF NOT EXISTS idx_projects_topic_key ON projects(topic_key);
+-- Note: idx_projects_identity (partial UNIQUE on project_identity) is NOT
+-- declared here. It references the project_identity column, which on an
+-- existing (pre-v18) DB does not yet exist when this CREATE TABLE IF NOT EXISTS
+-- short-circuits -- declaring the index here would parse-fail with "no such
+-- column: project_identity" during bootstrap of a legacy DB. The index is
+-- created by scripts/migrations/v17_to_v18.sql (existing DBs, after the ALTER)
+-- and by v17_to_v18_fresh.sql (fresh installs, after schema.sql added the
+-- column). Same convention as idx_memory_class_status (see L669) and the
+-- episodes tier indexes (L579).
 
 -- ---------------------------------------------------------------------------
 -- apps: deployed applications (services, jobs, functions, etc.)

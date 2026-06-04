@@ -574,6 +574,31 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
                 fi
                 # Otherwise: existing v16 DB -- fall through to default v16_to_v17.sql.
                 ;;
+            18)
+                # v17 -> v18: add project_identity column + partial unique index
+                # to projects (stable, vantage-independent project identity that
+                # collapses the same physical repo scanned from different roots
+                # into one row).
+                #
+                # Target state fingerprint: projects.project_identity column exists.
+                # We probe pragma_table_info for the column name.
+                # This is the correct fingerprint because:
+                #   - Fresh install: schema.sql creates projects WITH project_identity -> it exists
+                #   - Existing v17 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
+                #     -> project_identity does NOT exist -> falls through to the full migration
+                PROJECTS_HAS_IDENTITY="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='project_identity';")"
+                if [ "$PROJECTS_HAS_IDENTITY" = "project_identity" ]; then
+                    # Fresh install: schema.sql already created projects with the
+                    # project_identity column. Run the fresh-install variant
+                    # (no-op SELECT) to stamp the ledger.
+                    OVERRIDE_MIG_FILE="${MIG_DIR}/v17_to_v18_fresh.sql"
+                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
+                        echo "[bootstrap] ERROR: v17->v18 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
+                        exit 1
+                    fi
+                fi
+                # Otherwise: existing v17 DB -- fall through to default v17_to_v18.sql.
+                ;;
             *)
                 # Future migrations: each new N must add a case here with a
                 # fingerprint of the post-migration state.

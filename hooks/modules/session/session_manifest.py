@@ -265,6 +265,193 @@ def build_workspace_memory_block(workspace: Optional[str] = None) -> str:
         return ""
 
 
+def _extract_projects_from_identity(payload: dict, workspace: str,
+                                    path_lookup: dict) -> list[tuple[str, str]]:
+    """Pull (name, path) pairs out of one ``project_identity`` payload.
+
+    The contract stores two distinct shapes, and this normalizes both:
+
+    * **Map shape** (hand-authored, e.g. the ``me`` workspace's AOS entry):
+      a dict keyed by project slug, each value a dict with ``name`` and an
+      absolute ``local_path``. Detected by the absence of a top-level ``name``
+      and all values being dicts.
+    * **Scanner shape** (e.g. bildwiz/nfi/qxo/rnd): a top-level ``name`` plus an
+      optional ``workspace_repos`` list whose entries carry only a *relative*
+      ``path``. The absolute path is not in the contract, so it is resolved
+      from the ``projects`` table via ``path_lookup``.
+
+    ``path_lookup`` maps ``(workspace, name)`` -> absolute path, with a
+    per-workspace single-path fallback so a name mismatch (contract says
+    ``nfi`` but the project row is ``nfi-oro-com``) still resolves when the
+    workspace holds exactly one project. Entries that cannot resolve a path
+    are still returned (name only) -- the name alone is partial signal.
+    """
+    out: list[tuple[str, str]] = []
+    by_name: dict = path_lookup.get("by_name", {})
+    by_ws: dict = path_lookup.get("by_ws", {})
+
+    def _resolve(name: str) -> str:
+        p = by_name.get((workspace, name))
+        if p:
+            return p
+        # Single-project workspace: the one path we have is unambiguous.
+        ws_paths = by_ws.get(workspace) or []
+        if len(ws_paths) == 1:
+            return ws_paths[0]
+        return ""
+
+    is_map_shape = (
+        bool(payload)
+        and "name" not in payload
+        and all(isinstance(v, dict) for v in payload.values())
+        and any(("local_path" in v or "name" in v)
+                for v in payload.values() if isinstance(v, dict))
+    )
+
+    if is_map_shape:
+        for slug, v in payload.items():
+            if not isinstance(v, dict):
+                continue
+            name = v.get("name") or slug
+            path = v.get("local_path") or _resolve(slug) or _resolve(name)
+            out.append((name, path))
+        return out
+
+    repos = payload.get("workspace_repos")
+    if isinstance(repos, list) and repos:
+        for r in repos:
+            if not isinstance(r, dict):
+                continue
+            name = r.get("name") or ""
+            if not name:
+                continue
+            out.append((name, _resolve(name)))
+        return out
+
+    name = payload.get("name") or workspace
+    out.append((name, _resolve(name)))
+    return out
+
+
+def build_projects_context_block(max_chars: int = 1400) -> str:
+    """Render the active-context project index for the SessionStart manifest.
+
+    This is NOT an index of every git repo on disk. The source is the set of
+    projects that have **active project context** -- a ``project_identity`` row
+    in ``project_context_contracts``. That filter is the point: it includes
+    AOS (which lives only in the ``me`` workspace's hand-authored contract,
+    with absolute ``local_path``) and naturally excludes the dozens of cloned
+    reference repos under ``me`` that were scanned into the raw ``projects``
+    table but never given a project context. No path-prefix filtering is used.
+
+    Each entry is ``- <name>: <path>`` -- the path being the value the
+    orchestrator wants (where the project lives on disk). Workspace is not a
+    grouping axis here; it is only used internally to resolve relative/missing
+    paths against the ``projects`` table.
+
+    Framed as ``## Project Context — Projects`` so it reads as part of the
+    project-context setup the orchestrator receives at SessionStart (it is
+    emitted immediately after ``## Environment``), not as an orphan section.
+
+    Budget: bounded to ``max_chars`` (default 1400). The real active-context
+    set is small (~17 entries, ~1.2 KB today) and is meant to land in full;
+    the bound is a guard rail, not a target. On overflow we drop entries from
+    the tail and append a recoverable footer. Fail-safe: any error returns "".
+    """
+    # Ensure the package root (which holds the `gaia/` package) is importable.
+    # At real SessionStart, session_start.py already inserts it; this self-heal
+    # makes the builder robust when called from other entry points or tests.
+    try:
+        _pkg_root = str(Path(__file__).resolve().parents[3])
+        if _pkg_root not in sys.path:
+            sys.path.insert(0, _pkg_root)
+    except Exception:
+        pass
+
+    try:
+        from gaia.store.writer import _connect
+    except Exception as exc:
+        logger.debug("build_projects_context_block import failed: %s", exc)
+        return ""
+
+    try:
+        con = _connect()
+        try:
+            identity_rows = con.execute(
+                "SELECT workspace, payload FROM project_context_contracts "
+                "WHERE contract_name = 'project_identity' ORDER BY workspace"
+            ).fetchall()
+            # Path resolution sources: include missing rows -- the on-disk path
+            # may still be valid even if the scanner marked the repo missing.
+            proj_rows = con.execute(
+                "SELECT workspace, name, path FROM projects WHERE path IS NOT NULL"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception as exc:
+        logger.debug("build_projects_context_block query failed: %s", exc)
+        return ""
+
+    if not identity_rows:
+        return ""
+
+    by_name: dict = {}
+    by_ws: dict = {}
+    for r in proj_rows:
+        d = dict(r)
+        p = d.get("path")
+        if not p:
+            continue
+        by_name[(d["workspace"], d["name"])] = p
+        by_ws.setdefault(d["workspace"], []).append(p)
+    path_lookup = {"by_name": by_name, "by_ws": by_ws}
+
+    entries: list[tuple[str, str]] = []
+    seen: set = set()
+    for r in identity_rows:
+        d = dict(r)
+        ws = d.get("workspace") or ""
+        try:
+            payload = json.loads(d.get("payload") or "{}")
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for name, path in _extract_projects_from_identity(payload, ws, path_lookup):
+            key = (name, path)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append((name, path))
+
+    if not entries:
+        return ""
+
+    total_available = len(entries)
+    header = "## Project Context — Projects"
+
+    def _render(items: list[tuple[str, str]]) -> str:
+        lines = [header, ""]
+        for name, path in items:
+            lines.append(f"- {name}: {path}" if path else f"- {name}")
+        return "\n".join(lines)
+
+    block = _render(entries)
+    # Budget: drop from the tail until it fits, then add a recoverable footer.
+    if len(block) > max_chars:
+        kept = list(entries)
+        while kept and len(_render(kept)) > max_chars:
+            kept.pop()
+        dropped = total_available - len(kept)
+        block = _render(kept)
+        if dropped > 0:
+            footer = f"\n... ({dropped} more, use 'gaia context get')"
+            if len(block) + len(footer) <= max_chars:
+                block = block + footer
+
+    return block
+
+
 def build_pending_approvals_block() -> str:
     """Build the [ACTIONABLE] pending-approvals block, if any exist.
 
@@ -338,11 +525,18 @@ def build_session_context(mode: str) -> str:
     try:
         blocks = [
             build_environment_block(),
+            # Project Context — Projects: the index of projects that have active
+            # project context (a project_identity contract), each as name +
+            # on-disk path. Emitted immediately after Environment so it reads as
+            # part of the project-context setup the orchestrator receives -- it
+            # lets a bare mention in memory (e.g. "AOS", "nfi") resolve to a
+            # path the orchestrator already holds, without spending a subagent.
+            build_projects_context_block(),
             build_agentic_loop_block(),
             build_pending_approvals_block(),
             # Workspace Memory is injected last so the orchestrator sees the
-            # operational state (environment, loop, pendings) before the
-            # curated knowledge it should anchor against.
+            # operational state (environment, projects, loop, pendings) before
+            # the curated knowledge it should anchor against.
             build_workspace_memory_block(),
         ]
         non_empty = [b for b in blocks if b]

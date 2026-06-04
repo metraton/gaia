@@ -1,0 +1,56 @@
+AC-1 (plan_id=9, M1-T1): --workspace-name flag overrides remote-first identity in gaia scan
+
+COMMAND
+-------
+python3 -m pytest tests/cli/test_scan.py::TestWorkspaceNameFlag -v --tb=short
+
+OUTPUT
+------
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.0, pluggy-1.6.0
+cachedir: .pytest_cache
+rootdir: /home/jorge/ws/me/gaia
+configfile: pyproject.toml
+collecting ... collected 6 items
+
+tests/cli/test_scan.py::TestWorkspaceNameFlag::test_register_exposes_workspace_name_flag PASSED [ 16%]
+tests/cli/test_scan.py::TestWorkspaceNameFlag::test_workspace_name_default_is_none PASSED [ 33%]
+tests/cli/test_scan.py::TestWorkspaceNameFlag::test_run_scan_uses_workspace_name_override PASSED [ 50%]
+tests/cli/test_scan.py::TestWorkspaceNameFlag::test_run_scan_without_flag_calls_project_current PASSED [ 66%]
+tests/cli/test_scan.py::TestWorkspaceNameFlag::test_workspace_name_flag_end_to_end_with_json PASSED [ 83%]
+tests/cli/test_scan.py::TestWorkspaceNameFlag::test_workspace_name_no_flag_uses_remote_first PASSED [100%]
+
+============================== 6 passed in 0.09s ===============================
+
+WHAT EACH TEST PROVES
+---------------------
+test_register_exposes_workspace_name_flag:
+  Parser accepts --workspace-name NAME and stores it as args.workspace_name.
+
+test_workspace_name_default_is_none:
+  Without --workspace-name the attribute defaults to None (no override active).
+
+test_run_scan_uses_workspace_name_override:
+  When args.workspace_name is set, _run_scan passes that value directly to
+  scan_workspace and does NOT call gaia.project.current() at all.
+  (gaia.project.current is patched to raise AssertionError -- it must not fire.)
+
+test_run_scan_without_flag_calls_project_current:
+  Without the flag, _run_scan calls gaia.project.current() and uses its result
+  ("remote-first-identity") as the workspace -- no-regression confirmed.
+
+test_workspace_name_flag_end_to_end_with_json:
+  End-to-end through cmd_scan: a directory with a git remote
+  (https://github.com/org/my-service.git, which current() would normalize to
+  "github.com/org/my-service") passed with --workspace-name my-local-monorepo
+  results in scan_workspace receiving "my-local-monorepo", NOT the remote-
+  derived identity.
+
+test_workspace_name_no_flag_uses_remote_first:
+  No-regression: the same directory WITHOUT --workspace-name results in
+  scan_workspace receiving "github.com/org/my-service" (the remote-first form).
+
+FULL REGRESSION RUN (test_scan.py, 26 tests, 0 failures)
+---------------------------------------------------------
+python3 -m pytest tests/cli/test_scan.py -v --tb=short
+  26 passed in 0.17s
