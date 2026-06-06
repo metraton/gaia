@@ -191,10 +191,17 @@ class TestCmdShow:
 # 3. revoke subcommand
 # ---------------------------------------------------------------------------
 
-class TestCmdRevoke:
+class TestCmdRevokeGrant:
+    """Legacy command_set grant revoke path (``approval_grants`` table).
+
+    Exercises the internal ``_revoke_grant`` helper directly -- this is the
+    fallback the unified ``cmd_revoke`` invokes when an id is not present in
+    the new ``approvals`` table.
+    """
+
     def test_revoke_existing_grant(self, tmp_db, capsys):
         from gaia.store.writer import insert_approval_grant
-        from bin.cli.approvals import cmd_revoke
+        from bin.cli.approvals import _revoke_grant
         import gaia.store.writer as real_writer
 
         insert_approval_grant(
@@ -208,7 +215,7 @@ class TestCmdRevoke:
         with patch("bin.cli.approvals._import_writer", return_value=real_writer), \
              patch.object(real_writer, "revoke_approval_grant",
                           side_effect=lambda aid, **kw: original_revoke(aid, db_path=tmp_db)):
-            rc = cmd_revoke(_make_args(approval_id="approval-revoke-cli"))
+            rc = _revoke_grant(_make_args(approval_id="approval-revoke-cli"))
 
         assert rc == 0
         out, _ = capsys.readouterr()
@@ -216,15 +223,72 @@ class TestCmdRevoke:
         assert "approval-revoke-cli" in out
 
     def test_revoke_nonexistent_returns_1(self, capsys):
-        from bin.cli.approvals import cmd_revoke
+        from bin.cli.approvals import _revoke_grant
 
         mock_writer = MagicMock()
         mock_writer.revoke_approval_grant.return_value = {"status": "not_found"}
 
         with patch("bin.cli.approvals._import_writer", return_value=mock_writer):
-            rc = cmd_revoke(_make_args(approval_id="no-such-id"))
+            rc = _revoke_grant(_make_args(approval_id="no-such-id"))
 
         assert rc == 1
+
+
+class TestCmdRevokePending:
+    """Unified revoke path against the new ``approvals`` table.
+
+    No mocks of the revoke logic: a real approval is inserted into a real
+    schema via ``store.insert_requested``, the real ``store.revoke`` performs
+    the transition, and the row is re-read to assert pending -> revoked.
+    """
+
+    def test_pending_to_revoked_transition(self, tmp_path):
+        from gaia.store.writer import _connect
+        import gaia.approvals.store as store
+
+        con = _connect(tmp_path / "approvals.db")
+        try:
+            sealed = {
+                "operation": "gaia approvals revoke test",
+                "exact_content": "echo pending->revoked",
+                "scope": "COMMAND_SET",
+                "risk_level": "low",
+            }
+            approval_id = store.insert_requested(
+                sealed,
+                agent_id="gaia-system",
+                session_id="sess-pending",
+                con=con,
+            )
+
+            before = store.get_by_id(approval_id, con=con)
+            assert before is not None
+            assert before["status"] == "pending"
+
+            # Real transition through the production store path.
+            store.revoke(approval_id, "sess-revoker", con=con)
+
+            after = store.get_by_id(approval_id, con=con)
+            assert after is not None
+            assert after["status"] == "revoked"
+        finally:
+            con.close()
+
+    def test_revoke_rejects_non_pending(self, tmp_path):
+        """revoke() must refuse to transition an already-revoked approval."""
+        from gaia.store.writer import _connect
+        import gaia.approvals.store as store
+
+        con = _connect(tmp_path / "approvals.db")
+        try:
+            sealed = {"operation": "x", "exact_content": "x", "scope": "COMMAND_SET"}
+            approval_id = store.insert_requested(sealed, con=con)
+            store.revoke(approval_id, "sess-revoker", con=con)
+
+            with pytest.raises(ValueError):
+                store.revoke(approval_id, "sess-revoker", con=con)
+        finally:
+            con.close()
 
     def test_revoke_then_match_fails(self, tmp_db):
         """Insert → revoke → match returns None (end-to-end)."""
@@ -243,7 +307,7 @@ class TestCmdRevoke:
             db_path=tmp_db,
         )
         revoke_approval_grant("approval-revoke-flow", db_path=tmp_db)
-        result = match_command_set_grant(cmd, session_id="sess-flow", db_path=tmp_db)
+        result = match_command_set_grant(cmd, db_path=tmp_db)
         assert result is None
 
 

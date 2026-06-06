@@ -440,12 +440,16 @@ def cmd_show(args) -> int:
 # Subcommand: revoke
 # ---------------------------------------------------------------------------
 
-def cmd_revoke(args) -> int:
-    """Revoke an active command_set grant by its approval_id.
+def _revoke_grant(args) -> int:
+    """Revoke an active command_set grant by its approval_id (legacy path).
 
     Calls ``writer.revoke_approval_grant(approval_id)`` to mark the grant
     REVOKED in the DB.  After revocation, any unconsumed commands in the
     command_set will require fresh approval.
+
+    This is the legacy ``approval_grants``-table path. It is invoked as the
+    fallback by the unified :func:`cmd_revoke` when an id is not found in the
+    new ``approvals`` table.
 
     Exits 0 on success, 1 if the grant is not found or already in a terminal
     state.
@@ -939,18 +943,14 @@ def cmd_pending(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _resolve_approval_id(raw_id: str) -> str:
-    """Normalize a raw approval_id input.
+    """Normalize a raw approval_id input by trimming surrounding whitespace.
 
-    Accepts:
-      - Full P-{uuid4hex} form: returned as-is.
-      - Bare hex (no P- prefix): prefixed with 'P-'.
-      - P-XXXX short form: returned as-is for prefix search downstream.
+    The input is passed through unchanged otherwise -- both the full
+    ``P-{uuid4hex}`` form and the ``P-XXXX`` short form are returned as-is for
+    exact or prefix lookup downstream. (A bare hex string with no ``P-`` prefix
+    is also returned untouched; the lookup layer handles that case.)
     """
-    stripped = raw_id.strip()
-    if stripped.upper().startswith("P-"):
-        return stripped
-    # Try to detect if it's a bare hex string missing the P- prefix.
-    return stripped
+    return raw_id.strip()
 
 
 def cmd_show_v2(args) -> int:
@@ -1019,14 +1019,16 @@ def cmd_history_single(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# T3.2: gaia approvals revoke-v2 <id> -- revoke using new approvals table
+# gaia approvals revoke <id> -- unified revoke (auto-detects pending vs grant)
 # ---------------------------------------------------------------------------
 
-def cmd_revoke_v2(args) -> int:
-    """Revoke a pending approval from the new approvals table.
+def cmd_revoke(args) -> int:
+    """Revoke an approval, auto-detecting which store owns it.
 
-    Inserts a REVOKED event and updates status to 'revoked'. Requires
-    the approval to be in 'pending' status.
+    First looks the id up in the new ``approvals`` table. If found and
+    ``pending``, inserts a REVOKED event and updates status to 'revoked'.
+    If the id is not present in the new table, falls back to the legacy
+    command_set grant path (:func:`_revoke_grant`).
 
     With ``--yes``, skips the interactive confirmation prompt.
     Exits 0 on success, 1 on error.
@@ -1042,8 +1044,8 @@ def cmd_revoke_v2(args) -> int:
         return 1
 
     if approval is None:
-        # Fall back to old revoke command if not found in new table.
-        return cmd_revoke(args)
+        # Fall back to legacy grant revoke if not found in new table.
+        return _revoke_grant(args)
 
     current_status = approval.get("status", "?")
     if current_status != "pending":
@@ -1596,7 +1598,7 @@ def register(subparsers) -> None:
         help="Full approval_id (P-{uuid4hex}) of the approval to revoke",
     )
     p_revoke.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
-    p_revoke.set_defaults(func=cmd_revoke_v2)
+    p_revoke.set_defaults(func=cmd_revoke)
 
     # approve (T3.3) -- cross-session grant
     p_approve = sub.add_parser(
@@ -1839,7 +1841,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_revoke = subparsers.add_parser("revoke", help="Revoke a pending approval")
     p_revoke.add_argument("approval_id", metavar="APPROVAL_ID")
     p_revoke.add_argument("--yes", action="store_true")
-    p_revoke.set_defaults(func=cmd_revoke_v2)
+    p_revoke.set_defaults(func=cmd_revoke)
 
     p_history = subparsers.add_parser("history", help="Show approval history")
     p_history.add_argument("approval_id", metavar="APPROVAL_ID", nargs="?")
