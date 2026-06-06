@@ -12,6 +12,8 @@ Input lines must match: METRIC {name}={number}
 Output: JSON to stdout with metric name, numeric value, and raw line.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import re
