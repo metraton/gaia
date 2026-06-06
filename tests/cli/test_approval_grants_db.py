@@ -257,3 +257,149 @@ class TestListApprovalGrants:
         assert "idx_approval_grants_agent" in index_names
         assert "idx_approval_grants_session" in index_names
         assert "idx_approval_grants_status" in index_names
+
+
+# ---------------------------------------------------------------------------
+# 6. THREAD (c): consume-event consistency between SINGULAR and COMMAND_SET
+# ---------------------------------------------------------------------------
+#
+# These tests LOCK IN a design decision rather than introduce new behavior.
+#
+# The premise of thread (c) was that the SINGULAR grant writes a "CONSUMED"
+# event to approval_events on consume while COMMAND_SET does not. Investigation
+# disproved that premise:
+#
+#   * consume_db_semantic_grant   (SINGULAR consume)      -> only flips the
+#     approval_grants row to status=CONSUMED; writes NO approval_events row.
+#   * mark_command_set_item_consumed (COMMAND_SET consume) -> only flips the
+#     approval_grants row to status=CONSUMED; writes NO approval_events row.
+#
+# The two consume paths are therefore ALREADY consistent: neither emits a
+# consume-time audit event. The approval_events hash-chain (gaia.approvals)
+# records the REQUESTED -> SHOWN -> APPROVED lifecycle; the per-command consume
+# is tracked exclusively in approval_grants. The approval_events.event_type
+# CHECK constraint does not even include 'CONSUMED', so writing one would both
+# break the schema AND be the inconsistency. We add no consume event; instead we
+# pin the consistency so a future change cannot silently diverge one path.
+#
+# Uses the real gaia.store.writer._connect (full schema) rather than the
+# tmp_db fixture, because we need the approval_events table to assert against.
+# ---------------------------------------------------------------------------
+
+class TestConsumeEventConsistency:
+    """SINGULAR and COMMAND_SET consume paths must both write zero approval_events."""
+
+    @staticmethod
+    def _full_db(tmp_path):
+        """A fresh DB materialized through the real connect (whole schema)."""
+        from gaia.store.writer import _connect
+        db = tmp_path / "full.db"
+        con = _connect(db)
+        con.close()
+        return db
+
+    @staticmethod
+    def _count_events(db, approval_id):
+        con = sqlite3.connect(str(db))
+        n = con.execute(
+            "SELECT COUNT(*) FROM approval_events WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()[0]
+        con.close()
+        return n
+
+    def test_singular_consume_writes_no_approval_event(self, tmp_path):
+        from gaia.store.writer import insert_approval_grant, consume_db_semantic_grant
+        db = self._full_db(tmp_path)
+        insert_approval_grant(
+            "sing-evt",
+            [{"command": "terraform apply", "rationale": "x"}],
+            scope="SCOPE_SEMANTIC_SIGNATURE",
+            db_path=db,
+        )
+        before = self._count_events(db, "sing-evt")
+        assert consume_db_semantic_grant("sing-evt", db_path=db) is True
+        after = self._count_events(db, "sing-evt")
+        assert before == 0 and after == 0, (
+            "SINGULAR consume must not write an approval_events row "
+            f"(before={before}, after={after})"
+        )
+
+    def test_command_set_consume_writes_no_approval_event(self, tmp_path):
+        from gaia.store.writer import insert_approval_grant, mark_command_set_item_consumed
+        db = self._full_db(tmp_path)
+        insert_approval_grant(
+            "cs-evt",
+            [{"command": "git push origin main", "rationale": "a"},
+             {"command": "git push origin tags", "rationale": "b"}],
+            scope="COMMAND_SET",
+            db_path=db,
+        )
+        before = self._count_events(db, "cs-evt")
+        mark_command_set_item_consumed("cs-evt", 0, db_path=db)
+        result = mark_command_set_item_consumed("cs-evt", 1, db_path=db)
+        after = self._count_events(db, "cs-evt")
+        assert result.get("all_consumed") is True
+        assert before == 0 and after == 0, (
+            "COMMAND_SET consume must not write an approval_events row "
+            f"(before={before}, after={after})"
+        )
+
+    def test_both_paths_are_consistent(self, tmp_path):
+        """Side-by-side: both consume paths flip to CONSUMED with zero events."""
+        from gaia.store.writer import (
+            insert_approval_grant,
+            consume_db_semantic_grant,
+            mark_command_set_item_consumed,
+        )
+        db = self._full_db(tmp_path)
+
+        insert_approval_grant(
+            "both-sing", [{"command": "kubectl apply -f x.yaml", "rationale": "x"}],
+            scope="SCOPE_SEMANTIC_SIGNATURE", db_path=db,
+        )
+        insert_approval_grant(
+            "both-cs",
+            [{"command": "git push origin main", "rationale": "a"},
+             {"command": "helm upgrade app ./chart", "rationale": "b"}],
+            scope="COMMAND_SET", db_path=db,
+        )
+
+        consume_db_semantic_grant("both-sing", db_path=db)
+        mark_command_set_item_consumed("both-cs", 0, db_path=db)
+        mark_command_set_item_consumed("both-cs", 1, db_path=db)
+
+        con = sqlite3.connect(str(db))
+        sing_status = con.execute(
+            "SELECT status FROM approval_grants WHERE approval_id='both-sing'"
+        ).fetchone()[0]
+        cs_status = con.execute(
+            "SELECT status FROM approval_grants WHERE approval_id='both-cs'"
+        ).fetchone()[0]
+        total_events = con.execute(
+            "SELECT COUNT(*) FROM approval_events WHERE approval_id IN ('both-sing','both-cs')"
+        ).fetchone()[0]
+        con.close()
+
+        # Both reach CONSUMED; neither emits any approval_events row.
+        assert sing_status == "CONSUMED"
+        assert cs_status == "CONSUMED"
+        assert total_events == 0, (
+            "consistency invariant: neither consume path writes approval_events "
+            f"(got {total_events})"
+        )
+
+    def test_consumed_event_type_rejected_by_schema(self, tmp_path):
+        """A 'CONSUMED' approval_events row is rejected by the CHECK constraint --
+        proving a 'CONSUMED event' could not be added without a schema migration,
+        and would itself be the inconsistency (the chain has no such event type)."""
+        db = self._full_db(tmp_path)
+        con = sqlite3.connect(str(db))
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                con.execute(
+                    "INSERT INTO approval_events (approval_id, event_type) "
+                    "VALUES ('x', 'CONSUMED')"
+                )
+        finally:
+            con.close()
