@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.3] - 2026-06-05
+
+### COMMAND_SET Batch Approval, Consent-Reducing Approval Verbs, Contract Advisory Field
+
+Patch release wiring the COMMAND_SET batch-approval path end-to-end, reclassifying Gaia's own consent-reducing approval verbs out of T3, adding an advisory contract field, and removing the redundant `gitops_validator`. Full suite green (4555 passed).
+
+#### Added
+
+- **COMMAND_SET batch approval, end-to-end** — a payload carrying a `command_set`
+  of more than one mutative command now activates into ONE `COMMAND_SET` grant
+  covering the whole batch instead of being degraded to a single command. The
+  create side (`activate_db_pending_by_prefix` Step 3b in `approval_grants.py`,
+  fed by `_intake_command_set_pending` in `handoff_persister.py` and persisted via
+  `gaia/store/writer.py`) was previously orphaned; it is now wired to the
+  byte-for-byte consume path in `bash_validator`. The batch is consumed
+  item-by-item under a single consent.
+
+- **Advisory `user_facing_summary` field on the agent contract** — an additive,
+  optional field in the `agent_contract_handoff` envelope (`contract_validator.py`,
+  `response_contract.py`) carrying a human-readable summary for the orchestrator to
+  surface. Purely additive; absence does not affect validation.
+
+#### Changed
+
+- **Consent-reducing approval verbs are no longer T3** — `gaia approvals
+  revoke|reject|reject-all|clean` only revoke or discard grants Gaia itself issued
+  (they reduce capability, never reach remote state), so they are reclassified out
+  of T3 via `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS` in `mutative_verbs.py`. `gaia
+  approvals approve` *grants* capability and remains T3.
+
+- **`gaia approvals revoke` unified with auto-detect** — `revoke` now auto-detects
+  a pending approval (pending → grant) and the separate `revoke-v2` command was
+  removed. Behavior is otherwise unchanged.
+
+- **Plan-first heuristic** — COMMAND_SET is now treated as a judgment call, not a
+  default, when deciding how to present batched mutative work.
+
+#### Fixed
+
+- **Guard empty/None `transcript_path`** — `transcript_reader.py` now guards against
+  an empty or `None` transcript path instead of failing downstream during nonce
+  extraction.
+
+- **Harden AI-attribution footer stripping** — the attribution-footer stripping in
+  `bash_validator.py` is hardened against additional footer shapes.
+
+#### Removed
+
+- **Redundant `gitops_validator`** — `hooks/modules/security/gitops_validator.py` and
+  its test are removed; its responsibilities are covered by the unified bash
+  validation path. All references (security `__init__`, `bash_validator` import/call,
+  simulator extractor, surface-routing config, architecture docs, and skill/README
+  references) are cleaned up.
+
 ## [5.0.2] - 2026-06-03
 
 ### Approval-Flow Hardening, mkdir Reclassification, Jira Skill
