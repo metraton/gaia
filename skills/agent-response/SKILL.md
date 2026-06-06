@@ -16,7 +16,7 @@ The orchestrator loads this to interpret a returned `agent_contract_handoff` and
 
 ```
 parse_contract(agent_output)  ->  read agent_status.plan_status
-  |- COMPLETE         -> summarize key_outputs + surface verification, then close
+  |- COMPLETE         -> relay user_facing_summary if present & N=1, else summarize key_outputs; surface verification, then close
   |- APPROVAL_REQUEST -> split on approval_id (present: present-approval; absent: plan options)
   |- NEEDS_INPUT      -> AskUserQuestion, then SendMessage the answer
   |- BLOCKED          -> present open_gaps; new dispatch or accept the limitation
@@ -29,7 +29,7 @@ Before any branch runs, the contract must parse. A block that fails `parse_contr
 
 | `plan_status` | Action |
 |---|---|
-| `COMPLETE` | Summarize `key_outputs` in 3-5 bullets AND surface `verification.result` / `verification.details` -- that block is the proof the work landed, and relaying it is what lets the user trust the increment rather than take "done" on faith. Mention `cross_layer_impacts` and `open_gaps` when non-empty. |
+| `COMPLETE` | If `user_facing_summary` is present AND this is a single-agent turn (N=1), relay it near-verbatim -- adapt only to the user's language, do not re-synthesize -- because the subagent already wrote the human-shaped summary and re-summarizing its `key_outputs` only spends tokens to restate what it said. If the field is absent, or N>1 (multiple agents being consolidated), summarize `key_outputs` in 3-5 bullets as before. Either way, surface `verification.result` / `verification.details` -- that block is the proof the work landed, and relaying it is what lets the user trust the increment rather than take "done" on faith. Mention `cross_layer_impacts` and `open_gaps` when non-empty. |
 | `APPROVAL_REQUEST` | Split on `approval_request.approval_id`: present -> load `Skill('orchestrator-present-approval')`; absent -> present the plan with options (execute / modify / cancel) and on execute/modify resume the SAME agent via `SendMessage`. It splits because a hook-issued `approval_id` carries a pending T3 grant that needs the structured consent flow, while a plan-first request only needs direction (`agent-approval-protocol`, combo decision 2). |
 | `NEEDS_INPUT` | `AskUserQuestion` with the options in `next_action`, then `SendMessage` the answer back to resume. |
 | `BLOCKED` | Present `open_gaps` to the user. If they give direction, dispatch a NEW agent addressing the blocker; if they accept the limitation, close the task as incomplete and move on. |
@@ -40,6 +40,8 @@ Before any branch runs, the contract must parse. A block that fails `parse_contr
 These ride alongside `plan_status` and carry signal the orchestrator loses if it reads only the status.
 
 **`verification`** -- covered in COMPLETE above. It is required only on `COMPLETE` and its `result` must equal `"pass"` (`VERIFICATION_RESULT_MUST_BE_PASS`, `contract_validator.py`); surface `result` and `details` so the user sees the proof, never just the word "done."
+
+**`user_facing_summary`** -- the one human-audience field (every other field is machine-audience for the orchestrator). On a single-agent `COMPLETE` it is what you relay to the user, near-verbatim and language-adapted, *instead of* re-synthesizing `key_outputs`; that is the whole point -- the subagent wrote the summary once, so re-summarizing duplicates work the user never sees value in. It is optional and additive: when absent, fall back to `key_outputs`; when multiple agents are in flight (N>1), ignore it and synthesize across them, because no single agent's summary speaks for the consolidated result.
 
 **`memorialize_suggestions` / `memory_suggestions`** -- present each entry to the user before closing the turn and persist ONLY on consent. The orchestrator is the sole memory writer; subagents are blocked from curated writes by design so each entry enters the substrate as a named choice. For the curation mechanics -- how to triage, slug, and persist -- load `Skill('memory')` (combo decision 1: the HOW lives in `memory`).
 
