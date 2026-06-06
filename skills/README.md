@@ -64,7 +64,7 @@ skills/
 ├── gaia-patterns/         # Gaia component patterns: hooks, agents, routing, CLI
 │   └── reference.md
 ├── gaia-planner/          # Feature planning, briefs, task decomposition
-├── gaia-release/          # Gaia release pipeline: live, dry-run, beta, stable
+├── gaia-release/          # Gaia release pipeline: install local, dry-run, release
 ├── gaia-audit/            # Audit one component (agent or skill) against its standard + live implementation
 ├── gaia-verify/           # Verify a Gaia installation across delivery surfaces
 ├── git-conventions/       # Conventional Commits (on-demand workflow skill)
