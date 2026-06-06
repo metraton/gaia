@@ -2822,6 +2822,62 @@ def list_approval_grants(
         con.close()
 
 
+def list_command_set_grants_agnostic(
+    *,
+    status: str = "PENDING",
+    limit: int = 100,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """List COMMAND_SET grants WITHOUT a session_id constraint (Brief 71).
+
+    This is the COMMAND_SET analogue of the session-agnostic lookup that
+    ``check_db_semantic_grant`` performs for the SINGULAR (semantic-signature)
+    grant. The block-approve-retry flow legitimately spans sessions -- a
+    command is blocked under the subagent session, the user approves under the
+    orchestrator session, and the consuming retry runs under whichever session
+    (or none -- CLAUDE_SESSION_ID is not guaranteed to be exported into the bash
+    subprocess, where ``get_session_id()`` then falls back to the literal
+    ``"default"``). A session_id filter therefore never matches the grant the
+    approval created, which is exactly the consumption-bypass bug this function
+    fixes.
+
+    The security boundary is preserved WITHOUT a session_id constraint, by the
+    same conjunction of session-agnostic facts the singular path relies on
+    (mirrors the comment in ``check_db_semantic_grant``):
+      * the byte-for-byte command match (applied by the caller against each
+        unconsumed command_set item) binds the grant to THIS command's exact
+        intent;
+      * status='PENDING' plus per-index ``consumed_indexes_json`` is the
+        single-use replay guard -- a fully consumed grant flips to CONSUMED and
+        no longer matches, and an already-consumed index is skipped;
+      * expires_at is the TTL -- a stale grant past its window is skipped.
+    None of these depend on which session is asking, so dropping the session_id
+    filter widens nothing the other checks do not already gate. It only lets the
+    legitimate cross-session (or empty-session) retry succeed.
+
+    Args:
+        status: Status to filter on (default 'PENDING').
+        limit: Maximum rows to return.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        List of dicts keyed by column name, ordered by created_at DESC.
+    """
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT * FROM approval_grants "
+            "WHERE scope = 'COMMAND_SET' AND status = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Public API: insert_semantic_grant / check_db_semantic_grant /
 #             consume_db_semantic_grant (CHECK-side DB cutover, Brief 71)

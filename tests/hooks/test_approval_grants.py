@@ -102,7 +102,7 @@ class TestCommandSetPositiveMatch:
         )
         assert ok is True
 
-        result = match_command_set_grant(cmd, session_id="sess-1", db_path=tmp_db)
+        result = match_command_set_grant(cmd, db_path=tmp_db)
         assert result is not None
         approval_id, idx = result
         assert approval_id == "approval-1"
@@ -121,7 +121,7 @@ class TestCommandSetPositiveMatch:
             db_path=tmp_db,
         )
         for i, cmd in enumerate(cmds):
-            res = match_command_set_grant(cmd, session_id="sess-2", db_path=tmp_db)
+            res = match_command_set_grant(cmd, db_path=tmp_db)
             assert res is not None
             assert res[1] == i
 
@@ -144,7 +144,7 @@ class TestCommandSetNegativeMatch:
             db_path=tmp_db,
         )
         wrapped = f"cd /repo && {cmd}"
-        assert match_command_set_grant(wrapped, session_id="sess-3", db_path=tmp_db) is None
+        assert match_command_set_grant(wrapped, db_path=tmp_db) is None
 
     def test_redirect_does_not_match(self, tmp_db):
         from modules.security.approval_grants import (
@@ -159,7 +159,7 @@ class TestCommandSetNegativeMatch:
             db_path=tmp_db,
         )
         assert match_command_set_grant(
-            cmd + " > output.txt", session_id="sess-4", db_path=tmp_db
+            cmd + " > output.txt", db_path=tmp_db
         ) is None
 
     def test_extra_flag_does_not_match(self, tmp_db):
@@ -175,7 +175,7 @@ class TestCommandSetNegativeMatch:
             db_path=tmp_db,
         )
         assert match_command_set_grant(
-            cmd + " --force", session_id="sess-5", db_path=tmp_db
+            cmd + " --force", db_path=tmp_db
         ) is None
 
 
@@ -200,12 +200,12 @@ class TestSingleUseConsumption:
             db_path=tmp_db,
         )
 
-        res = match_command_set_grant(cmd, session_id="sess-6", db_path=tmp_db)
+        res = match_command_set_grant(cmd, db_path=tmp_db)
         assert res is not None
         mark_command_set_item_consumed("approval-singleuse", 0, db_path=tmp_db)
 
         # Second attempt should fail -- item already consumed
-        res2 = match_command_set_grant(cmd, session_id="sess-6", db_path=tmp_db)
+        res2 = match_command_set_grant(cmd, db_path=tmp_db)
         assert res2 is None
 
 
@@ -228,7 +228,7 @@ class TestExpiry:
             expires_at=past_expires,
         )
         result = match_command_set_grant(
-            "git push origin main", session_id="sess-7", db_path=tmp_db
+            "git push origin main", db_path=tmp_db
         )
         assert result is None
 
@@ -252,9 +252,9 @@ class TestRevocation:
         )
 
         # Verify match before revoke
-        assert match_command_set_grant(cmd, session_id="sess-8", db_path=tmp_db) is not None
+        assert match_command_set_grant(cmd, db_path=tmp_db) is not None
 
         revoke_approval_grant("approval-revoke", db_path=tmp_db)
 
         # After revocation, should not match
-        assert match_command_set_grant(cmd, session_id="sess-8", db_path=tmp_db) is None
+        assert match_command_set_grant(cmd, db_path=tmp_db) is None
