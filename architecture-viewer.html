@@ -614,11 +614,6 @@ const data = {
       "fields": ["event_type: EventType", "data: Dict", "timestamp: str"],
       "methods": ["to_dict"]
     },
-    "GitOpsValidationResult": {
-      "type": "dataclass",
-      "module": "modules/security/gitops_validator.py",
-      "fields": ["allowed: bool", "reason: str", "severity: str", "suggestions: List[str]"]
-    },
     "ResponseContractValidation": {
       "type": "dataclass",
       "frozen": true,
@@ -668,7 +663,6 @@ const data = {
         "modules/security/blocked_commands.py:is_blocked_command",
         "modules/security/mutative_verbs.py:detect_mutative_command",
         "modules/security/mutative_verbs.py:build_t3_block_response",
-        "modules/security/gitops_validator.py:validate_gitops_workflow",
         "modules/security/approval_grants.py:check_approval_grant",
         "modules/security/approval_grants.py:confirm_grant",
         "modules/security/approval_grants.py:generate_nonce",
@@ -745,12 +739,6 @@ const data = {
       "description": "Security tier classification (T0-T3) for logging and state tracking. Not the primary security gate -- bash_validator enforces decisions",
       "calls": ["modules/security/mutative_verbs.py:detect_mutative_command", "modules/security/blocked_commands.py:get_blocked_patterns"],
       "called_by": ["modules/tools/bash_validator.py", "modules/tools/task_validator.py"]
-    },
-    "modules/security/gitops_validator.py": {
-      "functions": ["validate_gitops_workflow", "is_safe_gitops_command", "is_forbidden_gitops_command", "to_dict"],
-      "classes": ["GitOpsValidationResult"],
-      "description": "GitOps workflow validation for kubectl/helm/flux: ensures commands follow GitOps principles (no direct cluster modifications)",
-      "called_by": ["modules/tools/bash_validator.py"]
     },
     "modules/security/command_semantics.py": {
       "functions": ["analyze_command", "tokenize_command"],

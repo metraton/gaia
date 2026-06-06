@@ -45,8 +45,7 @@ modules/
 │   ├── approval_constants.py # Approval system constants
 │   ├── approval_messages.py  # Approval denial message formatting
 │   ├── approval_scopes.py   # Approval scope definitions
-│   ├── command_semantics.py  # Command semantic analysis
-│   └── gitops_validator.py # kubectl/helm/flux validation
+│   └── command_semantics.py  # Command semantic analysis
 │
 ├── tools/                # Tool-specific validators
 │   ├── __init__.py
@@ -179,8 +178,7 @@ bash_validator checks commands in this order (short-circuit on first match):
 3. **Commit message validation** — conventional commits enforcement
 4. **Cloud pipe/redirect/chain check** (cloud_pipe_validator.py) — corrective deny
 5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, native `ask` dialog
-6. **GitOps validation** (gitops_validator.py) — kubectl/helm/flux policy enforcement
-7. **Everything else** — SAFE by elimination (auto-approved)
+6. **Everything else** — SAFE by elimination (auto-approved)
 
 ### Tier Classification
 - **T0**: Read-only (get, list, describe, show)

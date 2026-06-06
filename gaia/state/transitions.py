@@ -10,10 +10,10 @@ The Contract workflow transitions live in
 here for symmetry; the brief lifecycle transitions live in
 ``gaia.briefs.store._LEGAL_TRANSITIONS`` and are likewise imported.
 
-The plan and task lifecycle transitions are defined here directly (the
-underlying tables ``plans`` and ``tasks`` have no CLI surface yet -- a
-separate brief, ``cli-completion``, will add ``gaia plan`` and
-``gaia task`` commands that consume these helpers).
+The plan and task lifecycle transitions are defined here directly. The
+``gaia plan`` and ``gaia task`` commands (``bin/cli/plan.py`` and
+``bin/cli/task.py``) consume these helpers when driving the ``plans`` and
+``tasks`` lifecycle.
 """
 
 from __future__ import annotations

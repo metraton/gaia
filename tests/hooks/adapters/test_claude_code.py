@@ -824,7 +824,7 @@ class TestFormatValidationResponse:
         """Deny without nonce but not BLOCKED tier -> exit 0 (corrective)."""
         result = ValidationResult(
             allowed=False,
-            reason="GitOps policy violation",
+            reason="Corrective policy violation",
             tier="T3",
             nonce=None,
         )

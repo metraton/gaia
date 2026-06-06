@@ -72,7 +72,6 @@ Order is short-circuit -- first match wins:
    |                          If mutative + no active grant -> generate nonce, block
    |                          If mutative + active grant -> allow (T3)
    |                          If not mutative -> safe by elimination (T0)
-6. gitops_validator       --> GitOps policy for kubectl/helm/flux
 ```
 
 ### Task/Agent Validation
