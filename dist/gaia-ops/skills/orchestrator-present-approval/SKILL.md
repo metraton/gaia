@@ -71,11 +71,26 @@ Fields above are extracted from the DB-stored canonical payload (`payload_json` 
    grant consumed by the first retry (`consume_db_semantic_grant` in
    `gaia/store/writer.py`). A second invocation is a new APPROVAL_REQUEST.
 
-3. **No batch grant.** Legacy `verb_family` was removed; the `COMMAND_SET`
-   replacement has only the CHECK side wired (`match_command_set_grant` is
-   called by `bash_validator`, but `create_command_set_grant` has no production
-   caller). `batch_scope` is ignored. For N commands, expect N approvals.
+3. **Batch grant is `COMMAND_SET` -- one consent, N commands.** Legacy
+   `verb_family` was removed; its replacement, `COMMAND_SET`, is now wired
+   end-to-end (intake, activation, consume). When a subagent emits a plan-first
+   `APPROVAL_REQUEST` carrying a `command_set` of >= 2 `{command, rationale}`
+   items and **no** `approval_id`, the SubagentStop processor
+   (`handoff_persister._intake_command_set_pending`) mints ONE pending
+   `COMMAND_SET` with one `approval_id`. You present that single approval: list
+   **all N commands** in the question body, but use **one** Approve label with
+   **one** `[P-{nonce8}]` suffix -- one consent covers the whole batch. On
+   approval, `activate_db_pending_by_prefix` Step 3b creates a single
+   `COMMAND_SET` grant (60-min TTL); each command is consumed byte-for-byte on
+   its own retry. `batch_scope` is still ignored (the signal is `command_set`).
    See `reference.md` -> "On batch intents".
+
+   You present the batch the subagent chose to send; you do not steer it toward
+   batching. Whether grouping is warranted is the subagent's judgment (known
+   batch, >= 2, friction reduced -- see `subagent-request-approval`). A singular
+   approval arriving where you imagined a batch is not a defect to correct: the
+   default is just-in-time, and a batch you would have manufactured asks the
+   user to consent to commands that may never run.
 
 4. **Re-dispatch, do not resume.** `mode` does not survive a SendMessage resume:
    the resume runs in `default` and re-blocks the next protected operation even
@@ -97,5 +112,5 @@ wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
 | "I'll skip the [P-...] suffix, it's cosmetic" | The hook extracts the nonce from the label to find the right pending row; without it, targeted activation fails and no grant is created. |
 | "Similar command, slightly different path -- I'll reuse / wrap it" | Grants match the statement signature byte-for-byte. Any wrapper, redirect, flag, or path drift is a different signature and a fresh re-block. |
 | "The same command emitted a new approval_id" | Grants are single-use and consumed on the first retry. A second run is a new APPROVAL_REQUEST -- approve again. |
-| "I'll set batch_scope to approve many at once" | No batch activation exists in current code -- the field is ignored. Each blocked command needs its own approval. |
+| "I'll set batch_scope to approve many at once" | `batch_scope` is ignored -- but a real batch path exists: a plan-first `command_set` (>= 2 items, no `approval_id`) is intaken into ONE pending `COMMAND_SET`. Present that single approval (N commands shown, one `[P-...]` nonce, one consent), not N separate approvals. |
 | "I can paraphrase a field before relaying" | The fingerprint covers all 7 sealed fields; any modification raises `ChainTamperError` in Step 0 and the presentation is refused. |

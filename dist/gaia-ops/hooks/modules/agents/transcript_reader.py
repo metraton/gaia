@@ -139,10 +139,25 @@ def extract_injected_context_payload_from_transcript(
     """
     import os
 
+    # Empty/None path guard. Without it, Path("").stem == "" and the substring
+    # match below (``candidate.stem in "" or "" in candidate.stem``) is ALWAYS
+    # True because ``"" in any_string`` is True -- so an empty path would match
+    # (and return) the FIRST payload sitting in gaia-context-payloads/, making
+    # the result depend on whatever happens to be in that directory. Mirror the
+    # guard in read_first_user_content_from_transcript: no path, no match.
+    if not transcript_path:
+        return {}
+
     try:
         payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
         if payload_dir.exists():
             agent_file = Path(transcript_path).stem  # e.g. "agent-ae190a4da68d626d4"
+            # A stem that came out empty (e.g. path was "/" or "."): nothing to
+            # match against, so the substring test would again degrade to the
+            # always-true ``"" in candidate.stem``. Bail rather than grab an
+            # arbitrary payload.
+            if not agent_file:
+                return {}
             # Match by agent ID substring
             for candidate in payload_dir.glob("*.json"):
                 if candidate.stem in agent_file or agent_file in candidate.stem:

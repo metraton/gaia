@@ -5,7 +5,6 @@ Provides:
 - tiers: SecurityTier enum and classification
 - blocked_commands: Permanently blocked pattern matching
 - mutative_verbs: Mutative verb detection (user approval workflow)
-- gitops_validator: kubectl/helm/flux validation
 - approval_constants: Approval token patterns (legacy APPROVE: and ElicitationResult)
 - approval_grants: Time-limited T3 command passthrough after user approval
 - shell_unwrapper: Detect and strip wrapper shells for inner command classification
@@ -21,7 +20,6 @@ from .blocked_commands import (
     get_blocked_patterns,
     BlockedCommandResult,
 )
-from .gitops_validator import validate_gitops_workflow, GitOpsValidationResult
 from .mutative_verbs import (
     CLI_FAMILY_LOOKUP,
     CATEGORY_MUTATIVE,
@@ -73,9 +71,6 @@ __all__ = [
     "is_blocked_command",
     "get_blocked_patterns",
     "BlockedCommandResult",
-    # GitOps
-    "validate_gitops_workflow",
-    "GitOpsValidationResult",
     # Mutative verbs
     "CLI_FAMILY_LOOKUP",
     "CATEGORY_MUTATIVE",
