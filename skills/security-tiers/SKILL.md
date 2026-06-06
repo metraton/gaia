@@ -17,7 +17,11 @@ security-tiers classifies every operation into four tiers so an agent knows whet
 | **T0** | Read-only; observes state, changes nothing | No | get, list, describe, show, logs, status |
 | **T1** | Local validation; no remote calls, no state | No | validate, lint, fmt, check |
 | **T2** | Simulation / dry-run; may read remote, never writes | No | plan, diff, dry-run, template |
-| **T3** | State-mutating; creates, updates, or destroys | **Yes** | apply, create, delete, commit, push, deploy |
+| **T3** | State-mutating; creates, updates, or destroys | **Yes** | apply, create, delete, push, deploy |
+
+`git commit` and `git add` are **not** T3 -- they are local-only operations (they touch the working tree and local refs, never remote state), so they classify as safe by elimination. Only `git push` mutates remote state and is T3. This matches `GIT_LOCAL_SAFE_SUBCOMMANDS` in `mutative_verbs.py`, where `commit` and `add` are listed as local-safe.
+
+**T3 gates a direction, not a category of verb.** An operation needs consent because it moves the system toward *more* capability (it grants) or *less* recoverability (it destroys). An operation that only moves the other way -- that *reduces* capability already granted -- does not need consent, because the worst it can do is take back power that was given. So within Gaia's own consent layer, `gaia approvals revoke|reject|reject-all|clean` are **not** T3: they only revoke or discard grants Gaia itself issued, never reaching outside the local approval store. The asymmetry is deliberate -- `gaia approvals approve` *grants* capability without the AskUserQuestion flow, so it stays T3. This is anchored to the `gaia approvals` group in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS` (`mutative_verbs.py`), not generalized to every CLI's "revoke" -- a cloud IAM revoke is a real remote mutation and remains T3.
 
 ## Classification heuristic
 
