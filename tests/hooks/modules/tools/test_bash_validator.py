@@ -219,6 +219,106 @@ class TestClaudeFooterStripping:
         assert result.modified_input is None
 
 
+class TestClaudeFooterHardening:
+    """Detector/stripper alignment + new attribution shapes (Item 4).
+
+    Pins: (a) the detector recognizes everything the stripper removes,
+    (b) the robot emoji, the Anthropic model family (Opus/Sonnet/Haiku),
+    and Approved-by trailers are covered, and (c) footers carried in a
+    repeated ``-m "..."`` argument (no preceding newline) are stripped.
+    """
+
+    # ---- Detector / stripper alignment ----
+
+    def test_detector_recognizes_bare_emoji_generated(self, validator):
+        """A '🤖 Generated with ...' footer with NO 'Claude Code' text must
+        be DETECTED (previously the stripper covered it but the detector
+        did not, so the strip never fired)."""
+        cmd = 'git commit -m "fix bug\n\n🤖 Generated with the robot"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Generated with" not in stripped
+        assert "fix bug" in stripped
+
+    # ---- Robot emoji ----
+
+    def test_bare_robot_emoji_line_stripped(self, validator):
+        cmd = 'git commit -m "fix bug\n\n🤖 Claude was here"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "🤖" not in stripped
+        assert "fix bug" in stripped
+
+    # ---- Anthropic model family (Opus) ----
+
+    def test_co_authored_by_opus_stripped(self, validator):
+        cmd = 'git commit -m "fix\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Opus" not in stripped
+        assert "fix" in stripped
+
+    def test_co_authored_with_opus_stripped(self, validator):
+        cmd = 'git commit -m "fix\n\nCo-authored-with: Claude Opus"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Opus" not in stripped
+
+    # ---- Approved-by ----
+
+    def test_approved_by_stripped(self, validator):
+        cmd = 'git commit -m "fix\n\nApproved-by: Claude"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Approved-by" not in stripped
+        assert "fix" in stripped
+
+    # ---- Repeated -m argument (no preceding newline) ----
+
+    def test_repeated_m_opus_footer_stripped(self, validator):
+        cmd = 'git commit -m "real message" -m "Co-Authored-By: Claude Opus 4.8 <x@y>"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Opus" not in stripped
+        assert "Co-Authored-By" not in stripped
+        assert "real message" in stripped
+
+    def test_repeated_m_approved_by_stripped(self, validator):
+        cmd = "git commit -m 'real' -m 'Approved-by: Claude'"
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Approved-by" not in stripped
+        assert "real" in stripped
+
+    def test_repeated_m_emoji_footer_stripped(self, validator):
+        cmd = 'git commit -m "real" -m "🤖 Generated with Claude Code"'
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "🤖" not in stripped
+        assert "Generated with" not in stripped
+        assert "real" in stripped
+
+    # ---- Negative: a genuine "Opus" word is not a footer ----
+
+    def test_real_opus_word_not_flagged(self, validator):
+        """'Opus' as a real message word (not in an attribution trailer) must
+        NOT trip the detector -- avoids false-stripping real commit text."""
+        cmd = 'git commit -m "implement Opus-style retry logic in handler"'
+        assert validator._detect_claude_footers(cmd) is False
+
+    # ---- -F file limitation is documented, not implemented ----
+
+    def test_dash_F_file_footer_not_coverable(self, validator):
+        """`git commit -F file` carries the message (and any footer) in a file
+        the hook never reads. The stripper documents this as out of scope and
+        leaves the command untouched -- this test pins that intent so a future
+        change does not silently start reading arbitrary files."""
+        cmd = "git commit -F /tmp/commit_msg.txt"
+        # No footer text is present in the command string itself.
+        stripped = validator._strip_claude_footers(cmd)
+        assert stripped == cmd
+
+
 class TestBashValidationResult:
     """Test BashValidationResult structure."""
 
