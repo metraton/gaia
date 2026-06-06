@@ -43,6 +43,7 @@ The fenced `agent_contract_handoff` block. Parsed by `parse_contract` (regex `_R
 | `consolidation_report` | Conditional | required when INPUT set `consolidation_required` / `cross_check_required` / `surface_routing.multi_surface` (`requires_consolidation_report`); else may be `null` |
 | `approval_request` | Conditional | required when `plan_status` is `APPROVAL_REQUEST`; see sub-field table |
 | `loop_state` | Conditional | agentic-loop turns only; `_check_loop_state_blocking` blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` |
+| `user_facing_summary` | Optional | a brief prose summary written ONCE for the human reader; `parse_user_facing_summary`. The only human-audience field in the contract -- every other field is machine-audience for the orchestrator. On a single-agent `COMPLETE` (N=1) the orchestrator relays it near-verbatim (adapted to the user's language) instead of re-synthesizing `key_outputs`. Absent, or N>1 (multi-agent), the orchestrator falls back to synthesizing `key_outputs`. Purely additive: never required, never rejected. |
 | `memorialize_suggestions` | Optional | structured memory candidates for the user to triage; `parse_memorialize_suggestions` |
 | `memory_suggestions` | Optional | advisory text-only notes (array of strings); `parse_memory_suggestions` |
 | `update_contracts` | Optional | array of `{contract, payload}` for project-context writes; `parse_update_contracts`; see sub-field table |
@@ -66,6 +67,8 @@ The required keys are EXACTLY 7 (`_EVIDENCE_REQUIRED_FIELDS` in `contract_valida
 | `open_gaps` | what remains unresolved |
 
 `verification` is a SEPARATE field, NOT one of the 7. It is required ONLY when `plan_status` is `COMPLETE`: it must be a dict and `verification.result` must equal `"pass"`. Missing -> `VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE`; non-pass -> `VERIFICATION_RESULT_MUST_BE_PASS`. For non-COMPLETE statuses `verification` may be absent.
+
+**Audience boundary.** `key_outputs` and every other `evidence_report` key are written for the **orchestrator** -- distilled findings it reasons over to route the next turn. The optional top-level `user_facing_summary` is the **single** field written for the **human**. Keeping the two distinct is what lets the orchestrator relay a human-shaped summary on N=1 without re-synthesizing machine-shaped evidence, and lets it still synthesize from `key_outputs` when the summary is absent or when multiple agents must be consolidated.
 
 ### consolidation_report
 

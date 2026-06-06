@@ -36,7 +36,9 @@ Read on-demand by infrastructure agents. Not injected automatically.
 - `kubectl apply -f manifest.yaml`
 - `helm upgrade` (without `--dry-run`)
 - `flux reconcile` (write operations)
-- `git commit`, `git push` (any branch)
+- `git push` (any branch) -- mutates remote state
+
+Note: `git commit` and `git add` are **not** T3. They are local-only (working tree + local refs, never remote), classified safe by elimination via `GIT_LOCAL_SAFE_SUBCOMMANDS` in `mutative_verbs.py`. Only `git push` reaches remote state.
 
 ## Edge Cases
 
