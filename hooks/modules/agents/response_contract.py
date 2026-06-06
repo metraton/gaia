@@ -402,6 +402,31 @@ def parse_memorialize_suggestions(
     return _extract_memorialize_suggestions(contract)
 
 
+def parse_user_facing_summary(
+    agent_output: str,
+    parsed_contract: Optional[dict] = None,
+) -> Optional[str]:
+    """Parse the optional top-level ``user_facing_summary`` field (Option A).
+
+    This is the ONE human-audience field in the contract: a brief prose summary
+    the subagent writes once, intended for the user. The orchestrator relays it
+    near-verbatim on a single-agent COMPLETE (N=1) instead of re-synthesizing
+    ``key_outputs``; for N>1 it is ignored and synthesis proceeds.
+
+    Strictly additive and advisory: the field is never required and never
+    affects contract validity. Returns the trimmed string when present and
+    non-empty, otherwise None (absent, null, blank, or non-string).
+    """
+    contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
+    if contract is None:
+        return None
+    raw = contract.get("user_facing_summary")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text or None
+
+
 def _is_resume_agent_id(value: str) -> bool:
     return bool(_AGENT_ID_PATTERN.match(value or ""))
 
@@ -659,6 +684,7 @@ __all__ = [
     "parse_evidence_report",
     "parse_consolidation_report",
     "parse_memorialize_suggestions",
+    "parse_user_facing_summary",
     "validate_response_contract",
     "save_validation_result",
     "load_last_validation",
