@@ -23,6 +23,8 @@ Earlier flat-pipeline order preserved within phases for backward compat:
   - Blocked commands run before cloud_pipe and mutative_verbs in phase 3
 """
 
+from __future__ import annotations
+
 import os
 import re
 import json

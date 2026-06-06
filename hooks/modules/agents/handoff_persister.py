@@ -10,6 +10,8 @@ arise if the adapter imported _persist_handoff directly from subagent_stop
 (which itself imports from the adapter's dependency tree).
 """
 
+from __future__ import annotations
+
 import logging
 
 logger = logging.getLogger(__name__)

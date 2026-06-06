@@ -76,6 +76,8 @@ fallback plane retained for grants created before the DB cutover. The active
 flow runs through the DB plane in gaia.store.writer.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os

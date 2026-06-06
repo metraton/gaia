@@ -19,6 +19,8 @@ Mutating subcommands operate on the curated ``memory`` table in
                                           ~/.claude/projects/.../memory/).
 """
 
+from __future__ import annotations
+
 # Repo-root import bootstrap so ``from gaia.store.writer import ...`` resolves
 # regardless of cwd (the CLI is launched from many places).
 import sys as _sys
