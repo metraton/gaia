@@ -18,6 +18,7 @@ HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.agents.transcript_reader import (
+    extract_injected_context_payload_from_transcript,
     extract_task_description_from_transcript,
     read_first_user_content_from_transcript,
 )
@@ -240,3 +241,94 @@ class TestEdgeCases:
 
         result = extract_task_description_from_transcript(str(transcript))
         assert result == "First task prompt."
+
+
+# ============================================================================
+# INJECTED CONTEXT PAYLOAD EXTRACTION (extract_injected_context_payload_from_transcript)
+# ============================================================================
+
+class TestInjectedContextPayload:
+    """extract_injected_context_payload_from_transcript() reads the auto-injected
+    context JSON that context_injector persisted to <TMPDIR>/gaia-context-payloads/,
+    matching the payload file to the transcript by agent-ID substring.
+    """
+
+    def _seed_payload(self, monkeypatch, tmp_path, stem: str, data: dict):
+        """Create <tmp_path>/gaia-context-payloads/<stem>.json and point TMPDIR at it."""
+        payload_dir = tmp_path / "gaia-context-payloads"
+        payload_dir.mkdir()
+        (payload_dir / f"{stem}.json").write_text(json.dumps(data))
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
+        return payload_dir
+
+    def test_matching_transcript_returns_payload(self, monkeypatch, tmp_path):
+        """A transcript whose stem shares the agent-ID substring matches its payload."""
+        self._seed_payload(
+            monkeypatch, tmp_path, "agent-abc123",
+            {"surface_routing": {"multi_surface": True}},
+        )
+        result = extract_injected_context_payload_from_transcript(
+            "/some/dir/agent-abc123.jsonl"
+        )
+        assert result == {"surface_routing": {"multi_surface": True}}
+
+    # -- The empty-string regression (the real bug this fix closes) --------
+
+    def test_empty_path_does_not_match_any_payload(self, monkeypatch, tmp_path):
+        """REGRESSION: an empty transcript_path must NOT grab an arbitrary payload.
+
+        Before the fix, Path("").stem == "" and ``"" in candidate.stem`` is always
+        True, so an empty path returned the FIRST payload in the directory --
+        making downstream consolidation logic depend on /tmp directory contents.
+        The guard must return {} regardless of what payloads exist on disk.
+        """
+        self._seed_payload(
+            monkeypatch, tmp_path, "agent-whatever",
+            {"surface_routing": {"multi_surface": True}},
+        )
+        assert extract_injected_context_payload_from_transcript("") == {}
+
+    def test_none_path_does_not_match_any_payload(self, monkeypatch, tmp_path):
+        """None path is treated the same as empty: no match, regardless of disk."""
+        self._seed_payload(
+            monkeypatch, tmp_path, "agent-whatever",
+            {"surface_routing": {"multi_surface": True}},
+        )
+        assert extract_injected_context_payload_from_transcript(None) == {}
+
+    def test_empty_path_is_deterministic_across_payload_sets(self, monkeypatch, tmp_path):
+        """An empty path returns {} whether the payload dir is empty or full --
+        the result no longer depends on what happens to be in the directory.
+        """
+        # Directory exists but is empty.
+        payload_dir = tmp_path / "gaia-context-payloads"
+        payload_dir.mkdir()
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
+        empty_dir_result = extract_injected_context_payload_from_transcript("")
+
+        # Now populate it with several payloads.
+        for stem in ("agent-one", "agent-two", "agent-three"):
+            (payload_dir / f"{stem}.json").write_text(
+                json.dumps({"surface_routing": {"multi_surface": True}})
+            )
+        full_dir_result = extract_injected_context_payload_from_transcript("")
+
+        assert empty_dir_result == full_dir_result == {}
+
+    def test_root_path_stem_empty_does_not_match(self, monkeypatch, tmp_path):
+        """A path like '/' yields an empty stem; it must not match either."""
+        self._seed_payload(
+            monkeypatch, tmp_path, "agent-whatever",
+            {"surface_routing": {"multi_surface": True}},
+        )
+        assert extract_injected_context_payload_from_transcript("/") == {}
+
+    def test_no_match_returns_empty_dict(self, monkeypatch, tmp_path):
+        """A real path with no shared substring matches nothing -> {}."""
+        self._seed_payload(
+            monkeypatch, tmp_path, "agent-abc123",
+            {"surface_routing": {"multi_surface": True}},
+        )
+        assert extract_injected_context_payload_from_transcript(
+            "/some/dir/totally-different-xyz.jsonl"
+        ) == {}
