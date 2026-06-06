@@ -19,6 +19,7 @@ Provides:
     - parse_rollback_executed(): Parse rollback_executed clause (advisory)
     - parse_context_consumption(): Parse context_consumption clause (advisory)
     - parse_memory_suggestions(): Parse memory_suggestions clause (advisory)
+    - parse_user_facing_summary(): Parse user_facing_summary clause (advisory)
 """
 
 import json
@@ -653,6 +654,23 @@ def parse_memory_suggestions(contract: dict) -> List[str]:
         logger.warning("memory_suggestions: expected array, got %s", type(raw).__name__)
         return []
     return [str(item) for item in raw if item is not None]
+
+
+def parse_user_facing_summary(contract: dict) -> Optional[str]:
+    """Parse the optional top-level ``user_facing_summary`` clause (advisory).
+
+    The single human-audience field in the contract: a short prose summary the
+    subagent writes once for the user. The orchestrator relays it near-verbatim
+    on a single-agent COMPLETE (N=1) instead of re-synthesizing ``key_outputs``.
+
+    Strictly additive and advisory -- the validator never rejects based on this
+    field. Returns the trimmed string when present and non-empty, else None.
+    """
+    raw = contract.get("user_facing_summary")
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text or None
 
 
 def extract_plan_status_from_output(agent_output: str) -> str:

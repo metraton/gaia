@@ -151,10 +151,10 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "disconnect", "unbind", "force-delete", "force-remove", "erase",
     # Collaboration (GitHub/GitLab CLI)
     "comment", "label", "annotate", "approve", "close", "reopen", "tag",
-    # Helm-specific
-    "uninstall",
     # HTTP methods (e.g., glab api -X POST, gh api -X DELETE)
-    "post", "put", "patch",
+    # NOTE: "put" and "patch" already appear under Modification above, and
+    # "uninstall" under Deletion/removal -- so only "post" is new here.
+    "post",
 })
 
 SIMULATION_VERBS: FrozenSet[str] = frozenset({
@@ -283,6 +283,12 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # `gaia ac <verb>` (add/remove/edit/show/list/set-status): local acceptance-
     # criteria bookkeeping — reversible, no external effects.
     ("gaia", "ac"): CATEGORY_READ_ONLY,
+    # `gaia plan <verb>` (save/edit/show/list/set-status): local planning
+    # bookkeeping in the plan store — reversible, no external effects.  Anchored
+    # here (not left to the SIMULATION_VERBS['plan'] lexical collision) so the
+    # exemption is explicit and carries the same DENY-verb guard as `gaia brief`:
+    # `gaia plan delete` (whole-record destruction) stays T3.
+    ("gaia", "plan"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception
@@ -292,6 +298,37 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
 COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS: FrozenSet[str] = frozenset({
     "delete", "destroy", "purge", "wipe", "drop", "shred", "erase",
 })
+
+
+# ============================================================================
+# PRINCIPLE: consent-REDUCING operations are not T3.
+# ----------------------------------------------------------------------------
+# An operation requires T3 approval because it GRANTS capability or DESTROYS
+# state — it moves the system toward *more* power or *less* recoverability, the
+# directions that need informed consent.  An operation that REVOKES, REJECTS,
+# or CLEANS a consent grant Gaia itself issued moves in the opposite direction:
+# it can only REDUCE the capability already granted.  It never grants anything
+# and never reaches outside the local approval store.  Gating it creates an
+# absurd loop — you would need an approval to clean up approvals.
+#
+# So: within Gaia's own consent layer (`gaia approvals ...`), verbs that REDUCE
+# consent are exempted to read-only; the one verb that GRANTS capability
+# (`approve`) is deliberately NOT in this set and stays T3.  That asymmetry is
+# the whole point: `approve` hands out capability without the AskUserQuestion
+# flow, so it must remain gated; `revoke`/`reject`/`reject-all`/`clean` only
+# take capability back, so they must not be.
+#
+# This is anchored to (base_cmd, group) so it applies ONLY to Gaia's own
+# consent store, not to any other CLI's notion of "revoke"/"reject" (e.g. a
+# cloud IAM revoke is a real remote mutation and must stay T3).
+#
+# Key:   (base_cmd, subcommand-group)  — e.g. ("gaia", "approvals").
+# Value: frozenset of consent-REDUCING verbs under that group that are exempt.
+CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = {
+    ("gaia", "approvals"): frozenset({
+        "revoke", "reject", "reject-all", "clean",
+    }),
+}
 
 
 # ============================================================================
@@ -1159,10 +1196,30 @@ def detect_mutative_command(command: str) -> MutativeResult:
             group_verb.split("-", 1)[0] in COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS
             or group_verb in COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS
         )
-        if (
-            subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
-            and not verb_is_destructive
-        ):
+        if subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS:
+            if verb_is_destructive:
+                # Whole-record destruction (e.g. `gaia plan delete`) must stay
+                # T3 even inside an excepted group.  Anchor it MUTATIVE here
+                # instead of falling through to Step 4: the group token itself
+                # (`plan`) collides lexically with SIMULATION_VERBS['plan'], so
+                # the verb scanner would otherwise mis-classify the whole
+                # command as SIMULATION and silently un-gate the delete.  This
+                # explicit return is what makes `gaia plan delete` behave like
+                # `gaia brief delete` (where `brief` has no such collision).
+                dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=group_verb.split("-", 1)[0],
+                    dangerous_flags=dangerous_flags,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Whole-record destruction "
+                        f"'{base_cmd} {semantics.non_flag_tokens[0]} {group_verb}' "
+                        f"stays T3 despite the local bookkeeping exception"
+                    ),
+                )
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
             if not dangerous_flags:
                 target_category = COMMAND_SUBCOMMAND_TIER_EXCEPTIONS[subcommand_key]
@@ -1176,6 +1233,41 @@ def detect_mutative_command(command: str) -> MutativeResult:
                         f"Local-only planning bookkeeping "
                         f"'{base_cmd} {semantics.non_flag_tokens[0]}' "
                         f"excepted to {target_category.lower()} by config"
+                    ),
+                )
+
+    # --- Step 3f: Consent-reducing operations are not T3 (anchored) ---
+    # Within Gaia's own consent layer (`gaia approvals ...`), verbs that REDUCE
+    # consent (revoke/reject/reject-all/clean) can only take back capability
+    # already granted — they never grant anything and never reach outside the
+    # local approval store, so they are not T3.  The one consent-GRANTING verb
+    # (`approve`) is deliberately absent from CONSENT_REDUCING_SUBCOMMAND_
+    # EXCEPTIONS and falls through to Step 4, where it stays MUTATIVE/T3.  That
+    # asymmetry is the principle: granting capability needs consent, reducing it
+    # does not.  Anchored to (base_cmd, group) so it never relaxes another CLI's
+    # "revoke" (e.g. a cloud IAM revoke is a real remote mutation, still T3).
+    # Dangerous flags are still scanned so a slip like `--force` re-gates.
+    if semantics.non_flag_tokens:
+        consent_group_key = (base_cmd, semantics.non_flag_tokens[0])
+        consent_verb = (
+            semantics.non_flag_tokens[1]
+            if len(semantics.non_flag_tokens) > 1 else ""
+        )
+        reducing_verbs = CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS.get(consent_group_key)
+        if reducing_verbs is not None and consent_verb in reducing_verbs:
+            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+            if not dangerous_flags:
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=consent_verb,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Consent-reducing operation "
+                        f"'{base_cmd} {semantics.non_flag_tokens[0]} {consent_verb}' "
+                        f"only revokes/rejects capability already granted — "
+                        f"not state-granting, so not T3"
                     ),
                 )
 

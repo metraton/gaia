@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.0.3] - 2026-06-05
+## [5.0.4] - 2026-06-06
 
-### COMMAND_SET Batch Approval, Consent-Reducing Approval Verbs, Contract Advisory Field
+### COMMAND_SET Batch Approval, Consent-Reducing Approval Verbs, Contract Advisory Field, Version Source Sync
 
-Patch release wiring the COMMAND_SET batch-approval path end-to-end, reclassifying Gaia's own consent-reducing approval verbs out of T3, adding an advisory contract field, and removing the redundant `gitops_validator`. Full suite green (4555 passed).
+Patch release superseding 5.0.3 (which was never published to npm due to a pyproject.toml version drift that failed pre-publish validation). This release adds the version source sync fix on top of all 5.0.3 changes: COMMAND_SET batch-approval wired end-to-end, consent-reducing approval verbs reclassified out of T3, advisory contract field added, redundant `gitops_validator` removed, and all version sources (package.json, pyproject.toml, .claude-plugin/plugin.json, .claude-plugin/marketplace.json, CHANGELOG.md) aligned. Full suite green (4555 passed).
 
 #### Added
 

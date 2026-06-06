@@ -16,10 +16,12 @@ Two-phase nonce-based approval flow:
     grant and allows it.
 
 Grants are:
-- Scoped to a session (CLAUDE_SESSION_ID)
-- Time-limited (default 10 minutes)
+- Time-limited (default 10 minutes; DB grants use APPROVAL_GRANT_TTL_MINUTES)
 - Cleaned up after use or expiry
-- Stored in .claude/cache/approvals/
+- Stored AUTHORITATIVELY in the DB (``approval_grants`` in gaia.db) since the
+  Brief 71 cutover. The filesystem plane (.claude/cache/approvals/) is the
+  DEPRECATED fallback retained only for grants minted before the cutover; new
+  grants are created and consumed through the DB plane (gaia.store.writer).
 
 Security properties:
 - Grants are created ONLY by the hook (not by agents)
@@ -28,8 +30,11 @@ Security properties:
 - The deny list (blocked_commands.py) is NEVER bypassed -- grants only
   override the dangerous verb detector
 - Nonces are 128-bit random hex (cannot be guessed)
-- Pending files are session-scoped (cannot be activated from another session)
-- A nonce can only be activated ONCE (pending file deleted on activation)
+- A nonce can only be activated ONCE (DB row marked CONSUMED on activation;
+  legacy pending files are deleted on activation)
+- DB grants are session-AGNOSTIC by design: the block-approve-retry flow
+  legitimately spans sessions, so replay protection comes from the CONSUMED
+  status + TTL, not from session scoping (see the DB-backed model note below)
 
 =============================================================================
 Grant lifetime (DB-backed model -- Brief 71 cutover)
@@ -1160,16 +1165,26 @@ def consume_grant(command: str, session_id: str = None) -> bool:
 
 
 def consume_session_grants(session_id: str = None) -> int:
-    """Consume all confirmed grants for a session.
+    """Consume confirmed grants on the LEGACY FILESYSTEM plane for a session.
 
-    Called at SubagentStop to clean up all grants that were used during the
-    subagent's lifetime. Multi-use grants are also consumed (session is over).
+    Called at SubagentStop. Scope is the deprecated FS plane ONLY: it sweeps
+    ``grant-{session_id}-*.json`` files under the approvals cache dir and marks
+    confirmed ones used (multi-use grants too, since the session is over).
+
+    This is a NO-OP for grants on the authoritative DB plane (post Brief 71):
+    DB semantic grants are consumed on the MATCHING RETRY via
+    ``consume_db_semantic_grant`` (see the module docstring, "DB-backed model"),
+    NOT at SubagentStop. There is therefore no DB cleanup gap here -- DB replay
+    protection is handled at consume-on-retry time, and this function
+    intentionally does not (and must not) touch the DB plane. It remains live
+    only to drain pre-cutover FS grants; new sessions that never write an FS
+    grant simply get a return value of 0.
 
     Args:
         session_id: Session ID to scope consumption (defaults to env var).
 
     Returns:
-        Number of grants consumed.
+        Number of legacy FS grants consumed (0 when no FS grants exist).
     """
     if not session_id:
         session_id = _get_session_id()
@@ -1789,7 +1804,31 @@ def activate_db_pending_by_prefix(
                 reason="DB pending approval has invalid payload_json.",
             )
 
+        # Multi-command (COMMAND_SET) detection. A payload carrying a
+        # ``command_set`` list of more than one {command, rationale} item is a
+        # batch the user approved under ONE consent. It must NOT be degraded to
+        # a single command (the historic bug at this site) -- it activates into
+        # a COMMAND_SET grant via the dedicated branch below. A set of length
+        # <= 1 falls through to the singular SCOPE_SEMANTIC_SIGNATURE path so we
+        # never mint a COMMAND_SET grant for one command.
+        raw_command_set = payload.get("command_set")
+        command_set_items: list = []
+        if isinstance(raw_command_set, list):
+            for _item in raw_command_set:
+                if isinstance(_item, dict) and _item.get("command"):
+                    command_set_items.append(
+                        {
+                            "command": _item["command"],
+                            "rationale": _item.get("rationale", ""),
+                        }
+                    )
+        is_command_set = len(command_set_items) > 1
+
         command = payload.get("exact_content") or payload.get("commands", [None])[0] or ""
+        if is_command_set and not command:
+            # For a command_set the first item is a safe stand-in for the
+            # singular display/signature path; the set itself is authoritative.
+            command = command_set_items[0]["command"]
         if not command:
             logger.warning(
                 "activate_db_pending_by_prefix: no command found in payload for %s",
@@ -1835,6 +1874,57 @@ def activate_db_pending_by_prefix(
                     status=ACTIVATION_ERROR,
                     reason=f"DB transition failed: {ve}",
                 )
+
+        # Step 3b: COMMAND_SET branch. When the approved payload carries a set
+        # of more than one command, create ONE COMMAND_SET grant covering the
+        # whole batch instead of a singular SCOPE_SEMANTIC_SIGNATURE grant. The
+        # set is consumed item-by-item (byte-for-byte) by bash_validator's
+        # match_command_set_grant / mark_command_set_item_consumed path -- the
+        # consume side is unchanged; this is the create side that was orphaned.
+        #
+        # Precondition: ``command_set`` in the payload is already pre-filtered to
+        # mutative commands by ``_intake_command_set_pending`` (handoff_persister,
+        # the only producer of these pending records in production). Activation
+        # therefore assumes every item is consumable and does NOT re-filter here;
+        # do not add a filtering step at this site -- it would silently drop items
+        # the user already consented to under one grant.
+        if is_command_set:
+            created = create_command_set_grant(
+                command_set_items,
+                approval_id,
+                session_id=current_session_id,
+                agent_id=agent_id,
+                ttl_minutes=DEFAULT_COMMAND_SET_TTL_MINUTES,
+            )
+            if not created:
+                logger.error(
+                    "activate_db_pending_by_prefix: COMMAND_SET grant creation "
+                    "failed for approval_id=%s (items=%d)",
+                    approval_id[:16], len(command_set_items),
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason="Failed to create COMMAND_SET grant from approved payload.",
+                )
+            logger.info(
+                "activate_db_pending_by_prefix: COMMAND_SET grant created: "
+                "approval_id=%s, items=%d, ttl=%d min, originating_session=%s, "
+                "current_session=%s",
+                approval_id[:16], len(command_set_items),
+                DEFAULT_COMMAND_SET_TTL_MINUTES,
+                (originating_session or "")[:12],
+                current_session_id[:12],
+            )
+            return ApprovalActivationResult(
+                success=True,
+                status=ACTIVATION_ACTIVATED,
+                reason=(
+                    "DB pending approval activated as a COMMAND_SET grant "
+                    f"({len(command_set_items)} commands under one consent)."
+                ),
+                grant_path=None,
+            )
 
         # Step 4: Rebuild approval signature from the command so the
         # filesystem grant has a valid scope_signature for check_approval_grant().
@@ -2026,7 +2116,13 @@ def activate_grants_for_session(
 # approved command (adding cd, redirect, pipe, flag) produces a different
 # string and requires fresh approval. Each item in the set is single-use.
 
-DEFAULT_COMMAND_SET_TTL_MINUTES = 10
+# COMMAND_SET grant TTL in minutes. Aligned to the singular active-grant TTL
+# (DEFAULT_GRANT_TTL_MINUTES / APPROVAL_GRANT_TTL_MINUTES = 60) so a batch of
+# commands approved under one consent gets the same cross-session retry window
+# as a single approved command -- the block-approve-retry flow legitimately
+# spans sessions, and a shorter window would expire the batch before the
+# subagent could consume every item.
+DEFAULT_COMMAND_SET_TTL_MINUTES = 60
 
 
 def create_command_set_grant(
@@ -2107,7 +2203,6 @@ def create_command_set_grant(
 def match_command_set_grant(
     retried_command: str,
     *,
-    session_id: str | None = None,
     db_path=None,
 ) -> tuple | None:
     """Find an active COMMAND_SET grant containing ``retried_command``.
@@ -2117,14 +2212,26 @@ def match_command_set_grant(
     ``retried_command``.  No normalization of any kind is applied.
 
     The grant must:
+    - Have scope COMMAND_SET
     - Have status PENDING (not CONSUMED, REVOKED, or EXPIRED)
     - Not be past its expires_at timestamp
     - Contain ``retried_command`` at an index that has NOT been consumed
-    - Belong to the current session_id
+
+    The lookup is SESSION-AGNOSTIC (Brief 71), exactly like the singular path
+    (``check_db_semantic_grant``). The block-approve-retry flow legitimately
+    spans sessions, and CLAUDE_SESSION_ID is not guaranteed to be exported into
+    the bash subprocess -- where ``get_session_id()`` falls back to the literal
+    ``"default"``. A session_id filter therefore silently dropped every grant
+    created under the real session, letting approved COMMAND_SET commands run
+    WITHOUT being consumed (the consumption-bypass bug). Replay protection is
+    preserved by the conjunction of the byte-for-byte match, status='PENDING'
+    plus per-index ``consumed_indexes_json``, and the expires_at TTL -- none of
+    which depend on which session is asking. See
+    ``gaia.store.writer.list_command_set_grants_agnostic`` for the full
+    security-boundary rationale.
 
     Args:
         retried_command: The exact command string the agent wants to run.
-        session_id: CLAUDE_SESSION_ID (defaults to current session).
         db_path: Optional explicit DB path override (used by tests).
 
     Returns:
@@ -2132,15 +2239,11 @@ def match_command_set_grant(
         The caller should call mark_command_set_item_consumed(approval_id, index)
         after successful execution.
     """
-    if session_id is None:
-        session_id = _get_session_id()
-
     try:
-        from gaia.store.writer import list_approval_grants
+        from gaia.store.writer import list_command_set_grants_agnostic
         from datetime import datetime, timezone
 
-        grants = list_approval_grants(
-            session_id=session_id,
+        grants = list_command_set_grants_agnostic(
             status="PENDING",
             db_path=db_path,
         )
