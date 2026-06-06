@@ -30,9 +30,16 @@ without the data needed to decide. The job is **verbatim relay, not
 re-authoring**: rewriting any of the 7 sealed fields breaks the fingerprint and
 `verify_fingerprint` (`gaia/approvals/chain.py`) raises `ChainTamperError`.
 
-## Step 0 -- Fingerprint validation (mandatory before SHOWN)
+## Step 0 -- Verify the approval against the DB (mandatory before SHOWN)
 
-Before AskUserQuestion, call `verify_fingerprint(approval_id, payload_json, con) -> bool` from `gaia/approvals/chain.py`. It raises `ChainTamperError` if the payload was modified between subagent emission and your relay (security boundary, do not present), and `ValueError` if no REQUESTED event exists for this `approval_id`. Either case: **do not present**, report the failure, stop.
+A subagent's reported `approval_id` is an unverified claim, not a fact. The agent runs in its own context and can relay an id that is stale, from another session, or simply wrong -- and a stale id presented as a fresh block walks the user into consenting to nothing real (or to a grant that no longer exists). The DB is the source of truth; the agent's report is a pointer into it that you must resolve, never the authority itself.
+
+So before AskUserQuestion, two checks against the DB, in order:
+
+1. **The approval exists, is fresh, and is from the current session.** Query `gaia approvals pending --session "$CLAUDE_SESSION_ID"` (or `--json` for parsing). The reported `approval_id` MUST appear in that result. If it appears only under `--all-sessions` but not the current session, it is leakage from another session (a test session such as `e2e-sim`, a prior run) -- **do not present**. If it does not appear at all, it does not exist or was already consumed/rejected -- **do not present**. Freshness is the `created_at` of the pending row plus its presence as still-`pending`; an id the agent reports that is not currently pending in *this* session is not a fresh block, whatever the agent says.
+2. **The payload is untampered.** Call `verify_fingerprint(approval_id, payload_json, con) -> bool` from `gaia/approvals/chain.py`. It raises `ChainTamperError` if the payload was modified between subagent emission and your relay (security boundary, do not present), and `ValueError` if no REQUESTED event exists for this `approval_id`. Either case: **do not present**, report the failure, stop.
+
+**For a `command_set` (plan-first batch) the agent does not know the id at all.** The hook mints the `approval_id` at SubagentStop (`_intake_command_set_pending` -- see Rule 3); the subagent emits the `command_set` with **no** `approval_id`. So you do not have an agent-reported id to trust even if you wanted to -- you ALWAYS recover the freshly minted id from `gaia approvals pending` for the current session. This is the general shape made unavoidable: the DB mints, the orchestrator recovers, the agent never owns the id.
 
 ## Mandatory presentation -- 5 labeled fields + nonce-suffixed label
 
@@ -114,3 +121,4 @@ wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
 | "The same command emitted a new approval_id" | Grants are single-use and consumed on the first retry. A second run is a new APPROVAL_REQUEST -- approve again. |
 | "I'll set batch_scope to approve many at once" | `batch_scope` is ignored -- but a real batch path exists: a plan-first `command_set` (>= 2 items, no `approval_id`) is intaken into ONE pending `COMMAND_SET`. Present that single approval (N commands shown, one `[P-...]` nonce, one consent), not N separate approvals. |
 | "I can paraphrase a field before relaying" | The fingerprint covers all 7 sealed fields; any modification raises `ChainTamperError` in Step 0 and the presentation is refused. |
+| **"The agent reported an `approval_id`, so it's a real fresh block"** -- trusting a nonce relayed by the subagent | The agent's reported id is an unverified pointer, not a fact. It can be stale or belong to another session -- subagents have presented a STALE nonce from a test session (`e2e-sim`) as if it were a fresh block. Resolve every reported id against `gaia approvals pending --session "$CLAUDE_SESSION_ID"` (Step 0): it must be currently pending in *this* session. Visible only under `--all-sessions`, or absent entirely, means do not present. For `command_set` the hook mints the id and the agent never has one -- you always recover it from the DB. |
