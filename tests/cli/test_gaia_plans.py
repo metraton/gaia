@@ -136,7 +136,10 @@ class TestCollectBriefs:
 
 class TestFindProjectRoot:
     def test_finds_root_from_nested_dir(self, tmp_path):
-        (tmp_path / ".claude").mkdir()
+        # Create the marker that _find_project_root's highest-priority pass
+        # looks for (.claude/project-context/briefs/) so tmp_path wins before
+        # the walk reaches any real .claude/ ancestor (e.g. ~/.claude/).
+        (tmp_path / ".claude" / "project-context" / "briefs").mkdir(parents=True)
         nested = tmp_path / "a" / "b" / "c"
         nested.mkdir(parents=True)
         root = _find_project_root(nested)
