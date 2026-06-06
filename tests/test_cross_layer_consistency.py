@@ -52,10 +52,10 @@ from modules.security.approval_messages import (
     CANONICAL_APPROVAL_TOKEN,
     LATEST_BLOCKED_COMMAND_PHRASE,
 )
-from modules.security.gitops_validator import (
-    FORBIDDEN_FLUX_COMMANDS,
-    FORBIDDEN_HELM_COMMANDS,
-    FORBIDDEN_KUBECTL_COMMANDS,
+from modules.security.blocked_commands import is_blocked_command
+from modules.security.mutative_verbs import (
+    detect_mutative_command,
+    CATEGORY_MUTATIVE,
 )
 
 
@@ -156,8 +156,10 @@ class TestSettingsCodeConsistency:
     def test_flux_suspend_resume_protected(self, ask_list, deny_list):
         """flux suspend/resume must be protected (in ask, deny, or enforced by hooks).
 
-        When settings uses Bash(*) with deny-only, the hook layer (gitops_validator)
-        enforces approval for flux suspend/resume at runtime.
+        When settings uses Bash(*) with deny-only, the hook layer enforces approval
+        for flux suspend/resume at runtime. These are mutative (not irreversible),
+        so the real enforcer is mutative_verbs (detect_mutative_command -> T3),
+        not a blocked-commands deny.
         """
         ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
         deny_cmds = {self._extract_command(e) for e in deny_list if e.startswith("Bash(")}
@@ -165,32 +167,46 @@ class TestSettingsCodeConsistency:
 
         for cmd in ["flux suspend", "flux resume"]:
             if cmd not in protected:
-                # Not in settings lists -- verify the hook layer covers it
-                from modules.security.gitops_validator import is_forbidden_gitops_command
-                assert is_forbidden_gitops_command(cmd), (
-                    f"'{cmd}' not protected by settings.json or gitops_validator hook"
+                # Not in settings lists -- verify the hook layer covers it as T3.
+                result = detect_mutative_command(cmd)
+                assert result.category == CATEGORY_MUTATIVE, (
+                    f"'{cmd}' not protected by settings.json or mutative_verbs hook "
+                    f"(got category={result.category!r})"
                 )
 
     def test_gitops_forbidden_commands_protected(self, ask_list, deny_list):
-        """Commands forbidden by gitops_validator must be in ask/deny or enforced by hooks.
+        """GitOps mutations must be protected by ask/deny lists or the hook layer.
 
-        When settings uses Bash(*) with deny-only, the hook layer (gitops_validator)
-        provides the enforcement for commands not explicitly in the deny list.
+        With Bash(*) deny-only settings, enforcement comes from two real layers:
+          - blocked_commands (is_blocked_command): irreversible ops are permanently
+            BLOCKED (kubectl delete namespace -> kubernetes_critical,
+            flux uninstall -> flux_critical).
+          - mutative_verbs (detect_mutative_command): reversible mutations require
+            T3 approval (kubectl apply, helm install, flux suspend).
+        This replaces the removed gitops_validator path, which was redundant with
+        these two enforcers.
         """
         ask_cmds = {self._extract_command(e) for e in ask_list if e.startswith("Bash(")}
         deny_cmds = {self._extract_command(e) for e in deny_list if e.startswith("Bash(")}
         protected = ask_cmds | deny_cmds
 
-        # flux commands are forbidden in gitops_validator
-        for pattern in FORBIDDEN_FLUX_COMMANDS:
-            # Extract the command from the regex (e.g., r"flux\s+suspend" -> "flux suspend")
-            cmd = re.sub(r'\\s\+', ' ', pattern).strip()
+        # Irreversible GitOps ops: permanently BLOCKED by blocked_commands.
+        for cmd in ["kubectl delete namespace prod", "flux uninstall"]:
+            found = any(cmd_part in p for p in protected for cmd_part in [cmd])
+            if not found:
+                assert is_blocked_command(cmd).is_blocked, (
+                    f"Irreversible gitops command '{cmd}' not protected by "
+                    f"settings.json or blocked_commands hook"
+                )
+
+        # Reversible GitOps mutations: require T3 approval via mutative_verbs.
+        for cmd in ["kubectl apply -f x.yaml", "helm install r chart/", "flux suspend"]:
             found = any(cmd in p for p in protected)
             if not found:
-                # Verify the hook layer covers it
-                from modules.security.gitops_validator import is_forbidden_gitops_command
-                assert is_forbidden_gitops_command(cmd), (
-                    f"Forbidden gitops command '{cmd}' not protected by settings.json or hook"
+                result = detect_mutative_command(cmd)
+                assert result.category == CATEGORY_MUTATIVE, (
+                    f"Mutative gitops command '{cmd}' not protected by settings.json "
+                    f"or mutative_verbs hook (got category={result.category!r})"
                 )
 
 

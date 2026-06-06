@@ -77,7 +77,7 @@ Agent contracts live in `~/.gaia/gaia.db` (`project_context_contracts` + `agent_
 **cloud-troubleshooter:**
 - project_identity, stack, git, environment, infrastructure, orchestration
 - cluster_details, infrastructure_topology, terraform_infrastructure
-- gitops_configuration, application_services, monitoring_observability, architecture_overview
+- gitops_configuration, application_services, architecture_overview
 
 The same contracts are exposed under `write_permissions`:
 - `readable_sections`

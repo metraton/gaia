@@ -69,35 +69,85 @@ On your retry, `check_approval_grant()` matches it and immediately consumes it
 TTL will NOT match -- the grant is gone. This is replay protection by design;
 re-approve if you need to run the command again.
 
-## Batch / COMMAND_SET -- designed, not wired
+## Batch / COMMAND_SET -- wired
 
 The legacy `verb_family` multi-use grant was removed (see module docstring in
-`approval_grants.py`: "The legacy verb_family path has been removed"). Its intended
+`approval_grants.py`: "The legacy verb_family path has been removed"). Its
 replacement is the `COMMAND_SET` grant -- an explicit list of `{command, rationale}`
 items, each matched byte-for-byte and consumed individually
 (`approval_grants.create_command_set_grant()`; `approval_grants.match_command_set_grant()`).
+All three sides are now wired end-to-end -- **intake**, **activation**, and
+**consume** -- so one consent covers N commands.
 
-**Current state:** only the CHECK side is wired. `bash_validator._validate_single_command()`
-calls `match_command_set_grant()` and consumes a matched item, but **no
-production path calls `approval_grants.create_command_set_grant()`** -- it exists only in the
-module and its tests. The activation paths only call
-`approval_grants.activate_db_pending_by_prefix()`, which creates a single-use
-`SCOPE_SEMANTIC_SIGNATURE` grant.
+**Intake -- plan-first, one pending.** The batch is declared up-front: you emit
+an `APPROVAL_REQUEST` whose `approval_request` carries a `command_set` list and
+**no `approval_id`** (you have attempted nothing). The production intake caller
+is the SubagentStop processor `handoff_persister.persist_handoff()`, which calls
+`_intake_command_set_pending()`. That helper normalizes the `command_set` and,
+when it holds **>= 2** `{command, rationale}` items, builds a sealed_payload
+carrying the `command_set` key (mirroring the shape
+`bash_validator._build_sealed_payload()` emits) and calls
+`gaia.approvals.store.insert_requested()` -- minting **exactly ONE** pending
+`COMMAND_SET` approval with one `approval_id`. A set of length `<= 1` is not a
+batch: the intake declines and the singular semantic-signature path owns it (no
+COMMAND_SET is ever minted for one command). The intake runs independently of
+the audit handoff-row write, so a batch consent is never lost to an unrelated
+DB failure.
 
-**Consequence:** a `batch_scope` field in `approval_request`, or the word "batch"
-in a label, does nothing. Each blocked command produces its own single-use
-semantic grant and its own approval. For a sweep of N commands, expect N
-approvals until the COMMAND_SET create path is wired.
+**Envelope shape.** The sealed_payload the intake writes carries a `command_set`
+key holding the verbatim list of `{command, rationale}` items, and `commands`
+listing every command string in the set:
+
+```json
+{
+  "operation": "MUTATIVE command intercepted: push",
+  "exact_content": "git add -A",
+  "commands": ["git add -A", "git commit -m 'v1.2.0'", "git push origin main"],
+  "command_set": [
+    {"command": "git add -A",             "rationale": "stage release files"},
+    {"command": "git commit -m 'v1.2.0'", "rationale": "record the release commit"},
+    {"command": "git push origin main",   "rationale": "publish to the remote"}
+  ]
+}
+```
+
+**Activation -- one consent, one grant.** When the user approves, the
+ElicitationResult hook (`approval_grants.activate_db_pending_by_prefix()`)
+detects the `command_set` and branches to `approval_grants.create_command_set_grant()`,
+which inserts a single `COMMAND_SET` grant row into `approval_grants`
+(status `PENDING`, `command_set_json` holding the whole set). The grant TTL is
+**60 minutes** (`DEFAULT_COMMAND_SET_TTL_MINUTES`), aligned to the singular
+active-grant TTL so the batch does not expire mid-consume across sessions.
+
+**Consume -- item by item, replay-protected.** On each retry,
+`bash_validator._validate_single_command()` calls `match_command_set_grant()`,
+which finds the matching command's index byte-for-byte and returns it; the
+validator then calls `mark_command_set_item_consumed()`, appending that index to
+`consumed_indexes_json`. A consumed index never matches again (replay
+protection), and when every index is consumed the grant flips to `CONSUMED`.
+Wrapping an approved command -- adding `cd`, a redirect, a pipe, or a flag --
+produces a different string and matches nothing in the set; it requires fresh
+approval.
+
+**Consequence:** for a set of N related T3 commands, emit the `command_set`
+envelope and the user approves once. Each command runs on its own retry,
+single-use within the 60-minute window.
 
 ## Status to emit -- with vs without approval_id
 
 Always `plan_status: "APPROVAL_REQUEST"`. The presence of `approval_id` tells the
 orchestrator which path:
 
-- **With `approval_id`** -- the hook blocked; orchestrator validates the
-  fingerprint and activates the grant on user approval.
-- **Without `approval_id`** -- plan-first (you are presenting a T3 plan before
-  attempting); the orchestrator gates on user consent before any execution.
+- **With `approval_id`** -- the hook blocked a single command; orchestrator
+  validates the fingerprint and activates the single-use semantic grant on user
+  approval.
+- **Without `approval_id`, with a `command_set` of >= 2 items** -- plan-first
+  batch. The SubagentStop intake processor mints ONE pending `COMMAND_SET` and
+  the orchestrator presents that single approval (N commands, one nonce) before
+  any execution. See "Batch / COMMAND_SET -- wired" above.
+- **Without `approval_id` and without a multi-item `command_set`** -- plan-first
+  single (you are presenting one T3 plan before attempting); the orchestrator
+  gates on user consent before any execution.
 
 ## Examples
 

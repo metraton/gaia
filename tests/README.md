@@ -47,7 +47,7 @@ tests/
 ├── test_smoke_hook_pipeline.py      # Smoke check for hook pipeline
 ├── hooks/                           # Layer 1: hook and security module tests
 │   └── modules/
-│       ├── security/                # mutative_verbs, blocked_commands, tiers, gitops_validator
+│       ├── security/                # mutative_verbs, blocked_commands, tiers
 │       ├── tools/                   # bash_validator, shell_parser, task_validator
 │       ├── core/                    # paths, state
 │       └── context/                 # context_writer
