@@ -1644,32 +1644,102 @@ class TestGaiaPlanningBookkeepingException:
         result = detect_mutative_command("gaia ac show my-brief")
         assert result.is_mutative is False
 
+    # ---- gaia plan: every reversible verb classifies non-mutative ----
+    # `plan` is anchored explicitly in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS so the
+    # exemption no longer depends on the fragile lexical collision with
+    # SIMULATION_VERBS['plan'].
+
+    def test_gaia_plan_save_not_mutative(self):
+        result = detect_mutative_command("gaia plan save my-plan")
+        assert result.is_mutative is False, (
+            f"gaia plan save must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_plan_edit_not_mutative(self):
+        result = detect_mutative_command("gaia plan edit my-plan")
+        assert result.is_mutative is False, (
+            f"gaia plan edit must be local-only bookkeeping. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_plan_set_status_not_mutative(self):
+        result = detect_mutative_command("gaia plan set-status my-plan done")
+        assert result.is_mutative is False, (
+            f"gaia plan set-status must be local-only bookkeeping. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_plan_show_not_mutative(self):
+        result = detect_mutative_command("gaia plan show my-plan")
+        assert result.is_mutative is False
+
+    def test_gaia_plan_list_not_mutative(self):
+        result = detect_mutative_command("gaia plan list")
+        assert result.is_mutative is False
+
     # ---- Anchoring: the consent layer and memory writes stay gated ----
 
-    def test_gaia_approvals_revoke_still_mutative(self):
-        """gaia approvals revoke: 'revoke' is in MUTATIVE_VERBS and 'approvals'
-        is NOT an excepted group -- the consent layer must stay T3."""
+    # ---- Consent-direction principle: REDUCING consent is not T3 ----
+    # An operation is T3 because it GRANTS capability or DESTROYS state.
+    # Revoking/rejecting/cleaning a consent grant Gaia issued only takes
+    # capability BACK — it never grants anything and never leaves the local
+    # approval store, so it is not T3.  Gating it would create the absurd loop
+    # of needing an approval to clean up approvals.  The asymmetry is the point:
+    # `approve` GRANTS capability without the AskUserQuestion flow and stays T3.
+
+    def test_gaia_approvals_revoke_not_mutative(self):
+        """Revoking a grant only reduces capability already given -- not T3."""
         result = detect_mutative_command("gaia approvals revoke P-XXXX")
-        assert result.is_mutative is True, (
-            f"gaia approvals revoke must stay T3 (consent layer). "
+        assert result.is_mutative is False, (
+            f"gaia approvals revoke reduces consent and must not be T3. "
             f"Got: category={result.category}, reason={result.reason}"
         )
         assert result.verb == "revoke"
 
-    def test_gaia_approvals_approve_still_mutative(self):
-        """gaia approvals approve: 'approve' is in MUTATIVE_VERBS -- gated."""
+    def test_gaia_approvals_reject_not_mutative(self):
+        """Rejecting a pending approval reduces consent -- not T3."""
+        result = detect_mutative_command("gaia approvals reject P-XXXX")
+        assert result.is_mutative is False, (
+            f"gaia approvals reject reduces consent and must not be T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_approvals_reject_all_not_mutative(self):
+        """Bulk reject reduces consent across all pending approvals -- not T3."""
+        result = detect_mutative_command("gaia approvals reject-all")
+        assert result.is_mutative is False, (
+            f"gaia approvals reject-all reduces consent and must not be T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_approvals_clean_not_mutative(self):
+        """Cleaning expired/stale approvals only removes capability -- not T3."""
+        result = detect_mutative_command("gaia approvals clean")
+        assert result.is_mutative is False, (
+            f"gaia approvals clean reduces consent and must not be T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_gaia_approvals_approve_stays_mutative(self):
+        """The asymmetry: `approve` GRANTS capability and must stay T3 even
+        though its sibling verbs (revoke/reject/clean) are exempted."""
         result = detect_mutative_command("gaia approvals approve P-XXXX")
         assert result.is_mutative is True, (
-            f"gaia approvals approve must stay T3 (consent layer). "
+            f"gaia approvals approve GRANTS capability and must stay T3. "
             f"Got: category={result.category}, reason={result.reason}"
         )
         assert result.verb == "approve"
 
-    def test_gaia_approvals_reject_unchanged(self):
-        """gaia approvals reject: 'reject' is not in MUTATIVE_VERBS, so it was
-        already non-mutative -- the exception must not change that behavior."""
-        result = detect_mutative_command("gaia approvals reject P-XXXX")
-        assert result.is_mutative is False
+    def test_gaia_approvals_revoke_with_force_re_gates(self):
+        """A dangerous flag re-gates a consent-reducing verb to T3, matching
+        the --force escape hatch on the bookkeeping exception."""
+        result = detect_mutative_command("gaia approvals revoke P-XXXX --force")
+        assert result.is_mutative is True, (
+            f"--force on a consent-reducing verb must re-gate to T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
 
     def test_gaia_memory_save_still_mutative(self):
         """gaia memory save: 'memory' is not an excepted group; 'save'..."""
@@ -1717,4 +1787,25 @@ class TestGaiaPlanningBookkeepingException:
             f"gaia brief delete is irreversible and must stay T3. "
             f"Got: category={result.category}, reason={result.reason}"
         )
+        assert result.verb == "delete"
+
+    def test_gaia_plan_delete_still_mutative(self):
+        """Mirror of test_gaia_brief_delete_still_mutative for `gaia plan`.
+
+        Critical because `plan` collides lexically with SIMULATION_VERBS['plan']:
+        without the explicit destructive-verb anchor in Step 3e, `gaia plan
+        delete` would fall through Step 4 and be mis-classified as SIMULATION,
+        silently un-gating an irreversible deletion.  This pins it T3."""
+        result = detect_mutative_command("gaia plan delete my-plan")
+        assert result.is_mutative is True, (
+            f"gaia plan delete is irreversible and must stay T3. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+        assert result.verb == "delete"
+
+    def test_gaia_plan_delete_with_force_still_mutative(self):
+        """`gaia plan delete --force` stays T3 (destructive verb + dangerous flag)."""
+        result = detect_mutative_command("gaia plan delete my-plan --force")
+        assert result.is_mutative is True
         assert result.verb == "delete"
