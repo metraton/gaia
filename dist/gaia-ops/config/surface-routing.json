@@ -17,7 +17,6 @@
         "infrastructure",
         "orchestration",
         "cluster_details",
-        "monitoring_observability",
         "application_services",
         "infrastructure_topology",
         "architecture_overview"

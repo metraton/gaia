@@ -29,7 +29,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | Package | Files | Purpose |
 |---------|-------|---------|
 | `core/` | `hook_entry`, `paths`, `plugin_mode`, `plugin_setup`, `state`, `stdin` | Entry dispatch, path resolution, mode detection, shared state |
-| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `gitops_validator`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval nonce lifecycle |
+| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval nonce lifecycle |
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_injector`, `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Project-context injection, freshness checks, contract loading |
@@ -254,7 +254,7 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 | Category | Directory | What it tests |
 |----------|-----------|---------------|
 | Prompt regression | `tests/layer1_prompt_regression/` | Routing table, skill content rules, agent frontmatter, agent prompts, security tier consistency, skills cross-reference, context contracts |
-| Hooks | `tests/hooks/modules/` | Security modules (mutative_verbs, blocked_commands, tiers, gitops_validator, approval_grants, approval_scopes, command_semantics), tools (bash_validator, shell_parser, cloud_pipe_validator, task_validator), core (paths, state), context (context_writer) |
+| Hooks | `tests/hooks/modules/` | Security modules (mutative_verbs, blocked_commands, tiers, approval_grants, approval_scopes, command_semantics), tools (bash_validator, shell_parser, cloud_pipe_validator, task_validator), core (paths, state), context (context_writer) |
 | System | `tests/system/` | Directory structure, permissions, agent definitions, configuration, schema compatibility |
 | Tools | `tests/tools/` | context_provider, episodic, pending_updates, deep_merge, review_engine, surface_router |
 | Integration | `tests/integration/` | Context enrichment, subagent lifecycle, subagent stop, nonce approval relay |

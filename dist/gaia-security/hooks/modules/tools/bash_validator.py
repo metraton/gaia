@@ -32,7 +32,6 @@ from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
-from ..security.gitops_validator import validate_gitops_workflow
 from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
@@ -96,12 +95,35 @@ class BashValidationResult:
 
 
 # Patterns for AI tool attribution footers (auto-stripped from commits).
-# Covers Claude Code, GitHub Copilot, Aider, Windsurf, and any future
-# tool using the Co-authored-by git trailer convention.
+# Covers Claude Code, GitHub Copilot, Aider, Windsurf, Codex, Gemini, the
+# Anthropic model family (Opus/Sonnet/Haiku), and any future tool using the
+# Co-authored-by git trailer convention.
+#
+# IMPORTANT: this list is the DETECTOR (`_detect_claude_footers`). It MUST stay
+# aligned with the line patterns in `_strip_claude_footers` -- if the stripper
+# can remove a footer the detector cannot see, the strip never fires (the
+# early-normalization guard only strips when the detector returns True). Every
+# footer shape the stripper removes has a corresponding detector entry here.
+#
+# None of these patterns anchor on a newline, so they also catch footers that
+# arrive in a SECOND `-m "..."` argument (no preceding newline) -- the detector
+# fires, and the stripper's `-m`-aware branch removes them.
 FORBIDDEN_FOOTER_PATTERNS = [
     r"Generated with\s+Claude Code",
     r"Generated with\s+\[?Claude Code\]?",
+    # Bare robot-emoji "Generated with ..." line (e.g. "🤖 Generated with ...")
+    # WITHOUT requiring the literal "Claude Code" after it -- the stripper has
+    # always removed this shape; the detector now sees it too.
+    r"🤖\s*Generated with",
+    # Robot emoji on its own is a strong AI-attribution signal.
+    r"🤖",
     r"Co-Authored-By:\s+Claude\b",
+    # Anthropic model family attributed via Co-Authored-By / Co-authored-with.
+    r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bOpus\b",
+    r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bSonnet\b",
+    r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bHaiku\b",
+    # "Approved-by:" attribution trailer.
+    r"Approved-by:",
     r"Co-authored-by:\s+GitHub Copilot\b",
     r"Co-authored-by:\s+aider\b",
     r"Co-authored-by:\s+Windsurf\b",
@@ -466,7 +488,7 @@ class BashValidator:
         #   3d. Smart sanitization (strip nohup, &, redirects)
         #   3e. Cloud pipe/redirect/chain check (corrective deny)
         #   3f. Dispatch to single/compound classification
-        #        (mutative_verbs, gitops_validator, safe-by-elimination)
+        #        (mutative_verbs, safe-by-elimination)
         # ================================================================
 
         # 3a. Blocked commands check on FULL command (exit 2).
@@ -624,7 +646,7 @@ class BashValidator:
         if result.is_mutative:
             # Check for a DB-backed command_set grant first (M3 path).
             # Byte-for-byte match per D10: no normalization.
-            cs_match = match_command_set_grant(command, session_id=session_id)
+            cs_match = match_command_set_grant(command)
             if cs_match is not None:
                 cs_approval_id, cs_index = cs_match
                 try:
@@ -732,17 +754,6 @@ class BashValidator:
                     agent_type=agent_type,
                 )
 
-        # Check GitOps policy for kubectl/helm/flux commands
-        if any(keyword in command for keyword in ("kubectl", "helm", "flux")):
-            gitops_result = validate_gitops_workflow(command)
-            if not gitops_result.allowed:
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=f"GitOps policy violation: {gitops_result.reason}",
-                    suggestions=gitops_result.suggestions,
-                )
-
         # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
         # This supplements mutative_verbs -- it catches flag-dependent mutations
         # that verb-based detection misses (e.g. "sed" has no mutative verb, but
@@ -775,7 +786,7 @@ class BashValidator:
                     # never honoured and the command re-blocks unconditionally on
                     # every retry (the flag path never reaches the matcher).  The
                     # consume + return semantics replicate the verb branch exactly.
-                    cs_match = match_command_set_grant(command, session_id=session_id)
+                    cs_match = match_command_set_grant(command)
                     if cs_match is not None:
                         cs_approval_id, cs_index = cs_match
                         try:
@@ -1004,12 +1015,30 @@ class BashValidator:
 
     def _strip_claude_footers(self, command: str) -> str:
         """
-        Strip Claude Code attribution footers from a command.
+        Strip AI attribution footers from a commit command.
 
         Removes full lines matching forbidden footer patterns.
         Works on raw command string regardless of quoting/HEREDOC format.
         Preserves trailing quote/paren characters that close the commit
         message (e.g., the closing " in -m "...footer").
+
+        Covers, kept ALIGNED with FORBIDDEN_FOOTER_PATTERNS (the detector):
+          - Co-authored-by / Co-authored-with: Claude, Copilot, aider,
+            Windsurf, Cursor, Codex, Gemini, and the Anthropic model family
+            (Opus / Sonnet / Haiku)
+          - "Generated with [Claude Code]" and the bare "🤖 Generated with ..."
+          - a bare robot emoji 🤖 line
+          - "Approved-by:" trailers
+        Both newline-anchored footer LINES and footers carried in a SECOND
+        ``-m "..."`` argument (no preceding newline) are handled.
+
+        LIMITATION -- ``git commit -F <file>`` / ``--file=<file>``: when the
+        message body lives in a file, the footer is NOT in the command string
+        the PreToolUse hook receives. This stripper CANNOT see or remove it,
+        and deliberately does NOT read the referenced file (reading arbitrary
+        paths from a hook would be an unbounded side effect and a new attack
+        surface). Footer suppression for ``-F`` commits is therefore out of
+        scope here and must be enforced elsewhere (e.g. a commit-msg git hook).
 
         Args:
             command: Raw command string
@@ -1017,17 +1046,44 @@ class BashValidator:
         Returns:
             Command with footer lines removed
         """
-        # Remove full lines that contain AI attribution patterns.
+        # Author/model alternation reused across line- and -m-shaped patterns.
+        _authors = (
+            r"Claude|GitHub Copilot|aider|Windsurf|Cursor|Codex|Gemini"
+            r"|Opus|Sonnet|Haiku"
+        )
+
+        # (1) Remove full lines that contain AI attribution patterns.
         # Each pattern matches the newline + footer content, then uses a
         # lookahead to stop before any trailing quote/paren/bracket
         # sequence that closes the command structure.  The captured group
         # is replaced with empty string, leaving the closing chars intact.
         footer_line_patterns = [
-            r'\n\s*Co-[Aa]uthored-[Bb]y:\s+(?:Claude|GitHub Copilot|aider|Windsurf|Cursor|Codex|Gemini)[^\n]*?(?=["\')\]]*(?:\n|$))',
+            r'\n\s*Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):\s+(?:' + _authors + r')[^\n]*?(?=["\')\]]*(?:\n|$))',
+            # Co-authored-* lines naming an Anthropic model anywhere on the line.
+            r'\n\s*Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*?\b(?:Opus|Sonnet|Haiku)\b[^\n]*?(?=["\')\]]*(?:\n|$))',
+            r'\n\s*Approved-by:[^\n]*?(?=["\')\]]*(?:\n|$))',
             r'\n\s*Generated with\s+\[?Claude Code\]?[^\n]*?(?=["\')\]]*(?:\n|$))',
             r'\n\s*🤖\s*Generated with[^\n]*?(?=["\')\]]*(?:\n|$))',
+            # Bare robot-emoji line (emoji not followed by "Generated with").
+            r'\n\s*🤖[^\n]*?(?=["\')\]]*(?:\n|$))',
         ]
         for pattern in footer_line_patterns:
+            command = re.sub(pattern, '', command, flags=re.IGNORECASE)
+
+        # (2) Remove footers carried in a SEPARATE ``-m "..."`` / ``-m '...'``
+        # argument.  Repeated ``-m`` flags are concatenated by git as separate
+        # paragraphs, so an attribution footer often arrives as
+        #   git commit -m "real message" -m "Co-Authored-By: ... Opus"
+        # with NO preceding newline -- the line patterns above cannot see it.
+        # Drop the entire trailing ``-m "<footer>"`` flag+value when its value
+        # is (essentially) just an attribution footer.
+        m_footer_patterns = [
+            r'''\s+-m\s+(["'])\s*Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):\s+(?:''' + _authors + r''')[^"']*\1''',
+            r'''\s+-m\s+(["'])\s*Approved-by:[^"']*\1''',
+            r'''\s+-m\s+(["'])\s*🤖[^"']*\1''',
+            r'''\s+-m\s+(["'])\s*Generated with\s+\[?Claude Code\]?[^"']*\1''',
+        ]
+        for pattern in m_footer_patterns:
             command = re.sub(pattern, '', command, flags=re.IGNORECASE)
 
         # Clean up trailing whitespace inside quotes/heredoc
@@ -1222,6 +1278,7 @@ def _build_sealed_payload(
     verb: str,
     category: str,
     agent_type: str = "",
+    command_set: list | None = None,
 ) -> dict:
     """Build a sealed_payload dict from hook-intercepted command context.
 
@@ -1229,16 +1286,51 @@ def _build_sealed_payload(
     and calls store.insert_requested(). The 7 D13 fields are populated from
     what is available at intercept time.
 
+    Single vs. multi-command (COMMAND_SET):
+        By default this builds a SINGLE-command payload -- ``commands`` is
+        ``[command]`` and no ``command_set`` key is present, so activation
+        mints a single-use SCOPE_SEMANTIC_SIGNATURE grant.
+
+        When ``command_set`` is supplied (a list of ``{command, rationale}``
+        dicts representing more than one command the agent wants under ONE
+        consent), the payload additionally carries a ``command_set`` key
+        verbatim and ``commands`` lists every command string in the set. This
+        is the signal ``activate_db_pending_by_prefix`` reads to branch into
+        ``create_command_set_grant`` instead of degrading to a single command.
+        The set is NOT collapsed -- every item survives into the grant.
+
     Args:
-        command: The full Bash command string that was blocked.
+        command: The full Bash command string that was blocked (the primary /
+            first command; used for ``exact_content`` and the singular display).
         verb: The detected mutative verb (e.g. 'push', 'delete').
         category: The verb category string (e.g. 'MUTATIVE').
         agent_type: Name of the originating agent (may be empty).
+        command_set: Optional list of ``{command, rationale}`` dicts. When it
+            contains more than one item, the payload becomes a COMMAND_SET
+            envelope. A list with a single item (or None) keeps the singular
+            semantic-signature behaviour.
 
     Returns:
-        Dict with the 7 sealed_payload fields from D13.
+        Dict with the 7 sealed_payload fields from D13, plus an optional
+        ``command_set`` key when a multi-command set was supplied.
     """
-    return {
+    # Normalize the command_set into the canonical [{command, rationale}, ...]
+    # shape and decide whether this is a genuine multi-command envelope. A set
+    # of length <= 1 is NOT multi-command -- it stays the singular path so we
+    # never mint a COMMAND_SET grant for one command.
+    normalized_set: list = []
+    if command_set:
+        for item in command_set:
+            if isinstance(item, dict) and item.get("command"):
+                normalized_set.append(
+                    {
+                        "command": item["command"],
+                        "rationale": item.get("rationale", ""),
+                    }
+                )
+    is_command_set = len(normalized_set) > 1
+
+    payload = {
         "operation": f"{category} command intercepted: {verb}",
         "exact_content": command,
         "scope": command.split()[0] if command.strip() else "unknown",
@@ -1250,8 +1342,17 @@ def _build_sealed_payload(
             if agent_type
             else f"A {category.lower()} ({verb}) command requires user approval per T3 policy."
         ),
-        "commands": [command],
+        "commands": (
+            [it["command"] for it in normalized_set] if is_command_set else [command]
+        ),
     }
+
+    if is_command_set:
+        # Carry the full {command, rationale} set verbatim. This is the
+        # multi-command signal the activation path branches on.
+        payload["command_set"] = normalized_set
+
+    return payload
 
 
 def decide_t3_outcome(

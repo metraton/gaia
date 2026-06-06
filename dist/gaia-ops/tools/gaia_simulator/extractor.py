@@ -221,7 +221,6 @@ class LogExtractor:
                 # Exit 2 BLOCK (block_response is None):
                 #   - "Command blocked by security policy ..." -- permanent deny list
                 #   - "Commit message validation failed ..." -- validation error
-                #   - "GitOps policy violation ..." -- GitOps validation
                 #   - "Empty command not allowed"
                 if (
                     reason.startswith("Dangerous")

@@ -107,32 +107,49 @@ contain `[P-<hex>]`. Reject labels never carry a nonce. The captured hex is the
 `get_pending(all_sessions=True)` and selects the one whose `id` starts with
 `P-{prefix}`.
 
-## On batch intents -- there is no multi-use grant
+## On batch intents -- the COMMAND_SET grant (one consent, N commands)
 
 The old `verb_family` design (one approval covering many commands of the same
 `base_cmd + verb`) **was removed**. The module docstring in
 `hooks/modules/security/approval_grants.py` is explicit: "The legacy verb_family
 path has been removed."
 
-The intended replacement is the `COMMAND_SET` grant: an explicit list of
+Its replacement is the `COMMAND_SET` grant: an explicit list of
 `{command, rationale}` items, each matched **byte-for-byte** (D10: no whitespace
 normalization, no quote canonicalization, no shell expansion) and consumed
 individually (`create_command_set_grant` and `match_command_set_grant` in
 `approval_grants.py`).
 
-**Current state of the code:** only the CHECK side is wired. `bash_validator`
-(`hooks/modules/tools/bash_validator.py`) calls `match_command_set_grant()` and
-consumes a matched item, but **no production path calls
-`create_command_set_grant()`** -- it exists only in the module and its tests.
-The ElicitationResult / adapter activation paths (`hooks/elicitation_result.py`,
-`hooks/adapters/claude_code.py`) contain no "batch", "verb_family", "multi_use",
-or "command_set" handling; they only call `activate_db_pending_by_prefix()`,
-which creates a single-use `SCOPE_SEMANTIC_SIGNATURE` grant.
+**Current state of the code: all three sides are wired -- intake, activation,
+consume.** It is a **plan-first** flow: the subagent declares the batch up-front
+by emitting an `APPROVAL_REQUEST` whose `approval_request` carries a
+`command_set` list and **no** `approval_id`.
 
-**Practical consequence:** putting the word "batch" in a label, or a `batch_scope`
-field in an `approval_request`, does nothing. Each blocked command produces its
-own single-use semantic grant and its own approval. For a sweep of N commands,
-expect N approvals until the COMMAND_SET create path is wired.
+- **Intake.** The SubagentStop processor
+  `hooks/modules/agents/handoff_persister.py` ->
+  `_intake_command_set_pending()` reads the `command_set`; when it holds **>= 2**
+  items it calls `gaia.approvals.store.insert_requested()` with a payload that
+  contains the `command_set` key, minting **exactly ONE** pending `COMMAND_SET`
+  approval with one `approval_id`. A set of `<= 1` item is declined (no
+  COMMAND_SET is minted for one command).
+- **Activation.** When the user approves, `activate_db_pending_by_prefix()`
+  (`hooks/modules/security/approval_grants.py`) reads `payload["command_set"]`,
+  and because it has > 1 item branches at **Step 3b** into
+  `create_command_set_grant()`, inserting ONE `COMMAND_SET` grant row (status
+  `PENDING`, `command_set_json` holding the whole set, 60-min TTL via
+  `DEFAULT_COMMAND_SET_TTL_MINUTES`) instead of a singular
+  `SCOPE_SEMANTIC_SIGNATURE` grant.
+- **Consume.** On each retry, `bash_validator` calls `match_command_set_grant()`
+  (byte-for-byte index match), then `mark_command_set_item_consumed()`; a
+  consumed index never matches again (replay protection), and when every index
+  is consumed the grant flips to `CONSUMED`.
+
+**Practical consequence:** a `batch_scope` field still does nothing -- the signal
+is `command_set`. To approve a sweep of N related commands under one consent,
+present the single `COMMAND_SET` approval the intake minted: show **all N
+commands** in the question body, with **one** Approve label carrying **one**
+`[P-{nonce8}]` suffix. The user gives one consent; each command then runs on its
+own retry within the 60-minute window. You do NOT issue N separate approvals.
 
 ## Grant Activation Mechanics
 
