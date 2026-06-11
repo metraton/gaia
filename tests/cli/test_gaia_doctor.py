@@ -1201,8 +1201,38 @@ class TestCmdDoctorFix:
         fake_ss = types.ModuleType("tools.memory.search_store")
         fake_ss.count = lambda: 10
         monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-        if "tools.memory" in sys.modules:
-            monkeypatch.setattr(sys.modules["tools.memory"], "search_store", fake_ss, raising=False)
+        # check_memory_fts5_count does `from tools.memory import search_store`,
+        # which binds the attribute on the (already-imported) tools.memory
+        # package object, NOT the sys.modules child entry. Patch the package
+        # attribute too so the mock is honored regardless of whether the real
+        # package is already cached -- otherwise the real search_store.count()
+        # (0 against an isolated/empty DB) drives a spurious warning + backfill.
+        import importlib
+        tm = sys.modules.get("tools.memory") or importlib.import_module("tools.memory")
+        monkeypatch.setitem(sys.modules, "tools.memory", tm)
+        monkeypatch.setattr(tm, "search_store", fake_ss, raising=False)
+
+        # check_memory_fts5_db (order 120) is the OTHER backfill trigger: it
+        # queries episodes_fts in gaia.db and returns severity=info when the
+        # table is empty, which on its own drives --fix to backfill. Under
+        # real test isolation (empty per-test DB) that info path always fires;
+        # locally it was masked by the developer's populated ~/.gaia. Point
+        # _connect at a DB whose episodes_fts has a row so the check resolves
+        # to "pass" and the no-op assertion reflects the intended state.
+        import sqlite3
+        import gaia.store.writer as _writer_mod
+        fts_db = tmp_path / "fts5_db.db"
+        _con = sqlite3.connect(str(fts_db))
+        _con.execute(
+            "CREATE VIRTUAL TABLE episodes_fts USING fts5("
+            "episode_id UNINDEXED, prompt, enriched_prompt, tags, title)"
+        )
+        _con.execute("INSERT INTO episodes_fts (episode_id, title) VALUES ('e1', 't')")
+        _con.commit()
+        _con.close()
+        monkeypatch.setattr(
+            _writer_mod, "_connect", lambda *a, **k: sqlite3.connect(str(fts_db))
+        )
 
         # Ensure no stale backfill_fts5 mock from a previous test affects this run
         monkeypatch.delitem(sys.modules, "tools.memory.backfill_fts5", raising=False)
