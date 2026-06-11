@@ -70,3 +70,9 @@ tests/evals/results/*-smoke.json
 # Temporary probe/test artifacts
 tmp-*
 probe-*.md
+
+# Pytest temp dir (basetemp in pyproject.toml)
+.pytest-tmp/
+
+# Evidence dir (repo-root, prevent re-accumulation)
+evidence/

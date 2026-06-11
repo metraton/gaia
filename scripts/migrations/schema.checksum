@@ -1,0 +1,8 @@
+# Schema fingerprint for the build/pre-publish drift guard.
+# Generated and verified by scripts/check_schema_drift.py.
+# Pins the sha256 of gaia/store/schema.sql to the schema version it
+# corresponds to (EXPECTED_SCHEMA_VERSION in bin/cli/doctor.py).
+# Do NOT edit by hand: bump EXPECTED_SCHEMA_VERSION + add a migration,
+# then re-run the guard to refresh this file.
+version=18
+sha256=6f728de0625d5011b86eaf536c21785d19cfa08592ecaf086ab46f9b0d0ebda0

@@ -333,7 +333,6 @@ SYMLINKS_TO_REMOVE = [
     ".claude/tools",
     ".claude/hooks",
     ".claude/commands",
-    ".claude/templates",
     ".claude/config",
     ".claude/CHANGELOG.md",
     ".claude/README.en.md",

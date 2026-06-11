@@ -7,7 +7,7 @@
  *   import { getAgentPath, getToolPath, getConfigPath } from '@jaguilar87/gaia';
  *   const agentPath = getAgentPath('gitops-operator');
  *   const toolPath = getToolPath('context_provider.py');
- *   const configPath = getConfigPath('git_standards.json');
+ *   const configPath = getConfigPath('surface-routing.json');
  */
 
 import { fileURLToPath } from 'url';
@@ -55,17 +55,8 @@ export function getCommandPath(commandName) {
 }
 
 /**
- * Get absolute path to a template
- * @param {string} templateName - Name of the template (e.g., 'governance.template.md')
- * @returns {string} Absolute path to template file
- */
-export function getTemplatePath(templateName) {
-  return join(PACKAGE_ROOT, 'templates', templateName);
-}
-
-/**
  * Get absolute path to config file
- * @param {string} configName - Name of the config (e.g., 'git_standards.json')
+ * @param {string} configName - Name of the config (e.g., 'surface-routing.json')
  * @returns {string} Absolute path to config file
  */
 export function getConfigPath(configName) {
@@ -78,6 +69,5 @@ export default {
   getToolPath,
   getHookPath,
   getCommandPath,
-  getTemplatePath,
   getConfigPath
 };

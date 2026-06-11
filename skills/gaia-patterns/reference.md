@@ -130,7 +130,6 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 |------|---------|
 | `config/context-contracts.json` | Seeding source for per-agent context contracts (applied to gaia.db on install; runtime SSOT is DB) |
 | `config/surface-routing.json` | Surface routing table (intent to agent mapping) |
-| `config/git_standards.json` | Git commit and branch standards |
 | `config/cloud/aws.json` | AWS service patterns and commands |
 | `config/cloud/gcp.json` | GCP service patterns and commands |
 

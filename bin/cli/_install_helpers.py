@@ -345,7 +345,7 @@ def merge_local_hooks(
 # ---------------------------------------------------------------------------
 
 # Directories the package exposes via .claude/<name> symlinks
-_SYMLINK_NAMES = ["agents", "tools", "hooks", "commands", "templates", "config", "skills"]
+_SYMLINK_NAMES = ["agents", "tools", "hooks", "commands", "config", "skills"]
 # Files (not dirs) we link or copy into .claude/
 _SYMLINK_FILES = ["CHANGELOG.md"]
 

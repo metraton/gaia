@@ -25,7 +25,7 @@ without requiring explicit imports in agent code.
 - ✅ Subject line rules (max 72 chars, no period at end)
 - ✅ Forbidden footers (no "Generated with" footers)
 
-**Configuration:** `.claude/config/git_standards.json` (SSOT)
+**Configuration:** Standards are inlined as module-level constants in `hooks/modules/validation/commit_validator.py` (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`, `SUBJECT_RULES`, `BODY_MAX_LINE_LENGTH`, `ENFORCEMENT`). Forbidden-footer detection lives in `bash_validator`.
 **Logs:** `.claude/logs/commit-violations.jsonl`
 
 ---
@@ -108,16 +108,11 @@ This validation module works with skills in a **hybrid model**:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  config/git_standards.json (SSOT)                         │
-│  - Conventional commit types                              │
-│  - Forbidden footers                                      │
-│  - Max lengths                                            │
-└──────────────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌──────────────────────────────────────────────────────────┐
 │  hooks/modules/validation/ (Commit Validation)            │
 │  └─ commit_validator.py                                   │
+│     ├─ Standards inlined as module-level constants        │
+│     │   (types, subject/body max lengths, rules)          │
+│     ├─ Forbidden footers handled by bash_validator        │
 │     └─ Used by bash_validator.py only                     │
 └──────────────────────────────────────────────────────────┘
                         │
@@ -178,23 +173,19 @@ Note: commit_validator.py moved to hooks/modules/validation/
 
 ## Configuration
 
-**Git Standards:** `.claude/config/git_standards.json`
+**Git Standards:** Inlined as module-level constants in `hooks/modules/validation/commit_validator.py`.
 
 Example:
-```json
-{
-  "commit_message": {
-    "type_allowed": ["feat", "fix", "refactor", "docs", "test", "chore"],
-    "subject_max_length": 72,
-    "footer_forbidden": ["Generated with Claude Code"]
-  },
-  "enforcement": {
-    "enabled": true,
-    "block_on_failure": true,
-    "log_violations": true
-  }
-}
+```python
+TYPE_ALLOWED = ("feat", "fix", "refactor", "docs", "test", "chore",
+                "ci", "perf", "style", "build")
+SUBJECT_MAX_LENGTH = 72
+SUBJECT_RULES = {"no_period_at_end": True, "no_emoji": True,
+                 "imperative_mood": True, "capitalize_first_letter": False}
+ENFORCEMENT = {"enabled": True, "block_on_failure": True, "log_violations": True}
 ```
+
+Forbidden-footer detection lives, hardcoded, in `bash_validator`.
 
 ---
 
@@ -232,7 +223,7 @@ Example entry:
 
 ## See Also
 
-- `.claude/config/git_standards.json` - Git standards configuration
+- `hooks/modules/validation/commit_validator.py` - Git standards (inlined constants)
 - `.claude/skills/subagent-request-approval/SKILL.md` - Approval-request workflow patterns
 - `.claude/skills/execution/SKILL.md` - Execution workflow patterns
 - `CLAUDE.md` - Orchestrator protocol with T3 workflow

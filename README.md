@@ -21,7 +21,7 @@ UserPromptSubmit  ->  routing  ->  PreToolUse  ->  agent  ->  PostToolUse  ->  S
                                      injection
 ```
 
-That pipeline is the spine. Everything else in this repo is either a component of that pipeline (`hooks/`, `agents/`, `skills/`, `config/`) or infrastructure that supports it (`build/`, `bin/`, `tests/`, `templates/`). Start with the folder that matches the behavior you want to understand, and its README will tell you where it fits in the flow.
+That pipeline is the spine. Everything else in this repo is either a component of that pipeline (`hooks/`, `agents/`, `skills/`, `config/`) or infrastructure that supports it (`build/`, `bin/`, `tests/`). Start with the folder that matches the behavior you want to understand, and its README will tell you where it fits in the flow.
 
 ## Overview
 
@@ -150,10 +150,6 @@ Gaia enforces a 6-layer security pipeline:
 | Mutative verb detection | `ask` dialog for state-changing ops | User approves via native dialog |
 | Settings deny rules | 147 deny rules in `settings.local.json` | Self-healing (restored each session) |
 
-### Enterprise Deployment
-
-For organization-wide enforcement, deploy `templates/managed-settings.template.json` as a managed settings policy via Claude.ai Admin Console. Managed settings have the highest precedence and cannot be overridden.
-
 ## Project Structure
 
 ```
@@ -164,7 +160,6 @@ gaia-dev/
 ├── config/              # Configuration — routing, contracts, rules, git standards
 ├── commands/            # Slash commands — /gaia, /scan-project
 ├── build/               # Plugin manifests — hook + agent registration for Claude Code
-├── templates/           # Installation templates — managed-settings for enterprise
 ├── bin/                 # Single `gaia` CLI; subcommands discovered from bin/cli/
 ├── tests/               # Test suite — 3-layer pyramid (pytest, LLM eval, e2e)
 └── tools/               # Context provisioning tools

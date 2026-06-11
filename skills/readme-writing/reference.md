@@ -185,4 +185,3 @@ Copy this when writing a README from scratch. Fill every section -- do not delet
 | `bin/` | Low -- CLI tools, user-invoked | No |
 | `tests/` | Low -- run by CI or developer | No |
 | `build/` | Medium -- triggered by npm run build | Optional |
-| `templates/` | Low -- read by build scripts | No |

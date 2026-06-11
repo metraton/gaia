@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia",
-  "version": "5.0.4",
+  "version": "5.0.5",
   "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
@@ -37,13 +37,10 @@
     "tools/",
     "gaia/",
     "hooks/",
-    "commands/",
-    "templates/",
     "config/",
     "scripts/",
     "skills/",
     "dist/",
-    "git-hooks/",
     "README.md",
     "INSTALL.md",
     "CHANGELOG.md",
@@ -62,7 +59,6 @@
     "test:all": "python3 -m pytest tests/ -v -m ''",
     "test:promptfoo": "npx promptfoo eval --config tests/promptfoo.yaml",
     "lint": "eslint .",
-    "check:py39": "python3 scripts/check-py39-compat.py",
     "release:prepare": "node scripts/release-prepare.mjs",
     "clean:dist": "rm -rf dist/",
     "build:plugins": "npm run clean:dist && python3 scripts/build-plugin.py gaia-security && python3 scripts/build-plugin.py gaia-ops",
@@ -73,7 +69,7 @@
     "gaia:verify-install:local": "npm pack && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target sandbox",
     "gaia:verify-install:rc": "bash bin/validate-sandbox.sh --version @rc --target sandbox",
     "gaia:verify-install:latest": "bash bin/validate-sandbox.sh --version @latest --target sandbox",
-    "gaia:install-local": "npm pack && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target local",
+    "gaia:install-local": "npm run build:plugins && npm pack && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target local",
     "prepack": "npm run clean",
     "prepublishOnly": "npm run build:plugins && node bin/pre-publish-validate.js",
     "postinstall": "python3 bin/gaia install --postinstall",
@@ -87,6 +83,6 @@
   },
   "engines": {
     "node": ">=18.0.0",
-    "python": ">=3.9"
+    "python": ">=3.11"
   }
 }

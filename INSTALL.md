@@ -172,7 +172,6 @@ your-project/
 │   ├── hooks/ (symlink)           → Security validations
 │   ├── commands/ (symlink)        → Slash commands
 │   ├── config/ (symlink)          → Configuration (contracts, rules)
-│   ├── templates/ (symlink)       → Installation templates
 │   ├── logs/                      ← Audit logs
 │   ├── approvals/                 ← Pending T3 approval files
 │   ├── plugin-registry.json       ← installed[].name = "gaia-ops"
@@ -204,7 +203,6 @@ Once installed, you have access to **complete documentation** in each directory:
 ├── config/README.md      Contracts, git standards, surface routing
 ├── hooks/README.md       8 hook scripts (4 primary + 4 event handlers)
 ├── tools/                Context, memory, validation, review
-├── templates/README.md   Installation templates
 └── bin/README.md         CLI utilities
 ```
 

@@ -363,7 +363,6 @@
           "hooks/",
           "skills/",
           "agents/",
-          "templates/",
           "claude.md",
           "project-context.json"
         ]

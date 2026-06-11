@@ -1,6 +1,6 @@
 """
 Test suite for configuration files
-Validates settings.json, git_standards.json, and other configs
+Validates settings.json, surface-routing.json, and other configs
 """
 
 import pytest
@@ -17,53 +17,45 @@ class TestSettingsTemplateRemoved:
         assert not path.exists(), f"settings.template.json should have been deleted: {path}"
 
 
-class TestGitStandards:
-    """Test git_standards.json configuration"""
+class TestGitStandardsInlined:
+    """Git commit standards are now inlined as constants in commit_validator.py.
+
+    config/git_standards.json was removed: commit_validator.py was the single
+    runtime consumer of the format/subject/body rules, so they now live as
+    module-level constants. Footer detection lives in bash_validator. These
+    tests assert the inlined constants exist and carry the expected shape.
+    """
 
     @pytest.fixture
-    def git_standards_path(self):
-        """Get git_standards.json path"""
-        return Path(__file__).resolve().parents[2] / "config" / "git_standards.json"
+    def validator_module(self):
+        import importlib.util
 
-    def test_git_standards_exists(self, git_standards_path):
-        """git_standards.json must exist"""
-        assert git_standards_path.exists(), "git_standards.json not found"
-
-    def test_git_standards_is_valid_json(self, git_standards_path):
-        """git_standards.json must be valid JSON"""
-        try:
-            with open(git_standards_path, 'r') as f:
-                json.load(f)
-        except json.JSONDecodeError as e:
-            pytest.fail(f"git_standards.json is not valid JSON: {e}")
-
-    def test_git_standards_has_commit_types(self, git_standards_path):
-        """git_standards.json should define allowed commit types"""
-        with open(git_standards_path, 'r') as f:
-            data = json.load(f)
-        
-        # Structure is: data['commit_message']['type_allowed']
-        has_types = (
-            ('commit_message' in data and 'type_allowed' in data['commit_message']) or
-            'commit_types' in data or 
-            'allowed_types' in data
+        mod_path = (
+            Path(__file__).resolve().parents[2]
+            / "hooks" / "modules" / "validation" / "commit_validator.py"
         )
-        assert has_types, "git_standards.json missing commit types"
+        spec = importlib.util.spec_from_file_location("commit_validator", mod_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
-    def test_git_standards_has_forbidden_footers(self, git_standards_path):
-        """git_standards.json should define forbidden footers"""
-        with open(git_standards_path, 'r') as f:
-            data = json.load(f)
-        
-        # Structure is: data['commit_message']['footer_forbidden']
-        has_forbidden = (
-            ('commit_message' in data and 'footer_forbidden' in data['commit_message']) or
-            'forbidden_footers' in data or 
-            'blocked_footers' in data or
-            'prohibited_footers' in data
-        )
-        assert has_forbidden, \
-            "git_standards.json missing forbidden footers config"
+    def test_git_standards_json_removed(self):
+        """config/git_standards.json must no longer exist."""
+        path = Path(__file__).resolve().parents[2] / "config" / "git_standards.json"
+        assert not path.exists(), "git_standards.json should have been removed"
+
+    def test_inlined_commit_types(self, validator_module):
+        """commit_validator.py defines the allowed commit types inline."""
+        assert hasattr(validator_module, "TYPE_ALLOWED")
+        assert "feat" in validator_module.TYPE_ALLOWED
+        assert "fix" in validator_module.TYPE_ALLOWED
+        assert len(validator_module.TYPE_ALLOWED) == 10
+
+    def test_inlined_subject_rules(self, validator_module):
+        """commit_validator.py defines subject rules and max length inline."""
+        assert validator_module.SUBJECT_MAX_LENGTH == 72
+        assert validator_module.SUBJECT_RULES["no_period_at_end"] is True
+        assert validator_module.SUBJECT_RULES["no_emoji"] is True
 
 
 class TestConfigConsistency:
