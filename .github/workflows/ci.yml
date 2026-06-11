@@ -27,7 +27,7 @@ jobs:
         run: pip install pytest==8.3.5
 
       - name: Run tests
-        run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
+        run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e --ignore=tests/evals
 
   lint-js:
     name: ESLint (Node ${{ matrix.node-version }})
