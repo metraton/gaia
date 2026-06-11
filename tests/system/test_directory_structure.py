@@ -23,11 +23,13 @@ class TestCoreDirectories:
     def test_required_directories_exist(self, package_root):
         """All required npm package directories must exist"""
         # Directories that should be in the published npm package
+        # commands/ was removed this session and git does not track empty dirs,
+        # so a clean CI checkout has no commands/. Only assert dirs that have
+        # tracked content and ship in the package.
         required_dirs = [
             "tools",
             "agents",
             "hooks",
-            "commands",
             "config",
             "tests",
             "bin"
