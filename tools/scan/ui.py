@@ -17,6 +17,22 @@ from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
+# Glyphs
+#
+# Hoisted to module-level constants so they are never written as escape
+# sequences *inside* an f-string replacement field. A backslash within an
+# f-string expression (e.g. f"{self._green('◇')}") is a SyntaxError on
+# Python 3.11 (our declared minimum); it is only permitted on 3.12+ via PEP
+# 701. Referencing a bare name inside the braces keeps the same rendered
+# output while staying 3.11-compatible.
+# ---------------------------------------------------------------------------
+
+_GLYPH_DIAMOND_OUTLINE = "◇"  # ◇
+_GLYPH_WARNING = "⚠"          # ⚠
+_GLYPH_CORNER_BL = "└"        # └
+
+
+# ---------------------------------------------------------------------------
 # ANSI color helpers
 # ---------------------------------------------------------------------------
 
@@ -119,7 +135,7 @@ class RailUI:
             name: Section title (e.g. "Stack", "Infrastructure").
             lines: Detail lines to display under the section.
         """
-        self._write(f"{self._green('\u25c7')}  {self._cyan(name)}")
+        self._write(f"{self._green(_GLYPH_DIAMOND_OUTLINE)}  {self._cyan(name)}")
         for line in lines:
             self._write(f"{self._rail()}  {line}")
         self._write(self._rail())
@@ -131,7 +147,7 @@ class RailUI:
             names: List of section names to join with middle-dot.
         """
         joined = self._cyan(" \u00b7 ".join(names))
-        self._write(f"{self._green('\u25c7')}  {joined}")
+        self._write(f"{self._green(_GLYPH_DIAMOND_OUTLINE)}  {joined}")
         self._write(self._rail())
 
     def warning(self, count: int, messages: List[str]) -> None:
@@ -141,7 +157,7 @@ class RailUI:
             count: Total number of warnings.
             messages: Warning messages to display.
         """
-        self._write(f"{self._yellow('\u26a0')}  {self._yellow(f'Warnings ({count})')}")
+        self._write(f"{self._yellow(_GLYPH_WARNING)}  {self._yellow(f'Warnings ({count})')}")
         for msg in messages:
             self._write(f"{self._rail()}  {msg}")
         self._write(self._rail())
@@ -193,7 +209,7 @@ class RailUI:
         Args:
             message: Footer message text.
         """
-        self._write(f"{self._dim('\u2514')}  {message}")
+        self._write(f"{self._dim(_GLYPH_CORNER_BL)}  {message}")
 
 
 # ---------------------------------------------------------------------------
