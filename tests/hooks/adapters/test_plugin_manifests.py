@@ -15,12 +15,43 @@ Validates:
 """
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 # Resolve project root (tests/hooks/adapters/ -> project root)
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+
+
+@pytest.fixture(scope="session")
+def built_plugins_dir(tmp_path_factory) -> Path:
+    """Build both plugins into a session-scoped temp dir.
+
+    The sub-plugin manifest/version tests read
+    dist/gaia-*/.claude-plugin/plugin.json, but dist/ is gitignored and the CI
+    test job never builds it. Building here via build-plugin.py --output-dir
+    makes those tests self-contained: they read freshly built artifacts from a
+    temp dir, not an ambient dist/. build-plugin.py's --output-dir is the
+    plugin's own output root (default dist/<plugin>), so each plugin is built
+    into <tmp>/<plugin-name> to reproduce the dist/gaia-*/ layout.
+    """
+    out_root = tmp_path_factory.mktemp("built_plugins")
+    build_script = str(PROJECT_ROOT / "scripts" / "build-plugin.py")
+    for plugin in ("gaia-security", "gaia-ops"):
+        subprocess.run(
+            [
+                sys.executable,
+                build_script,
+                plugin,
+                "--output-dir",
+                str(out_root / plugin),
+            ],
+            check=True,
+            cwd=PROJECT_ROOT,
+        )
+    return out_root
 
 
 class TestPluginJson:
@@ -296,12 +327,12 @@ class TestSubPluginManifests:
     """Test sub-plugin plugin.json files in dist/."""
 
     @pytest.fixture(autouse=True)
-    def setup(self):
+    def setup(self, built_plugins_dir):
         self.security_path = (
-            PROJECT_ROOT / "dist" / "gaia-security" / ".claude-plugin" / "plugin.json"
+            built_plugins_dir / "gaia-security" / ".claude-plugin" / "plugin.json"
         )
         self.ops_path = (
-            PROJECT_ROOT / "dist" / "gaia-ops" / ".claude-plugin" / "plugin.json"
+            built_plugins_dir / "gaia-ops" / ".claude-plugin" / "plugin.json"
         )
 
     def test_gaia_security_plugin_json_exists(self):
@@ -345,15 +376,15 @@ class TestVersionSync:
     """Test version synchronization across all manifest files."""
 
     @pytest.fixture(autouse=True)
-    def setup(self):
+    def setup(self, built_plugins_dir):
         self.package_path = PROJECT_ROOT / "package.json"
         self.plugin_path = PROJECT_ROOT / ".claude-plugin" / "plugin.json"
         self.marketplace_path = PROJECT_ROOT / ".claude-plugin" / "marketplace.json"
         self.security_path = (
-            PROJECT_ROOT / "dist" / "gaia-security" / ".claude-plugin" / "plugin.json"
+            built_plugins_dir / "gaia-security" / ".claude-plugin" / "plugin.json"
         )
         self.ops_path = (
-            PROJECT_ROOT / "dist" / "gaia-ops" / ".claude-plugin" / "plugin.json"
+            built_plugins_dir / "gaia-ops" / ".claude-plugin" / "plugin.json"
         )
 
     def _get_version(self, path: Path) -> str:
