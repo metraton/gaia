@@ -1,7 +1,0 @@
-AC-5: security-tiers/SKILL.md lista composition_rules.py y flag_classifiers.py en Enforcement anchors, anclados a simbolo
-
-Command: grep -E 'composition_rules.py|flag_classifiers.py' .claude/skills/security-tiers/SKILL.md
-Result:  ambos modulos presentes, anclados a simbolo en tabla Enforcement anchors
-Status:  PASS
-
-Verified: 2026-06-03 post-commit 7d51737

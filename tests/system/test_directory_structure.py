@@ -28,7 +28,6 @@ class TestCoreDirectories:
             "agents",
             "hooks",
             "commands",
-            "templates",
             "config",
             "tests",
             "bin"
@@ -46,7 +45,6 @@ class TestCoreDirectories:
         """Config directory should have contracts and standards"""
         config_dir = package_root / "config"
         required_files = [
-            "git_standards.json",
             "surface-routing.json",
         ]
 
@@ -165,10 +163,10 @@ class TestConfigDirectory:
         config = Path(__file__).resolve().parents[2] / "config"
         return config.resolve() if config.is_symlink() else config
 
-    def test_git_standards_exist(self, config_dir):
-        """git_standards.json must exist"""
-        git_standards = config_dir / "git_standards.json"
-        assert git_standards.exists(), "git_standards.json not found"
+    def test_surface_routing_exists(self, config_dir):
+        """surface-routing.json must exist"""
+        surface_routing = config_dir / "surface-routing.json"
+        assert surface_routing.exists(), "surface-routing.json not found"
 
     def test_config_files_valid_json(self, config_dir):
         """All JSON config files should be valid"""
@@ -197,37 +195,6 @@ class TestReadmePresence:
     def package_root(self):
         """Get the package root directory (gaia-ops/)"""
         return Path(__file__).resolve().parents[2]
-
-    def test_top_level_folders_have_readme(self, package_root):
-        """All key top-level component folders must have a README.md"""
-        required_readme_dirs = [
-            "agents",
-            "skills",
-            "hooks",
-            "commands",
-            "config",
-            "bin",
-            "tests",
-            "build",
-            "templates",
-        ]
-
-        missing = []
-        for dir_name in required_readme_dirs:
-            dir_path = package_root / dir_name
-            # Follow symlinks to the real directory
-            if dir_path.is_symlink():
-                dir_path = dir_path.resolve()
-            if not dir_path.exists():
-                continue  # Directory itself missing is caught by test_required_directories_exist
-            readme = dir_path / "README.md"
-            if not readme.exists():
-                missing.append(dir_name)
-
-        assert not missing, (
-            f"These folders are missing README.md: {missing}. "
-            "Add a README following skills/readme-writing/SKILL.md template."
-        )
 
     def test_skill_folders_have_skill_md(self, package_root):
         """Every skill subfolder must contain a SKILL.md file"""

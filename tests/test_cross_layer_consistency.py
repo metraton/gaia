@@ -27,7 +27,6 @@ GAIA_OPS_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = GAIA_OPS_ROOT / "hooks"
 HOOKS_MODULES_DIR = HOOKS_DIR / "modules"
 SKILLS_DIR = GAIA_OPS_ROOT / "skills"
-TEMPLATES_DIR = GAIA_OPS_ROOT / "templates"
 CONFIG_DIR = GAIA_OPS_ROOT / "config"
 
 # Add hooks to path for imports

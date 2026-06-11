@@ -149,48 +149,79 @@ sqlite3 "$GAIA_DB" <<'EOF'
 DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator';
 EOF
 
-# === Section 3b: Seed schema_version baseline (v1) ===
+# === Section 3b: Seed schema_version baseline (floor) ===
 #
-# La tabla schema_version se crea en schema.sql. Aquí insertamos SOLO la fila
-# v1 ("initial schema") como baseline del ledger. Idempotente vía INSERT OR
-# IGNORE -- reejecutar el bootstrap no duplica ni reescribe la fila.
+# Modelo de FLOOR (piso de schema), reemplaza al viejo "seed v1 + camina
+# v1..v17". Gaia es una herramienta personal de un solo usuario: nadie
+# actualiza una DB más vieja que la versión actual, y las instalaciones
+# nuevas construyen el schema directamente desde schema.sql (que ya produce
+# la forma del FLOOR). Por eso colapsamos la historia v1->v17 a un baseline.
 #
-# Las versiones >= 2 NO se insertan aquí. Section 3c (abajo) aplica migraciones
-# en orden y emite la fila schema_version correspondiente sólo si la migración
-# concreta tuvo éxito. Diseño elegido para evitar el bug histórico de "ledger
-# miente": v2 era stampada incondicionalmente aunque CREATE TABLE IF NOT EXISTS
-# short-circuiteaba la DDL nueva sobre DBs preexistentes.
+# SCHEMA_FLOOR es la versión mínima soportada in-place. schema.sql produce
+# exactamente esta forma. Reglas:
+#
+#   - DB nueva (sin filas en schema_version): schema.sql ya creó el estado
+#     FLOOR, así que sellamos (version=SCHEMA_FLOOR) directamente. No se
+#     siembra v1 ni se camina la cadena.
+#   - DB en o por encima del FLOOR: no se hace nada aquí (Section 3c decide
+#     si hay migraciones forward pendientes hacia EXPECTED).
+#   - DB por debajo del FLOOR (1 <= version < FLOOR): NO soportada para
+#     upgrade in-place. Abortamos con un mensaje claro pidiendo recrear la DB.
 #
 # `gaia doctor` lee MAX(version) y lo compara contra EXPECTED_SCHEMA_VERSION
 # baked in al CLI. Adicionalmente, check_schema_ddl_consistency compara el CHECK
 # constraint vivo contra el de schema.sql para cazar drift de ledger.
-NOW_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-sqlite3 "$GAIA_DB" <<EOF
-INSERT OR IGNORE INTO schema_version (version, applied_at, description)
-VALUES (1, '${NOW_UTC}', 'initial schema');
-EOF
-echo "[bootstrap] schema_version baseline seeded (v1)"
+SCHEMA_FLOOR=18
 
-# === Section 3c: Apply pending schema migrations ===
+NOW_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+EXISTING_VERSION="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
+
+if [ "$EXISTING_VERSION" -eq 0 ]; then
+    # Fresh install: schema.sql ya construyó el estado FLOOR. Sellamos el
+    # ledger directamente en el FLOOR. INSERT OR IGNORE mantiene idempotencia.
+    sqlite3 "$GAIA_DB" <<EOF
+INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+VALUES (${SCHEMA_FLOOR}, '${NOW_UTC}', 'baseline floor: schema.sql at v${SCHEMA_FLOOR}');
+EOF
+    echo "[bootstrap] schema_version baseline seeded at floor (v${SCHEMA_FLOOR})"
+elif [ "$EXISTING_VERSION" -lt "$SCHEMA_FLOOR" ]; then
+    # DB por debajo del piso: ya no soportamos upgrade in-place desde la
+    # cadena histórica v1..v17. Fallamos claro (no en silencio).
+    echo "[bootstrap] ERROR: DB at schema_version=${EXISTING_VERSION} is below the supported floor v${SCHEMA_FLOOR}." >&2
+    echo "[bootstrap] In-place upgrade from pre-v${SCHEMA_FLOOR} databases is no longer supported." >&2
+    echo "[bootstrap] Recreate the DB: back up any data you need, delete ${GAIA_DB}, then re-run \`gaia install\`." >&2
+    exit 1
+else
+    # DB en o por encima del piso: nada que sembrar aquí. Section 3c decide
+    # si hay migraciones forward pendientes hacia EXPECTED_SCHEMA_VERSION.
+    echo "[bootstrap] schema_version at v${EXISTING_VERSION} (>= floor v${SCHEMA_FLOOR}); no baseline seed needed"
+fi
+
+# === Section 3c: Apply pending forward migrations (floor+1 .. EXPECTED) ===
 #
-# Itera desde MAX(version)+1 hasta EXPECTED_SCHEMA_VERSION (extraído de
-# bin/cli/doctor.py vía grep) y aplica scripts/migrations/v{N-1}_to_v{N}.sql
-# cuando son necesarios. Cada migración se aplica en su propia transacción
-# BEGIN/COMMIT con guard de pre-condición para soportar fresh installs donde
-# schema.sql ya creó la tabla en estado target.
+# Modelo FLOOR forward-only. La cadena histórica v1..v17 fue eliminada; el
+# baseline es el FLOOR (Section 3b). Esta sección aplica SÓLO migraciones
+# forward que se agreguen en el futuro, una por bump:
 #
-# Lógica por versión N:
-#   1. ¿Existe el archivo de migración? Si no, abort.
-#   2. Guard probe: ¿la live DB ya está en estado target? Si sí, sólo stampa
-#      el row del ledger y continúa (caso fresh install).
-#   3. Si no, ejecuta la migración dentro de BEGIN/COMMIT. Si la transacción
-#      falla, abort -- el ledger NO se actualiza, el próximo bootstrap retry
-#      ve la misma migración pendiente.
-#   4. Tras éxito, INSERT OR IGNORE en schema_version (version=N, ...).
+#   scripts/migrations/v{N-1}_to_v{N}.sql   (N > SCHEMA_FLOOR)
+#
+# Convención forward-only (ver scripts/migrations/README.md):
+#   - El baseline es la versión actual (FLOOR). schema.sql produce esa forma.
+#   - Cada bump futuro agrega EXACTAMENTE un v{N-1}_to_v{N}.sql y sube
+#     EXPECTED_SCHEMA_VERSION en doctor.py en el mismo commit.
+#   - Para una DB en el FLOOR, esa migración corre directo (la DB está en el
+#     estado source de la migración). No se necesitan variantes _fresh: un
+#     fresh install ya está en EXPECTED tras schema.sql, así que el loop no
+#     entra (CURRENT == EXPECTED). El guard-probe por-versión del modelo viejo
+#     desaparece junto con la cadena histórica.
+#
+# Cada migración corre en su propia transacción BEGIN/COMMIT. Si falla, abort
+# -- el ledger NO avanza y el próximo bootstrap retry ve la misma pendiente.
 #
 # EXPECTED_SCHEMA_VERSION se lee dinámicamente de doctor.py para mantener una
 # sola fuente de verdad. test_schema_version_lockstep garantiza que el número
-# en doctor.py concuerda con las migraciones disponibles.
+# en doctor.py concuerda con las migraciones disponibles (== FLOOR cuando no
+# hay migraciones forward todavía).
 
 DOCTOR_PY="${SCRIPT_DIR}/../bin/cli/doctor.py"
 if [ ! -f "$DOCTOR_PY" ]; then
@@ -215,6 +246,12 @@ echo "[bootstrap] schema_version: current=${CURRENT_VERSION}, expected=${EXPECTE
 MIG_DIR="${SCRIPT_DIR}/migrations"
 
 if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
+    # Forward-only loop. Reaches here only when a FUTURE migration has been
+    # added (EXPECTED_SCHEMA_VERSION > FLOOR) and the live DB is behind it.
+    # On a fresh install the DB is already at EXPECTED (schema.sql produced the
+    # FLOOR == EXPECTED shape when no forward migrations exist), so this branch
+    # is skipped entirely. Any DB below the FLOOR was already rejected in
+    # Section 3b, so CURRENT_VERSION here is always >= FLOOR.
     for N in $(seq $((CURRENT_VERSION + 1)) "$EXPECTED_VERSION"); do
         PREV=$((N - 1))
         MIG_FILE="${MIG_DIR}/v${PREV}_to_v${N}.sql"
@@ -222,424 +259,35 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
         if [ ! -f "$MIG_FILE" ]; then
             echo "[bootstrap] ERROR: missing migration file ${MIG_FILE}" >&2
             echo "[bootstrap] Cannot advance from v${PREV} to v${N}. The ledger will remain at v${CURRENT_VERSION}." >&2
+            echo "[bootstrap] When bumping EXPECTED_SCHEMA_VERSION to v${N}, add scripts/migrations/v${PREV}_to_v${N}.sql in the same commit." >&2
             exit 1
         fi
 
-        # Per-version guard probe. Each migration has a fingerprint that
-        # tells us whether the live DDL is already at the target state
-        # (fresh install where schema.sql ran with the new DDL) or still
-        # at the source state (existing DB where CREATE TABLE IF NOT EXISTS
-        # short-circuited).
-        #
-        # A guard probe can also OVERRIDE which .sql file to run when the
-        # entry state is mutative but distinct from the canonical source.
-        # See v2->v3 below for the "both tables present" case, which needs
-        # the merge variant rather than the rename variant.
-        ALREADY_AT_TARGET=0
-        OVERRIDE_MIG_FILE=""
-        case "$N" in
-            2)
-                # v1 -> v2: widen memory.type CHECK. Target state contains 'atom'.
-                MEMORY_DDL="$(sqlite3 "$GAIA_DB" "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory';")"
-                if [[ "$MEMORY_DDL" == *"'atom'"* ]]; then
-                    ALREADY_AT_TARGET=1
-                fi
-                ;;
-            3)
-                # v2 -> v3: rename context_contracts -> project_context_contracts
-                # and add agent_contract_permissions. Three entry states:
-                #   state 1 (only old): rename via v2_to_v3.sql (the default file).
-                #   state 2 (only new + perms exist): "at target", stamp ledger.
-                #   state 3 (both tables): copy rows + drop old via v2_to_v3_merge.sql.
-                #
-                # The detection order is deliberate: we check for the legacy
-                # table first because its presence is the disqualifying signal
-                # for "already at target", regardless of what else exists.
-                HAS_OLD="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='context_contracts';")"
-                HAS_NEW="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='project_context_contracts';")"
-                HAS_PERMS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_contract_permissions';")"
-
-                if [ -z "$HAS_OLD" ] && [ "$HAS_NEW" = "project_context_contracts" ] && [ "$HAS_PERMS" = "agent_contract_permissions" ]; then
-                    # State 2: only new tables exist, fully migrated.
-                    ALREADY_AT_TARGET=1
-                elif [ "$HAS_OLD" = "context_contracts" ] && [ "$HAS_NEW" = "project_context_contracts" ]; then
-                    # State 3: both tables exist -- run the merge variant.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v2_to_v3_merge.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: state-3 merge script missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: state 1 (only old) -- fall through to default rename script.
-                ;;
-            4)
-                # v3 -> v4: add memory.class + memory.status columns plus the
-                # memory_links table. Target state contains the `class` column
-                # on the memory table. We probe pragma_table_info; presence of
-                # 'class' is the fingerprint of v4 target state.
-                #
-                # Note: idx_memory_class_status is intentionally NOT declared
-                # in schema.sql -- it references columns that ALTER TABLE adds
-                # later, and CREATE INDEX in schema.sql would parse-fail on
-                # v3 DBs. On fresh-install (ALREADY_AT_TARGET=1) we run the
-                # migration script anyway because its statements are all
-                # idempotent (`IF NOT EXISTS`) and the only operation that is
-                # NOT a no-op on fresh install is the index creation.
-                MEMORY_HAS_CLASS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('memory') WHERE name='class';")"
-                MEMORY_LINKS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_links';")"
-                if [ "$MEMORY_HAS_CLASS" = "class" ] && [ "$MEMORY_LINKS_EXISTS" = "memory_links" ]; then
-                    # Fresh install: schema.sql created the v4 columns and
-                    # memory_links table. Run the migration anyway -- the
-                    # ALTER TABLE statements need to be skipped because the
-                    # columns already exist. We branch to a fresh-install
-                    # variant that ONLY creates the index.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v3_to_v4_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v3->v4 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v3 DB -- fall through to default v3_to_v4.sql.
-                ;;
-            5)
-                # v4 -> v5: add acceptance_criteria.status + milestones.status.
-                # Target state: acceptance_criteria has 'status' column.
-                AC_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('acceptance_criteria') WHERE name='status';")"
-                MS_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('milestones') WHERE name='status';")"
-                if [ "$AC_HAS_STATUS" = "status" ] && [ "$MS_HAS_STATUS" = "status" ]; then
-                    # Fresh install: schema.sql already created v5 columns.
-                    # Run the fresh-install variant that ONLY creates the indexes.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v4_to_v5_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v4->v5 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v4 DB -- fall through to default v4_to_v5.sql.
-                ;;
-            6)
-                # v5 -> v6: add evidence table (three-tier storage model).
-                # Target state: evidence table exists.
-                EVIDENCE_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='evidence';")"
-                if [ "$EVIDENCE_EXISTS" = "evidence" ]; then
-                    # Fresh install: schema.sql already created the evidence table.
-                    # Run the fresh-install variant that ONLY creates the indexes.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v5_to_v6_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v5->v6 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v5 DB -- fall through to default v5_to_v6.sql.
-                ;;
-            7)
-                # v6 -> v7: add workspaces.last_scan_at column (agent-contract-handoff M1).
-                # Target state: workspaces table has a 'last_scan_at' column.
-                WS_HAS_LAST_SCAN="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('workspaces') WHERE name='last_scan_at';")"
-                if [ "$WS_HAS_LAST_SCAN" = "last_scan_at" ]; then
-                    # Fresh install: schema.sql already created the column.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v6_to_v7_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v6->v7 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v6 DB -- fall through to default v6_to_v7.sql.
-                ;;
-            8)
-                # v7 -> v8: add approval_grants table (agent-contract-handoff M3).
-                # Target state: approval_grants table exists.
-                GRANTS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='approval_grants';")"
-                if [ "$GRANTS_EXISTS" = "approval_grants" ]; then
-                    # Fresh install: schema.sql already created the approval_grants table.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v7_to_v8_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v7->v8 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v7 DB -- fall through to default v7_to_v8.sql.
-                ;;
-            9)
-                # v8 -> v9: add agent_contract_handoffs, agent_contract_handoff_approvals,
-                # project_context_contracts_history tables + trg_pcc_history trigger
-                # (agent-contract-handoff M4: handoff persistence).
-                # Target state: agent_contract_handoffs table exists.
-                HANDOFFS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_contract_handoffs';")"
-                if [ "$HANDOFFS_EXISTS" = "agent_contract_handoffs" ]; then
-                    # Fresh install: schema.sql already created all v9 tables and trigger.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v8_to_v9_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v8->v9 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v8 DB -- fall through to default v8_to_v9.sql.
-                ;;
-            10)
-                # v9 -> v10: add episodes.tier column + idx_episodes_tier + idx_episodes_tier_outcome
-                # + episode_anomalies table + its 3 indexes
-                # (episodic-workflow-to-db AC-3: migration apply).
-                #
-                # Target state fingerprint: episodes.tier column exists.
-                # We use PRAGMA table_info to check for the tier column.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates episodes WITH tier -> tier exists
-                #   - Existing v9 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> tier does NOT exist -> falls through to the full migration
-                # Note: episode_anomalies table is NOT a valid fingerprint because
-                # schema.sql creates it via CREATE TABLE IF NOT EXISTS even on existing DBs.
-                TIER_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('episodes') WHERE name='tier';")"
-                if [ "$TIER_EXISTS" = "tier" ]; then
-                    # Fresh install: schema.sql already created episodes with tier column.
-                    # Run the fresh-install variant (creates tier indexes) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v9_to_v10_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v9->v10 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v9 DB -- fall through to default v9_to_v10.sql.
-                ;;
-            11)
-                # v10 -> v11: memory.class NOT NULL + CHECK(anchor|thread|log)
-                # + trg_pcc_history trigger column fix (contract_key->contract_name,
-                # payload_json->payload). Closes ledger task #6.
-                #
-                # Target state fingerprint: memory.class column is NOT NULL.
-                # We query pragma_table_info and check the notnull flag (column 3 in
-                # the pragma output: 0=nullable, 1=NOT NULL). A fresh install creates
-                # memory with NOT NULL class -> notnull=1. An existing v10 DB has
-                # class as nullable -> notnull=0 -> falls through to the full migration.
-                # Correct fingerprint because:
-                #   - Fresh install (schema.sql creates memory with NOT NULL class): notnull=1
-                #   - Existing v10 DB (CREATE TABLE IF NOT EXISTS is a no-op): notnull=0
-                MEMORY_CLASS_NOTNULL="$(sqlite3 "$GAIA_DB" "SELECT \"notnull\" FROM pragma_table_info('memory') WHERE name='class';")"
-                if [ "$MEMORY_CLASS_NOTNULL" = "1" ]; then
-                    # Fresh install: schema.sql already created memory with NOT NULL class.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v10_to_v11_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v10->v11 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v10 DB -- fall through to default v10_to_v11.sql.
-                ;;
-            12)
-                # v11 -> v12: add approvals + approval_events tables + three hash-chain triggers
-                # (approval-model-redesign M1: user-in-loop, fingerprint-bound, hash-chained).
-                #
-                # Target state fingerprint: approvals table exists.
-                # We probe sqlite_master for the table name.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates approvals table -> it exists
-                #   - Existing v11 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> approvals does NOT exist -> falls through to the full migration
-                # Note: approval_events triggers require the gaia_sha256 scalar function
-                # to be registered on the connection before any INSERT fires them.
-                # bootstrap_database.sh uses sqlite3 CLI which does NOT register Python
-                # functions; the trigger DDL is stored but can only fire via gaia.store.
-                # The migration SQL itself only defines the DDL (no INSERTs into
-                # approval_events), so the migration applies cleanly via sqlite3 CLI.
-                APPROVALS_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='approvals';")"
-                if [ "$APPROVALS_EXISTS" = "approvals" ]; then
-                    # Fresh install: schema.sql already created the approvals table.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v11_to_v12_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v11->v12 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v11 DB -- fall through to default v11_to_v12.sql.
-                ;;
-            13)
-                # v12 -> v13: add group_name column to projects table
-                # (gaia-scan-overhaul: workspace->group->repo model, AC-2).
-                #
-                # Target state fingerprint: projects.group_name column exists.
-                # We probe pragma_table_info for the column name.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates projects WITH group_name -> it exists
-                #   - Existing v12 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> group_name does NOT exist -> falls through to the full migration
-                GROUP_NAME_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='group_name';")"
-                if [ "$GROUP_NAME_EXISTS" = "group_name" ]; then
-                    # Fresh install: schema.sql already created projects with group_name column.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v12_to_v13_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v12->v13 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v12 DB -- fall through to default v12_to_v13.sql.
-                ;;
-            14)
-                # v13 -> v14: add path column to projects table
-                # (gaia-scan-overhaul: findability, project -> path + workspace).
-                #
-                # Target state fingerprint: projects.path column exists.
-                # We probe pragma_table_info for the column name.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates projects WITH path -> it exists
-                #   - Existing v13 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> path does NOT exist -> falls through to the full migration
-                PATH_EXISTS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='path';")"
-                if [ "$PATH_EXISTS" = "path" ]; then
-                    # Fresh install: schema.sql already created projects with path column.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v13_to_v14_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v13->v14 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v13 DB -- fall through to default v13_to_v14.sql.
-                ;;
-            15)
-                # v14 -> v15: rename the per-project child-table FK column
-                # repo -> project on apps, libraries, services, features,
-                # tf_modules, tf_live, releases, workloads, clusters_defined
-                # (substrate rename catch-up; closes "no such column: project").
-                #
-                # Target state fingerprint: apps.project column exists.
-                # We probe pragma_table_info for the column name on `apps`
-                # (representative of all nine child tables, which are renamed
-                # together in the same migration).
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates apps WITH `project` -> it exists
-                #   - Existing v14 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     so apps still has the legacy `repo` column -> `project` does
-                #     NOT exist -> falls through to the full rename migration.
-                APPS_HAS_PROJECT="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('apps') WHERE name='project';")"
-                if [ "$APPS_HAS_PROJECT" = "project" ]; then
-                    # Fresh install: schema.sql already created child tables with
-                    # the `project` column. Run the fresh-install variant (no-op
-                    # SELECT) to stamp the ledger without attempting the rename.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v14_to_v15_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v14->v15 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v14 DB -- fall through to default v14_to_v15.sql.
-                ;;
-            16)
-                # v15 -> v16: add status + missing_since columns to projects table
-                # (gaia-scan-overhaul: soft-delete support for missing projects).
-                #
-                # Target state fingerprint: projects.status column exists.
-                # We probe pragma_table_info for the column name.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates projects WITH status -> it exists
-                #   - Existing v15 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> status does NOT exist -> falls through to the full migration
-                PROJECTS_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='status';")"
-                if [ "$PROJECTS_HAS_STATUS" = "status" ]; then
-                    # Fresh install: schema.sql already created projects with status column.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v15_to_v16_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v15->v16 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v15 DB -- fall through to default v15_to_v16.sql.
-                ;;
-            17)
-                # v16 -> v17: add status + missing_since columns to workspaces
-                # table (DEMOTE case: soft-delete support for demoted workspaces
-                # whose Gaia install footprint disappeared).
-                #
-                # Target state fingerprint: workspaces.status column exists.
-                # We probe pragma_table_info for the column name.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates workspaces WITH status -> it exists
-                #   - Existing v16 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> status does NOT exist -> falls through to the full migration
-                WORKSPACES_HAS_STATUS="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('workspaces') WHERE name='status';")"
-                if [ "$WORKSPACES_HAS_STATUS" = "status" ]; then
-                    # Fresh install: schema.sql already created workspaces with status column.
-                    # Run the fresh-install variant (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v16_to_v17_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v16->v17 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v16 DB -- fall through to default v16_to_v17.sql.
-                ;;
-            18)
-                # v17 -> v18: add project_identity column + partial unique index
-                # to projects (stable, vantage-independent project identity that
-                # collapses the same physical repo scanned from different roots
-                # into one row).
-                #
-                # Target state fingerprint: projects.project_identity column exists.
-                # We probe pragma_table_info for the column name.
-                # This is the correct fingerprint because:
-                #   - Fresh install: schema.sql creates projects WITH project_identity -> it exists
-                #   - Existing v17 DB: schema.sql's CREATE TABLE IF NOT EXISTS is a no-op
-                #     -> project_identity does NOT exist -> falls through to the full migration
-                PROJECTS_HAS_IDENTITY="$(sqlite3 "$GAIA_DB" "SELECT name FROM pragma_table_info('projects') WHERE name='project_identity';")"
-                if [ "$PROJECTS_HAS_IDENTITY" = "project_identity" ]; then
-                    # Fresh install: schema.sql already created projects with the
-                    # project_identity column. Run the fresh-install variant
-                    # (no-op SELECT) to stamp the ledger.
-                    OVERRIDE_MIG_FILE="${MIG_DIR}/v17_to_v18_fresh.sql"
-                    if [ ! -f "$OVERRIDE_MIG_FILE" ]; then
-                        echo "[bootstrap] ERROR: v17->v18 fresh-install variant missing at ${OVERRIDE_MIG_FILE}" >&2
-                        exit 1
-                    fi
-                fi
-                # Otherwise: existing v17 DB -- fall through to default v17_to_v18.sql.
-                ;;
-            *)
-                # Future migrations: each new N must add a case here with a
-                # fingerprint of the post-migration state.
-                echo "[bootstrap] ERROR: no guard probe registered for v${PREV}->v${N}." >&2
-                echo "[bootstrap] Add a case to Section 3c when introducing migration v${N}." >&2
-                exit 1
-                ;;
-        esac
-
-        # Resolve which file actually runs: per-state override or default.
-        EFFECTIVE_MIG_FILE="${OVERRIDE_MIG_FILE:-$MIG_FILE}"
-
-        if [ "$ALREADY_AT_TARGET" = "1" ]; then
-            echo "[bootstrap] migration v${PREV}->v${N}: live DDL already at target (fresh install), stamping ledger only"
-            sqlite3 "$GAIA_DB" <<EOF
-INSERT OR IGNORE INTO schema_version (version, applied_at, description)
-VALUES (${N}, '${NOW_UTC}', 'auto-stamped: schema.sql created table at v${N} state');
-EOF
-        else
-            echo "[bootstrap] migration v${PREV}->v${N}: applying ${EFFECTIVE_MIG_FILE}"
-            # Wrap the migration in an explicit transaction. The migration SQL
-            # itself does NOT contain BEGIN/COMMIT so we control atomicity here.
-            # Errors abort the script via set -e + sqlite3 exit code.
-            MIG_SQL="$(cat "$EFFECTIVE_MIG_FILE")"
-            if ! sqlite3 "$GAIA_DB" <<EOF
+        # Forward-only: a DB at the FLOOR (or any version below N) is in the
+        # source state of this migration, so we apply it directly inside an
+        # explicit transaction. No per-version guard probe and no _fresh
+        # variant are needed -- the historical "schema.sql already created the
+        # target table" case only existed because the baseline was v1 and the
+        # whole chain was walked on every fresh install. Under the FLOOR model
+        # a fresh install is already at EXPECTED, so it never enters this loop.
+        echo "[bootstrap] migration v${PREV}->v${N}: applying ${MIG_FILE}"
+        MIG_SQL="$(cat "$MIG_FILE")"
+        if ! sqlite3 "$GAIA_DB" <<EOF
 BEGIN;
 ${MIG_SQL}
 COMMIT;
 EOF
-            then
-                echo "[bootstrap] ERROR: migration v${PREV}->v${N} failed. Transaction rolled back." >&2
-                echo "[bootstrap] schema_version ledger remains at v${CURRENT_VERSION} -- not stamping v${N}." >&2
-                exit 1
-            fi
-            echo "[bootstrap] migration v${PREV}->v${N}: applied successfully"
-            MIG_DESC="applied migration $(basename "$EFFECTIVE_MIG_FILE")"
-            sqlite3 "$GAIA_DB" <<EOF
+        then
+            echo "[bootstrap] ERROR: migration v${PREV}->v${N} failed. Transaction rolled back." >&2
+            echo "[bootstrap] schema_version ledger remains at v${CURRENT_VERSION} -- not stamping v${N}." >&2
+            exit 1
+        fi
+        echo "[bootstrap] migration v${PREV}->v${N}: applied successfully"
+        MIG_DESC="applied migration $(basename "$MIG_FILE")"
+        sqlite3 "$GAIA_DB" <<EOF
 INSERT OR IGNORE INTO schema_version (version, applied_at, description)
 VALUES (${N}, '${NOW_UTC}', '${MIG_DESC}');
 EOF
-        fi
     done
 else
     echo "[bootstrap] schema_version up-to-date (no migrations pending)"
@@ -831,12 +479,13 @@ else
 fi
 
 # Check 5: schema_version. La tabla se crea en schema.sql y la Section 3b
-# inserta la fila (version=1). Verificamos que MAX(version) >= 1.
+# sella la fila baseline en el FLOOR (v${SCHEMA_FLOOR}). Verificamos que
+# MAX(version) >= FLOOR -- por debajo del piso ya habríamos abortado en 3b.
 SCHEMA_VER="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
-if [ "$SCHEMA_VER" -ge 1 ]; then
-    echo "[bootstrap] check: schema_version >= 1 (got ${SCHEMA_VER}) -- PASS"
+if [ "$SCHEMA_VER" -ge "$SCHEMA_FLOOR" ]; then
+    echo "[bootstrap] check: schema_version >= floor v${SCHEMA_FLOOR} (got ${SCHEMA_VER}) -- PASS"
 else
-    echo "[bootstrap] check: schema_version >= 1 (got ${SCHEMA_VER}) -- FAIL"
+    echo "[bootstrap] check: schema_version >= floor v${SCHEMA_FLOOR} (got ${SCHEMA_VER}) -- FAIL"
     ALL_OK=0
 fi
 

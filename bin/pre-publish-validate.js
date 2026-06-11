@@ -324,12 +324,9 @@ class PrePublishValidator {
       'hooks',
       'agents',
       'skills',
-      'commands',
       'config',
-      'templates',
       'tools',
       'dist',
-      'git-hooks',
     ];
 
     const missing = [];
@@ -383,6 +380,52 @@ class PrePublishValidator {
       );
     }
     this.log('✓ All critical directories covered by package.json files', 'success');
+  }
+
+  /**
+   * Schema-drift guard.
+   *
+   * Fails the publish if gaia/store/schema.sql changed without a corresponding
+   * EXPECTED_SCHEMA_VERSION bump + migration file. Without this guard, schema
+   * drift is only caught at runtime by `gaia doctor` (as a warning) -- here we
+   * make it a hard, non-zero build failure.
+   *
+   * The actual logic lives in scripts/check_schema_drift.py (fingerprint of
+   * schema.sql pinned to the version in scripts/migrations/schema.checksum).
+   * This method just invokes it and surfaces a non-zero exit as a failure.
+   */
+  validateSchemaDrift() {
+    this.log('Step 5c: Schema-drift guard (schema.sql vs EXPECTED_SCHEMA_VERSION)...', 'info');
+
+    const guardPath = path.join(GAIA_OPS_ROOT, 'scripts', 'check_schema_drift.py');
+    if (!fs.existsSync(guardPath)) {
+      this.log(`✗ schema-drift guard missing: ${guardPath}`, 'error');
+      throw new Error('scripts/check_schema_drift.py not found -- cannot verify schema drift');
+    }
+
+    const pyCmd = findPython();
+    if (!pyCmd) {
+      // Python is required for the runtime; a publish that cannot run the
+      // guard cannot prove the schema is consistent, so fail rather than skip.
+      this.log('✗ Python not available -- cannot run schema-drift guard', 'error');
+      throw new Error('Python interpreter not found; schema-drift guard cannot run');
+    }
+
+    try {
+      const out = this.execute(`${pyCmd} "${guardPath}"`, GAIA_OPS_ROOT, true);
+      out.trim().split('\n').filter(Boolean).forEach(line => this.log(`  ${line}`, 'info'));
+      this.log('✓ No schema drift detected', 'success');
+    } catch (error) {
+      // execSync throws on non-zero exit; surface the guard's own stderr/stdout.
+      const detail = (error.stderr || error.stdout || error.message || '').toString().trim();
+      this.log('✗ Schema-drift guard failed:', 'error');
+      if (detail) detail.split('\n').forEach(line => console.error(`    ${line}`));
+      throw new Error(
+        'Schema drift detected: gaia/store/schema.sql changed without a ' +
+        'version bump + migration. Bump EXPECTED_SCHEMA_VERSION in ' +
+        'bin/cli/doctor.py and add the migration, then re-run the guard.'
+      );
+    }
   }
 
   validatePluginManifest() {
@@ -440,8 +483,7 @@ class PrePublishValidator {
       // Test 1: Validate JSON files
       this.log('Test 1: Validating JSON configuration files...', 'info');
       const jsonFiles = [
-        'config/clarification_rules.json',
-        'config/git_standards.json'
+        'config/clarification_rules.json'
       ];
 
       jsonFiles.forEach(file => {
@@ -654,6 +696,7 @@ class PrePublishValidator {
         this.validateFiles();
       }
       this.validateFilesCoverage();
+      this.validateSchemaDrift();
       this.validatePluginManifest();
       this.runTests();
 

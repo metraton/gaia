@@ -256,7 +256,7 @@ def _run_verification(claude_dir: Path) -> dict:
         issues.append(f"project-context DB read error: {exc}")
 
     # 4. Config files
-    config_files = ["git_standards.json", "surface-routing.json"]
+    config_files = ["surface-routing.json"]
     for cfg in config_files:
         path = claude_dir / "config" / cfg
         ok = path.exists()

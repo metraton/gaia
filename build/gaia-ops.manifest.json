@@ -56,9 +56,7 @@
     "agents/gaia-planner.md"
   ],
   "skills": "all",
-  "commands": [
-    "commands/gaia.md"
-  ],
+  "commands": [],
   "tools": "all",
   "config": "all",
   "settings": {

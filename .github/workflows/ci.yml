@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        python-version: ["3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
@@ -75,10 +75,8 @@ jobs:
         run: |
           test -f dist/gaia-security/.claude-plugin/plugin.json
           test -f dist/gaia-security/hooks/hooks.json
-          test -f dist/gaia-security/settings.json
           test -f dist/gaia-ops/.claude-plugin/plugin.json
           test -f dist/gaia-ops/hooks/hooks.json
-          test -f dist/gaia-ops/settings.json
           echo "All plugin artifacts verified"
 
   validate-manifests:

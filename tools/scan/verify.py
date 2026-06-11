@@ -45,8 +45,8 @@ class CheckResult:
 def check_symlinks(project_root: Path) -> CheckResult:
     """Verify that all expected symlinks exist in .claude/.
 
-    Checks for: agents, tools, hooks, commands, templates, config,
-    skills, CHANGELOG.md (8 total).
+    Checks for: agents, tools, hooks, commands, config,
+    skills, CHANGELOG.md (7 total).
 
     Args:
         project_root: Project root directory.
@@ -56,7 +56,7 @@ def check_symlinks(project_root: Path) -> CheckResult:
     """
     names = [
         "agents", "tools", "hooks", "commands",
-        "templates", "config", "skills",
+        "config", "skills",
         "CHANGELOG.md",
     ]
     valid = 0

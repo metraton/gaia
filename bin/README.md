@@ -110,6 +110,5 @@ A single binary; subcommands are discovered, not registered.
 
 - [`package.json`](../package.json) -- exposes `bin/gaia`; `scripts.postinstall` / `scripts.preuninstall` wire the lifecycle subcommands
 - [`INSTALL.md`](../INSTALL.md) -- installation workflow that calls `gaia scan` and `gaia install`
-- [`templates/README.md`](../templates/README.md) -- `gaia install` and `gaia scan` consume templates from here
 - [`hooks/README.md`](../hooks/README.md) -- `gaia doctor` verifies the hook registrations are valid
 - [`bin/validate-sandbox.sh`](./validate-sandbox.sh) -- end-to-end harness that drives `gaia` subcommands against a fresh tarball install

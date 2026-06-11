@@ -44,7 +44,7 @@ Append `--fresh` to either form. The harness will delete `node_modules/`, `packa
 **What postinstall does:**
 1. Ships `scripts/` (bootstrap_database.sh) -- failed silently in pre-rc.4 builds; verified in `npm pack --dry-run`.
 2. Creates `.claude/` if missing.
-3. Runs `bootstrap_database.sh` -- seeds the schema (v17), agent rows, and `schema_version`. Fails loud on any error (writes `~/.gaia/last-install-error.json` and exits non-zero).
+3. Runs `bootstrap_database.sh` -- seeds the schema (current floor v18), agent rows, and `schema_version`. Fails loud on any error (writes `~/.gaia/last-install-error.json` and exits non-zero).
 4. Merges hooks into `settings.local.json` via the consolidated `merge_hooks` step.
 5. Creates 7 symlinks under `.claude/` to `node_modules/@jaguilar87/gaia/<dir>/`.
 6. Writes `plugin-registry.json` with `installed[].name == "gaia-ops"`.
@@ -96,7 +96,7 @@ Both modes share the same pipeline. The pipeline auto-detects the npm tag from t
    - runs `npm run pre-publish:validate` and fails loud on any drift.
 
    This replaces hand-bumping one file at a time. `pre-publish:validate` fails the release unless every version source agrees, and the two real escapes a hand-bump leaves are a `pyproject.toml` left behind on a prior version (caught only by `pre-publish:validate`) and a `marketplace.json` that still advertises the old tag. `release:prepare` makes the desync impossible because all sources are written from one target version. For a bare semver: `5.0.5` for stable, `5.1.0-rc.1` for RC (no leading `v` -- the tag adds it). The script is idempotent: re-running with the same version is a no-op bump that re-validates.
-3. Pre-flight that reproduces CI (steps already partly done inside `release:prepare`): `npm run check:py39` (the 3.9 union gate) and `npm test`. `pre-publish:validate` ran in step 2; do not skip `check:py39`.
+3. Pre-flight that reproduces CI (steps already partly done inside `release:prepare`): `npm test`. `pre-publish:validate` ran in step 2.
 4. Commit (`git add` + `git commit` -- local-only, not T3). **If the remote diverged, reconcile with MERGE, never rebase** (see "Reconciling a diverged remote" below).
 5. Tag (force-free -- a *new* `v<version>`, never moved) + push (`git push`, T3). The merge in step 4 keeps the push force-free.
 6. Create a GitHub Release:
@@ -146,25 +146,29 @@ When you bump `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py`, the four steps b
 3. Add migration SQL (`UPDATE` / `ALTER TABLE`) when existing DBs need to upgrade in place; otherwise old workspaces stay below the expected version and `gaia doctor` fails.
 4. Run `pytest tests/cli/test_schema_version_lockstep.py` -- it cross-references the constant, the bootstrap insert, and the migration SQL to confirm they all agree.
 
+### Build/pre-publish Schema-Drift Guard
+
+`bin/pre-publish-validate.js` Step 5c runs `scripts/check_schema_drift.py`, which sha256-fingerprints `gaia/store/schema.sql` and compares it against `scripts/migrations/schema.checksum` (pinned to `EXPECTED_SCHEMA_VERSION`). If the schema has changed but the version was not bumped and no migration file added, the guard fails the build.
+
+**Consequence:** if you edit `schema.sql` you MUST either (a) bump `EXPECTED_SCHEMA_VERSION` + add the migration file (following the lockstep above), OR (b) re-pin the checksum with `python3 scripts/check_schema_drift.py --record` (the escape hatch for pure-comment or non-semantic edits). Without one of these, `npm run pre-publish:validate` — and therefore `release:prepare` — will FAIL.
+
 ## Release Checklist
 
 ### The pre-flight reproduces what CI validates, not a subset of it
 
-A green pre-flight only protects the release if it runs the same gates CI runs. When the local check is a *subset* of CI, the gaps CI covers are discovered after publishing -- on the published tarball, where the only remedy is another release. `npm run gaia:verify-install:local` packs and installs into a sandbox, but it does **not** run `pre-publish:validate` and it runs only the **local** Python. CI (`.github/workflows/ci.yml`) runs both, across a Python matrix. Two real failures escaped exactly through that gap: a `pyproject.toml` version drift that only `pre-publish:validate` catches, and a Python 3.9 syntax break (`type | None`, which 3.10+ accepts and 3.9 rejects) that only the 3.9 matrix leg catches. Both were green locally and red in CI *after* the tag was pushed.
+A green pre-flight only protects the release if it runs the same gates CI runs. When the local check is a *subset* of CI, the gaps CI covers are discovered after publishing -- on the published tarball, where the only remedy is another release. `npm run gaia:verify-install:local` packs and installs into a sandbox, but it does **not** run `pre-publish:validate`. CI (`.github/workflows/ci.yml`) runs it separately. A real failure escaped exactly through that gap: a `pyproject.toml` version drift that only `pre-publish:validate` catches, which was green locally and red in CI *after* the tag was pushed.
 
-So the pre-flight must close both gaps before any tag or push:
+So the pre-flight must close that gap before any tag or push:
 
 **Pre-publish:**
 - `pytest tests/` green (or `npm test` for the L1 subset).
 - **`npm run pre-publish:validate` green locally** -- this is the version-drift gate (`validate-manifests` job in `ci.yml`). Run it before tag/push, not only in CI. It is what catches a `pyproject.toml` / `package.json` / `plugin.json` / `marketplace.json` desync before it ships.
-- **`npm run check:py39` green locally** -- the static Python 3.9 union gate (`scripts/check-py39-compat.py`). It runs on any Python 3.x (no 3.9 install needed) and AST-scans the runtime trees (`bin/cli`, `hooks`, `gaia`, `tools`) for PEP 604 `X | None` annotations in modules that lack `from __future__ import annotations` -- exactly the class of break that shipped in 5.0.4. A green on 3.10+ does **not** prove 3.9: that syntax parses on the newer interpreter and fails at annotation-evaluation time on 3.9, invisible until the 3.9 leg runs. This check makes it visible locally. (For full fidelity you can still build under each interpreter -- `python3.9 scripts/build-plugin.py gaia-ops`, etc. -- and re-run the harness, but `check:py39` catches the union class without that setup.)
 - `npm pack --dry-run | grep scripts/` confirms `scripts/bootstrap_database.sh` is included in the tarball.
 - `bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target sandbox --fresh` green (or `npm run gaia:verify-install:local`).
 - Optional smoke: `npm run gaia:install-local -- --workspace /tmp/test-install --fresh`.
 
 **Publish:**
-- Bump version in `package.json`, `dist/*/plugin.json`, and `marketplace.json`.
-- `npm run build:plugins` regenerates `dist/`.
+- Run `npm run release:prepare <version>` -- atomically bumps all version sources (`package.json`, `pyproject.toml`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`), regenerates `dist/` via `build:plugins`, and runs `pre-publish:validate` (including the schema-drift guard). Nothing else should write a version.
 - Commit + push.
 - Create GitHub Release with the version tag.
 - Pipeline publishes (`publish.yml` triggers on Release event):
@@ -185,7 +189,7 @@ The workflow at `.github/workflows/publish.yml` runs on every GitHub Release eve
 - Installs deps with `npm ci`.
 - Builds plugins with `npm run build:plugins`.
 - Verifies all expected artifacts in `dist/`.
-- Commits built artifacts back if changed.
+- Commits built artifacts back if changed (commit message carries `[skip ci]` so the dist commit-back does not re-trigger CI).
 - Runs `npm run pre-publish:validate`.
 - Auto-detects npm tag from version string (see "Publish" above).
 - Publishes with `npm publish --access public --tag <detected>`.

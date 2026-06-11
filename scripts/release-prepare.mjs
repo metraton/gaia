@@ -193,7 +193,7 @@ function main() {
   }
 
   log(`release:prepare complete -- all sources at ${version}, dist/ rebuilt, validation green.`, 'success');
-  log('Next (driven by the gaia-release "release" flow, not by hand): pre-flight (py39 + tests), commit, tag, push, gh release.', 'info');
+  log('Next (driven by the gaia-release "release" flow, not by hand): pre-flight (Python 3.11/3.12 + tests), commit, tag, push, gh release.', 'info');
 }
 
 main();

@@ -1,6 +1,6 @@
 ---
 name: readme-writing
-description: Use when writing or updating a README for a Gaia component folder (agents/, skills/, hooks/, commands/, config/, bin/, tests/, build/, templates/, or the repo root)
+description: Use when writing or updating a README for a Gaia component folder (agents/, skills/, hooks/, commands/, config/, bin/, tests/, build/, or the repo root)
 metadata:
   user-invocable: false
   type: technique

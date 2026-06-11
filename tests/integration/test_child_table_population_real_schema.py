@@ -210,56 +210,18 @@ def _fk_col(db_path: Path, table: str) -> str | None:
 
 
 class TestSchemaV15Migration:
-    """v14 -> v15 renames the child-table FK column repo -> project."""
+    """Child tables expose the `project` FK column.
+
+    The v14 -> v15 in-place rename (repo -> project) is below the schema floor
+    (v18) and is no longer exercised: the historical migration chain was
+    collapsed and bootstrap rejects below-floor DBs. What remains verifiable is
+    the floor contract -- a fresh install builds child tables already on the
+    `project` column.
+    """
 
     def setup_method(self):
         if not _BOOTSTRAP_SH.is_file():
             pytest.skip(f"bootstrap script not found at {_BOOTSTRAP_SH}")
-        if not (_MIGRATIONS_DIR / "v14_to_v15.sql").is_file():
-            pytest.skip("v14_to_v15.sql migration not found")
-
-    def test_legacy_repo_db_converges_to_project(self):
-        """A v14 DB with `repo` columns must end up with `project` after bootstrap.
-
-        This is the exact regression behind the live `no such column: project`
-        failure: the migration must rename the column on all nine child tables.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db_path = workspace / "tmp_gaia.db"
-            _build_v14_legacy_db(db_path)
-
-            # Pre-condition: every child table starts on the legacy `repo` column.
-            for t in _CHILD_TABLES:
-                assert _fk_col(db_path, t) == "repo", (
-                    f"test setup wrong: {t} should start with `repo`"
-                )
-
-            res = _run_bootstrap_with_db(db_path, workspace)
-            assert res.returncode == 0, (
-                f"bootstrap failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
-            )
-
-            # Post-condition: every child table now uses `project`, none `repo`.
-            for t in _CHILD_TABLES:
-                assert _fk_col(db_path, t) == "project", (
-                    f"{t} still not on `project` column after v14->v15 migration"
-                )
-
-            con = sqlite3.connect(str(db_path))
-            try:
-                max_v = con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-                # Data preserved + queryable by the new column name.
-                seed = con.execute(
-                    "SELECT COUNT(*) FROM apps WHERE workspace='me' AND project='gaia'"
-                ).fetchone()[0]
-                fk_issues = con.execute("PRAGMA foreign_key_check").fetchall()
-            finally:
-                con.close()
-
-            assert max_v >= 15, f"ledger did not advance to v15 (got {max_v})"
-            assert seed == 1, "seed row lost during repo->project rename"
-            assert fk_issues == [], f"FK integrity broken after rename: {fk_issues}"
 
     def test_fresh_install_child_tables_use_project(self):
         """Fresh bootstrap (schema.sql) produces child tables with `project`."""

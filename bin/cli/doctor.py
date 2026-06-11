@@ -762,7 +762,7 @@ def _extract_check_values(
 @register_check("Symlinks", order=50)
 def check_symlinks(project_root: Path) -> dict:
     """Check .claude/ symlinks resolve to package content."""
-    names = ["agents", "tools", "hooks", "commands", "templates", "config", "skills", "CHANGELOG.md"]
+    names = ["agents", "tools", "hooks", "commands", "config", "skills", "CHANGELOG.md"]
     critical = {"agents", "hooks", "skills"}
     valid = 0
     has_critical_missing = False

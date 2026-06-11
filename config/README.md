@@ -1,68 +1,46 @@
 # Config
 
-Configuration lives here, separate from hooks, because these are data files — not code. Hooks are Python scripts that run at runtime; config files are JSON documents that those scripts read to make decisions. Keeping them apart means you can audit and change system behavior (which agents see which context sections, what git commit patterns are allowed, which surfaces route where) without touching executable code. It also makes the config files version-controllable and reviewable on their own terms.
+Configuration lives here, separate from hooks, because these are data files — not code. Hooks are Python scripts that run at runtime; config files are JSON documents that those scripts read to make decisions. Keeping them apart means you can audit and change system behavior (what git commit patterns are allowed, which surfaces route where) without touching executable code. It also makes the config files version-controllable and reviewable on their own terms.
 
-`context-contracts.json` is the seeding source for agent contracts. During `gaia install`, its contents are loaded into the `project_context_contracts` and `agent_contract_permissions` tables in `~/.gaia/gaia.db`. At runtime, the DB is the SSOT — the hook layer reads contracts from the DB, not from this file. Editing `context-contracts.json` without re-running `gaia install` (or manually applying the SQL) has no effect. The cloud extension files in `cloud/` extend these contracts for cloud-specific sections without modifying the base file, so adding a new cloud provider is a new file, not an edit to the core.
+The routing table is consumed at a well-defined point in the request lifecycle: on every user prompt. It is not loaded eagerly at startup — it is parsed exactly when `surface_router.py` is invoked. (Git commit standards used to live here too, in `git_standards.json`; they are now inlined as module-level constants in `hooks/modules/validation/commit_validator.py` — the single runtime consumer of those rules — so this folder no longer owns them.)
 
-The other files — routing and git standards — are each consumed by a specific module and do exactly what their names say. There is no magic here: the files are loaded, parsed, and applied by the module that reads them.
+## When activated
 
-## Cuándo se activa
-
-This component does not activate as a runtime process. Each file is read on-demand by the module that needs it. The table below shows the read point for each file.
-
-**Cuándo se lee cada archivo:**
-
-| File | Read by | When |
-|------|---------|------|
-| `surface-routing.json` | `hooks/user_prompt_submit.py` | Every prompt — determines routing recommendation injected into orchestrator context |
-| `context-contracts.json` | `gaia install` / `gaia update` | One-time at install; populates `~/.gaia/gaia.db` tables. Runtime reads come from DB. |
-| `git_standards.json` | `hooks/modules/validation/commit_validator.py` | Every `git commit` call intercepted by PreToolUse |
-| `cloud/gcp.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = gcp` in workspace DB record |
-| `cloud/aws.json` | `tools/context/context_provider.py` | Agent dispatch when `cloud_provider = aws` in workspace DB record |
-
-**Base + cloud merge flow:**
+This folder has no single activation event. Each file is read on-demand by the module that owns it.
 
 ```
-Agent dispatch triggered
+User submits a prompt
         |
-hooks/modules/context/contracts_loader.py reads project_context_contracts from DB
+hooks/user_prompt_submit.py fires
         |
-Detects cloud_provider from workspace record in ~/.gaia/gaia.db
+tools/context/surface_router.py calls load_surface_routing_config()
         |
-Reads cloud/{provider}.json                         <- cloud extensions (still file-based)
+Reads config/surface-routing.json
         |
-Merges: extends read/write lists per agent (no duplicates)
-        |
-Result: complete contract for this agent on this cloud
-        |
-Agent receives filtered project-context sections
+Returns surface match + recommended agent injected into orchestrator context
 ```
 
-## Qué hay aquí
+If `surface-routing.json` is absent, `load_surface_routing_config()` returns a degraded config (`"version": "missing"`) and routing falls back to the `reconnaissance_agent` default.
+
+## What's here
 
 ```
 config/
-├── context-contracts.json   # Seeding source for per-agent read/write contracts (applied on install to gaia.db)
-├── surface-routing.json     # Intent classification and agent routing signals
-├── git_standards.json       # Commit type allowlist, footer rules, Conventional Commits config
-├── cloud/
-│   ├── gcp.json             # GCP-specific context sections (extends base contracts)
-│   └── aws.json             # AWS-specific context sections (extends base contracts)
+├── surface-routing.json   # Surface→agent routing table; consumed by tools/context/surface_router.py on every prompt
 └── README.md
 ```
 
-## Convenciones
+## Conventions
 
-**context-contracts.json schema:** Each entry is keyed by agent name. Each agent has `read` (list of project-context section names the agent receives) and `write` (list of sections the agent can update via an `update_contracts` clause). `core_sections` is a top-level list of sections injected into every agent regardless of per-agent config. This schema is mirrored in the DB tables `project_context_contracts` (one row per agent) and `agent_contract_permissions` (permission grants).
+**surface-routing.json schema:** Top-level keys are `version`, `reconnaissance_agent`, and `surfaces`. Each surface entry has `intent` (human description), `primary_agent` (agent id to dispatch), `adjacent_surfaces` (list of related surface names), `contract_sections` (context sections injected for that surface), `required_checks` (agent checklist), and `signals` with `keywords`, `commands`, and `artifacts` sub-lists. `surface_router.py` scores surfaces by matching task text against all signal lists; the highest-scoring surface wins.
 
-**Adding a new cloud:** Create `cloud/azure.json` following the same schema as `cloud/gcp.json`. Define agent-specific sections for that cloud. No code changes needed — `context_provider.py` detects the file automatically by matching `cloud_provider` from project-context.
+**Git commit standards (no longer in this folder):** The Conventional Commits rules — allowed types, subject/body length limits, subject rules — are inlined as module-level constants (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`, `SUBJECT_RULES`, `BODY_MAX_LINE_LENGTH`, `ENFORCEMENT`) in `hooks/modules/validation/commit_validator.py`. Forbidden-footer detection lives, hardcoded, in `bash_validator`. To add a new commit type, edit `TYPE_ALLOWED` in `commit_validator.py`.
 
-**surface-routing.json format:** Each surface entry has `intent`, `primary_agent`, `adjacent_surfaces`, and `signals` (with `high` and `medium` confidence keyword lists). High-confidence signals are checked first; medium signals act as tie-breakers.
+**Adding a new surface:** Add an entry to `surfaces` in `surface-routing.json` with all required sub-keys. Update L1 routing tests and the `gaia_system` signals if the new surface involves Gaia components.
 
-## Ver también
+## See also
 
-- [`~/.gaia/gaia.db`](../gaia/store/schema.sql) — `project_context_contracts` + `agent_contract_permissions` tables (runtime SSOT for contracts)
-- [`hooks/user_prompt_submit.py`](../hooks/user_prompt_submit.py) — reads `surface-routing.json` on every prompt
-- [`hooks/modules/validation/`](../hooks/modules/validation/) — reads `git_standards.json` on commit validation
-- [`tools/context/`](../tools/context/) — reads contracts (from DB) at agent dispatch time
-- [`agents/README.md`](../agents/README.md) — agent names that must match context-contracts.json keys
+- [`tools/context/surface_router.py`](../tools/context/surface_router.py) — loads and scores `surface-routing.json`; the routing pillar source of truth
+- [`hooks/user_prompt_submit.py`](../hooks/user_prompt_submit.py) — calls `classify_surfaces` from `surface_router` on every prompt
+- [`hooks/modules/validation/commit_validator.py`](../hooks/modules/validation/commit_validator.py) — enforces Conventional Commits on every `git commit`; standards inlined as module-level constants
+- [`skills/git-conventions/`](../skills/git-conventions/) — the agent-facing skill teaching the commit conventions

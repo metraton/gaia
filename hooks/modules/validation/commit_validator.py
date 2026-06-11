@@ -23,9 +23,73 @@ Usage:
 import json
 import os
 import re
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
+
+
+# ---------------------------------------------------------------------------
+# Git commit standards -- inlined constants.
+#
+# These were previously loaded from config/git_standards.json. They are now
+# module-level constants: commit_validator.py is the single runtime consumer
+# of these format/subject/body rules, so the JSON indirection added drift risk
+# without any benefit. Footer detection/stripping is NOT here -- it lives,
+# hardcoded, in bash_validator (footers are bash_validator's responsibility).
+# ---------------------------------------------------------------------------
+
+FORMAT = "conventional_commits"
+
+TYPE_ALLOWED = (
+    "feat",
+    "fix",
+    "refactor",
+    "docs",
+    "test",
+    "chore",
+    "ci",
+    "perf",
+    "style",
+    "build",
+)
+
+SCOPE_REQUIRED = False
+SCOPE_EXAMPLES = ("helmrelease", "terraform", "pg-non-prod", "infrastructure")
+
+SUBJECT_MAX_LENGTH = 72
+SUBJECT_RULES = {
+    "capitalize_first_letter": False,
+    "no_period_at_end": True,
+    "imperative_mood": True,
+    "no_emoji": True,
+}
+
+BODY_MAX_LINE_LENGTH = 72
+BODY_REQUIRED = False
+
+EXAMPLES_VALID = (
+    "feat(helmrelease): add Phase 3.3 services",
+    "fix(pg-non-prod): correct API key environment variable mappings",
+    "refactor: simplify context provider logic",
+    "docs: update README with new workflow",
+    "chore(deps): update terraform to v1.6.0",
+)
+
+EXAMPLES_INVALID = (
+    "Added new feature",
+    "Fixed bugs",
+    "Updates",
+    "feat: add feature\n\n🤖 Generated with Claude Code",
+    "feat: add new feature 🚀",
+    "fix: 🐛 correct bug",
+)
+
+ENFORCEMENT = {
+    "enabled": True,
+    "block_on_failure": True,
+    "log_violations": True,
+    "log_path": ".claude/logs/commit-violations.jsonl",
+}
 
 
 @dataclass
@@ -44,43 +108,30 @@ class CommitMessageValidator:
     """
     Validates git commit messages against project standards.
 
-    Standards are defined in .claude/config/git_standards.json
+    Standards are inlined as module-level constants (TYPE_ALLOWED,
+    SUBJECT_MAX_LENGTH, SUBJECT_RULES, etc.). Footer detection is not handled
+    here -- that is bash_validator's responsibility.
     """
 
     def __init__(self, config_path: Optional[str] = None):
         """
-        Initialize validator with configuration.
+        Initialize validator.
 
         Args:
-            config_path: Optional path to git_standards.json
-                        If None, uses default location
+            config_path: Accepted for backward compatibility only. When given,
+                         it anchors base_path (used to resolve the relative
+                         violation log path); the rules themselves come from
+                         the module-level constants, not from any file.
         """
         if config_path is None:
-            # Default path relative to this file
-            # From hooks/modules/validation/ go up to gaia-ops root
+            # base_path -> gaia-ops root, used to resolve the violation log.
             # __file__ -> hooks/modules/validation/commit_validator.py
-            # dirname(dirname(dirname(dirname(__file__)))) -> gaia-ops root
             base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-            config_path = os.path.join(base_path, 'config', 'git_standards.json')
         else:
-            # If config_path provided, derive base_path from it
             base_path = os.path.dirname(os.path.dirname(config_path))
 
         self.base_path = base_path
-        self.config_path = config_path
-        self.config = self._load_config()
-        self.standards = self.config.get('commit_message', {})
-        self.enforcement = self.config.get('enforcement', {})
-
-    def _load_config(self) -> Dict[str, Any]:
-        """Load git standards configuration from JSON file."""
-        if not os.path.exists(self.config_path):
-            raise FileNotFoundError(
-                f"Git standards configuration not found at: {self.config_path}"
-            )
-
-        with open(self.config_path, 'r') as f:
-            return json.load(f)
+        self.enforcement = ENFORCEMENT
 
     def validate(self, message: str) -> ValidationResult:
         """
@@ -95,19 +146,19 @@ class CommitMessageValidator:
         errors = []
         warnings = []
 
-        # 1. Check for forbidden footers (CRITICAL)
-        footer_errors = self._check_forbidden_footers(message)
-        errors.extend(footer_errors)
+        # Note: forbidden-footer detection is intentionally NOT done here.
+        # Footers are bash_validator's responsibility (stripping/detection
+        # is hardcoded there).
 
-        # 2. Check conventional commits format
+        # 1. Check conventional commits format
         format_errors = self._check_conventional_format(message)
         errors.extend(format_errors)
 
-        # 3. Check subject line rules
+        # 2. Check subject line rules
         subject_errors = self._check_subject_rules(message)
         errors.extend(subject_errors)
 
-        # 4. Check body rules (warnings only)
+        # 3. Check body rules (warnings only)
         body_warnings = self._check_body_rules(message)
         warnings.extend(body_warnings)
 
@@ -121,22 +172,6 @@ class CommitMessageValidator:
             warnings=warnings
         )
 
-    def _check_forbidden_footers(self, message: str) -> List[Dict[str, str]]:
-        """Check for forbidden footers in commit message."""
-        errors = []
-        forbidden = self.standards.get('footer_forbidden', [])
-
-        for forbidden_text in forbidden:
-            if forbidden_text.lower() in message.lower():
-                errors.append({
-                    'type': 'FORBIDDEN_FOOTER',
-                    'message': f"Commit message contains forbidden footer: '{forbidden_text}'",
-                    'fix': f"Remove all occurrences of '{forbidden_text}'",
-                    'severity': 'error'
-                })
-
-        return errors
-
     def _check_conventional_format(self, message: str) -> List[Dict[str, str]]:
         """Check if message follows Conventional Commits format."""
         errors = []
@@ -147,16 +182,16 @@ class CommitMessageValidator:
 
         # Pattern: type(scope)?: description
         # Examples: feat: add feature, fix(api): correct bug
-        allowed_types = '|'.join(self.standards.get('type_allowed', []))
+        allowed_types = '|'.join(TYPE_ALLOWED)
         pattern = rf'^({allowed_types})(\(.+?\))?: .+$'
 
         if not re.match(pattern, subject):
             errors.append({
                 'type': 'INVALID_FORMAT',
                 'message': 'Commit message does not follow Conventional Commits format',
-                'fix': f"Use format: type(scope): description\nAllowed types: {', '.join(self.standards.get('type_allowed', []))}",
+                'fix': f"Use format: type(scope): description\nAllowed types: {', '.join(TYPE_ALLOWED)}",
                 'severity': 'error',
-                'examples': self.standards.get('examples_valid', [])
+                'examples': list(EXAMPLES_VALID)
             })
 
         return errors
@@ -175,7 +210,7 @@ class CommitMessageValidator:
             description = match.group(2)
 
             # Check max length
-            max_length = self.standards.get('subject_max_length', 72)
+            max_length = SUBJECT_MAX_LENGTH
             if len(subject) > max_length:
                 errors.append({
                     'type': 'SUBJECT_TOO_LONG',
@@ -185,7 +220,7 @@ class CommitMessageValidator:
                 })
 
             # Check for period at end
-            rules = self.standards.get('subject_rules', {})
+            rules = SUBJECT_RULES
             if rules.get('no_period_at_end', True) and description.endswith('.'):
                 errors.append({
                     'type': 'SUBJECT_ENDS_WITH_PERIOD',
@@ -242,7 +277,7 @@ class CommitMessageValidator:
             })
 
         # Check body line length
-        max_length = self.standards.get('body_max_line_length', 72)
+        max_length = BODY_MAX_LINE_LENGTH
         for i, line in enumerate(lines[2:], start=3):  # Skip subject and blank line
             if len(line) > max_length and not line.startswith('http'):
                 warnings.append({
@@ -285,13 +320,13 @@ class CommitMessageValidator:
     def get_examples(self) -> Dict[str, List[str]]:
         """Get example commit messages (valid and invalid)."""
         return {
-            'valid': self.standards.get('examples_valid', []),
-            'invalid': self.standards.get('examples_invalid', [])
+            'valid': list(EXAMPLES_VALID),
+            'invalid': list(EXAMPLES_INVALID)
         }
 
     def get_allowed_types(self) -> List[str]:
         """Get list of allowed commit types."""
-        return self.standards.get('type_allowed', [])
+        return list(TYPE_ALLOWED)
 
     def format_error_message(self, validation: ValidationResult) -> str:
         """

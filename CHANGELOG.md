@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.5] - 2026-06-11
+
+### Repository Hygiene, Python 3.11 Floor, v18 Schema Floor + Drift Guard, Release-Pipeline Hardening
+
+Maintenance release focused on shrinking the surface area and hardening the release pipeline. Dead and redundant surfaces are removed, Python 3.9 support is dropped (minimum is now 3.11), the database migration history is collapsed to a v18 floor backed by a new build-time schema-drift guard, git-format rules are inlined into their single consumer, and several release-pipeline bugs that caused CI re-triggers and stale local installs are fixed.
+
+#### Added
+
+- **Schema-drift guard wired into pre-publish validation** — a new build/pre-publish
+  check (`scripts/check_schema_drift.py` + a recorded fingerprint in
+  `scripts/migrations/schema.checksum`, wired into pre-publish-validate **Step 5c**)
+  fails the build if `gaia/store/schema.sql` changes without a matching schema version
+  bump and migration. This makes silent schema drift impossible to ship: any edit to
+  the schema must be accompanied by a version bump, or the gate stops the release.
+
+#### Changed
+
+- **Python minimum is now 3.11 (Python 3.9 dropped)** — `pyproject.toml`
+  `requires-python`, the ruff target version, and the CI test matrix all move to 3.11
+  as the floor. The dead `scripts/check-py39-compat.py` compatibility checker and its
+  npm alias are removed along with the 3.9 support.
+
+- **Database migration history collapsed to a v18 floor** — fresh installs now stamp
+  schema **v18** directly instead of replaying the full migration chain. Databases below
+  the v18 floor are rejected cleanly with guidance to recreate, rather than attempting an
+  unsupported incremental upgrade. The per-step `vN_to_vN+1` migration SQL and their
+  obsolete version-specific tests are removed.
+
+- **Git commit-format rules inlined into their single consumer** — the commit-format
+  rules previously in `config/git_standards.json` are inlined directly into
+  `commit_validator.py` (its only reader), and the standalone config file is removed.
+  Forbidden-footer enforcement is consolidated into `bash_validator` (the duplicate dead
+  check is removed); runtime AI-attribution footer stripping continues to live in
+  `bash_validator`. The git-conventions skill is updated to match.
+
+- **Release pipeline hardened** — `publish.yml` now runs on Python 3.11 and appends
+  `[skip ci]` to the dist commit-back, stopping the CI re-trigger / version-churn loop
+  that re-ran the pipeline on every published dist commit. `gaia:install-local` now
+  rebuilds plugins before packing so a local install can never carry a stale `dist/`.
+  `ci.yml` drops the obsolete `settings.json` build assertions, and the gaia-release
+  skill drift is corrected.
+
+- **pytest tmp uses the default OS tmpdir** — the in-repo pytest `basetemp` that
+  polluted the working tree (and broke scanner project-identity isolation) is removed;
+  tests now use the default OS temporary directory. `config/README.md` is rewritten to
+  match the actual directory contents.
+
+#### Removed
+
+- **Dead and redundant surfaces and artifacts** — removed `evidence/`, `docs/`,
+  `git-hooks/` (the redundant `commit-msg` sed copy; runtime footer stripping stays in
+  `bash_validator`), `tools/agentic-loop/`, `tools/review/`, `logs/`, the `commands/`
+  slash-command surface (including `/gaia`), the `templates/` managed-settings surface,
+  and `config/crons-schema.md`. These were either unused, duplicated by an active code
+  path, or superseded surfaces with no remaining consumer.
+
 ## [5.0.4] - 2026-06-06
 
 ### COMMAND_SET Batch Approval, Consent-Reducing Approval Verbs, Contract Advisory Field, Version Source Sync

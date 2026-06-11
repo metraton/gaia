@@ -43,5 +43,9 @@ requires explicit user instruction.
 
 ## Hook Enforcement
 
-The `commit_validator.py` hook validates against `config/git_standards.json`.
-Format violations block the commit. Body line length triggers warnings only.
+The `commit_validator.py` hook validates against standards inlined as
+module-level constants in that file (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`,
+`SUBJECT_RULES`, `BODY_MAX_LINE_LENGTH`) -- it covers the conventional-commits
+format, subject, and body rules. Forbidden-footer detection lives separately
+in `bash_validator` (hardcoded there). Format violations block the commit.
+Body line length triggers warnings only.

@@ -1,7 +1,0 @@
-AC-2: En contexto ops+subagente, file_to_exec y curl -X POST rutean a deny+approval_id (no 'ask')
-
-Command: python3 -m pytest tests/ -k 't3 and subagent' -q
-Result:  6 passed, 1 skipped, 4509 deselected in 1.17s
-Status:  PASS (exit 0)
-
-Verified: 2026-06-03 post-commit 7d51737

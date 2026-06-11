@@ -64,7 +64,7 @@ def healthy_project(tmp_path):
     }))
 
     # Symlink targets (real directories, not symlinks -- tests just need exists())
-    for name in ["agents", "tools", "hooks", "commands", "templates", "config", "skills"]:
+    for name in ["agents", "tools", "hooks", "commands", "config", "skills"]:
         (claude_dir / name).mkdir()
     (claude_dir / "CHANGELOG.md").write_text("# Changelog")
 
@@ -202,7 +202,7 @@ class TestCheckSymlinks:
         """Should warn (not error) when non-critical dirs are missing."""
         import shutil
         # Remove non-critical dir
-        shutil.rmtree(healthy_project / ".claude" / "templates")
+        shutil.rmtree(healthy_project / ".claude" / "commands")
         r = doctor_mod.check_symlinks(healthy_project)
         # Not all valid, but no critical missing
         assert r["severity"] == "warning"
@@ -1111,7 +1111,7 @@ class TestCmdDoctorFix:
             "source": "local-dev",
         }))
 
-        for name in ["agents", "tools", "hooks", "commands", "templates", "config", "skills"]:
+        for name in ["agents", "tools", "hooks", "commands", "config", "skills"]:
             (claude_dir / name).mkdir()
         (claude_dir / "CHANGELOG.md").write_text("# Changelog")
 
