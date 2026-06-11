@@ -68,6 +68,33 @@ def _clear_plugin_mode_cache():
         pass
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gaia_data_dir(tmp_path, monkeypatch):
+    """Architectural test-DB isolation -- the personal ~/.gaia is unreachable.
+
+    Every DB path in Gaia resolves through gaia.paths.data_dir(), which honors
+    GAIA_DATA_DIR and falls back to ~/.gaia. gaia.store.writer._connect() and
+    db_path() both flow through it. Without isolation, any test that calls a
+    writer/reader without an explicit db_path silently touches the developer's
+    real ~/.gaia/gaia.db -- a locally-masked leak that fails on a clean CI
+    runner (e.g. test_fix_noop_when_already_indexed).
+
+    This autouse function-scoped fixture points GAIA_DATA_DIR at a per-test
+    tmp directory and clears GAIA_DB / GAIA_DB_PATH so no ambient override can
+    reach the real home. Because monkeypatch.setenv applies fixture-first and a
+    test's own setenv runs after, individual tests that set their own
+    GAIA_DATA_DIR (e.g. tests/cli/test_gaia_doctor.py::check_project_context)
+    transparently override this default. temp_gaia_db and explicit db_path=
+    callers are unaffected -- this only changes the *fallback* resolution.
+    """
+    data_dir = tmp_path / "_gaia_isolated_data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("GAIA_DB", raising=False)
+    monkeypatch.delenv("GAIA_DB_PATH", raising=False)
+    yield
+
+
 def pytest_collection_modifyitems(config, items):
     """Auto-skip llm and e2e tests unless explicitly requested via -m flag."""
     # If user explicitly passed -m, respect that
