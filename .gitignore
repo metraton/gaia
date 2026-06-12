@@ -12,6 +12,7 @@ node_modules/
 
 
 # Python
+uv.lock
 __pycache__/
 *.py[cod]
 *$py.class
