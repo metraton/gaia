@@ -202,7 +202,7 @@ class TestCheckSymlinks:
         """Should warn (not error) when non-critical dirs are missing."""
         import shutil
         # Remove non-critical dir
-        shutil.rmtree(healthy_project / ".claude" / "commands")
+        shutil.rmtree(healthy_project / ".claude" / "config")
         r = doctor_mod.check_symlinks(healthy_project)
         # Not all valid, but no critical missing
         assert r["severity"] == "warning"
@@ -1008,58 +1008,53 @@ class TestCheckMemoryFts5Db:
 
 
 class TestCheckMemoryFts5Count:
-    """Test check_memory_fts5_count."""
+    """Test check_memory_fts5_count.
 
-    def _make_index(self, em_dir, n_episodes):
-        episodes = [{"episode_id": f"ep_{i}", "title": f"Episode {i}"} for i in range(n_episodes)]
-        import json
-        (em_dir / "index.json").write_text(json.dumps({"episodes": episodes}))
+    T6 migration: check_memory_fts5_count now queries the canonical gaia.db
+    (episodes_fts for indexed, episodes for total) via gaia.store.writer._connect,
+    replacing the legacy search_store.count()/index.json path. These tests stub
+    _connect to return a fake sqlite connection driving each count branch.
+    """
 
-    def test_no_index_returns_info(self, tmp_path):
-        """Missing index.json should return info."""
-        em_dir = tmp_path / ".claude" / "project-context" / "episodic-memory"
-        em_dir.mkdir(parents=True)
+    def _patch_connect(self, monkeypatch, indexed, total):
+        """Stub gaia.store.writer._connect to return counts for the two queries."""
+        import gaia.store.writer as _writer_mod
+
+        class _FakeCursor:
+            def __init__(self, value):
+                self._value = value
+
+            def fetchone(self):
+                return (self._value,)
+
+        class _FakeConn:
+            def execute(self, sql, *args):
+                if "episodes_fts" in sql:
+                    return _FakeCursor(indexed)
+                return _FakeCursor(total)
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(_writer_mod, "_connect", lambda: _FakeConn())
+
+    def test_no_index_returns_pass(self, tmp_path, monkeypatch):
+        """No episodes in gaia.db (total=0) should return pass."""
+        self._patch_connect(monkeypatch, indexed=0, total=0)
         r = doctor_mod.check_memory_fts5_count(tmp_path)
-        assert r["severity"] == "info"
+        assert r["severity"] == "pass"
+        assert "No episodes to index" in r["detail"]
 
     def test_indexed_gte_90pct_returns_pass(self, tmp_path, monkeypatch):
         """indexed >= 90% of total should return pass."""
-        em_dir = tmp_path / ".claude" / "project-context" / "episodic-memory"
-        em_dir.mkdir(parents=True)
-        self._make_index(em_dir, 10)
-
-        # Monkeypatch search_store.count to return 10 (100%)
-        import types
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 10
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-        monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
-        sys.modules["tools.memory"].search_store = fake_ss
-
+        self._patch_connect(monkeypatch, indexed=10, total=10)
         r = doctor_mod.check_memory_fts5_count(tmp_path)
         assert r["severity"] == "pass"
         assert "10/10" in r["detail"]
 
     def test_indexed_lt_90pct_returns_warning(self, tmp_path, monkeypatch):
         """indexed < 90% of total should return warning."""
-        em_dir = tmp_path / ".claude" / "project-context" / "episodic-memory"
-        em_dir.mkdir(parents=True)
-        self._make_index(em_dir, 10)
-
-        import types
-
-        # Build a fake search_store with count returning 5 (50%)
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 5  # 50% — below 90%
-
-        # Unconditionally inject tools.memory package and search_store submodule so
-        # that 'from tools.memory import search_store' inside check_memory_fts5_count
-        # resolves to our fake regardless of sys.path state or prior test pollution.
-        fake_tm = types.ModuleType("tools.memory")
-        fake_tm.search_store = fake_ss
-        monkeypatch.setitem(sys.modules, "tools.memory", fake_tm)
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-
+        self._patch_connect(monkeypatch, indexed=5, total=10)
         r = doctor_mod.check_memory_fts5_count(tmp_path)
         assert r["severity"] == "warning", f"Expected warning but got {r['severity']}: {r['detail']}"
         assert "5/10" in r["detail"]
