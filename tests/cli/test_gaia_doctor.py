@@ -333,16 +333,21 @@ class TestCheckProjectContext:
         assert r["ok"] is True
 
     def test_missing_context(self, broken_project):
-        """Should warn when no project_context_contracts exist in DB."""
+        """Empty context is advisory: no contracts yet means run `gaia scan`.
+
+        A freshly-installed workspace has no contracts until the first scan;
+        that empty state is info (advisory), not warning, so a clean install
+        passes doctor rc=0.
+        """
         r = doctor_mod.check_project_context(broken_project)
-        assert r["severity"] == "warning"
+        assert r["severity"] == "info"
 
     def test_invalid_json(self, healthy_project):
-        """Should warn when no contracts in DB (legacy json is no longer read)."""
+        """Should report info when no contracts in DB (legacy json is no longer read)."""
         # With no GAIA_DATA_DIR override, _DEFAULT_DB_PATH (isolated to
-        # empty tmp) has no contracts -> warning path.
+        # empty tmp) has no contracts -> info (advisory) path.
         r = doctor_mod.check_project_context(healthy_project)
-        assert r["severity"] == "warning"
+        assert r["severity"] == "info"
 
 
 class TestCheckMemoryDirs:
