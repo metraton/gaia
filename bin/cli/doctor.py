@@ -935,7 +935,7 @@ def check_project_context(project_root: Path) -> dict:
         return _result("project-context", "warning", f"DB read error: {exc}", "Run `gaia scan`")
 
     if count == 0:
-        return _result("project-context", "warning", "No contracts in DB", "Run `gaia scan`")
+        return _result("project-context", "info", "No contracts in DB", "Run `gaia scan`")
 
     if count < 3:
         return _result(
