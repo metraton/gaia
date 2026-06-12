@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.6] - 2026-06-12
+
+### Fixed
+
+- **`gaia doctor` no longer reports a freshly-installed workspace as "degraded"
+  (rc=1)** — an empty project-context contracts table is now `info` (an advisory
+  to run `gaia scan`) instead of `warning`, so a clean install passes doctor with
+  rc=0. Fixes the post-publish sandbox-validation failure seen in 5.0.5.
+
 ## [5.0.5] - 2026-06-11
 
 ### Repository Hygiene, Python 3.11 Floor, v18 Schema Floor + Drift Guard, Release-Pipeline Hardening
