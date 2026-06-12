@@ -6,7 +6,8 @@ Public surface:
     chain.ChainTamperError
     chain.insert_event(con, approval_id, event_type, ...) -> int
 
-    store.insert_requested(sealed_payload, *, agent_id, session_id, con=None) -> str
+    store.insert_requested(sealed_payload, *, agent_id, session_id, approval_id=None, con=None) -> str
+    store.derive_command_set_id(commands) -> str  -- content-derived COMMAND_SET id
     store.record_event(approval_id, event_type, *, ..., con=None) -> int
     store.get_pending(session_id=None, all_sessions=False, con=None) -> list[dict]
     store.list_pending(all_sessions=False, session_id=None, con=None) -> list[dict]

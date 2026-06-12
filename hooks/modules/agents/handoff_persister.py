@@ -170,19 +170,30 @@ def _intake_command_set_pending(
     }
 
     try:
-        from gaia.approvals.store import insert_requested
+        from gaia.approvals.store import derive_command_set_id, insert_requested
     except ImportError:
         import pathlib as _pl
         import sys as _sys
 
         _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent
         _sys.path.insert(0, str(_repo_root))
-        from gaia.approvals.store import insert_requested
+        from gaia.approvals.store import derive_command_set_id, insert_requested
+
+    # Derive the PUBLIC approval_id deterministically from the post-filter
+    # mutative command strings. Because the id is content-derived (not uuid4),
+    # the orchestrator reproduces the SAME id from the command_set it reads in
+    # the contract via `gaia approvals derive-id` -- no DB search, no
+    # cross-session miss. The list passed here is the SAME list the CLI helper
+    # derives over (post-mutative-filter), so both sides agree.
+    derived_id = derive_command_set_id(
+        [it["command"] for it in command_set_items]
+    )
 
     approval_id = insert_requested(
         sealed_payload,
         agent_id=agent_id,
         session_id=session_id or None,
+        approval_id=derived_id,
     )
     logger.info(
         "INTAKE: plan-first COMMAND_SET pending created approval_id=%s items=%d",

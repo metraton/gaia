@@ -99,6 +99,17 @@ with one `approval_id` -- so a batch of N commands is **one consent, N
 commands**, not N approvals. A set of `<= 1` item is not a batch: it does not
 mint a COMMAND_SET (use the normal singular block path for a single command).
 
+You still emit the `command_set` with **no `approval_id`** -- nothing changes on
+your side. What changed underneath: the minted `approval_id` is now
+**content-derived** from the command_set
+(`derive_command_set_id` -> `P-<first 32 hex of sha256(canonical commands)>`),
+not a random uuid4. You do not compute or emit it (you cannot hash reliably, and
+you have nothing to attempt yet); the value is purely internal. The reason it
+matters: the orchestrator reproduces that exact id from the `command_set` you
+emitted (via `gaia approvals derive-id`), with no DB search and no cross-session
+miss. Your contract stays the same -- `command_set` of `{command, rationale}`
+items, no `approval_id`.
+
 On the user's approval, that one pending activates into a single `COMMAND_SET`
 grant (60-minute TTL); each item is then consumed byte-for-byte on its own
 retry, with replay protection, until the whole set is `CONSUMED`. See

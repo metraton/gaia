@@ -67,14 +67,70 @@ from .chain import (
 
 _APPROVAL_ID_PREFIX = "P-"
 
+# Length (in hex chars) of the content-derived suffix for COMMAND_SET ids.
+# 32 hex chars == 128 bits of the SHA-256 digest, matching the visual length of
+# the uuid4 suffix used by singular approvals (uuid4.hex is also 32 chars).
+_COMMAND_SET_ID_HEX_LEN = 32
+
 
 def _generate_approval_id() -> str:
     """Generate a unique approval ID with the P- prefix.
 
     Format: P-{uuid4_hex}
     Example: P-3f2504e04f8911d39a0c0305e82c3301
+
+    Used for SINGULAR T3 approvals (the hook-block path), where the id only
+    needs to be unique and is relayed verbatim by the subagent. For the
+    plan-first COMMAND_SET path -- where the orchestrator must reproduce the id
+    from the command_set it reads in the contract, with no DB lookup -- use
+    ``derive_command_set_id()`` instead.
     """
     return f"{_APPROVAL_ID_PREFIX}{uuid.uuid4().hex}"
+
+
+def derive_command_set_id(commands: List[str]) -> str:
+    """Deterministically derive a COMMAND_SET approval_id from its command list.
+
+    The plan-first COMMAND_SET id is content-derived rather than random so that
+    BOTH the hook (at SubagentStop intake) and the orchestrator (from the
+    command_set it reads in the contract) compute the SAME id without any DB
+    lookup. This closes the cross-session miss where the orchestrator could not
+    reproduce a uuid4 minted at SubagentStop (Claude Code issue #5812: the
+    SubagentStop output never reaches the parent).
+
+    Format: ``P-<first 32 hex of sha256(canonical([{"command": c}, ...]))>``
+
+    Canonicalization reuses ``chain.canonical_payload`` -- the SAME machinery
+    that produces the fingerprint -- so there is exactly one canonicalization in
+    the system, not a second one. The hash is taken over the ordered list of
+    ``{"command": <str>}`` items, so the id is:
+
+      * **order-sensitive** -- a different command order yields a different id
+        (the consume side matches commands positionally, so order is load-bearing);
+      * **content-only** -- it depends solely on the command strings, not on
+        rationale, session, agent, or timestamp, so the two sides need only the
+        command list (which both have) to agree.
+
+    Idempotency consequence (acceptable, and consistent with the existing
+    fingerprint dedup in ``insert_requested``): two identical command lists map
+    to the same id. No per-attempt salt is added -- both sides could not derive
+    a salt they do not share.
+
+    Args:
+        commands: Ordered list of command strings (the mutative/T3 commands the
+            COMMAND_SET grant will cover). Both the intake and the orchestrator
+            MUST pass the SAME post-filter list for the ids to match.
+
+    Returns:
+        A ``P-{32 hex}`` approval_id deterministically derived from ``commands``.
+    """
+    # Build a minimal, stable structure over the command strings ONLY. We do not
+    # fold in rationale/operation/scope because the orchestrator must reproduce
+    # the id from the command_set alone and those fields may differ between the
+    # subagent's emission and the intake's neutral defaults.
+    canon = canonical_payload({"command_set_commands": list(commands)})
+    digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    return f"{_APPROVAL_ID_PREFIX}{digest[:_COMMAND_SET_ID_HEX_LEN]}"
 
 
 def _now_iso() -> str:
@@ -113,12 +169,13 @@ def insert_requested(
     *,
     agent_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    approval_id: Optional[str] = None,
     con: Optional[sqlite3.Connection] = None,
 ) -> str:
     """Insert a new approval row and emit a REQUESTED audit event.
 
     This is the canonical entry point for the T3 hook intercept. It:
-      1. Generates a P-{uuid4} approval_id.
+      1. Generates a P-{uuid4} approval_id (unless one is supplied -- see below).
       2. Computes fingerprint = SHA-256(canonical_json(sealed_payload)).
       3. Inserts a row into approvals with status='pending'.
       4. Calls chain.insert_event() to write REQUESTED to approval_events
@@ -130,14 +187,23 @@ def insert_requested(
             exact_content, scope, risk_level, rollback_hint, rationale, commands).
         agent_id: Optional agent identifier (e.g., agent_id from session context).
         session_id: Optional session identifier (CLAUDE_SESSION_ID).
+        approval_id: Optional caller-supplied approval_id. When provided, it is
+            used as the pending row id instead of minting a fresh P-{uuid4}.
+            This is the plan-first COMMAND_SET path: the intake derives a
+            CONTENT-derived id via ``derive_command_set_id()`` so the
+            orchestrator can reproduce it from the command_set without a DB
+            lookup. The singular T3 hook-block path leaves this None and keeps
+            the uuid4 id. The fingerprint idempotency check below runs FIRST in
+            either case, so a supplied id only takes effect when no pending row
+            with the same fingerprint already exists.
         con: Optional open sqlite3.Connection. When provided, the caller owns
             connection lifecycle (no commit or close). When None, a fresh
             connection to ~/.gaia/gaia.db is opened, committed, and closed.
 
     Returns:
-        The P-{uuid4} approval_id string. When an existing pending approval
-        already carries the same fingerprint, that existing id is returned
-        unchanged (fingerprint idempotency -- see below).
+        The approval_id string used for the pending row. When an existing
+        pending approval already carries the same fingerprint, that existing id
+        is returned unchanged (fingerprint idempotency -- see below).
     """
     # Compute the fingerprint FIRST so we can check for an existing pending with
     # the same byte-binding before minting anything.
@@ -166,10 +232,16 @@ def insert_requested(
         if existing is not None:
             existing_id = existing[0] if not hasattr(existing, "keys") else existing["id"]
             # No INSERT and no REQUESTED event: the chain already holds this
-            # approval's REQUESTED from when it was first minted.
+            # approval's REQUESTED from when it was first minted. Fingerprint
+            # dedup wins over any caller-supplied approval_id: an identical
+            # payload maps to the one pending row that already exists.
             return existing_id
 
-        approval_id = _generate_approval_id()
+        # Use the caller-supplied id (plan-first COMMAND_SET: content-derived,
+        # reproducible by the orchestrator) when given, else mint a uuid4 id
+        # (singular T3 hook-block path).
+        if approval_id is None:
+            approval_id = _generate_approval_id()
 
         # Insert the parent approval row.
         _con.execute(
