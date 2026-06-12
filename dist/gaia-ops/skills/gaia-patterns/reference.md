@@ -80,14 +80,6 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `skill-creation/` | Technique | Injected (gaia-system) |
 | `skills/reference.md` | Reference | On-demand (shared security-tiers ref) |
 
-### Commands (slash commands)
-
-| Command | File | Purpose |
-|---------|------|---------|
-| `/gaia` | `commands/gaia.md` | Invoke gaia meta-agent |
-| `/scan-project` | `commands/scan-project.md` | Scan project, update project context in ~/.gaia/gaia.db |
-| `/gaia-plan` | `commands/gaia-plan.md` | Plan a feature, create brief, decompose into tasks |
-
 ### Tools (7 subsystems)
 
 | Subsystem | Location | Purpose |
@@ -139,7 +131,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 
 | Mode | Package | What ships |
 |------|---------|-----------|
-| `gaia-ops` | `@jaguilar87/gaia` (full) | All hooks, all modules, all agents, all skills, all commands, all tools, all config |
+| `gaia-ops` | `@jaguilar87/gaia` (full) | All hooks, all modules, all agents, all skills, all tools, all config |
 | `gaia-security` | `@jaguilar87/gaia` (security dist) | 6 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`, `session_end_hook`), all modules, no agents, no skills, no config |
 
 ### Detection Cascade (`hooks/modules/core/plugin_mode.py`)
@@ -159,7 +151,6 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | T3 approval | Claude Code native dialog (`permissionDecision: ask`) | Hook blocks with nonce, orchestrator approval flow |
 | Agents | None | 8 agents routed by orchestrator |
 | Skills | None | 24 skills injected per frontmatter |
-| Commands | None | 7 slash commands |
 | PreToolUse matchers | `Bash` only | `Bash`, `Task`, `Agent`, `SendMessage`, multi-tool |
 | File write protection | `_is_protected()` blocks hooks/ and settings*.json for Edit/Write tools | Same -- fires regardless of permissionMode |
 
@@ -206,7 +197,7 @@ npm publish                    # publishes @jaguilar87/gaia
 3. Run `scripts/bootstrap_database.sh` -- seeds the schema (v17), agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
 4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
 5. Merge hooks from `hooks.json` into `settings.local.json` via the consolidated `merge_hooks` step.
-6. Create `.claude/{agents, tools, hooks, commands, templates, config, skills}` symlinks (7) plus `CHANGELOG.md` file link.
+6. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus `CHANGELOG.md` file link.
 7. Write `plugin-registry.json` with `installed[].name == "gaia-ops"` (or `gaia-security`).
 8. Verification.
 
@@ -229,8 +220,6 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 .claude/agents    -> node_modules/@jaguilar87/gaia/agents/
 .claude/tools     -> node_modules/@jaguilar87/gaia/tools/
 .claude/hooks     -> node_modules/@jaguilar87/gaia/hooks/
-.claude/commands  -> node_modules/@jaguilar87/gaia/commands/
-.claude/templates -> node_modules/@jaguilar87/gaia/templates/
 .claude/config    -> node_modules/@jaguilar87/gaia/config/
 .claude/skills    -> node_modules/@jaguilar87/gaia/skills/
 .claude/CHANGELOG.md (file link) -> node_modules/@jaguilar87/gaia/CHANGELOG.md
@@ -333,7 +322,6 @@ ln -sf /home/jorge/ws/me/gaia-dev/agents   .claude/agents
 ln -sf /home/jorge/ws/me/gaia-dev/hooks    .claude/hooks
 ln -sf /home/jorge/ws/me/gaia-dev/skills   .claude/skills
 ln -sf /home/jorge/ws/me/gaia-dev/tools    .claude/tools
-ln -sf /home/jorge/ws/me/gaia-dev/commands .claude/commands
 ln -sf /home/jorge/ws/me/gaia-dev/config   .claude/config
 ```
 

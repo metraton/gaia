@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.7] - 2026-06-12
+
+### Fixed
+
+- `gaia doctor` now passes (rc=0) on a clean install: the `commands` symlink (a removed surface) was dropped from the symlink checks, and `memory_fts5_count` now reads the canonical gaia.db store instead of the legacy search.db — eliminating the two warnings that made a fresh install report "degraded" in 5.0.5/5.0.6.
+
+### Changed
+
+- Release pipeline: the sandbox validation harness is now a PRE-publish gate (runs against the packed tarball before `npm publish`), and the harness fails if `gaia doctor` returns rc>=1 — so a degraded build can no longer be published.
+
 ## [5.0.6] - 2026-06-12
 
 ### Fixed
