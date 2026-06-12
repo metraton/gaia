@@ -1523,6 +1523,114 @@ def cmd_replay(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# derive-id -- reproduce a plan-first COMMAND_SET approval_id from its commands
+# ---------------------------------------------------------------------------
+
+def _read_command_set_input(args) -> list:
+    """Resolve the command list for derive-id from args/stdin.
+
+    Accepts, in order of precedence:
+      1. ``--commands-json '[{"command": "..."}, ...]'`` or a bare list of
+         strings ``["cmd a", "cmd b"]`` -- the command_set as the orchestrator
+         reads it from the contract.
+      2. stdin (when ``--commands-json`` is omitted), same JSON shapes.
+
+    Returns the ordered list of command STRINGS (rationale is irrelevant to the
+    derivation). Raises ValueError on malformed input.
+    """
+    raw = getattr(args, "commands_json", None)
+    if raw is None:
+        raw = sys.stdin.read()
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("no command_set provided (use --commands-json or stdin)")
+
+    parsed = json.loads(raw)
+
+    # Accept either a top-level list, or {"command_set": [...]} / {"commands": [...]}.
+    if isinstance(parsed, dict):
+        parsed = parsed.get("command_set") or parsed.get("commands") or []
+
+    if not isinstance(parsed, list):
+        raise ValueError("command_set must be a JSON array")
+
+    commands: list = []
+    for item in parsed:
+        if isinstance(item, str):
+            if item:
+                commands.append(item)
+        elif isinstance(item, dict) and item.get("command"):
+            commands.append(item["command"])
+    return commands
+
+
+def cmd_derive_id(args) -> int:
+    """Derive the deterministic COMMAND_SET approval_id from its commands.
+
+    This is the orchestrator-side mirror of the intake's mint: given the
+    ``command_set`` the subagent emitted in its contract (no DB search), it
+    reproduces the EXACT ``P-...`` id the SubagentStop intake wrote as the
+    pending row, by applying the SAME mutative filter and the SAME
+    ``derive_command_set_id`` canonicalization the intake uses.
+
+    The mutative filter is shared with the intake
+    (``handoff_persister._filter_mutative_command_set``) so the CLI and the hook
+    operate on the identical post-filter command list. When fewer than 2
+    mutative commands remain, NO COMMAND_SET was minted (the singular path owns
+    it) -- the helper reports that rather than emitting a bogus id.
+
+    Exits 0 on success, 1 on error.
+    """
+    output_json = getattr(args, "json", False)
+    apply_filter = not getattr(args, "no_filter", False)
+
+    try:
+        commands = _read_command_set_input(args)
+    except Exception as exc:
+        _print_error(f"Failed to parse command_set: {exc}", args)
+        return 1
+
+    # Apply the SAME mutative filter the intake uses, so the orchestrator's
+    # derivation operates on the identical post-filter list. Skippable via
+    # --no-filter for callers that already hold the filtered list.
+    if apply_filter:
+        try:
+            from modules.agents.handoff_persister import _filter_mutative_command_set
+            filtered = _filter_mutative_command_set(
+                [{"command": c, "rationale": ""} for c in commands]
+            )
+            commands = [it["command"] for it in filtered]
+        except Exception as exc:
+            _print_error(f"Failed to apply mutative filter: {exc}", args)
+            return 1
+
+    if len(commands) < 2:
+        msg = (
+            f"Not a COMMAND_SET: {len(commands)} mutative command(s) after filter "
+            "(need >= 2). No COMMAND_SET approval was minted -- the singular path "
+            "owns this."
+        )
+        if output_json:
+            print(json.dumps({"approval_id": None, "command_count": len(commands), "reason": msg}))
+        else:
+            _print_error(msg, args)
+        return 1
+
+    try:
+        store = _import_approval_store()
+        approval_id = store.derive_command_set_id(commands)
+    except Exception as exc:
+        _print_error(f"Failed to derive id: {exc}", args)
+        return 1
+
+    if output_json:
+        print(json.dumps({"approval_id": approval_id, "command_count": len(commands)}))
+    else:
+        print(approval_id)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Plugin registration (called by bin/gaia dispatcher)
 # ---------------------------------------------------------------------------
 
@@ -1763,6 +1871,35 @@ def register(subparsers) -> None:
     p_stats.add_argument("--json", action="store_true", help="JSON output")
     p_stats.set_defaults(func=cmd_stats)
 
+    # derive-id -- reproduce a plan-first COMMAND_SET id from its commands
+    p_derive = sub.add_parser(
+        "derive-id",
+        help="Derive the deterministic COMMAND_SET approval_id from its commands",
+        description=(
+            "Reproduce the content-derived approval_id the SubagentStop intake\n"
+            "minted for a plan-first COMMAND_SET, from the command_set in the\n"
+            "contract -- no DB search. Pass the command_set as JSON via\n"
+            "--commands-json or stdin (a list of strings, a list of\n"
+            "{command, rationale} objects, or an object with a command_set/\n"
+            "commands key). Applies the same mutative filter the intake uses."
+        ),
+    )
+    p_derive.add_argument(
+        "--commands-json",
+        dest="commands_json",
+        metavar="JSON",
+        default=None,
+        help="command_set as JSON (omit to read from stdin)",
+    )
+    p_derive.add_argument(
+        "--no-filter",
+        action="store_true",
+        dest="no_filter",
+        help="Skip the mutative filter (input is already the filtered list)",
+    )
+    p_derive.add_argument("--json", action="store_true", help="JSON output")
+    p_derive.set_defaults(func=cmd_derive_id)
+
     p.set_defaults(func=_approvals_default)
 
 
@@ -1795,6 +1932,7 @@ def _approvals_default(args) -> int:
     print("  reject-all [--dry-run]            -- bulk reject (legacy)")
     print("  clean [--dry-run]                 -- remove expired approvals")
     print("  stats                             -- approval system statistics")
+    print("  derive-id --commands-json JSON    -- reproduce a COMMAND_SET id (no DB)")
     print("")
     print("Run 'gaia approvals --help' for more information.")
     return 0
@@ -1885,6 +2023,12 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_stats = subparsers.add_parser("stats", help="Approval system stats")
     p_stats.add_argument("--json", action="store_true")
     p_stats.set_defaults(func=cmd_stats)
+
+    p_derive = subparsers.add_parser("derive-id", help="Derive a COMMAND_SET approval_id from its commands")
+    p_derive.add_argument("--commands-json", dest="commands_json", metavar="JSON", default=None)
+    p_derive.add_argument("--no-filter", action="store_true", dest="no_filter")
+    p_derive.add_argument("--json", action="store_true")
+    p_derive.set_defaults(func=cmd_derive_id)
 
     return parser
 
