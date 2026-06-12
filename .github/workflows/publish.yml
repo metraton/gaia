@@ -57,9 +57,6 @@ jobs:
       - name: Run validation
         run: npm run pre-publish:validate
 
-      - name: Clean build artifacts
-        run: npm run clean
-
       - name: Determine npm tag
         id: npm-tag
         run: |
@@ -74,33 +71,38 @@ jobs:
             echo "tag=latest" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Publish to npm
-        run: npm publish --access public --tag ${{ steps.npm-tag.outputs.tag }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Pack tarball
+        # Produce the exact artifact that would be published. The sandbox
+        # harness installs FROM this tarball, so the gate validates precisely
+        # what npm publish would ship — not the working tree.
+        id: pack
+        run: |
+          TARBALL=$(npm pack --silent)
+          echo "tarball=${PWD}/${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "Packed ${TARBALL}"
 
-      - name: Sandbox validation harness
-        # End-to-end consumer-install verification. Installs the freshly
-        # published version into an ephemeral sandbox populated from
+      - name: Sandbox validation harness (PRE-PUBLISH GATE)
+        # End-to-end consumer-install verification against the PACKED TARBALL.
+        # Installs into an ephemeral sandbox populated from
         # tests/fixtures/sandbox-project/ and exercises install-time code
         # paths (postinstall merge, FTS5 backfill) plus read-side CLI
         # surface (version, doctor, status, context, memory stats/search,
-        # scan, preservation checksum). 8 pass/fail checks.
-        #
-        # Waits briefly for npm registry propagation (eventual consistency)
-        # before handing off to the harness. Harness exit code is the gate.
+        # scan, preservation checksum). The harness exit code is the gate:
+        # if it fails, npm publish below never runs and no broken artifact
+        # reaches the registry.
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          for i in 1 2 3 4 5 6; do
-            if npm view "@jaguilar87/gaia@${VERSION}" version >/dev/null 2>&1; then
-              echo "Version ${VERSION} visible on registry"
-              break
-            fi
-            echo "Waiting for registry propagation (attempt ${i}/6)..."
-            sleep 10
-          done
-          bash bin/validate-sandbox.sh --version "@jaguilar87/gaia@${VERSION}" --target sandbox
+          bash bin/validate-sandbox.sh --tarball "${{ steps.pack.outputs.tarball }}" --target sandbox
+
+      - name: Publish to npm
+        # Runs ONLY if the sandbox harness above exited 0. The same tarball
+        # the harness validated is the one published.
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --tag ${{ steps.npm-tag.outputs.tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Clean build artifacts
+        run: npm run clean
 
       - name: Notify success
         if: success()
-        run: echo "Package published and smoke-installed successfully"
+        run: echo "Package gated, published, and smoke-installed successfully"

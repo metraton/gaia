@@ -590,11 +590,16 @@ else
   rc=$?
 fi
 ms=$(( $(now_ms) - t0 ))
-# doctor may exit 1 on warnings; allow rc=0 or rc=1 if json is parseable
-if python3 -c "import json,sys; d=json.loads(sys.argv[1]); c=d['checks']; p=sum(1 for r in c if r['severity']=='pass'); t=len(c); sys.exit(0 if t>=5 and p>=max(1,t-3) else 1)" "${out}" 2>/dev/null; then
+# The harness gate must not pass a degraded doctor: a non-zero rc means at
+# least one check is warning/error, so treat rc>=1 as a hard FAILURE. Only a
+# clean rc=0 (all checks pass/info) with parseable JSON counts as PASS.
+if [[ "${rc}" -ne 0 ]]; then
+  nonpass="$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(', '.join(f\"{r['name']}={r['severity']}\" for r in d['checks'] if r['severity'] not in ('pass','info')))" "${out}" 2>/dev/null || echo "unparseable output")"
+  record "gaia doctor --json" "FAIL" "doctor returned rc=${rc}; non-pass: ${nonpass:-none}" "${ms}"
+elif python3 -c "import json,sys; d=json.loads(sys.argv[1]); c=d['checks']; t=len(c); sys.exit(0 if t>=5 else 1)" "${out}" 2>/dev/null; then
   total=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(len(d['checks']))" "${out}")
   passed=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(sum(1 for r in d['checks'] if r['severity']=='pass'))" "${out}")
-  record "gaia doctor --json" "PASS" "${passed}/${total} checks passed" "${ms}"
+  record "gaia doctor --json" "PASS" "rc=0, ${passed}/${total} checks passed" "${ms}"
 else
   record "gaia doctor --json" "FAIL" "parse/threshold failure (rc=${rc})" "${ms}"
 fi

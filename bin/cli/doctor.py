@@ -762,7 +762,7 @@ def _extract_check_values(
 @register_check("Symlinks", order=50)
 def check_symlinks(project_root: Path) -> dict:
     """Check .claude/ symlinks resolve to package content."""
-    names = ["agents", "tools", "hooks", "commands", "config", "skills", "CHANGELOG.md"]
+    names = ["agents", "tools", "hooks", "config", "skills", "CHANGELOG.md"]
     critical = {"agents", "hooks", "skills"}
     valid = 0
     has_critical_missing = False
@@ -1053,34 +1053,36 @@ def check_memory_fts5_db(project_root: Path) -> dict:
 
 @register_check("memory_fts5_count", order=130)
 def check_memory_fts5_count(project_root: Path) -> dict:
-    """Check FTS5 indexed count against total episode count in index.json."""
-    index_path = project_root / ".claude" / "project-context" / "episodic-memory" / "index.json"
+    """Check FTS5 indexed count against total episode count in gaia.db.
 
-    if not index_path.is_file():
-        return _result("memory_fts5_count", "info", "index.json not found — no episodes yet")
-
-    index_data = _read_json(index_path)
-    if not index_data:
-        return _result("memory_fts5_count", "info", "index.json unreadable")
-
-    total = len(index_data.get("episodes") or [])
-
+    T6 migration: replaced legacy search_store.count()/index.json check
+    (which read search.db and ignored GAIA_DATA_DIR) with queries against
+    the canonical gaia.db -- episodes_fts for indexed, episodes for total.
+    """
     try:
         import sys as _sys
-        # Ensure package root is on path for lazy import
         pkg_root = str(_package_root())
         if pkg_root not in _sys.path:
             _sys.path.insert(0, pkg_root)
-        from tools.memory import search_store  # noqa: PLC0415
-        indexed = search_store.count()
+        from gaia.store.writer import _connect as _store_connect
     except ImportError:
         return _result(
             "memory_fts5_count",
             "info",
-            "tools.memory.search_store not importable — FTS5 count skipped",
+            "gaia.store.writer not importable — FTS5 count skipped",
         )
+
+    try:
+        con = _store_connect()
+        try:
+            indexed_row = con.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()
+            indexed = indexed_row[0] if indexed_row else 0
+            total_row = con.execute("SELECT COUNT(*) FROM episodes").fetchone()
+            total = total_row[0] if total_row else 0
+        finally:
+            con.close()
     except Exception as exc:
-        return _result("memory_fts5_count", "info", f"Could not query FTS5 count: {exc}")
+        return _result("memory_fts5_count", "info", f"Could not query FTS5 count from gaia.db: {exc}")
 
     if total == 0:
         return _result("memory_fts5_count", "pass", "No episodes to index")
