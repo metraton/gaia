@@ -90,6 +90,11 @@ class BashValidationResult:
     # plain error string (exit 2).  Used for structured block responses that
     # should correct the agent rather than terminate execution.
     block_response: Optional[Dict[str, Any]] = None
+    # When a T3 command is allowed because it matched (and consumed) an active
+    # grant, this carries the approval_id of that grant. The adapter stashes it
+    # in HookState so PostToolUse can append an EXECUTED/FAILED event to the
+    # approval_events chain for this approval. None for non-T3 / no-grant paths.
+    consumed_approval_id: Optional[str] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -667,6 +672,7 @@ class BashValidator:
                     allowed=True,
                     tier=SecurityTier.T3_BLOCKED,
                     reason="Command-set grant matched",
+                    consumed_approval_id=cs_approval_id,
                 )
 
             # DB-primary + filesystem-fallback grant check.
@@ -720,6 +726,7 @@ class BashValidator:
                         allowed=True,
                         tier=SecurityTier.T3_BLOCKED,
                         reason="Grant confirmed",
+                        consumed_approval_id=db_approval_id,
                     )
                 else:
                     # Filesystem grant exists, not yet confirmed -- GAIA approved,
@@ -733,6 +740,7 @@ class BashValidator:
                         allowed=True,
                         tier=SecurityTier.T3_BLOCKED,
                         reason="Grant active, pending confirmation",
+                        consumed_approval_id=db_approval_id,
                     )
             else:
                 # Converge on the single T3 decision point.  When there is an
@@ -808,6 +816,7 @@ class BashValidator:
                             allowed=True,
                             tier=SecurityTier.T3_BLOCKED,
                             reason="Command-set grant matched",
+                            consumed_approval_id=cs_approval_id,
                         )
 
                     grant = check_approval_grant(command, session_id=session_id)
@@ -859,6 +868,7 @@ class BashValidator:
                                 allowed=True,
                                 tier=SecurityTier.T3_BLOCKED,
                                 reason="Grant confirmed",
+                                consumed_approval_id=db_approval_id,
                             )
                         else:
                             logger.info(
@@ -870,6 +880,7 @@ class BashValidator:
                                 allowed=True,
                                 tier=SecurityTier.T3_BLOCKED,
                                 reason="Grant active, pending confirmation",
+                                consumed_approval_id=db_approval_id,
                             )
 
                     # No grant matched -- converge on the single T3 decision
@@ -939,10 +950,18 @@ class BashValidator:
             key=lambda t: tier_order.index(t.value),
         )
 
+        # Propagate the consumed approval_id from whichever component matched a
+        # grant, so PostToolUse can append EXECUTED/FAILED for that approval.
+        consumed_approval_id = next(
+            (r.consumed_approval_id for r in component_results if r.consumed_approval_id),
+            None,
+        )
+
         return BashValidationResult(
             allowed=True,
             tier=highest_tier,
             reason=f"All {len(components)} components validated",
+            consumed_approval_id=consumed_approval_id,
         )
 
     def _phase4_check_composition(

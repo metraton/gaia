@@ -63,8 +63,11 @@ becomes `rollback` in the contract; `commands` (`[exact_content]`) and
 }
 ```
 
-There is no `batch_scope` field: the `verb_family` grant was removed, so each
-blocked command gets its own single-use grant. See
+There is no `batch_scope` field: the `verb_family` grant was removed. For a
+single blocked command, each gets its own single-use `SCOPE_SEMANTIC_SIGNATURE`
+grant. For a batch of >= 2 T3 commands known up-front, emit a `command_set`
+list and **no** `approval_id` -- the SubagentStop intake mints a single
+`COMMAND_SET` grant (one consent covers all). See
 `Skill('orchestrator-present-approval')` for the orchestrator side.
 
 ## Status vocabularies -- distinct columns, opposite casing, never collapse
@@ -77,8 +80,8 @@ blocked command gets its own single-use grant. See
 ## Event chain
 
 The `approval_events.event_type` CHECK admits nine values: `REQUESTED` `SHOWN`
-`APPROVED` `REJECTED` `EXECUTED` `FAILED` `NOOP` `REVOKED` `REVERTED`. Only these
-are written by production code today:
+`APPROVED` `REJECTED` `EXECUTED` `FAILED` `NOOP` `REVOKED` `REVERTED`. These are
+written by production code today:
 
 | Event | Who writes it | When |
 |-------|--------------|------|
@@ -86,11 +89,16 @@ are written by production code today:
 | `SHOWN` | ElicitationResult hook via `activate_db_pending_by_prefix()` | User selects an Approve `[P-xxx]` label |
 | `APPROVED` | ElicitationResult hook (same call as `SHOWN`) | Immediately after `SHOWN` |
 | `REJECTED` / `REVOKED` | `gaia approvals` CLI via `store.reject()` / `store.revoke()` | User rejects or admin cancels |
+| `EXECUTED` / `FAILED` | PostToolUse adapter (`_record_t3_outcome_event`) via `store.record_event()` | An approved T3 command runs under a consumed grant -- `EXECUTED` on clean exit, `FAILED` otherwise |
 
-`EXECUTED` `FAILED` `NOOP` `REVERTED` are valid in the CHECK and are *read* by
-`store.get_executed_payload()` and `revert.py`, but no production hook *writes*
-them today -- treat them as a designed extension point, not a live invariant. Do
-not assume an `EXECUTED` event exists after a command runs.
+The PostToolUse path closes the audit cycle: PreToolUse stashes the consumed
+grant's `approval_id` in `HookState`, and PostToolUse appends `EXECUTED` or
+`FAILED` for that approval, continuing the hash chain through `record_event()`.
+`store.get_executed_payload()` and `gaia approvals replay` read the `EXECUTED`
+payload to re-present the commands that ran. `NOOP` and `REVERTED` remain valid
+in the CHECK but are **inert** -- no production code writes them (the revert
+feature was removed). Do not assume an `EXECUTED` event exists for an approval
+whose command never ran, or that ran through the redirect-sanitized path.
 
 ## Key invariants
 

@@ -26,16 +26,17 @@ AskUserQuestion(
 Where `approval_id_prefix8` is the first 8 characters of the `approval_id`
 field from the subagent's `approval_request` (after the `P-` prefix).
 
-## No batch template
+## Batch template (COMMAND_SET)
 
-There is no batch/multi-use approval in the current code. The `verb_family` grant
-was removed (see the module docstring of
-`hooks/modules/security/approval_grants.py`) and the `COMMAND_SET` replacement
-has no production activation path (`create_command_set_grant` has no production
-caller). The word "batch" in a label and a `batch_scope` field are both ignored.
-For a sweep of N commands, present each command with its own single-command
-approval (the template above), once per `approval_id`. See `reference.md` ->
-"On batch intents".
+When the subagent emits a plan-first `APPROVAL_REQUEST` with a `command_set`
+of >= 2 `{command, rationale}` items and **no** `approval_id`, the
+SubagentStop intake mints ONE pending `COMMAND_SET` approval. Present it as
+a single approval: list all N commands in the question body, one Approve
+label with one `[P-{nonce8}]` suffix. See `reference.md` -> "On batch
+intents" for the full layout.
+
+A `batch_scope` field and the word "batch" in an option label are both
+ignored -- the signal is the presence of `command_set` in the contract.
 
 ## Field Extraction Reference
 

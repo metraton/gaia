@@ -353,3 +353,124 @@ class TestT3InterceptInsertsRequestedWithChain:
 
         # Chain must still be valid after the transition event.
         assert validate_chain(approval_id, con) is True
+
+
+class TestExecutedFailedAuditCycle:
+    """EXECUTED / FAILED audit events appended after an approved T3 command runs.
+
+    Mirrors the PostToolUse adapter path (_record_t3_outcome_event): once a T3
+    command runs under a consumed grant, the adapter appends EXECUTED (clean
+    exit) or FAILED (non-zero exit) for that approval via store.record_event(),
+    continuing the hash chain. These tests exercise the store-level contract the
+    adapter relies on.
+
+    Satisfies: AC1, AC2, AC3 (close the audit-log cycle, Tier 1).
+    """
+
+    @staticmethod
+    def _payload_json(command: str, exit_code: int) -> str:
+        return canonical_payload(
+            {
+                "command": command,
+                "exit_code": exit_code,
+                "outcome": "success" if exit_code == 0 else "failure",
+            }
+        )
+
+    def test_executed_event_links_chain(self):
+        """AC1: a successful approved T3 command appends EXECUTED with valid linkage."""
+        con = _make_v12_db()
+        payload = {"operation": "deploy", "commands": ["kubectl apply -f app.yaml"]}
+        approval_id = insert_requested(payload, agent_id="ag", session_id="s", con=con)
+        transition(approval_id, "pending", "approved",
+                   agent_id="user", session_id="s", con=con)
+
+        # Adapter would call record_event(EXECUTED) on a clean exit.
+        record_event(
+            approval_id,
+            "EXECUTED",
+            session_id="s",
+            payload_json=self._payload_json("kubectl apply -f app.yaml", 0),
+            metadata_json=json.dumps({"source": "post_tool_use"}),
+            con=con,
+        )
+        con.commit()
+
+        events = replay_for_approval(approval_id, con=con)
+        assert events[-1]["event_type"] == "EXECUTED"
+        # prev_hash of EXECUTED must equal this_hash of the prior (APPROVED) row.
+        assert events[-1]["prev_hash"] == events[-2]["this_hash"]
+        # Chain walk passes end to end.
+        assert validate_chain(approval_id, con) is True
+
+    def test_failed_event_links_chain(self):
+        """AC2: a failed approved T3 command appends FAILED with valid linkage."""
+        con = _make_v12_db()
+        payload = {"operation": "deploy", "commands": ["kubectl apply -f bad.yaml"]}
+        approval_id = insert_requested(payload, agent_id="ag", session_id="s", con=con)
+        transition(approval_id, "pending", "approved",
+                   agent_id="user", session_id="s", con=con)
+
+        # Adapter would call record_event(FAILED) on a non-zero exit.
+        record_event(
+            approval_id,
+            "FAILED",
+            session_id="s",
+            payload_json=self._payload_json("kubectl apply -f bad.yaml", 1),
+            metadata_json=json.dumps({"source": "post_tool_use"}),
+            con=con,
+        )
+        con.commit()
+
+        events = replay_for_approval(approval_id, con=con)
+        assert events[-1]["event_type"] == "FAILED"
+        assert events[-1]["prev_hash"] == events[-2]["this_hash"]
+        assert validate_chain(approval_id, con) is True
+
+    def test_full_requested_to_executed_chain_validates(self):
+        """AC3: REQUESTED -> SHOWN -> APPROVED -> EXECUTED validates end to end."""
+        con = _make_v12_db()
+        payload = {"operation": "push", "commands": ["git push origin main"]}
+        approval_id = insert_requested(payload, agent_id="ag", session_id="s", con=con)
+        record_event(approval_id, "SHOWN", agent_id="orch", session_id="s", con=con)
+        record_event(approval_id, "APPROVED", agent_id="user", session_id="s", con=con)
+        record_event(
+            approval_id,
+            "EXECUTED",
+            session_id="s",
+            payload_json=self._payload_json("git push origin main", 0),
+            con=con,
+        )
+        con.commit()
+
+        events = replay_for_approval(approval_id, con=con)
+        assert [e["event_type"] for e in events] == [
+            "REQUESTED", "SHOWN", "APPROVED", "EXECUTED",
+        ]
+        assert validate_chain(approval_id, con) is True
+
+    def test_executed_payload_recoverable_by_replay(self):
+        """AC5 corollary: replay reads the EXECUTED payload that the adapter stored."""
+        con = _make_v12_db()
+        payload = {"operation": "deploy", "commands": ["helm upgrade app ."]}
+        approval_id = insert_requested(payload, agent_id="ag", session_id="s", con=con)
+        transition(approval_id, "pending", "approved",
+                   agent_id="user", session_id="s", con=con)
+        record_event(
+            approval_id,
+            "EXECUTED",
+            session_id="s",
+            payload_json=self._payload_json("helm upgrade app .", 0),
+            con=con,
+        )
+        con.commit()
+
+        executed = [
+            e for e in replay_for_approval(approval_id, con=con)
+            if e["event_type"] == "EXECUTED"
+        ]
+        assert len(executed) == 1
+        stored = json.loads(executed[0]["payload_json"])
+        assert stored["command"] == "helm upgrade app ."
+        assert stored["exit_code"] == 0
+        assert stored["outcome"] == "success"
