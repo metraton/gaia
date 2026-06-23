@@ -94,6 +94,22 @@ COMMAND_SET is ever minted for one command). The intake runs independently of
 the audit handoff-row write, so a batch consent is never lost to an unrelated
 DB failure.
 
+**The COMMAND_SET `approval_id` is content-derived, not uuid4.** Unlike the
+singular hook-block path (which mints `P-{uuid4hex}`), the intake derives the id
+from the command_set content via `gaia.approvals.store.derive_command_set_id()`:
+`P-<first 32 hex of sha256(canonical(post-filter command strings))>`. It then
+passes that id to `insert_requested(..., approval_id=...)` as the pending row id.
+The point is reproducibility without a DB lookup: the orchestrator holds the
+same `command_set` (you emitted it in the contract) and reproduces the EXACT id
+with `gaia approvals derive-id`, which applies the same mutative filter and the
+same canonicalization (`chain.canonical_payload`). This closes the cross-session
+miss -- a uuid4 minted at SubagentStop could not be recovered by the parent
+(Claude Code #5812), but a content-derived id needs no recovery. The id is
+**order-sensitive** (the consume side matches positionally) and **content-only**
+(rationale/session/agent are not folded in, so both sides agree from the command
+list alone). Idempotency follows the existing fingerprint dedup: two identical
+command sets map to one id.
+
 **Envelope shape.** The sealed_payload the intake writes carries a `command_set`
 key holding the verbatim list of `{command, rationale}` items, and `commands`
 listing every command string in the set:
@@ -142,9 +158,11 @@ orchestrator which path:
   validates the fingerprint and activates the single-use semantic grant on user
   approval.
 - **Without `approval_id`, with a `command_set` of >= 2 items** -- plan-first
-  batch. The SubagentStop intake processor mints ONE pending `COMMAND_SET` and
-  the orchestrator presents that single approval (N commands, one nonce) before
-  any execution. See "Batch / COMMAND_SET -- wired" above.
+  batch. The SubagentStop intake processor mints ONE pending `COMMAND_SET` with a
+  **content-derived** id (`derive_command_set_id`), and the orchestrator
+  reproduces that exact id from the command_set via `gaia approvals derive-id`
+  (no DB search) before presenting the single approval (N commands, one nonce).
+  See "Batch / COMMAND_SET -- wired" above.
 - **Without `approval_id` and without a multi-item `command_set`** -- plan-first
   single (you are presenting one T3 plan before attempting); the orchestrator
   gates on user consent before any execution.

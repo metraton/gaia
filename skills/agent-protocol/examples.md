@@ -330,4 +330,15 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 
 ## Notes on multi-command APPROVAL_REQUEST sweeps
 
-There is no batch/multi-use grant in the current code: the legacy `verb_family` grant was removed (`hooks/modules/security/approval_grants.py`) and its `COMMAND_SET` replacement has no production activation path yet. Do **not** emit a `batch_scope` field -- it is ignored. When one intent expands into many T3 commands, each blocked command produces its own single-use approval; emit one `APPROVAL_REQUEST` per blocked command (shape identical to example 4 above) and let the user approve each.
+**Just-in-time (unknown batch):** when T3 commands appear one at a time as the
+agent works, each blocked command produces its own `APPROVAL_REQUEST` with an
+`approval_id` (shape identical to example 4 above). Do not emit `batch_scope`
+-- it is ignored.
+
+**Plan-first (known batch):** when the agent knows >= 2 T3 commands up-front,
+emit ONE `APPROVAL_REQUEST` carrying a `command_set` list of `{command,
+rationale}` items and **no** `approval_id`. The SubagentStop intake
+(`handoff_persister._intake_command_set_pending`) mints a single `COMMAND_SET`
+approval; the orchestrator presents it as one consent covering all N commands.
+Each command then runs on its own retry, byte-for-byte matched and consumed
+individually.

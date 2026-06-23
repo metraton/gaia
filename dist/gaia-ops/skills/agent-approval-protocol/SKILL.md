@@ -21,10 +21,18 @@ the hash chain, grant activation, reading a granted approval from Python -- see
 
 ## approval_id format
 
+For a **singular** T3 approval (the hook-block path),
 `store._generate_approval_id()` returns `P-{uuid4().hex}` (e.g.
-`P-b1bdfbb0b9474bf5b3f86b1f6a213f7a`). The `P-` prefix is mandatory: without it
-the PostToolUse hook cannot do targeted grant activation. The first 8 hex chars
-after `P-` are the nonce prefix shown in option labels: `[P-b1bdfbb0]`.
+`P-b1bdfbb0b9474bf5b3f86b1f6a213f7a`) -- a random, unique id the subagent relays
+verbatim. For a **plan-first `COMMAND_SET`** the id is instead **content-derived**
+by `store.derive_command_set_id()`: `P-<first 32 hex of
+sha256(canonical(command strings))>`. The two share the `P-` prefix and 32-hex
+length but differ in origin -- the command_set id is deterministic so the
+orchestrator reproduces it from the command_set (via `gaia approvals derive-id`)
+with no DB search; the singular id is random because the subagent relays it
+directly. The `P-` prefix is mandatory in both cases: without it the PostToolUse
+hook cannot do targeted grant activation. The first 8 hex chars after `P-` are
+the nonce prefix shown in option labels: `[P-b1bdfbb0]`.
 
 ## APPROVAL_REQUEST contract shape
 

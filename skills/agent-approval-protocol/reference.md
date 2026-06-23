@@ -27,9 +27,11 @@ Each event links to the previous via `prev_hash` -> `this_hash`
 Because `approval_events` is append-only (UPDATE/DELETE blocked by the
 `bu_approval_events_immutable` and `bd_approval_events_immutable` triggers),
 `this_hash` is computed in the application layer before INSERT, inside
-`chain.insert_event()` -- not by a DB trigger. `REVERTED` events, when written,
-carry the original `event_id` in `metadata_json` per the revert design (D14);
-see `gaia/approvals/revert.py`.
+`chain.insert_event()` -- not by a DB trigger. `EXECUTED` / `FAILED` events,
+appended by the PostToolUse adapter through `store.record_event()` after an
+approved T3 command runs, extend the same chain. `REVERTED` remains a valid
+CHECK value but is **inert** -- the revert feature was removed, so no code
+writes it.
 
 ## Grant activation walk-through
 

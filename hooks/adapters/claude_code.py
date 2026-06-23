@@ -603,13 +603,18 @@ class ClaudeCodeAdapter(HookAdapter):
                 exit_code=2,
             )
 
-        # Save state for post-hook
+        # Save state for post-hook. When the command was allowed by consuming a
+        # T3 approval grant, carry that approval_id forward so PostToolUse can
+        # append an EXECUTED/FAILED event to the approval_events chain (the grant
+        # is consumed here at PreToolUse and flips to CONSUMED, so PostToolUse
+        # cannot re-discover it via check_approval_grant).
         effective_command = result.modified_input.get("command", command) if result.modified_input else command
         state = create_pre_hook_state(
             tool_name=tool_name,
             command=effective_command,
             tier=str(result.tier),
             allowed=True,
+            consumed_approval_id=result.consumed_approval_id,
         )
         save_hook_state(state)
 
@@ -1003,6 +1008,26 @@ class ClaudeCodeAdapter(HookAdapter):
                             "T3 grant confirmed (will be consumed at SubagentStop): %s", command[:80],
                         )
 
+            # Close the audit-log cycle for an APPROVED T3 command that just ran.
+            # PreToolUse stashed the consumed grant's approval_id in HookState
+            # when it matched (and consumed) the grant; append EXECUTED on a clean
+            # exit, FAILED otherwise. This continues the approval_events hash chain
+            # via the canonical store.record_event() helper -- the only authorized
+            # writer for the chain (it routes through chain.insert_event(), which
+            # links prev_hash -> this_hash before INSERT).
+            if tool_name == "Bash":
+                consumed_approval_id = (
+                    pre_state.metadata.get("consumed_approval_id") if pre_state else None
+                )
+                if consumed_approval_id:
+                    self._record_t3_outcome_event(
+                        consumed_approval_id,
+                        command=parameters.get("command", ""),
+                        success=success,
+                        exit_code=tool_result_data.exit_code,
+                        session_id=hook_data.get("session_id", ""),
+                    )
+
             events = detect_critical_event(tool_name, parameters, output, success)
             if events:
                 writer = SessionContextWriter()
@@ -1030,6 +1055,53 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.error("Error in adapt_post_tool_use: %s", e, exc_info=True)
 
         return HookResponse(output={}, exit_code=0)
+
+    def _record_t3_outcome_event(
+        self,
+        approval_id: str,
+        *,
+        command: str,
+        success: bool,
+        exit_code: int,
+        session_id: str = "",
+    ) -> None:
+        """Append an EXECUTED or FAILED event for an approved T3 command.
+
+        Closes the audit-log cycle: once a command runs under a consumed grant,
+        the approval_events chain records whether it succeeded (EXECUTED) or
+        failed (FAILED). Writes through gaia.approvals.store.record_event(), the
+        canonical chain writer -- never a raw INSERT -- so prev_hash -> this_hash
+        linkage is preserved and validate_chain() stays intact end to end.
+
+        Best-effort and non-fatal: the approval store lives in gaia.db and may be
+        unavailable in some hook contexts; any failure is logged and swallowed so
+        a chain-write hiccup never breaks tool execution.
+        """
+        event_type = "EXECUTED" if success else "FAILED"
+        try:
+            from gaia.approvals import store as _approval_store
+
+            payload = {
+                "command": command,
+                "exit_code": exit_code,
+                "outcome": "success" if success else "failure",
+            }
+            _approval_store.record_event(
+                approval_id,
+                event_type,
+                session_id=session_id or None,
+                payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                metadata_json=json.dumps({"source": "post_tool_use"}),
+            )
+            logger.info(
+                "Recorded %s event for approval_id=%s (exit=%d)",
+                event_type, approval_id[:16], exit_code,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to record %s event for approval_id=%s (non-fatal): %s",
+                event_type, approval_id[:16], exc,
+            )
 
     # ------------------------------------------------------------------ #
     # _handle_ask_user_question_result: grant activation from user answer
