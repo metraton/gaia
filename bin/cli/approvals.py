@@ -42,13 +42,11 @@ for _p in [str(_HOOKS_DIR), str(_PLUGIN_ROOT)]:
 def _import_approval_grants():
     """Import approval_grants lazily to allow mocking in tests."""
     from modules.security.approval_grants import (
-        cleanup_expired_grants,
         get_pending_approvals_for_session,
         load_pending_by_nonce_prefix,
         reject_pending,
     )
     return {
-        "cleanup_expired_grants": cleanup_expired_grants,
         "get_pending_approvals_for_session": get_pending_approvals_for_session,
         "load_pending_by_nonce_prefix": load_pending_by_nonce_prefix,
         "reject_pending": reject_pending,
@@ -74,18 +72,6 @@ def _import_grants_dir():
         return Path(plugin_data) / "cache" / "approvals"
     from modules.security.approval_grants import _get_grants_dir
     return _get_grants_dir()
-
-
-def _import_approval_grants_module():
-    """Return the approval_grants module object for direct attribute access.
-
-    Separate from _import_approval_grants() so cmd_clean can reset
-    _last_cleanup_time and call cleanup_expired_grants atomically on the
-    same module reference.  Kept as a separate injectable function so tests
-    can mock it without touching sys.modules.
-    """
-    import modules.security.approval_grants as ag_mod
-    return ag_mod
 
 
 def _import_writer():
@@ -152,42 +138,96 @@ def _pending_to_display(p: dict) -> dict:
 def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
     """Return all non-expired, non-rejected pending approvals across all sessions.
 
-    Thin wrapper around the shared ``scan_pending_approvals`` in
-    ``modules.session.pending_scanner`` so CLI and hook consumers share one
-    implementation of pending discovery + liveness filtering.
+    DB-primary since Task E: queries gaia.approvals.store (all_sessions=True).
+    All pending types (T3 commands, COMMAND_SET batches, SCOPE_FILE_PATH
+    file-write blocks) are now written exclusively to the DB.
 
     When ``exclude_live_sessions=True``, only pendings whose owning session
-    is NOT currently alive (orphans) are returned — this backs the
-    ``--orphans-only`` flag.
+    is NOT currently alive (orphans) are returned -- this backs the
+    ``--orphans-only`` flag.  Session liveness is checked via
+    session_registry.get_live_sessions() when available.
+
+    Returns a list of dicts in the shape _pending_to_display() expects.
 
     Raises:
-        Exception: propagated from ``_import_grants_dir()`` so ``cmd_list``
-            can catch it and return exit code 1 consistently.
+        Exception: propagated from the store import so cmd_list can catch it
+            and return exit code 1 consistently.
     """
-    # Let ImportError / other failures from _import_grants_dir propagate up.
-    grants_dir = _import_grants_dir()
+    store = _import_approval_store()
+    rows = store.list_pending(all_sessions=True)
 
-    from modules.session.pending_scanner import scan_pending_approvals
+    # Optional liveness filter.
+    if exclude_live_sessions:
+        try:
+            import sys as _sys
+            import pathlib as _pl
+            # Ensure hooks/ is importable (mirrors the top-of-file sys.path setup).
+            _hooks_dir = str(_PLUGIN_ROOT / "hooks")
+            if _hooks_dir not in _sys.path:
+                _sys.path.insert(0, _hooks_dir)
+            from modules.session.session_registry import get_live_sessions
+            live = get_live_sessions(include_headless=False)
+            rows = [r for r in rows if r.get("session_id") not in live]
+        except Exception:
+            pass  # Conservative: return all on registry failure
 
-    scanned = scan_pending_approvals(
-        grants_dir, exclude_live_sessions=exclude_live_sessions
-    )
-
-    # scan_pending_approvals returns a display-ish shape; we rehydrate each
-    # scanned result back into the on-disk pending dict keys that
-    # _pending_to_display expects. Single source of truth for the scan,
-    # but the CLI's display contract is preserved unchanged.
     results = []
-    for s in scanned:
+    for row in rows:
+        payload_json = row.get("payload_json") or "{}"
+        try:
+            payload = json.loads(payload_json)
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+
+        # Extract command: prefer exact_content, fall back to first command.
+        command = (
+            payload.get("exact_content")
+            or (payload.get("commands") or [None])[0]
+            or payload.get("operation")
+            or ""
+        )
+
+        # Extract verb and category from operation field.
+        operation = payload.get("operation", "")
+        danger_verb = "unknown"
+        danger_category = "MUTATIVE"
+        if ": " in operation:
+            danger_verb = operation.rsplit(": ", 1)[-1].strip()
+        if " command intercepted" in operation:
+            danger_category = operation.split(" command intercepted")[0].strip()
+
+        # Compute timestamp from created_at.
+        created_at_str = row.get("created_at", "")
+        ts: float = 0.0
+        if created_at_str:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                dt = _dt.strptime(created_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=_tz.utc
+                )
+                ts = dt.timestamp()
+            except (ValueError, TypeError):
+                ts = 0.0
+
+        approval_id = row.get("id", "")
+        # nonce: strip the "P-" prefix so _pending_to_display's
+        # _approval_id_label("P-" + nonce_prefix) works correctly.
+        nonce = approval_id[2:] if approval_id.startswith("P-") else approval_id
+
         results.append({
-            "nonce": s.get("nonce_full") or s.get("nonce_short", ""),
-            "session_id": s.get("pending_session_id", ""),
-            "command": s.get("command", ""),
-            "danger_verb": s.get("verb", ""),
-            "danger_category": s.get("category", ""),
-            "scope_type": s.get("scope_type", ""),
-            "timestamp": s.get("timestamp", 0),
-            "context": s.get("context", {}),
+            "nonce": nonce,
+            "session_id": row.get("session_id", ""),
+            "command": command,
+            "danger_verb": danger_verb,
+            "danger_category": danger_category,
+            "scope_type": payload.get("scope", "semantic_signature"),
+            "timestamp": ts,
+            "context": {
+                "description": payload.get("rationale", ""),
+                "risk": payload.get("risk_level", "medium"),
+                "rollback": payload.get("rollback_hint"),
+                "source": "db",
+            },
         })
 
     results.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
@@ -513,38 +553,45 @@ def cmd_reject(args) -> int:
     if nonce.upper().startswith("P-"):
         nonce = nonce[2:]
 
+    # DB-primary since Task E: find the pending DB row whose approval_id matches
+    # the prefix, then revoke it (pending -> revoked, append-only event chain).
+    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject"
     try:
-        ag = _import_approval_grants()
-        ok = ag["reject_pending"](nonce)
+        store = _import_approval_store()
+        rows = store.list_pending(all_sessions=True)
+        matched_id = None
+        for row in rows:
+            row_id = row.get("id", "")
+            if row_id.startswith(f"P-{nonce}"):
+                matched_id = row_id
+                break
+        if matched_id is None:
+            _print_error(f"No pending approval found for P-{nonce}", args)
+            return 1
+        store.revoke(matched_id, session_id)
     except Exception as exc:
         _print_error(f"Failed to reject approval: {exc}", args)
         return 1
 
-    if ok:
-        msg = f"Rejected P-{nonce}"
-        if reason:
-            msg += f" (reason: {reason})"
-        if getattr(args, "json", False):
-            print(json.dumps({"status": "rejected", "nonce_prefix": nonce, "reason": reason}))
-        else:
-            print(msg)
-        return 0
+    msg = f"Rejected P-{nonce}"
+    if reason:
+        msg += f" (reason: {reason})"
+    if getattr(args, "json", False):
+        print(json.dumps({"status": "rejected", "nonce_prefix": nonce, "reason": reason}))
     else:
-        _print_error(f"No pending approval found for P-{nonce}", args)
-        return 1
+        print(msg)
+    return 0
 
 
 def _cmd_reject_all(args, reason: str | None) -> int:
     """Reject all pending approvals across all sessions.
 
-    Scans the same queue that ``gaia approvals list`` shows, then calls
-    ``reject_pending`` for each non-expired, non-rejected pending approval.
-    Exits 0 always -- an empty queue is not an error.
+    DB-primary since Task E: queries gaia.approvals.store for all pending
+    rows and revokes each via store.revoke(). Exits 0 always -- an empty
+    queue is not an error.
     """
     try:
-        # Bulk reject operates on the full queue regardless of liveness;
-        # we intentionally pass exclude_live_sessions=False so the operator
-        # can clear orphaned and live-session pendings in one call.
+        # Bulk reject operates on the full queue regardless of liveness.
         raw = _scan_pending_shared(exclude_live_sessions=False)
     except Exception as exc:
         _print_error(f"Failed to load approvals: {exc}", args)
@@ -557,11 +604,11 @@ def _cmd_reject_all(args, reason: str | None) -> int:
             print("No pending approvals to reject.")
         return 0
 
+    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject-all"
     try:
-        ag = _import_approval_grants()
-        reject_fn = ag["reject_pending"]
+        store = _import_approval_store()
     except Exception as exc:
-        _print_error(f"Failed to load approval module: {exc}", args)
+        _print_error(f"Failed to load approval store: {exc}", args)
         return 1
 
     rejected_ids = []
@@ -569,12 +616,10 @@ def _cmd_reject_all(args, reason: str | None) -> int:
     for pending in raw:
         nonce = pending.get("nonce", "")
         nonce_prefix = _nonce_short(nonce)
+        approval_id = f"P-{nonce}"
         try:
-            ok = reject_fn(nonce_prefix)
-            if ok:
-                rejected_ids.append(f"P-{nonce_prefix}")
-            else:
-                failed_ids.append(f"P-{nonce_prefix}")
+            store.revoke(approval_id, session_id)
+            rejected_ids.append(f"P-{nonce_prefix}")
         except Exception:
             failed_ids.append(f"P-{nonce_prefix}")
 
@@ -632,23 +677,24 @@ def cmd_reject_all(args) -> int:
     dry_run: bool = getattr(args, "dry_run", False)
     workspace: str | None = getattr(args, "workspace", None)
 
-    # Resolve grants directory, honoring --workspace if provided.
-    try:
-        grants_dir = _grants_dir_for_workspace(workspace)
-    except Exception as exc:
-        _print_error(f"Cannot resolve approvals directory: {exc}", args)
-        return 1
+    # Scan pending approvals from the DB (all_sessions, no workspace filter
+    # needed -- the DB is per-machine, not per-workspace).
+    # When --workspace was supplied, emit an informational note that it is
+    # ignored (the DB is the authoritative store since Task E).
+    if workspace is not None:
+        import sys as _sys
+        print(
+            f"Note: --workspace is ignored; pending approvals are stored in "
+            f"~/.gaia/gaia.db (per-machine DB), not in the workspace FS.",
+            file=_sys.stderr,
+        )
 
-    # Scan pending approvals using the resolved directory.
     try:
-        from modules.session.pending_scanner import scan_pending_approvals
-        scanned = scan_pending_approvals(grants_dir, exclude_live_sessions=False)
-        raw: list = []
-        for s in scanned:
-            raw.append({
-                "nonce": s.get("nonce_full") or s.get("nonce_short", ""),
-                "command": s.get("command", ""),
-            })
+        raw_pending = _scan_pending_shared(exclude_live_sessions=False)
+        raw: list = [
+            {"nonce": p.get("nonce", ""), "command": p.get("command", "")}
+            for p in raw_pending
+        ]
     except Exception as exc:
         _print_error(f"Failed to load approvals: {exc}", args)
         return 1
@@ -666,12 +712,12 @@ def cmd_reject_all(args) -> int:
         print(f"\n{len(raw)} pending(s) would be rejected.")
         return 0
 
-    # Live rejection via the canonical reject_pending() path.
+    # Live rejection via store.revoke() (DB path -- all pendings are in DB now).
+    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject-all"
     try:
-        ag = _import_approval_grants()
-        reject_fn = ag["reject_pending"]
+        store = _import_approval_store()
     except Exception as exc:
-        _print_error(f"Failed to load approval module: {exc}", args)
+        _print_error(f"Failed to load approval store: {exc}", args)
         return 1
 
     rejected_ids = []
@@ -679,12 +725,10 @@ def cmd_reject_all(args) -> int:
     for item in raw:
         nonce = item["nonce"]
         nonce_prefix = _nonce_short(nonce)
+        approval_id = f"P-{nonce}"
         try:
-            ok = reject_fn(nonce_prefix)
-            if ok:
-                rejected_ids.append(f"P-{nonce_prefix}")
-            else:
-                failed_ids.append(f"P-{nonce_prefix}")
+            store.revoke(approval_id, session_id)
+            rejected_ids.append(f"P-{nonce_prefix}")
         except Exception:
             failed_ids.append(f"P-{nonce_prefix}")
 
@@ -702,79 +746,128 @@ def cmd_reject_all(args) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_clean(args) -> int:
-    """Remove expired and stale approvals."""
+    """Remove expired approvals and grants from the DB.
+
+    DB-only since FS retirement: all pending approvals and grants live in
+    gaia.db.  Expired DB pending rows (status='pending', older than 24h TTL)
+    are transitioned to 'revoked' so the append-only event chain is preserved.
+    Expired approval_grants rows (status='PENDING', past expires_at) are
+    transitioned to 'EXPIRED'.
+    """
     dry_run = getattr(args, "dry_run", False)
 
     if dry_run:
-        # Inspect without deleting -- count files that would be removed
+        # Count DB rows that would be cleaned (pending rows older than 24h).
+        db_expired = 0
         try:
-            grants_dir = _import_grants_dir()
-        except Exception as exc:
-            _print_error(f"Cannot access approvals directory: {exc}", args)
-            return 1
+            store = _import_approval_store()
+            rows = store.list_pending(all_sessions=True)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                created_at_str = row.get("created_at", "")
+                if created_at_str:
+                    try:
+                        created_dt = datetime.strptime(
+                            created_at_str, "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=timezone.utc)
+                        age_hours = (now - created_dt).total_seconds() / 3600
+                        if age_hours > 24:
+                            db_expired += 1
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
 
-        if not grants_dir.exists():
-            msg = "Approvals directory does not exist. Nothing to clean."
-            if getattr(args, "json", False):
-                print(json.dumps({"dry_run": True, "would_remove": 0, "message": msg}))
-            else:
-                print(msg)
-            return 0
+        # Count expired DB grant rows.
+        db_expired_grants = _count_expired_db_grants()
 
-        would_remove = _count_stale_files(grants_dir)
+        would_remove = db_expired + db_expired_grants
+        msg = f"Dry run: {db_expired} expired DB pending(s) + {db_expired_grants} expired DB grant(s)"
         if getattr(args, "json", False):
-            print(json.dumps({"dry_run": True, "would_remove": would_remove}))
+            print(json.dumps({
+                "dry_run": True,
+                "would_remove": would_remove,
+                "db_expired": db_expired,
+                "db_expired_grants": db_expired_grants,
+                "message": msg,
+            }))
         else:
-            print(f"Dry run: {would_remove} expired/stale file(s) would be removed.")
+            print(msg)
         return 0
 
-    # Real cleanup -- reset throttle to force run
+    # Real cleanup.
+    db_cleaned = 0
     try:
-        ag_mod = _import_approval_grants_module()
-        ag_mod._last_cleanup_time = 0.0
-        cleaned = ag_mod.cleanup_expired_grants()
+        store = _import_approval_store()
+        rows = store.list_pending(all_sessions=True)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-cleanup"
+        for row in rows:
+            created_at_str = row.get("created_at", "")
+            if not created_at_str:
+                continue
+            try:
+                created_dt = datetime.strptime(
+                    created_at_str, "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc)
+                age_hours = (now - created_dt).total_seconds() / 3600
+                if age_hours > 24:
+                    try:
+                        store.revoke(row["id"], session_id)
+                        db_cleaned += 1
+                    except Exception:
+                        pass
+            except (ValueError, TypeError):
+                pass
     except Exception as exc:
-        _print_error(f"Cleanup failed: {exc}", args)
-        return 1
+        _print_error(f"DB cleanup failed: {exc}", args)
 
+    # Expire DB grant rows whose expires_at has passed.
+    db_grants_expired = 0
+    try:
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        writer = _import_writer()
+        pending_grants = writer.list_approval_grants(status="PENDING", limit=1000)
+        for row in pending_grants:
+            expires_at = row.get("expires_at")
+            if expires_at and expires_at < now_iso:
+                try:
+                    writer.update_approval_grant_status(row["approval_id"], "EXPIRED")
+                    db_grants_expired += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    total = db_cleaned + db_grants_expired
     if getattr(args, "json", False):
-        print(json.dumps({"status": "ok", "cleaned": cleaned}))
+        print(json.dumps({
+            "status": "ok",
+            "cleaned": total,
+            "db_cleaned": db_cleaned,
+            "db_grants_expired": db_grants_expired,
+        }))
     else:
-        print(f"Cleaned {cleaned} expired/stale approval file(s).")
+        print(f"Cleaned {db_cleaned} expired DB pending(s) and {db_grants_expired} expired DB grant(s).")
     return 0
 
 
-def _count_stale_files(grants_dir: Path) -> int:
-    """Count expired grant and pending files without deleting them."""
-    count = 0
-    now = time.time()
-
-    for f in grants_dir.glob("grant-*.json"):
-        try:
-            data = json.loads(f.read_text())
-            granted_at = float(data.get("granted_at", 0))
-            ttl = int(data.get("ttl_minutes", 5))
-            if ttl > 0 and (now - granted_at) / 60 > ttl:
-                count += 1
-        except Exception:
-            count += 1
-
-    for f in grants_dir.glob("pending-*.json"):
-        if "index" in f.name:
-            continue
-        try:
-            data = json.loads(f.read_text())
-            if data.get("status") == "rejected":
-                count += 1
-                continue
-            ts = float(data.get("timestamp", 0))
-            ttl = int(data.get("ttl_minutes", 5))
-            if ttl > 0 and (now - ts) / 60 > ttl:
-                count += 1
-        except Exception:
-            count += 1
-
-    return count
+def _count_expired_db_grants() -> int:
+    """Count DB approval_grants rows with PENDING status whose expires_at has passed."""
+    try:
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        writer = _import_writer()
+        rows = writer.list_approval_grants(status="PENDING", limit=1000)
+        return sum(
+            1 for r in rows
+            if r.get("expires_at") and r["expires_at"] < now_iso
+        )
+    except Exception:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -782,64 +875,61 @@ def _count_stale_files(grants_dir: Path) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_stats(args) -> int:
-    """Show approval system statistics."""
+    """Show approval system statistics from the DB.
+
+    DB-only since FS retirement: all pending approvals and grants live in
+    gaia.db.  Counts are derived from the approvals table (all statuses) and
+    the approval_grants table (active grants).
+    """
+    # DB counts.
+    db_pending = 0
+    db_approved = 0
+    db_rejected = 0
+    db_revoked = 0
+    verb_counts: dict = {}
     try:
-        ag = _import_approval_grants()
-        grants_dir = _import_grants_dir()
+        store = _import_approval_store()
+        all_rows = store.list_all(limit=1000)
+        for row in all_rows:
+            status = row.get("status", "")
+            if status == "pending":
+                db_pending += 1
+                # Extract verb from payload for breakdown.
+                payload_json = row.get("payload_json") or "{}"
+                try:
+                    payload = json.loads(payload_json)
+                    operation = payload.get("operation", "")
+                    verb = "unknown"
+                    if ": " in operation:
+                        verb = operation.rsplit(": ", 1)[-1].strip()
+                    verb_counts[verb] = verb_counts.get(verb, 0) + 1
+                except Exception:
+                    pass
+            elif status == "approved":
+                db_approved += 1
+            elif status == "rejected":
+                db_rejected += 1
+            elif status == "revoked":
+                db_revoked += 1
     except Exception as exc:
-        _print_error(f"Failed to access approval system: {exc}", args)
+        _print_error(f"Failed to query DB statistics: {exc}", args)
         return 1
 
-    # Gather data
-    all_sessions_pending = []
-    active_grants = []
-    rejected_count = 0
-    expired_pending_count = 0
-    now = time.time()
-
-    if grants_dir.exists():
-        for f in grants_dir.glob("pending-*.json"):
-            if "index" in f.name:
-                continue
-            try:
-                data = json.loads(f.read_text())
-                if data.get("status") == "rejected":
-                    rejected_count += 1
-                    continue
-                ts = float(data.get("timestamp", 0))
-                ttl = int(data.get("ttl_minutes", 5))
-                if ttl > 0 and (now - ts) / 60 > ttl:
-                    expired_pending_count += 1
-                    continue
-                all_sessions_pending.append(data)
-            except Exception:
-                pass
-
-        for f in grants_dir.glob("grant-*.json"):
-            try:
-                data = json.loads(f.read_text())
-                granted_at = float(data.get("granted_at", 0))
-                ttl = int(data.get("ttl_minutes", 5))
-                if ttl == 0 or (now - granted_at) / 60 <= ttl:
-                    active_grants.append(data)
-            except Exception:
-                pass
-
-    # Current session pending
-    session_pending = ag["get_pending_approvals_for_session"]()
-
-    # Verb breakdown
-    verb_counts: dict = {}
-    for p in all_sessions_pending:
-        verb = p.get("danger_verb", "unknown")
-        verb_counts[verb] = verb_counts.get(verb, 0) + 1
+    # Active DB grants.
+    db_active_grants = 0
+    try:
+        writer = _import_writer()
+        db_grants = writer.list_approval_grants(limit=500)
+        db_active_grants = len(db_grants)
+    except Exception:
+        pass
 
     stats = {
-        "pending_current_session": len(session_pending),
-        "pending_all_sessions": len(all_sessions_pending),
-        "active_grants": len(active_grants),
-        "rejected": rejected_count,
-        "expired_pending": expired_pending_count,
+        "pending_all_sessions": db_pending,
+        "approved": db_approved,
+        "rejected": db_rejected,
+        "revoked": db_revoked,
+        "active_db_grants": db_active_grants,
         "verb_breakdown": verb_counts,
     }
 
@@ -849,13 +939,13 @@ def cmd_stats(args) -> int:
 
     print("Approval System Stats")
     print("---------------------")
-    print(f"  Pending (this session) : {stats['pending_current_session']}")
     print(f"  Pending (all sessions) : {stats['pending_all_sessions']}")
-    print(f"  Active grants          : {stats['active_grants']}")
-    print(f"  Rejected (pending)     : {stats['rejected']}")
-    print(f"  Expired (pending)      : {stats['expired_pending']}")
+    print(f"  Approved               : {stats['approved']}")
+    print(f"  Rejected               : {stats['rejected']}")
+    print(f"  Revoked                : {stats['revoked']}")
+    print(f"  Active DB grants       : {stats['active_db_grants']}")
     if verb_counts:
-        print("  Verb breakdown:")
+        print("  Verb breakdown (pending):")
         for verb, cnt in sorted(verb_counts.items(), key=lambda x: -x[1]):
             print(f"    {verb:<16} {cnt}")
     return 0
@@ -896,9 +986,17 @@ def _import_approval_display():
 def cmd_pending(args) -> int:
     """Show pending approvals from the new approvals table.
 
-    With ``--all-sessions``, returns pending approvals from all sessions
-    (cross-session recovery, D9). Without it, returns pending for the
-    current session when SESSION_ID env var is set, or all sessions.
+    With no arguments, returns all pending approvals from all sessions on this
+    machine (the DB is per-machine, so all-sessions is the correct default
+    scope).  This avoids the Bug B / P-a11d14e0 silent-drop: inside a
+    subagent ``$CLAUDE_SESSION_ID`` is the subagent's own session id, not the
+    orchestrator session id stored on the approval row, so an exact-match
+    filter would silently return nothing.
+
+    With ``--session SESSION_ID``, filters to that explicit session id only
+    (useful when the caller holds a known-good orchestrator session id).
+    With ``--all-sessions``, same as the default (kept for backwards
+    compatibility with callers that pass the flag explicitly).
 
     Exits 0 on success, 1 on error.
     """
@@ -906,10 +1004,12 @@ def cmd_pending(args) -> int:
     session_id = getattr(args, "session", None)
     output_json = getattr(args, "json", False)
 
-    # If no session_id provided, default to all_sessions behavior.
-    if session_id is None and not all_sessions:
-        # Try to detect session from environment (mirrors hook behavior).
-        session_id = os.environ.get("CLAUDE_SESSION_ID") or None
+    # No auto-derivation from $CLAUDE_SESSION_ID.  Inside a subagent that env
+    # var holds the subagent's own session id, which does NOT match the
+    # orchestrator session_id stored on approval rows -- exact-match filtering
+    # would silently drop all pending rows.  When no explicit --session is
+    # supplied, pass session_id=None so get_pending() uses the all-sessions
+    # query (``WHERE status='pending'`` with no session filter).
 
     try:
         store = _import_approval_store()
@@ -1463,17 +1563,32 @@ def register(subparsers) -> None:
         help="List pending approvals from the new approvals table",
         description=(
             "Show pending T3 approvals from the DB-backed approvals table.\n\n"
-            "Use --all-sessions to see pending approvals from all sessions\n"
-            "(cross-session recovery -- local machine only)."
+            "Default (no flags): returns ALL pending approvals on this machine\n"
+            "across every session.  The DB is per-machine so all-sessions is the\n"
+            "correct default scope.  This avoids a silent-drop that occurred when\n"
+            "the command ran inside a subagent (whose $CLAUDE_SESSION_ID differs\n"
+            "from the orchestrator session_id stored on the approval row).\n\n"
+            "Use --session SESSION_ID to filter to one specific session when you\n"
+            "hold a known-good orchestrator session id.\n\n"
+            "--all-sessions is accepted for backwards compatibility but is\n"
+            "equivalent to the default behaviour."
         ),
     )
     p_pending.add_argument("--json", action="store_true", help="JSON output")
-    p_pending.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
+    p_pending.add_argument(
+        "--session",
+        metavar="SESSION_ID",
+        help=(
+            "Filter to this exact session id.  Pass an orchestrator session id;\n"
+            "do NOT rely on $CLAUDE_SESSION_ID inside a subagent -- it holds the\n"
+            "subagent's own id, not the orchestrator's."
+        ),
+    )
     p_pending.add_argument(
         "--all-sessions",
         action="store_true",
         dest="all_sessions",
-        help="Show pending from all sessions (cross-session recovery)",
+        help="Show pending from all sessions (default; kept for backwards compatibility)",
     )
     p_pending.set_defaults(func=cmd_pending)
 

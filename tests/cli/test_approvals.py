@@ -79,79 +79,143 @@ def _make_args(**kwargs):
 
 
 # ---------------------------------------------------------------------------
+# DB-backed test fixture (Task E: all pending approvals live in gaia.db)
+# ---------------------------------------------------------------------------
+
+def _sha256(value):
+    import hashlib
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _make_v12_schema(con):
+    """Apply the approvals + approval_events schema to a file-backed DB."""
+    con.execute("PRAGMA foreign_keys = ON")
+    con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS approvals (
+            id           TEXT PRIMARY KEY,
+            agent_id     TEXT,
+            session_id   TEXT,
+            status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
+            fingerprint  TEXT,
+            payload_json TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            decided_at   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS approval_events (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_id   TEXT NOT NULL,
+            event_type    TEXT NOT NULL CHECK (event_type IN (
+                              'REQUESTED','SHOWN','APPROVED','REJECTED',
+                              'EXECUTED','FAILED','NOOP','REVOKED','REVERTED'
+                          )),
+            agent_id      TEXT,
+            session_id    TEXT,
+            payload_json  TEXT,
+            fingerprint   TEXT,
+            prev_hash     TEXT,
+            this_hash     TEXT,
+            metadata_json TEXT,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY (approval_id) REFERENCES approvals(id)
+        );
+        CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
+        BEFORE UPDATE ON approval_events
+        BEGIN SELECT RAISE(ABORT, 'approval_events is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
+        BEFORE DELETE ON approval_events
+        BEGIN SELECT RAISE(ABORT, 'approval_events is append-only'); END;
+    """)
+
+
+def _sealed_payload(command, verb="push", category="GIT_PUSH", scope=None):
+    """Build a sealed_payload dict that scan_pending_db / _scan_pending_shared parse."""
+    return {
+        "operation": f"{category} command intercepted: {verb}",
+        "exact_content": command,
+        "scope": scope or (command.split()[0] if command.strip() else "unknown"),
+        "risk_level": "medium",
+        "rollback_hint": "git revert HEAD",
+        "rationale": f"{verb} requires approval",
+        "commands": [command],
+    }
+
+
+@pytest.fixture()
+def db_store(tmp_path, monkeypatch):
+    """File-backed DB with gaia.approvals.store patched to use it.
+
+    Yields (store_module, insert_pending) where insert_pending(command, ...,
+    approval_id=...) inserts a pending row and returns its approval_id. This is
+    how Task E tests seed pending approvals -- the DB is the sole store.
+    """
+    import sqlite3
+    db_path = tmp_path / "cli_approvals.db"
+    con = sqlite3.connect(str(db_path))
+    _make_v12_schema(con)
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(
+        "gaia.approvals.store._open_db",
+        lambda: sqlite3.connect(str(db_path)),
+    )
+
+    import gaia.approvals.store as store
+
+    def insert_pending(command, *, verb="push", category="GIT_PUSH",
+                       session_id="test-session-aaa", scope=None, approval_id=None):
+        payload = _sealed_payload(command, verb=verb, category=category, scope=scope)
+        return store.insert_requested(
+            payload,
+            agent_id="test-agent",
+            session_id=session_id,
+            approval_id=approval_id,
+        )
+
+    # Also stub the DB-backed grant writer so cmd_list's grant listing returns [].
+    stub_writer = MagicMock()
+    stub_writer.list_approval_grants = MagicMock(return_value=[])
+    monkeypatch.setattr(approvals_mod, "_import_writer", lambda: stub_writer)
+
+    yield store, insert_pending
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_list
 # ---------------------------------------------------------------------------
 
 class TestCmdList:
-    """Tests for cmd_list.
+    """Tests for cmd_list (DB-backed since Task E).
 
-    When --session is not provided, cmd_list uses _scan_pending_shared()
-    which delegates to scan_pending_approvals() in
-    modules.session.pending_scanner, reading directly from the grants
-    directory via _import_grants_dir().  Tests for the no-session path
-    therefore patch _import_grants_dir to return a tmp directory populated
-    with fake pending-*.json files so they don't touch the real filesystem.
-
-    When --session is provided, cmd_list delegates to
-    get_pending_approvals_for_session() via _import_approval_grants(); those
-    tests patch _import_approval_grants as before.
-
-    When --orphans-only is set, _scan_pending_shared passes
-    exclude_live_sessions=True to the scanner, which filters out pendings
-    whose session_id is currently registered as alive in session_registry.
-    Tests for that path additionally patch get_live_sessions().
-
-    All tests in this class also patch _import_writer so cmd_list never
-    touches the real gaia.db DB-backed grant listing; the DB path returns
-    an empty grant list and only the filesystem path under test is exercised.
+    All pending approvals are stored in gaia.db.  cmd_list reads the
+    pending portion via _scan_pending_shared() (which now queries
+    gaia.approvals.store) and the grant portion via _import_writer
+    (stubbed to []).  --orphans-only filters out pendings whose
+    owning session is currently alive in session_registry.
     """
 
-    @pytest.fixture(autouse=True)
-    def _no_db_writer(self):
-        """Stub the DB-backed writer so cmd_list's grant listing returns [].
-
-        Without this, cmd_list calls writer.list_approval_grants() against the
-        real gaia.db, which can return SCOPE_SEMANTIC_SIGNATURE grants whose
-        command_set is a dict -- unrelated to the filesystem path under test.
-        """
-        stub_writer = MagicMock()
-        stub_writer.list_approval_grants = MagicMock(return_value=[])
-        with patch.object(approvals_mod, "_import_writer", return_value=stub_writer):
-            yield
-
-    def test_list_empty_returns_0(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_list(_make_args())
+    def test_list_empty_returns_0(self, capsys, db_store):
+        rc = approvals_mod.cmd_list(_make_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "No active grants or pending approvals." in captured.out
 
-    def test_list_with_items_shows_table(self, capsys, tmp_path):
-        pending = _make_pending()
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        # Write the pending file to the fake grants dir
-        pending_path = grants_dir / f"pending-{pending['nonce']}.json"
-        pending_path.write_text(json.dumps(pending))
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_list(_make_args())
+    def test_list_with_items_shows_table(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
+        rc = approvals_mod.cmd_list(_make_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "P-abcd1234" in captured.out
         assert "push" in captured.out
-        # Command is truncated in table to 40 chars; check the prefix
         assert "git push origin m" in captured.out
 
-    def test_list_json_output(self, capsys, tmp_path):
-        pending = _make_pending()
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        pending_path = grants_dir / f"pending-{pending['nonce']}.json"
-        pending_path.write_text(json.dumps(pending))
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_list(_make_args(json=True))
+    def test_list_json_output(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
+        rc = approvals_mod.cmd_list(_make_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -159,62 +223,42 @@ class TestCmdList:
         assert len(data["pending_fs"]) == 1
         assert data["pending_fs"][0]["approval_id"] == "P-abcd1234"
 
-    def test_list_json_empty(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_list(_make_args(json=True))
+    def test_list_json_empty(self, capsys, db_store):
+        rc = approvals_mod.cmd_list(_make_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 0
         assert data["pending_fs"] == []
 
-    def test_list_import_error_returns_1(self, capsys):
-        # M3 DB-backed cmd_list silently swallows both DB and filesystem errors;
-        # when both fail, it falls through to the empty-state message and exits 0.
-        with patch.object(approvals_mod, "_import_grants_dir", side_effect=ImportError("no module")):
-            rc = approvals_mod.cmd_list(_make_args())
-        assert rc == 0
-
-    def test_list_passes_session_filter(self):
+    def test_list_passes_session_filter(self, db_store):
+        # With --session, cmd_list delegates to get_pending_approvals_for_session
+        # (legacy filesystem-session path, retained for explicit session queries).
         with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
             mock_fn = MagicMock(return_value=[])
             mock_ag.return_value = {
                 "get_pending_approvals_for_session": mock_fn,
                 "load_pending_by_nonce_prefix": MagicMock(),
                 "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
             }
             approvals_mod.cmd_list(_make_args(session="sess-xyz"))
         mock_fn.assert_called_once_with("sess-xyz")
 
     # ----- --orphans-only --------------------------------------------------
 
-    def test_list_orphans_only_filters_live_sessions(self, capsys, tmp_path):
+    def test_list_orphans_only_filters_live_sessions(self, capsys, db_store):
         """With --orphans-only, pendings from live sessions are hidden."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+        _store, insert_pending = db_store
+        insert_pending("live cmd", session_id="session-alive",
+                       approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        insert_pending("orphan cmd", session_id="session-dead",
+                       approval_id="P-cccc3333dddd4444cccc3333dddd4444")
 
-        alive = _make_pending(
-            nonce="aaaa1111bbbb2222aaaa1111bbbb2222",
-            session_id="session-alive",
-            command="live cmd",
-        )
-        dead = _make_pending(
-            nonce="cccc3333dddd4444cccc3333dddd4444",
-            session_id="session-dead",
-            command="orphan cmd",
-        )
-        (grants_dir / f"pending-{alive['nonce']}.json").write_text(json.dumps(alive))
-        (grants_dir / f"pending-{dead['nonce']}.json").write_text(json.dumps(dead))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch(
-                "modules.session.session_registry.get_live_sessions",
-                return_value={"session-alive"},
-            ):
-                rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
+        with patch(
+            "modules.session.session_registry.get_live_sessions",
+            return_value={"session-alive"},
+        ):
+            rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
 
         assert rc == 0
         captured = capsys.readouterr()
@@ -224,58 +268,42 @@ class TestCmdList:
         )
         assert data["pending_fs"][0]["approval_id"] == "P-cccc3333"
 
-    def test_list_orphans_only_empty_when_all_alive(self, capsys, tmp_path):
+    def test_list_orphans_only_empty_when_all_alive(self, capsys, db_store):
         """If every pending's session is alive, --orphans-only returns none."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+        _store, insert_pending = db_store
+        insert_pending("live cmd", session_id="session-alive",
+                       approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
 
-        alive = _make_pending(
-            nonce="aaaa1111bbbb2222aaaa1111bbbb2222",
-            session_id="session-alive",
-        )
-        (grants_dir / f"pending-{alive['nonce']}.json").write_text(json.dumps(alive))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch(
-                "modules.session.session_registry.get_live_sessions",
-                return_value={"session-alive"},
-            ):
-                rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
+        with patch(
+            "modules.session.session_registry.get_live_sessions",
+            return_value={"session-alive"},
+        ):
+            rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
 
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 0
 
-    def test_list_without_orphans_only_shows_all(self, capsys, tmp_path):
-        """Default behavior (no flag) keeps pre-T13 semantics."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_list_without_orphans_only_shows_all(self, capsys, db_store):
+        """Default behavior (no flag): both live and dead session pendings listed."""
+        _store, insert_pending = db_store
+        insert_pending("cmd alive", session_id="session-alive",
+                       approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        insert_pending("cmd dead", session_id="session-dead",
+                       approval_id="P-cccc3333dddd4444cccc3333dddd4444")
 
-        alive = _make_pending(
-            nonce="aaaa1111bbbb2222aaaa1111bbbb2222",
-            session_id="session-alive",
-        )
-        dead = _make_pending(
-            nonce="cccc3333dddd4444cccc3333dddd4444",
-            session_id="session-dead",
-        )
-        (grants_dir / f"pending-{alive['nonce']}.json").write_text(json.dumps(alive))
-        (grants_dir / f"pending-{dead['nonce']}.json").write_text(json.dumps(dead))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch(
-                "modules.session.session_registry.get_live_sessions",
-                return_value={"session-alive"},
-            ):
-                rc = approvals_mod.cmd_list(_make_args(json=True))
+        with patch(
+            "modules.session.session_registry.get_live_sessions",
+            return_value={"session-alive"},
+        ):
+            rc = approvals_mod.cmd_list(_make_args(json=True))
 
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 2, (
-            "Without --orphans-only, behavior must be unchanged: both "
-            "live and dead session pendings are listed."
+            "Without --orphans-only, both live and dead session pendings are listed."
         )
 
 
@@ -291,7 +319,6 @@ class TestCmdShow:
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": MagicMock(return_value=pending),
                 "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
             }
             args = _make_args()
             args.approval_id = "abcd1234"
@@ -307,7 +334,6 @@ class TestCmdShow:
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": MagicMock(return_value=None),
                 "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
             }
             args = _make_args()
             args.approval_id = "deadbeef"
@@ -321,7 +347,6 @@ class TestCmdShow:
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": MagicMock(return_value=pending),
                 "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
             }
             args = _make_args(json=True)
             args.approval_id = "abcd1234"
@@ -341,7 +366,6 @@ class TestCmdShow:
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": mock_fn,
                 "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
             }
             args = _make_args()
             args.approval_id = "P-abcd1234"
@@ -356,60 +380,43 @@ class TestCmdShow:
 # ---------------------------------------------------------------------------
 
 class TestCmdReject:
-    def test_reject_success(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(return_value=True),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            args = _make_args()
-            args.nonce = "abcd1234"
-            rc = approvals_mod.cmd_reject(args)
+    """cmd_reject single-reject path (DB-backed since Task E).
+
+    Single reject finds the pending DB row by nonce prefix and revokes it
+    via store.revoke() (pending -> revoked, append-only chain).
+    """
+
+    def test_reject_success(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
+        args = _make_args()
+        args.nonce = "abcd1234"
+        rc = approvals_mod.cmd_reject(args)
         assert rc == 0
         captured = capsys.readouterr()
         assert "Rejected P-abcd1234" in captured.out
 
-    def test_reject_not_found_returns_1(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(return_value=False),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            args = _make_args()
-            args.nonce = "deadbeef"
-            rc = approvals_mod.cmd_reject(args)
+    def test_reject_not_found_returns_1(self, capsys, db_store):
+        args = _make_args()
+        args.nonce = "deadbeef"
+        rc = approvals_mod.cmd_reject(args)
         assert rc == 1
 
-    def test_reject_strips_P_prefix(self):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_fn = MagicMock(return_value=True)
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": mock_fn,
-                "cleanup_expired_grants": MagicMock(),
-            }
-            args = _make_args()
-            args.nonce = "P-abcd1234"
-            approvals_mod.cmd_reject(args)
-        call_arg = mock_fn.call_args[0][0]
-        assert not call_arg.upper().startswith("P-")
+    def test_reject_strips_P_prefix(self, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
+        args = _make_args()
+        args.nonce = "P-abcd1234"
+        rc = approvals_mod.cmd_reject(args)
+        # P- prefix must be stripped before matching; the row is found and revoked.
+        assert rc == 0
 
-    def test_reject_json_output(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(return_value=True),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            args = _make_args(json=True, reason="not needed")
-            args.nonce = "abcd1234"
-            rc = approvals_mod.cmd_reject(args)
+    def test_reject_json_output(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
+        args = _make_args(json=True, reason="not needed")
+        args.nonce = "abcd1234"
+        rc = approvals_mod.cmd_reject(args)
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -417,17 +424,12 @@ class TestCmdReject:
         assert data["nonce_prefix"] == "abcd1234"
         assert data["reason"] == "not needed"
 
-    def test_reject_with_reason(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(return_value=True),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            args = _make_args(reason="risky operation")
-            args.nonce = "abcd1234"
-            rc = approvals_mod.cmd_reject(args)
+    def test_reject_with_reason(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
+        args = _make_args(reason="risky operation")
+        args.nonce = "abcd1234"
+        rc = approvals_mod.cmd_reject(args)
         assert rc == 0
         captured = capsys.readouterr()
         assert "risky operation" in captured.out
@@ -452,69 +454,37 @@ class TestCmdRejectAll:
         base.nonce = None
         return base
 
-    def test_reject_all_empty_queue(self, capsys, tmp_path):
+    def test_reject_all_empty_queue(self, capsys, db_store):
         """When queue is empty, exit 0 with informational message."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_reject(self._make_reject_all_args())
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "No pending approvals to reject" in captured.out
 
-    def test_reject_all_empty_queue_json(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
+    def test_reject_all_empty_queue_json(self, capsys, db_store):
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["rejected"] == 0
         assert data["ids"] == []
 
-    def test_reject_all_rejects_all_pending(self, capsys, tmp_path):
+    def test_reject_all_rejects_all_pending(self, capsys, db_store):
         """With two pending approvals, both should be rejected."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222", command="git push origin main")
-        p2 = _make_pending(nonce="cccc3333dddd4444cccc3333dddd4444", command="kubectl delete pod x")
-        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
-        (grants_dir / f"pending-{p2['nonce']}.json").write_text(json.dumps(p2))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(return_value=True),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject(self._make_reject_all_args())
-
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        insert_pending("kubectl delete pod x", verb="delete",
+                       approval_id="P-cccc3333dddd4444cccc3333dddd4444")
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "Rejected 2 approval(s)" in captured.out
         assert "P-aaaa1111" in captured.out or "P-cccc3333" in captured.out
 
-    def test_reject_all_json_output(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(return_value=True),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
-
+    def test_reject_all_json_output(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -523,72 +493,43 @@ class TestCmdRejectAll:
         assert len(data["ids"]) == 1
         assert data["ids"][0] == "P-aaaa1111"
 
-    def test_reject_all_with_reason(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(return_value=True),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject(self._make_reject_all_args(reason="bulk-test"))
-
+    def test_reject_all_with_reason(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args(reason="bulk-test"))
         assert rc == 0
         captured = capsys.readouterr()
         assert "bulk-test" in captured.out
 
-    def test_reject_all_reason_in_json(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(return_value=True),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True, reason="bulk-test"))
-
+    def test_reject_all_reason_in_json(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True, reason="bulk-test"))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["reason"] == "bulk-test"
 
-    def test_reject_all_partial_failure(self, capsys, tmp_path):
-        """When one reject_pending call fails, exit 1 and report partial status."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_reject_all_partial_failure(self, capsys, db_store, monkeypatch):
+        """When one revoke call fails, exit 1 and report partial status."""
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        insert_pending("kubectl delete pod x", verb="delete",
+                       approval_id="P-cccc3333dddd4444cccc3333dddd4444")
 
-        p1 = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        p2 = _make_pending(nonce="cccc3333dddd4444cccc3333dddd4444")
-        (grants_dir / f"pending-{p1['nonce']}.json").write_text(json.dumps(p1))
-        (grants_dir / f"pending-{p2['nonce']}.json").write_text(json.dumps(p2))
+        # Make the second revoke raise.
+        orig_revoke = _store.revoke
+        calls = {"n": 0}
 
-        # First call succeeds, second fails
-        side_effects = [True, False]
+        def flaky_revoke(approval_id, session_id, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated revoke failure")
+            return orig_revoke(approval_id, session_id, **kw)
 
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(side_effect=side_effects),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
+        monkeypatch.setattr(_store, "revoke", flaky_revoke)
 
+        rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
         assert rc == 1
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -634,12 +575,9 @@ class TestCmdRejectAllSubcommand:
     # 0 pendings
     # ------------------------------------------------------------------
 
-    def test_reject_all_empty_queue_prints_nothing_to_reject(self, capsys, tmp_path):
+    def test_reject_all_empty_queue_prints_nothing_to_reject(self, capsys, db_store):
         """With no active pendings, exit 0 and print the 'nothing to reject' message."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_reject_all(self._make_args())
+        rc = approvals_mod.cmd_reject_all(self._make_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "No active pendings" in captured.out
@@ -648,174 +586,80 @@ class TestCmdRejectAllSubcommand:
     # 3 pendings -- all rejected
     # ------------------------------------------------------------------
 
-    def test_reject_all_rejects_three_pendings(self, capsys, tmp_path):
-        """With 3 pending approvals, all 3 are marked rejected, count is 3."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_reject_all_rejects_three_pendings(self, capsys, db_store):
+        """With 3 pending approvals, all 3 are revoked, count is 3."""
+        _store, insert_pending = db_store
+        insert_pending("cmd-aaaa", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        insert_pending("cmd-cccc", approval_id="P-cccc3333dddd4444cccc3333dddd4444")
+        insert_pending("cmd-eeee", approval_id="P-eeee5555ffff6666eeee5555ffff6666")
 
-        nonces = [
-            "aaaa1111bbbb2222aaaa1111bbbb2222",
-            "cccc3333dddd4444cccc3333dddd4444",
-            "eeee5555ffff6666eeee5555ffff6666",
-        ]
-        for nonce in nonces:
-            p = _make_pending(nonce=nonce, command=f"cmd-{nonce[:4]}")
-            (grants_dir / f"pending-{nonce}.json").write_text(json.dumps(p))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(return_value=True),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject_all(self._make_args())
+        rc = approvals_mod.cmd_reject_all(self._make_args())
 
         assert rc == 0
         captured = capsys.readouterr()
         assert "3 pending(s) rejected" in captured.out
-        # Verify individual IDs appear
         assert "P-aaaa1111" in captured.out
         assert "P-cccc3333" in captured.out
         assert "P-eeee5555" in captured.out
 
-    def test_reject_all_does_not_delete_files(self, tmp_path):
-        """reject-all must NOT delete files -- it only calls reject_pending()."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_reject_all_marks_pendings_revoked_in_db(self, db_store):
+        """reject-all must transition DB rows pending -> revoked (not delete them)."""
+        _store, insert_pending = db_store
+        aid = insert_pending("git push origin main",
+                             approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
 
-        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        pending_file = grants_dir / f"pending-{p['nonce']}.json"
-        pending_file.write_text(json.dumps(p))
+        approvals_mod.cmd_reject_all(self._make_args())
 
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": MagicMock(return_value=True),
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                approvals_mod.cmd_reject_all(self._make_args())
-
-        # File still exists -- reject_pending() mutates status, does not delete
-        assert pending_file.exists(), (
-            "reject-all must not delete pending files; "
-            "it delegates to reject_pending() which does a status mutation."
+        # The row still exists but is now revoked (append-only audit preserved).
+        row = _store.get_by_id(aid)
+        assert row is not None, "reject-all must not delete the DB row"
+        assert row["status"] == "revoked", (
+            "reject-all transitions pending -> revoked via store.revoke()"
         )
 
-    def test_reject_all_does_not_touch_grant_files(self, tmp_path):
-        """Grant files (grant-*.json) must not be touched by reject-all."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_reject_all_does_not_touch_already_decided(self, capsys, db_store):
+        """Already-revoked pendings are not in the pending queue, so not re-counted."""
+        _store, insert_pending = db_store
+        aid_done = insert_pending("git push origin main",
+                                  approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        # Pre-revoke this one so it is no longer pending.
+        _store.revoke(aid_done, "pretest")
+        insert_pending("kubectl delete pod x", verb="delete",
+                       approval_id="P-cccc3333dddd4444cccc3333dddd4444")
 
-        # Write one pending and one grant file
-        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        pending_file = grants_dir / f"pending-{p['nonce']}.json"
-        pending_file.write_text(json.dumps(p))
-
-        grant_data = {"nonce": "zzzz9999", "granted_at": time.time(), "ttl_minutes": 5}
-        grant_file = grants_dir / "grant-zzzz9999.json"
-        grant_file.write_text(json.dumps(grant_data))
-
-        reject_calls = []
-
-        def _mock_reject(nonce_prefix):
-            reject_calls.append(nonce_prefix)
-            return True
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": _mock_reject,
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                approvals_mod.cmd_reject_all(self._make_args())
-
-        # reject_pending should only be called for the pending, not the grant
-        for call_arg in reject_calls:
-            assert "zzzz" not in call_arg, (
-                "reject-all called reject_pending on a grant file nonce -- it must not."
-            )
-
-    def test_reject_all_does_not_touch_already_rejected(self, capsys, tmp_path):
-        """Already-rejected pendings should not be included in the reject-all count."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        # Write one already-rejected and one active pending
-        rejected = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        rejected["status"] = "rejected"
-        (grants_dir / f"pending-{rejected['nonce']}.json").write_text(json.dumps(rejected))
-
-        active = _make_pending(nonce="cccc3333dddd4444cccc3333dddd4444")
-        (grants_dir / f"pending-{active['nonce']}.json").write_text(json.dumps(active))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                reject_mock = MagicMock(return_value=True)
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": reject_mock,
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject_all(self._make_args())
+        rc = approvals_mod.cmd_reject_all(self._make_args())
 
         assert rc == 0
         captured = capsys.readouterr()
-        # Only 1 pending was active -- only 1 rejection should be counted
+        # Only 1 pending was active -- only 1 rejection counted.
         assert "1 pending(s) rejected" in captured.out
-        # The already-rejected one must not have been fed to reject_pending again
-        call_args = [c[0][0] for c in reject_mock.call_args_list]
-        assert not any("aaaa1111" in arg for arg in call_args), (
-            "reject-all must not call reject_pending on an already-rejected pending."
-        )
+        assert "P-cccc3333" in captured.out
+        assert "P-aaaa1111" not in captured.out
 
     # ------------------------------------------------------------------
     # --dry-run
     # ------------------------------------------------------------------
 
-    def test_reject_all_dry_run_no_state_changes(self, tmp_path):
-        """--dry-run must not invoke reject_pending or write any files."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_reject_all_dry_run_no_state_changes(self, db_store):
+        """--dry-run must not revoke any DB row."""
+        _store, insert_pending = db_store
+        aid = insert_pending("git push origin main",
+                             approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
 
-        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222", command="git push origin main")
-        pending_file = grants_dir / f"pending-{p['nonce']}.json"
-        original_content = json.dumps(p)
-        pending_file.write_text(original_content)
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                reject_mock = MagicMock(return_value=True)
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": reject_mock,
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
+        rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
 
         assert rc == 0
-        # reject_pending was NOT called
-        reject_mock.assert_not_called()
-        # File content unchanged
-        assert pending_file.read_text() == original_content
+        # Row is still pending -- dry-run did not revoke it.
+        row = _store.get_by_id(aid)
+        assert row["status"] == "pending"
 
-    def test_reject_all_dry_run_prints_list(self, capsys, tmp_path):
+    def test_reject_all_dry_run_prints_list(self, capsys, db_store):
         """--dry-run output shows '[dry-run] would reject:' and each P-id + command."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+        _store, insert_pending = db_store
+        insert_pending("git push origin main",
+                       approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
 
-        p = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222", command="git push origin main")
-        (grants_dir / f"pending-{p['nonce']}.json").write_text(json.dumps(p))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
+        rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
 
         assert rc == 0
         captured = capsys.readouterr()
@@ -823,52 +667,38 @@ class TestCmdRejectAllSubcommand:
         assert "P-aaaa1111" in captured.out
         assert "git push origin main" in captured.out
 
-    def test_reject_all_dry_run_zero_pendings(self, capsys, tmp_path):
+    def test_reject_all_dry_run_zero_pendings(self, capsys, db_store):
         """--dry-run with empty queue still prints 'nothing to reject'."""
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
+        rc = approvals_mod.cmd_reject_all(self._make_args(dry_run=True))
         assert rc == 0
         captured = capsys.readouterr()
         assert "No active pendings" in captured.out
 
     # ------------------------------------------------------------------
-    # --workspace
+    # --workspace (informational only since Task E: DB is per-machine)
     # ------------------------------------------------------------------
 
-    def test_reject_all_workspace_uses_target_grants_dir(self, tmp_path):
-        """--workspace <path> must operate on <path>/.claude/cache/approvals/."""
-        # Create a fake "other workspace"
-        other_ws = tmp_path / "other-project"
-        other_grants = other_ws / ".claude" / "cache" / "approvals"
-        other_grants.mkdir(parents=True)
+    def test_reject_all_workspace_is_informational(self, capsys, db_store):
+        """--workspace no longer scopes to an FS dir; the DB is per-machine.
 
-        p = _make_pending(nonce="bbbb2222cccc3333bbbb2222cccc3333", command="terraform apply")
-        (other_grants / f"pending-{p['nonce']}.json").write_text(json.dumps(p))
+        The flag is accepted and an informational note is printed, but the
+        operation still acts on the machine-wide DB pending queue.
+        """
+        _store, insert_pending = db_store
+        aid = insert_pending("terraform apply", verb="apply",
+                             approval_id="P-bbbb2222cccc3333bbbb2222cccc3333")
 
-        # The "current" grants dir is empty -- the pending lives in other_ws
-        current_grants = tmp_path / "current-approvals"
-        current_grants.mkdir()
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=current_grants):
-            with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-                reject_mock = MagicMock(return_value=True)
-                mock_ag.return_value = {
-                    "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                    "load_pending_by_nonce_prefix": MagicMock(),
-                    "reject_pending": reject_mock,
-                    "cleanup_expired_grants": MagicMock(),
-                }
-                rc = approvals_mod.cmd_reject_all(
-                    self._make_args(workspace=str(other_ws))
-                )
+        rc = approvals_mod.cmd_reject_all(
+            self._make_args(workspace="/some/other-ws")
+        )
 
         assert rc == 0
-        # reject_pending was called with the pending from other_ws, not current_grants
-        reject_mock.assert_called_once()
-        call_arg = reject_mock.call_args[0][0]
-        assert "bbbb2222" in call_arg
+        captured = capsys.readouterr()
+        # The DB pending is revoked regardless of --workspace.
+        assert "1 pending(s) rejected" in captured.out
+        assert _store.get_by_id(aid)["status"] == "revoked"
+        # Informational note about --workspace being ignored is on stderr.
+        assert "workspace" in captured.err.lower()
 
     # ------------------------------------------------------------------
     # Subcommand parser registration
@@ -916,70 +746,72 @@ class TestCmdRejectAllSubcommand:
 # ---------------------------------------------------------------------------
 
 class TestCmdClean:
-    def test_clean_dry_run(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    """cmd_clean (DB-only since FS retirement).
 
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_clean(_make_args(dry_run=True))
+    Expired DB pending rows (older than 24h) are revoked.  Expired
+    approval_grants rows (past expires_at) are transitioned to EXPIRED.
+    No filesystem grant files are swept.
+    """
+
+    def test_clean_dry_run(self, capsys, db_store):
+        rc = approvals_mod.cmd_clean(_make_args(dry_run=True))
         assert rc == 0
         captured = capsys.readouterr()
         assert "Dry run" in captured.out
 
-    def test_clean_dry_run_counts_expired(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    def test_clean_dry_run_counts_expired(self, capsys, db_store):
+        _store, insert_pending = db_store
+        import sqlite3
+        # Insert a pending and backdate its created_at past the 24h window.
+        aid = insert_pending("kubectl delete pod", verb="delete",
+                             approval_id="P-aabb1122ccdd3344aabb1122ccdd3344")
+        con = _store._open_db()
+        con.execute(
+            "UPDATE approvals SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+            (aid,),
+        )
+        con.commit()
+        con.close()
 
-        # Write one expired pending file
-        expired = {
-            "nonce": "aabb1122",
-            "session_id": "s1",
-            "command": "kubectl delete pod",
-            "timestamp": time.time() - 3600,  # 1 hour ago
-            "ttl_minutes": 5,
-            "scope_signature": {},
-        }
-        (grants_dir / "pending-aabb1122.json").write_text(json.dumps(expired))
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_clean(_make_args(dry_run=True))
+        rc = approvals_mod.cmd_clean(_make_args(dry_run=True))
         assert rc == 0
         captured = capsys.readouterr()
         assert "1" in captured.out
 
-    def test_clean_dry_run_json(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-            rc = approvals_mod.cmd_clean(_make_args(dry_run=True, json=True))
+    def test_clean_dry_run_json(self, capsys, db_store):
+        rc = approvals_mod.cmd_clean(_make_args(dry_run=True, json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["dry_run"] is True
         assert "would_remove" in data
 
-    def test_clean_live_calls_cleanup(self, capsys):
-        """Test that cmd_clean (live mode) calls cleanup_expired_grants."""
-        mock_mod = MagicMock()
-        mock_mod._last_cleanup_time = 0.0
-        mock_mod.cleanup_expired_grants = MagicMock(return_value=3)
+    def test_clean_live_revokes_expired_db_pending(self, capsys, db_store):
+        """Live clean revokes DB pending rows older than 24h."""
+        _store, insert_pending = db_store
+        aid = insert_pending("kubectl delete pod", verb="delete",
+                             approval_id="P-aabb1122ccdd3344aabb1122ccdd3344")
+        con = _store._open_db()
+        con.execute(
+            "UPDATE approvals SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+            (aid,),
+        )
+        con.commit()
+        con.close()
 
-        with patch.object(approvals_mod, "_import_approval_grants_module", return_value=mock_mod):
-            rc = approvals_mod.cmd_clean(_make_args(dry_run=False))
-
+        rc = approvals_mod.cmd_clean(_make_args(dry_run=False))
         assert rc == 0
-        captured = capsys.readouterr()
-        assert "3" in captured.out
-        mock_mod.cleanup_expired_grants.assert_called_once()
+        # The expired row is now revoked.
+        assert _store.get_by_id(aid)["status"] == "revoked"
 
-    def test_clean_no_directory(self, capsys, tmp_path):
-        nonexistent = tmp_path / "does_not_exist"
-        with patch.object(approvals_mod, "_import_grants_dir", return_value=nonexistent):
-            rc = approvals_mod.cmd_clean(_make_args(dry_run=True))
+    def test_clean_live_keeps_fresh_db_pending(self, capsys, db_store):
+        """Live clean must NOT revoke a fresh (< 24h) pending."""
+        _store, insert_pending = db_store
+        aid = insert_pending("git push origin main",
+                             approval_id="P-ffff0000ffff0000ffff0000ffff0000")
+        rc = approvals_mod.cmd_clean(_make_args(dry_run=False))
         assert rc == 0
-        captured = capsys.readouterr()
-        assert "does not exist" in captured.out or "Nothing" in captured.out
+        assert _store.get_by_id(aid)["status"] == "pending"
 
 
 # ---------------------------------------------------------------------------
@@ -987,69 +819,41 @@ class TestCmdClean:
 # ---------------------------------------------------------------------------
 
 class TestCmdStats:
-    def test_stats_empty(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
+    """cmd_stats (DB-backed since Task E): counts derived from the approvals table."""
 
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-                rc = approvals_mod.cmd_stats(_make_args())
+    def test_stats_empty(self, capsys, db_store):
+        rc = approvals_mod.cmd_stats(_make_args())
         assert rc == 0
         captured = capsys.readouterr()
         assert "Stats" in captured.out
 
-    def test_stats_json(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        # Write one live pending
-        pending = _make_pending()
-        (grants_dir / f"pending-{pending['nonce']}.json").write_text(json.dumps(pending))
-
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=[pending]),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-                rc = approvals_mod.cmd_stats(_make_args(json=True))
+    def test_stats_json(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main",
+                       approval_id="P-abcd1234ef567890abcd1234ef567890")
+        rc = approvals_mod.cmd_stats(_make_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert "pending_current_session" in data
         assert "pending_all_sessions" in data
-        assert "active_grants" in data
+        assert "approved" in data
+        assert "rejected" in data
+        assert "revoked" in data
+        assert "active_db_grants" in data
         assert "verb_breakdown" in data
+        assert data["pending_all_sessions"] == 1
 
-    def test_stats_counts_rejected(self, capsys, tmp_path):
-        grants_dir = tmp_path / "approvals"
-        grants_dir.mkdir()
-
-        rejected = _make_pending(nonce="aaaa1111bbbb2222aaaa1111bbbb2222")
-        rejected["status"] = "rejected"
-        (grants_dir / f"pending-{rejected['nonce']}.json").write_text(json.dumps(rejected))
-
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(return_value=[]),
-                "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
-                "cleanup_expired_grants": MagicMock(),
-            }
-            with patch.object(approvals_mod, "_import_grants_dir", return_value=grants_dir):
-                rc = approvals_mod.cmd_stats(_make_args(json=True))
+    def test_stats_counts_revoked(self, capsys, db_store):
+        _store, insert_pending = db_store
+        aid = insert_pending("git push origin main",
+                             approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
+        _store.revoke(aid, "test")
+        rc = approvals_mod.cmd_stats(_make_args(json=True))
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data["rejected"] == 1
+        assert data["revoked"] == 1
+        assert data["pending_all_sessions"] == 0
 
 
 # ---------------------------------------------------------------------------

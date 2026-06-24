@@ -1809,3 +1809,55 @@ class TestGaiaPlanningBookkeepingException:
         result = detect_mutative_command("gaia plan delete my-plan --force")
         assert result.is_mutative is True
         assert result.verb == "delete"
+
+    # ---- gaia task: task-lifecycle bookkeeping exemption (Option A) ----
+    # Reverses the 2026-06-04 decision to keep `gaia task` fully T3-gated.
+    # `gaia task set-status` and other reversible verbs are now local-only
+    # bookkeeping (same pattern as brief/ac/plan).  `gaia task remove` (row
+    # deletion) stays T3 via the DENY_VERBS guard ("remove" added to the set).
+
+    def test_gaia_task_set_status_not_mutative(self):
+        """`gaia task set-status` is a reversible status transition in gaia.db --
+        local bookkeeping, no external effects, must not require T3 approval."""
+        result = detect_mutative_command(
+            "gaia task set-status my-brief task-1 done"
+        )
+        assert result.is_mutative is False, (
+            f"gaia task set-status must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_task_remove_stays_mutative(self):
+        """`gaia task remove` is irreversible row deletion; it must stay T3 even
+        though the `task` group is now exempted, pinned by 'remove' in
+        COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS[("gaia", "task")]."""
+        result = detect_mutative_command("gaia task remove my-brief task-1")
+        assert result.is_mutative is True, (
+            f"gaia task remove is irreversible and must stay T3. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+        assert result.verb == "remove"
+
+    def test_gaia_task_add_not_mutative(self):
+        """`gaia task add` is a safe bookkeeping write -- no T3 needed.
+        Guards against regression if the exemption is inadvertently narrowed."""
+        result = detect_mutative_command("gaia task add my-brief 'do the thing'")
+        assert result.is_mutative is False, (
+            f"gaia task add must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_task_reorder_not_mutative(self):
+        """`gaia task reorder` is a safe local resequencing -- no T3 needed.
+        Guards against regression if the exemption is inadvertently narrowed."""
+        result = detect_mutative_command(
+            "gaia task reorder my-brief task-1 task-2"
+        )
+        assert result.is_mutative is False, (
+            f"gaia task reorder must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )

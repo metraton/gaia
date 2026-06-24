@@ -950,6 +950,41 @@ BEGIN
     SELECT RAISE(ABORT, 'approval_events is append-only');
 END;
 
+-- BEFORE UPDATE trigger: enforce that every approvals.status transition has a
+-- preceding event in the append-only approval_events chain (Task B audit-
+-- immutability gap closure).
+--
+-- Fires when status changes TO one of the three user-visible terminal statuses
+-- (approved / rejected / revoked). For each new status it checks that an event
+-- row with the matching event_type exists for this approval_id. Because the
+-- canonical write path (store.transition) inserts the event FIRST and then
+-- UPDATEs status, the event row is already in the transaction-visible table by
+-- the time this trigger fires -- and the check passes. A direct UPDATE that
+-- bypasses the write path (no preceding insert_event call) will find COUNT=0
+-- and RAISE(ABORT), rolling back the update.
+--
+-- 'expired' is intentionally excluded: it is a cleanup-layer status (TTL
+-- sweep) with no corresponding event_type in the approval_events schema. All
+-- other status values ('pending') are only ever written by INSERT in
+-- insert_requested(), not by UPDATE, so they are not reachable here.
+CREATE TRIGGER IF NOT EXISTS bu_approvals_status_has_event
+BEFORE UPDATE OF status ON approvals
+WHEN NEW.status != OLD.status AND NEW.status IN ('approved', 'rejected', 'revoked')
+BEGIN
+    SELECT CASE
+        WHEN (
+            SELECT COUNT(*) FROM approval_events
+             WHERE approval_id = NEW.id
+               AND event_type = CASE NEW.status
+                                    WHEN 'approved' THEN 'APPROVED'
+                                    WHEN 'rejected' THEN 'REJECTED'
+                                    WHEN 'revoked'  THEN 'REVOKED'
+                                END
+        ) = 0
+        THEN RAISE(ABORT, 'approvals: status change requires a preceding event in approval_events')
+    END;
+END;
+
 -- ---------------------------------------------------------------------------
 -- schema_version: migration ledger.
 -- One row per applied schema migration; the highest version is the current

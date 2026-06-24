@@ -549,10 +549,10 @@ def transition(
                 f"Cannot transition approval {approval_id!r}: "
                 f"expected status={from_status!r} but found {actual_status!r}"
             )
-        _con.execute(
-            "UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?",
-            (to_status, _now_iso(), approval_id),
-        )
+        # Insert the event FIRST so the DB trigger bu_approvals_status_has_event
+        # (schema.sql) can verify the event exists before the status UPDATE fires.
+        # The trigger fires BEFORE UPDATE, reading the transaction-visible
+        # approval_events rows; inserting the event first satisfies the guard.
         insert_event(
             _con,
             approval_id,
@@ -561,6 +561,10 @@ def transition(
             session_id=session_id,
             payload_json=payload_json_str,
             fingerprint=fp,
+        )
+        _con.execute(
+            "UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?",
+            (to_status, _now_iso(), approval_id),
         )
         if owned:
             _con.commit()

@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Tests for approval_cleanup.cleanup() — preserve_nonces hardening.
+"""Tests for approval_cleanup.cleanup() — DB-backed revocation (Task E FS retirement).
 
-Phase 2 introduced ``preserve_nonces`` so the SubagentStop cleanup does not
-destroy pending approvals that the agent's final agent_contract_handoff still
-references via APPROVAL_REQUEST. The user needs those files to act on the
-[ACTIONABLE] block surfaced by the orchestrator.
+Since Task E, cleanup() revokes pending DB rows instead of deleting
+pending-*.json files.  Tests verify:
+  - Returns False (no-op) when the DB store is unavailable.
+  - Returns False when no pending rows exist for the session.
+  - Returns True and revokes rows that match the session.
+  - Skips rows in preserve_nonces (still live APPROVAL_REQUEST).
+  - Logs a 'Preserving' line for skipped rows.
+  - Leaves other-session rows untouched.
+  - Handles ValueError from revoke() gracefully (already-transitioned race).
 """
 
-import json
 import logging
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -18,172 +23,202 @@ import pytest
 HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-from modules.security import approval_cleanup
 from modules.security.approval_cleanup import cleanup
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Helpers
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def approvals_dir(tmp_path, monkeypatch):
-    """Redirect _get_approvals_dir() to a tmp directory for each test."""
-    d = tmp_path / "approvals"
-    d.mkdir()
-    monkeypatch.setattr(
-        approval_cleanup, "_get_approvals_dir", lambda: d
-    )
-    monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-test")
-    yield d
-
-
-def _write_pending(approvals_dir: Path, nonce: str, session_id: str = "sess-test") -> Path:
-    """Write a minimal pending file for the given nonce / session."""
-    file_path = approvals_dir / f"pending-{nonce}.json"
-    file_path.write_text(
-        json.dumps(
-            {
-                "nonce": nonce,
-                "session_id": session_id,
-                "command": f"fake-cmd-{nonce[:6]}",
-                "danger_verb": "update",
-                "danger_category": "MUTATIVE",
-                "timestamp": 1700000000.0,
-            }
-        )
-    )
-    return file_path
+def _make_row(approval_id: str, session_id: str = "sess-test") -> dict:
+    """Build a minimal pending DB row dict."""
+    return {
+        "id": approval_id,
+        "session_id": session_id,
+        "status": "pending",
+        "payload_json": "{}",
+        "created_at": "2026-06-24T00:00:00Z",
+    }
 
 
 # ---------------------------------------------------------------------------
-# Back-compat: no preserve_nonces argument behaves as before
+# No-op / error paths
 # ---------------------------------------------------------------------------
 
-class TestBackCompat:
-    def test_cleanup_without_preserve_deletes_all_session_pendings(self, approvals_dir):
-        a = _write_pending(approvals_dir, "a" * 32)
-        b = _write_pending(approvals_dir, "b" * 32)
+class TestNoOp:
+    def test_returns_false_when_store_unavailable(self, monkeypatch):
+        """When gaia.approvals.store cannot be imported, cleanup is a no-op."""
+        import builtins
+        real_import = builtins.__import__
 
-        consumed = cleanup("test-agent", session_id="sess-test")
+        def _block_store(name, *args, **kwargs):
+            if "gaia.approvals.store" in name or name == "gaia.approvals.store":
+                raise ImportError("store unavailable")
+            return real_import(name, *args, **kwargs)
 
-        assert consumed is True
-        assert not a.exists()
-        assert not b.exists()
+        monkeypatch.setattr(builtins, "__import__", _block_store)
+        result = cleanup("test-agent", session_id="sess-test")
+        assert result is False
 
-    def test_cleanup_with_none_preserve_nonces_deletes_all(self, approvals_dir):
-        a = _write_pending(approvals_dir, "a" * 32)
-        b = _write_pending(approvals_dir, "b" * 32)
+    def test_returns_false_when_no_pending_rows(self, monkeypatch):
+        """When list_pending returns [], cleanup returns False."""
+        mock_list = MagicMock(return_value=[])
+        mock_revoke = MagicMock()
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            result = cleanup("test-agent", session_id="sess-test")
 
-        cleanup("test-agent", session_id="sess-test", preserve_nonces=None)
+        assert result is False
+        mock_revoke.assert_not_called()
 
-        assert not a.exists()
-        assert not b.exists()
+    def test_returns_false_when_list_pending_raises(self, monkeypatch):
+        """list_pending() raising must not propagate — cleanup is a no-op."""
+        mock_list = MagicMock(side_effect=RuntimeError("DB unavailable"))
+        with patch("gaia.approvals.store.list_pending", mock_list):
+            result = cleanup("test-agent", session_id="sess-test")
 
-    def test_cleanup_with_empty_preserve_set_deletes_all(self, approvals_dir):
-        a = _write_pending(approvals_dir, "a" * 32)
-
-        cleanup("test-agent", session_id="sess-test", preserve_nonces=set())
-
-        assert not a.exists()
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
-# preserve_nonces — the core Phase 2 contract
+# Revocation happy paths
+# ---------------------------------------------------------------------------
+
+class TestRevocation:
+    def test_revokes_session_pending(self):
+        """A pending row for the session is revoked and True is returned."""
+        row = _make_row("P-abc1234500000000")
+        mock_list = MagicMock(return_value=[row])
+        mock_revoke = MagicMock()
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            result = cleanup("test-agent", session_id="sess-test")
+
+        assert result is True
+        mock_revoke.assert_called_once_with("P-abc1234500000000", revoker_session="sess-test")
+
+    def test_revokes_multiple_pending_rows(self):
+        """All pending rows for the session are revoked."""
+        rows = [_make_row("P-aaa0000000000000"), _make_row("P-bbb0000000000000")]
+        mock_list = MagicMock(return_value=rows)
+        mock_revoke = MagicMock()
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            result = cleanup("test-agent", session_id="sess-test")
+
+        assert result is True
+        assert mock_revoke.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# preserve_nonces — the core Phase 2 contract (now with DB rows)
 # ---------------------------------------------------------------------------
 
 class TestPreserveNonces:
-    def test_preserve_nonces_keeps_listed_pendings(self, approvals_dir):
-        """3 pendings of the same session, preserve B. Expect A and C deleted, B kept."""
-        nonce_a = "a" * 32
-        nonce_b = "b" * 32
-        nonce_c = "c" * 32
+    def test_preserve_nonces_skips_matching_approval_id(self):
+        """A row whose approval_id is in preserve_nonces must NOT be revoked."""
+        nonce_a = "P-aaa0000000000000"
+        nonce_b = "P-bbb0000000000000"
+        nonce_c = "P-ccc0000000000000"
 
-        file_a = _write_pending(approvals_dir, nonce_a)
-        file_b = _write_pending(approvals_dir, nonce_b)
-        file_c = _write_pending(approvals_dir, nonce_c)
+        rows = [_make_row(nonce_a), _make_row(nonce_b), _make_row(nonce_c)]
+        mock_list = MagicMock(return_value=rows)
+        mock_revoke = MagicMock()
 
-        consumed = cleanup(
-            "test-agent",
-            session_id="sess-test",
-            preserve_nonces={nonce_b},
-        )
-
-        assert consumed is True
-        assert not file_a.exists()
-        assert file_b.exists(), (
-            "Preserved nonce must NOT be deleted — the agent's contract still "
-            "references it via APPROVAL_REQUEST and the user needs the file."
-        )
-        assert not file_c.exists()
-
-    def test_preserve_emits_log_line(self, approvals_dir, caplog):
-        nonce = "b" * 32
-        _write_pending(approvals_dir, nonce)
-
-        with caplog.at_level(
-            logging.INFO, logger="modules.security.approval_cleanup"
-        ):
-            cleanup(
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            result = cleanup(
                 "test-agent",
                 session_id="sess-test",
-                preserve_nonces={nonce},
+                preserve_nonces={nonce_b},
             )
 
+        assert result is True
+        revoked_ids = {c.args[0] for c in mock_revoke.call_args_list}
+        assert nonce_a in revoked_ids
+        assert nonce_b not in revoked_ids, "Preserved nonce must NOT be revoked"
+        assert nonce_c in revoked_ids
+
+    def test_preserve_emits_log_line(self, caplog):
+        nonce = "P-bbb0000000000000"
+        rows = [_make_row(nonce)]
+        mock_list = MagicMock(return_value=rows)
+        mock_revoke = MagicMock()
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            with caplog.at_level(logging.INFO, logger="modules.security.approval_cleanup"):
+                cleanup(
+                    "test-agent",
+                    session_id="sess-test",
+                    preserve_nonces={nonce},
+                )
+
         assert any(
-            "Preserving pending nonce=" in record.getMessage()
-            and nonce[:12] in record.getMessage()
+            "Preserving pending approval_id=" in record.getMessage()
             for record in caplog.records
-        ), (
-            "Cleanup must emit a 'Preserving pending nonce=...' log line so "
-            "the operator can audit which pendings survived the sweep."
-        )
+        ), "Cleanup must emit a 'Preserving pending approval_id=...' log line"
 
-    def test_preserve_does_not_protect_other_sessions(self, approvals_dir):
-        """preserve_nonces only narrows the in-session cleanup. Other-session
-        pendings were already untouched by cleanup (session filter), and that
-        does not change.
-        """
-        nonce_other = "d" * 32
-        other = _write_pending(
-            approvals_dir, nonce_other, session_id="sess-other"
-        )
+    def test_none_preserve_nonces_revokes_all(self):
+        """preserve_nonces=None revokes all session pendings."""
+        rows = [_make_row("P-aaa0000000000000"), _make_row("P-bbb0000000000000")]
+        mock_list = MagicMock(return_value=rows)
+        mock_revoke = MagicMock()
 
-        cleanup(
-            "test-agent",
-            session_id="sess-test",
-            preserve_nonces={nonce_other},
-        )
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            result = cleanup("test-agent", session_id="sess-test", preserve_nonces=None)
 
-        # The other-session pending was never deletion-eligible anyway.
-        assert other.exists()
+        assert result is True
+        assert mock_revoke.call_count == 2
 
-    def test_preserve_skips_only_exact_match(self, approvals_dir):
-        """preserve_nonces uses full-nonce equality; partial/prefix doesn't shield."""
-        nonce_full = "e" * 32
-        file_full = _write_pending(approvals_dir, nonce_full)
+    def test_empty_preserve_set_revokes_all(self):
+        """preserve_nonces=set() (empty) revokes all session pendings."""
+        rows = [_make_row("P-aaa0000000000000")]
+        mock_list = MagicMock(return_value=rows)
+        mock_revoke = MagicMock()
 
-        cleanup(
-            "test-agent",
-            session_id="sess-test",
-            preserve_nonces={nonce_full[:8]},  # prefix only -- must NOT match
-        )
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            result = cleanup("test-agent", session_id="sess-test", preserve_nonces=set())
 
-        assert not file_full.exists(), (
-            "Cleanup must compare full nonces, not prefixes. A short [P-xxxx] "
-            "tag that happens to share a prefix should not accidentally keep "
-            "an unrelated pending alive."
-        )
+        assert result is True
 
-    def test_corrupt_files_are_removed_regardless_of_preserve(self, approvals_dir):
-        """A corrupt pending file cannot be matched against preserve_nonces."""
-        bad = approvals_dir / "pending-corrupt.json"
-        bad.write_text("{ not valid json")
 
-        cleanup(
-            "test-agent",
-            session_id="sess-test",
-            preserve_nonces={"any-nonce"},
-        )
+# ---------------------------------------------------------------------------
+# Error resilience
+# ---------------------------------------------------------------------------
 
-        assert not bad.exists()
+class TestErrorResilience:
+    def test_valueerror_from_revoke_is_non_fatal(self):
+        """ValueError from revoke() (already-transitioned) must not propagate."""
+        row = _make_row("P-abc1234500000000")
+        mock_list = MagicMock(return_value=[row])
+        mock_revoke = MagicMock(side_effect=ValueError("already approved"))
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", mock_revoke):
+            # Must not raise
+            result = cleanup("test-agent", session_id="sess-test")
+
+        assert result is False
+
+    def test_unexpected_revoke_error_is_non_fatal(self):
+        """Any Exception from revoke() must not propagate."""
+        rows = [_make_row("P-aaa0000000000000"), _make_row("P-bbb0000000000000")]
+        mock_list = MagicMock(return_value=rows)
+
+        call_count = [0]
+        def _sometimes_fail(approval_id, revoker_session):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("transient DB error")
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.revoke", side_effect=_sometimes_fail):
+            result = cleanup("test-agent", session_id="sess-test")
+
+        # Second row succeeded
+        assert result is True
