@@ -1050,14 +1050,10 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
     If a valid grant exists that matches the command, the command should
     be allowed through.
 
-    Primary path (DB): check_db_semantic_grant() in gaia.store.writer is
-    consulted first.  When a DB row is found it is wrapped as an ApprovalGrant
-    with confirmed=True so downstream consumers see the same interface.
-
-    Fallback path (filesystem): the legacy grant-{session}-*.json files are
-    scanned when no DB row is found.  This path is DEPRECATED -- it remains
-    for backward compatibility with grants created before the DB cutover and
-    will be removed in a future migration.
+    DB-only since G2 cutover: check_db_semantic_grant() in gaia.store.writer
+    is the sole source of truth. When a DB row is found it is wrapped as an
+    ApprovalGrant with confirmed=True so downstream consumers see the same
+    interface. The legacy filesystem fallback has been retired.
 
     Args:
         command: The shell command to check.
@@ -1072,9 +1068,6 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
     if not session_id:
         session_id = _get_session_id()
 
-    # ------------------------------------------------------------------ #
-    # DB-primary path (Brief 71 CHECK-side cutover)
-    # ------------------------------------------------------------------ #
     try:
         from gaia.store.writer import check_db_semantic_grant
         db_row = check_db_semantic_grant(command, session_id=session_id)
@@ -1100,152 +1093,56 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
             # Attach the approval_id so bash_validator can consume it.
             grant._db_approval_id = db_row.get("approval_id")
             logger.info(
-                "Approval grant matched (DB path): command='%s', approval_id=%s",
+                "Approval grant matched (DB): command='%s', approval_id=%s",
                 command[:80], (db_row.get("approval_id") or "?")[:16],
             )
             return grant
     except Exception as _db_err:
-        logger.debug(
-            "check_approval_grant: DB path unavailable (%s), falling through to filesystem",
+        logger.error(
+            "check_approval_grant: DB lookup failed: %s",
             _db_err,
         )
-
-    # ------------------------------------------------------------------ #
-    # DEPRECATED filesystem fallback
-    # Retained for grants created before the DB cutover.
-    #
-    # Security guard: before returning a filesystem grant, verify that
-    # the DB does NOT already have a CONSUMED grant for this command.
-    # If the DB shows the grant was consumed (e.g. by bash_validator in a
-    # prior call), the filesystem grant must NOT be returned -- it is a
-    # stale copy that would bypass replay protection.
-    #
-    # This guard now delegates to the consolidated, session-agnostic
-    # _consumed_grant_exists() in gaia.store.writer (Brief 71, Change 4). The
-    # previous inline copy here was session-locked (`AND session_id=?`), which
-    # reintroduced the cross-session bug: a grant CONSUMED under one session went
-    # unseen by a retry in another, letting a stale filesystem copy bypass replay
-    # protection. The single helper is queried session-agnostic, so a consumed
-    # command stays consumed across every session.
-    # ------------------------------------------------------------------ #
-
-    # Check DB for a CONSUMED grant matching this command (replay guard).
-    try:
-        import gaia.store.writer as _sw
-        _con = _sw._connect()
-        try:
-            if _sw._consumed_grant_exists(command, _con):
-                logger.info(
-                    "Filesystem fallback suppressed: DB shows grant already "
-                    "CONSUMED for command='%s'", command[:80],
-                )
-                return None
-        finally:
-            _con.close()
-    except Exception:
-        pass
-
-    try:
-        grants_dir = _get_grants_dir()
-        if not grants_dir.exists():
-            return None
-
-        # Scan grant files for this session
-        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
-            try:
-                data = json.loads(grant_file.read_text())
-                grant = ApprovalGrant(**data)
-
-                # Skip expired or used grants
-                if not grant.is_valid():
-                    # Clean up expired grants; track if it would have matched
-                    if grant.is_expired():
-                        if grant.matches_command(command):
-                            _last_check_found_expired = True
-                        _cleanup_grant(grant_file)
-                    continue
-
-                signature = grant.get_signature()
-                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
-                    logger.warning("Removing unsupported approval grant file %s", grant_file)
-                    _cleanup_grant(grant_file)
-                    continue
-
-                # Check if command matches the explicit scope signature
-                if grant.matches_command(command):
-                    logger.info(
-                        "Approval grant matched (filesystem fallback): "
-                        "command='%s', scope='%s', type=%s",
-                        command[:80], grant.approved_scope, grant.scope_type,
-                    )
-                    return grant
-
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning("Invalid grant file %s: %s", grant_file, e)
-                _cleanup_grant(grant_file)
-                continue
-
-    except Exception as e:
-        logger.error("Error checking approval grants: %s", e)
 
     return None
 
 
 def consume_grant(command: str, session_id: str = None) -> bool:
-    """Mark the first matching valid grant as used and persist to disk.
+    """Mark the matching DB semantic grant as CONSUMED (replay protection).
 
-    Called by bash_validator immediately after check_approval_grant() returns
-    a match, so that the grant can only be used once (single-use).
+    DB-only since G2 cutover.  Called by bash_validator as a secondary
+    consume step after check_approval_grant() returns a match.  When
+    bash_validator already holds a ``_db_approval_id`` it calls
+    ``consume_db_semantic_grant`` directly; this function handles any
+    remaining cases where only the command string is available.
 
     Args:
         command: The shell command whose grant should be consumed.
-        session_id: Session ID for grant scoping (defaults to env var).
+        session_id: Accepted for signature compatibility; not used for the
+            DB lookup (grants are session-agnostic, per Brief 71).
 
     Returns:
-        True if a grant was found and consumed, False otherwise.
+        True if a matching PENDING grant was found and consumed, False otherwise.
     """
-    if not session_id:
-        session_id = _get_session_id()
-
     try:
-        grants_dir = _get_grants_dir()
-        if not grants_dir.exists():
-            return False
-
-        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
-            try:
-                data = json.loads(grant_file.read_text())
-                grant = ApprovalGrant(**data)
-
-                if not grant.is_valid():
-                    if grant.is_expired():
-                        _cleanup_grant(grant_file)
-                    continue
-
-                signature = grant.get_signature()
-                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
-                    continue
-
-                if grant.matches_command(command):
-                    if grant.multi_use:
-                        logger.info(
-                            "Grant matched (multi-use, not consumed): command='%s', grant=%s",
-                            command[:80], grant_file.name,
-                        )
-                        return True
-                    data["used"] = True
-                    grant_file.write_text(json.dumps(data, indent=2))
+        from gaia.store.writer import check_db_semantic_grant, consume_db_semantic_grant
+        db_row = check_db_semantic_grant(command, session_id=session_id)
+        if db_row is not None:
+            approval_id = db_row.get("approval_id")
+            if approval_id:
+                consumed = consume_db_semantic_grant(approval_id)
+                if consumed:
                     logger.info(
-                        "Grant consumed (single-use): command='%s', grant=%s",
-                        command[:80], grant_file.name,
+                        "Grant consumed (DB): command='%s', approval_id=%s",
+                        command[:80], approval_id[:16],
                     )
-                    return True
-
-            except (json.JSONDecodeError, TypeError):
-                continue
-
+                else:
+                    logger.debug(
+                        "consume_grant: DB grant already consumed or not found: "
+                        "approval_id=%s", approval_id[:16],
+                    )
+                return consumed
     except Exception as e:
-        logger.error("Error consuming grant: %s", e)
+        logger.error("Error consuming grant (DB): %s", e)
 
     return False
 
