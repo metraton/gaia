@@ -1148,127 +1148,130 @@ def consume_grant(command: str, session_id: str = None) -> bool:
 
 
 def consume_session_grants(session_id: str = None) -> int:
-    """Consume confirmed grants on the LEGACY FILESYSTEM plane for a session.
+    """Proactively consume confirmed DB grants for a session at session end.
 
-    Called at SubagentStop. Scope is the deprecated FS plane ONLY: it sweeps
-    ``grant-{session_id}-*.json`` files under the approvals cache dir and marks
-    confirmed ones used (multi-use grants too, since the session is over).
+    Called at SubagentStop as a defense-in-depth measure.  Since G3 cutover
+    the authoritative grant plane is the DB only; this function sweeps all
+    PENDING approval_grants rows whose confirmed=1 and marks them CONSUMED
+    so unused grants cannot be replayed after the session closes.
 
-    This is a NO-OP for grants on the authoritative DB plane (post Brief 71):
-    DB semantic grants are consumed on the MATCHING RETRY via
-    ``consume_db_semantic_grant`` (see the module docstring, "DB-backed model"),
-    NOT at SubagentStop. There is therefore no DB cleanup gap here -- DB replay
-    protection is handled at consume-on-retry time, and this function
-    intentionally does not (and must not) touch the DB plane. It remains live
-    only to drain pre-cutover FS grants; new sessions that never write an FS
-    grant simply get a return value of 0.
+    The primary replay guard remains consume-on-retry (bash_validator calls
+    consume_db_semantic_grant after each allowed command) -- this function
+    is a secondary sweep that catches any confirmed but unused DB grants that
+    were never retried in the session.
 
     Args:
         session_id: Session ID to scope consumption (defaults to env var).
 
     Returns:
-        Number of legacy FS grants consumed (0 when no FS grants exist).
+        Number of DB grants consumed (0 when none found or on error).
     """
     if not session_id:
         session_id = _get_session_id()
 
     consumed_count = 0
     try:
-        grants_dir = _get_grants_dir()
-        if not grants_dir.exists():
-            return 0
+        from gaia.store.writer import consume_db_semantic_grant
+        import gaia.store.writer as _sw
 
-        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
+        con = _sw._connect()
+        try:
+            # Find all PENDING, confirmed semantic grants (session-scoped
+            # for this sweep -- we only clean up what this session created).
+            cur = con.execute(
+                """
+                SELECT approval_id
+                FROM approval_grants
+                WHERE scope = 'SCOPE_SEMANTIC_SIGNATURE'
+                  AND status = 'PENDING'
+                  AND confirmed = 1
+                  AND (session_id = ? OR session_id IS NULL)
+                """,
+                (session_id,),
+            )
+            rows = cur.fetchall()
+        finally:
+            con.close()
+
+        for row in rows:
+            approval_id = row[0] if isinstance(row, tuple) else row.get("approval_id")
+            if not approval_id:
+                continue
             try:
-                data = json.loads(grant_file.read_text())
-                grant = ApprovalGrant(**data)
-
-                if grant.used:
-                    continue  # already consumed
-
-                if not grant.is_valid():
-                    if grant.is_expired():
-                        _cleanup_grant(grant_file)
-                    continue
-
-                # Consume all confirmed grants (single-use and multi-use)
-                if grant.confirmed:
-                    data["used"] = True
-                    grant_file.write_text(json.dumps(data, indent=2))
+                consumed = consume_db_semantic_grant(approval_id)
+                if consumed:
                     consumed_count += 1
                     logger.info(
-                        "Grant consumed at SubagentStop: grant=%s, multi_use=%s",
-                        grant_file.name, grant.multi_use,
+                        "Grant consumed at SubagentStop (DB): approval_id=%s",
+                        approval_id[:16],
                     )
-
-            except (json.JSONDecodeError, TypeError):
-                continue
+            except Exception as _ce:
+                logger.debug(
+                    "consume_session_grants: DB consume failed for %s (non-fatal): %s",
+                    approval_id[:16], _ce,
+                )
 
     except Exception as e:
-        logger.error("Error consuming session grants: %s", e)
+        logger.error("Error consuming session grants (DB): %s", e)
 
     return consumed_count
 
 
 def confirm_grant(command: str, session_id: str = None) -> bool:
-    """Mark the first unconfirmed grant matching command as confirmed.
+    """Set confirmed=1 on the first PENDING DB grant matching command.
 
-    Called after the native permission dialog accepts the first T3 execution.
-    Subsequent T3 commands within the TTL window will see ``confirmed=True``
-    and be auto-allowed without a native dialog.
+    DB-only since G3 cutover.  Called after the native permission dialog
+    accepts the first T3 execution.  Subsequent T3 commands within the TTL
+    window will see confirmed=True and be auto-allowed without a native dialog.
+
+    The matching approval_id is found via check_db_semantic_grant() (which
+    returns PENDING grants), then confirm_db_grant() sets confirmed=1.
 
     Args:
         command: The shell command whose grant should be confirmed.
         session_id: Session ID for grant scoping (defaults to env var).
 
     Returns:
-        True if a grant was found and confirmed, False otherwise.
+        True if a matching PENDING grant was found and confirmed, False otherwise.
     """
     if not session_id:
         session_id = _get_session_id()
 
     try:
-        grants_dir = _get_grants_dir()
-        if not grants_dir.exists():
+        from gaia.store.writer import check_db_semantic_grant, confirm_db_grant
+        db_row = check_db_semantic_grant(command, session_id=session_id)
+        if db_row is None:
+            logger.debug("confirm_grant: no DB grant found for command='%s'", command[:80])
             return False
-
-        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
-            try:
-                data = json.loads(grant_file.read_text())
-                grant = ApprovalGrant(**data)
-
-                if not grant.is_valid():
-                    if grant.is_expired():
-                        _cleanup_grant(grant_file)
-                    continue
-
-                if grant.confirmed:
-                    continue
-
-                signature = grant.get_signature()
-                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
-                    continue
-
-                if grant.matches_command(command):
-                    data["confirmed"] = True
-                    grant_file.write_text(json.dumps(data, indent=2))
-                    logger.info(
-                        "Grant confirmed: command='%s', grant=%s",
-                        command[:80], grant_file.name,
-                    )
-                    return True
-
-            except (json.JSONDecodeError, TypeError):
-                continue
-
+        approval_id = db_row.get("approval_id")
+        if not approval_id:
+            return False
+        result = confirm_db_grant(approval_id)
+        if result.get("status") == "applied":
+            logger.info(
+                "Grant confirmed (DB): command='%s', approval_id=%s",
+                command[:80], approval_id[:16],
+            )
+            return True
+        logger.debug(
+            "confirm_grant: confirm_db_grant returned %s for approval_id=%s",
+            result.get("status"), approval_id[:16],
+        )
     except Exception as e:
-        logger.error("Error confirming grant: %s", e)
+        logger.error("Error confirming grant (DB): %s", e)
 
     return False
 
 
 def cleanup_expired_grants(force: bool = False) -> int:
-    """Remove expired grant, pending, and stale pending-index files.
+    """Clean up expired grants and stale pending files.
+
+    Since G3 cutover the authoritative grant plane is the DB; this function
+    calls ``cleanup_expired_db_grants()`` to mark expired DB rows as EXPIRED,
+    and also sweeps the FS pending-{nonce}.json files (which may still exist
+    from write_pending_approval) and the legacy pending-index-{session}.json
+    files.  No FS grant-*.json files are written any more so that sweep has
+    been retired.
 
     Called periodically (e.g., at hook startup) to prevent accumulation.
     Throttled to run at most once every ``_CLEANUP_INTERVAL_SECONDS`` --
@@ -1276,13 +1279,10 @@ def cleanup_expired_grants(force: bool = False) -> int:
     CLI flush) can pass ``force=True``.
 
     Args:
-        force: When True, run cleanup regardless of the throttle. The
-            throttle exists to keep pre_tool_use cheap on bursty traffic;
-            session-lifecycle callers should bypass it so users do not
-            wait up to 60s for the first sweep of the session.
+        force: When True, run cleanup regardless of the throttle.
 
     Returns:
-        Number of files cleaned up (grants + pending + index files).
+        Total number of items cleaned (DB rows + FS files).
     """
     global _last_cleanup_time
     now = time.time()
@@ -1291,29 +1291,25 @@ def cleanup_expired_grants(force: bool = False) -> int:
     _last_cleanup_time = now
 
     cleaned = 0
+
+    # DB grant expiry sweep
+    try:
+        from gaia.store.writer import cleanup_expired_db_grants
+        db_cleaned = cleanup_expired_db_grants()
+        if db_cleaned:
+            logger.info("Marked %d expired DB approval_grants rows as EXPIRED", db_cleaned)
+            cleaned += db_cleaned
+    except Exception as _db_exc:
+        logger.debug("cleanup_expired_grants: DB sweep failed (non-fatal): %s", _db_exc)
+
+    # FS pending file and index sweep (write_pending_approval still writes to FS)
     sessions_to_rebuild: set[str] = set()
     try:
         grants_dir = _get_grants_dir()
         if not grants_dir.exists():
-            return 0
-
-        # Clean up expired active grants
-        for grant_file in grants_dir.glob("grant-*.json"):
-            try:
-                data = json.loads(grant_file.read_text())
-                grant = ApprovalGrant(**data)
-                signature = grant.get_signature()
-                if signature is None or signature.scope_type not in SUPPORTED_SCOPE_TYPES:
-                    _cleanup_grant(grant_file)
-                    cleaned += 1
-                    continue
-                if grant.is_expired():
-                    _cleanup_grant(grant_file)
-                    cleaned += 1
-            except Exception:
-                # Corrupt file, remove it
-                _cleanup_grant(grant_file)
-                cleaned += 1
+            if cleaned:
+                logger.info("Cleaned up %d expired approval/pending items", cleaned)
+            return cleaned
 
         # Clean up expired pending approvals
         for pending_file in grants_dir.glob("pending-*.json"):
@@ -1349,12 +1345,7 @@ def cleanup_expired_grants(force: bool = False) -> int:
                 _cleanup_grant(pending_file)
                 cleaned += 1
 
-        # Sweep orphan pending-index files. An index entry is orphan when
-        # its pending_file no longer exists on disk; an index file is orphan
-        # when none of its entries point to live pending files. Corrupt /
-        # unreadable index files are also removed -- the next write_pending
-        # call rebuilds the index from authoritative pending-{nonce}.json
-        # files, so there is no data loss risk.
+        # Sweep orphan pending-index files.
         for index_file in grants_dir.glob("pending-index-*.json"):
             try:
                 data = _read_json_file(index_file)
@@ -1388,13 +1379,13 @@ def cleanup_expired_grants(force: bool = False) -> int:
                 )
 
     except Exception as e:
-        logger.error("Error during grant cleanup: %s", e)
+        logger.error("Error during FS pending cleanup: %s", e)
 
     for session_id in sessions_to_rebuild:
         _rebuild_pending_index(session_id)
 
     if cleaned:
-        logger.info("Cleaned up %d expired approval/pending files", cleaned)
+        logger.info("Cleaned up %d expired approval/pending items", cleaned)
     return cleaned
 
 
