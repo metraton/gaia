@@ -171,7 +171,7 @@ EOF
 # `gaia doctor` lee MAX(version) y lo compara contra EXPECTED_SCHEMA_VERSION
 # baked in al CLI. Adicionalmente, check_schema_ddl_consistency compara el CHECK
 # constraint vivo contra el de schema.sql para cazar drift de ledger.
-SCHEMA_FLOOR=19
+SCHEMA_FLOOR=18
 
 NOW_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 EXISTING_VERSION="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
