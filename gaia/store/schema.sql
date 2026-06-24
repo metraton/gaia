@@ -785,7 +785,9 @@ CREATE TABLE IF NOT EXISTS approval_grants (
     status               TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|CONSUMED|REVOKED|EXPIRED
     consumed_indexes_json TEXT,                      -- JSON array of consumed command_set indexes
     consumed_at          TEXT,                       -- ISO8601 when all items consumed
-    revoked_at           TEXT                        -- ISO8601 when explicitly revoked
+    revoked_at           TEXT,                       -- ISO8601 when explicitly revoked
+    multi_use            INTEGER NOT NULL DEFAULT 0, -- 1 = multi-use grant, 0 = single-use (BOOLEAN)
+    confirmed            INTEGER NOT NULL DEFAULT 0  -- 1 = grant confirmed by user, 0 = pending (BOOLEAN)
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_grants_agent   ON approval_grants(agent_id);

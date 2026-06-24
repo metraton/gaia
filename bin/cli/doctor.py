@@ -185,7 +185,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 19
+EXPECTED_SCHEMA_VERSION = 20
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
