@@ -268,7 +268,12 @@ class TestActivateDbPendingByPrefix:
     """Core unit tests for activate_db_pending_by_prefix()."""
 
     def test_activates_db_pending_creates_grant(self, db_and_store):
-        """Given a DB REQUESTED row, activation creates a filesystem grant + DB events."""
+        """Given a DB REQUESTED row, activation inserts a DB semantic grant.
+
+        Since Task E the filesystem grant dual-write is retired.  The DB
+        semantic grant (approval_grants table) is the sole check-side artifact;
+        grant_path is None for SCOPE_SEMANTIC_SIGNATURE activations.
+        """
         db_path, assert_con, store = db_and_store
         command = "terraform apply"
         session_id = "test-bridge-session"
@@ -297,8 +302,12 @@ class TestActivateDbPendingByPrefix:
 
         assert result.success, f"Activation should succeed, got: {result.reason}"
         assert result.status == ACTIVATION_ACTIVATED
-        assert result.grant_path is not None
-        assert result.grant_path.exists(), "Filesystem grant file should exist"
+        # Task E: filesystem grant is retired; DB semantic grant is the sole
+        # check-side artifact.  grant_path is None for SCOPE_SEMANTIC_SIGNATURE.
+        assert result.grant_path is None, (
+            "Task E: SCOPE_SEMANTIC_SIGNATURE activations no longer create a "
+            "filesystem grant file; grant_path must be None"
+        )
 
     def test_db_events_written(self, db_and_store):
         """SHOWN and APPROVED events are written to approval_events."""
@@ -868,8 +877,12 @@ class TestActivateDbPendingCommandSet:
             nonce_prefix, current_session_id=session_id,
         )
         assert result.success
-        # Singular path -> a filesystem grant exists, no COMMAND_SET grant.
-        assert result.grant_path is not None
+        # Singular path -> DB semantic grant, no COMMAND_SET grant.
+        # Task E: filesystem grant is retired; grant_path is None.
+        assert result.grant_path is None, (
+            "Task E: singular SCOPE_SEMANTIC_SIGNATURE path must not create a "
+            "filesystem grant file"
+        )
 
         from gaia.store.writer import list_approval_grants
         grants = list_approval_grants(session_id=session_id, status="PENDING")
@@ -1288,3 +1301,289 @@ class TestIntakeCommandSetPending:
             if "command_set" in json.loads(p["payload_json"] or "{}")
         ]
         assert cs_pending == [], "A single-item command_set must not mint a COMMAND_SET pending"
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Task A -- verify_fingerprint is a HARD, fail-closed check on the
+# activation path (presentation-role integrity invariant).
+#
+# The approval flow has three non-violable roles:
+#   - generation  (subagent)  -- sealed via fingerprint at REQUESTED time
+#   - presentation (orchestrator) -- must show verbatim; enforced here
+#   - approval    (user)      -- sole authority; recorded in APPROVED event
+#
+# These tests verify:
+#   (a) A tampered/mismatched payload is REFUSED at activation (fail-closed).
+#   (b) A matching payload activates normally (no regression).
+#   (c) The refusal emits a FAILED audit event with tamper metadata.
+# ---------------------------------------------------------------------------
+
+class TestFingerprintEnforcementOnActivation:
+    """verify_fingerprint is HARD and fail-closed on the activation path."""
+
+    def _tamper_payload_json_in_db(
+        self,
+        assert_con: sqlite3.Connection,
+        approval_id: str,
+        tampered_command: str,
+    ) -> None:
+        """Directly overwrite payload_json in the approvals row to simulate tampering.
+
+        This bypasses the fingerprint idempotency check in insert_requested by
+        modifying the row AFTER it was written.  The stored fingerprint in
+        approval_events (REQUESTED event) will now disagree with the modified
+        payload_json, exactly as would happen if an orchestrator altered the
+        payload before calling activate_db_pending_by_prefix().
+        """
+        import json as _j
+        # Build a tampered payload with a different command.
+        tampered_payload = {
+            "operation": "MUTATIVE command intercepted: apply",
+            "exact_content": tampered_command,
+            "scope": tampered_command.split()[0],
+            "risk_level": "medium",
+            "rollback_hint": None,
+            "rationale": "TAMPERED approval",
+            "commands": [tampered_command],
+        }
+        # Disable the immutability triggers temporarily for approvals (not events).
+        assert_con.execute(
+            "UPDATE approvals SET payload_json = ? WHERE id = ?",
+            (_j.dumps(tampered_payload), approval_id),
+        )
+        assert_con.commit()
+
+    def test_tampered_payload_refused_at_activation(self, db_and_store):
+        """A payload that disagrees with the REQUESTED fingerprint is REFUSED.
+
+        Acceptance criterion (a): tampered/mismatched payload -> fail-closed.
+        """
+        db_path, assert_con, store = db_and_store
+        command = "terraform apply"
+        session_id = "test-bridge-session"
+
+        # Insert a legitimate REQUESTED row (fingerprint is correct at this point).
+        payload = _build_sealed_payload(command)
+        approval_id = store.insert_requested(
+            payload,
+            agent_id="test-agent",
+            session_id=session_id,
+        )
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+
+        # Tamper the payload_json in the DB after generation (simulates orchestrator
+        # altering the command the user would see).
+        self._tamper_payload_json_in_db(assert_con, approval_id, "rm -rf /production")
+
+        from modules.security.approval_grants import (
+            activate_db_pending_by_prefix,
+            ACTIVATION_CHAIN_TAMPER_DETECTED,
+        )
+
+        result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
+        )
+
+        assert not result.success, "Tampered payload must NOT activate"
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED, (
+            f"Expected CHAIN_TAMPER_DETECTED, got {result.status!r}"
+        )
+        assert "integrity" in result.reason.lower() or "tamper" in result.reason.lower(), (
+            f"Reason must describe the integrity failure: {result.reason}"
+        )
+
+    def test_tampered_payload_approval_stays_pending(self, db_and_store):
+        """After a tamper-refused activation, the approval row stays 'pending'.
+
+        The fail-closed path must not flip the DB status to 'approved'.
+        """
+        db_path, assert_con, store = db_and_store
+        command = "git push origin main"
+        session_id = "test-bridge-session"
+
+        payload = _build_sealed_payload(command)
+        approval_id = store.insert_requested(
+            payload, session_id=session_id,
+        )
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        self._tamper_payload_json_in_db(assert_con, approval_id, "git push --force origin main")
+
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+
+        result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
+        )
+
+        assert not result.success
+        row = assert_con.execute(
+            "SELECT status FROM approvals WHERE id = ?", (approval_id,)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "pending", (
+            f"Approval must remain 'pending' after tamper refusal, got: {row[0]}"
+        )
+
+    def test_tampered_payload_emits_failed_audit_event(self, db_and_store):
+        """Refusal due to tampered payload writes a FAILED audit event.
+
+        Acceptance criterion (c): the refusal is recorded in the append-only chain.
+        """
+        db_path, assert_con, store = db_and_store
+        command = "kubectl delete pod mypod"
+        session_id = "test-bridge-session"
+
+        payload = _build_sealed_payload(command)
+        approval_id = store.insert_requested(
+            payload,
+            agent_id="test-agent",
+            session_id=session_id,
+        )
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        self._tamper_payload_json_in_db(assert_con, approval_id, "kubectl delete namespace production")
+
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+
+        result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
+        )
+
+        assert not result.success
+
+        # Check that a FAILED event was written to approval_events.
+        events = store.replay_for_approval(approval_id, con=assert_con)
+        event_types = [e["event_type"] for e in events]
+        assert "FAILED" in event_types, (
+            f"A FAILED audit event must exist after tamper refusal, got: {event_types}"
+        )
+
+        # The FAILED event metadata must describe the integrity failure.
+        failed_events = [e for e in events if e["event_type"] == "FAILED"]
+        assert len(failed_events) == 1
+        failed_meta = failed_events[0].get("metadata_json") or "{}"
+        import json as _j
+        meta = _j.loads(failed_meta)
+        assert meta.get("integrity_check") == "fingerprint_mismatch", (
+            f"FAILED event metadata must carry integrity_check=fingerprint_mismatch, got: {meta}"
+        )
+
+    def test_matching_payload_activates_normally(self, db_and_store):
+        """A genuine (unmodified) payload activates as expected.
+
+        Acceptance criterion (b): no regression for the legitimate case.
+        """
+        db_path, assert_con, store = db_and_store
+        command = "terraform apply"
+        session_id = "test-bridge-session"
+
+        payload = _build_sealed_payload(command)
+        approval_id = store.insert_requested(
+            payload,
+            agent_id="test-agent",
+            session_id=session_id,
+        )
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        # No tampering -- payload_json matches the REQUESTED fingerprint.
+
+        from modules.security.approval_grants import (
+            activate_db_pending_by_prefix,
+            ACTIVATION_ACTIVATED,
+        )
+
+        result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
+        )
+
+        assert result.success, f"Legitimate activation must succeed: {result.reason}"
+        assert result.status == ACTIVATION_ACTIVATED
+        # Task E: filesystem grant is retired; DB semantic grant is sole check-side artifact.
+        assert result.grant_path is None, (
+            "Task E: SCOPE_SEMANTIC_SIGNATURE activations must not write a "
+            "filesystem grant file"
+        )
+
+        # DB should show 'approved' and events REQUESTED+SHOWN+APPROVED.
+        row = assert_con.execute(
+            "SELECT status FROM approvals WHERE id = ?", (approval_id,)
+        ).fetchone()
+        assert row[0] == "approved"
+
+        events = store.replay_for_approval(approval_id, con=assert_con)
+        event_types = [e["event_type"] for e in events]
+        assert "REQUESTED" in event_types
+        assert "SHOWN" in event_types
+        assert "APPROVED" in event_types
+        assert "FAILED" not in event_types, (
+            "No FAILED event should appear for a legitimate activation"
+        )
+
+    def test_no_requested_event_refused_at_activation(self, db_and_store):
+        """An approval missing a REQUESTED event cannot be activated.
+
+        verify_fingerprint raises ValueError when no REQUESTED event exists.
+        The activation must fail-closed with CHAIN_TAMPER_DETECTED.
+        """
+        db_path, assert_con, store = db_and_store
+        session_id = "test-bridge-session"
+
+        # Manually insert a pending approval row WITHOUT using insert_requested
+        # (so no REQUESTED event is written to approval_events).
+        import json as _j
+        import uuid as _uuid
+        approval_id = f"P-{_uuid.uuid4().hex}"
+        raw_payload = _build_sealed_payload("terraform apply")
+        raw_payload_json = _j.dumps(raw_payload)
+        assert_con.execute(
+            "INSERT INTO approvals (id, session_id, status, payload_json) "
+            "VALUES (?, ?, 'pending', ?)",
+            (approval_id, session_id, raw_payload_json),
+        )
+        assert_con.commit()
+
+        # There are no approval_events rows for this approval_id.
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+
+        from modules.security.approval_grants import (
+            activate_db_pending_by_prefix,
+            ACTIVATION_CHAIN_TAMPER_DETECTED,
+        )
+
+        result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
+        )
+
+        assert not result.success
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED, (
+            f"Missing REQUESTED event must fail with CHAIN_TAMPER_DETECTED, got: {result.status!r}"
+        )
+
+    def test_no_filesystem_grant_created_on_tamper_refusal(self, db_and_store, isolated_grants_dir):
+        """No filesystem grant file is created when activation is refused for tamper.
+
+        The refusal must be completely fail-closed: no usable artefact is left.
+        """
+        db_path, assert_con, store = db_and_store
+        command = "gcloud projects delete my-project"
+        session_id = "test-bridge-session"
+
+        payload = _build_sealed_payload(command)
+        approval_id = store.insert_requested(
+            payload, session_id=session_id,
+        )
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        self._tamper_payload_json_in_db(assert_con, approval_id, "gcloud projects delete all-projects")
+
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+
+        result = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
+        )
+
+        assert not result.success
+        assert result.grant_path is None, (
+            "No grant_path must be set on a tamper-refused activation"
+        )
+        # Verify no grant-*.json file was written.
+        grant_files = list(isolated_grants_dir.glob("grant-*.json"))
+        assert grant_files == [], (
+            f"No grant files must exist after tamper refusal, got: {grant_files}"
+        )

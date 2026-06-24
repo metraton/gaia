@@ -3211,6 +3211,223 @@ def consume_db_semantic_grant(
 
 
 # ---------------------------------------------------------------------------
+# Public API: insert_file_path_grant / check_db_file_path_grant /
+#             consume_db_file_path_grant (SCOPE_FILE_PATH DB migration)
+# ---------------------------------------------------------------------------
+#
+# Mirrors the SCOPE_SEMANTIC_SIGNATURE grant triplet above but for protected-
+# path Write/Edit approvals.  Uses scope='SCOPE_FILE_PATH' in the same
+# approval_grants table so all grant lifecycle is visible in one place.
+#
+# Lifecycle:
+#   insert_file_path_grant()       -- called by activate_db_pending_by_prefix()
+#                                     SCOPE_FILE_PATH branch; writes status=PENDING.
+#   check_db_file_path_grant()     -- called by check_approval_grant_for_file();
+#                                     returns the matching row dict.
+#   consume_db_file_path_grant()   -- called by _adapt_write_edit after allowing
+#                                     the protected-path write; sets CONSUMED.
+# ---------------------------------------------------------------------------
+
+
+def insert_file_path_grant(
+    approval_id: str,
+    file_path: str,
+    scope_signature: dict,
+    *,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    ttl_minutes: int = APPROVAL_GRANT_TTL_MINUTES,
+    db_path: Path | None = None,
+) -> dict:
+    """Insert a SCOPE_FILE_PATH row into approval_grants (status=PENDING).
+
+    Called by activate_db_pending_by_prefix() when a SCOPE_FILE_PATH pending
+    approval is activated (user approved the protected-path write).  The row
+    is later found by check_db_file_path_grant() on the subagent retry.
+
+    Args:
+        approval_id: The P-{hex} approval id that was activated.  Used as PK.
+        file_path: The absolute file path approved for write/edit.
+        scope_signature: Dict from ApprovalSignature.to_dict() -- stored in
+            command_set_json so check_db_file_path_grant() can match.
+        agent_id: Requesting agent identifier (audit only).
+        session_id: CLAUDE_SESSION_ID at grant time (audit only -- the check
+            side is cross-session, same as SCOPE_SEMANTIC_SIGNATURE).
+        ttl_minutes: Grant lifetime in minutes.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied"} on success, {"status": "error", "reason": ...} otherwise.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    grant_data = {
+        "file_path": file_path,
+        "scope_signature": scope_signature,
+    }
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO approval_grants
+                    (approval_id, agent_id, session_id, command_set_json,
+                     scope, created_at, expires_at, status,
+                     consumed_indexes_json)
+                VALUES (?, ?, ?, ?, 'SCOPE_FILE_PATH', ?, ?, 'PENDING', '[]')
+                """,
+                (
+                    approval_id,
+                    agent_id,
+                    session_id,
+                    _json.dumps(grant_data),
+                    _now_iso(),
+                    expires_at,
+                ),
+            )
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        return _applied()
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def check_db_file_path_grant(
+    file_path: str,
+    *,
+    db_path: Path | None = None,
+) -> dict | None:
+    """Find an active SCOPE_FILE_PATH grant for file_path in the DB.
+
+    Called by check_approval_grant_for_file() as the primary (DB) check path.
+    Matching uses the scope_signature stored in command_set_json via
+    matches_file_path_approval().
+
+    Grant must:
+    - Have scope='SCOPE_FILE_PATH'
+    - Have status='PENDING'
+    - Not be past its expires_at timestamp
+
+    The lookup is session-agnostic (same rationale as check_db_semantic_grant):
+    the activate-approve-retry flow crosses sessions, so a session_id constraint
+    would prevent the subagent from finding the grant the orchestrator created.
+
+    Args:
+        file_path: The file path to match.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        Dict with grant row data when a matching grant is found, None otherwise.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    try:
+        import sys as _sys
+        _hooks_root = str(_Path(__file__).resolve().parents[2] / "hooks")
+        if _hooks_root not in _sys.path:
+            _sys.path.insert(0, _hooks_root)
+        from modules.security.approval_scopes import (
+            ApprovalSignature,
+            matches_file_path_approval,
+        )
+    except ImportError:
+        return None
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT * FROM approval_grants "
+            "WHERE scope = 'SCOPE_FILE_PATH' AND status = 'PENDING' "
+            "ORDER BY created_at DESC",
+        ).fetchall()
+
+        for row in rows:
+            row_dict = dict(row)
+            expires_at = row_dict.get("expires_at")
+            if expires_at and expires_at < now_iso:
+                continue
+
+            command_set_json = row_dict.get("command_set_json") or "{}"
+            try:
+                grant_data = _json.loads(command_set_json)
+            except Exception:
+                continue
+
+            sig_dict = grant_data.get("scope_signature")
+            if not sig_dict:
+                continue
+
+            try:
+                signature = ApprovalSignature.from_dict(sig_dict)
+                if matches_file_path_approval(signature, file_path):
+                    return row_dict
+            except Exception:
+                continue
+
+        return None
+    except Exception:
+        return None
+    finally:
+        con.close()
+
+
+def consume_db_file_path_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Mark a SCOPE_FILE_PATH grant as CONSUMED (replay protection).
+
+    Called by _adapt_write_edit immediately after a protected-path write is
+    allowed via a DB file-path grant.  Setting status=CONSUMED prevents reuse.
+
+    Args:
+        approval_id: The grant to consume.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        True if the grant was found and consumed, False otherwise.
+    """
+    now = _now_iso()
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                """
+                UPDATE approval_grants
+                SET status = 'CONSUMED', consumed_at = ?
+                WHERE approval_id = ?
+                  AND scope = 'SCOPE_FILE_PATH'
+                  AND status = 'PENDING'
+                """,
+                (now, approval_id),
+            )
+            con.commit()
+            return cur.rowcount > 0
+        except Exception:
+            con.rollback()
+            raise
+    except Exception:
+        return False
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: agent_contract_handoffs (v9 / M4)
 # ---------------------------------------------------------------------------
 #

@@ -128,6 +128,7 @@ class TestBuildAgenticLoopBlock:
 # ---------------------------------------------------------------------------
 
 def _make_fake_pending(nonce_short: str, session_id: str):
+    """Build a filesystem-style fake pending dict."""
     return {
         "nonce_short": nonce_short,
         "nonce_full": nonce_short + ("0" * (32 - len(nonce_short))),
@@ -143,81 +144,117 @@ def _make_fake_pending(nonce_short: str, session_id: str):
     }
 
 
+def _make_fake_pending_db(nonce_short: str, session_id: str):
+    """Build a DB-style fake pending dict (as returned by scan_pending_db)."""
+    nonce_full = nonce_short + ("0" * (32 - len(nonce_short)))
+    return {
+        "nonce_short": nonce_short,
+        "nonce_full": nonce_full,
+        "command": f"fake-db-cmd-{nonce_short}",
+        "verb": "delete",
+        "category": "DESTRUCTIVE",
+        "age_human": "1 hora",
+        "timestamp": time.time() - 3600,
+        "context": {"source": "db", "description": "test op", "risk": "high", "rollback": None},
+        "scope_type": "db",
+        "cross_session": False,
+        "pending_session_id": session_id,
+        "_approval_id": f"P-{nonce_full}",
+    }
+
+
 class TestBuildPendingApprovalsBlock:
     def test_returns_empty_when_no_pendings(self, monkeypatch):
         import modules.session.pending_scanner as ps
+        monkeypatch.setattr(ps, "scan_pending_db", lambda: [])
         monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
         monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-empty")
 
         result = build_pending_approvals_block()
         assert result == ""
 
-    def test_returns_actionable_block_with_pendings(self, monkeypatch):
+    def test_returns_actionable_block_with_db_pendings(self, monkeypatch):
+        """DB pendings (primary path) must surface in the [ACTIONABLE] block."""
         import modules.session.pending_scanner as ps
-        pendings = [_make_fake_pending("abcd1234", "sess-test")]
-        monkeypatch.setattr(
-            ps, "scan_pending_approvals", lambda *a, **kw: pendings
-        )
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-test")
+        db_pendings = [_make_fake_pending_db("abcd1234", "sess-main")]
+        monkeypatch.setattr(ps, "scan_pending_db", lambda: db_pendings)
+        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-main")
 
         result = build_pending_approvals_block()
         assert "[ACTIONABLE]" in result
         assert "P-abcd1234" in result
 
-    def test_cross_session_fallback_uses_exclude_live_sessions(self, monkeypatch):
-        """When current-session scan is empty, the cross-session scan must
-        be invoked with exclude_live_sessions=True so live siblings are
-        filtered out. This protects the include_headless=False path
-        installed inside pending_scanner."""
+    def test_returns_empty_when_db_empty(self, monkeypatch):
+        """When DB returns no pending rows, the block is empty (DB-only since Task E)."""
         import modules.session.pending_scanner as ps
+        monkeypatch.setattr(ps, "scan_pending_db", lambda: [])
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-fs")
 
-        captured_calls = []
+        result = build_pending_approvals_block()
+        assert result == "", (
+            "Task E: FS supplement is retired; an empty DB must yield an empty block."
+        )
 
-        def fake_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
-        ):
-            captured_calls.append(
-                {
-                    "session_id": session_id,
-                    "current_session_id": current_session_id,
-                    "exclude_live_sessions": exclude_live_sessions,
-                }
-            )
-            # First call (current-session) returns empty so fallback triggers.
-            if session_id is not None:
-                return []
-            # Second call (cross-session fallback) returns one pending.
-            return [_make_fake_pending("xs000001", "sess-other")]
-
-        monkeypatch.setattr(ps, "scan_pending_approvals", fake_scan)
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-test")
+    def test_db_is_sole_source_multiple_pendings(self, monkeypatch):
+        """Multiple DB pendings all surface; no deduplication needed since DB is sole source."""
+        import modules.session.pending_scanner as ps
+        db_pendings = [
+            _make_fake_pending_db("abcd1234", "sess-x"),
+            _make_fake_pending_db("deadbeef", "sess-x"),
+        ]
+        monkeypatch.setattr(ps, "scan_pending_db", lambda: db_pendings)
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-x")
 
         result = build_pending_approvals_block()
         assert "[ACTIONABLE]" in result
-        assert len(captured_calls) == 2, (
-            "Both the current-session and cross-session scans must run "
-            "when the first returns empty."
-        )
-        assert captured_calls[1]["exclude_live_sessions"] is True, (
-            "Cross-session fallback must pass exclude_live_sessions=True. "
-            "Without it, pendings from parallel live sessions would "
-            "double-surface."
-        )
+        assert "P-abcd1234" in result
+        assert "P-deadbeef" in result
+        # Each approval must appear exactly once.
+        assert result.count("P-abcd1234") == 1
+        assert result.count("P-deadbeef") == 1
+
+    def test_failsafe_when_db_scanner_raises(self, monkeypatch):
+        """When scan_pending_db raises, the block must still be "" (fail-safe)."""
+        import modules.session.pending_scanner as ps
+
+        def _boom_db():
+            raise RuntimeError("simulated DB failure")
+
+        monkeypatch.setattr(ps, "scan_pending_db", _boom_db)
+        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-x")
+
+        # Must not raise.
+        assert build_pending_approvals_block() == ""
 
     def test_failsafe_when_scanner_raises(self, monkeypatch):
+        """When scan_pending_db raises, return "" without propagating (DB-only since Task E)."""
         import modules.session.pending_scanner as ps
 
         def _boom(*a, **kw):
             raise RuntimeError("simulated scanner failure")
 
-        monkeypatch.setattr(ps, "scan_pending_approvals", _boom)
+        monkeypatch.setattr(ps, "scan_pending_db", _boom)
         monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-x")
 
         # Must not raise.
         assert build_pending_approvals_block() == ""
+
+    def test_command_set_pending_surfaces_correctly(self, monkeypatch):
+        """A COMMAND_SET DB pending (multi-command) must surface with
+        the correct P-id and command summary in the [ACTIONABLE] block."""
+        import modules.session.pending_scanner as ps
+        cs_pending = _make_fake_pending_db("cs001234", "sess-y")
+        cs_pending["command"] = "[2 commands] kubectl delete pod foo"
+        monkeypatch.setattr(ps, "scan_pending_db", lambda: [cs_pending])
+        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-y")
+
+        result = build_pending_approvals_block()
+        assert "[ACTIONABLE]" in result
+        assert "P-cs001234" in result
+        assert "[2 commands]" in result
 
 
 # ---------------------------------------------------------------------------

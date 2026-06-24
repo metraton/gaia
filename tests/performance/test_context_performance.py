@@ -4,11 +4,9 @@ Performance benchmark tests for context enrichment pipeline.
 
 Validates non-functional requirements:
   NFR-001: process_agent_output completes in < 200 ms on a ~50 KB payload.
-  NFR-002: deep_merge handles ~50 KB without degradation (linear, not quadratic).
 
 Modules under test:
   - hooks/modules/context/context_writer.py  (process_agent_output)
-  - tools/context/deep_merge.py              (used internally)
 """
 
 import sys
@@ -21,12 +19,9 @@ from pathlib import Path
 # Path setup (follows existing project conventions)
 # ---------------------------------------------------------------------------
 HOOKS_DIR = Path(__file__).resolve().parents[2] / "hooks"
-TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
-sys.path.insert(0, str(TOOLS_DIR))
-sys.path.insert(0, str(TOOLS_DIR / "context"))
 
 # DB helpers
 from tests.fixtures.db_helpers import (
@@ -48,18 +43,12 @@ def _import_process_update_contracts():
     return process_update_contracts
 
 
-def _import_deep_merge():
-    from deep_merge import deep_merge
-    return deep_merge
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 TARGET_CONTEXT_SIZE_KB = 50
 NFR_001_MAX_MS = 200
-NFR_002_DEGRADATION_FACTOR = 3.0  # 2x file must not take > 3x the time
 
 # Number of timing iterations for stable measurements
 TIMING_ITERATIONS = 5
@@ -73,8 +62,7 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
     """Generate a realistic project-context.json of approximately *target_kb* KB.
 
     Structure mirrors real production contexts with 12 sections, nested dicts,
-    and arrays of objects with ``name`` keys (exercising the named-dict merge
-    path in deep_merge).
+    and arrays of objects with ``name`` keys.
     """
     context = {
         "metadata": {
@@ -634,77 +622,6 @@ class TestNFR001ProcessAgentOutputLatency:
 
 
 # ============================================================================
-# NFR-002: deep_merge scales linearly with file size
-# ============================================================================
-
-class TestNFR002DeepMergeScalability:
-    """NFR-002: deep_merge on a ~50 KB section must not degrade non-linearly.
-
-    Strategy: time the merge on 25 KB vs 50 KB data.  The 50 KB run should
-    not take more than NFR_002_DEGRADATION_FACTOR times the 25 KB run
-    (allowing for constant overhead, GC jitter, etc.).
-    """
-
-    def test_deep_merge_linear_scaling(self):
-        deep_merge = _import_deep_merge()
-
-        # Build two section dicts of different sizes (25 KB and 50 KB)
-        small_section = _build_section_dict(target_kb=25)
-        large_section = _build_section_dict(target_kb=50)
-
-        # The update is the same small delta applied to both
-        update = {
-            "new_field": "added-value",
-            "nested": {
-                "deep_key": "deep_value",
-                "list_field": ["alpha", "beta", "gamma"],
-            },
-        }
-
-        def merge_small():
-            deep_merge(small_section, update)
-
-        def merge_large():
-            deep_merge(large_section, update)
-
-        time_small = _median_time_ms(merge_small, iterations=10)
-        time_large = _median_time_ms(merge_large, iterations=10)
-
-        # Guard against near-zero measurements (both should be > 0)
-        assert time_small > 0, "Small merge completed in 0 ms -- clock resolution issue?"
-
-        ratio = time_large / time_small if time_small > 0 else 999
-
-        assert ratio < NFR_002_DEGRADATION_FACTOR, (
-            f"NFR-002 FAILED: deep_merge scaled non-linearly. "
-            f"25 KB: {time_small:.2f} ms, 50 KB: {time_large:.2f} ms, "
-            f"ratio: {ratio:.2f}x (max: {NFR_002_DEGRADATION_FACTOR}x)"
-        )
-
-    def test_deep_merge_50kb_absolute_time(self):
-        """Deep merge on a single ~50 KB section completes well under 200 ms."""
-        deep_merge = _import_deep_merge()
-
-        section = _build_section_dict(target_kb=50)
-        update = {
-            "services": [
-                {"name": "service-0", "status": "updated"},
-                {"name": "new-service-benchmark", "status": "running", "port": 9999},
-            ],
-        }
-
-        def run_merge():
-            deep_merge(section, update)
-
-        elapsed_ms = _median_time_ms(run_merge, iterations=10)
-
-        assert elapsed_ms < NFR_001_MAX_MS, (
-            f"NFR-002 FAILED: deep_merge on 50 KB took {elapsed_ms:.1f} ms "
-            f"(budget: {NFR_001_MAX_MS} ms)"
-        )
-
-
-# ============================================================================
 # Correctness under load: verify process_update_contracts results are accurate
 # ============================================================================
 
@@ -763,37 +680,3 @@ class TestCorrectnessUnderLoad:
         assert "gitops_configuration" in result["rejected"]
 
 
-# ---------------------------------------------------------------------------
-# Helpers for NFR-002 section generation
-# ---------------------------------------------------------------------------
-
-def _build_section_dict(target_kb: int) -> dict:
-    """Build a dict of approximately *target_kb* KB with realistic structure.
-
-    Contains nested dicts and arrays of named dicts to exercise all merge
-    paths in deep_merge.
-    """
-    section: dict = {
-        "metadata": {"generated_for": "benchmark", "version": "1.0"},
-        "services": [],
-        "config": {},
-    }
-
-    svc_index = 0
-    while len(json.dumps(section)) < target_kb * 1024:
-        section["services"].append({
-            "name": f"svc-{svc_index}",
-            "port": 3000 + svc_index,
-            "status": "running",
-            "replicas": 3,
-            "labels": {f"label-{j}": f"value-{j}" for j in range(5)},
-            "annotations": {f"ann-{j}": f"data-{j}" for j in range(5)},
-        })
-        section["config"][f"key-{svc_index}"] = {
-            "nested_a": f"value-a-{svc_index}",
-            "nested_b": svc_index * 100,
-            "nested_list": list(range(svc_index % 10)),
-        }
-        svc_index += 1
-
-    return section

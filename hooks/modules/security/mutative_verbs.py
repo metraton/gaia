@@ -289,6 +289,12 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # exemption is explicit and carries the same DENY-verb guard as `gaia brief`:
     # `gaia plan delete` (whole-record destruction) stays T3.
     ("gaia", "plan"): CATEGORY_READ_ONLY,
+    # `gaia task <verb>` (add/set-status/reorder/show/list): local task-lifecycle
+    # bookkeeping in gaia.db — reversible status transitions, no external effects,
+    # mirrors the brief/ac/plan exemptions.  `gaia task remove` (irreversible row
+    # deletion) stays T3 via the per-group deny-verbs guard in
+    # COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS below.
+    ("gaia", "task"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception
@@ -298,6 +304,18 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
 COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS: FrozenSet[str] = frozenset({
     "delete", "destroy", "purge", "wipe", "drop", "shred", "erase",
 })
+
+# Per-group EXTRA deny verbs that augment the global set above for specific
+# (base_cmd, subcommand) pairs.  Use this when a verb is destructive for one
+# group but is a legitimate reversible bookkeeping operation for another
+# (e.g., `gaia ac remove` removes a single reversible AC row and must stay
+# non-T3, but `gaia task remove` deletes the task record permanently and must
+# stay T3).  The enforcement logic ORs the global set with this per-group set.
+COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str], FrozenSet[str]] = {
+    # `gaia task remove` is an irreversible row deletion (no un-delete in the
+    # tasks store), unlike `gaia ac remove` (AC rows can be re-added).
+    ("gaia", "task"): frozenset({"remove"}),
+}
 
 
 # ============================================================================
@@ -1191,10 +1209,15 @@ def detect_mutative_command(command: str) -> MutativeResult:
             if len(semantics.non_flag_tokens) > 1 else ""
         )
         # Whole-record destruction (delete/destroy/...) stays gated even within
-        # an excepted group; only reversible bookkeeping is exempted.
+        # an excepted group; only reversible bookkeeping is exempted.  Also
+        # check per-group extra deny verbs (COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS)
+        # for verbs that are destructive in one group but reversible in another.
+        _extra_deny = COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS.get(subcommand_key, frozenset())
         verb_is_destructive = (
             group_verb.split("-", 1)[0] in COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS
             or group_verb in COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS
+            or group_verb.split("-", 1)[0] in _extra_deny
+            or group_verb in _extra_deny
         )
         if subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS:
             if verb_is_destructive:

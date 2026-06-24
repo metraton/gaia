@@ -173,6 +173,82 @@ def test_close(tmp_db):
     assert close_brief("me", "ghost", db_path=tmp_db) is False
 
 
+def test_close_advisory_warns_on_inconsistency(tmp_db, tmp_path, monkeypatch, capsys):
+    """AC-3: brief close emits advisory warnings to stderr for inconsistencies.
+
+    Creates a brief with an empty plan (zero tasks) -- invariant 1 of
+    verify_brief (empty_plan). Asserts:
+      - _cmd_close returns 0 (close always succeeds)
+      - brief status is 'closed' (mutation applied)
+      - stderr contains at least one Warning line for the inconsistency
+      - stdout contains the 'Closed' confirmation
+    """
+    import argparse
+    from cli.brief import _cmd_close
+    from gaia.briefs import upsert_brief, get_brief
+    from gaia.store.writer import upsert_plan
+
+    monkeypatch.chdir(tmp_path)
+
+    # Create brief in draft status, then create an empty plan (zero tasks).
+    upsert_brief("me", "ac3-advisory-brief",
+                 {"status": "draft", "title": "AC-3 Advisory Test"},
+                 db_path=tmp_db)
+    upsert_plan("me", "ac3-advisory-brief",
+                content="plan with no tasks", db_path=tmp_db)
+
+    args = argparse.Namespace(name="ac3-advisory-brief", workspace="me")
+    rc = _cmd_close(args)
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"expected exit 0, got {rc}; stderr={captured.err}"
+
+    brief = get_brief("me", "ac3-advisory-brief", db_path=tmp_db)
+    assert brief["status"] == "closed", "brief must be closed after _cmd_close"
+
+    assert "Closed" in captured.out
+    # Advisory fires: at least one Warning line on stderr.
+    assert "Warning:" in captured.err, (
+        f"expected stderr advisory warnings, got: {captured.err!r}"
+    )
+    # The empty_plan kind must be surfaced.
+    assert "empty_plan" in captured.err
+
+
+def test_close_advisory_silent_for_clean_brief(tmp_db, tmp_path, monkeypatch, capsys):
+    """AC-3: brief close emits NO warnings when the brief has no inconsistencies.
+
+    A brief with no associated plan has nothing for verify_brief to flag.
+    Asserts:
+      - _cmd_close returns 0
+      - brief status is 'closed'
+      - stderr is empty (no spurious advisory noise)
+    """
+    import argparse
+    from cli.brief import _cmd_close
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+
+    upsert_brief("me", "ac3-clean-brief",
+                 {"status": "draft", "title": "AC-3 Clean Test"},
+                 db_path=tmp_db)
+
+    args = argparse.Namespace(name="ac3-clean-brief", workspace="me")
+    rc = _cmd_close(args)
+
+    captured = capsys.readouterr()
+    assert rc == 0, f"expected exit 0, got {rc}; stderr={captured.err}"
+
+    brief = get_brief("me", "ac3-clean-brief", db_path=tmp_db)
+    assert brief["status"] == "closed"
+
+    assert "Closed" in captured.out
+    assert captured.err == "", (
+        f"expected empty stderr for clean brief, got: {captured.err!r}"
+    )
+
+
 def test_deps(tmp_db):
     """deps returns transitive closure."""
     from gaia.briefs import upsert_brief, get_dependencies

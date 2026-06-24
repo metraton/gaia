@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Tests for the pending-approval session-liveness filter (T13).
 
-Validates that ``build_pending_approvals_block()`` (the SessionStart
-manifest builder, formerly the UserPromptSubmit ``_build_pending_context``
-shim) passes ``exclude_live_sessions=True`` to the cross-session fallback
-scan, so pendings from parallel live sessions do NOT appear in the
-[ACTIONABLE] injection of another session.
+Task E: liveness filtering moved OUT of the SessionStart block.
+``build_pending_approvals_block()`` is now DB-only (``scan_pending_db``,
+all_sessions=True) -- the DB is per-machine so cross-session leakage is
+impossible and no liveness exclusion is applied there.
 
-This closes the root bug that motivated the approvals-drift-fix brief:
-pendings created in session X were being injected into session Y under
-the "[session anterior]" label even though session X was still alive and
-would resolve them on its next turn.
+The liveness filter (``exclude_live_sessions=True``) now lives in the CLI
+discovery path ``_scan_pending_shared`` (used by ``gaia approvals list
+--orphans-only`` and ``reject-all``). These tests therefore validate the
+liveness axis against that function -- the new home of the filter -- and
+keep one DB-only assertion for the SessionStart block to confirm it no
+longer applies a liveness filter.
 
-Tests in this file focus on the liveness axis; the shape/format of the
-[ACTIONABLE] block is covered by
+The shape/format of the [ACTIONABLE] block is covered by
 ``tests/hooks/modules/session/test_session_manifest.py``.
 """
 
@@ -28,43 +28,53 @@ import pytest
 # Add hooks to path so imports mirror the production layout.
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
+# bin/ for the CLI module that now owns the liveness filter.
+BIN_DIR = Path(__file__).parent.parent.parent / "bin"
+sys.path.insert(0, str(BIN_DIR))
 
-# Pending-approval block lives in session_manifest after Phase 4. The
-# legacy _build_pending_context() shim was removed once the runtime stopped
-# calling it; these tests now exercise the canonical home directly.
-from modules.session.session_manifest import (
-    build_pending_approvals_block as _build_pending_context,
-)
+from modules.session.session_manifest import build_pending_approvals_block
 from modules.core.paths import clear_path_cache
+import cli.approvals as approvals_mod
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _make_fake_pending(
-    nonce_short: str,
-    session_id: str,
-    cross_session: bool = True,
-) -> Dict:
-    """Build a pending dict in the shape pending_scanner returns."""
-    return {
-        "nonce_short": nonce_short,
-        "nonce_full": nonce_short + "0" * 24,
-        "command": f"cmd-{nonce_short}",
-        "verb": "push",
-        "category": "GIT",
-        "age_human": "1 min",
-        "timestamp": time.time() - 60,
-        "context": {
-            "source": "developer",
-            "description": "fake",
-            "risk": "medium",
-        },
-        "scope_type": "semantic_signature",
-        "cross_session": cross_session,
-        "pending_session_id": session_id,
-    }
+def _sha256(value):
+    import hashlib
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _make_v12_schema(con):
+    con.execute("PRAGMA foreign_keys = ON")
+    con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY, agent_id TEXT, session_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','approved','rejected','revoked','expired')),
+            fingerprint TEXT, payload_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            decided_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS approval_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, approval_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN (
+                'REQUESTED','SHOWN','APPROVED','REJECTED',
+                'EXECUTED','FAILED','NOOP','REVOKED','REVERTED')),
+            agent_id TEXT, session_id TEXT, payload_json TEXT, fingerprint TEXT,
+            prev_hash TEXT, this_hash TEXT, metadata_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY (approval_id) REFERENCES approvals(id)
+        );
+        CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
+        BEFORE UPDATE ON approval_events
+        BEGIN SELECT RAISE(ABORT, 'approval_events is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
+        BEFORE DELETE ON approval_events
+        BEGIN SELECT RAISE(ABORT, 'approval_events is append-only'); END;
+    """)
 
 
 @pytest.fixture(autouse=True)
@@ -83,188 +93,139 @@ def setup_env(tmp_path, monkeypatch):
     yield tmp_path
 
 
+@pytest.fixture()
+def db_store(tmp_path, monkeypatch):
+    """File-backed DB with gaia.approvals.store patched to it.
+
+    Yields insert_pending(command, session_id, approval_id) -- the helper that
+    seeds DB pending rows the liveness filter (and the block) read.
+    """
+    import sqlite3
+    db_path = tmp_path / "liveness.db"
+    con = sqlite3.connect(str(db_path))
+    _make_v12_schema(con)
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(
+        "gaia.approvals.store._open_db",
+        lambda: sqlite3.connect(str(db_path)),
+    )
+    import gaia.approvals.store as store
+
+    def insert_pending(command, session_id, approval_id):
+        payload = {
+            "operation": "GIT command intercepted: push",
+            "exact_content": command,
+            "scope": command.split()[0] if command.strip() else "x",
+            "risk_level": "medium",
+            "rollback_hint": None,
+            "rationale": "test",
+            "commands": [command],
+        }
+        return store.insert_requested(
+            payload, agent_id="t", session_id=session_id, approval_id=approval_id,
+        )
+
+    yield store, insert_pending
+
+
 # ---------------------------------------------------------------------------
 # Core contract: fallback call passes exclude_live_sessions=True
 # ---------------------------------------------------------------------------
 
-class TestExcludeLiveSessionsOnFallback:
-    """The cross-session fallback must request liveness filtering."""
-
-    def test_fallback_call_passes_exclude_live_sessions_true(self, monkeypatch):
-        """Second scan call (no session_id filter) must request live-filter.
-
-        This is the exact bug the brief closes: before T13, the fallback
-        scan returned every pending including those owned by live parallel
-        sessions, which then leaked into the current session's [ACTIONABLE]
-        injection as "[session anterior]".
-        """
-        call_log: List[Dict] = []
-
-        def mock_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
-        ):
-            call_log.append({
-                "session_id": session_id,
-                "current_session_id": current_session_id,
-                "exclude_live_sessions": exclude_live_sessions,
-            })
-            # Current-session scan returns empty to force the fallback path.
-            if session_id is not None:
-                return []
-            # Fallback returns one pending so _build_pending_context proceeds.
-            return [
-                _make_fake_pending("orphan01", "dead-session", cross_session=True)
-            ]
-
-        import modules.session.pending_scanner as ps
-        monkeypatch.setattr(ps, "scan_pending_approvals", mock_scan)
-
-        result = _build_pending_context()
-
-        # Sanity: both calls happened.
-        assert len(call_log) == 2, (
-            "Expected two scans: current session first, then fallback."
-        )
-        # First call is the current-session scan (not the fallback).
-        assert call_log[0]["session_id"] == "current-session"
-        assert call_log[0]["exclude_live_sessions"] is False, (
-            "Current-session scan must NOT filter by liveness — that scan "
-            "is explicitly asking only for this session's own pendings."
-        )
-        # Second call is the cross-session fallback.
-        assert call_log[1]["session_id"] is None
-        assert call_log[1]["exclude_live_sessions"] is True, (
-            "Cross-session fallback MUST pass exclude_live_sessions=True. "
-            "Without it, pendings from live parallel sessions reappear as "
-            "'[session anterior]' injections — the exact bug this brief fixes."
-        )
-        # And the block was produced using the orphan.
-        assert result.startswith("[ACTIONABLE]")
-        assert "P-orphan01" in result
+def _approval_id(nonce_short: str) -> str:
+    """Build a full P- approval_id from a short nonce (padded to 32 hex)."""
+    return "P-" + nonce_short + "0" * (32 - len(nonce_short))
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: live session pendings are NOT injected
-# ---------------------------------------------------------------------------
+def _ids_from_shared(rows):
+    """Collect P-<8> short ids from _scan_pending_shared output."""
+    return {"P-" + r["nonce"][:8] for r in rows}
 
-class TestLiveSessionPendingsExcludedFromActionable:
-    """Integration: a live session's pending must not appear in the block."""
 
-    def test_live_session_pending_not_in_actionable_block(self, monkeypatch):
-        """Given pendings (1 live, 1 dead), only the dead one is injected.
+class TestBlockIsDbOnlyNoLivenessFilter:
+    """Task E: the SessionStart block is DB-only and applies NO liveness filter.
 
-        This wires ``exclude_live_sessions=True`` through the real
-        ``scan_pending_approvals`` filter path so we catch a regression if
-        someone later drops the kwarg from ``_build_pending_context``.
-        """
+    The DB is per-machine, so every pending row is the same user; surfacing
+    them all in the [ACTIONABLE] block is correct. Liveness filtering moved to
+    the CLI discovery path (``_scan_pending_shared``) -- see the classes below.
+    """
+
+    def test_block_surfaces_all_db_pendings_regardless_of_session(
+        self, monkeypatch, db_store
+    ):
         from unittest.mock import patch
+        _store, insert_pending = db_store
+        insert_pending("cmd-alive", "alive-session", _approval_id("alive001"))
+        insert_pending("cmd-dead", "dead-session", _approval_id("dead0001"))
 
-        # Fake on-disk approvals: one pending per hypothetical session.
-        # We don't actually write files — we monkeypatch scan_pending_approvals
-        # to exercise the real liveness filter by wrapping it.
-        import modules.session.pending_scanner as ps
-
-        real_scan = ps.scan_pending_approvals
-
-        pendings_disk = {
-            # session_id -> pending dict
-            "alive-session": _make_fake_pending(
-                "alive001", "alive-session", cross_session=True
-            ),
-            "dead-session": _make_fake_pending(
-                "dead0001", "dead-session", cross_session=True
-            ),
-        }
-
-        def wrapped_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
-        ):
-            # Simulate the on-disk scan result.
-            items = list(pendings_disk.values())
-            if session_id is not None:
-                items = [i for i in items if i["pending_session_id"] == session_id]
-            if exclude_live_sessions:
-                try:
-                    from modules.session.session_registry import get_live_sessions
-                    live = get_live_sessions()
-                    items = [
-                        i for i in items
-                        if i["pending_session_id"] not in live
-                    ]
-                except Exception:
-                    pass
-            return items
-
-        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
-
-        # Patch get_live_sessions so "alive-session" is reported alive.
+        # Even with a session reported alive, the block does NOT filter it out:
+        # the block no longer calls get_live_sessions at all.
         with patch(
             "modules.session.session_registry.get_live_sessions",
             return_value={"alive-session"},
         ):
-            result = _build_pending_context()
+            result = build_pending_approvals_block()
 
         assert result.startswith("[ACTIONABLE]")
-        assert "P-dead0001" in result, (
-            "Orphan pending (dead session) must still be shown — otherwise "
-            "the operator loses visibility into real work to resolve."
+        assert "P-alive001" in result, (
+            "Task E: the DB-only block surfaces every pending row; the "
+            "per-machine DB means there is no cross-session leak to filter."
         )
-        assert "P-alive001" not in result, (
-            "Pending owned by a live parallel session must NOT appear in "
-            "another session's [ACTIONABLE] block. The owning live session "
-            "is expected to resolve it on its next turn."
-        )
+        assert "P-dead0001" in result
 
-    def test_registry_error_falls_back_to_all_pendings(self, monkeypatch):
-        """If the registry raises, the scanner returns all pendings (safe)."""
+
+# ---------------------------------------------------------------------------
+# Liveness filter now lives in the CLI discovery path (_scan_pending_shared)
+# ---------------------------------------------------------------------------
+
+class TestExcludeLiveSessionsInCliScan:
+    """``_scan_pending_shared(exclude_live_sessions=True)`` filters live sessions.
+
+    This is the new home of the liveness filter (Task E): it backs
+    ``gaia approvals list --orphans-only`` and ``reject-all``. The pendings
+    are read from the DB; sessions reported alive by session_registry are
+    excluded.
+    """
+
+    def test_live_session_pending_excluded(self, monkeypatch, db_store):
         from unittest.mock import patch
-        import modules.session.pending_scanner as ps
+        _store, insert_pending = db_store
+        insert_pending("cmd-alive", "alive-session", _approval_id("alive001"))
+        insert_pending("cmd-dead", "dead-session", _approval_id("dead0001"))
 
-        pendings_disk = [
-            _make_fake_pending("a" * 8, "session-a", cross_session=True),
-            _make_fake_pending("b" * 8, "session-b", cross_session=True),
-        ]
-
-        def wrapped_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
+        with patch(
+            "modules.session.session_registry.get_live_sessions",
+            return_value={"alive-session"},
         ):
-            items = list(pendings_disk)
-            if session_id is not None:
-                items = [i for i in items if i["pending_session_id"] == session_id]
-            if exclude_live_sessions:
-                try:
-                    from modules.session.session_registry import get_live_sessions
-                    live = get_live_sessions()
-                    items = [
-                        i for i in items
-                        if i["pending_session_id"] not in live
-                    ]
-                except Exception:
-                    # Conservative fallback: return unfiltered.
-                    pass
-            return items
+            rows = approvals_mod._scan_pending_shared(exclude_live_sessions=True)
 
-        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
+        ids = _ids_from_shared(rows)
+        assert "P-dead0001" in ids, (
+            "Orphan pending (dead session) must still be shown."
+        )
+        assert "P-alive001" not in ids, (
+            "Pending owned by a live parallel session must be filtered out "
+            "by the --orphans-only path."
+        )
+
+    def test_registry_error_falls_back_to_all_pendings(self, monkeypatch, db_store):
+        from unittest.mock import patch
+        _store, insert_pending = db_store
+        insert_pending("cmd-a", "session-a", _approval_id("a" * 8))
+        insert_pending("cmd-b", "session-b", _approval_id("b" * 8))
 
         with patch(
             "modules.session.session_registry.get_live_sessions",
             side_effect=RuntimeError("registry unavailable"),
         ):
-            result = _build_pending_context()
+            rows = approvals_mod._scan_pending_shared(exclude_live_sessions=True)
 
-        # Both pendings must survive — losing real pendings on a registry
-        # bug is a worse failure than showing extras.
-        assert "P-" + ("a" * 8) in result
-        assert "P-" + ("b" * 8) in result
+        ids = _ids_from_shared(rows)
+        # Both survive -- losing real pendings on a registry bug is worse.
+        assert "P-" + ("a" * 8) in ids
+        assert "P-" + ("b" * 8) in ids
 
 
 # ---------------------------------------------------------------------------
@@ -272,43 +233,29 @@ class TestLiveSessionPendingsExcludedFromActionable:
 # ---------------------------------------------------------------------------
 
 class TestLivenessFilterByHeartbeat:
-    """Exercise the liveness filter end-to-end against a real session_registry.
+    """Exercise the liveness filter end-to-end via _scan_pending_shared against
+    a real session_registry.
 
     Heartbeat-only model: a session is live if its ``last_heartbeat`` is
     within ``HEARTBEAT_TTL_SECONDS``. When a sibling Claude Code process
     crashes without firing SessionEnd its heartbeat goes stale, the
-    registry entry stops being live, and the pending surfaces in any
-    interactive session that scans.
+    registry entry stops being live, and the pending surfaces in the
+    --orphans-only CLI scan.
     """
 
     def _register_with_heartbeat(
-        self,
-        tmp_path,
-        monkeypatch,
-        session_id: str,
-        heartbeat_age_seconds: float,
-        is_headless: bool = False,
-    ) -> None:
-        """Seed the user-scoped registry with a controlled heartbeat age.
-
-        Positive age = heartbeat is N seconds in the past (older = more
-        stale). The registry file is redirected to tmp_path so the test
-        never pollutes ~/.claude/session_registry.json.
-        """
+        self, tmp_path, monkeypatch, session_id, heartbeat_age_seconds,
+        is_headless=False,
+    ):
         import json
         import time
         from modules.session import session_registry
 
         registry_file = tmp_path / "session_registry_live.json"
         monkeypatch.setattr(
-            session_registry,
-            "_get_registry_path",
-            lambda: registry_file,
+            session_registry, "_get_registry_path", lambda: registry_file,
         )
         session_registry.register_session(session_id, is_headless=is_headless)
-
-        # Backdate the heartbeat we just wrote so this test can simulate
-        # "session crashed N seconds ago without firing SessionEnd".
         data = json.loads(registry_file.read_text())
         data["sessions"][session_id]["last_heartbeat"] = (
             time.time() - heartbeat_age_seconds
@@ -316,135 +263,47 @@ class TestLivenessFilterByHeartbeat:
         registry_file.write_text(json.dumps(data))
 
     def test_stale_heartbeat_session_surfaces_its_pendings(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, db_store
     ):
-        """Crashed session (heartbeat >> TTL) must drop out of the live-set
-        so its pending shows up in the current session's [ACTIONABLE] block.
-        """
-        from modules.session import session_registry
-        import modules.session.pending_scanner as ps
-
-        # 1 hour stale: well past the 30-minute HEARTBEAT_TTL_SECONDS.
+        _store, insert_pending = db_store
         self._register_with_heartbeat(
             tmp_path, monkeypatch, "crashed-session", heartbeat_age_seconds=3600
         )
+        insert_pending("cmd-cr", "crashed-session", _approval_id("cr00001a"))
 
-        pendings_disk = [
-            _make_fake_pending("cr00001a", "crashed-session", cross_session=True),
-        ]
-
-        def wrapped_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
-        ):
-            items = list(pendings_disk)
-            if session_id is not None:
-                items = [i for i in items if i["pending_session_id"] == session_id]
-            if exclude_live_sessions:
-                live = session_registry.get_live_sessions(include_headless=False)
-                items = [
-                    i for i in items if i["pending_session_id"] not in live
-                ]
-            return items
-
-        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
-
-        result = _build_pending_context()
-        assert "P-cr00001a" in result, (
-            "Pending from a session with stale heartbeat must be visible — "
-            "the liveness filter must drop registry entries whose heartbeat "
-            "is older than HEARTBEAT_TTL_SECONDS so their pendings are no "
-            "longer hidden behind a stale 'alive' flag."
+        rows = approvals_mod._scan_pending_shared(exclude_live_sessions=True)
+        assert "P-cr00001a" in _ids_from_shared(rows), (
+            "Pending from a session with stale heartbeat must surface in the "
+            "--orphans-only scan -- the registry no longer reports it alive."
         )
 
     def test_fresh_heartbeat_session_keeps_its_pendings_hidden(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, db_store
     ):
-        """Mirror assertion: when the sibling session has a fresh heartbeat
-        (within the TTL) it is considered alive and its pending must NOT
-        appear in the current session's [ACTIONABLE] injection.
-        """
-        from modules.session import session_registry
-        import modules.session.pending_scanner as ps
-
-        # 30 seconds stale: well within the 30-minute TTL.
+        _store, insert_pending = db_store
         self._register_with_heartbeat(
             tmp_path, monkeypatch, "alive-sibling", heartbeat_age_seconds=30
         )
+        insert_pending("cmd-liv", "alive-sibling", _approval_id("liv00001"))
 
-        pendings_disk = [
-            _make_fake_pending("liv00001", "alive-sibling", cross_session=True),
-        ]
-
-        def wrapped_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
-        ):
-            items = list(pendings_disk)
-            if session_id is not None:
-                items = [i for i in items if i["pending_session_id"] == session_id]
-            if exclude_live_sessions:
-                live = session_registry.get_live_sessions(include_headless=False)
-                items = [
-                    i for i in items if i["pending_session_id"] not in live
-                ]
-            return items
-
-        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
-
-        result = _build_pending_context()
-        assert "P-liv00001" not in result, (
-            "Sibling session with a fresh heartbeat must be treated as "
-            "alive — its pending must not leak into another session's block."
+        rows = approvals_mod._scan_pending_shared(exclude_live_sessions=True)
+        assert "P-liv00001" not in _ids_from_shared(rows), (
+            "Sibling session with a fresh heartbeat is alive -- its pending "
+            "must be excluded by the --orphans-only scan."
         )
 
     def test_headless_session_with_fresh_heartbeat_surfaces_its_pendings(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, db_store
     ):
-        """Headless sessions have no live human watching. Even if their
-        heartbeat is fresh, their pendings must surface to interactive
-        sessions because nobody can act on them in the headless run.
-        """
-        from modules.session import session_registry
-        import modules.session.pending_scanner as ps
-
+        _store, insert_pending = db_store
         self._register_with_heartbeat(
-            tmp_path,
-            monkeypatch,
-            "headless-sibling",
-            heartbeat_age_seconds=30,
-            is_headless=True,
+            tmp_path, monkeypatch, "headless-sibling",
+            heartbeat_age_seconds=30, is_headless=True,
         )
+        insert_pending("cmd-hl", "headless-sibling", _approval_id("hl000001"))
 
-        pendings_disk = [
-            _make_fake_pending("hl000001", "headless-sibling", cross_session=True),
-        ]
-
-        def wrapped_scan(
-            approvals_dir,
-            session_id=None,
-            current_session_id=None,
-            exclude_live_sessions=False,
-        ):
-            items = list(pendings_disk)
-            if session_id is not None:
-                items = [i for i in items if i["pending_session_id"] == session_id]
-            if exclude_live_sessions:
-                live = session_registry.get_live_sessions(include_headless=False)
-                items = [
-                    i for i in items if i["pending_session_id"] not in live
-                ]
-            return items
-
-        monkeypatch.setattr(ps, "scan_pending_approvals", wrapped_scan)
-
-        result = _build_pending_context()
-        assert "P-hl000001" in result, (
-            "Headless session pending must surface to interactive sessions "
-            "regardless of heartbeat freshness — include_headless=False "
-            "excludes it from the live-set so it does not suppress itself."
+        rows = approvals_mod._scan_pending_shared(exclude_live_sessions=True)
+        assert "P-hl000001" in _ids_from_shared(rows), (
+            "Headless session pending must surface -- include_headless=False "
+            "excludes it from the live-set so it is treated as an orphan."
         )

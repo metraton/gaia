@@ -431,10 +431,23 @@ def _cmd_list(args) -> int:
 
 def _cmd_close(args) -> int:
     from gaia.briefs import close_brief
+    from gaia.briefs.store import verify_brief
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
     if close_brief(workspace, name):
         print(f"Closed brief '{name}'")
+        # AC-3 advisory: run invariant checker and surface any inconsistencies
+        # as non-blocking stderr warnings (mirrors D11 pattern in plan CLI).
+        # Close always succeeds (exit 0); warnings never gate the operation.
+        try:
+            result = verify_brief(workspace, name)
+            for issue in result.get("inconsistencies", []):
+                print(
+                    f"Warning: [{issue['kind']}] {issue['detail']}",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass  # advisory failure must never abort the close
         return 0
     return _err(f"brief '{name}' not found in workspace '{workspace}'")
 
