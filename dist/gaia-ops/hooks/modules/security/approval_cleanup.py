@@ -1,33 +1,27 @@
 """
-Approval file cleanup for the subagent stop hook.
+Approval cleanup for the subagent stop hook.
 
-Cleans up pending approval files after an agent completes, using the current
-per-nonce file layout under .claude/cache/approvals/pending-{nonce}.json.
+DB-only since Task E FS retirement:
+  All pending approvals are stored exclusively in gaia.db (approvals table).
+  cleanup() revokes PENDING DB rows for the agent's session at subagent stop,
+  skipping any nonces still referenced by an in-flight APPROVAL_REQUEST.
 
 Also performs DB-backed soft-expire of PENDING approval_grants rows whose
 expires_at timestamp has passed (M3 addition).
 
 Provides:
-    - cleanup(): Delete pending approval files that match agent session
+    - cleanup(): Revoke pending DB approvals for the agent session
     - expire_db_grants(): Soft-expire PENDING DB grants past their expires_at
     - consume_approval_file(): Backward-compatible alias for cleanup()
 """
 
-import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional, Set
 
-from ..core.paths import find_claude_dir
 from ..core.state import get_session_id
 
 logger = logging.getLogger(__name__)
-
-
-def _get_approvals_dir() -> Path:
-    """Return the approvals cache directory."""
-    return find_claude_dir() / "cache" / "approvals"
 
 
 def expire_db_grants(session_id: Optional[str] = None) -> int:
@@ -81,77 +75,87 @@ def cleanup(
     session_id: Optional[str] = None,
     preserve_nonces: Optional[Set[str]] = None,
 ) -> bool:
-    """
-    Delete pending-{nonce}.json files for the current session after agent completion.
+    """Revoke pending DB approvals for the current session after agent completion.
 
-    Scans .claude/cache/approvals/ for pending files scoped to the current
-    session and removes them, preventing stale pending approvals from
-    accumulating after the agent run finishes.
+    Queries the DB approvals table for PENDING rows scoped to this session and
+    revokes them, preventing stale pending approvals from accumulating after the
+    agent run finishes.  Rows whose approval_id is in preserve_nonces are skipped
+    so that an in-flight APPROVAL_REQUEST the user still needs to act on survives
+    the sweep.
+
+    DB-only since Task E FS retirement.  No filesystem files are scanned or deleted.
 
     Args:
         agent_type: The agent type that just completed (for logging).
         session_id: Session ID to scope cleanup (defaults to CLAUDE_SESSION_ID).
-        preserve_nonces: Optional set of nonce strings to skip during cleanup.
-            Used when an agent's final agent_contract_handoff still carries an
-            APPROVAL_REQUEST so that the pending file remains available for
-            the user to approve or reject. When None or empty, all session
-            pendings are eligible for deletion (legacy behaviour).
+        preserve_nonces: Optional set of approval_id strings to skip during
+            cleanup.  Used when an agent's final agent_contract_handoff still
+            carries an APPROVAL_REQUEST so the pending row remains for the user
+            to approve or reject.  When None or empty, all session pendings are
+            eligible for revocation.
 
     Returns:
-        True if any pending approval files were consumed, False otherwise.
+        True if any pending DB approvals were revoked, False otherwise.
     """
     if session_id is None:
         session_id = get_session_id()
 
     preserve_nonces = preserve_nonces or set()
 
-    approvals_dir = _get_approvals_dir()
-    if not approvals_dir.exists():
+    revoked = False
+    try:
+        from gaia.approvals.store import list_pending, revoke
+    except ImportError:
+        import pathlib as _pl
+        import sys as _sys
+        _repo = _pl.Path(__file__).resolve().parent.parent.parent.parent.parent
+        _sys.path.insert(0, str(_repo))
+        try:
+            from gaia.approvals.store import list_pending, revoke
+        except ImportError as exc:
+            logger.debug("cleanup: gaia.approvals.store unavailable (non-fatal): %s", exc)
+            return False
+
+    try:
+        pending_rows = list_pending(session_id=session_id, all_sessions=False)
+    except Exception as exc:
+        logger.debug("cleanup: list_pending failed (non-fatal): %s", exc)
         return False
 
-    consumed = False
-    try:
-        for pending_file in approvals_dir.glob("pending-*.json"):
-            # Skip the per-session index files
-            if pending_file.name.startswith("pending-index-"):
-                continue
-            try:
-                data = json.loads(pending_file.read_text())
-                if data.get("session_id") != session_id:
-                    continue
+    for row in pending_rows:
+        approval_id = row.get("id", "")
+        if not approval_id:
+            continue
 
-                nonce = data.get("nonce", "")
-                if nonce and nonce in preserve_nonces:
-                    logger.info(
-                        "Preserving pending nonce=%s (still in APPROVAL_REQUEST)",
-                        nonce[:12],
-                    )
-                    continue
+        if approval_id in preserve_nonces:
+            logger.info(
+                "Preserving pending approval_id=%s (still in APPROVAL_REQUEST)",
+                approval_id[:20],
+            )
+            continue
 
-                pending_file.unlink(missing_ok=True)
-                logger.info(
-                    "Consumed pending approval for agent '%s' "
-                    "(nonce: %s, command: %s)",
-                    agent_type,
-                    nonce or "unknown",
-                    data.get("command", "unknown"),
-                )
-                consumed = True
+        try:
+            revoke(approval_id, revoker_session=session_id)
+            logger.info(
+                "Revoked pending DB approval for agent '%s' "
+                "(approval_id: %s)",
+                agent_type,
+                approval_id[:20],
+            )
+            revoked = True
+        except ValueError as exc:
+            # Approval was already transitioned (race or double-call) -- not an error.
+            logger.debug(
+                "cleanup: revoke skipped for approval_id=%s (non-fatal): %s",
+                approval_id[:20], exc,
+            )
+        except Exception as exc:
+            logger.debug(
+                "cleanup: revoke error for approval_id=%s (non-fatal): %s",
+                approval_id[:20], exc,
+            )
 
-            except (json.JSONDecodeError, TypeError):
-                # Corrupt file -- remove it (corrupt files are never
-                # preserve-eligible because we cannot read their nonce).
-                pending_file.unlink(missing_ok=True)
-                consumed = True
-            except Exception as e:
-                logger.debug(
-                    "Failed to process pending file %s (non-fatal): %s",
-                    pending_file.name, e,
-                )
-    except Exception as e:
-        logger.debug("Failed to scan approvals dir (non-fatal): %s", e)
-
-    return consumed
+    return revoked
 
 
 # Backward-compatible alias

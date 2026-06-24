@@ -637,11 +637,13 @@ def activate_pending_approval(
     session_id: Optional[str] = None,
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
 ) -> ApprovalActivationResult:
-    """Activate a pending approval by converting it to an active grant.
+    """Activate a pending approval by converting it to a DB grant.
 
-    Called by the pre_tool_use hook when it detects "APPROVE:{nonce}" in a
-    Task resume prompt. Validates the pending file, creates an active grant,
-    and deletes the pending file.
+    Called when load_pending_by_nonce_prefix() finds a filesystem pending
+    file (i.e. the pending was written by the legacy write_pending_approval
+    path). Validates the pending file, writes the grant to the DB (DB-only
+    since G1 cutover -- no filesystem grant-*.json is written), and deletes
+    the pending file.
 
     Args:
         nonce: The nonce from the APPROVE: token.
@@ -756,33 +758,72 @@ def activate_pending_approval(
         else:
             verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
 
-        # Create active grant
-        grant = ApprovalGrant(
-            session_id=session_id,
-            approved_verbs=verbs,
-            approved_scope=command,
-            scope_type=signature.scope_type,
-            scope_signature=signature.to_dict(),
-            granted_at=time.time(),
-            ttl_minutes=ttl_minutes,
-        )
+        # Use "P-{nonce}" as the approval_id -- consistent with the DB-side convention
+        # used by write_pending_approval_for_file / activate_db_pending_by_prefix.
+        approval_id = f"P-{nonce}"
 
-        grant_file = grants_dir / f"grant-{session_id}-{int(time.time() * 1000)}-{nonce[:8]}.json"
-        grant_file.write_text(json.dumps(asdict(grant), indent=2))
+        # Write grant to DB ONLY (no filesystem grant-*.json written).
+        if signature.scope_type == SCOPE_FILE_PATH:
+            try:
+                from gaia.store.writer import insert_file_path_grant
+                result = insert_file_path_grant(
+                    approval_id=approval_id,
+                    file_path=command,
+                    scope_signature=signature.to_dict(),
+                    agent_id=None,
+                    session_id=session_id,
+                    ttl_minutes=ttl_minutes,
+                )
+            except Exception as _err:
+                logger.error("activate_pending_approval: DB file-path grant insert error: %s", _err)
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"DB file-path grant insert error: {_err}",
+                )
+        else:
+            try:
+                from gaia.store.writer import insert_semantic_grant
+                result = insert_semantic_grant(
+                    approval_id=approval_id,
+                    command=command,
+                    scope_signature=signature.to_dict(),
+                    agent_id=None,
+                    session_id=session_id,
+                    ttl_minutes=ttl_minutes,
+                )
+            except Exception as _err:
+                logger.error("activate_pending_approval: DB semantic grant insert error: %s", _err)
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"DB semantic grant insert error: {_err}",
+                )
+
+        if result.get("status") != "applied":
+            logger.error(
+                "activate_pending_approval: DB grant insert failed for nonce %s: %s",
+                nonce, result,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_ERROR,
+                reason=f"DB grant insert failed: {result.get('reason', 'unknown')}",
+            )
 
         # Delete pending file (one-time activation)
         _cleanup_grant(pending_file)
         _rebuild_pending_index(session_id)
 
         logger.info(
-            "Pending approval activated: nonce=%s, verbs=%s, grant=%s",
-            nonce, verbs, grant_file.name,
+            "Pending approval activated (DB grant): nonce=%s, verbs=%s, approval_id=%s",
+            nonce, verbs, approval_id[:16],
         )
         return ApprovalActivationResult(
             success=True,
             status=ACTIVATION_ACTIVATED,
-            reason="Pending approval activated.",
-            grant_path=grant_file,
+            reason="Pending approval activated (DB grant).",
+            grant_path=None,
         )
 
     except (json.JSONDecodeError, TypeError) as e:
@@ -805,7 +846,7 @@ def activate_cross_session_pending(
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
     session_id: Optional[str] = None,
 ) -> ApprovalActivationResult:
-    """Create an active grant from a pending file that belongs to a prior session.
+    """Create a DB grant from a pending file that belongs to a prior session.
 
     Called ONLY when the user has already confirmed approval via AskUserQuestion.
     Unlike activate_pending_approval(), this function skips the session_id equality
@@ -813,9 +854,9 @@ def activate_cross_session_pending(
     match the current session.  All other validation (nonce presence, TTL, signature)
     is performed normally.
 
-    The new grant is created under the CURRENT session ID so that
-    check_approval_grant() can find it when the dispatched agent runs the command.
-    confirmed is set to True directly because the human has already approved.
+    The new grant is written to the DB under the CURRENT session ID (DB-only
+    since G1 cutover -- no filesystem grant-*.json is written). The filesystem
+    pending file is deleted after successful activation.
 
     Args:
         pending_data: The dict loaded from a pending-{nonce}.json file.
@@ -912,37 +953,78 @@ def activate_cross_session_pending(
         else:
             verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
 
-        # Create active grant under the CURRENT session; confirmed=True because
-        # the human already approved via AskUserQuestion.
-        grant = ApprovalGrant(
-            session_id=current_session_id,
-            approved_verbs=verbs,
-            approved_scope=command,
-            scope_type=signature.scope_type,
-            scope_signature=signature.to_dict(),
-            granted_at=time.time(),
-            ttl_minutes=ttl_minutes,
-            confirmed=True,
-        )
+        # Use "P-{nonce}" as the approval_id -- consistent with the DB-side
+        # convention.  confirmed=True because the human already approved.
+        approval_id = f"P-{nonce}"
+        prior_session_id = pending_data.get("session_id", "unknown")
 
-        grant_file = grants_dir / f"grant-{current_session_id}-{int(time.time() * 1000)}-{nonce[:8]}.json"
-        grant_file.write_text(json.dumps(asdict(grant), indent=2))
+        # Write grant to DB ONLY under the CURRENT session.
+        if signature.scope_type == SCOPE_FILE_PATH:
+            try:
+                from gaia.store.writer import insert_file_path_grant
+                result = insert_file_path_grant(
+                    approval_id=approval_id,
+                    file_path=command,
+                    scope_signature=signature.to_dict(),
+                    agent_id=None,
+                    session_id=current_session_id,
+                    ttl_minutes=ttl_minutes,
+                )
+            except Exception as _err:
+                logger.error(
+                    "activate_cross_session_pending: DB file-path grant insert error: %s", _err
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"DB file-path grant insert error: {_err}",
+                )
+        else:
+            try:
+                from gaia.store.writer import insert_semantic_grant
+                result = insert_semantic_grant(
+                    approval_id=approval_id,
+                    command=command,
+                    scope_signature=signature.to_dict(),
+                    agent_id=None,
+                    session_id=current_session_id,
+                    ttl_minutes=ttl_minutes,
+                )
+            except Exception as _err:
+                logger.error(
+                    "activate_cross_session_pending: DB semantic grant insert error: %s", _err
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"DB semantic grant insert error: {_err}",
+                )
+
+        if result.get("status") != "applied":
+            logger.error(
+                "activate_cross_session_pending: DB grant insert failed for nonce %s: %s",
+                nonce, result,
+            )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_ERROR,
+                reason=f"DB grant insert failed: {result.get('reason', 'unknown')}",
+            )
 
         # Delete the old pending file (one-time activation)
         _cleanup_grant(pending_file)
-        prior_session_id = pending_data.get("session_id", "unknown")
         _rebuild_pending_index(prior_session_id)
 
         logger.info(
-            "Cross-session pending activated: nonce=%s, prior_session=%s, "
-            "current_session=%s, verbs=%s, grant=%s",
-            nonce, prior_session_id, current_session_id, verbs, grant_file.name,
+            "Cross-session pending activated (DB grant): nonce=%s, prior_session=%s, "
+            "current_session=%s, verbs=%s, approval_id=%s",
+            nonce, prior_session_id, current_session_id, verbs, approval_id[:16],
         )
         return ApprovalActivationResult(
             success=True,
             status=ACTIVATION_ACTIVATED,
-            reason="Cross-session pending approval activated.",
-            grant_path=grant_file,
+            reason="Cross-session pending approval activated (DB grant).",
+            grant_path=None,
         )
 
     except (json.JSONDecodeError, TypeError) as e:

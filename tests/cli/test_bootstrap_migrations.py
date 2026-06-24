@@ -60,6 +60,14 @@ def _read_floor() -> int:
     return int(m.group(1))
 
 
+def _read_expected_version() -> int:
+    """Parse EXPECTED_SCHEMA_VERSION=N from bin/cli/doctor.py."""
+    text = _DOCTOR_PY.read_text()
+    m = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)\s*$", text, re.MULTILINE)
+    assert m is not None, "EXPECTED_SCHEMA_VERSION not found in doctor.py"
+    return int(m.group(1))
+
+
 def _run_bootstrap(workspace: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
     """Invoke bootstrap_database.sh with GAIA_DB inside the workspace."""
     tmp_db = workspace / "tmp_gaia.db"
@@ -117,12 +125,13 @@ class TestBootstrapFloorModel(unittest.TestCase):
         if not _SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
         self.floor = _read_floor()
+        self.expected = _read_expected_version()
 
     # ----- 1. Fresh install lands at the floor ----------------------------
 
     def test_fresh_install_stamps_floor(self):
-        """Empty DB + bootstrap: ledger stamped at exactly the floor, with no
-        v1 seed and no chain walk."""
+        """Empty DB + bootstrap: ledger stamped at floor then advanced to
+        EXPECTED_SCHEMA_VERSION via forward migrations, no v1 baseline seed."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             res = _run_bootstrap(workspace)
@@ -141,8 +150,9 @@ class TestBootstrapFloorModel(unittest.TestCase):
                 self.assertIn(self.floor, versions)
                 self.assertNotIn(1, versions,
                                  "fresh install seeded the obsolete v1 baseline")
-                # MAX is the floor (no forward migrations exist today).
-                self.assertEqual(max(versions), self.floor)
+                # MAX version must reach EXPECTED_SCHEMA_VERSION: fresh install
+                # seeds at FLOOR then bootstrap walks forward migrations to EXPECTED.
+                self.assertEqual(max(versions), self.expected)
 
                 # memory.type CHECK must contain the widened set (floor shape).
                 row = con.execute(
@@ -194,7 +204,8 @@ class TestBootstrapFloorModel(unittest.TestCase):
     # ----- 3. Idempotency at the floor ------------------------------------
 
     def test_bootstrap_idempotent_at_floor(self):
-        """Two successive bootstraps on the same DB: second is a no-op."""
+        """Two successive bootstraps on the same DB: second run is a no-op
+        and adds no duplicate schema_version rows."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             res1 = _run_bootstrap(workspace)
@@ -208,16 +219,19 @@ class TestBootstrapFloorModel(unittest.TestCase):
                 count = con.execute(
                     "SELECT COUNT(*) FROM schema_version"
                 ).fetchone()[0]
-                # Floor model: exactly one ledger row on a fresh install (no
-                # chain). Idempotency means the second run does not add rows.
+                # Floor model: one baseline row (FLOOR) plus one row per forward
+                # migration (FLOOR+1 .. EXPECTED).  Idempotency means the second
+                # bootstrap run must NOT duplicate any of these rows.
+                expected_rows = 1 + (self.expected - self.floor)
                 self.assertEqual(
-                    count, 1,
-                    f"expected exactly 1 schema_version row at the floor, got {count}",
+                    count, expected_rows,
+                    f"expected {expected_rows} schema_version row(s) "
+                    f"(floor={self.floor}, expected={self.expected}), got {count}",
                 )
             finally:
                 con.close()
 
-            # Second run sees a DB already at the floor.
+            # Second run sees a DB already at or above the floor.
             self.assertIn(f">= floor v{self.floor}", res2.stdout)
 
 
