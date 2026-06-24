@@ -11,29 +11,216 @@ Pipeline:
   3. Collect and combine scanner sections (handling environment sub-keys)
   4. Cross-populate derived fields
   5. Return ScanOutput
+
+Section ownership rules (inlined from the retired tools/scan/merge.py):
+  Rule 1: Scanner-owned sections -> full replace
+  Rule 2: Agent-enriched sections -> never touch
+  Rule 3: Mixed sections -> selective update at sub-key level
+  Rule 4: Unknown/user-custom sections -> preserve
+  Rule 5: Metadata -> always update
 """
 
+import copy
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from tools.scan import __version__ as scanner_package_version
 from tools.scan.config import ScanConfig
-from tools.scan.merge import (
-    AGENT_ENRICHED_SECTIONS,
-    collect_scanner_sections,
-    merge_context,
-)
 from tools.scan.registry import ScannerRegistry
 from tools.scan.scanners.base import BaseScanner, ScanResult
 from tools.scan.workspace import WorkspaceInfo, detect_workspace_type
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Section ownership constants (Rule 1 / Rule 2 / Rule 3)
+# ---------------------------------------------------------------------------
+
+# Sections fully owned by scanners -- replaced entirely on each scan (Rule 1)
+# Top-level sections only; sub-key ownership handled separately
+SCANNER_OWNED_TOP_LEVEL: Dict[str, str] = {
+    "project_identity": "stack",
+    "stack": "stack",
+    "git": "git",
+    "infrastructure": "infrastructure",
+    "orchestration": "orchestration",
+    # "environment" is NOT listed here because it has sub-key ownership
+}
+
+# Sub-key ownership within the `environment` section (Rule 4 / sub-section)
+# Maps environment sub-key -> owning scanner name
+ENVIRONMENT_SUBKEY_OWNERS: Dict[str, str] = {
+    "tools": "tools",
+    "tool_preferences": "tools",
+    "os": "environment",
+    "runtimes": "environment",
+    "env_files": "environment",
+}
+
+# Agent-enriched sections -- never modified by scanners (Rule 2)
+AGENT_ENRICHED_SECTIONS: frozenset = frozenset([
+    "operational_guidelines",
+    "cluster_details",
+    "infrastructure_topology",
+    "monitoring_observability",
+    "architecture_overview",
+    "gcp_services",
+    "workload_identity",
+])
+
+# Mixed sections with partial scanner ownership (Rule 3)
+# Maps section_name -> set of scanner-owned field names
+MIXED_SECTION_SCANNER_FIELDS: Dict[str, Set[str]] = {
+    "terraform_infrastructure": {"layout"},
+    "gitops_configuration": {"repository"},
+    "application_services": {"base_path", "services"},
+}
+
+
+# ---------------------------------------------------------------------------
+# Section collection and merge helpers
+# ---------------------------------------------------------------------------
+
+def collect_scanner_sections(
+    scanner_results: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Collect and combine sections from all scanner results.
+
+    Handles the environment section specially: both `tools` and `environment`
+    scanners produce sub-keys under `environment`, so their outputs are
+    combined into a single `environment` section.
+
+    Args:
+        scanner_results: Mapping of scanner_name -> ScanResult (must have
+                         a `sections` attribute that is a dict).
+
+    Returns:
+        Combined sections dict from all scanners.
+    """
+    combined: Dict[str, Any] = {}
+    environment_parts: Dict[str, Any] = {}
+
+    for _scanner_name, scan_result in scanner_results.items():
+        sections = scan_result.sections if hasattr(scan_result, "sections") else {}
+
+        for section_name, section_data in sections.items():
+            if section_name == "environment":
+                # Merge environment sub-keys from both scanners
+                if isinstance(section_data, dict):
+                    for key, value in section_data.items():
+                        if key != "_source":
+                            environment_parts[key] = value
+            else:
+                # Non-environment sections: direct assignment (last scanner wins,
+                # but each section should have exactly one owner)
+                combined[section_name] = section_data
+
+    # Reassemble environment section if we got any parts
+    if environment_parts:
+        combined["environment"] = {
+            "_source": "scanner:environment+tools",
+            **environment_parts,
+        }
+
+    return combined
+
+
+def _merge_environment_section(
+    result: Dict[str, Any],
+    scan_sections: Dict[str, Any],
+) -> None:
+    """Merge the `environment` section with sub-key level ownership.
+
+    Two scanners contribute to the `environment` section:
+    - `tools` scanner owns: tools, tool_preferences
+    - `environment` scanner owns: os, runtimes, env_files
+
+    Each scanner's sub-keys replace their owned portion; the other scanner's
+    sub-keys are preserved. The `_source` field gets a combined tag.
+
+    Args:
+        result: The result dict being built (mutated in place).
+        scan_sections: Combined sections from all scanners.
+    """
+    if "environment" not in scan_sections:
+        return
+
+    scan_env = scan_sections["environment"]
+
+    if "environment" not in result:
+        result["environment"] = {}
+
+    env = result["environment"]
+
+    # Replace each sub-key based on ownership
+    for subkey in ENVIRONMENT_SUBKEY_OWNERS:
+        if subkey in scan_env:
+            env[subkey] = copy.deepcopy(scan_env[subkey])
+
+    # Set combined _source tag
+    env["_source"] = "scanner:environment+tools"
+
+
+def _merge_sections(
+    existing: Dict[str, Any],
+    scan_sections: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge scanner results with existing project-context sections.
+
+    Applies the ownership rules to produce the final merged sections dict.
+    Called with existing={} in normal scan runs (display-only path).
+
+    Args:
+        existing: Current sections (may be empty when called from scan).
+        scan_sections: Combined sections from all scanners.
+
+    Returns:
+        Merged sections dict. The merge is deterministic: same inputs always
+        produce the same output.
+    """
+    result = copy.deepcopy(existing)
+
+    # --- Rule 1: Scanner-owned top-level sections -> full replace ---
+    for section_name in SCANNER_OWNED_TOP_LEVEL:
+        if section_name in scan_sections:
+            result[section_name] = copy.deepcopy(scan_sections[section_name])
+
+    # --- Sub-section level ownership for `environment` ---
+    _merge_environment_section(result, scan_sections)
+
+    # --- Rule 2: Agent-enriched sections -> never touch ---
+    # These are already in `result` from the deepcopy of `existing`.
+    # (No action needed -- they are preserved by the deepcopy.)
+
+    # --- Rule 3: Mixed sections -> selective update ---
+    for section_name, scanner_fields in MIXED_SECTION_SCANNER_FIELDS.items():
+        if section_name in scan_sections:
+            scan_data = scan_sections[section_name]
+            if section_name not in result:
+                result[section_name] = {}
+            # Only update scanner-owned fields; preserve agent fields
+            for field_name in scanner_fields:
+                if field_name in scan_data:
+                    result[section_name][field_name] = copy.deepcopy(
+                        scan_data[field_name]
+                    )
+
+    # --- Rule 5: Unknown/user-custom sections -> preserve ---
+    # Any section in `existing` not covered above is preserved by the deepcopy.
+    # We do NOT add new unknown sections from scan_sections.
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ScanOutput dataclass
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ScanOutput:
@@ -187,11 +374,9 @@ class ScanOrchestrator:
         scan_sections = collect_scanner_sections(scanner_results)
 
         # Merge with empty existing context (no JSON persistence)
-        section_owners = self.registry.get_section_owners()
-        merged_sections = merge_context(
+        merged_sections = _merge_sections(
             existing={},
             scan_sections=scan_sections,
-            section_owners=section_owners,
         )
 
         # Determine which sections were updated vs preserved
@@ -210,7 +395,6 @@ class ScanOrchestrator:
         self._cross_populate_monorepo(merged_sections)
 
         # Remove empty {} placeholders for agent-enriched and mixed sections
-        from tools.scan.merge import MIXED_SECTION_SCANNER_FIELDS
         remove_if_empty = (
             AGENT_ENRICHED_SECTIONS
             | frozenset(MIXED_SECTION_SCANNER_FIELDS.keys())

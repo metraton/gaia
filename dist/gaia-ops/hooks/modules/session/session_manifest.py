@@ -455,47 +455,41 @@ def build_projects_context_block(max_chars: int = 1400) -> str:
 def build_pending_approvals_block() -> str:
     """Build the [ACTIONABLE] pending-approvals block, if any exist.
 
-    Same cross-session fallback as the legacy ``_build_pending_context()``:
-    current session first, then a sweep across all sessions filtered by
-    ``exclude_live_sessions=True``. With Fase 1's heartbeat liveness, that
-    filter is now reliable, so the block can live in SessionStart instead
-    of being re-evaluated on every prompt.
+    DB-only since Task E of the approval redesign: all pending types
+    (T3 commands, COMMAND_SET batches, and SCOPE_FILE_PATH file-write
+    blocks) are now written exclusively to gaia.db via
+    gaia.approvals.store.insert_requested().  The filesystem supplement
+    that was kept in Tasks C-D is removed: scan_pending_db() is the sole
+    read source.
+
+    Scoping: DB query uses all_sessions=True (no session filter).  The
+    session_id stored in approval rows is the main session while
+    $CLAUDE_SESSION_ID inside a subagent is the subagent id -- filtering by
+    session would silently drop all subagent pendings.  The DB is
+    per-machine so all rows are from the same user.
 
     Returns "" when no pendings are surfaced. Never raises.
     """
     try:
-        from ..core.paths import get_plugin_data_dir
-        from ..core.state import get_session_id
         from .pending_scanner import (
             format_pending_summary,
-            scan_pending_approvals,
+            scan_pending_db,
         )
 
-        approvals_dir = get_plugin_data_dir() / "cache" / "approvals"
-        session_id = get_session_id()
-
-        pendings = scan_pending_approvals(
-            approvals_dir,
-            session_id=session_id,
-            current_session_id=session_id,
-        )
-
-        # Cross-session fallback. exclude_live_sessions=True drops pendings
-        # from parallel live sessions so we don't double-surface them in
-        # two interactive Claude Code windows. include_headless=False is
-        # already applied inside scan_pending_approvals.
-        if not pendings:
-            pendings = scan_pending_approvals(
-                approvals_dir,
-                current_session_id=session_id,
-                exclude_live_sessions=True,
-            )
+        pendings = scan_pending_db()
 
         if not pendings:
             return ""
 
+        # Sort oldest-first so the orchestrator sees the most urgent
+        # (longest-waiting) pending first.
+        pendings.sort(key=lambda x: x["timestamp"])
+
         summary = format_pending_summary(pendings)
-        logger.info("SessionStart: %d pending approval(s) surfaced", len(pendings))
+        logger.info(
+            "SessionStart: %d pending approval(s) surfaced (DB-only)",
+            len(pendings),
+        )
         return (
             "[ACTIONABLE] Pending approvals require your attention before "
             "routing the next request.\n\n" + summary

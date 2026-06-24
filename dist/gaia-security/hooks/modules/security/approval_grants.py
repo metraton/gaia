@@ -152,6 +152,7 @@ class ActivationStatus(str, Enum):
     INVALID_SIGNATURE = "invalid_signature"
     INVALID_PENDING = "invalid_pending"
     ERROR = "error"
+    CHAIN_TAMPER_DETECTED = "chain_tamper_detected"
 
 
 # Backward-compatible module-level aliases
@@ -163,6 +164,7 @@ ACTIVATION_EXPIRED = ActivationStatus.EXPIRED
 ACTIVATION_INVALID_SIGNATURE = ActivationStatus.INVALID_SIGNATURE
 ACTIVATION_INVALID_PENDING = ActivationStatus.INVALID_PENDING
 ACTIVATION_ERROR = ActivationStatus.ERROR
+ACTIVATION_CHAIN_TAMPER_DETECTED = ActivationStatus.CHAIN_TAMPER_DETECTED
 
 
 def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
@@ -1554,22 +1556,35 @@ def write_pending_approval_for_file(
     ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
     context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
-    """Write a pending approval file when a Write/Edit to a protected path is blocked.
+    """Write a pending approval record when a Write/Edit to a protected path is blocked.
 
-    Analogous to write_pending_approval() but uses SCOPE_FILE_PATH so that
-    the file path (not a shell command) is the scope identifier.
+    DB-primary since Task E of the approval redesign: persists to
+    gaia.approvals.store (gaia.db) first using insert_requested() with
+    approval_id = "P-" + nonce.  The filesystem write is removed entirely --
+    scan_pending_db() surfaces file-path pendings exactly like T3 command
+    pendings now that the DB carries them.
+
+    The sealed_payload uses:
+      - exact_content  = file_path          (surfaced as "command" by scan_pending_db)
+      - operation      = "FILE_WRITE command intercepted: write"
+      - scope          = SCOPE_FILE_PATH constant
+      - scope_signature = serialised ApprovalSignature for check/activation
+      - risk_level, rollback_hint, rationale from context when available
 
     Args:
-        nonce: Cryptographic nonce from generate_nonce().
+        nonce: Cryptographic nonce from generate_nonce().  The DB row is stored
+            under approval_id = "P-" + nonce.
         file_path: The absolute path of the file being written/edited.
         session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
         ttl_minutes: How long the pending approval is valid before expiry
-            (0 = no expiry).
+            (0 = no expiry; ignored by DB which uses TTL at query time).
         context: Optional dict with enriched context (source, description,
             risk, rollback, branch, files_changed, etc.).
 
     Returns:
-        Path to the pending file, or None on failure.
+        A sentinel Path whose name encodes the approval_id on success (the DB
+        row, not a real file), or None on failure.  Callers only check for
+        None to detect failure; they do not read the returned path.
     """
     if session_id is None:
         session_id = _get_session_id()
@@ -1582,41 +1597,53 @@ def write_pending_approval_for_file(
         )
         return None
 
-    pending_data = {
-        "nonce": nonce,
-        "session_id": session_id,
-        "command": file_path,
-        "danger_verb": "write",
-        "danger_category": "FILE_WRITE",
-        "scope_type": signature.scope_type,
+    ctx = context or {}
+    sealed_payload: Dict[str, Any] = {
+        "operation": "FILE_WRITE command intercepted: write",
+        "exact_content": file_path,
+        "scope": SCOPE_FILE_PATH,
         "scope_signature": signature.to_dict(),
-        "timestamp": time.time(),
-        "ttl_minutes": ttl_minutes,
-        "context": context or {},
+        "risk_level": ctx.get("risk", "medium") or "medium",
+        "rollback_hint": ctx.get("rollback"),
+        "rationale": (
+            ctx.get("description")
+            or f"Protected-path write to {file_path!r} requires user approval."
+        ),
+        "commands": [file_path],
     }
 
+    db_approval_id = f"P-{nonce}"
     try:
-        grants_dir = _get_grants_dir()
-        pending_file = grants_dir / f"pending-{nonce}.json"
-        pending_file.write_text(json.dumps(pending_data, indent=2))
-        _rebuild_pending_index(session_id)
-
-        logger.info(
-            "Pending file-path approval written: nonce=%s, file=%s, session=%s",
-            nonce, file_path, session_id,
+        from gaia.approvals.store import insert_requested
+        stored_id = insert_requested(
+            sealed_payload,
+            agent_id=None,
+            session_id=session_id,
+            approval_id=db_approval_id,
         )
-        return pending_file
+        logger.info(
+            "Pending file-path approval written to DB: approval_id=%s, file=%s, session=%s",
+            stored_id, file_path, session_id,
+        )
+        # Return a sentinel Path so callers can distinguish success (non-None)
+        # from failure (None).  The path is not written to disk.
+        return Path(stored_id)
 
     except Exception as e:
-        logger.error("Failed to write pending file-path approval: %s", e)
+        logger.error("Failed to write pending file-path approval to DB: %s", e)
         return None
 
 
 def check_approval_grant_for_file(
     file_path: str,
-    session_id: str = None,
-) -> Optional[ApprovalGrant]:
+    session_id: str = None,  # noqa: ARG001 — kept for signature compatibility
+) -> Optional[dict]:
     """Check if there is an active approval grant for a Write/Edit file path.
+
+    DB-only since Task E full migration: queries approval_grants with
+    scope='SCOPE_FILE_PATH' via check_db_file_path_grant().  Callers only
+    check truthiness of the return value (None = no grant, any dict = grant
+    found).
 
     Called by _adapt_write_edit before blocking a protected-path write. If
     a valid SCOPE_FILE_PATH grant exists for this path, the write should be
@@ -1624,47 +1651,25 @@ def check_approval_grant_for_file(
 
     Args:
         file_path: The file path being written/edited.
-        session_id: Session ID for grant scoping (defaults to env var).
+        session_id: Accepted for signature compatibility; not used (DB lookup
+            is cross-session by design — same rationale as semantic grants).
 
     Returns:
-        The matching ApprovalGrant if found and valid, None otherwise.
+        A dict with grant row data when a matching grant is found, None otherwise.
     """
-    if not session_id:
-        session_id = _get_session_id()
-
     try:
-        grants_dir = _get_grants_dir()
-        if not grants_dir.exists():
-            return None
-
-        for grant_file in sorted(grants_dir.glob(f"grant-{session_id}-*.json")):
-            try:
-                data = json.loads(grant_file.read_text())
-                grant = ApprovalGrant(**data)
-
-                if not grant.is_valid():
-                    if grant.is_expired():
-                        _cleanup_grant(grant_file)
-                    continue
-
-                signature = grant.get_signature()
-                if signature is None or signature.scope_type != SCOPE_FILE_PATH:
-                    continue
-
-                if matches_file_path_approval(signature, file_path):
-                    logger.info(
-                        "File-path approval grant matched: file='%s', grant=%s",
-                        file_path, grant_file.name,
-                    )
-                    return grant
-
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning("Invalid grant file %s: %s", grant_file, e)
-                _cleanup_grant(grant_file)
-                continue
-
+        from gaia.store.writer import check_db_file_path_grant
+        row = check_db_file_path_grant(file_path)
+        if row is not None:
+            logger.info(
+                "File-path DB grant matched: file=%r, approval_id=%s",
+                file_path, str(row.get("approval_id", ""))[:16],
+            )
+            return row
     except Exception as e:
-        logger.error("Error checking file-path approval grants: %s", e)
+        logger.warning(
+            "check_approval_grant_for_file: DB lookup failed (non-fatal): %s", e,
+        )
 
     return None
 
@@ -1680,34 +1685,50 @@ def find_pending_for_file(
     prevents generating a new approval_id on every retry while the user
     reviews the first one.
 
+    DB-primary since Task E: queries gaia.approvals.store for SCOPE_FILE_PATH
+    pending rows whose payload.exact_content matches the target path.
+    No filesystem fallback is needed because write_pending_approval_for_file
+    now writes exclusively to the DB.
+
     Args:
-        session_id: Session to search.
+        session_id: Session to search (used when all_sessions query unavailable).
         file_path: The file path to match against pending approvals.
 
     Returns:
-        The nonce (approval_id) if a matching pending approval exists, else None.
+        The nonce part of the approval_id (approval_id without "P-" prefix)
+        if a matching pending approval exists in the DB, else None.
     """
-    pending_list = get_pending_approvals_for_session(session_id)
-    if not pending_list:
+    stripped = file_path.strip() if file_path else ""
+    if not stripped:
         return None
 
-    stripped = file_path.strip() if file_path else ""
-    for pending_data in pending_list:
-        pending_sig_data = pending_data.get("scope_signature")
-        if not pending_sig_data:
-            continue
-        try:
-            pending_sig = ApprovalSignature.from_dict(pending_sig_data)
-            if matches_file_path_approval(pending_sig, stripped):
-                nonce = pending_data.get("nonce")
-                if nonce:
+    # DB path: query all pending rows (all_sessions=True -- see scan_pending_db
+    # for the rationale: CLAUDE_SESSION_ID inside a subagent is the subagent's id,
+    # not the orchestrator's, so session-scoping would silently miss the row).
+    try:
+        from gaia.approvals.store import list_pending
+        rows = list_pending(all_sessions=True)
+        for row in rows:
+            payload_json = row.get("payload_json") or "{}"
+            try:
+                payload = json.loads(payload_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            # SCOPE_FILE_PATH pendings are identified by their scope field.
+            if payload.get("scope") != SCOPE_FILE_PATH:
+                continue
+            # exact_content holds the file path.
+            if payload.get("exact_content", "").strip() == stripped:
+                approval_id = row.get("id", "")
+                if approval_id.startswith("P-"):
+                    nonce = approval_id[2:]
                     logger.info(
-                        "Reusing existing pending file-path approval nonce=%s for file: %s",
-                        nonce, file_path,
+                        "Reusing existing DB file-path pending approval_id=%s for file: %s",
+                        approval_id, file_path,
                     )
                     return nonce
-        except Exception:
-            continue
+    except Exception as exc:
+        logger.debug("find_pending_for_file: DB query failed (non-fatal): %s", exc)
 
     return None
 
@@ -1725,8 +1746,17 @@ def activate_db_pending_by_prefix(
 
       1. Looks up the approval row in the DB using ``id LIKE 'P-<prefix>%'``
          with ``status='pending'``.
-      2. Writes SHOWN + APPROVED events via ``gaia.approvals.store``.
-      3. Creates a filesystem grant file so that ``check_approval_grant()``
+      2. Parses payload_json from the DB row.
+      2b. [HARD INTEGRITY CHECK] Calls ``verify_fingerprint()`` to confirm the
+          payload has not changed since the REQUESTED event sealed it.  If the
+          fingerprint does not match (``ChainTamperError``) or the REQUESTED
+          event is missing (``ValueError``), activation FAILS CLOSED -- a
+          ``FAILED`` audit event is written and the approval is NOT activated.
+          This is the enforcement point for the presentation-role guarantee:
+          the command the orchestrator shows the user MUST equal what the
+          subagent generated.
+      3. Writes SHOWN + APPROVED events via ``gaia.approvals.store``.
+      4. Creates a filesystem grant file so that ``check_approval_grant()``
          (which still reads the filesystem) can find it on the subagent retry.
 
     Cross-session semantics: the DB approval was created under the subagent's
@@ -1842,6 +1872,70 @@ def activate_db_pending_by_prefix(
                 reason="Could not extract command from DB pending approval payload.",
             )
 
+        # Step 2b: HARD fingerprint integrity check (Task A -- presentation-role
+        # guarantee).
+        #
+        # The approval flow has three non-violable roles:
+        #   - generation  (subagent)  -- sealed via fingerprint at REQUESTED time
+        #   - presentation (orchestrator) -- must show verbatim; enforced HERE
+        #   - approval    (user)      -- sole authority; recorded in APPROVED event
+        #
+        # verify_fingerprint() re-derives SHA-256 of the canonical payload and
+        # compares it against the fingerprint stored in the REQUESTED event.
+        # A mismatch means the payload was altered between generation and
+        # presentation -- which would allow the orchestrator to show the user a
+        # different command than the subagent generated.  We MUST NOT activate
+        # such a tampered approval: activation is refused and a FAILED event is
+        # written for audit.
+        try:
+            from gaia.approvals.chain import verify_fingerprint, ChainTamperError
+            from gaia.approvals.store import _open_db as _chain_open_db
+            _fp_con = _chain_open_db()
+            try:
+                verify_fingerprint(approval_id, payload_json_str, _fp_con)
+            finally:
+                _fp_con.close()
+        except Exception as _fp_exc:
+            # Determine whether this is a tamper or a missing REQUESTED event.
+            _is_tamper = _fp_exc.__class__.__name__ == "ChainTamperError"
+            _tamper_label = "fingerprint_mismatch" if _is_tamper else "missing_requested_event"
+            logger.error(
+                "activate_db_pending_by_prefix: INTEGRITY VIOLATION for %s "
+                "(%s) -- refusing to activate: %s",
+                approval_id, _tamper_label, _fp_exc,
+            )
+            # Record a FAILED audit event so the refusal is in the append-only chain.
+            try:
+                import json as _meta_json
+                _metadata = _meta_json.dumps({
+                    "integrity_check": _tamper_label,
+                    "error": str(_fp_exc),
+                    "activating_session": current_session_id,
+                })
+                record_event(
+                    approval_id,
+                    "FAILED",
+                    agent_id=agent_id,
+                    session_id=current_session_id,
+                    metadata_json=_metadata,
+                )
+            except Exception as _audit_err:
+                logger.error(
+                    "activate_db_pending_by_prefix: also failed to record FAILED "
+                    "audit event for %s: %s",
+                    approval_id, _audit_err,
+                )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_CHAIN_TAMPER_DETECTED,
+                reason=(
+                    f"Activation refused: payload integrity check failed for "
+                    f"{approval_id!r} ({_tamper_label}). "
+                    "The command presented to the user may differ from what the "
+                    "subagent generated. A FAILED audit event has been recorded."
+                ),
+            )
+
         # Step 3: Write SHOWN + APPROVED events and flip status in DB.
         try:
             record_event(
@@ -1928,6 +2022,84 @@ def activate_db_pending_by_prefix(
                 grant_path=None,
             )
 
+        # Step 3c: SCOPE_FILE_PATH branch. When the payload carries a
+        # SCOPE_FILE_PATH scope (a protected-file Write/Edit pending),
+        # create a SCOPE_FILE_PATH DB grant so that check_approval_grant_for_file()
+        # can find it on the subagent retry via check_db_file_path_grant().
+        # No filesystem grant file is written -- the DB is the sole grant store
+        # since the Task E full migration.
+        if payload.get("scope") == SCOPE_FILE_PATH:
+            file_path = payload.get("exact_content", "")
+            if not file_path:
+                logger.warning(
+                    "activate_db_pending_by_prefix: SCOPE_FILE_PATH pending %s "
+                    "has no exact_content (file path) -- cannot create grant",
+                    approval_id,
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_INVALID_PENDING,
+                    reason="SCOPE_FILE_PATH pending is missing the file path (exact_content).",
+                )
+
+            fp_signature = build_file_path_signature(file_path)
+            if fp_signature is None:
+                logger.warning(
+                    "activate_db_pending_by_prefix: could not build file-path signature "
+                    "for file=%r in pending %s",
+                    file_path, approval_id,
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_INVALID_SIGNATURE,
+                    reason="Could not build SCOPE_FILE_PATH signature for approved file path.",
+                )
+
+            # Write DB grant (replaces the former filesystem grant write).
+            try:
+                from gaia.store.writer import insert_file_path_grant
+                result_fp = insert_file_path_grant(
+                    approval_id=approval_id,
+                    file_path=file_path,
+                    scope_signature=fp_signature.to_dict(),
+                    agent_id=None,
+                    session_id=current_session_id,
+                    ttl_minutes=ttl_minutes,
+                )
+            except Exception as _fp_err:
+                logger.error(
+                    "activate_db_pending_by_prefix: SCOPE_FILE_PATH DB grant insert error: %s",
+                    _fp_err,
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"SCOPE_FILE_PATH DB grant insert error: {_fp_err}",
+                )
+
+            if result_fp.get("status") != "applied":
+                logger.error(
+                    "activate_db_pending_by_prefix: SCOPE_FILE_PATH DB grant insert failed: %s",
+                    result_fp,
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"SCOPE_FILE_PATH DB grant insert failed: {result_fp.get('reason', 'unknown')}",
+                )
+
+            logger.info(
+                "activate_db_pending_by_prefix: SCOPE_FILE_PATH DB grant inserted: "
+                "approval_id=%s, file=%r",
+                approval_id[:16], file_path,
+            )
+            return ApprovalActivationResult(
+                success=True,
+                status=ACTIVATION_ACTIVATED,
+                reason="DB SCOPE_FILE_PATH pending activated (DB grant inserted for file-path check).",
+                grant_path=None,
+            )
+
         # Step 4: Rebuild approval signature from the command so the
         # filesystem grant has a valid scope_signature for check_approval_grant().
         from .approval_scopes import build_approval_signature, SCOPE_SEMANTIC_SIGNATURE
@@ -1973,11 +2145,12 @@ def activate_db_pending_by_prefix(
 
         verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else ["write"])
 
-        # Step 5a: Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants DB.
-        # This is the DB-primary path (CHECK-side cutover, Brief 71 FASE 2).
+        # Step 5: Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants DB.
+        # This is the sole grant path since Task E retired the filesystem dual-write.
         # The row is keyed by approval_id so check_db_semantic_grant() can find it
         # cross-session without relying on filesystem files.
-        db_grant_inserted = False
+        # Task A's verify_fingerprint enforcement (Step 2b above) is preserved
+        # exactly -- we only removed the filesystem grant write, not the check.
         try:
             from gaia.store.writer import insert_semantic_grant
             result_sg = insert_semantic_grant(
@@ -1989,70 +2162,40 @@ def activate_db_pending_by_prefix(
                 ttl_minutes=ttl_minutes,
             )
             if result_sg.get("status") == "applied":
-                db_grant_inserted = True
                 logger.info(
                     "activate_db_pending_by_prefix: DB semantic grant inserted: "
                     "approval_id=%s, session=%s",
                     approval_id[:16], current_session_id[:12],
                 )
+                return ApprovalActivationResult(
+                    success=True,
+                    status=ACTIVATION_ACTIVATED,
+                    reason=(
+                        "DB pending approval activated (SHOWN + APPROVED written, "
+                        "DB semantic grant inserted)."
+                    ),
+                    grant_path=None,
+                )
             else:
-                logger.warning(
-                    "activate_db_pending_by_prefix: DB semantic grant insert failed "
-                    "(non-fatal, falling back to filesystem): %s",
+                logger.error(
+                    "activate_db_pending_by_prefix: DB semantic grant insert failed: %s",
                     result_sg,
                 )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"DB semantic grant insert failed: {result_sg.get('reason', 'unknown')}",
+                )
         except Exception as _sg_err:
-            logger.warning(
-                "activate_db_pending_by_prefix: DB semantic grant insert error "
-                "(non-fatal, falling back to filesystem): %s",
+            logger.error(
+                "activate_db_pending_by_prefix: DB semantic grant insert error: %s",
                 _sg_err,
             )
-
-        # Step 5b: Create filesystem grant under current_session_id.
-        # DEPRECATED: check_approval_grant() now prefers the DB path (Step 5a).
-        # The filesystem grant is retained as a fallback for any legacy consumers
-        # that still read filesystem directly.  It will be removed in a future
-        # migration once the DB path is stable in production.
-        grant = ApprovalGrant(
-            session_id=current_session_id,
-            approved_verbs=verbs,
-            approved_scope=command,
-            scope_type=signature.scope_type,
-            scope_signature=signature.to_dict(),
-            granted_at=time.time(),
-            ttl_minutes=ttl_minutes,
-            confirmed=True,  # user already approved via AskUserQuestion
-        )
-
-        grants_dir = _get_grants_dir()
-        nonce_suffix = approval_id.replace("P-", "")[:8]
-        grant_file = grants_dir / (
-            f"grant-{current_session_id}-{int(time.time() * 1000)}-{nonce_suffix}.json"
-        )
-        grant_file.write_text(json.dumps(asdict(grant), indent=2))
-
-        logger.info(
-            "activate_db_pending_by_prefix: %s grant created: "
-            "approval_id=%s, prefix=%s, originating_session=%s, "
-            "current_session=%s, command='%s', grant=%s",
-            "DB+filesystem" if db_grant_inserted else "filesystem-only",
-            approval_id[:16], nonce_prefix,
-            (originating_session or "")[:12],
-            current_session_id[:12],
-            command[:80],
-            grant_file.name,
-        )
-        return ApprovalActivationResult(
-            success=True,
-            status=ACTIVATION_ACTIVATED,
-            reason=(
-                "DB pending approval activated (SHOWN + APPROVED written, "
-                "DB semantic grant inserted, filesystem grant created)."
-                if db_grant_inserted
-                else "DB pending approval activated (SHOWN + APPROVED written, filesystem grant created)."
-            ),
-            grant_path=grant_file,
-        )
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_ERROR,
+                reason=f"DB semantic grant insert error: {_sg_err}",
+            )
 
     except Exception as exc:
         logger.error(

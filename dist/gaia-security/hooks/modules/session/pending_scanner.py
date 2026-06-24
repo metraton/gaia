@@ -1,13 +1,159 @@
-"""Scan for deferred pending approvals and format a human-readable summary."""
+"""Scan for deferred pending approvals and format a human-readable summary.
+
+DB-only since Task E FS retirement:
+  ``scan_pending_db()`` queries the approvals table directly and is the
+  sole canonical source for pending-approvals surfacing.  All pending
+  types -- T3 commands, COMMAND_SET batches, and SCOPE_FILE_PATH
+  file-write blocks -- are written exclusively to gaia.db via
+  gaia.approvals.store.insert_requested().
+
+  ``scan_pending_approvals()`` has been retired: no pending-*.json files
+  have been written since the M2 cutover.  The stub returns [] so any
+  residual callers fail safely without raising.
+  ``build_pending_approvals_block`` in session_manifest.py calls
+  ``scan_pending_db()`` exclusively.
+"""
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# DB-primary path (canonical since T2.1 cutover / Brief 71)
+# ---------------------------------------------------------------------------
+
+def scan_pending_db() -> List[Dict]:
+    """Query the DB approvals table for currently-pending rows.
+
+    Returns the same dict shape as scan_pending_approvals() so the existing
+    format_pending_summary() and format_pending_detail() formatters work
+    unchanged.  Scopes to ALL pending rows (no session filter) because:
+      * The DB is per-machine (~/.gaia/gaia.db), so cross-machine leakage is
+        impossible.
+      * The session_id stored in approvals rows is the main session_id, while
+        $CLAUDE_SESSION_ID inside a subagent is the subagent's id — filtering
+        by session would silently drop all subagent-originated pendings (the
+        known bug owned by another task; see CONFIRMED FINDINGS, Task C).
+
+    Returns [] on any error (never raises) so the caller's fail-safe catches it.
+    """
+    try:
+        # Lazy import: keeps gaia.approvals out of modules that only use the
+        # filesystem path.  Falls back to the repo root path when the installed
+        # package is not importable (e.g. running directly from the source tree).
+        try:
+            from gaia.approvals.store import list_pending
+        except ImportError:
+            import pathlib as _pl
+            import sys as _sys
+            _repo = _pl.Path(__file__).resolve().parent.parent.parent.parent.parent
+            _sys.path.insert(0, str(_repo))
+            from gaia.approvals.store import list_pending
+
+        rows = list_pending(all_sessions=True)
+    except Exception as exc:
+        logger.debug("scan_pending_db: DB query failed (non-fatal): %s", exc)
+        return []
+
+    results = []
+    now = time.time()
+    for row in rows:
+        try:
+            approval_id = row.get("id", "unknown")
+            # Short display id: strip the "P-" prefix and take first 8 chars.
+            nonce_short = approval_id[2:10] if approval_id.startswith("P-") else approval_id[:8]
+            nonce_full = approval_id[2:] if approval_id.startswith("P-") else approval_id
+
+            payload_json = row.get("payload_json") or "{}"
+            try:
+                payload = json.loads(payload_json)
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+
+            # Extract command: prefer exact_content, fall back to first
+            # command in the commands list, then the operation description.
+            command_set_items = payload.get("command_set") or []
+            commands_list = payload.get("commands") or []
+            command = (
+                payload.get("exact_content")
+                or (commands_list[0] if commands_list else None)
+                or payload.get("operation")
+                or "unknown"
+            )
+            # For COMMAND_SET: the "command" shown is a summary of all commands.
+            is_command_set = len(command_set_items) > 1 or len(commands_list) > 1
+            if is_command_set:
+                all_cmds = (
+                    [it["command"] for it in command_set_items if isinstance(it, dict) and it.get("command")]
+                    if command_set_items
+                    else commands_list
+                )
+                if len(all_cmds) > 1:
+                    command = f"[{len(all_cmds)} commands] " + (all_cmds[0] if all_cmds else command)
+
+            # Reconstruct verb and category from operation field.
+            # operation format: "{CATEGORY} command intercepted: {verb}"
+            operation = payload.get("operation", "")
+            verb = "unknown"
+            category = "MUTATIVE"
+            if ": " in operation:
+                verb = operation.rsplit(": ", 1)[-1].strip()
+            if " command intercepted" in operation:
+                category = operation.split(" command intercepted")[0].strip()
+
+            # Build a context dict that format_pending_summary can use.
+            context = {
+                "source": "db",
+                "description": payload.get("rationale", ""),
+                "risk": payload.get("risk_level", "medium"),
+                "rollback": payload.get("rollback_hint"),
+            }
+
+            # Age from created_at timestamp.
+            age_seconds: float = row.get("age_seconds", 0.0)
+            if not age_seconds:
+                created_at = row.get("created_at", "")
+                if created_at:
+                    try:
+                        from datetime import datetime, timezone
+                        dt = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                            tzinfo=timezone.utc
+                        )
+                        age_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+                    except (ValueError, TypeError):
+                        age_seconds = 0.0
+            age_human = _format_age(age_seconds)
+            timestamp = now - age_seconds
+
+            results.append({
+                "nonce_short": nonce_short,
+                "nonce_full": nonce_full,
+                "command": command,
+                "verb": verb,
+                "category": category,
+                "age_human": age_human,
+                "timestamp": timestamp,
+                "context": context,
+                "scope_type": "db",
+                # DB-sourced pendings are not cross-session (all sessions on
+                # this machine are the same user); mark False so the formatter
+                # does not add the "[session anterior]" tag.
+                "cross_session": False,
+                "pending_session_id": row.get("session_id", "unknown"),
+                # Extra field for deduplication in the UNION path.
+                "_approval_id": approval_id,
+            })
+        except Exception as exc:
+            logger.debug("scan_pending_db: skipping row %s: %s", row.get("id"), exc)
+            continue
+
+    results.sort(key=lambda x: x["timestamp"])
+    return results
 
 
 def scan_pending_approvals(
@@ -16,101 +162,15 @@ def scan_pending_approvals(
     current_session_id: Optional[str] = None,
     exclude_live_sessions: bool = False,
 ) -> List[Dict]:
-    """Scan approvals directory for pending files.
+    """Filesystem pending scan — retired as of Task E FS retirement.
 
-    Returns list of dicts with: nonce (short), command, verb, category,
-    age_human (e.g. "14 hours ago"), context (if enriched), timestamp,
-    cross_session (bool), pending_session_id.
+    No new pending-*.json files are written after the M2 cutover.
+    The DB is the sole pending store; use scan_pending_db() instead.
 
-    If session_id provided, filter to that session. Otherwise return all.
-    current_session_id is used to annotate items from prior sessions
-    (cross_session=True when pending.session_id != current_session_id).
-
-    If exclude_live_sessions is True, pendings whose owning session_id
-    is currently registered as alive (per session_registry.get_live_sessions)
-    are filtered out. This is used by the [ACTIONABLE] injection path and
-    the `gaia approvals list --orphans-only` CLI flag to avoid showing
-    cross-session pendings that a parallel live session may still resolve.
-    On registry errors the function logs a warning and returns all pendings
-    unfiltered (conservative: better to show extras than lose real pendings).
+    Signature preserved for backward compatibility with callers that still
+    reference the function.  Returns [] unconditionally.
     """
-    results = []
-
-    if not approvals_dir.exists():
-        return results
-
-    for f in approvals_dir.glob("pending-*.json"):
-        if "index" in f.name:
-            continue
-        try:
-            data = json.loads(f.read_text())
-            # Clean up expired pendings (ttl > 0 and expired)
-            ttl = data.get("ttl_minutes", 0)
-            if ttl > 0:
-                elapsed = (time.time() - data.get("timestamp", 0)) / 60
-                if elapsed > ttl:
-                    try:
-                        os.unlink(str(f))
-                    except OSError:
-                        pass
-                    continue
-            # Clean up rejected pendings
-            if data.get("status") == "rejected":
-                try:
-                    os.unlink(str(f))
-                except OSError:
-                    pass
-                continue
-            # Filter by session if requested
-            if session_id and data.get("session_id") != session_id:
-                continue
-            # Format age
-            age_seconds = time.time() - data.get("timestamp", 0)
-            age_human = _format_age(age_seconds)
-
-            # Detect cross-session pending approvals
-            pending_sid = data.get("session_id", "unknown")
-            cross_session = bool(
-                current_session_id and pending_sid != current_session_id
-            )
-
-            results.append({
-                "nonce_short": data["nonce"][:8],
-                "nonce_full": data["nonce"],
-                "command": data.get("command", data.get("file_path", "unknown")),
-                "verb": data.get("danger_verb", "unknown"),
-                "category": data.get("danger_category", "UNKNOWN"),
-                "age_human": age_human,
-                "timestamp": data.get("timestamp", 0),
-                "context": data.get("context", {}),
-                "scope_type": data.get("scope_type", "semantic_signature"),
-                "cross_session": cross_session,
-                "pending_session_id": pending_sid,
-            })
-        except Exception:
-            continue
-
-    # Optionally exclude pendings whose owning session is currently alive.
-    # Lazy import keeps the registry dependency out of modules that call
-    # scan_pending_approvals() without the flag.
-    if exclude_live_sessions:
-        try:
-            from modules.session.session_registry import get_live_sessions
-            # Exclude headless sessions from the live-set: nobody is
-            # watching them interactively, so their pendings must surface
-            # to interactive sessions that can approve/reject them.
-            live = get_live_sessions(include_headless=False)
-            results = [r for r in results if r["pending_session_id"] not in live]
-        except Exception as exc:  # noqa: BLE001 — deliberate broad catch
-            logger.warning(
-                "scan_pending_approvals: get_live_sessions() failed (%s) "
-                "— returning all pendings unfiltered",
-                exc,
-            )
-
-    # Sort by timestamp (oldest first)
-    results.sort(key=lambda x: x["timestamp"])
-    return results
+    return []
 
 
 def _truncate_smart(cmd: str, max_len: int = 100) -> str:

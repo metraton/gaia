@@ -23,8 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.scan.config import ScanConfig
-from tools.scan.merge import AGENT_ENRICHED_SECTIONS
-from tools.scan.orchestrator import ScanOrchestrator, ScanOutput
+from tools.scan.orchestrator import AGENT_ENRICHED_SECTIONS, ScanOrchestrator, ScanOutput
 from tools.scan.registry import ScannerRegistry
 from tools.scan.scanners.base import BaseScanner, ScanResult
 from tools.scan.tests.conftest import create_git_dir
