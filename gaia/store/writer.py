@@ -3428,6 +3428,104 @@ def consume_db_file_path_grant(
 
 
 # ---------------------------------------------------------------------------
+# Public API: confirm_db_grant / cleanup_expired_db_grants (v20 / grant-lifecycle)
+# ---------------------------------------------------------------------------
+#
+# Foundation scaffolding for the grant-lifecycle FS-to-DB migration (v20).
+# These helpers are called by the upcoming confirm_grant and
+# consume_session_grants migration; callers are NOT wired yet -- only the DB
+# write path is provided here.
+#
+#   confirm_db_grant()          -- sets confirmed=1 on a PENDING grant row;
+#                                  used when the user explicitly confirms a
+#                                  multi-use grant.
+#   cleanup_expired_db_grants() -- marks EXPIRED (or hard-deletes) any grant
+#                                  whose expires_at is in the past and whose
+#                                  status is still PENDING.  Idempotent.
+# ---------------------------------------------------------------------------
+
+
+def confirm_db_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Set confirmed=1 on a PENDING approval_grants row.
+
+    Called when the user explicitly confirms a multi-use grant.  Only rows
+    with status='PENDING' are touched -- a CONSUMED or REVOKED grant cannot
+    be retroactively confirmed.
+
+    Args:
+        approval_id: The grant to confirm (PK of approval_grants).
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied"} when the row was updated.
+        {"status": "not_found"} when no PENDING row with that id exists.
+        {"status": "error", "reason": ...} on unexpected failure.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                "UPDATE approval_grants SET confirmed = 1 "
+                "WHERE approval_id = ? AND status = 'PENDING'",
+                (approval_id,),
+            )
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        if cur.rowcount == 0:
+            return {"status": "not_found"}
+        return _applied()
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def cleanup_expired_db_grants(
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Mark EXPIRED any PENDING approval_grants rows whose expires_at has passed.
+
+    Idempotent: rows already in a terminal status (CONSUMED, REVOKED, EXPIRED)
+    are not touched.  Rows with expires_at=NULL are skipped (no TTL set).
+
+    Args:
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        Number of rows marked EXPIRED.
+    """
+    now = _now_iso()
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                "UPDATE approval_grants SET status = 'EXPIRED' "
+                "WHERE status = 'PENDING' "
+                "  AND expires_at IS NOT NULL "
+                "  AND expires_at < ?",
+                (now,),
+            )
+            con.commit()
+            return cur.rowcount
+        except Exception:
+            con.rollback()
+            raise
+    except Exception:
+        return 0
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: agent_contract_handoffs (v9 / M4)
 # ---------------------------------------------------------------------------
 #
