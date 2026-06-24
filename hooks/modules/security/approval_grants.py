@@ -1078,9 +1078,20 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
             import json as _j
             row_data = _j.loads(db_row.get("command_set_json") or "{}")
             sig_dict = row_data.get("scope_signature")
+            # Derive approved_verbs from the persisted scope_signature the same
+            # way the FS activation paths do: deserialise the signature and use
+            # its verb field (falls back to an empty list when absent).
+            _approved_verbs: List[str] = []
+            if sig_dict:
+                try:
+                    _sig = ApprovalSignature.from_dict(sig_dict)
+                    if _sig.verb:
+                        _approved_verbs = [_sig.verb]
+                except Exception:
+                    pass
             grant = ApprovalGrant(
                 session_id=db_row.get("session_id", session_id),
-                approved_verbs=[],
+                approved_verbs=_approved_verbs,
                 approved_scope=row_data.get("command", command),
                 scope_type=SCOPE_SEMANTIC_SIGNATURE,
                 scope_signature=sig_dict,
