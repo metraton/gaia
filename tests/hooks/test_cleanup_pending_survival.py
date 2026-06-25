@@ -266,6 +266,116 @@ class TestExpiredPendingIsCleaned:
 
 
 # ---------------------------------------------------------------------------
+# Cross-session sweep: SubagentStop expires past-TTL pendings from ANY session,
+# while fresh pendings in ANY session survive (global-scope invariant).
+# ---------------------------------------------------------------------------
+
+class TestCrossSessionSweep:
+    def test_stale_pending_in_other_session_is_expired(self, writer_db):
+        """A STALE (> TTL) pending created under session B IS expired when a
+        subagent in session A stops.
+
+        Before this fix the EXPIRE sweep was session-scoped
+        (list_pending(all_sessions=False)), so a stale pending orphaned by a
+        dead/other session never auto-expired -- it had to be drained by hand.
+        With the global sweep (all_sessions=True), the session-A SubagentStop
+        reaps it because the only gate is the age, not session membership.
+        """
+        from modules.security.approval_cleanup import cleanup
+        from gaia.approvals.store import get_by_id
+
+        session_b = "dead-session-B"
+        session_a = "live-session-A"
+        stale = seed_db_pending(
+            command="terraform destroy -auto-approve",
+            session_id=session_b,
+            danger_verb="destroy",
+            danger_category="MUTATIVE",
+        )
+        _backdate_created_at(writer_db, stale, "2020-01-01T00:00:00Z")
+
+        # A subagent in a DIFFERENT session (A) stops.
+        cleanup("developer", session_id=session_a, preserve_nonces=None)
+
+        row = get_by_id(stale)
+        assert row is not None
+        assert row["status"] == "expired", (
+            "Stale pending in another session MUST be expired at a SubagentStop "
+            "from a different session (cross-session auto-expiry)"
+        )
+
+    def test_fresh_pending_in_other_session_survives(self, writer_db):
+        """A FRESH (< TTL) pending created under session B SURVIVES when a
+        subagent in session A stops.
+
+        This is the critical guard against re-introducing the P-3d23 bug at
+        global scope: widening the sweep to all_sessions must NOT touch a fresh
+        pending in any session. The age gate is session-independent.
+        """
+        from modules.security.approval_cleanup import cleanup
+        from gaia.approvals.store import get_by_id, list_pending
+
+        session_b = "other-session-B"
+        session_a = "live-session-A"
+        fresh = seed_db_pending(
+            command="kubectl delete pod web-0",
+            session_id=session_b,
+            danger_verb="delete",
+            danger_category="MUTATIVE",
+        )
+        # No backdate: pending is fresh (< 24h TTL).
+
+        # A subagent in a DIFFERENT session (A) stops.
+        cleanup("cloud-troubleshooter", session_id=session_a, preserve_nonces=None)
+
+        row = get_by_id(fresh)
+        assert row is not None
+        assert row["status"] == "pending", (
+            "Fresh pending in another session MUST survive a cross-session "
+            "SubagentStop (P-3d23 invariant holds at global scope)"
+        )
+        pending_ids = {p["id"] for p in list_pending(all_sessions=True)}
+        assert fresh in pending_ids, (
+            "Fresh cross-session pending must still be listed after the sweep"
+        )
+
+    def test_cross_session_expiry_event_has_provenance(self, writer_db):
+        """A cross-session expiry still carries provenance: the auto-transition
+        event records the sweeping agent_id and reason=expired_ttl."""
+        import json
+        from modules.security.approval_cleanup import cleanup
+
+        session_b = "dead-session-B"
+        session_a = "live-session-A"
+        stale = seed_db_pending(
+            command="terraform destroy",
+            session_id=session_b,
+            danger_verb="destroy",
+        )
+        _backdate_created_at(writer_db, stale, "2020-01-01T00:00:00Z")
+
+        cleanup("platform-architect", session_id=session_a, preserve_nonces=None)
+
+        con = sqlite3.connect(str(writer_db))
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT agent_id, metadata_json FROM approval_events "
+            "WHERE approval_id = ? AND event_type = 'REVOKED'",
+            (stale,),
+        ).fetchall()
+        con.close()
+
+        assert rows, "A cross-session expiry must write an auto-transition event"
+        for r in rows:
+            assert r["agent_id"] == "platform-architect", (
+                "cross-session expiry event must carry the sweeping agent_id"
+            )
+            assert r["metadata_json"], "event must carry metadata_json"
+            meta = json.loads(r["metadata_json"])
+            assert meta.get("reason") == "expired_ttl"
+
+
+# ---------------------------------------------------------------------------
 # Test 4: provenance guard -- every auto-transition has non-null agent_id + reason
 # ---------------------------------------------------------------------------
 
