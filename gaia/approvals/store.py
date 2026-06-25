@@ -29,8 +29,16 @@ Public API::
     reject(approval_id, approver_session, *, agent_id=None, con=None)
         -> None  -- convenience wrapper: pending -> rejected
 
+    revoke(approval_id, revoker_session, *, agent_id=None, event_payload=None,
+           metadata_json=None, con=None)
+        -> None  -- convenience wrapper: pending -> revoked (user/admin cancel)
+
+    expire(approval_id, expirer_session=None, *, agent_id=None,
+           event_payload=None, metadata_json=None, con=None)
+        -> None  -- convenience wrapper: pending -> expired (TTL-sweep terminal)
+
     transition(approval_id, from_status, to_status, event_payload, *,
-               agent_id, session_id, con=None)
+               agent_id, session_id, metadata_json=None, con=None)
         -> None  -- state machine wrapper; raises if from_status does not match
 
     replay_for_approval(approval_id, con=None)
@@ -500,6 +508,7 @@ def transition(
     *,
     agent_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    metadata_json: Optional[str] = None,
     con: Optional[sqlite3.Connection] = None,
 ) -> None:
     """State machine wrapper for approval status transitions.
@@ -512,21 +521,34 @@ def transition(
         approval_id: The P-{uuid4} approval identifier.
         from_status: Expected current status (guard). Must match the actual
             stored status or this function raises ValueError.
-        to_status: New status to write.
+        to_status: New status to write. Recognized: 'approved', 'rejected',
+            'revoked', 'expired'. The 'expired' status is the TTL-sweep
+            terminal status (schema.sql, bu_approvals_status_has_event excludes
+            it); it has no dedicated event_type in approval_events, so its audit
+            event is recorded as a REVOKED event carrying a reason in
+            metadata_json to distinguish a TTL expiry from a user/admin revoke.
         event_payload: Optional dict for the event's payload_json and fingerprint.
-        agent_id: Optional agent identifier for the event.
+        agent_id: Optional agent identifier for the event -- restores provenance
+            on auto-transitions (cleanup/expiry) that previously wrote null.
         session_id: Optional session identifier for the event.
+        metadata_json: Optional free-form JSON forwarded to the event's
+            metadata_json column (e.g. {"reason": "expired_ttl", ...}). Mirrors
+            record_event(); the canonical way to tag WHY an auto-transition fired.
         con: Optional open connection.
 
     Raises:
         ValueError: If the stored status does not match from_status.
         ValueError: If the approval_id does not exist.
     """
-    # Derive the event_type from the to_status transition.
+    # Derive the event_type from the to_status transition. 'expired' has no
+    # event_type of its own (the approval_events CHECK has no EXPIRED value and
+    # the status-has-event trigger does not gate it), so its audit trail is a
+    # REVOKED event distinguished by metadata_json reason="expired_ttl".
     _STATUS_TO_EVENT: dict[str, str] = {
         "approved": "APPROVED",
         "rejected": "REJECTED",
         "revoked": "REVOKED",
+        "expired": "REVOKED",
     }
     event_type = _STATUS_TO_EVENT.get(to_status, to_status.upper())
 
@@ -561,6 +583,7 @@ def transition(
             session_id=session_id,
             payload_json=payload_json_str,
             fingerprint=fp,
+            metadata_json=metadata_json,
         )
         _con.execute(
             "UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?",
@@ -614,6 +637,8 @@ def revoke(
     revoker_session: str,
     *,
     agent_id: Optional[str] = None,
+    event_payload: Optional[Dict[str, Any]] = None,
+    metadata_json: Optional[str] = None,
     con: Optional[sqlite3.Connection] = None,
 ) -> None:
     """Revoke a pending approval (user or admin cancellation before execution).
@@ -625,7 +650,11 @@ def revoke(
     Args:
         approval_id: The P-{uuid4} approval identifier.
         revoker_session: The session_id of the revoking session.
-        agent_id: Optional agent identifier for the REVOKED event.
+        agent_id: Optional agent identifier for the REVOKED event -- pass this on
+            automated revocations so the event carries provenance instead of null.
+        event_payload: Optional dict for the event's payload_json and fingerprint.
+        metadata_json: Optional free-form JSON tagging WHY the revoke fired
+            (e.g. {"reason": "...", "source": "..."}), forwarded to the event.
         con: Optional open connection.
 
     Raises:
@@ -636,8 +665,53 @@ def revoke(
         approval_id,
         from_status="pending",
         to_status="revoked",
+        event_payload=event_payload,
         agent_id=agent_id,
         session_id=revoker_session,
+        metadata_json=metadata_json,
+        con=con,
+    )
+
+
+def expire(
+    approval_id: str,
+    expirer_session: Optional[str] = None,
+    *,
+    agent_id: Optional[str] = None,
+    event_payload: Optional[Dict[str, Any]] = None,
+    metadata_json: Optional[str] = None,
+    con: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Expire a pending approval whose TTL has elapsed (cleanup-layer sweep).
+
+    Transitions approvals.status to 'expired' -- the schema's TTL-sweep terminal
+    status (schema.sql). 'expired' is deliberately distinct from 'revoked': a
+    revoke is a user/admin cancellation, an expire is the 24h pending window
+    (DEFAULT_PENDING_TTL_MINUTES) lapsing without a decision. Because the
+    approval_events schema has no EXPIRED event_type and the status-has-event
+    trigger does not gate 'expired', the audit event is recorded as REVOKED and
+    distinguished by metadata_json (reason="expired_ttl").
+
+    Args:
+        approval_id: The P-{uuid4} approval identifier.
+        expirer_session: The session_id under which the sweep ran (event session).
+        agent_id: Optional agent identifier for the event (provenance).
+        event_payload: Optional dict for the event's payload_json and fingerprint.
+        metadata_json: Optional free-form JSON tagging the expiry reason.
+        con: Optional open connection.
+
+    Raises:
+        ValueError: If the approval is not in 'pending' status.
+        ValueError: If the approval_id does not exist.
+    """
+    transition(
+        approval_id,
+        from_status="pending",
+        to_status="expired",
+        event_payload=event_payload,
+        agent_id=agent_id,
+        session_id=expirer_session,
+        metadata_json=metadata_json,
         con=con,
     )
 
