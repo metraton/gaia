@@ -1026,10 +1026,10 @@ class TestScenario8FullApprovalCycle:
         import sys
         sys.path.insert(0, str(HOOKS_DIR))
         from modules.security.approval_grants import (
-            generate_nonce, write_pending_approval,
-            activate_pending_approval, ACTIVATION_ACTIVATED, ACTIVATION_NOT_FOUND,
+            generate_nonce, activate_db_pending_by_prefix,
+            ACTIVATION_ACTIVATED, ACTIVATION_NOT_FOUND,
         )
-        from modules.core.paths import clear_path_cache
+        from tests.fixtures.db_helpers import seed_db_pending, apply_approvals_schema
 
         # Set up isolated environment
         claude_dir = tmp_path / ".claude"
@@ -1043,27 +1043,76 @@ class TestScenario8FullApprovalCycle:
         original_get_plugin = ag.get_plugin_data_dir
         ag.get_plugin_data_dir = lambda: claude_dir
 
+        # Isolate the DB pending plane: seed_db_pending / activate_db_pending_by_prefix
+        # delegate to gaia.store.writer._connect(); patch it to a per-test SQLite file
+        # so the one-time activation invariant is verified against an empty DB.
+        import sqlite3
+        import hashlib
+        import gaia.store.writer as _swriter
+        writer_db_path = tmp_path / "writer_isolation.db"
+
+        def _make_writer_db():
+            con = sqlite3.connect(str(writer_db_path))
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA foreign_keys = ON")
+            con.create_function(
+                "gaia_sha256", 1,
+                lambda v: hashlib.sha256((v or "").encode()).hexdigest(),
+                deterministic=True,
+            )
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS approval_grants (
+                    approval_id           TEXT PRIMARY KEY,
+                    agent_id              TEXT,
+                    session_id            TEXT,
+                    command_set_json      TEXT NOT NULL,
+                    scope                 TEXT NOT NULL DEFAULT 'COMMAND_SET',
+                    created_at            TEXT NOT NULL
+                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    expires_at            TEXT,
+                    status                TEXT NOT NULL DEFAULT 'PENDING',
+                    consumed_indexes_json TEXT,
+                    consumed_at           TEXT,
+                    revoked_at            TEXT,
+                    multi_use             INTEGER NOT NULL DEFAULT 0,
+                    confirmed             INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            apply_approvals_schema(con)
+            con.commit()
+            return con
+
+        original_connect = _swriter._connect
+        _swriter._connect = lambda db_path_arg=None: _make_writer_db()
+
         try:
             nonce = generate_nonce()
-            write_pending_approval(
-                nonce=nonce,
+            seed_db_pending(
                 command="git push origin main",
+                session_id="e2e-nonce-reuse-test",
                 danger_verb="push",
                 danger_category="MUTATIVE",
-                session_id="e2e-nonce-reuse-test",
+                nonce=nonce,
             )
 
-            # First activation should succeed
-            result1 = activate_pending_approval(nonce, session_id="e2e-nonce-reuse-test")
+            # First activation should succeed (pending -> approved)
+            result1 = activate_db_pending_by_prefix(
+                nonce[:8], current_session_id="e2e-nonce-reuse-test",
+            )
             assert result1.success, f"First activation should succeed: {result1.reason}"
             assert result1.status == ACTIVATION_ACTIVATED
 
-            # Second activation should fail (pending file deleted)
-            result2 = activate_pending_approval(nonce, session_id="e2e-nonce-reuse-test")
+            # Second activation should fail (no pending row remains)
+            result2 = activate_db_pending_by_prefix(
+                nonce[:8], current_session_id="e2e-nonce-reuse-test",
+            )
             assert not result2.success, "Second activation should fail"
             assert result2.status == ACTIVATION_NOT_FOUND
         finally:
             ag.get_plugin_data_dir = original_get_plugin
+            _swriter._connect = original_connect
             cp.clear_path_cache()
 
 

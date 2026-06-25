@@ -25,9 +25,9 @@ from modules.security.approval_grants import (
     check_approval_grant,
     generate_nonce,
     get_pending_approvals_for_session,
-    write_pending_approval,
 )
 from modules.core.paths import clear_path_cache
+from tests.fixtures.db_helpers import seed_db_pending
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +88,11 @@ def clean_grants_dir(tmp_path, monkeypatch):
             );
             """
         )
+        # The DB pending plane (seed_db_pending -> insert_requested / get_pending)
+        # reads the approvals + approval_events tables; materialize them in the
+        # isolation DB so the migrated pending functions work test-locally.
+        from tests.fixtures.db_helpers import apply_approvals_schema
+        apply_approvals_schema(con)
         con.commit()
         return con
 
@@ -191,26 +196,27 @@ class TestActivateGrants:
     """Test grant activation via _activate_grants."""
 
     def test_approval_activates_pending_grant(self):
-        """Approval response should activate a pending grant."""
+        """A nonce-tagged approval response should activate the pending grant."""
         session_id = "test-elicitation-session"
         command = "terraform apply"
 
-        # Create a pending approval
+        # Create a DB pending approval
         nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command=command,
+            session_id=session_id,
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce,
         )
 
         # Verify pending exists
         pending = get_pending_approvals_for_session(session_id)
         assert len(pending) == 1
 
-        # Activate grants
-        _activate_grants(session_id)
+        # Activate grants via the nonce-targeted elicitation path
+        response = f"Approve -- {command} [P-{nonce[:8]}]"
+        _activate_grants(session_id, response=response)
 
         # Verify grant is now active
         grant = check_approval_grant(command)
@@ -233,44 +239,50 @@ class TestActivateGrants:
         assert grant is None
 
     def test_multiple_pending_all_activated(self):
-        """Multiple pending approvals should all be activated."""
-        from modules.security.approval_grants import activate_grants_for_session
+        """Multiple pending approvals are each activated by their own nonce.
 
+        The session-wide FS sweep (activate_grants_for_session) was retired with
+        the filesystem pending plane; activation is now per-nonce via the DB
+        bridge. Activating each pending by its nonce leaves all grants active and
+        all pending consumed -- the behavior this test guards.
+        """
         session_id = "test-elicitation-session"
 
         nonce1 = generate_nonce()
-        write_pending_approval(
-            nonce=nonce1,
+        seed_db_pending(
             command="terraform apply",
+            session_id=session_id,
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce1,
         )
 
         nonce2 = generate_nonce()
-        write_pending_approval(
-            nonce=nonce2,
+        seed_db_pending(
             command="git push origin main",
+            session_id=session_id,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce2,
         )
 
         # Verify both pending exist before activation
         pending_before = get_pending_approvals_for_session(session_id)
         assert len(pending_before) == 2, "Should have 2 pending approvals"
 
-        # Activate via the module function directly to check results
-        results = activate_grants_for_session(session_id)
-        activated = sum(1 for r in results if r.success)
-        assert activated == 2, (
-            f"Expected 2 activations, got {activated}. "
-            f"Results: {[(r.status, r.reason) for r in results]}"
+        # Activate each pending via its own nonce-targeted elicitation response
+        _activate_grants(
+            session_id, response=f"Approve -- terraform apply [P-{nonce1[:8]}]",
+        )
+        _activate_grants(
+            session_id, response=f"Approve -- git push origin main [P-{nonce2[:8]}]",
         )
 
-        # Verify at least the first grant is findable
+        # Both grants should be findable
         grant1 = check_approval_grant("terraform apply")
         assert grant1 is not None, "First grant should be active"
+        grant2 = check_approval_grant("git push origin main")
+        assert grant2 is not None, "Second grant should be active"
 
         # Verify all pending consumed
         pending_after = get_pending_approvals_for_session(session_id)
@@ -286,21 +298,21 @@ class TestNonceTargetedActivation:
 
         # Create two pending approvals
         nonce1 = generate_nonce()
-        write_pending_approval(
-            nonce=nonce1,
+        seed_db_pending(
             command="terraform apply",
+            session_id=session_id,
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce1,
         )
 
         nonce2 = generate_nonce()
-        write_pending_approval(
-            nonce=nonce2,
+        seed_db_pending(
             command="git push origin main",
+            session_id=session_id,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce2,
         )
 
         # Build a response that contains the nonce prefix for the first pending
@@ -321,58 +333,65 @@ class TestNonceTargetedActivation:
             "Only the targeted pending should be consumed; the other should remain"
         )
 
-    def test_fallback_to_session_wide_when_no_nonce(self):
-        """Response without [P-...] falls back to session-wide activation."""
+    def test_no_nonce_response_activates_nothing(self):
+        """Response without [P-...] activates nothing.
+
+        The session-wide FS fallback was retired with the filesystem pending
+        plane. _activate_grants() now resolves a pending strictly by its nonce
+        prefix (activate_db_pending_by_prefix); a response carrying no [P-...]
+        tag is a no-op and every pending stays pending.
+        """
         session_id = "test-elicitation-session"
 
         nonce1 = generate_nonce()
-        write_pending_approval(
-            nonce=nonce1,
+        seed_db_pending(
             command="terraform apply",
+            session_id=session_id,
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce1,
         )
 
         nonce2 = generate_nonce()
-        write_pending_approval(
-            nonce=nonce2,
+        seed_db_pending(
             command="git push origin main",
+            session_id=session_id,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce2,
         )
 
-        # Response has no [P-...] tag -- legacy approval
+        # Response has no [P-...] tag -- nothing to target
         response = "Approve -- Allow the operation to proceed"
 
         _activate_grants(session_id, response=response)
 
-        # Both grants should be activated (session-wide fallback)
-        grant1 = check_approval_grant("terraform apply")
-        assert grant1 is not None, "First grant should be active (session-wide)"
+        # No grant should be activated without a nonce target
+        assert check_approval_grant("terraform apply") is None
+        assert check_approval_grant("git push origin main") is None
 
-        grant2 = check_approval_grant("git push origin main")
-        assert grant2 is not None, "Second grant should be active (session-wide)"
-
+        # Both pending remain
         pending_after = get_pending_approvals_for_session(session_id)
-        assert len(pending_after) == 0, "All pending should be consumed"
+        assert len(pending_after) == 2, "No pending should be consumed without a nonce"
 
     def test_cross_session_nonce_activation_via_elicitation(self):
-        """Response nonce from a prior session creates grant under current session."""
-        from modules.security.approval_grants import activate_cross_session_pending
+        """Response nonce from a prior session creates grant under current session.
 
+        The DB bridge (activate_db_pending_by_prefix) queries pending across all
+        sessions and creates the grant under the current session, so a pending
+        seeded in a prior session is activatable from the current one.
+        """
         prior_session = "prior-session-abc"
         current_session = "test-elicitation-session"
 
         # Create pending in a DIFFERENT session
         nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command="kubectl delete pod nginx",
+            session_id=prior_session,
             danger_verb="delete",
             danger_category="DESTRUCTIVE",
-            session_id=prior_session,
+            nonce=nonce,
         )
 
         nonce_prefix = nonce[:8]

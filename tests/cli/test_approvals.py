@@ -239,7 +239,6 @@ class TestCmdList:
             mock_ag.return_value = {
                 "get_pending_approvals_for_session": mock_fn,
                 "load_pending_by_nonce_prefix": MagicMock(),
-                "reject_pending": MagicMock(),
             }
             approvals_mod.cmd_list(_make_args(session="sess-xyz"))
         mock_fn.assert_called_once_with("sess-xyz")
@@ -318,7 +317,6 @@ class TestCmdShow:
             mock_ag.return_value = {
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": MagicMock(return_value=pending),
-                "reject_pending": MagicMock(),
             }
             args = _make_args()
             args.approval_id = "abcd1234"
@@ -333,7 +331,6 @@ class TestCmdShow:
             mock_ag.return_value = {
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": MagicMock(return_value=None),
-                "reject_pending": MagicMock(),
             }
             args = _make_args()
             args.approval_id = "deadbeef"
@@ -346,7 +343,6 @@ class TestCmdShow:
             mock_ag.return_value = {
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": MagicMock(return_value=pending),
-                "reject_pending": MagicMock(),
             }
             args = _make_args(json=True)
             args.approval_id = "abcd1234"
@@ -365,7 +361,6 @@ class TestCmdShow:
             mock_ag.return_value = {
                 "get_pending_approvals_for_session": MagicMock(),
                 "load_pending_by_nonce_prefix": mock_fn,
-                "reject_pending": MagicMock(),
             }
             args = _make_args()
             args.approval_id = "P-abcd1234"

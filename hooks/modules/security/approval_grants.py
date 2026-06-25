@@ -180,11 +180,6 @@ def _is_ttl_expired(timestamp: float, ttl_minutes: int) -> bool:
     return elapsed_minutes > ttl_minutes
 
 
-def _is_rejected(data: Dict[str, Any]) -> bool:
-    """Return True if a pending approval has been rejected."""
-    return data.get("status") == "rejected"
-
-
 @dataclass(frozen=True)
 class ApprovalActivationResult:
     """Structured result for pending approval activation."""
@@ -279,105 +274,9 @@ def _get_grants_dir() -> Path:
     return grants_dir
 
 
-def _get_pending_index_path(session_id: str) -> Path:
-    """Return the session-scoped pending-approval index path."""
-    return _get_grants_dir() / f"pending-index-{session_id}.json"
-
-
-def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
-    """Read a JSON file defensively and return its dict payload."""
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
-
-
-def _rebuild_pending_index(session_id: str) -> None:
-    """Rebuild the per-session pending-approval index from authoritative files."""
-    index_path = _get_pending_index_path(session_id)
-    entries: List[Dict[str, Any]] = []
-
-    for pending_file in _get_grants_dir().glob("pending-*.json"):
-        if pending_file.name.startswith("pending-index-"):
-            continue
-        data = _read_json_file(pending_file)
-        if not data or data.get("session_id") != session_id:
-            continue
-        if _is_rejected(data):
-            continue
-
-        nonce = data.get("nonce")
-        timestamp = data.get("timestamp")
-        if not nonce or not isinstance(timestamp, (int, float)):
-            continue
-        ttl_minutes = data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
-        if _is_ttl_expired(float(timestamp), int(ttl_minutes)):
-            continue
-
-        entries.append(
-            {
-                "nonce": nonce,
-                "pending_file": pending_file.name,
-                "timestamp": float(timestamp),
-            }
-        )
-
-    entries.sort(key=lambda item: item["timestamp"], reverse=True)
-
-    if not entries:
-        index_path.unlink(missing_ok=True)
-        return
-
-    index_payload = {
-        "session_id": session_id,
-        "latest_nonce": entries[0]["nonce"],
-        "entries": entries,
-    }
-    index_path.write_text(json.dumps(index_payload, indent=2))
-
-
 def _get_session_id() -> str:
     """Get the current session ID. Delegates to core.state.get_session_id()."""
     return get_session_id()
-
-
-def get_latest_pending_approval(session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Return the newest pending approval record for the current session.
-
-    This is a deterministic helper for future orchestrator logic: it reads the
-    session index, then dereferences the authoritative pending file instead of
-    asking callers to parse a nonce from agent text.
-    """
-    if session_id is None:
-        session_id = _get_session_id()
-
-    index_path = _get_pending_index_path(session_id)
-
-    for attempt in range(2):
-        if not index_path.exists():
-            return None
-
-        index_data = _read_json_file(index_path)
-        if not index_data:
-            _rebuild_pending_index(session_id)
-            continue
-
-        latest_nonce = index_data.get("latest_nonce")
-        entries = index_data.get("entries") or []
-        pending_ref = next((entry for entry in entries if entry.get("nonce") == latest_nonce), None)
-        if not latest_nonce or pending_ref is None:
-            _rebuild_pending_index(session_id)
-            continue
-
-        pending_path = _get_grants_dir() / pending_ref.get("pending_file", "")
-        pending_data = _read_json_file(pending_path)
-        if not pending_data or pending_data.get("session_id") != session_id:
-            _rebuild_pending_index(session_id)
-            continue
-
-        return pending_data
-
-    return None
 
 
 # ============================================================================
@@ -416,36 +315,37 @@ def extract_nonce_from_label(label: str) -> Optional[str]:
 
 
 def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
-    """Load a pending approval file whose nonce starts with the given prefix.
+    """Load a pending approval whose nonce starts with the given prefix.
 
     The ``[P-<hex>]`` tag in AskUserQuestion labels carries the first 8
-    characters of the full 32-character nonce.  This function scans the
-    grants directory for a matching ``pending-{nonce}.json`` file and
-    returns its parsed contents.
+    characters of the full nonce.  DB-backed since the pending plane moved
+    fully to gaia.db: queries ``gaia.approvals.store.get_pending`` (all
+    sessions -- the approval may have been created by a subagent whose session
+    differs from the resolver's) and matches DB rows whose approval_id is
+    ``P-{prefix}...``, returning the legacy pending dict shape.
 
-    If multiple files match (extremely unlikely with 8 hex chars), the
-    most recent one (by timestamp) is returned.
+    If multiple rows match (extremely unlikely with 8 hex chars), the most
+    recent one (by created_at timestamp) is returned.
 
     Args:
         prefix: Hex prefix extracted from a ``[P-xxx]`` label (typically 8 chars).
 
     Returns:
-        The parsed pending approval dict, or ``None`` if no match was found.
+        The pending approval dict, or ``None`` if no match was found.
     """
     try:
-        grants_dir = _get_grants_dir()
+        from gaia.approvals.store import get_pending
+        rows = get_pending(all_sessions=True)
         candidates: List[Dict[str, Any]] = []
 
-        for pending_file in grants_dir.glob("pending-*.json"):
-            if pending_file.name.startswith("pending-index-"):
+        for row in rows:
+            approval_id = row.get("id", "")
+            nonce = approval_id[2:] if approval_id.startswith("P-") else approval_id
+            if not nonce.startswith(prefix):
                 continue
-            # Extract nonce from filename: pending-{nonce}.json
-            fname_nonce = pending_file.stem.removeprefix("pending-")
-            if not fname_nonce.startswith(prefix):
-                continue
-            data = _read_json_file(pending_file)
-            if data and not _is_rejected(data):
-                candidates.append(data)
+            mapped = _db_row_to_pending_dict(row)
+            if mapped is not None:
+                candidates.append(mapped)
 
         if not candidates:
             logger.info("No pending approval found for nonce prefix %s", prefix)
@@ -539,508 +439,6 @@ def capture_environment_snapshot(
     except Exception as exc:
         logger.debug("Environment snapshot capture failed: %s", exc)
         return {}
-
-
-def write_pending_approval(
-    nonce: str,
-    command: str,
-    danger_verb: str,
-    danger_category: str,
-    session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
-    context: Optional[Dict[str, Any]] = None,
-    cwd: Optional[str] = None,
-    environment: Optional[Dict[str, Any]] = None,
-) -> Optional[Path]:
-    """Write a pending approval file when a T3 command is blocked.
-
-    Called by bash_validator when it detects a dangerous command and blocks it.
-    The nonce is included in the block response so the agent can present it
-    to the user for approval.
-
-    Args:
-        nonce: Cryptographic nonce from generate_nonce().
-        command: The command that was blocked.
-        danger_verb: The dangerous verb detected (e.g., "push", "apply").
-        danger_category: The danger category (e.g., "MUTATIVE", "DESTRUCTIVE").
-        session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
-        ttl_minutes: How long the pending approval is valid before expiry
-            (0 = no expiry).
-        context: Optional dict with enriched context (source, description,
-            risk, rollback, branch, files_changed, etc.).
-        cwd: Optional working directory where the command was invoked.
-        environment: Optional dict with environment state at blocking time.
-            If not provided, auto-captured via capture_environment_snapshot().
-
-    Returns:
-        Path to the pending file, or None on failure.
-    """
-    if session_id is None:
-        session_id = _get_session_id()
-
-    signature = build_approval_signature(
-        command,
-        scope_type=SCOPE_SEMANTIC_SIGNATURE,
-        danger_verb=danger_verb,
-        danger_category=danger_category,
-    )
-    if signature is None:
-        logger.error(
-            "Failed to build semantic approval signature for pending command: %s",
-            command,
-        )
-        return None
-
-    # Auto-capture environment if not explicitly provided.
-    if environment is None:
-        try:
-            environment = capture_environment_snapshot(command, cwd=cwd)
-        except Exception as exc:
-            logger.debug("Auto environment capture failed (non-fatal): %s", exc)
-            environment = {}
-
-    pending_data = {
-        "nonce": nonce,
-        "session_id": session_id,
-        "command": command,
-        "danger_verb": danger_verb,
-        "danger_category": danger_category,
-        "scope_type": signature.scope_type,
-        "scope_signature": signature.to_dict(),
-        "timestamp": time.time(),
-        "ttl_minutes": ttl_minutes,
-        "context": context or {},
-        "environment": environment,
-    }
-    if cwd is not None:
-        pending_data["cwd"] = cwd
-
-    try:
-        grants_dir = _get_grants_dir()
-        pending_file = grants_dir / f"pending-{nonce}.json"
-        pending_file.write_text(json.dumps(pending_data, indent=2))
-        _rebuild_pending_index(session_id)
-
-        logger.info(
-            "Pending approval written: nonce=%s, verb=%s, category=%s, session=%s",
-            nonce, danger_verb, danger_category, session_id,
-        )
-        return pending_file
-
-    except Exception as e:
-        logger.error("Failed to write pending approval: %s", e)
-        return None
-
-
-def activate_pending_approval(
-    nonce: str,
-    session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
-) -> ApprovalActivationResult:
-    """Activate a pending approval by converting it to a DB grant.
-
-    Called when load_pending_by_nonce_prefix() finds a filesystem pending
-    file (i.e. the pending was written by the legacy write_pending_approval
-    path). Validates the pending file, writes the grant to the DB (DB-only
-    since G1 cutover -- no filesystem grant-*.json is written), and deletes
-    the pending file.
-
-    Args:
-        nonce: The nonce from the APPROVE: token.
-        session_id: Current session ID for validation.
-        ttl_minutes: TTL for the active grant.
-
-    Returns:
-        Structured activation result with status and optional grant path.
-    """
-    if session_id is None:
-        session_id = _get_session_id()
-
-    try:
-        grants_dir = _get_grants_dir()
-        pending_file = grants_dir / f"pending-{nonce}.json"
-
-        # Pending file must exist
-        if not pending_file.exists():
-            logger.warning(
-                "Pending approval not found for nonce %s -- "
-                "may have expired or already been activated",
-                nonce,
-            )
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_NOT_FOUND,
-                reason="Pending approval not found. It may have expired or already been used.",
-            )
-
-        # Read and validate pending data
-        pending_data = json.loads(pending_file.read_text())
-
-        # Validate nonce matches exactly
-        if pending_data.get("nonce") != nonce:
-            logger.warning("Nonce mismatch in pending file: expected %s", nonce)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_NONCE_MISMATCH,
-                reason="Nonce mismatch while activating approval.",
-            )
-
-        # Validate session matches
-        if pending_data.get("session_id") != session_id:
-            logger.warning(
-                "Session mismatch for nonce %s: pending=%s, current=%s",
-                nonce, pending_data.get("session_id"), session_id,
-            )
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_SESSION_MISMATCH,
-                reason="Approval was issued for a different Claude session.",
-            )
-
-        # Validate not expired
-        pending_timestamp = pending_data.get("timestamp", 0)
-        pending_ttl = pending_data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
-        if _is_ttl_expired(pending_timestamp, pending_ttl):
-            logger.warning(
-                "Pending approval expired for nonce %s: TTL=%d min",
-                nonce, pending_ttl,
-            )
-            # Clean up expired pending file
-            _cleanup_grant(pending_file)
-            _rebuild_pending_index(session_id)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_EXPIRED,
-                reason="Approval nonce expired before activation.",
-            )
-
-        command = pending_data.get("command", "")
-        danger_verb = pending_data.get("danger_verb", "")
-        scope_signature_data = pending_data.get("scope_signature")
-        if not scope_signature_data:
-            logger.warning("Pending approval for nonce %s is missing scope_signature", nonce)
-            _cleanup_grant(pending_file)
-            _rebuild_pending_index(session_id)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_PENDING,
-                reason="Pending approval file is missing a semantic signature.",
-            )
-
-        signature = ApprovalSignature.from_dict(scope_signature_data)
-        if signature.scope_type not in (SCOPE_SEMANTIC_SIGNATURE, SCOPE_FILE_PATH):
-            logger.warning(
-                "Pending approval for nonce %s has unsupported scope_type=%s",
-                nonce,
-                signature.scope_type,
-            )
-            _cleanup_grant(pending_file)
-            _rebuild_pending_index(session_id)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_SIGNATURE,
-                reason="Pending approval uses an unsupported scope type.",
-            )
-
-        # For file-path scopes, verb validation is not applicable.
-        if signature.scope_type == SCOPE_FILE_PATH:
-            verbs = ["write"]
-        elif not signature.verb and not danger_verb:
-            logger.warning(
-                "Could not validate semantic signature for pending approval command: %s",
-                command,
-            )
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_SIGNATURE,
-                reason="Approval signature could not be validated safely.",
-            )
-        else:
-            verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
-
-        # Use "P-{nonce}" as the approval_id -- consistent with the DB-side convention
-        # used by write_pending_approval_for_file / activate_db_pending_by_prefix.
-        approval_id = f"P-{nonce}"
-
-        # Write grant to DB ONLY (no filesystem grant-*.json written).
-        if signature.scope_type == SCOPE_FILE_PATH:
-            try:
-                from gaia.store.writer import insert_file_path_grant
-                result = insert_file_path_grant(
-                    approval_id=approval_id,
-                    file_path=command,
-                    scope_signature=signature.to_dict(),
-                    agent_id=None,
-                    session_id=session_id,
-                    ttl_minutes=ttl_minutes,
-                )
-            except Exception as _err:
-                logger.error("activate_pending_approval: DB file-path grant insert error: %s", _err)
-                return ApprovalActivationResult(
-                    success=False,
-                    status=ACTIVATION_ERROR,
-                    reason=f"DB file-path grant insert error: {_err}",
-                )
-        else:
-            try:
-                from gaia.store.writer import insert_semantic_grant
-                result = insert_semantic_grant(
-                    approval_id=approval_id,
-                    command=command,
-                    scope_signature=signature.to_dict(),
-                    agent_id=None,
-                    session_id=session_id,
-                    ttl_minutes=ttl_minutes,
-                )
-            except Exception as _err:
-                logger.error("activate_pending_approval: DB semantic grant insert error: %s", _err)
-                return ApprovalActivationResult(
-                    success=False,
-                    status=ACTIVATION_ERROR,
-                    reason=f"DB semantic grant insert error: {_err}",
-                )
-
-        if result.get("status") != "applied":
-            logger.error(
-                "activate_pending_approval: DB grant insert failed for nonce %s: %s",
-                nonce, result,
-            )
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_ERROR,
-                reason=f"DB grant insert failed: {result.get('reason', 'unknown')}",
-            )
-
-        # Delete pending file (one-time activation)
-        _cleanup_grant(pending_file)
-        _rebuild_pending_index(session_id)
-
-        logger.info(
-            "Pending approval activated (DB grant): nonce=%s, verbs=%s, approval_id=%s",
-            nonce, verbs, approval_id[:16],
-        )
-        return ApprovalActivationResult(
-            success=True,
-            status=ACTIVATION_ACTIVATED,
-            reason="Pending approval activated (DB grant).",
-            grant_path=None,
-        )
-
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.error("Invalid pending approval file for nonce %s: %s", nonce, e)
-        return ApprovalActivationResult(
-            success=False,
-            status=ACTIVATION_INVALID_PENDING,
-            reason="Pending approval file is invalid or corrupt.",
-        )
-    except Exception as e:
-        logger.error("Failed to activate pending approval: %s", e)
-        return ApprovalActivationResult(
-            success=False,
-            status=ACTIVATION_ERROR,
-            reason="Unexpected error while activating approval.",
-        )
-
-def activate_cross_session_pending(
-    pending_data: dict,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
-    session_id: Optional[str] = None,
-) -> ApprovalActivationResult:
-    """Create a DB grant from a pending file that belongs to a prior session.
-
-    Called ONLY when the user has already confirmed approval via AskUserQuestion.
-    Unlike activate_pending_approval(), this function skips the session_id equality
-    check because the pending file is from a previous session whose nonce can never
-    match the current session.  All other validation (nonce presence, TTL, signature)
-    is performed normally.
-
-    The new grant is written to the DB under the CURRENT session ID (DB-only
-    since G1 cutover -- no filesystem grant-*.json is written). The filesystem
-    pending file is deleted after successful activation.
-
-    Args:
-        pending_data: The dict loaded from a pending-{nonce}.json file.
-        ttl_minutes: TTL for the active grant (default DEFAULT_GRANT_TTL_MINUTES).
-        session_id: Optional explicit session ID to use for the new grant.  When
-            provided this value is used directly, which avoids relying on the
-            CLAUDE_SESSION_ID environment variable -- important when the function
-            is called from a dispatched agent's subprocess where the env var may
-            not be set.  Defaults to None, which falls back to _get_session_id()
-            (backward compatible).
-
-    Returns:
-        Structured activation result with status and optional grant path.
-    """
-    current_session_id = session_id if session_id is not None else _get_session_id()
-
-    try:
-        grants_dir = _get_grants_dir()
-
-        # Validate required fields
-        nonce = pending_data.get("nonce")
-        if not nonce:
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_PENDING,
-                reason="Pending approval file is missing a nonce.",
-            )
-
-        pending_file = grants_dir / f"pending-{nonce}.json"
-
-        # Validate not expired (TTL check still applies)
-        pending_timestamp = pending_data.get("timestamp", 0)
-        pending_ttl = pending_data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
-        if _is_ttl_expired(pending_timestamp, pending_ttl):
-            logger.warning(
-                "Cross-session pending approval expired for nonce %s: TTL=%d min",
-                nonce, pending_ttl,
-            )
-            _cleanup_grant(pending_file)
-            prior_session_id = pending_data.get("session_id", "unknown")
-            _rebuild_pending_index(prior_session_id)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_EXPIRED,
-                reason="Approval nonce expired before cross-session activation.",
-            )
-
-        command = pending_data.get("command", "")
-        danger_verb = pending_data.get("danger_verb", "")
-        scope_signature_data = pending_data.get("scope_signature")
-        if not scope_signature_data:
-            logger.warning(
-                "Cross-session pending approval for nonce %s is missing scope_signature",
-                nonce,
-            )
-            _cleanup_grant(pending_file)
-            prior_session_id = pending_data.get("session_id", "unknown")
-            _rebuild_pending_index(prior_session_id)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_PENDING,
-                reason="Pending approval file is missing a semantic signature.",
-            )
-
-        signature = ApprovalSignature.from_dict(scope_signature_data)
-        if signature.scope_type not in (SCOPE_SEMANTIC_SIGNATURE, SCOPE_FILE_PATH):
-            logger.warning(
-                "Cross-session pending for nonce %s has unsupported scope_type=%s",
-                nonce,
-                signature.scope_type,
-            )
-            _cleanup_grant(pending_file)
-            prior_session_id = pending_data.get("session_id", "unknown")
-            _rebuild_pending_index(prior_session_id)
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_SIGNATURE,
-                reason="Pending approval uses an unsupported scope type.",
-            )
-
-        # For file-path scopes, verb validation is not applicable.
-        if signature.scope_type == SCOPE_FILE_PATH:
-            verbs = ["write"]
-        elif not signature.verb and not danger_verb:
-            logger.warning(
-                "Could not validate semantic signature for cross-session command: %s",
-                command,
-            )
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_INVALID_SIGNATURE,
-                reason="Approval signature could not be validated safely.",
-            )
-        else:
-            verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else [])
-
-        # Use "P-{nonce}" as the approval_id -- consistent with the DB-side
-        # convention.  confirmed=True because the human already approved.
-        approval_id = f"P-{nonce}"
-        prior_session_id = pending_data.get("session_id", "unknown")
-
-        # Write grant to DB ONLY under the CURRENT session.
-        if signature.scope_type == SCOPE_FILE_PATH:
-            try:
-                from gaia.store.writer import insert_file_path_grant
-                result = insert_file_path_grant(
-                    approval_id=approval_id,
-                    file_path=command,
-                    scope_signature=signature.to_dict(),
-                    agent_id=None,
-                    session_id=current_session_id,
-                    ttl_minutes=ttl_minutes,
-                )
-            except Exception as _err:
-                logger.error(
-                    "activate_cross_session_pending: DB file-path grant insert error: %s", _err
-                )
-                return ApprovalActivationResult(
-                    success=False,
-                    status=ACTIVATION_ERROR,
-                    reason=f"DB file-path grant insert error: {_err}",
-                )
-        else:
-            try:
-                from gaia.store.writer import insert_semantic_grant
-                result = insert_semantic_grant(
-                    approval_id=approval_id,
-                    command=command,
-                    scope_signature=signature.to_dict(),
-                    agent_id=None,
-                    session_id=current_session_id,
-                    ttl_minutes=ttl_minutes,
-                )
-            except Exception as _err:
-                logger.error(
-                    "activate_cross_session_pending: DB semantic grant insert error: %s", _err
-                )
-                return ApprovalActivationResult(
-                    success=False,
-                    status=ACTIVATION_ERROR,
-                    reason=f"DB semantic grant insert error: {_err}",
-                )
-
-        if result.get("status") != "applied":
-            logger.error(
-                "activate_cross_session_pending: DB grant insert failed for nonce %s: %s",
-                nonce, result,
-            )
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_ERROR,
-                reason=f"DB grant insert failed: {result.get('reason', 'unknown')}",
-            )
-
-        # Delete the old pending file (one-time activation)
-        _cleanup_grant(pending_file)
-        _rebuild_pending_index(prior_session_id)
-
-        logger.info(
-            "Cross-session pending activated (DB grant): nonce=%s, prior_session=%s, "
-            "current_session=%s, verbs=%s, approval_id=%s",
-            nonce, prior_session_id, current_session_id, verbs, approval_id[:16],
-        )
-        return ApprovalActivationResult(
-            success=True,
-            status=ACTIVATION_ACTIVATED,
-            reason="Cross-session pending approval activated (DB grant).",
-            grant_path=None,
-        )
-
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.error("Invalid pending approval data for cross-session activation: %s", e)
-        return ApprovalActivationResult(
-            success=False,
-            status=ACTIVATION_INVALID_PENDING,
-            reason="Pending approval data is invalid or corrupt.",
-        )
-    except Exception as e:
-        logger.error("Failed to activate cross-session pending approval: %s", e)
-        return ApprovalActivationResult(
-            success=False,
-            status=ACTIVATION_ERROR,
-            reason="Unexpected error while activating cross-session approval.",
-        )
 
 
 def check_approval_grant(command: str, session_id: str = None) -> Optional[ApprovalGrant]:
@@ -1275,14 +673,13 @@ def confirm_grant(command: str, session_id: str = None) -> bool:
 
 
 def cleanup_expired_grants(force: bool = False) -> int:
-    """Clean up expired grants and stale pending files.
+    """Clean up expired DB approval grants.
 
-    Since G3 cutover the authoritative grant plane is the DB; this function
-    calls ``cleanup_expired_db_grants()`` to mark expired DB rows as EXPIRED,
-    and also sweeps the FS pending-{nonce}.json files (which may still exist
-    from write_pending_approval) and the legacy pending-index-{session}.json
-    files.  No FS grant-*.json files are written any more so that sweep has
-    been retired.
+    The authoritative grant plane is the DB (``approval_grants`` in gaia.db).
+    This function calls ``cleanup_expired_db_grants()`` to mark expired DB rows
+    as EXPIRED.  The legacy filesystem pending/index sweep has been retired:
+    no ``pending-*.json`` or ``pending-index-*.json`` files are written any
+    more, so there is nothing on disk to sweep.
 
     Called periodically (e.g., at hook startup) to prevent accumulation.
     Throttled to run at most once every ``_CLEANUP_INTERVAL_SECONDS`` --
@@ -1293,7 +690,7 @@ def cleanup_expired_grants(force: bool = False) -> int:
         force: When True, run cleanup regardless of the throttle.
 
     Returns:
-        Total number of items cleaned (DB rows + FS files).
+        Number of expired DB grant rows marked EXPIRED.
     """
     global _last_cleanup_time
     now = time.time()
@@ -1303,7 +700,7 @@ def cleanup_expired_grants(force: bool = False) -> int:
 
     cleaned = 0
 
-    # DB grant expiry sweep
+    # DB grant expiry sweep -- the sole grant plane since the DB cutover.
     try:
         from gaia.store.writer import cleanup_expired_db_grants
         db_cleaned = cleanup_expired_db_grants()
@@ -1313,97 +710,82 @@ def cleanup_expired_grants(force: bool = False) -> int:
     except Exception as _db_exc:
         logger.debug("cleanup_expired_grants: DB sweep failed (non-fatal): %s", _db_exc)
 
-    # FS pending file and index sweep (write_pending_approval still writes to FS)
-    sessions_to_rebuild: set[str] = set()
-    try:
-        grants_dir = _get_grants_dir()
-        if not grants_dir.exists():
-            if cleaned:
-                logger.info("Cleaned up %d expired approval/pending items", cleaned)
-            return cleaned
-
-        # Clean up expired pending approvals
-        for pending_file in grants_dir.glob("pending-*.json"):
-            if pending_file.name.startswith("pending-index-"):
-                continue
-            try:
-                data = json.loads(pending_file.read_text())
-                session_id = data.get("session_id")
-                if not data.get("scope_signature"):
-                    _cleanup_grant(pending_file)
-                    if session_id:
-                        sessions_to_rebuild.add(session_id)
-                    cleaned += 1
-                    continue
-                if _is_rejected(data):
-                    _cleanup_grant(pending_file)
-                    if session_id:
-                        sessions_to_rebuild.add(session_id)
-                    cleaned += 1
-                    continue
-                timestamp = data.get("timestamp", 0)
-                ttl = data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
-                if _is_ttl_expired(timestamp, ttl):
-                    _cleanup_grant(pending_file)
-                    if session_id:
-                        sessions_to_rebuild.add(session_id)
-                    cleaned += 1
-            except Exception:
-                # Corrupt file, remove it
-                data = _read_json_file(pending_file)
-                if data and data.get("session_id"):
-                    sessions_to_rebuild.add(data["session_id"])
-                _cleanup_grant(pending_file)
-                cleaned += 1
-
-        # Sweep orphan pending-index files.
-        for index_file in grants_dir.glob("pending-index-*.json"):
-            try:
-                data = _read_json_file(index_file)
-                if not data:
-                    index_file.unlink(missing_ok=True)
-                    cleaned += 1
-                    logger.info(
-                        "cleanup_expired: removed corrupt index %s",
-                        index_file.name,
-                    )
-                    continue
-                entries = data.get("entries") or []
-                valid_entries = [
-                    e for e in entries
-                    if isinstance(e, dict)
-                    and (grants_dir / e.get("pending_file", "")).exists()
-                ]
-                if not valid_entries:
-                    index_file.unlink(missing_ok=True)
-                    cleaned += 1
-                    logger.info(
-                        "cleanup_expired: removed orphan index %s "
-                        "(0/%d entries point to live pendings)",
-                        index_file.name,
-                        len(entries),
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "Index sweep failed for %s (non-fatal): %s",
-                    index_file.name, exc,
-                )
-
-    except Exception as e:
-        logger.error("Error during FS pending cleanup: %s", e)
-
-    for session_id in sessions_to_rebuild:
-        _rebuild_pending_index(session_id)
-
     if cleaned:
-        logger.info("Cleaned up %d expired approval/pending items", cleaned)
+        logger.info("Cleaned up %d expired approval grant(s)", cleaned)
     return cleaned
+
+
+def _db_row_to_pending_dict(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert a gaia.approvals.store pending row into the legacy pending dict.
+
+    The legacy filesystem pending dict shape (nonce, command, danger_verb,
+    danger_category, scope_type, scope_signature, timestamp, context, ...) is
+    still what readers like ``bin/cli/approvals.py`` expect. This mapping is the
+    DB-backed equivalent of the filesystem ``pending-{nonce}.json`` payload --
+    mirrors ``_scan_pending_shared`` in ``bin/cli/approvals.py``.
+
+    Returns None when the row cannot be parsed.
+    """
+    payload_json = row.get("payload_json") or "{}"
+    try:
+        payload = json.loads(payload_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    command = (
+        payload.get("exact_content")
+        or (payload.get("commands") or [None])[0]
+        or payload.get("operation")
+        or ""
+    )
+
+    operation = payload.get("operation", "")
+    danger_verb = "unknown"
+    danger_category = "MUTATIVE"
+    if ": " in operation:
+        danger_verb = operation.rsplit(": ", 1)[-1].strip()
+    if " command intercepted" in operation:
+        danger_category = operation.split(" command intercepted")[0].strip()
+
+    created_at_str = row.get("created_at", "")
+    ts: float = 0.0
+    if created_at_str:
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            dt = _dt.strptime(created_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
+            ts = dt.timestamp()
+        except (ValueError, TypeError):
+            ts = 0.0
+
+    approval_id = row.get("id", "")
+    nonce = approval_id[2:] if approval_id.startswith("P-") else approval_id
+
+    return {
+        "nonce": nonce,
+        "session_id": row.get("session_id", ""),
+        "command": command,
+        "danger_verb": danger_verb,
+        "danger_category": danger_category,
+        "scope_type": payload.get("scope", SCOPE_SEMANTIC_SIGNATURE),
+        "scope_signature": payload.get("scope_signature"),
+        "timestamp": ts,
+        "context": {
+            "description": payload.get("rationale", ""),
+            "risk": payload.get("risk_level", "medium"),
+            "rollback": payload.get("rollback_hint"),
+            "source": "db",
+        },
+    }
 
 
 def get_pending_approvals_for_session(
     session_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Return all non-expired pending approvals for a session.
+
+    DB-backed since the pending plane moved fully to gaia.db: delegates to
+    ``gaia.approvals.store.get_pending`` and maps each DB row into the legacy
+    pending dict shape via ``_db_row_to_pending_dict``.
 
     Args:
         session_id: Session ID to filter by (defaults to current session).
@@ -1416,20 +798,12 @@ def get_pending_approvals_for_session(
 
     results: List[Dict[str, Any]] = []
     try:
-        grants_dir = _get_grants_dir()
-        for pending_file in grants_dir.glob("pending-*.json"):
-            if pending_file.name.startswith("pending-index-"):
-                continue
-            data = _read_json_file(pending_file)
-            if not data or data.get("session_id") != session_id:
-                continue
-            if _is_rejected(data):
-                continue
-            timestamp = data.get("timestamp", 0)
-            ttl = data.get("ttl_minutes", DEFAULT_PENDING_TTL_MINUTES)
-            if _is_ttl_expired(float(timestamp), int(ttl)):
-                continue
-            results.append(data)
+        from gaia.approvals.store import get_pending
+        rows = get_pending(session_id=session_id)
+        for row in rows:
+            mapped = _db_row_to_pending_dict(row)
+            if mapped is not None:
+                results.append(mapped)
     except Exception as e:
         logger.error("Error listing pending approvals for session %s: %s", session_id, e)
 
@@ -1485,49 +859,6 @@ def find_pending_for_command(
             continue
 
     return None
-
-
-def reject_pending(nonce_prefix: str) -> bool:
-    """Mark a pending approval as rejected without deleting the file.
-
-    Finds the pending file whose nonce starts with ``nonce_prefix``, sets
-    ``status`` to ``"rejected"`` and ``rejected_at`` to the current time,
-    writes the file back, and rebuilds the session index.
-
-    Rejected pendings are invisible to all readers (``_is_rejected`` filter)
-    and are cleaned up by the pending scanner on its next sweep.
-
-    Args:
-        nonce_prefix: Hex prefix of the nonce (typically 8 chars from ``[P-xxx]``).
-
-    Returns:
-        True if a matching pending was found and rejected, False otherwise.
-    """
-    try:
-        grants_dir = _get_grants_dir()
-        for pending_file in grants_dir.glob("pending-*.json"):
-            if pending_file.name.startswith("pending-index-"):
-                continue
-            fname_nonce = pending_file.stem.removeprefix("pending-")
-            if not fname_nonce.startswith(nonce_prefix):
-                continue
-            data = _read_json_file(pending_file)
-            if not data or _is_rejected(data):
-                continue
-            data["status"] = "rejected"
-            data["rejected_at"] = time.time()
-            pending_file.write_text(json.dumps(data, indent=2))
-            session_id = data.get("session_id")
-            if session_id:
-                _rebuild_pending_index(session_id)
-            logger.info(
-                "Pending approval rejected: nonce_prefix=%s, nonce=%s",
-                nonce_prefix, data.get("nonce", "?"),
-            )
-            return True
-    except Exception as e:
-        logger.error("Error rejecting pending approval for prefix %s: %s", nonce_prefix, e)
-    return False
 
 
 def write_pending_approval_for_file(
@@ -2190,48 +1521,6 @@ def activate_db_pending_by_prefix(
         )
 
 
-def activate_grants_for_session(
-    session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
-) -> List[ApprovalActivationResult]:
-    """Activate ALL pending approvals for a session.
-
-    Called by the ElicitationResult hook when the user approves via
-    AskUserQuestion. Converts every non-expired pending approval for the
-    session into an active grant.
-
-    Args:
-        session_id: Session to activate for (defaults to current session).
-        ttl_minutes: TTL for the resulting active grants.
-
-    Returns:
-        List of activation results (one per pending approval).
-    """
-    if session_id is None:
-        session_id = _get_session_id()
-
-    pending_list = get_pending_approvals_for_session(session_id)
-    results: List[ApprovalActivationResult] = []
-
-    for pending_data in pending_list:
-        nonce = pending_data.get("nonce", "")
-        if not nonce:
-            continue
-        result = activate_pending_approval(
-            nonce=nonce,
-            session_id=session_id,
-            ttl_minutes=ttl_minutes,
-        )
-        results.append(result)
-        logger.info(
-            "Session-wide activation: nonce=%s status=%s",
-            nonce,
-            getattr(result.status, "value", str(result.status)),
-        )
-
-    return results
-
-
 # ============================================================================
 # Command-Set Grant Creation and Matching (M3 / D4 / D10)
 # ============================================================================
@@ -2423,13 +1712,3 @@ def match_command_set_grant(
         logger.error("match_command_set_grant error: %s", exc)
 
     return None
-
-
-
-
-def _cleanup_grant(grant_file: Path) -> None:
-    """Remove a single grant or pending file."""
-    try:
-        grant_file.unlink(missing_ok=True)
-    except Exception as e:
-        logger.warning("Failed to remove grant file %s: %s", grant_file, e)

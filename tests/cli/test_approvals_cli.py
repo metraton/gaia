@@ -74,7 +74,6 @@ def _mock_approval_grants_empty():
     m.cleanup_expired_grants.return_value = 0
     m.get_pending_approvals_for_session.return_value = []
     m.load_pending_by_nonce_prefix.return_value = None
-    m.reject_pending.return_value = False
     return m
 
 
@@ -95,7 +94,6 @@ class TestCmdList:
                  "get_pending_approvals_for_session": lambda *a, **kw: [],
                  "cleanup_expired_grants": lambda *a, **kw: 0,
                  "load_pending_by_nonce_prefix": lambda *a: None,
-                 "reject_pending": lambda *a: False,
              }), \
              patch("bin.cli.approvals._scan_pending_shared", return_value=[]):
             rc = cmd_list(_make_args())
