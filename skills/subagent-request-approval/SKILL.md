@@ -44,9 +44,20 @@ Add an `approval_request` to your `agent_contract_handoff`, copying the hook's f
 
 The `approval_request` schema is canonical in `agent-approval-protocol` — relay the sealed_payload fields verbatim (the hook built them) and add `verification` (your own success criteria) + `approval_id` (the literal token from the denial). See `agent-approval-protocol/SKILL.md` for the full field list and types.
 
-The `approval_id` is the `P-{...}` token the orchestrator uses to find the
-`REQUESTED` row in the DB and validate the fingerprint. Fields written only in
-prose are invisible to the presentation -- the user would approve blind.
+The `approval_id` is the `P-{...}` token tying this request to its `REQUESTED`
+row in the DB. Fields written only in prose are invisible to the presentation --
+the user would approve blind.
+
+**What your relay is for: same-turn immediacy.** Your `approval_request` is the
+orchestrator's source only for the CURRENT turn. The orchestrator's primary
+source is the per-turn `[PENDING-APPROVALS-VERIFIED]` block injected at
+`UserPromptSubmit`, which carries every pending that has survived >= 1 turn,
+already DB-read and fingerprint-verified. But that block was built before you
+ran this turn, so a pending you mint now is not in it yet -- the orchestrator
+presents it from your relay until the next turn's block picks it up. You emit the
+same fields either way; nothing on your side changes. The orchestrator never
+dispatches a subagent to verify or derive your request -- integrity is enforced
+at grant activation, not at presentation.
 
 ## Non-negotiable rules
 
@@ -105,9 +116,12 @@ your side. What changed underneath: the minted `approval_id` is now
 (`derive_command_set_id` -> `P-<first 32 hex of sha256(canonical commands)>`),
 not a random uuid4. You do not compute or emit it (you cannot hash reliably, and
 you have nothing to attempt yet); the value is purely internal. The reason it
-matters: the orchestrator reproduces that exact id from the `command_set` you
-emitted (via `gaia approvals derive-id`), with no DB search and no cross-session
-miss. Your contract stays the same -- `command_set` of `{command, rationale}`
+matters: the content-derived id is reproducible without a uuid4 that could be
+lost across sessions. Once the minted pending has survived a turn, the
+orchestrator reads it -- with all N commands -- straight from the injected
+`[PENDING-APPROVALS-VERIFIED]` block (no DB search, no derive-dispatch); for the
+turn you mint it in, the orchestrator presents from the `command_set` in your
+relay. Your contract stays the same -- `command_set` of `{command, rationale}`
 items, no `approval_id`.
 
 On the user's approval, that one pending activates into a single `COMMAND_SET`
