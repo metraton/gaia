@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
-"""Tests for approval_cleanup.cleanup() — DB-backed revocation (Task E FS retirement).
+"""Unit tests for approval_cleanup.cleanup() — DB-backed TTL expiry (Fix A).
 
-Since Task E, cleanup() revokes pending DB rows instead of deleting
-pending-*.json files.  Tests verify:
+P-3d23 invariant (Fix A): cleanup() runs at SubagentStop, but SubagentStop is
+the NORMAL lifecycle of the block -> approve -> retry flow and subagents share
+the main session_id. So cleanup() no longer revokes pendings by session
+membership; it ONLY expires pendings that have aged past
+DEFAULT_PENDING_TTL_MINUTES (24h). A fresh pending ALWAYS survives, regardless
+of the stopping subagent's plan_status.
+
+These are fast unit tests that mock list_pending / expire. The mocked rows must
+carry an ``age_seconds`` field (cleanup gates on it) because the mock bypasses
+list_pending's real age enrichment. End-to-end coverage against a real schema
+DB (the actual TTL gate, the 'expired' transition, the status-has-event trigger,
+and provenance) lives in tests/hooks/test_cleanup_pending_survival.py.
+
+Tests verify:
   - Returns False (no-op) when the DB store is unavailable.
   - Returns False when no pending rows exist for the session.
-  - Returns True and revokes rows that match the session.
-  - Skips rows in preserve_nonces (still live APPROVAL_REQUEST).
-  - Logs a 'Preserving' line for skipped rows.
-  - Leaves other-session rows untouched.
-  - Handles ValueError from revoke() gracefully (already-transitioned race).
+  - A FRESH pending (< TTL) is NEVER expired (the P-3d23 invariant).
+  - An AGED pending (>= TTL) IS expired, with provenance (agent_id + reason).
+  - preserve_nonces shields an aged pending at the TTL edge (belt-and-suspenders).
+  - Handles ValueError from expire() gracefully (already-transitioned race).
 """
 
+import json
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,20 +36,33 @@ HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.approval_cleanup import cleanup
+from modules.security.approval_grants import DEFAULT_PENDING_TTL_MINUTES
+
+_TTL_SECONDS = DEFAULT_PENDING_TTL_MINUTES * 60
+_FRESH_AGE = 60.0                         # 1 minute old -> well within TTL
+_AGED = float(_TTL_SECONDS + 3600)       # 1h past the 24h pending window
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_row(approval_id: str, session_id: str = "sess-test") -> dict:
-    """Build a minimal pending DB row dict."""
+def _make_row(approval_id: str, session_id: str = "sess-test",
+              age_seconds: float = _FRESH_AGE) -> dict:
+    """Build a minimal pending DB row dict with an explicit age.
+
+    cleanup() reads ``age_seconds`` (list_pending enriches it in production);
+    the mock must supply it directly. Default is FRESH so a bare _make_row is
+    the survival case.
+    """
     return {
         "id": approval_id,
         "session_id": session_id,
         "status": "pending",
         "payload_json": "{}",
         "created_at": "2026-06-24T00:00:00Z",
+        "age_seconds": age_seconds,
+        "stale": age_seconds > 3600.0,
     }
 
 
@@ -60,18 +85,18 @@ class TestNoOp:
         result = cleanup("test-agent", session_id="sess-test")
         assert result is False
 
-    def test_returns_false_when_no_pending_rows(self, monkeypatch):
+    def test_returns_false_when_no_pending_rows(self):
         """When list_pending returns [], cleanup returns False."""
         mock_list = MagicMock(return_value=[])
-        mock_revoke = MagicMock()
+        mock_expire = MagicMock()
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
+             patch("gaia.approvals.store.expire", mock_expire):
             result = cleanup("test-agent", session_id="sess-test")
 
         assert result is False
-        mock_revoke.assert_not_called()
+        mock_expire.assert_not_called()
 
-    def test_returns_false_when_list_pending_raises(self, monkeypatch):
+    def test_returns_false_when_list_pending_raises(self):
         """list_pending() raising must not propagate — cleanup is a no-op."""
         mock_list = MagicMock(side_effect=RuntimeError("DB unavailable"))
         with patch("gaia.approvals.store.list_pending", mock_list):
@@ -81,74 +106,113 @@ class TestNoOp:
 
 
 # ---------------------------------------------------------------------------
-# Revocation happy paths
+# P-3d23 invariant: fresh pendings are never expired
 # ---------------------------------------------------------------------------
 
-class TestRevocation:
-    def test_revokes_session_pending(self):
-        """A pending row for the session is revoked and True is returned."""
-        row = _make_row("P-abc1234500000000")
+class TestFreshPendingSurvives:
+    def test_fresh_pending_is_not_expired(self):
+        """A FRESH pending for the session must NOT be expired (the core fix)."""
+        row = _make_row("P-abc1234500000000", age_seconds=_FRESH_AGE)
         mock_list = MagicMock(return_value=[row])
-        mock_revoke = MagicMock()
+        mock_expire = MagicMock()
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
+             patch("gaia.approvals.store.expire", mock_expire):
             result = cleanup("test-agent", session_id="sess-test")
 
-        assert result is True
-        mock_revoke.assert_called_once_with("P-abc1234500000000", revoker_session="sess-test")
+        assert result is False, "Fresh pending must survive (P-3d23 invariant)"
+        mock_expire.assert_not_called()
 
-    def test_revokes_multiple_pending_rows(self):
-        """All pending rows for the session are revoked."""
-        rows = [_make_row("P-aaa0000000000000"), _make_row("P-bbb0000000000000")]
+    def test_multiple_fresh_pendings_all_survive(self):
+        """All fresh pendings survive a COMPLETE Stop (empty preserve_nonces)."""
+        rows = [
+            _make_row("P-aaa0000000000000", age_seconds=_FRESH_AGE),
+            _make_row("P-bbb0000000000000", age_seconds=_FRESH_AGE),
+        ]
         mock_list = MagicMock(return_value=rows)
-        mock_revoke = MagicMock()
+        mock_expire = MagicMock()
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
-            result = cleanup("test-agent", session_id="sess-test")
+             patch("gaia.approvals.store.expire", mock_expire):
+            result = cleanup("test-agent", session_id="sess-test", preserve_nonces=None)
 
-        assert result is True
-        assert mock_revoke.call_count == 2
+        assert result is False
+        mock_expire.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# preserve_nonces — the core Phase 2 contract (now with DB rows)
+# TTL expiry: aged pendings are expired with provenance
+# ---------------------------------------------------------------------------
+
+class TestExpiry:
+    def test_aged_pending_is_expired_with_provenance(self):
+        """An aged pending (>= TTL) is expired via store.expire(), carrying
+        agent_id and a reason metadata so the event is never null-provenance."""
+        row = _make_row("P-abc1234500000000", age_seconds=_AGED)
+        mock_list = MagicMock(return_value=[row])
+        mock_expire = MagicMock()
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.expire", mock_expire):
+            result = cleanup("test-agent", session_id="sess-test")
+
+        assert result is True
+        mock_expire.assert_called_once()
+        _args, kwargs = mock_expire.call_args
+        assert mock_expire.call_args.args[0] == "P-abc1234500000000"
+        assert kwargs.get("expirer_session") == "sess-test"
+        assert kwargs.get("agent_id") == "test-agent", "provenance: agent_id"
+        meta = json.loads(kwargs.get("metadata_json"))
+        assert meta["reason"] == "expired_ttl"
+        assert meta["source"] == "approval_cleanup.cleanup"
+
+    def test_only_aged_pendings_are_expired(self):
+        """In a mixed batch, only the aged rows are expired; fresh ones stay."""
+        fresh = _make_row("P-fresh00000000000", age_seconds=_FRESH_AGE)
+        aged = _make_row("P-aged000000000000", age_seconds=_AGED)
+        mock_list = MagicMock(return_value=[fresh, aged])
+        mock_expire = MagicMock()
+
+        with patch("gaia.approvals.store.list_pending", mock_list), \
+             patch("gaia.approvals.store.expire", mock_expire):
+            result = cleanup("test-agent", session_id="sess-test")
+
+        assert result is True
+        expired_ids = {c.args[0] for c in mock_expire.call_args_list}
+        assert expired_ids == {"P-aged000000000000"}
+
+
+# ---------------------------------------------------------------------------
+# preserve_nonces — now belt-and-suspenders at the TTL edge
 # ---------------------------------------------------------------------------
 
 class TestPreserveNonces:
-    def test_preserve_nonces_skips_matching_approval_id(self):
-        """A row whose approval_id is in preserve_nonces must NOT be revoked."""
-        nonce_a = "P-aaa0000000000000"
-        nonce_b = "P-bbb0000000000000"
-        nonce_c = "P-ccc0000000000000"
-
-        rows = [_make_row(nonce_a), _make_row(nonce_b), _make_row(nonce_c)]
+    def test_preserve_nonces_shields_aged_pending(self):
+        """An aged pending in preserve_nonces is NOT expired (edge guard)."""
+        nonce = "P-bbb0000000000000"
+        rows = [_make_row(nonce, age_seconds=_AGED)]
         mock_list = MagicMock(return_value=rows)
-        mock_revoke = MagicMock()
+        mock_expire = MagicMock()
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
+             patch("gaia.approvals.store.expire", mock_expire):
             result = cleanup(
                 "test-agent",
                 session_id="sess-test",
-                preserve_nonces={nonce_b},
+                preserve_nonces={nonce},
             )
 
-        assert result is True
-        revoked_ids = {c.args[0] for c in mock_revoke.call_args_list}
-        assert nonce_a in revoked_ids
-        assert nonce_b not in revoked_ids, "Preserved nonce must NOT be revoked"
-        assert nonce_c in revoked_ids
+        assert result is False
+        mock_expire.assert_not_called()
 
-    def test_preserve_emits_log_line(self, caplog):
+    def test_preserve_emits_log_line_for_aged_row(self, caplog):
         nonce = "P-bbb0000000000000"
-        rows = [_make_row(nonce)]
+        rows = [_make_row(nonce, age_seconds=_AGED)]
         mock_list = MagicMock(return_value=rows)
-        mock_revoke = MagicMock()
+        mock_expire = MagicMock()
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
+             patch("gaia.approvals.store.expire", mock_expire):
             with caplog.at_level(logging.INFO, logger="modules.security.approval_cleanup"):
                 cleanup(
                     "test-agent",
@@ -161,30 +225,19 @@ class TestPreserveNonces:
             for record in caplog.records
         ), "Cleanup must emit a 'Preserving pending approval_id=...' log line"
 
-    def test_none_preserve_nonces_revokes_all(self):
-        """preserve_nonces=None revokes all session pendings."""
-        rows = [_make_row("P-aaa0000000000000"), _make_row("P-bbb0000000000000")]
+    def test_fresh_pending_not_in_preserve_still_survives(self):
+        """A fresh pending NOT in preserve_nonces still survives -- TTL gate, not
+        preserve_nonces, is what protects fresh pendings now."""
+        rows = [_make_row("P-aaa0000000000000", age_seconds=_FRESH_AGE)]
         mock_list = MagicMock(return_value=rows)
-        mock_revoke = MagicMock()
+        mock_expire = MagicMock()
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
-            result = cleanup("test-agent", session_id="sess-test", preserve_nonces=None)
-
-        assert result is True
-        assert mock_revoke.call_count == 2
-
-    def test_empty_preserve_set_revokes_all(self):
-        """preserve_nonces=set() (empty) revokes all session pendings."""
-        rows = [_make_row("P-aaa0000000000000")]
-        mock_list = MagicMock(return_value=rows)
-        mock_revoke = MagicMock()
-
-        with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
+             patch("gaia.approvals.store.expire", mock_expire):
             result = cleanup("test-agent", session_id="sess-test", preserve_nonces=set())
 
-        assert result is True
+        assert result is False
+        mock_expire.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -192,32 +245,36 @@ class TestPreserveNonces:
 # ---------------------------------------------------------------------------
 
 class TestErrorResilience:
-    def test_valueerror_from_revoke_is_non_fatal(self):
-        """ValueError from revoke() (already-transitioned) must not propagate."""
-        row = _make_row("P-abc1234500000000")
+    def test_valueerror_from_expire_is_non_fatal(self):
+        """ValueError from expire() (already-transitioned) must not propagate."""
+        row = _make_row("P-abc1234500000000", age_seconds=_AGED)
         mock_list = MagicMock(return_value=[row])
-        mock_revoke = MagicMock(side_effect=ValueError("already approved"))
+        mock_expire = MagicMock(side_effect=ValueError("already approved"))
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", mock_revoke):
+             patch("gaia.approvals.store.expire", mock_expire):
             # Must not raise
             result = cleanup("test-agent", session_id="sess-test")
 
         assert result is False
 
-    def test_unexpected_revoke_error_is_non_fatal(self):
-        """Any Exception from revoke() must not propagate."""
-        rows = [_make_row("P-aaa0000000000000"), _make_row("P-bbb0000000000000")]
+    def test_unexpected_expire_error_is_non_fatal(self):
+        """Any Exception from expire() must not propagate; later rows still run."""
+        rows = [
+            _make_row("P-aaa0000000000000", age_seconds=_AGED),
+            _make_row("P-bbb0000000000000", age_seconds=_AGED),
+        ]
         mock_list = MagicMock(return_value=rows)
 
         call_count = [0]
-        def _sometimes_fail(approval_id, revoker_session):
+
+        def _sometimes_fail(approval_id, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise RuntimeError("transient DB error")
 
         with patch("gaia.approvals.store.list_pending", mock_list), \
-             patch("gaia.approvals.store.revoke", side_effect=_sometimes_fail):
+             patch("gaia.approvals.store.expire", side_effect=_sometimes_fail):
             result = cleanup("test-agent", session_id="sess-test")
 
         # Second row succeeded
