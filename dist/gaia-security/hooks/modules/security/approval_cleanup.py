@@ -15,6 +15,13 @@ that have genuinely aged past DEFAULT_PENDING_TTL_MINUTES (the 24h user-wait
 window). Expiry transitions the row to the schema 'expired' terminal status,
 distinct from a user/admin 'revoked'.
 
+The EXPIRE sweep is GLOBAL across sessions (list_pending(all_sessions=True)):
+SubagentStop is the only periodic sweep trigger, so a session-scoped sweep
+would never reap past-TTL pendings orphaned by dead/other sessions and they
+accumulate forever. The age gate (age_seconds >= TTL) is the sole guard and is
+session-independent, so a FRESH pending in ANY session always survives -- the
+widening to all sessions cannot regress the P-3d23 invariant.
+
 Also performs DB-backed soft-expire of PENDING approval_grants rows whose
 expires_at timestamp has passed (M3 addition).
 
@@ -101,9 +108,11 @@ def expire_db_pendings(
     Args:
         agent_type: The agent whose SubagentStop drove the sweep (provenance +
             logging).
-        session_id: Session whose pendings are swept. TTL is the gate, not
-            session-membership -- but the sweep is scoped to this session to
-            match the SubagentStop trigger.
+        session_id: Recorded as the expirer_session provenance on each expiry
+            event (the session whose SubagentStop drove the sweep). The sweep
+            itself is GLOBAL (all_sessions=True): TTL is the only gate, so
+            past-TTL pendings from any session -- including dead/other sessions
+            -- are reaped, while fresh pendings in any session survive.
 
     Returns:
         Number of pendings transitioned to 'expired'.
@@ -129,7 +138,13 @@ def expire_db_pendings(
             return 0
 
     try:
-        pending_rows = list_pending(session_id=session_id, all_sessions=False)
+        # all_sessions=True: the TTL sweep is global. SubagentStop is the only
+        # periodic trigger we have, so it must expire EVERY past-TTL pending --
+        # including stale pendings from dead or other sessions, which would
+        # otherwise accumulate forever (no session-scoped Stop ever fires for
+        # them). The age gate below is what protects fresh pendings; widening
+        # the scope to all sessions does not touch any pending under its TTL.
+        pending_rows = list_pending(session_id=session_id, all_sessions=True)
     except Exception as exc:
         logger.debug("expire_db_pendings: list_pending failed (non-fatal): %s", exc)
         return 0
@@ -237,7 +252,16 @@ def cleanup(
             return False
 
     try:
-        pending_rows = list_pending(session_id=session_id, all_sessions=False)
+        # all_sessions=True: the stale-pending EXPIRE sweep is GLOBAL, not
+        # session-scoped. SubagentStop is our only periodic sweep trigger, so a
+        # session-scoped sweep never reaps past-TTL pendings left by dead or
+        # other sessions -- they accumulate forever (we had to drain 102 by
+        # hand). The age gate below (age_seconds >= ttl_seconds) is the sole
+        # guard: a FRESH pending in ANY session is < TTL and is skipped, so
+        # widening to all_sessions cannot expire a fresh pending. This stays
+        # EXPIRE-only and age-gated -- no session-membership revoke is
+        # reintroduced (the P-3d23 invariant holds at global scope).
+        pending_rows = list_pending(session_id=session_id, all_sessions=True)
     except Exception as exc:
         logger.debug("cleanup: list_pending failed (non-fatal): %s", exc)
         return False
