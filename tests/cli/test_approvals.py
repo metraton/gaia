@@ -231,18 +231,6 @@ class TestCmdList:
         assert data["count"] == 0
         assert data["pending_fs"] == []
 
-    def test_list_passes_session_filter(self, db_store):
-        # With --session, cmd_list delegates to get_pending_approvals_for_session
-        # (legacy filesystem-session path, retained for explicit session queries).
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_fn = MagicMock(return_value=[])
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": mock_fn,
-                "load_pending_by_nonce_prefix": MagicMock(),
-            }
-            approvals_mod.cmd_list(_make_args(session="sess-xyz"))
-        mock_fn.assert_called_once_with("sess-xyz")
-
     # ----- --orphans-only --------------------------------------------------
 
     def test_list_orphans_only_filters_live_sessions(self, capsys, db_store):

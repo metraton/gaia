@@ -281,13 +281,13 @@ def _grant_to_display(g: dict) -> dict:
 
 
 def cmd_list(args) -> int:
-    """List approval grants from the DB.
+    """List approval grants and pending approvals from the DB.
 
     Without ``--session``, all grants are shown.  With ``--session SESSION_ID``,
     only that session's grants are shown.
 
-    Also supports ``--orphans-only`` (filesystem pending approvals from dead
-    sessions) via the legacy scan path for backward compatibility.
+    ``--orphans-only`` filters pending approvals to rows whose owning session
+    is no longer alive (orphaned pendings from dead sessions).
     """
     session_id = getattr(args, "session", None)
     orphans_only = getattr(args, "orphans_only", False)
@@ -302,22 +302,12 @@ def cmd_list(args) -> int:
     except Exception:
         db_grants = []
 
-    # Legacy filesystem pending listing (for filesystem-based pending approvals)
+    # DB-backed pending listing (canonical since Task E FS retirement)
     fs_pending = []
-    if not orphans_only:
-        try:
-            if session_id is None:
-                fs_pending = _scan_pending_shared(exclude_live_sessions=False)
-            else:
-                ag = _import_approval_grants()
-                fs_pending = ag["get_pending_approvals_for_session"](session_id)
-        except Exception:
-            pass
-    else:
-        try:
-            fs_pending = _scan_pending_shared(exclude_live_sessions=True)
-        except Exception:
-            pass
+    try:
+        fs_pending = _scan_pending_shared(exclude_live_sessions=orphans_only)
+    except Exception:
+        pass
 
     db_items = [_grant_to_display(g) for g in db_grants]
     fs_items = [_pending_to_display(p) for p in fs_pending]
