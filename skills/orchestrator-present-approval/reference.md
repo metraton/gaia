@@ -151,6 +151,16 @@ commands** in the question body, with **one** Approve label carrying **one**
 `[P-{nonce8}]` suffix. The user gives one consent; each command then runs on its
 own retry within the 60-minute window. You do NOT issue N separate approvals.
 
+**Reading the batch id and commands -- from the block, not by dispatch.** Once
+the minted `COMMAND_SET` pending has survived a turn, it appears in the injected
+`[PENDING-APPROVALS-VERIFIED]` block with its content-derived `approval_id` and
+all N commands attached (`build_verified_pending_approvals` in
+`hooks/modules/session/session_manifest.py`). Read the id and the commands
+straight from that block -- the orchestrator has no shell and must NOT dispatch
+`gaia approvals derive-id` or any verify command. For a command_set emitted in
+the CURRENT turn (not yet in the block), present from the subagent's relayed
+`approval_request`, which carries the same `command_set`.
+
 ## Grant Activation Mechanics
 
 When the hook blocks a T3 Bash command in subagent context,
@@ -161,9 +171,12 @@ generates a `P-{uuid4_hex}` `approval_id`, fingerprints the payload, inserts an
 message ends with `approval_id: P-{...}` (`build_t3_blocked_denial_message` in
 `hooks/modules/security/approval_messages.py`).
 
-The subagent relays that `approval_id` in its `approval_request`. The
-orchestrator presents via AskUserQuestion with the `[P-xxxxxxxx]` label. When
-the user selects the Approve label, the **ElicitationResult hook**
+The orchestrator presents via AskUserQuestion with the `[P-xxxxxxxx]` label,
+reading the `approval_id` and fields from the injected
+`[PENDING-APPROVALS-VERIFIED]` block (primary) or, for a same-turn pending not
+yet in the block, from the subagent's relayed `approval_request` (fallback). It
+does not dispatch to verify or derive. When the user selects the Approve label,
+the **ElicitationResult hook**
 (`hooks/elicitation_result.py`) fires and calls
 `activate_db_pending_by_prefix()`, which:
 

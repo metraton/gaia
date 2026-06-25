@@ -1,8 +1,12 @@
 # AskUserQuestion Template
 
 Use this layout verbatim when presenting an approval to the user. Replace
-`{...}` placeholders with values extracted from the subagent's `sealed_payload`
-and `approval_request`. Do not paraphrase, summarize, or omit any field.
+`{...}` placeholders with values read from your trusted source -- the injected
+`[PENDING-APPROVALS-VERIFIED]` block (primary; already DB-read and
+fingerprint-verified by the per-turn hook) or, for a same-turn pending not yet
+in the block, the subagent's relayed `approval_request` (fallback). Never
+dispatch a subagent to derive or verify the approval. Do not paraphrase,
+summarize, or omit any field.
 
 ## Standard Approval (single command)
 
@@ -23,8 +27,9 @@ AskUserQuestion(
 )
 ```
 
-Where `approval_id_prefix8` is the first 8 characters of the `approval_id`
-field from the subagent's `approval_request` (after the `P-` prefix).
+Where `approval_id_prefix8` is the first 8 characters (after the `P-` prefix) of
+the `approval_id` read from the `[PENDING-APPROVALS-VERIFIED]` block, or from the
+subagent's `approval_request` for a same-turn pending.
 
 ## Batch template (COMMAND_SET)
 
@@ -47,4 +52,4 @@ ignored -- the signal is the presence of `command_set` in the contract.
 | SCOPE | `sealed_payload.scope` |
 | RIESGO | `sealed_payload.risk_level` + `sealed_payload.rationale` |
 | ROLLBACK | `sealed_payload.rollback_hint` (null -> "NOT REVERSIBLE") |
-| Option nonce suffix | `approval_request.approval_id` first 8 chars after `P-` |
+| Option nonce suffix | `approval_id` first 8 chars after `P-` (from the `[PENDING-APPROVALS-VERIFIED]` block, or `approval_request.approval_id` for a same-turn pending) |
