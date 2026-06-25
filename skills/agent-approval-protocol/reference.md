@@ -12,12 +12,17 @@ canonical string. `store.insert_requested()` stores both the canonical JSON
 (`payload_json`) and the hex fingerprint on the `approvals` row and on the
 `REQUESTED` event.
 
-The orchestrator MUST re-verify via
-`chain.verify_fingerprint(approval_id, payload_json, con)` before presenting.
-That function re-parses and re-canonicalizes the relayed `payload_json`,
-recomputes the fingerprint, and compares it against the fingerprint stored on
-the `REQUESTED` event. A mismatch raises `ChainTamperError` and the approval
-aborts -- this is a security boundary, not a recoverable UX issue.
+The fingerprint is verified at grant **activation**, not at presentation.
+`chain.verify_fingerprint(approval_id, payload_json, con)` re-parses and
+re-canonicalizes the payload, recomputes the fingerprint, and compares it
+against the fingerprint stored on the `REQUESTED` event; a mismatch raises
+`ChainTamperError` and the grant never forms -- a security boundary, not a
+recoverable UX issue. The per-turn `[PENDING-APPROVALS-VERIFIED]` builder
+(`build_verified_pending_approvals`) applies the same check when assembling the
+injected block, so only fingerprint-clean pendings reach the orchestrator marked
+`verified: true`. The orchestrator therefore presents from that already-verified
+block (or a same-turn relayed `approval_request`) and never dispatches to verify
+the payload itself.
 
 ## Hash chain
 
