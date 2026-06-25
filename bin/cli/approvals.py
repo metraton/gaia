@@ -44,12 +44,10 @@ def _import_approval_grants():
     from modules.security.approval_grants import (
         get_pending_approvals_for_session,
         load_pending_by_nonce_prefix,
-        reject_pending,
     )
     return {
         "get_pending_approvals_for_session": get_pending_approvals_for_session,
         "load_pending_by_nonce_prefix": load_pending_by_nonce_prefix,
-        "reject_pending": reject_pending,
     }
 
 
@@ -666,9 +664,9 @@ def _grants_dir_for_workspace(workspace: str | None):
 def cmd_reject_all(args) -> int:
     """Reject all active pending approvals in one pass.
 
-    Scans the approval cache for every non-expired, non-rejected pending
-    approval and calls ``reject_pending()`` on each nonce.  This is the
-    canonical subcommand surface documented in the pending-approvals skill.
+    Scans the DB for every non-expired, non-rejected pending approval and
+    calls ``store.revoke()`` on each approval_id.  This is the canonical
+    subcommand surface documented in the pending-approvals skill.
 
     Flags:
       --dry-run     Preview what would be rejected without writing changes.

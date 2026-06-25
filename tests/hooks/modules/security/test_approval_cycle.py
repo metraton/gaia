@@ -33,17 +33,16 @@ from modules.security.approval_grants import (
     ACTIVATION_NOT_FOUND,
     DEFAULT_GRANT_TTL_MINUTES,
     ApprovalGrant,
-    activate_grants_for_session,
-    activate_pending_approval,
+    activate_db_pending_by_prefix,
     check_approval_grant,
     confirm_grant,
     consume_grant,
     consume_session_grants,
     generate_nonce,
     get_pending_approvals_for_session,
-    write_pending_approval,
 )
 from modules.tools.bash_validator import BashValidator, validate_bash_command
+from tests.fixtures.db_helpers import apply_approvals_schema, seed_db_pending
 
 
 # ---------------------------------------------------------------------------
@@ -181,13 +180,9 @@ class TestSubagentMutativeDeny:
     def test_subagent_deny_creates_pending_approval(self, approvals_test_db, monkeypatch):
         """Subagent deny should create a DB pending approval row.
 
-        T2.1 cutover: write_pending_approval (filesystem) was replaced by
-        store.insert_requested (DB).  This test now asserts the DB row exists
-        instead of the legacy filesystem file.
-
-        M2 partial migration: DB-side asserted here.  Activation-side
-        (activate_grants_for_session) is still filesystem until T-activation
-        migration.
+        T2.1 cutover: the filesystem pending write was replaced by
+        store.insert_requested (DB).  This test asserts the DB row exists
+        instead of the retired filesystem file.
         """
         import gaia.approvals.store as astore
 
@@ -257,31 +252,81 @@ class TestOrchestratorMutativeAsk:
         )
 
 
+def _isolate_writer_db(monkeypatch, tmp_path):
+    """Redirect gaia.store.writer._connect to an isolated SQLite file that
+    carries both the approvals plane (approvals/approval_events) and the
+    grant plane (approval_grants), so DB-backed seeding/activation/grant
+    checks never touch ~/.gaia/gaia.db.
+
+    Returns the db path.
+    """
+    import gaia.store.writer as gwriter
+
+    writer_db_path = tmp_path / "cycle_writer.db"
+
+    def _make_writer_db():
+        con = sqlite3.connect(str(writer_db_path))
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = ON")
+        con.create_function(
+            "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
+        )
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS approval_grants (
+                approval_id          TEXT PRIMARY KEY,
+                agent_id             TEXT,
+                session_id           TEXT,
+                command_set_json     TEXT NOT NULL,
+                scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
+                created_at           TEXT NOT NULL
+                    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                expires_at           TEXT,
+                status               TEXT NOT NULL DEFAULT 'PENDING',
+                consumed_indexes_json TEXT,
+                consumed_at          TEXT,
+                revoked_at           TEXT,
+                multi_use            INTEGER NOT NULL DEFAULT 0,
+                confirmed            INTEGER NOT NULL DEFAULT 0
+            );
+            """
+        )
+        apply_approvals_schema(con)
+        con.commit()
+        return con
+
+    monkeypatch.setattr(gwriter, "_connect", lambda db_path=None: _make_writer_db())
+    return writer_db_path
+
+
 class TestElicitationResultActivatesGrant:
     """Test 3: ElicitationResult activates grant for pending approval."""
 
-    def test_activate_grants_for_session(self):
-        """Writing a pending approval then activating it creates a usable grant."""
+    def test_activate_db_pending_creates_grant(self, monkeypatch, tmp_path):
+        """Seeding a DB pending then activating it by nonce prefix creates a usable grant."""
+        _isolate_writer_db(monkeypatch, tmp_path)
+
         nonce = generate_nonce()
         command = "terraform apply"
+        session_id = "test-cycle-session"
 
-        # 1. Write a pending approval
-        path = write_pending_approval(
-            nonce=nonce,
+        # 1. Seed a DB pending approval (replaces the retired FS write).
+        seed_db_pending(
             command=command,
+            session_id=session_id,
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id="test-cycle-session",
+            nonce=nonce,
         )
-        assert path is not None, "Failed to write pending approval"
 
-        # 2. Activate grants for the session (simulates ElicitationResult)
-        results = activate_grants_for_session("test-cycle-session")
-        assert len(results) >= 1, "Expected at least one activation result"
-        assert results[0].success, f"Activation should succeed: {results[0].reason}"
+        # 2. Activate the DB pending by nonce prefix (simulates approval).
+        result = activate_db_pending_by_prefix(
+            nonce[:8], current_session_id=session_id,
+        )
+        assert result.success, f"Activation should succeed: {result.reason}"
 
-        # 3. Check that the grant is now active
-        grant = check_approval_grant(command)
+        # 3. Check that the grant is now active.
+        grant = check_approval_grant(command, session_id=session_id)
         assert grant is not None, "Grant should be active after activation"
         assert grant.approved_scope == command
 
@@ -289,18 +334,17 @@ class TestElicitationResultActivatesGrant:
 class TestFullApprovalCycle:
     """Test 4: Full cycle -- deny, approve, retry succeeds (passthrough)."""
 
-    def test_deny_activate_retry_succeeds(self, approvals_test_db, monkeypatch):
+    def test_deny_activate_retry_succeeds(self, approvals_test_db, monkeypatch, tmp_path):
         """Complete cycle: subagent denied, approval activated, retry passthrough.
 
         With grant passthrough, once a grant is activated (even unconfirmed),
         the validator returns allowed=True immediately. PostToolUse will
         confirm and consume the grant after execution.
 
-        M2 partial migration: DB-side deny (insert_requested) is asserted via
-        the patched store.  The activation-side (activate_grants_for_session)
-        is still filesystem-based; a filesystem pending is written manually so
-        the activation step works without requiring the activation migration.
-        Activation-side DB migration is tracked separately.
+        DB-only since the FS pending plane was retired: the deny writes a DB
+        pending (insert_requested), the user-approval step activates that DB
+        pending by its nonce prefix (activate_db_pending_by_prefix), and the
+        retry passes through on the resulting DB grant.
         """
         import re
         import gaia.approvals.store as astore
@@ -324,6 +368,10 @@ class TestFullApprovalCycle:
 
         monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
 
+        # Isolate the grant plane (gaia.store.writer) so activation + grant
+        # checks land in a test-local DB.
+        _isolate_writer_db(monkeypatch, tmp_path)
+
         # Step 1: Subagent command is denied with approval_id (written to DB).
         result1 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
@@ -334,7 +382,7 @@ class TestFullApprovalCycle:
 
         # Extract approval_id from the deny reason.
         reason = hook_output["permissionDecisionReason"]
-        match = re.search(r"approval_id:\s*([\w-]+)", reason)
+        match = re.search(r"approval_id:\s*(P-[\w-]+)", reason)
         assert match, f"Could not extract approval_id from: {reason}"
         approval_id = match.group(1)
 
@@ -345,25 +393,14 @@ class TestFullApprovalCycle:
             f"DB approval_id mismatch: stored={pending_rows[0]['id']}, deny={approval_id}"
         )
 
-        # Step 2: Activation-side bridge (filesystem pending for activate_grants_for_session).
-        # activate_grants_for_session still reads filesystem (pre-migration).
-        # Write a filesystem pending so it can activate a grant for this session.
-        # M2 partial migration: this bridge will be removed when the activation
-        # side is migrated to DB in a future task.
-        fs_nonce = generate_nonce()
-        write_pending_approval(
-            nonce=fs_nonce,
-            command=command,
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
+        # Step 2: User approves -> activate the DB pending by its nonce prefix.
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        activation = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
         )
+        assert activation.success, f"Activation failed: {activation.reason}"
 
-        results = activate_grants_for_session(session_id)
-        assert len(results) >= 1
-        assert results[0].success, f"Activation failed: {results[0].reason}"
-
-        # Step 3: Retry the same command -- passthrough (filesystem grant exists).
+        # Step 3: Retry the same command -- passthrough (DB grant exists).
         result2 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
@@ -384,17 +421,19 @@ class TestNegativeResponseDoesNotActivate:
         assert not _is_approval("Reject"), "'Reject' should not be affirmative"
         assert not _is_approval("Modify"), "'Modify' should not be affirmative"
 
-    def test_negative_response_leaves_pending_intact(self):
+    def test_negative_response_leaves_pending_intact(self, monkeypatch, tmp_path):
         """A negative response should not activate pending approvals."""
         from elicitation_result import _is_approval
 
+        _isolate_writer_db(monkeypatch, tmp_path)
+
         nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command="terraform apply",
+            session_id="test-cycle-session",
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id="test-cycle-session",
+            nonce=nonce,
         )
 
         # Simulate a negative response -- should NOT activate
@@ -407,46 +446,6 @@ class TestNegativeResponseDoesNotActivate:
         # Grant should NOT exist
         grant = check_approval_grant("terraform apply")
         assert grant is None, "No grant should exist after negative response"
-
-
-class TestExpiredPendingNotActivated:
-    """Test 6: Expired pending is not activated."""
-
-    def test_expired_pending_fails_activation(self):
-        """A pending approval with expired TTL should not activate."""
-        import modules.security.approval_grants as ag
-
-        nonce = generate_nonce()
-        # Write a pending with a very short TTL
-        # Note: ttl_minutes=0 means "no expiry" in the code, so use ttl_minutes=1
-        # and backdate the timestamp so the 1-minute TTL has elapsed.
-        path = write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id="test-cycle-session",
-            ttl_minutes=1,
-        )
-        assert path is not None
-
-        # Manually backdate the pending file timestamp to ensure expiry
-        import json
-        data = json.loads(path.read_text())
-        data["timestamp"] = time.time() - 3600  # 1 hour ago
-        path.write_text(json.dumps(data))
-
-        # Attempt activation -- should fail due to expiry
-        result = activate_pending_approval(
-            nonce=nonce,
-            session_id="test-cycle-session",
-        )
-        assert not result.success, "Expired pending should not activate"
-        assert result.status == ACTIVATION_EXPIRED
-
-        # Verify no grant was created
-        grant = check_approval_grant("terraform apply")
-        assert grant is None, "No grant should exist after expired pending activation"
 
 
 class TestApprovalResponsePatterns:
@@ -592,21 +591,23 @@ class TestSubagentRetryReusesPendingNonce:
 class TestConsumeGrant:
     """Test 9: consume_grant() marks grant as used (single-use)."""
 
-    def test_consume_grant_marks_used(self):
-        """consume_grant() sets used=True and persists to disk."""
+    def test_consume_grant_marks_used(self, monkeypatch, tmp_path):
+        """consume_grant() marks the grant consumed so it no longer matches."""
+        _isolate_writer_db(monkeypatch, tmp_path)
+
         nonce = generate_nonce()
         command = "terraform apply"
         session_id = "test-cycle-session"
 
-        # Create a pending approval and activate it
-        write_pending_approval(
-            nonce=nonce,
+        # Seed a DB pending approval and activate it by nonce prefix.
+        seed_db_pending(
             command=command,
+            session_id=session_id,
             danger_verb="apply",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce,
         )
-        result = activate_pending_approval(nonce=nonce, session_id=session_id)
+        result = activate_db_pending_by_prefix(nonce[:8], current_session_id=session_id)
         assert result.success, f"Activation should succeed: {result.reason}"
 
         # Verify grant exists before consume
@@ -623,20 +624,22 @@ class TestConsumeGrant:
             "check_approval_grant() should return None after grant is consumed"
         )
 
-    def test_consume_grant_second_call_returns_false(self):
+    def test_consume_grant_second_call_returns_false(self, monkeypatch, tmp_path):
         """Second call to consume_grant() returns False (already consumed)."""
+        _isolate_writer_db(monkeypatch, tmp_path)
+
         nonce = generate_nonce()
         command = "git push origin main"
         session_id = "test-cycle-session"
 
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command=command,
+            session_id=session_id,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_id,
+            nonce=nonce,
         )
-        activate_pending_approval(nonce=nonce, session_id=session_id)
+        activate_db_pending_by_prefix(nonce[:8], current_session_id=session_id)
 
         # First consume succeeds
         assert consume_grant(command, session_id=session_id) is True
@@ -644,8 +647,9 @@ class TestConsumeGrant:
         # Second consume fails (grant already used)
         assert consume_grant(command, session_id=session_id) is False
 
-    def test_consume_nonexistent_grant_returns_false(self):
+    def test_consume_nonexistent_grant_returns_false(self, monkeypatch, tmp_path):
         """consume_grant() returns False when no matching grant exists."""
+        _isolate_writer_db(monkeypatch, tmp_path)
         consumed = consume_grant("terraform destroy", session_id="test-cycle-session")
         assert consumed is False
 

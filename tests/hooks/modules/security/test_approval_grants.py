@@ -18,23 +18,13 @@ HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.approval_grants import (
-    ACTIVATION_ACTIVATED,
-    ACTIVATION_EXPIRED,
-    ACTIVATION_INVALID_PENDING,
-    ACTIVATION_INVALID_SIGNATURE,
-    ACTIVATION_NOT_FOUND,
-    ACTIVATION_SESSION_MISMATCH,
     ApprovalGrant,
-    activate_cross_session_pending,
-    activate_grants_for_session,
-    activate_pending_approval,
+    activate_db_pending_by_prefix,
     capture_environment_snapshot,
     check_approval_grant,
     cleanup_expired_grants,
     confirm_grant,
     generate_nonce,
-    get_latest_pending_approval,
-    write_pending_approval,
 )
 
 from modules.security.approval_grants import (
@@ -42,8 +32,8 @@ from modules.security.approval_grants import (
     extract_nonce_from_label,
     get_pending_approvals_for_session,
     load_pending_by_nonce_prefix,
-    reject_pending,
 )
+from tests.fixtures.db_helpers import seed_db_pending
 from modules.security.approval_scopes import (
     SCOPE_EXACT_COMMAND,
     SCOPE_SEMANTIC_SIGNATURE,
@@ -111,6 +101,12 @@ def clean_grants_dir(tmp_path, monkeypatch):
             );
             """
         )
+        # The DB-backed pending plane (insert_requested / get_pending) reads the
+        # approvals + approval_events tables. gaia.approvals.store._open_db()
+        # delegates to gaia.store.writer._connect(), so the same isolation DB
+        # must materialize these tables for the migrated pending functions.
+        from tests.fixtures.db_helpers import apply_approvals_schema
+        apply_approvals_schema(con)
         con.commit()
         return con
 
@@ -299,250 +295,6 @@ class TestNonceGeneration:
         assert match.group(1) == nonce
 
 
-class TestPendingApproval:
-    """Pending approval files should persist the semantic signature contract."""
-
-    def test_creates_pending_file(self, clean_grants_dir):
-        nonce = generate_nonce()
-        path = write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        assert path is not None
-        assert path.exists()
-        assert path.name == f"pending-{nonce}.json"
-
-    def test_pending_file_content(self, clean_grants_dir):
-        nonce = generate_nonce()
-        path = write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        data = json.loads(path.read_text())
-        assert data["nonce"] == nonce
-        assert data["session_id"] == "test-session-123"
-        assert data["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
-        assert data["scope_signature"]["scope_type"] == SCOPE_SEMANTIC_SIGNATURE
-
-    def test_latest_pending_index_tracks_newest_nonce(self, clean_grants_dir):
-        first_nonce = generate_nonce()
-        second_nonce = generate_nonce()
-        write_pending_approval(
-            nonce=first_nonce,
-            command="git commit -m 'feat: first'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        time.sleep(0.01)
-        write_pending_approval(
-            nonce=second_nonce,
-            command="git commit -m 'feat: second'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-
-        index_file = clean_grants_dir / "pending-index-test-session-123.json"
-        assert index_file.exists()
-
-        index_data = json.loads(index_file.read_text())
-        assert index_data["session_id"] == "test-session-123"
-        assert index_data["latest_nonce"] == second_nonce
-        assert [entry["nonce"] for entry in index_data["entries"]] == [second_nonce, first_nonce]
-
-    def test_get_latest_pending_approval_dereferences_pending_file(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: latest'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-
-        pending = get_latest_pending_approval()
-        assert pending is not None
-        assert pending["nonce"] == nonce
-        assert pending["command"] == "git commit -m 'feat: latest'"
-        assert pending["session_id"] == "test-session-123"
-
-
-class TestActivatePendingApproval:
-    """Pending approvals should activate only for valid nonce-backed records."""
-
-    def test_activates_pending_to_grant(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        result = activate_pending_approval(nonce)
-        assert result.success is True
-        assert result.status == ACTIVATION_ACTIVATED
-        # DB-primary: grant_path is None (no filesystem grant file written)
-        assert result.grant_path is None
-        # Verify the DB grant is accessible via check_approval_grant
-        grant = check_approval_grant("git commit -m 'feat: test'")
-        assert grant is not None
-
-    def test_activation_deletes_pending_file(self, clean_grants_dir):
-        nonce = generate_nonce()
-        pending_path = write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        activate_pending_approval(nonce)
-        assert not pending_path.exists()
-
-    def test_activation_removes_latest_pending_index_when_last_nonce_used(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        activate_pending_approval(nonce)
-        assert not (clean_grants_dir / "pending-index-test-session-123.json").exists()
-
-    def test_activation_rebuilds_index_to_previous_pending_nonce(self, clean_grants_dir):
-        first_nonce = generate_nonce()
-        second_nonce = generate_nonce()
-        write_pending_approval(
-            nonce=first_nonce,
-            command="git commit -m 'feat: first'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        time.sleep(0.01)
-        write_pending_approval(
-            nonce=second_nonce,
-            command="git commit -m 'feat: second'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-
-        activate_pending_approval(second_nonce)
-        latest = get_latest_pending_approval()
-        assert latest is not None
-        assert latest["nonce"] == first_nonce
-
-    def test_activated_grant_matches_exact_command(self, clean_grants_dir):
-        nonce = generate_nonce()
-        command = "git commit -m 'feat: test'"
-        write_pending_approval(
-            nonce=nonce,
-            command=command,
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        activate_pending_approval(nonce)
-        grant = check_approval_grant(command)
-        assert grant is not None
-        assert "commit" in grant.approved_verbs
-
-    def test_activation_fails_for_nonexistent_nonce(self, clean_grants_dir):
-        result = activate_pending_approval("deadbeef" * 4)
-        assert result.success is False
-        assert result.status == ACTIVATION_NOT_FOUND
-
-    def test_activation_fails_for_wrong_session(self, clean_grants_dir, monkeypatch):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "different-session")
-        result = activate_pending_approval(nonce)
-        assert result.success is False
-        assert result.status == ACTIVATION_SESSION_MISMATCH
-
-    def test_activation_fails_for_expired_pending(self, clean_grants_dir):
-        nonce = generate_nonce()
-        pending_file = write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-            ttl_minutes=1,
-        )
-        # Backdate the timestamp so the 1-minute TTL has elapsed
-        data = json.loads(pending_file.read_text())
-        data["timestamp"] = 1000000.0
-        pending_file.write_text(json.dumps(data, indent=2))
-        result = activate_pending_approval(nonce)
-        assert result.success is False
-        assert result.status == ACTIVATION_EXPIRED
-
-    def test_activation_fails_for_missing_scope_signature(self, clean_grants_dir):
-        nonce = generate_nonce()
-        pending_file = clean_grants_dir / f"pending-{nonce}.json"
-        pending_file.write_text(json.dumps({
-            "nonce": nonce,
-            "session_id": "test-session-123",
-            "command": "git commit -m 'feat: test'",
-            "danger_verb": "commit",
-            "danger_category": "MUTATIVE",
-            "timestamp": time.time(),
-            "ttl_minutes": 10,
-        }))
-        result = activate_pending_approval(nonce)
-        assert result.success is False
-        assert result.status == ACTIVATION_INVALID_PENDING
-        assert not pending_file.exists()
-
-    def test_activation_fails_for_unsupported_scope_type(self, clean_grants_dir):
-        nonce = generate_nonce()
-        pending_file = clean_grants_dir / f"pending-{nonce}.json"
-        pending_file.write_text(json.dumps({
-            "nonce": nonce,
-            "session_id": "test-session-123",
-            "command": "git commit -m 'feat: test'",
-            "danger_verb": "commit",
-            "danger_category": "MUTATIVE",
-            "scope_signature": {
-                "version": 2,
-                "scope_type": "resource_family",
-                "base_cmd": "git",
-                "cli_family": "git",
-                "danger_category": "MUTATIVE",
-                "verb": "commit",
-                "semantic_tokens": ["git", "commit"],
-                "normalized_flags": [],
-                "dangerous_flags": [],
-                "exact_tokens": [],
-            },
-            "timestamp": time.time(),
-            "ttl_minutes": 10,
-        }))
-        result = activate_pending_approval(nonce)
-        assert result.success is False
-        assert result.status == ACTIVATION_INVALID_SIGNATURE
-        assert not pending_file.exists()
-
-    def test_activation_is_one_time_only(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        result1 = activate_pending_approval(nonce)
-        result2 = activate_pending_approval(nonce)
-        assert result1.success is True
-        assert result2.success is False
-        assert result2.status == ACTIVATION_NOT_FOUND
-
-
 class TestCleanup:
     """Cleanup should remove expired or unsupported approval artifacts."""
 
@@ -604,88 +356,6 @@ class TestCleanup:
         # DB-primary: check_approval_grant only matches SCOPE_SEMANTIC_SIGNATURE rows
         assert check_approval_grant("terraform apply") is None
 
-    def test_cleanup_removes_expired_pending(self, clean_grants_dir):
-        nonce = generate_nonce()
-        pending_file = write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'test'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-            ttl_minutes=1,
-        )
-        data = json.loads(pending_file.read_text())
-        data["timestamp"] = 1000000.0
-        pending_file.write_text(json.dumps(data, indent=2))
-        cleaned = cleanup_expired_grants()
-        assert cleaned >= 1
-        assert not pending_file.exists()
-        assert not (clean_grants_dir / "pending-index-test-session-123.json").exists()
-
-    def test_cleanup_removes_pending_without_signature(self, clean_grants_dir):
-        nonce = generate_nonce()
-        pending_file = clean_grants_dir / f"pending-{nonce}.json"
-        pending_file.write_text(json.dumps({
-            "nonce": nonce,
-            "session_id": "test-session-123",
-            "command": "git commit -m 'test'",
-            "timestamp": time.time(),
-            "ttl_minutes": 10,
-        }))
-        cleaned = cleanup_expired_grants()
-        assert cleaned >= 1
-        assert not pending_file.exists()
-
-    def test_get_latest_pending_approval_recovers_from_stale_index(self, clean_grants_dir):
-        first_nonce = generate_nonce()
-        second_nonce = generate_nonce()
-        write_pending_approval(
-            nonce=first_nonce,
-            command="git commit -m 'feat: first'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        time.sleep(0.01)
-        write_pending_approval(
-            nonce=second_nonce,
-            command="git commit -m 'feat: stale'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        index_file = clean_grants_dir / "pending-index-test-session-123.json"
-        pending_file = clean_grants_dir / f"pending-{second_nonce}.json"
-        pending_file.unlink()
-
-        latest = get_latest_pending_approval()
-        assert latest is not None
-        assert latest["nonce"] == first_nonce
-        rebuilt = json.loads(index_file.read_text())
-        assert rebuilt["latest_nonce"] == first_nonce
-
-    def test_get_latest_pending_approval_skips_expired_entries(self, clean_grants_dir):
-        expired_nonce = generate_nonce()
-        fresh_nonce = generate_nonce()
-        expired_file = write_pending_approval(
-            nonce=expired_nonce,
-            command="git commit -m 'feat: old'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        expired_data = json.loads(expired_file.read_text())
-        expired_data["timestamp"] = 1000000.0
-        expired_file.write_text(json.dumps(expired_data, indent=2))
-
-        time.sleep(0.01)
-        write_pending_approval(
-            nonce=fresh_nonce,
-            command="git commit -m 'feat: fresh'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-
-        latest = get_latest_pending_approval()
-        assert latest is not None
-        assert latest["nonce"] == fresh_nonce
-
     # ------------------------------------------------------------------
     # Phase 2: force=True bypasses the 60s throttle
     # ------------------------------------------------------------------
@@ -729,85 +399,6 @@ class TestCleanup:
             "last cleanup would silently skip and leave stale artefacts."
         )
 
-    # ------------------------------------------------------------------
-    # Phase 2: orphan pending-index files are swept
-    # ------------------------------------------------------------------
-
-    def test_sweep_removes_index_with_no_live_entries(self, clean_grants_dir):
-        """An index referencing only deleted pending files must be removed."""
-        import modules.security.approval_grants as ag
-
-        # Build an index manually, then remove the pending it references so
-        # the entry becomes an orphan. The index sweep must catch this.
-        index_file = clean_grants_dir / "pending-index-test-session-123.json"
-        index_file.write_text(
-            json.dumps(
-                {
-                    "session_id": "test-session-123",
-                    "latest_nonce": "deadbeef" * 4,
-                    "entries": [
-                        {
-                            "nonce": "deadbeef" * 4,
-                            "pending_file": "pending-deadbeef-does-not-exist.json",
-                            "timestamp": time.time(),
-                        }
-                    ],
-                }
-            )
-        )
-        assert index_file.exists()
-
-        ag._last_cleanup_time = 0.0  # ensure not throttled
-        cleaned = cleanup_expired_grants(force=True)
-
-        assert not index_file.exists(), (
-            "An index whose every entry points to a missing pending file is "
-            "an orphan -- the sweep must delete it so the operator does not "
-            "see phantom approvals in `gaia approvals list`."
-        )
-        assert cleaned >= 1
-
-    def test_sweep_removes_corrupt_index(self, clean_grants_dir):
-        """A pending-index-*.json that fails to parse must be removed."""
-        import modules.security.approval_grants as ag
-
-        bad_index = clean_grants_dir / "pending-index-corrupt-session.json"
-        bad_index.write_text("{ not valid json")
-
-        ag._last_cleanup_time = 0.0
-        cleanup_expired_grants(force=True)
-
-        assert not bad_index.exists(), (
-            "A corrupt index file cannot be trusted to enumerate pendings; "
-            "remove it so the next write_pending rebuilds from authoritative "
-            "pending-{nonce}.json files."
-        )
-
-    def test_sweep_preserves_index_with_live_entries(self, clean_grants_dir):
-        """An index that points at a real pending file must be kept."""
-        import modules.security.approval_grants as ag
-
-        # Create a real pending so its index entry is valid.
-        nonce = generate_nonce()
-        pending_file = write_pending_approval(
-            nonce=nonce,
-            command="git commit -m 'feat: keep'",
-            danger_verb="commit",
-            danger_category="MUTATIVE",
-        )
-        assert pending_file is not None
-        index_file = clean_grants_dir / "pending-index-test-session-123.json"
-        assert index_file.exists(), "write_pending must rebuild the index"
-
-        ag._last_cleanup_time = 0.0
-        cleanup_expired_grants(force=True)
-
-        assert pending_file.exists()
-        assert index_file.exists(), (
-            "Index with at least one live entry must survive -- removing it "
-            "would force a rebuild on the next read for no benefit."
-        )
-
 
 class TestNonceEndToEnd:
     """The full nonce flow should still work end-to-end.
@@ -818,7 +409,7 @@ class TestNonceEndToEnd:
     """
 
     def test_full_flow_block_activate_passthrough(self, clean_grants_dir):
-        """Manually write a pending approval, activate, and verify grant passthrough.
+        """Block a T3 command, seed the post-approval DB grant, verify passthrough.
 
         Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
         """
@@ -834,29 +425,12 @@ class TestNonceEndToEnd:
         assert result.block_response is not None
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
-        # Simulate the nonce flow that pre_tool_use.py would drive
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command=command,
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
-        pending_file = clean_grants_dir / f"pending-{nonce}.json"
-        assert pending_file.exists()
-
-        activation = activate_pending_approval(nonce, session_id=session_id)
-        assert activation.success is True
-        # DB-primary: no filesystem grant file is written after activation
-        assert activation.grant_path is None
-        assert not pending_file.exists()
+        # Seed the DB grant the activation path would create after user approval.
+        _write_active_grant(clean_grants_dir, command, session_id=session_id)
 
         # After activation, grant passthrough: GAIA approved, no second dialog
         result2 = validator.validate(command, session_id=session_id)
         assert result2.allowed is True
-        # DB grants are confirmed=True so reason is "Grant confirmed";
-        # FS grants not yet confirmed return "Grant active, pending confirmation".
         assert "grant" in result2.reason.lower()
 
     def test_blocked_t3_returns_ask_without_nonce(self, clean_grants_dir):
@@ -872,8 +446,7 @@ class TestNonceEndToEnd:
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
 
         # No pending approval is created by bash_validator directly
-        latest = get_latest_pending_approval()
-        assert latest is None
+        assert get_pending_approvals_for_session("test-session-123") == []
 
 
 class TestBashValidatorIntegration:
@@ -896,39 +469,15 @@ class TestBashValidatorIntegration:
         assert result.allowed is True
 
     def test_nonce_grant_does_not_cross_cli_same_verb(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply prod/vpc",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-        )
-        result = activate_pending_approval(nonce)
-        assert result.success is True
+        _write_active_grant(clean_grants_dir, "terraform apply prod/vpc")
         assert check_approval_grant("kubectl apply -f prod.yaml") is None
 
     def test_nonce_grant_does_not_escalate_to_more_dangerous_variant(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-        )
-        result = activate_pending_approval(nonce)
-        assert result.success is True
+        _write_active_grant(clean_grants_dir, "git push origin main")
         assert check_approval_grant("git push origin main --force") is None
 
     def test_nonce_grant_does_not_jump_resource_kind(self, clean_grants_dir):
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="kubectl delete pod pod-1",
-            danger_verb="delete",
-            danger_category="DESTRUCTIVE",
-        )
-        result = activate_pending_approval(nonce)
-        assert result.success is True
+        _write_active_grant(clean_grants_dir, "kubectl delete pod pod-1")
         assert check_approval_grant("kubectl delete namespace prod") is None
 
     def test_unsupported_grant_file_does_not_match(self, clean_grants_dir):
@@ -1011,77 +560,6 @@ class TestBashValidatorIntegration:
         assert len(rows) >= 1, "Grant row must remain PENDING after check_approval_grant"
 
 
-class TestCrossSessionActivation:
-    """activate_cross_session_pending should use explicit session_id when provided."""
-
-    def test_uses_explicit_session_id(self, clean_grants_dir):
-        """When session_id is passed, the DB grant is created under that ID."""
-        import gaia.store.writer as _sw
-
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id="prior-session-xyz",
-        )
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        pending_data = json.loads(pending_path.read_text())
-
-        result = activate_cross_session_pending(
-            pending_data,
-            session_id="explicit-session-abc",
-        )
-        assert result.success is True
-        assert result.status == ACTIVATION_ACTIVATED
-        # DB-primary: grant_path is None (no FS file written)
-        assert result.grant_path is None
-
-        # Verify the DB row has session_id='explicit-session-abc'
-        con = _sw._connect()
-        try:
-            row = con.execute(
-                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
-            ).fetchone()
-        finally:
-            con.close()
-        assert row is not None
-        assert row[0] == "explicit-session-abc"
-
-    def test_falls_back_to_env_session_id(self, clean_grants_dir):
-        """Without explicit session_id, the env-based session ID is used."""
-        import gaia.store.writer as _sw
-
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id="prior-session-xyz",
-        )
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        pending_data = json.loads(pending_path.read_text())
-
-        result = activate_cross_session_pending(pending_data)
-        assert result.success is True
-        assert result.status == ACTIVATION_ACTIVATED
-        # DB-primary: grant_path is None (no FS file written)
-        assert result.grant_path is None
-
-        # Verify the DB row has session_id matching the env var (test-session-123)
-        con = _sw._connect()
-        try:
-            row = con.execute(
-                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
-            ).fetchone()
-        finally:
-            con.close()
-        assert row is not None
-        assert row[0] == "test-session-123"
-
-
 class TestCrossSessionNonceTargeted:
     """Nonce-targeted cross-session activation: the orchestrator extracts a nonce
     from the AskUserQuestion option label and activates that specific pending
@@ -1117,31 +595,27 @@ class TestCrossSessionNonceTargeted:
         """Pending created under session_A, activated with explicit session_B:
         the DB grant row is recorded with session_id=session_B."""
         import gaia.store.writer as _sw
+        from modules.security.approval_grants import ACTIVATION_ACTIVATED
 
         session_a = "session-A-originator"
         session_b = "session-B-current"
 
         nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command="git push origin main",
+            session_id=session_a,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_a,
+            nonce=nonce,
         )
 
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        pending_data = json.loads(pending_path.read_text())
-        assert pending_data["session_id"] == session_a
-
-        result = activate_cross_session_pending(
-            pending_data,
-            session_id=session_b,
+        # Activate by nonce prefix under session_B (cross-session: the DB
+        # lookup is all-sessions, the grant is created under current session).
+        result = activate_db_pending_by_prefix(
+            nonce[:8], current_session_id=session_b,
         )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
-        # DB-primary: grant_path is None (no FS file written)
-        assert result.grant_path is None
 
         # DB row is recorded under session_B
         con = _sw._connect()
@@ -1160,43 +634,7 @@ class TestCrossSessionNonceTargeted:
         assert "push" in grant.approved_verbs
 
     # ------------------------------------------------------------------ #
-    # 3. Targeted activation cleans pending file
-    # ------------------------------------------------------------------ #
-
-    def test_cross_session_targeted_activation_cleans_pending_file(
-        self, clean_grants_dir,
-    ):
-        """After cross-session activation the pending file and its session_A
-        index must be cleaned up."""
-        session_a = "session-A-cleanup"
-        session_b = "session-B-cleanup"
-
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id=session_a,
-        )
-
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        index_path = clean_grants_dir / f"pending-index-{session_a}.json"
-        assert pending_path.exists()
-        assert index_path.exists()
-
-        pending_data = json.loads(pending_path.read_text())
-        result = activate_cross_session_pending(pending_data, session_id=session_b)
-        assert result.success is True
-
-        # Pending file removed
-        assert not pending_path.exists()
-
-        # Index for session_A rebuilt (should be gone since that was the only pending)
-        assert not index_path.exists()
-
-    # ------------------------------------------------------------------ #
-    # 4. Cross-session grant matches exact command
+    # 3. Cross-session grant matches exact command
     # ------------------------------------------------------------------ #
 
     def test_cross_session_grant_matches_exact_command(self, clean_grants_dir):
@@ -1206,17 +644,16 @@ class TestCrossSessionNonceTargeted:
         session_b = "session-B-exact"
 
         nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command="git push origin main",
+            session_id=session_a,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_a,
+            nonce=nonce,
         )
-        pending_data = json.loads(
-            (clean_grants_dir / f"pending-{nonce}.json").read_text()
+        result = activate_db_pending_by_prefix(
+            nonce[:8], current_session_id=session_b,
         )
-        result = activate_cross_session_pending(pending_data, session_id=session_b)
         assert result.success is True
 
         # Exact command matches
@@ -1226,34 +663,42 @@ class TestCrossSessionNonceTargeted:
         assert check_approval_grant("git push origin develop", session_id=session_b) is None
 
     # ------------------------------------------------------------------ #
-    # 5. Cross-session activation preserves scope signature
+    # 4. Cross-session activation preserves scope signature
     # ------------------------------------------------------------------ #
 
     def test_cross_session_activation_preserves_scope_signature(self, clean_grants_dir):
-        """The scope_signature written by write_pending_approval must survive
-        intact through cross-session activation into the DB grant row."""
+        """The scope_signature sealed into the DB pending must survive intact
+        through cross-session activation into the DB grant row."""
         import gaia.store.writer as _sw
+        from modules.security.approval_scopes import (
+            SCOPE_SEMANTIC_SIGNATURE,
+            build_approval_signature,
+        )
 
         session_a = "session-A-sig"
         session_b = "session-B-sig"
 
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
+        original_signature = build_approval_signature(
+            "git push origin main",
+            scope_type=SCOPE_SEMANTIC_SIGNATURE,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_a,
-        )
-        pending_data = json.loads(
-            (clean_grants_dir / f"pending-{nonce}.json").read_text()
-        )
-        original_signature = pending_data["scope_signature"]
+        ).to_dict()
 
-        result = activate_cross_session_pending(pending_data, session_id=session_b)
+        nonce = generate_nonce()
+        seed_db_pending(
+            command="git push origin main",
+            session_id=session_a,
+            danger_verb="push",
+            danger_category="MUTATIVE",
+            scope_signature=original_signature,
+            nonce=nonce,
+        )
+
+        result = activate_db_pending_by_prefix(
+            nonce[:8], current_session_id=session_b,
+        )
         assert result.success is True
-        # DB-primary: no FS file written
-        assert result.grant_path is None
 
         # Read back the scope_signature from the DB row's command_set_json
         con = _sw._connect()
@@ -1272,100 +717,38 @@ class TestCrossSessionNonceTargeted:
         assert grant_signature["base_cmd"] == original_signature["base_cmd"]
         assert grant_signature["verb"] == original_signature["verb"]
         assert grant_signature["cli_family"] == original_signature["cli_family"]
-        assert grant_signature["semantic_tokens"] == original_signature["semantic_tokens"]
+        assert list(grant_signature["semantic_tokens"]) == list(original_signature["semantic_tokens"])
         assert grant_signature["danger_category"] == original_signature["danger_category"]
 
     # ------------------------------------------------------------------ #
-    # 6. Pending file stores cwd
-    # ------------------------------------------------------------------ #
-
-    def test_pending_file_stores_cwd(self, clean_grants_dir):
-        """write_pending_approval() persists the cwd parameter in the pending JSON file."""
-        nonce = generate_nonce()
-        target_cwd = "/home/jorge/ws/me/gaia-ops-dev"
-
-        # NEW API — cwd parameter does not exist yet
-        path = write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            cwd=target_cwd,
-        )
-        assert path is not None
-        assert path.exists()
-
-        data = json.loads(path.read_text())
-        assert data["cwd"] == target_cwd
-
-    # ------------------------------------------------------------------ #
-    # 7. Session-wide activation does NOT activate cross-session pendings
-    # ------------------------------------------------------------------ #
-
-    def test_session_wide_activation_does_not_activate_cross_session_pendings(
-        self, clean_grants_dir, monkeypatch,
-    ):
-        """activate_grants_for_session('session_B') must NOT activate pending
-        approvals that belong to session_A. This documents that the existing
-        session-wide flow stays session-scoped — it does not reach across
-        sessions."""
-        session_a = "session-A-scoped"
-        session_b = "session-B-scoped"
-
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id=session_a,
-        )
-
-        # Attempt session-wide activation under session_B
-        monkeypatch.setenv("CLAUDE_SESSION_ID", session_b)
-        results = activate_grants_for_session(session_b)
-
-        # No grants should have been activated (pending belongs to session_A)
-        assert len(results) == 0
-
-        # Pending file is still there (untouched)
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        assert pending_path.exists()
-
-        # No grant exists under session_B
-        assert check_approval_grant("git push origin main", session_id=session_b) is None
-
-    # ------------------------------------------------------------------ #
-    # 8. Nonce-targeted activation works regardless of session
+    # 5. Nonce-targeted activation works regardless of session
     # ------------------------------------------------------------------ #
 
     def test_nonce_targeted_activation_works_regardless_of_session(
         self, clean_grants_dir,
     ):
-        """Unlike session-wide activation, nonce-targeted (cross-session)
-        activation does NOT care which session created the pending. It loads
-        pending data directly and creates the grant under the specified
-        current session."""
+        """Nonce-targeted (cross-session) activation does NOT care which session
+        created the pending. It looks the pending up by nonce prefix across all
+        sessions and creates the grant under the specified current session."""
         import gaia.store.writer as _sw
+        from modules.security.approval_grants import ACTIVATION_ACTIVATED
 
         session_a = "session-A-any"
         session_b = "session-B-any"
 
         nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command="git push origin main",
+            session_id=session_a,
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id=session_a,
+            nonce=nonce,
         )
 
-        # Load pending data directly (nonce-targeted — no session filtering)
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        pending_data = json.loads(pending_path.read_text())
-
         # Activate under session_B even though pending belongs to session_A
-        result = activate_cross_session_pending(pending_data, session_id=session_b)
+        result = activate_db_pending_by_prefix(
+            nonce[:8], current_session_id=session_b,
+        )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
@@ -1407,16 +790,16 @@ class TestNonceTargetedHookActivation:
     def test_load_pending_by_nonce_prefix_finds_matching_file(
         self, clean_grants_dir,
     ):
-        """A pending file can be found by the first 8 chars of its nonce."""
+        """A DB pending can be found by the first 8 chars of its nonce."""
         nonce = generate_nonce()
         prefix = nonce[:8]
 
-        write_pending_approval(
-            nonce=nonce,
+        seed_db_pending(
             command="git push origin main",
+            session_id="session-prefix-test",
             danger_verb="push",
             danger_category="MUTATIVE",
-            session_id="session-prefix-test",
+            nonce=nonce,
         )
 
         result = load_pending_by_nonce_prefix(prefix)
@@ -1428,155 +811,16 @@ class TestNonceTargetedHookActivation:
     def test_load_pending_by_nonce_prefix_returns_none_for_no_match(
         self, clean_grants_dir,
     ):
-        """When no pending file matches the prefix, None is returned."""
+        """When no pending row matches the prefix, None is returned."""
         result = load_pending_by_nonce_prefix("deadbeef")
         assert result is None
 
-    # ------------------------------------------------------------------ #
-    # 2. Same-session nonce-targeted activation via prefix
-    # ------------------------------------------------------------------ #
-
-    def test_nonce_targeted_same_session_activation_via_prefix(
-        self, clean_grants_dir,
-    ):
-        """Simulates the hook flow for same-session approval:
-        extract prefix -> load pending -> activate_pending_approval."""
-        session_id = "session-same-nonce"
-        nonce = generate_nonce()
-        prefix = nonce[:8]
-
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
-
-        # Step 1: load by prefix (simulates what hook does after extract_nonce_from_label)
-        pending_data = load_pending_by_nonce_prefix(prefix)
-        assert pending_data is not None
-        assert pending_data["session_id"] == session_id  # same session
-
-        # Step 2: same session -> activate_pending_approval
-        result = activate_pending_approval(
-            nonce=pending_data["nonce"],
-            session_id=session_id,
-        )
-        assert result.success is True
-        assert result.status == ACTIVATION_ACTIVATED
-
-        # Step 3: grant is findable under this session
-        grant = check_approval_grant("git push origin main", session_id=session_id)
-        assert grant is not None
-        assert "push" in grant.approved_verbs
-
-        # Pending file is cleaned up
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        assert not pending_path.exists()
-
-    # ------------------------------------------------------------------ #
-    # 3. Cross-session nonce-targeted activation via prefix
-    # ------------------------------------------------------------------ #
-
-    def test_nonce_targeted_cross_session_activation_via_prefix(
-        self, clean_grants_dir,
-    ):
-        """Simulates the hook flow for cross-session approval:
-        extract prefix -> load pending -> detect different session ->
-        activate_cross_session_pending under current session."""
-        import gaia.store.writer as _sw
-
-        session_a = "session-A-originator"
-        session_b = "session-B-current"
-
-        nonce = generate_nonce()
-        prefix = nonce[:8]
-
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_a,
-        )
-
-        # Step 1: load by prefix
-        pending_data = load_pending_by_nonce_prefix(prefix)
-        assert pending_data is not None
-        assert pending_data["session_id"] == session_a  # different from current
-
-        # Step 2: cross session -> activate_cross_session_pending
-        result = activate_cross_session_pending(
-            pending_data,
-            session_id=session_b,
-        )
-        assert result.success is True
-        assert result.status == ACTIVATION_ACTIVATED
-
-        # Step 3: grant is findable (DB lookup is session-agnostic)
-        grant = check_approval_grant("terraform apply", session_id=session_b)
-        assert grant is not None
-        assert grant.confirmed is True  # cross-session grants are pre-confirmed
-        assert "apply" in grant.approved_verbs
-
-        # DB row is recorded under session_B
-        con = _sw._connect()
-        try:
-            row = con.execute(
-                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
-            ).fetchone()
-        finally:
-            con.close()
-        assert row is not None
-        assert row[0] == session_b
-
-        # Pending file is cleaned up
-        pending_path = clean_grants_dir / f"pending-{nonce}.json"
-        assert not pending_path.exists()
-
-    # ------------------------------------------------------------------ #
-    # 4. Session-wide fallback (no nonce in label)
-    # ------------------------------------------------------------------ #
-
-    def test_session_wide_fallback_when_no_nonce(
-        self, clean_grants_dir,
-    ):
-        """When no nonce prefix is available, activate_grants_for_session
-        activates ALL pending approvals for the session (backward compat)."""
-        session_id = "session-fallback"
-
-        # Create two pending approvals for the same session
-        nonce1 = generate_nonce()
-        nonce2 = generate_nonce()
-
-        write_pending_approval(
-            nonce=nonce1,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
-        write_pending_approval(
-            nonce=nonce2,
-            command="git tag v1.0",
-            danger_verb="tag",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
-
-        # Session-wide activation (the fallback path)
-        results = activate_grants_for_session(session_id)
-        activated = sum(1 for r in results if r.success)
-        assert activated == 2
-
-        # Both grants are findable
-        assert check_approval_grant("git push origin main", session_id=session_id) is not None
-        assert check_approval_grant("git tag v1.0", session_id=session_id) is not None
-
-        # Both pending files are cleaned up
-        assert not (clean_grants_dir / f"pending-{nonce1}.json").exists()
-        assert not (clean_grants_dir / f"pending-{nonce2}.json").exists()
+    # NOTE: the nonce-targeted ACTIVATION flow (same-session, cross-session,
+    # and session-wide fallback) is now driven entirely by the DB bridge
+    # (activate_db_pending_by_prefix) and is covered by
+    # test_activation_db_bridge.py. The former filesystem activation helpers
+    # (activate_pending_approval / activate_cross_session_pending /
+    # activate_grants_for_session) were retired with the FS pending plane.
 
 
 class TestCaptureEnvironmentSnapshot:
@@ -1644,109 +888,14 @@ class TestCaptureEnvironmentSnapshot:
         assert "branch" not in snapshot
         assert "remote_head" not in snapshot
 
-    # ------------------------------------------------------------------ #
-    # 4. Pending file includes auto-captured environment
-    # ------------------------------------------------------------------ #
-
-    @patch("modules.security.approval_grants.capture_environment_snapshot")
-    def test_pending_file_includes_environment(
-        self, mock_capture, clean_grants_dir,
-    ):
-        """write_pending_approval auto-captures and persists environment."""
-        mock_capture.return_value = {
-            "command_class": "git",
-            "local_head": "aaa111",
-            "branch": "feature-x",
-        }
-
-        nonce = generate_nonce()
-        path = write_pending_approval(
-            nonce=nonce,
-            command="git push origin feature-x",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-        )
-        assert path is not None
-
-        data = json.loads(path.read_text())
-        assert "environment" in data
-        assert data["environment"]["command_class"] == "git"
-        assert data["environment"]["local_head"] == "aaa111"
-        assert data["environment"]["branch"] == "feature-x"
-
-        # Verify auto-capture was called with the command
-        mock_capture.assert_called_once_with(
-            "git push origin feature-x", cwd=None,
-        )
-
 
 # ====================================================================== #
-# TestRejectPending -- rejection flow and TTL default
+# TestPendingTTLDefault -- pending TTL default constant
 # ====================================================================== #
 
 
-class TestRejectPending:
-    """Rejection marks pendings as rejected without deleting the file.
-    Rejected pendings are invisible to all readers."""
-
-    def test_reject_pending_marks_status_rejected(self, clean_grants_dir):
-        """reject_pending sets status='rejected' and rejected_at in the JSON file."""
-        nonce = generate_nonce()
-        prefix = nonce[:8]
-        path = write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-        )
-        assert path is not None
-
-        result = reject_pending(prefix)
-        assert result is True
-
-        # File still exists but is marked rejected
-        assert path.exists()
-        data = json.loads(path.read_text())
-        assert data["status"] == "rejected"
-        assert "rejected_at" in data
-        assert isinstance(data["rejected_at"], float)
-
-    def test_rejected_pending_not_found_by_load_prefix(self, clean_grants_dir):
-        """After rejection, load_pending_by_nonce_prefix returns None."""
-        nonce = generate_nonce()
-        prefix = nonce[:8]
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-        )
-
-        reject_pending(prefix)
-
-        result = load_pending_by_nonce_prefix(prefix)
-        assert result is None
-
-    def test_rejected_pending_not_found_by_session(self, clean_grants_dir):
-        """After rejection, get_pending_approvals_for_session skips it."""
-        nonce = generate_nonce()
-        prefix = nonce[:8]
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-        )
-
-        # Before rejection: visible
-        pendings_before = get_pending_approvals_for_session()
-        assert any(p["nonce"] == nonce for p in pendings_before)
-
-        reject_pending(prefix)
-
-        # After rejection: invisible
-        pendings_after = get_pending_approvals_for_session()
-        assert not any(p["nonce"] == nonce for p in pendings_after)
+class TestPendingTTLDefault:
+    """The default pending TTL constant must remain 24 hours."""
 
     def test_ttl_default_is_24_hours(self):
         """DEFAULT_PENDING_TTL_MINUTES must be 1440 (24 hours)."""

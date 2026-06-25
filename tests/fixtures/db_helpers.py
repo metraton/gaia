@@ -154,6 +154,139 @@ def seed_agent_perms(
     con.close()
 
 
+_APPROVALS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS approvals (
+    id           TEXT PRIMARY KEY,
+    agent_id     TEXT,
+    session_id   TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    fingerprint  TEXT,
+    payload_json TEXT,
+    created_at   TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS approval_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    approval_id   TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    agent_id      TEXT,
+    session_id    TEXT,
+    payload_json  TEXT,
+    fingerprint   TEXT,
+    prev_hash     TEXT,
+    this_hash     TEXT,
+    metadata_json TEXT,
+    created_at    TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (approval_id) REFERENCES approvals(id)
+);
+"""
+
+
+def apply_approvals_schema(con) -> None:
+    """Create the ``approvals`` and ``approval_events`` tables on a connection.
+
+    These are the tables ``gaia.approvals.store.insert_requested`` / ``get_pending``
+    read and write. Test isolation DBs that patch ``gaia.store.writer._connect``
+    (which ``gaia.approvals.store._open_db`` delegates to) must materialize these
+    tables so the DB-backed pending plane works against the test-local DB.
+
+    Idempotent: ``CREATE TABLE IF NOT EXISTS``.
+    """
+    con.executescript(_APPROVALS_SCHEMA)
+    con.commit()
+
+
+def seed_db_pending(
+    *,
+    command: str,
+    session_id: str,
+    danger_verb: str = "commit",
+    danger_category: str = "MUTATIVE",
+    scope: Optional[str] = None,
+    scope_signature: Optional[dict] = None,
+    approval_id: Optional[str] = None,
+    nonce: Optional[str] = None,
+    rationale: str = "",
+    risk_level: str = "medium",
+    rollback_hint: Optional[str] = None,
+) -> str:
+    """Insert a DB pending approval via gaia.approvals.store.insert_requested.
+
+    Shared seeding helper for the approval-grants tests after the filesystem
+    pending plane (``pending-{nonce}.json``) was retired. It builds the
+    canonical sealed_payload (the same shape the production T3 intercept writes
+    via ``insert_requested``) and persists it to the isolated test DB.
+
+    The caller's test fixture MUST patch ``gaia.store.writer._connect`` to the
+    isolation DB AND have applied the approvals schema (see
+    ``apply_approvals_schema``) so the row lands in the test-local DB.
+
+    Args:
+        command: The blocked command string (stored as exact_content).
+        session_id: Session the pending belongs to.
+        danger_verb / danger_category: Encoded into the operation string so
+            ``_db_row_to_pending_dict`` can recover them.
+        scope: Optional scope constant. Defaults to SCOPE_SEMANTIC_SIGNATURE.
+        scope_signature: Optional pre-built signature dict. When omitted, a
+            semantic signature is built from the command.
+        approval_id: Optional explicit approval_id ("P-<nonce>"). When omitted,
+            derived from ``nonce`` if given, else minted by insert_requested.
+        nonce: Optional nonce; "P-<nonce>" becomes the approval_id.
+        rationale / risk_level / rollback_hint: Optional context fields.
+
+    Returns:
+        The approval_id (nonce part recoverable as approval_id[2:]).
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    # Ensure hooks/ is importable for the signature builders.
+    _hooks_dir = str(_Path(__file__).resolve().parents[2] / "hooks")
+    if _hooks_dir not in _sys.path:
+        _sys.path.insert(0, _hooks_dir)
+
+    from modules.security.approval_scopes import (
+        SCOPE_SEMANTIC_SIGNATURE,
+        build_approval_signature,
+    )
+    from gaia.approvals.store import insert_requested
+
+    resolved_scope = scope or SCOPE_SEMANTIC_SIGNATURE
+
+    if scope_signature is None:
+        sig = build_approval_signature(
+            command,
+            scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            danger_verb=danger_verb,
+            danger_category=danger_category,
+        )
+        scope_signature = sig.to_dict() if sig is not None else None
+
+    sealed_payload = {
+        "operation": f"{danger_category} command intercepted: {danger_verb}",
+        "exact_content": command,
+        "scope": resolved_scope,
+        "scope_signature": scope_signature,
+        "risk_level": risk_level,
+        "rollback_hint": rollback_hint,
+        "rationale": rationale or f"{command} requires user approval.",
+        "commands": [command],
+    }
+
+    resolved_id = approval_id
+    if resolved_id is None and nonce is not None:
+        resolved_id = f"P-{nonce}"
+
+    return insert_requested(
+        sealed_payload,
+        session_id=session_id,
+        approval_id=resolved_id,
+    )
+
+
 def bootstrap_m4_schema(db_path: Path) -> None:
     """Apply M4-specific schema extensions (v9) on top of minimal schema.
 
