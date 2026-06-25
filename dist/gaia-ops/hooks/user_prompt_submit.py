@@ -194,6 +194,26 @@ if __name__ == "__main__":
             else:
                 logger.info("Could not extract user prompt from stdin, skipping routing")
 
+            # Per-turn VERIFIED pending approvals. Lets the orchestrator present
+            # a pending approval for consent directly from injected context,
+            # WITHOUT dispatching a subagent to derive/verify it (that dispatch's
+            # SubagentStop caused a pending-revocation bug). Emits "" when there
+            # are no verified pendings, so a turn with nothing pending injects
+            # nothing -- this is what keeps the per-turn injection quiet, unlike
+            # the one-shot SessionStart summary it deliberately does not re-emit.
+            try:
+                from modules.session.session_manifest import (
+                    build_per_turn_pending_approvals_block,
+                )
+                pending_block = build_per_turn_pending_approvals_block()
+                if pending_block:
+                    context_parts.append(pending_block)
+            except Exception as _pa_exc:
+                logger.debug(
+                    "per-turn pending approvals injection failed (non-fatal): %s",
+                    _pa_exc,
+                )
+
         additional_context = "\n\n".join(context_parts)
         logger.info("Context injected: %s mode (%d chars)", mode, len(additional_context))
 

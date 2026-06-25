@@ -52,6 +52,7 @@ def _handle_pre_compact(event) -> None:
 
     response = {
         "hookSpecificOutput": {
+            "hookEventName": "PreCompact",
             "additionalContext": context,
         }
     }

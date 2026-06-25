@@ -16,8 +16,12 @@ payload from the intercepted command and calls
 3. writes the `REQUESTED` event to the DB.
 
 The block message you receive (`[T3_BLOCKED] ...`) ends with `approval_id: P-{...}`.
-You relay that token plus the operation details; the orchestrator re-derives the
-fingerprint from the DB row.
+You relay that token plus the operation details. For the current turn the
+orchestrator presents from your relay; once the pending survives a turn it
+appears in the per-turn `[PENDING-APPROVALS-VERIFIED]` block, already
+fingerprint-verified by the hook. Payload integrity is enforced at grant
+activation (`verify_fingerprint`), so the orchestrator never dispatches to
+verify or derive your request.
 
 Source: `bash_validator._build_sealed_payload()`, the subagent block path in
 `bash_validator._validate_single_command()`; `gaia/approvals/store.py`
@@ -99,12 +103,14 @@ singular hook-block path (which mints `P-{uuid4hex}`), the intake derives the id
 from the command_set content via `gaia.approvals.store.derive_command_set_id()`:
 `P-<first 32 hex of sha256(canonical(post-filter command strings))>`. It then
 passes that id to `insert_requested(..., approval_id=...)` as the pending row id.
-The point is reproducibility without a DB lookup: the orchestrator holds the
-same `command_set` (you emitted it in the contract) and reproduces the EXACT id
-with `gaia approvals derive-id`, which applies the same mutative filter and the
-same canonicalization (`chain.canonical_payload`). This closes the cross-session
-miss -- a uuid4 minted at SubagentStop could not be recovered by the parent
-(Claude Code #5812), but a content-derived id needs no recovery. The id is
+The point is reproducibility without a fragile uuid4: a uuid4 minted at
+SubagentStop could not be recovered by the parent (Claude Code #5812), but a
+content-derived id needs no recovery -- the same canonicalization
+(`chain.canonical_payload`) and mutative filter always yield the same id. Once
+the minted pending survives a turn, the orchestrator reads that id (and all N
+commands) straight from the injected `[PENDING-APPROVALS-VERIFIED]` block -- no
+DB lookup and no `gaia approvals derive-id` dispatch; for the mint turn it
+presents from the `command_set` in your relay. The id is
 **order-sensitive** (the consume side matches positionally) and **content-only**
 (rationale/session/agent are not folded in, so both sides agree from the command
 list alone). Idempotency follows the existing fingerprint dedup: two identical
@@ -154,15 +160,17 @@ single-use within the 60-minute window.
 Always `plan_status: "APPROVAL_REQUEST"`. The presence of `approval_id` tells the
 orchestrator which path:
 
-- **With `approval_id`** -- the hook blocked a single command; orchestrator
-  validates the fingerprint and activates the single-use semantic grant on user
-  approval.
+- **With `approval_id`** -- the hook blocked a single command; the orchestrator
+  presents from your relay (current turn) or the injected
+  `[PENDING-APPROVALS-VERIFIED]` block (later turns), and the single-use semantic
+  grant activates on user approval (fingerprint checked at activation).
 - **Without `approval_id`, with a `command_set` of >= 2 items** -- plan-first
   batch. The SubagentStop intake processor mints ONE pending `COMMAND_SET` with a
-  **content-derived** id (`derive_command_set_id`), and the orchestrator
-  reproduces that exact id from the command_set via `gaia approvals derive-id`
-  (no DB search) before presenting the single approval (N commands, one nonce).
-  See "Batch / COMMAND_SET -- wired" above.
+  **content-derived** id (`derive_command_set_id`). The orchestrator reads that
+  id and the N commands from the injected `[PENDING-APPROVALS-VERIFIED]` block
+  (no derive-dispatch), or, for the mint turn, from the `command_set` in your
+  relay, then presents the single approval (N commands, one nonce). See
+  "Batch / COMMAND_SET -- wired" above.
 - **Without `approval_id` and without a multi-item `command_set`** -- plan-first
   single (you are presenting one T3 plan before attempting); the orchestrator
   gates on user consent before any execution.

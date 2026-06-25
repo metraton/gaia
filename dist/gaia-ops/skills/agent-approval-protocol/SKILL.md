@@ -14,6 +14,20 @@ through the hook layer, to the orchestrator when a T3 command is blocked: the
 the status and event vocabularies, and how to confirm a grant is active. The
 tables below are the canonical schema -- relay them verbatim, do not author them.
 
+The orchestrator presents this contract to the user from a **trusted source**,
+never by dispatching a subagent to verify or derive it (it has no shell). The
+primary source is the per-turn `[PENDING-APPROVALS-VERIFIED]` block injected at
+`UserPromptSubmit` (`build_verified_pending_approvals` in
+`hooks/modules/session/session_manifest.py`), which carries every pending that
+has survived >= 1 turn, each already DB-read and fingerprint-verified
+(`verified: true`). For a pending emitted in the current turn -- not yet in the
+block -- the fallback is the subagent's relayed `approval_request`. The
+**integrity boundary is grant activation**, not presentation:
+`verify_fingerprint` (`gaia/approvals/chain.py`) runs when the user selects the
+Approve label, so a tampered payload fails to form a grant regardless of how it
+was presented. See `Skill('orchestrator-present-approval')` for the presentation
+discipline.
+
 For the universal response envelope (`plan_status` states, `evidence_report`),
 see `agent-protocol`. For the deep mechanics -- fingerprint canonicalization,
 the hash chain, grant activation, reading a granted approval from Python -- see
@@ -27,10 +41,12 @@ For a **singular** T3 approval (the hook-block path),
 verbatim. For a **plan-first `COMMAND_SET`** the id is instead **content-derived**
 by `store.derive_command_set_id()`: `P-<first 32 hex of
 sha256(canonical(command strings))>`. The two share the `P-` prefix and 32-hex
-length but differ in origin -- the command_set id is deterministic so the
-orchestrator reproduces it from the command_set (via `gaia approvals derive-id`)
-with no DB search; the singular id is random because the subagent relays it
-directly. The `P-` prefix is mandatory in both cases: without it the PostToolUse
+length but differ in origin -- the command_set id is deterministic (minted at
+SubagentStop intake), and once the pending has survived a turn the orchestrator
+reads that id directly from the injected `[PENDING-APPROVALS-VERIFIED]` block
+(no derive-dispatch, no DB search); the singular id is random and the subagent
+relays it directly for the same-turn case. The `P-` prefix is mandatory in both
+cases: without it the PostToolUse
 hook cannot do targeted grant activation. The first 8 hex chars after `P-` are
 the nonce prefix shown in option labels: `[P-b1bdfbb0]`.
 
@@ -106,9 +122,13 @@ whose command never ran, or that ran through the redirect-sanitized path.
 - `SHOWN` precedes `APPROVED`; the activation path writes them together.
 - `approval_events` is append-only -- the `bu_approval_events_immutable` and
   `bd_approval_events_immutable` triggers `RAISE(ABORT)` on UPDATE/DELETE.
-- The orchestrator MUST re-verify a relayed payload via
-  `chain.verify_fingerprint(approval_id, payload_json, con)` before presenting;
-  a mismatch raises `ChainTamperError` and the approval aborts.
+- The payload's integrity is enforced at grant **activation**, not at
+  presentation: `chain.verify_fingerprint(approval_id, payload_json, con)` runs
+  when the user selects the Approve label, and a mismatch raises
+  `ChainTamperError` so the grant never forms. The orchestrator presents from a
+  trusted source (the injected `[PENDING-APPROVALS-VERIFIED]` block, already
+  fingerprint-verified by the hook; or a same-turn relayed `approval_request`)
+  and never dispatches a subagent to verify or derive the approval.
 
 For the grant activation walk-through, fingerprint internals, reading a granted
 approval from Python, and the retry-blocked-again diagnosis, see `reference.md`.
