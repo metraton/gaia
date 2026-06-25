@@ -665,7 +665,23 @@ class TestDefaultTTL:
 
 
 class TestConditionalActivation:
-    """Test 11: Conditional activation based on answers in AskUserQuestion."""
+    """Test 11: Conditional activation based on answers in AskUserQuestion.
+
+    DB-only since the grant-lifecycle FS retirement.  Activation is
+    nonce-targeted: the orchestrator's Approve label carries a
+    ``[P-<nonce8>]`` tag (mandated by orchestrator-present-approval:
+    "Without the suffix no grant is created"), the PostToolUse handler
+    extracts it and activates the specific DB pending via
+    ``activate_db_pending_by_prefix``.
+
+    The legacy "no-nonce session-wide activation" path (an unlabeled
+    "Approve" activating ALL of a session's pendings) was dropped during
+    the FS retirement: it has no production caller (every real Approve
+    label is nonce-suffixed) and it violated informed consent by
+    activating grants the user never specifically saw.  These tests now
+    assert the nonce-targeted DB behavior; an approve answer WITHOUT a
+    nonce activates nothing.
+    """
 
     @pytest.fixture(autouse=True)
     def setup_adapter(self):
@@ -675,7 +691,89 @@ class TestConditionalActivation:
         from adapters.claude_code import ClaudeCodeAdapter
         self.adapter = ClaudeCodeAdapter()
 
-    def _make_hook_data(self, answers=None, session_id="test-cycle-session"):
+    @pytest.fixture(autouse=True)
+    def isolate_db(self, approvals_test_db, monkeypatch, tmp_path):
+        """Redirect every approval/grant DB access to isolated test DBs.
+
+        Mirrors TestConsumeGrantAtSubagentStop: the approvals chain
+        (insert_requested / get_pending) reads the v12 approvals DB, and
+        the grant chain (check_db_semantic_grant / consume_db_semantic_grant
+        / insert_semantic_grant) reads an isolated writer DB.  Neither
+        touches ~/.gaia/gaia.db.
+        """
+        import gaia.approvals.store as astore
+        import gaia.store.writer as gwriter
+
+        db_path, assert_con = approvals_test_db
+        self.assert_con = assert_con
+
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
+        )
+
+        _orig_get_pending = astore.get_pending
+
+        def _patched_get_pending(session_id=None, all_sessions=False, con=None):
+            if con is None:
+                con = sqlite3.connect(str(db_path))
+            return _orig_get_pending(
+                session_id=session_id, all_sessions=all_sessions, con=con,
+            )
+
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
+
+        writer_db_path = tmp_path / "writer_grants.db"
+
+        def _make_writer_db():
+            con = sqlite3.connect(str(writer_db_path))
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA foreign_keys = ON")
+            con.create_function(
+                "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
+            )
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS approval_grants (
+                    approval_id          TEXT PRIMARY KEY,
+                    agent_id             TEXT,
+                    session_id           TEXT,
+                    command_set_json     TEXT NOT NULL,
+                    scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
+                    created_at           TEXT NOT NULL
+                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    expires_at           TEXT,
+                    status               TEXT NOT NULL DEFAULT 'PENDING',
+                    consumed_indexes_json TEXT,
+                    consumed_at          TEXT,
+                    revoked_at           TEXT,
+                    multi_use            INTEGER NOT NULL DEFAULT 0,
+                    confirmed            INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            con.commit()
+            return con
+
+        monkeypatch.setattr(
+            gwriter, "_connect", lambda db_path=None: _make_writer_db(),
+        )
+
+    def _deny_creates_db_pending(self, command, session_id="test-cycle-session"):
+        """Deny a subagent command -> DB pending row; return its approval_id."""
+        import re
+
+        result = validate_bash_command(
+            command, is_subagent=True, session_id=session_id,
+        )
+        assert not result.allowed, f"{command} should be blocked"
+        reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        m = re.search(r"approval_id:\s*(P-[\w-]+)", reason)
+        assert m, f"no approval_id in deny reason: {reason}"
+        return m.group(1)
+
+    def _make_hook_data(self, answers=None, session_id="test-cycle-session",
+                        in_tool_input=False):
         """Build a minimal AskUserQuestion PostToolUse hook_data."""
         data = {
             "hook_event_name": "PostToolUse",
@@ -685,42 +783,36 @@ class TestConditionalActivation:
             "tool_response": {},
         }
         if answers is not None:
-            data["tool_response"] = {"answers": answers}
+            key = "tool_input" if in_tool_input else "tool_response"
+            data[key] = {"answers": answers}
         return data
 
+    def _grant_active(self, command, session_id="test-cycle-session"):
+        """True iff a live DB semantic grant matches the command."""
+        from gaia.store.writer import check_db_semantic_grant
+        return check_db_semantic_grant(command, session_id=session_id) is not None
+
     def test_approve_answer_activates_grants(self):
-        """Answers containing 'Approve' should activate pending grants."""
+        """A nonce-labeled Approve answer activates the targeted DB grant."""
         session_id = "test-cycle-session"
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
+        approval_id = self._deny_creates_db_pending("terraform apply", session_id)
+        nonce8 = approval_id[len("P-"):len("P-") + 8]
 
         hook_data = self._make_hook_data(
-            answers={"Proceed with terraform apply?": "Approve (Recommended)"},
+            answers={"Proceed with terraform apply?":
+                     f"Approve -- terraform apply [P-{nonce8}]"},
             session_id=session_id,
         )
         self.adapter._handle_ask_user_question_result(hook_data)
 
-        # Grant should now be active
-        grant = check_approval_grant("terraform apply", session_id=session_id)
-        assert grant is not None, "Grant should be active after user approved"
+        assert self._grant_active("terraform apply", session_id), (
+            "Grant should be active after nonce-labeled approval"
+        )
 
     def test_reject_answer_does_not_activate_grants(self):
         """Answers containing 'Reject' should NOT activate pending grants."""
         session_id = "test-cycle-session"
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
+        self._deny_creates_db_pending("terraform apply", session_id)
 
         hook_data = self._make_hook_data(
             answers={"Proceed with terraform apply?": "Reject"},
@@ -728,21 +820,14 @@ class TestConditionalActivation:
         )
         self.adapter._handle_ask_user_question_result(hook_data)
 
-        # Grant should NOT be active
-        grant = check_approval_grant("terraform apply", session_id=session_id)
-        assert grant is None, "Grant should NOT be active after user rejected"
+        assert not self._grant_active("terraform apply", session_id), (
+            "Grant should NOT be active after user rejected"
+        )
 
     def test_modify_answer_does_not_activate_grants(self):
         """Answers containing 'Modify' should NOT activate pending grants."""
         session_id = "test-cycle-session"
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="git push origin main",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
+        self._deny_creates_db_pending("git push origin main", session_id)
 
         hook_data = self._make_hook_data(
             answers={"Allow git push?": "Modify"},
@@ -750,39 +835,31 @@ class TestConditionalActivation:
         )
         self.adapter._handle_ask_user_question_result(hook_data)
 
-        grant = check_approval_grant("git push origin main", session_id=session_id)
-        assert grant is None, "Grant should NOT be active after user chose Modify"
+        assert not self._grant_active("git push origin main", session_id), (
+            "Grant should NOT be active after user chose Modify"
+        )
 
     def test_no_answers_does_not_activate_grants(self):
         """Missing answers field should NOT activate pending grants."""
         session_id = "test-cycle-session"
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
-        )
+        self._deny_creates_db_pending("terraform apply", session_id)
 
-        # No answers in payload
         hook_data = self._make_hook_data(answers=None, session_id=session_id)
         self.adapter._handle_ask_user_question_result(hook_data)
 
-        grant = check_approval_grant("terraform apply", session_id=session_id)
-        assert grant is None, "Grant should NOT be active when no answers present"
-
-    def test_approve_recommended_matches(self):
-        """'Approve (Recommended)' contains 'approve' and should match."""
-        session_id = "test-cycle-session"
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
+        assert not self._grant_active("terraform apply", session_id), (
+            "Grant should NOT be active when no answers present"
         )
+
+    def test_no_nonce_approve_activates_nothing(self):
+        """An Approve answer WITHOUT a nonce tag activates nothing.
+
+        Documents the dropped legacy behavior: a bare 'Approve (Recommended)'
+        no longer triggers session-wide activation.  Only the nonce-targeted
+        DB path (test_approve_answer_activates_grants) creates a grant.
+        """
+        session_id = "test-cycle-session"
+        self._deny_creates_db_pending("terraform apply", session_id)
 
         hook_data = self._make_hook_data(
             answers={"q1": "Approve (Recommended)"},
@@ -790,33 +867,26 @@ class TestConditionalActivation:
         )
         self.adapter._handle_ask_user_question_result(hook_data)
 
-        grant = check_approval_grant("terraform apply", session_id=session_id)
-        assert grant is not None, "'Approve (Recommended)' should activate grant"
-
-    def test_answers_from_tool_input_fallback(self):
-        """Answers in tool_input (fallback) should also be checked."""
-        session_id = "test-cycle-session"
-        nonce = generate_nonce()
-        write_pending_approval(
-            nonce=nonce,
-            command="terraform apply",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
+        assert not self._grant_active("terraform apply", session_id), (
+            "A no-nonce approve must not activate any grant (legacy path dropped)"
         )
 
-        # Answers in tool_input instead of tool_response
-        hook_data = {
-            "hook_event_name": "PostToolUse",
-            "tool_name": "AskUserQuestion",
-            "session_id": session_id,
-            "tool_input": {"answers": {"q1": "Approve"}},
-            "tool_response": {},
-        }
+    def test_answers_from_tool_input_fallback(self):
+        """A nonce-labeled answer in tool_input (fallback) also activates."""
+        session_id = "test-cycle-session"
+        approval_id = self._deny_creates_db_pending("terraform apply", session_id)
+        nonce8 = approval_id[len("P-"):len("P-") + 8]
+
+        hook_data = self._make_hook_data(
+            answers={"q1": f"Approve -- terraform apply [P-{nonce8}]"},
+            session_id=session_id,
+            in_tool_input=True,
+        )
         self.adapter._handle_ask_user_question_result(hook_data)
 
-        grant = check_approval_grant("terraform apply", session_id=session_id)
-        assert grant is not None, "Answers from tool_input fallback should work"
+        assert self._grant_active("terraform apply", session_id), (
+            "Answers from tool_input fallback should activate the targeted grant"
+        )
 
 
 class TestConsumeGrantAtSubagentStop:
