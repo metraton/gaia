@@ -9,49 +9,96 @@ These must stay separate. The pending TTL (1440 = 24h) is the design:
 user has a full day to come back and approve. Reducing it would break
 legitimate workflows.
 
-The scanner in pending_scanner.py honors the stored ttl_minutes field
-on each pending file. This test suite locks that contract.
+Since the FS-scanner retirement (Task E), the canonical pending store is the
+DB (gaia.db).  scan_pending_db() is the sole query surface; it returns all
+pending rows regardless of session.  Tests in this class verify that the DB
+scanner honours TTL semantics: rejected rows are excluded, and within-TTL
+rows are returned.  Expired-row TTL enforcement is covered by
+tests/cli/test_approvals.py::TestCmdClean.
 """
 
 import json
+import sqlite3
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
+GAIA_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(GAIA_ROOT))
 
 from modules.security.approval_grants import (
     DEFAULT_GRANT_TTL_MINUTES,
     DEFAULT_PENDING_TTL_MINUTES,
 )
-from modules.session.pending_scanner import scan_pending_approvals
+from modules.session.pending_scanner import scan_pending_db
 
 
-def _write_pending(dir_path: Path, nonce: str, session_id: str, age_hours: float,
-                   ttl_minutes: int = 1440, status: str = None) -> Path:
-    """Write a fake pending-{nonce}.json file with given age and session."""
-    file_path = dir_path / f"pending-{nonce}.json"
-    payload = {
-        "nonce": nonce,
-        "session_id": session_id,
-        "command": f"fake-cmd-{nonce[:6]}",
-        "danger_verb": "update",
-        "danger_category": "MUTATIVE",
-        "timestamp": time.time() - (age_hours * 3600),
-        "ttl_minutes": ttl_minutes,
-        "context": {},
-    }
-    if status:
-        payload["status"] = status
-    file_path.write_text(json.dumps(payload))
-    return file_path
+# ---------------------------------------------------------------------------
+# DB fixture helpers
+# ---------------------------------------------------------------------------
+
+def _make_v12_schema(con: sqlite3.Connection) -> None:
+    """Apply the minimal approvals schema needed by scan_pending_db."""
+    import hashlib
+
+    def _sha256(v):
+        return hashlib.sha256((v or "").encode("utf-8")).hexdigest()
+
+    con.create_function("gaia_sha256", 1, _sha256, deterministic=True)
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS approvals (
+            id           TEXT PRIMARY KEY,
+            agent_id     TEXT,
+            session_id   TEXT,
+            status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
+            fingerprint  TEXT,
+            payload_json TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            decided_at   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS approval_events (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            approval_id   TEXT NOT NULL,
+            event_type    TEXT NOT NULL CHECK (event_type IN (
+                              'REQUESTED','SHOWN','APPROVED','REJECTED',
+                              'EXECUTED','FAILED','NOOP','REVOKED','REVERTED'
+                          )),
+            agent_id      TEXT,
+            session_id    TEXT,
+            payload_json  TEXT,
+            fingerprint   TEXT,
+            prev_hash     TEXT,
+            this_hash     TEXT,
+            metadata_json TEXT,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY (approval_id) REFERENCES approvals(id)
+        );
+    """)
 
 
-def _fresh_dir() -> Path:
-    """Mint a fresh tmp dir per test helper invocation."""
-    return Path(tempfile.mkdtemp(prefix="gaia-pending-test-"))
+def _insert_pending_row(con: sqlite3.Connection, approval_id: str,
+                        session_id: str = "test-session",
+                        command: str = "git push origin main",
+                        status: str = "pending") -> None:
+    """Insert a minimal approvals row directly (bypasses chain for test speed)."""
+    payload = json.dumps({
+        "operation": "GIT_PUSH command intercepted: push",
+        "exact_content": command,
+        "scope": "semantic_signature",
+        "risk_level": "medium",
+        "rollback_hint": "git revert HEAD",
+        "rationale": "push requires approval",
+        "commands": [command],
+    })
+    con.execute(
+        "INSERT INTO approvals (id, agent_id, session_id, status, payload_json) "
+        "VALUES (?, 'test-agent', ?, ?, ?)",
+        (approval_id, session_id, status, payload),
+    )
+    con.commit()
 
 
 class TestTTLConstants:
@@ -89,83 +136,97 @@ class TestTTLConstants:
 
 
 class TestScannerRespectsStoredTTL:
-    """Scanner honors the ttl_minutes field stored in each JSON file."""
+    """DB scanner honours the pending-row TTL contract.
 
-    def test_legacy_1440_pending_expired_at_25h_is_unlinked(self):
-        """Pending with ttl=1440 and age 25h is past TTL -> scanner unlinks."""
-        dir_path = _fresh_dir()
-        expired = _write_pending(
-            dir_path,
-            nonce="1111111111111111aaaaaaaaaaaaaaaa",
-            session_id="any-session",
-            age_hours=25.0,
-            ttl_minutes=1440,
-        )
-        results = scan_pending_approvals(dir_path, current_session_id="any-session")
-        assert not expired.exists(), (
-            "Pending older than its stored ttl must be cleaned by the scanner"
-        )
-        assert len(results) == 0
+    Note: Expired-row cleanup (rows older than 24h are transitioned to
+    'revoked') is exercised by tests/cli/test_approvals.py::TestCmdClean --
+    the behaviour lives in cmd_clean(), not in scan_pending_db() itself.
+    These tests focus on what scan_pending_db() *returns*: active pending
+    rows are surfaced; rejected/revoked rows are excluded.
+    """
 
-    def test_legacy_1440_pending_at_20h_is_preserved(self):
-        """Pending with ttl=1440 and age 20h is WITHIN TTL -> preserved.
+    def test_pending_row_within_ttl_is_returned_by_db_scanner(self, tmp_path, monkeypatch):
+        """A fresh pending row is returned by scan_pending_db().
 
-        This is the exact scenario of the real ghost bug: the 20h-old
-        pendings were NOT expired yet. Scanner must preserve them and
-        report them as pendings.
+        This is the DB equivalent of the former 'at_20h_is_preserved' test:
+        a row that has not yet been cleaned/expired/rejected must appear in
+        the DB scanner results so the user can act on it.
         """
-        dir_path = _fresh_dir()
-        alive = _write_pending(
-            dir_path,
-            nonce="2222222222222222bbbbbbbbbbbbbbbb",
-            session_id="any-session",
-            age_hours=20.0,
-            ttl_minutes=1440,
-        )
-        results = scan_pending_approvals(dir_path, current_session_id="any-session")
-        assert alive.exists(), (
-            "Pending within stored TTL must be preserved; the real fix for "
-            "ghosts is at the creation side (Fix A: --help exemption), not "
-            "at the scanner side."
-        )
-        assert len(results) == 1
+        db_path = tmp_path / "approvals.db"
+        con = sqlite3.connect(str(db_path))
+        _make_v12_schema(con)
+        _insert_pending_row(con, "P-2222222222222222bbbbbbbbbbbbbbbb",
+                            command="git push origin main")
+        con.close()
 
-    def test_rejected_pending_is_always_cleaned(self):
-        """A pending with status='rejected' is cleaned regardless of age."""
-        dir_path = _fresh_dir()
-        rejected = _write_pending(
-            dir_path,
-            nonce="3333333333333333cccccccccccccccc",
-            session_id="any-session",
-            age_hours=0.1,
-            ttl_minutes=1440,
-            status="rejected",
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
         )
-        results = scan_pending_approvals(dir_path, current_session_id="any-session")
-        assert not rejected.exists()
-        assert len(results) == 0
+
+        results = scan_pending_db()
+        assert len(results) == 1, (
+            "A fresh pending DB row must be returned by scan_pending_db(); "
+            "the scanner must not suppress rows that have not expired."
+        )
+        assert results[0]["command"] == "git push origin main"
+
+    def test_rejected_pending_is_excluded_from_db_scanner(self, tmp_path, monkeypatch):
+        """A row with status='rejected' is excluded from scan_pending_db().
+
+        scan_pending_db() calls list_pending() which queries only status='pending'
+        rows, so a rejected row must not appear regardless of its age.
+        """
+        db_path = tmp_path / "approvals.db"
+        con = sqlite3.connect(str(db_path))
+        _make_v12_schema(con)
+        _insert_pending_row(con, "P-3333333333333333cccccccccccccccc",
+                            status="rejected",
+                            command="git push origin main")
+        con.close()
+
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
+        )
+
+        results = scan_pending_db()
+        assert len(results) == 0, (
+            "Rejected rows must be excluded from scan_pending_db(); "
+            "list_pending() queries status='pending' only."
+        )
 
 
 class TestNoCrossSessionDelete:
-    """Scanner must NOT delete pendings based on session_id mismatch.
+    """DB scanner must return pendings regardless of which session created them.
 
-    Two Claude Code sessions running in parallel in the same cwd would
-    each have their own session_id. The scanner must not interpret
-    'different session_id' as 'dead session' and wipe live pendings.
+    scan_pending_db() uses all_sessions=True and applies no session filter.
+    A pending from 'session-A' must appear when called from 'session-B'.
     """
 
-    def test_cross_session_pending_within_ttl_is_preserved(self):
-        """Cross-session pending, young or old, stays until natural TTL."""
-        dir_path = _fresh_dir()
-        cross = _write_pending(
-            dir_path,
-            nonce="4444444444444444dddddddddddddddd",
-            session_id="other-live-session",
-            age_hours=5.0,
-            ttl_minutes=1440,
+    def test_cross_session_pending_is_returned_by_db_scanner(self, tmp_path, monkeypatch):
+        """Pending from a different session is returned by scan_pending_db().
+
+        This ensures no cross-session filtering silently drops live pendings
+        from parallel Claude Code sessions running in the same workspace.
+        """
+        db_path = tmp_path / "approvals.db"
+        con = sqlite3.connect(str(db_path))
+        _make_v12_schema(con)
+        _insert_pending_row(con, "P-4444444444444444dddddddddddddddd",
+                            session_id="other-live-session",
+                            command="kubectl delete pod x")
+        con.close()
+
+        monkeypatch.setattr(
+            "gaia.approvals.store._open_db",
+            lambda: sqlite3.connect(str(db_path)),
         )
-        results = scan_pending_approvals(dir_path, current_session_id="current-session")
-        assert cross.exists(), (
-            "Scanner must NOT delete cross-session pendings. A parallel "
-            "live session may still be awaiting approval on this pending."
+
+        results = scan_pending_db()
+        assert len(results) == 1, (
+            "scan_pending_db() must return pendings from ALL sessions "
+            "(all_sessions=True). A pending from 'other-live-session' must "
+            "be visible regardless of the current session."
         )
+        assert results[0]["pending_session_id"] == "other-live-session"
