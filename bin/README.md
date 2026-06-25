@@ -50,17 +50,22 @@ bin/
 └── cli/                       # Subcommand modules (one file per subcommand)
     ├── __init__.py            # Discovery: imports every sibling that defines register()
     ├── _install_helpers.py    # Shared helpers for install/update (private, leading _)
+    ├── ac.py                  # gaia ac         — acceptance criteria for briefs (DB-canonical)
     ├── approvals.py           # gaia approvals  — list/show/reject/clean/stats T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
     ├── context.py             # gaia context    — show / scan / get / query / wipe project context from gaia.db
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)
+    ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — postinstall: bootstrap DB, settings, symlinks
     ├── memory.py              # gaia memory     — episodic memory: stats, search, show
     ├── metrics.py             # gaia metrics    — usage analytics (tier, agent, anomalies)
+    ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
     ├── paths.py               # Shared path resolution helpers
-    ├── plans.py               # gaia plans      — list/show feature plans
+    ├── plan.py                # gaia plan       — manage plans (one per brief, DB-canonical)
+    ├── query.py               # gaia query      — cross-surface read-only query (memory, episodes, harness_events)
+    ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)
     ├── workspace.py           # gaia workspace  — workspace identity / consolidate operations
     ├── scan.py                # gaia scan       — project scanner; writes scan results to gaia.db (DB-canonical)
     ├── status.py              # gaia status     — quick installation snapshot

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.9] - 2026-06-25
+
+### Changed
+
+- Harness events now persist exclusively to the `harness_events` table in `~/.gaia/gaia.db`. `event_writer.py` writes through `gaia/store/writer.py::write_harness_event`; the legacy `events.jsonl` append path is retired. The SessionStart "Recent Events" block in `context_injector.py` reads from `harness_events` via `cross_surface_query` and is remapped to the reader's row shape (`surface, timestamp, type, agent, summary, raw`).
+
+### Removed
+
+- Legacy `gaia plans` CLI subcommand (`bin/cli/plans.py`) — superseded by the plan tables and `gaia plan`.
+- One-shot migration tooling `tools/migration/migrate_04_harness_events.py` and `.sh` — the harness-events cutover is complete and the migration is no longer needed.
+
 ## [5.0.8] - 2026-06-24
 
 ## [5.0.7] - 2026-06-12

@@ -1,16 +1,27 @@
-"""Event writer and reader for the GAIA Event Context system.
+"""Event writer for the GAIA Event Context system.
+
+As of Brief 54 / Task 2.2 the event pipeline writes to the ``harness_events``
+table in the Gaia SQLite substrate (``~/.gaia/gaia.db``) instead of the legacy
+``events.jsonl`` file. This is an ATOMIC cutover: ``write_event`` no longer
+touches ``events.jsonl`` in any code path -- there is NO dual-write.
 
 Provides:
-    - EventWriter: append-only JSONL writer with file locking
-    - read_events(): read events from last N hours with optional filtering
-    - cleanup_old_events(): remove events older than N days
+    - EventWriter: non-blocking, silent-on-failure DB event writer
+    - read_events(): legacy JSONL reader (read-only; retained until Task 2.3
+      removes events.jsonl entirely -- no longer the canonical read path)
     - Event type constants
+
+The DB write delegates to ``gaia.store.writer.write_harness_event``, which
+resolves the DB path the same way every other gaia DB writer does (via
+``gaia.paths.db_path()`` -> ``GAIA_DATA_DIR`` / ``gaia.db``, falling back to
+``~/.gaia/gaia.db``). The hook subprocess imports the ``gaia`` package via the
+repo-root fallback already established by handoff_persister.
 """
 
-import fcntl
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,17 +43,36 @@ HEARTBEAT = "heartbeat"
 USER_NOTE = "user.note"
 
 
-class EventWriter:
-    """Append-only JSONL event writer with file locking.
+def _import_store_writer():
+    """Import gaia.store.writer, falling back to the repo layout.
 
-    All writes are wrapped in try/except -- events are non-critical and
-    must never block the hook pipeline.
+    Mirrors the import contract used by
+    hooks/modules/agents/handoff_persister.py: prefer a sibling ``gaia``
+    package if installed; otherwise add the repo root (two levels above
+    ``hooks/``) to ``sys.path`` and import from there.
+    """
+    try:
+        from gaia.store import writer as _writer
+    except ImportError:
+        _repo_root = Path(__file__).resolve().parents[3]
+        sys.path.insert(0, str(_repo_root))
+        from gaia.store import writer as _writer
+    return _writer
+
+
+class EventWriter:
+    """Non-blocking DB event writer.
+
+    All writes are wrapped in try/except -- events are non-critical and must
+    never block the hook pipeline. The ``events_dir`` argument is retained for
+    backward compatibility (legacy JSONL reads still resolve it) but is no
+    longer used for writes, which target the ``harness_events`` DB table.
     """
 
     def __init__(self, events_dir: Optional[Path] = None):
+        # Retained for compatibility with the legacy reader; not used for
+        # writes. Resolved lazily-safe (never raises here).
         self.events_dir = events_dir or get_events_dir()
-        self.events_file = self.events_dir / "events.jsonl"
-        self.lock_file = self.events_dir / "events.jsonl.lock"
 
     def write_event(
         self,
@@ -53,10 +83,10 @@ class EventWriter:
         severity: str = "info",
         meta: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Append a single event to the JSONL log.
+        """Append a single event to the ``harness_events`` DB table.
 
-        Thread-safe via exclusive file lock.  Fails silently on any error
-        to avoid disrupting the hook pipeline.
+        Fails silently on any error to avoid disrupting the hook pipeline --
+        same contract as the historical file writer.
 
         Args:
             event_type: Dotted event category (e.g. "agent.dispatch").
@@ -64,30 +94,21 @@ class EventWriter:
             agent: Agent involved, or empty string for non-agent events.
             result: Outcome summary string.
             severity: info | warning | error.
-            meta: Optional type-specific structured data.
+            meta: Optional type-specific structured data (stored as JSON in
+                the ``payload`` column).
         """
         try:
-            self.events_dir.mkdir(parents=True, exist_ok=True)
-
-            record: Dict[str, Any] = {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "type": event_type,
-                "source": source,
-                "agent": agent,
-                "result": result,
-                "severity": severity,
-            }
-            if meta:
-                record["meta"] = meta
-
-            with open(self.lock_file, "w") as lf:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-                try:
-                    with open(self.events_file, "a") as f:
-                        f.write(json.dumps(record, separators=(",", ":")) + "\n")
-                finally:
-                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-
+            writer = _import_store_writer()
+            workspace = os.environ.get("GAIA_WORKSPACE") or None
+            writer.write_harness_event(
+                event_type=event_type,
+                source=source,
+                agent=agent,
+                result=result,
+                severity=severity,
+                meta=meta,
+                workspace=workspace,
+            )
         except Exception as exc:
             logger.debug("Event write failed (non-fatal): %s", exc)
 
@@ -98,7 +119,13 @@ def read_events(
     limit: int = 50,
     events_dir: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
-    """Read recent events from the JSONL log.
+    """Read recent events from the legacy JSONL log.
+
+    NOTE: As of Task 2.2 this is no longer the canonical read path -- new
+    events are written to the ``harness_events`` DB table. This reader is
+    retained read-only until Task 2.3 removes ``events.jsonl`` entirely, so
+    historical pre-cutover events remain consultable. New callers should use
+    ``gaia.store.reader.cross_surface_query(surface="harness_events")``.
 
     Args:
         hours: How far back to look (default 24h).
@@ -148,63 +175,3 @@ def read_events(
     except Exception as exc:
         logger.debug("Event read failed (non-fatal): %s", exc)
         return []
-
-
-def cleanup_old_events(
-    days: int = 7,
-    events_dir: Optional[Path] = None,
-) -> int:
-    """Remove events older than *days* from the JSONL log.
-
-    Uses file locking to avoid conflicts with concurrent writers.
-    Retains lines that cannot be parsed (conservative).
-
-    Args:
-        days: Retention window in days (default 7).
-        events_dir: Override events directory (for testing).
-
-    Returns:
-        Number of events removed.
-    """
-    try:
-        edir = events_dir or get_events_dir()
-        events_file = edir / "events.jsonl"
-        lock_file = edir / "events.jsonl.lock"
-
-        if not events_file.exists():
-            return 0
-
-        retention_days = int(os.environ.get("GAIA_EVENT_RETENTION_DAYS", str(days)))
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        kept: List[str] = []
-        removed = 0
-
-        with open(lock_file, "w") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                with open(events_file, "r") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            evt = json.loads(line)
-                            ts = datetime.fromisoformat(evt["ts"])
-                            if ts < cutoff:
-                                removed += 1
-                                continue
-                        except (json.JSONDecodeError, KeyError, ValueError):
-                            pass  # Keep unparseable lines
-                        kept.append(line)
-
-                with open(events_file, "w") as f:
-                    for line in kept:
-                        f.write(line + "\n")
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-
-        return removed
-
-    except Exception as exc:
-        logger.debug("Event cleanup failed (non-fatal): %s", exc)
-        return 0
