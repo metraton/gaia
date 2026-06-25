@@ -1117,19 +1117,15 @@ class ClaudeCodeAdapter(HookAdapter):
           2. Load the specific pending file by prefix (any session).
           3. Activate the grant under the CURRENT session.
 
-        Falls back to session-wide activation when no nonce is present in
-        the answer (backward compatibility with older approval labels).
+        DB-only since the grant-lifecycle FS retirement: REQUESTED writes go
+        to the DB, so the approved pending is resolved by nonce prefix straight
+        from the DB via ``activate_db_pending_by_prefix()``.
 
         Never blocks (no exceptions raised to caller).
         """
         from modules.security.approval_grants import (
-            activate_cross_session_pending,
             activate_db_pending_by_prefix,
-            activate_grants_for_session,
-            activate_pending_approval,
             extract_nonce_from_label,
-            get_pending_approvals_for_session,
-            load_pending_by_nonce_prefix,
         )
 
         session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
@@ -1163,93 +1159,31 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.info("AskUserQuestion: no session_id available, skipping grant activation")
                 return
 
-            # Try nonce-targeted activation first: extract nonce from answer labels
+            # Nonce-targeted activation: extract the nonce from answer labels.
             nonce_prefix = None
             for v in answers.values():
                 nonce_prefix = extract_nonce_from_label(str(v))
                 if nonce_prefix:
                     break
 
-            if nonce_prefix:
-                # Nonce-targeted: load this specific pending regardless of session
-                pending_data = load_pending_by_nonce_prefix(nonce_prefix)
-                if pending_data:
-                    pending_session = pending_data.get("session_id", "")
-                    full_nonce = pending_data.get("nonce", "")
-
-                    if pending_session == session_id:
-                        # Same session -- use standard activation
-                        result = activate_pending_approval(
-                            nonce=full_nonce,
-                            session_id=session_id,
-                        )
-                    else:
-                        # Cross session -- activate under current session
-                        result = activate_cross_session_pending(
-                            pending_data,
-                            session_id=session_id,
-                        )
-
-                    if result.success:
-                        logger.info(
-                            "AskUserQuestion nonce-targeted activation: prefix=%s, "
-                            "pending_session=%s, current_session=%s, status=%s",
-                            nonce_prefix, pending_session[:12], session_id[:12],
-                            getattr(result.status, "value", str(result.status)),
-                        )
-                        return
-                    else:
-                        logger.warning(
-                            "AskUserQuestion nonce-targeted activation failed: "
-                            "prefix=%s, status=%s, reason=%s",
-                            nonce_prefix,
-                            getattr(result.status, "value", str(result.status)),
-                            result.reason,
-                        )
-                else:
-                    # Filesystem pending not found -- try DB lookup (M2 bridge).
-                    # Since M2, REQUESTED writes go to DB only; no pending-{nonce}.json
-                    # is written to the filesystem any more.
-                    logger.info(
-                        "AskUserQuestion: nonce prefix %s found in label but no "
-                        "matching pending file -- trying DB lookup (M2 bridge)",
-                        nonce_prefix,
-                    )
-                    result = activate_db_pending_by_prefix(
-                        nonce_prefix, current_session_id=session_id,
-                    )
-                    if result.success:
-                        logger.info(
-                            "AskUserQuestion DB-bridge activation: prefix=%s status=%s",
-                            nonce_prefix,
-                            getattr(result.status, "value", str(result.status)),
-                        )
-                        return
-                    else:
-                        logger.warning(
-                            "AskUserQuestion DB-bridge activation failed: "
-                            "prefix=%s status=%s reason=%s -- falling back to session-wide",
-                            nonce_prefix,
-                            getattr(result.status, "value", str(result.status)),
-                            result.reason,
-                        )
-                    # Fall through to session-wide activation below
-                    nonce_prefix = None
-
             if not nonce_prefix:
-                # No nonce in label (or all targeted paths failed) -- fall back to
-                # session-wide activation for backward compatibility
-                pending = get_pending_approvals_for_session(session_id)
-                if not pending:
-                    logger.info("AskUserQuestion: no pending grants for session %s", session_id)
-                    return
-
-                results = activate_grants_for_session(session_id)
-                activated = sum(1 for r in results if r.success)
                 logger.info(
-                    "AskUserQuestion session-wide activation: %d/%d pending grants for session %s",
-                    activated, len(results), session_id,
+                    "AskUserQuestion: no nonce prefix in answer labels -- "
+                    "nothing to activate for session %s", session_id[:12],
                 )
+                return
+
+            # Resolve the approved pending straight from the DB.
+            result = activate_db_pending_by_prefix(
+                nonce_prefix, current_session_id=session_id,
+            )
+            logger.info(
+                "AskUserQuestion DB activation: prefix=%s success=%s status=%s reason=%s",
+                nonce_prefix,
+                result.success,
+                getattr(result.status, "value", str(result.status)),
+                result.reason,
+            )
 
         except Exception as e:
             logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)

@@ -82,93 +82,38 @@ def _activate_grants(session_id: str, response: str = "") -> None:
     """Activate approval grants for this session.
 
     When *response* contains a ``[P-<nonce>]`` tag (nonce-labeled approval),
-    only the specific grant identified by that nonce is activated.  When no
-    nonce is present (legacy approvals that predate nonce labeling) the
-    function falls back to session-wide activation for backward compatibility.
+    only the specific grant identified by that nonce is activated.
 
-    Since M2, REQUESTED writes go to DB only (no filesystem pending file).
-    When ``load_pending_by_nonce_prefix()`` returns None (filesystem miss),
-    ``activate_db_pending_by_prefix()`` is tried as a DB fallback.  This
-    bridges the M2 partial migration: REQUESTED in DB, SHOWN+APPROVED written
-    to DB, filesystem grant created for ``check_approval_grant()`` to find.
+    DB-only since the grant-lifecycle FS retirement: REQUESTED writes go to
+    the DB (insert_requested), so activation resolves the pending by nonce
+    prefix straight from the DB via ``activate_db_pending_by_prefix()``.  No
+    filesystem pending file is ever written, so there is no filesystem path
+    to consult and no session-wide filesystem sweep to fall back to.
     """
     from modules.security.approval_grants import (
-        activate_grants_for_session,
-        activate_pending_approval,
-        activate_cross_session_pending,
         activate_db_pending_by_prefix,
         extract_nonce_from_label,
-        load_pending_by_nonce_prefix,
-        get_pending_approvals_for_session,
     )
 
-    # Try nonce-targeted activation first
     nonce_prefix = extract_nonce_from_label(response) if response else None
-    if nonce_prefix:
+    if not nonce_prefix:
         logger.info(
-            "ElicitationResult: nonce prefix found in response: %s", nonce_prefix,
+            "ElicitationResult: no nonce prefix in response -- nothing to activate",
         )
-        pending_data = load_pending_by_nonce_prefix(nonce_prefix)
-        if pending_data:
-            full_nonce = pending_data.get("nonce", "")
-            pending_session = pending_data.get("session_id", "")
-            if pending_session == session_id:
-                # Same session -- standard targeted activation
-                result = activate_pending_approval(
-                    nonce=full_nonce, session_id=session_id,
-                )
-            else:
-                # Cross-session pending -- approval came from a prior session
-                result = activate_cross_session_pending(
-                    pending_data, session_id=session_id,
-                )
-            logger.info(
-                "ElicitationResult nonce-targeted activation: "
-                "nonce=%s success=%s status=%s",
-                full_nonce[:12] if full_nonce else nonce_prefix,
-                result.success,
-                result.status,
-            )
-            return
-        else:
-            # Filesystem pending not found -- try DB lookup (M2 bridge).
-            # Since M2, REQUESTED writes go to DB only; no pending-{nonce}.json
-            # is written to the filesystem any more.
-            logger.info(
-                "ElicitationResult: nonce prefix %s not found in pending files, "
-                "trying DB lookup (M2 bridge)",
-                nonce_prefix,
-            )
-            result = activate_db_pending_by_prefix(
-                nonce_prefix, current_session_id=session_id,
-            )
-            if result.success:
-                logger.info(
-                    "ElicitationResult DB-bridge activation: prefix=%s status=%s",
-                    nonce_prefix,
-                    getattr(result.status, "value", str(result.status)),
-                )
-                return
-            else:
-                logger.warning(
-                    "ElicitationResult DB-bridge activation failed: "
-                    "prefix=%s status=%s reason=%s -- falling back to session-wide",
-                    nonce_prefix,
-                    getattr(result.status, "value", str(result.status)),
-                    result.reason,
-                )
-
-    # Fallback: session-wide activation (backward compat for unlabeled approvals)
-    pending = get_pending_approvals_for_session(session_id)
-    if not pending:
-        logger.info("No pending approvals to activate for session %s", session_id)
         return
 
-    results = activate_grants_for_session(session_id)
-    activated = sum(1 for r in results if r.success)
     logger.info(
-        "ElicitationResult activated %d/%d pending approvals for session %s",
-        activated, len(results), session_id,
+        "ElicitationResult: nonce prefix found in response: %s", nonce_prefix,
+    )
+    result = activate_db_pending_by_prefix(
+        nonce_prefix, current_session_id=session_id,
+    )
+    logger.info(
+        "ElicitationResult DB activation: prefix=%s success=%s status=%s reason=%s",
+        nonce_prefix,
+        result.success,
+        getattr(result.status, "value", str(result.status)),
+        result.reason,
     )
 
 
