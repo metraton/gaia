@@ -211,9 +211,13 @@ fi
 #     EXPECTED_SCHEMA_VERSION en doctor.py en el mismo commit.
 #   - Para una DB en el FLOOR, esa migración corre directo (la DB está en el
 #     estado source de la migración). No se necesitan variantes _fresh: un
-#     fresh install ya está en EXPECTED tras schema.sql, así que el loop no
-#     entra (CURRENT == EXPECTED). El guard-probe por-versión del modelo viejo
-#     desaparece junto con la cadena histórica.
+#     fresh install sella el ledger en el FLOOR (Section 3b) y, cuando hay
+#     migraciones forward (EXPECTED > FLOOR), ESTE loop SÍ se replaya en cada
+#     fresh install desde FLOOR+1 hasta EXPECTED contra una DB cuyos objetos
+#     schema.sql ya creó -- por eso las migraciones DEBEN ser idempotentes
+#     (CREATE ... IF NOT EXISTS; ADD COLUMN neutralizado por el guard runner).
+#     El guard-probe por-versión del modelo viejo desaparece junto con la
+#     cadena histórica.
 #
 # Cada migración corre en su propia transacción BEGIN/COMMIT. Si falla, abort
 # -- el ledger NO avanza y el próximo bootstrap retry ve la misma pendiente.
@@ -288,12 +292,15 @@ _filter_add_column_idempotent() {
 }
 
 if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
-    # Forward-only loop. Reaches here only when a FUTURE migration has been
-    # added (EXPECTED_SCHEMA_VERSION > FLOOR) and the live DB is behind it.
-    # On a fresh install the DB is already at EXPECTED (schema.sql produced the
-    # FLOOR == EXPECTED shape when no forward migrations exist), so this branch
-    # is skipped entirely. Any DB below the FLOOR was already rejected in
-    # Section 3b, so CURRENT_VERSION here is always >= FLOOR.
+    # Forward-only loop. Runs whenever the live DB is behind EXPECTED, which
+    # INCLUDES a fresh install: Section 3b stamps the ledger at the FLOOR, and
+    # when forward migrations exist (EXPECTED > FLOOR) a fresh DB sits at the
+    # FLOOR while EXPECTED is higher, so it enters here and replays FLOOR+1..
+    # EXPECTED. That replay runs against a DB whose objects schema.sql already
+    # created, which is exactly why these migrations MUST be idempotent (CREATE
+    # ... IF NOT EXISTS; ADD COLUMN neutralised by the runner guard above).
+    # Any DB below the FLOOR was already rejected in Section 3b, so
+    # CURRENT_VERSION here is always >= FLOOR.
     for N in $(seq $((CURRENT_VERSION + 1)) "$EXPECTED_VERSION"); do
         PREV=$((N - 1))
         MIG_FILE="${MIG_DIR}/v${PREV}_to_v${N}.sql"

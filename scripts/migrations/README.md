@@ -17,25 +17,31 @@ The floor is **v18**. It is declared in three places that must agree:
 
 | Location | What it holds |
 |----------|---------------|
-| `gaia/store/schema.sql` | Produces the v18 shape directly (fresh installs land here). |
-| `scripts/bootstrap_database.sh` Section 3b (`SCHEMA_FLOOR=18`) | Seeds/stamps the ledger at the floor; rejects DBs below it. |
-| `bin/cli/doctor.py` (`EXPECTED_SCHEMA_VERSION`) | The version the CLI expects; equals the floor until a forward migration is added. |
+| `gaia/store/schema.sql` | Produces the **latest** (EXPECTED) shape directly -- fresh installs land here, not at the floor. |
+| `scripts/bootstrap_database.sh` Section 3b (`SCHEMA_FLOOR=18`) | Stamps the fresh ledger at the floor; rejects DBs below it. |
+| `bin/cli/doctor.py` (`EXPECTED_SCHEMA_VERSION`) | The version the CLI expects; equals the floor when no forward migration exists, and the highest migration target once they do. |
 
 How bootstrap treats each case:
 
 * **Fresh install** (no `schema_version` rows): `schema.sql` already produced
-  the floor shape, so bootstrap stamps `(version=18, ...)` directly. It does
-  **not** seed v1 and walk the chain.
-* **DB at or above the floor** (the common case, e.g. `~/.gaia/gaia.db`): no
-  migration needed. Section 3c only runs if a forward migration exists.
+  the EXPECTED shape, and Section 3b stamps the ledger at the **floor** (not
+  EXPECTED). Section 3c then replays every forward migration from `floor+1` to
+  EXPECTED against that already-current DB. It does **not** seed v1 and walk the
+  historical chain. Because the migrations run against objects `schema.sql`
+  already created, they **must be idempotent** (see section 1).
+* **DB at or above the floor** (the common case, e.g. `~/.gaia/gaia.db`):
+  Section 3c applies any forward migrations the DB is still behind on, up to
+  EXPECTED.
 * **DB below the floor** (`1 <= version < 18`): **no longer supported** for
   in-place upgrade. Bootstrap aborts with a clear message asking you to
   recreate the DB (back up, delete `~/.gaia/gaia.db`, re-run `gaia install`).
 
 There are no `_fresh` / `_merge` variants under the floor model. Those existed
 only because the old baseline was v1 and the whole chain was walked on every
-fresh install. With the floor, a fresh install is already at the expected
-version after `schema.sql`, so the migration loop is skipped entirely.
+fresh install. Under the floor model the forward-migration loop is still
+replayed on every fresh install (from `floor+1` to EXPECTED) -- so the single
+forward migration file per bump must be idempotent rather than split into
+`_fresh` / `_merge` variants.
 
 ---
 
@@ -48,14 +54,19 @@ version) to `N`:
 1. Add the new DDL to `gaia/store/schema.sql` so fresh installs land in the
    target shape.
 2. Create exactly one `scripts/migrations/v{N-1}_to_v{N}.sql` containing the
-   full DDL delta applied to a DB at version `N-1`.
+   full DDL delta applied to a DB at version `N-1`. It **must be idempotent**
+   (`CREATE ... IF NOT EXISTS`; for `ADD COLUMN`, rely on the runner's
+   existence guard -- SQLite has no `ADD COLUMN IF NOT EXISTS`), because it is
+   replayed on fresh installs against a DB that already has those objects.
 3. Bump `EXPECTED_SCHEMA_VERSION` to `N` in `bin/cli/doctor.py` **in the same
    commit**.
 
 `bootstrap_database.sh` Section 3c then applies `v{N-1}_to_v{N}.sql` inside a
 single `BEGIN/COMMIT` transaction for any DB behind `N`, and stamps the ledger
-only on success. A fresh install is already at `N` after `schema.sql`, so it
-never enters the loop -- no `_fresh` variant is required.
+only on success. A fresh install stamps the ledger at the floor (Section 3b)
+and then replays `floor+1 .. N` here too -- since `schema.sql` already produced
+the `N` shape, the migration runs against objects that already exist, which is
+exactly why it must be idempotent (no `_fresh` variant is used).
 
 `tests/cli/test_schema_version_lockstep.py` enforces that
 `EXPECTED_SCHEMA_VERSION` equals the floor when no forward migrations exist,
@@ -93,8 +104,9 @@ as the ledger grows.
 | `vN_to_vN+1.sql` | Applied to an existing DB at version N. Contains the full DDL delta, applied inside a `BEGIN/COMMIT` transaction by bootstrap Section 3c. |
 
 The historical `_fresh` and `_merge` variants are no longer used: under the
-floor model a fresh install is already at the expected version after
-`schema.sql`, so it never runs a migration script.
+floor model a single idempotent `vN_to_vN+1.sql` covers both an in-place
+upgrade and the fresh-install replay (Section 3c walks `floor+1 .. EXPECTED`
+on every fresh install), so one idempotent file replaces the old split.
 
 ---
 
