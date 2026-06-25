@@ -557,10 +557,23 @@ class TestCleanup:
         assert cleaned >= 1
 
     def test_cleanup_preserves_valid_grants(self, clean_grants_dir):
+        import gaia.store.writer as _sw
         path = _write_active_grant(clean_grants_dir, "git commit")
+        # Extract the approval_id from the sentinel filename (grant-sentinel-P-<id>.ref)
+        approval_id = path.stem.replace("grant-sentinel-", "")
         cleaned = cleanup_expired_grants()
         assert cleaned == 0
-        assert path.exists()
+        # Verify the DB row was NOT expired (still PENDING)
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT status FROM approval_grants WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None, "Grant row must still exist in DB"
+        assert row[0] == "PENDING", f"Expected PENDING, got {row[0]}"
 
     def test_cleanup_removes_unsupported_grants(self, clean_grants_dir):
         """DB grants with unsupported scope types are not matched by
@@ -842,7 +855,9 @@ class TestNonceEndToEnd:
         # After activation, grant passthrough: GAIA approved, no second dialog
         result2 = validator.validate(command, session_id=session_id)
         assert result2.allowed is True
-        assert "grant active" in result2.reason.lower()
+        # DB grants are confirmed=True so reason is "Grant confirmed";
+        # FS grants not yet confirmed return "Grant active, pending confirmation".
+        assert "grant" in result2.reason.lower()
 
     def test_blocked_t3_returns_ask_without_nonce(self, clean_grants_dir):
         """BashValidator returns 'ask' for T3 commands without creating pending approvals.
