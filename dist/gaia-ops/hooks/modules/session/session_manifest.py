@@ -500,6 +500,241 @@ def build_pending_approvals_block() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Per-turn VERIFIED pending approvals (UserPromptSubmit)
+# ---------------------------------------------------------------------------
+#
+# Why a SEPARATE builder from build_pending_approvals_block():
+#
+# The SessionStart block above is a one-shot, human-readable *summary*
+# (format_pending_summary) deliberately moved OUT of per-turn UserPromptSubmit
+# because re-emitting a summary on every prompt added noise without changing
+# the answer (see this module's header, "What does NOT move").
+#
+# The per-turn injection here solves a DIFFERENT problem: it lets the
+# orchestrator PRESENT an approval for informed consent directly from injected
+# context, WITHOUT dispatching a subagent to derive/verify it. That dispatch's
+# SubagentStop is what caused a pending-revocation bug. To present without a
+# dispatch the orchestrator needs the full sealed payload (verbatim
+# exact_content, the command_set list, scope/risk/rationale/rollback) AND a
+# trustworthy VERIFIED marker -- none of which the summary carries.
+#
+# Noise control (the reason the summary was moved to SessionStart): this
+# builder emits "" when there are no currently-pending VERIFIED approvals, so a
+# turn with nothing pending injects nothing. It only speaks when there is
+# actionable, verified state to present.
+#
+# Scoping: identical to scan_pending_db() / build_pending_approvals_block() --
+# all_sessions=True (no session filter). The DB is per-machine so every row is
+# the same user, and pendings are written under the MAIN session while a
+# subagent's $CLAUDE_SESSION_ID differs; a session filter would silently drop
+# subagent-originated pendings.
+
+def build_verified_pending_approvals() -> list:
+    """Return the currently-pending approvals whose fingerprint VERIFIES.
+
+    Reads pending rows via the same all_sessions=True DB scope as
+    scan_pending_db(), then gates each row through
+    gaia.approvals.chain.verify_fingerprint(): a row is included ONLY when its
+    stored payload re-canonicalizes to the fingerprint recorded in its
+    REQUESTED event. A row that fails verification (tampered, or with no
+    REQUESTED baseline) is skipped and never returned as presentable.
+
+    Each returned dict carries everything the orchestrator needs to present the
+    approval for informed consent without any further dispatch::
+
+        {
+            "approval_id": "P-...",            # full id; verbatim Approve label uses [P-<nonce8>]
+            "nonce_short": "<8 hex>",          # display nonce for the [P-<nonce8>] label
+            "verified": True,                  # always True for returned rows
+            "operation": "...",                # sealed payload field
+            "exact_content": "...",            # verbatim command/content
+            "scope": "...",
+            "risk_level": "low|medium|high",
+            "rationale": "...",
+            "rollback_hint": "..." | None,
+            "command_set": [ {"command": "...", "rationale": "..."}, ... ],  # [] if singular
+            "age_human": "5 min",              # freshness indicator
+            "age_seconds": 300.0,
+            "session_id": "<originating session>",
+        }
+
+    Returns [] on any error (never raises) so the caller's fail-safe applies.
+    """
+    try:
+        try:
+            from gaia.approvals.store import list_pending
+            from gaia.approvals.chain import verify_fingerprint, ChainTamperError
+            from gaia.store.writer import _connect as _connect_db
+        except ImportError:
+            import pathlib as _pl
+            import sys as _sys
+            _repo = _pl.Path(__file__).resolve().parents[4]
+            _sys.path.insert(0, str(_repo))
+            from gaia.approvals.store import list_pending
+            from gaia.approvals.chain import verify_fingerprint, ChainTamperError
+            from gaia.store.writer import _connect as _connect_db
+
+        from .pending_scanner import _format_age
+
+        rows = list_pending(all_sessions=True)
+    except Exception as exc:
+        logger.debug("build_verified_pending_approvals: read failed (non-fatal): %s", exc)
+        return []
+
+    if not rows:
+        return []
+
+    verified: list = []
+    con = None
+    try:
+        con = _connect_db()
+        for row in rows:
+            try:
+                approval_id = row.get("id")
+                if not approval_id:
+                    continue
+                payload_json = row.get("payload_json") or "{}"
+
+                # VERIFIED gate: only rows whose stored payload matches the
+                # fingerprint in their REQUESTED event are presentable. A
+                # tamper (ChainTamperError) or a missing REQUESTED baseline
+                # (ValueError) means the row is NOT safe to present -- skip it.
+                try:
+                    ok = verify_fingerprint(approval_id, payload_json, con)
+                except (ChainTamperError, ValueError) as verr:
+                    logger.debug(
+                        "build_verified_pending_approvals: %s fails verification, "
+                        "skipping (non-fatal): %s", approval_id, verr,
+                    )
+                    continue
+                if not ok:
+                    continue
+
+                try:
+                    payload = json.loads(payload_json)
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+
+                nonce_short = (
+                    approval_id[2:10] if approval_id.startswith("P-")
+                    else approval_id[:8]
+                )
+
+                command_set = payload.get("command_set") or []
+                # Normalize command_set items to {command, rationale}.
+                norm_command_set = []
+                if isinstance(command_set, list):
+                    for it in command_set:
+                        if isinstance(it, dict) and it.get("command"):
+                            norm_command_set.append({
+                                "command": it.get("command"),
+                                "rationale": it.get("rationale", ""),
+                            })
+
+                age_seconds = row.get("age_seconds", 0.0) or 0.0
+
+                verified.append({
+                    "approval_id": approval_id,
+                    "nonce_short": nonce_short,
+                    "verified": True,
+                    "operation": payload.get("operation", ""),
+                    "exact_content": payload.get("exact_content", ""),
+                    "scope": payload.get("scope", ""),
+                    "risk_level": payload.get("risk_level", "medium"),
+                    "rationale": payload.get("rationale", ""),
+                    "rollback_hint": payload.get("rollback_hint"),
+                    "command_set": norm_command_set,
+                    "age_human": _format_age(age_seconds),
+                    "age_seconds": age_seconds,
+                    "session_id": row.get("session_id", "unknown"),
+                })
+            except Exception as exc:
+                logger.debug(
+                    "build_verified_pending_approvals: skipping row %s: %s",
+                    row.get("id"), exc,
+                )
+                continue
+    except Exception as exc:
+        logger.debug("build_verified_pending_approvals: failed (non-fatal): %s", exc)
+        return []
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    # Oldest-first so the longest-waiting (most urgent) approval is presented first.
+    verified.sort(key=lambda x: x.get("age_seconds", 0.0), reverse=True)
+    return verified
+
+
+def build_per_turn_pending_approvals_block() -> str:
+    """Render the per-turn VERIFIED pending-approvals block for UserPromptSubmit.
+
+    Emits "" when there are no currently-pending VERIFIED approvals -- a turn
+    with nothing pending injects nothing (the noise concern that motivated
+    moving the SessionStart summary out of per-turn injection).
+
+    When verified pendings exist, renders a concise structured block carrying,
+    per approval, the full sealed payload the orchestrator needs to present for
+    informed consent WITHOUT dispatching a subagent. The block is explicitly
+    marked VERIFIED so the orchestrator knows every entry passed
+    verify_fingerprint and is safe to present verbatim.
+
+    Returns "" on any error (never raises).
+    """
+    try:
+        pendings = build_verified_pending_approvals()
+        if not pendings:
+            return ""
+
+        lines = [
+            "[PENDING-APPROVALS-VERIFIED] "
+            f"{len(pendings)} pending approval(s) verified and presentable "
+            "WITHOUT dispatch. Present any of these for consent directly from "
+            "this block; do NOT dispatch a subagent to derive or verify them. "
+            "The Approve label is [P-<nonce8>].",
+            "",
+        ]
+        for i, p in enumerate(pendings, 1):
+            lines.append(
+                f"### #{i} [P-{p['nonce_short']}] (approval_id: {p['approval_id']})"
+            )
+            lines.append(f"- verified: true")
+            lines.append(f"- operation: {p['operation']}")
+            lines.append(f"- risk_level: {p['risk_level']}")
+            lines.append(f"- scope: {p['scope']}")
+            lines.append(f"- age: {p['age_human']}")
+            if p.get("rationale"):
+                lines.append(f"- rationale: {p['rationale']}")
+            if p.get("rollback_hint"):
+                lines.append(f"- rollback_hint: {p['rollback_hint']}")
+            if p.get("command_set"):
+                lines.append(
+                    f"- command_set ({len(p['command_set'])} commands, "
+                    f"single approval_id {p['approval_id']}):"
+                )
+                for c in p["command_set"]:
+                    rat = f"  # {c['rationale']}" if c.get("rationale") else ""
+                    lines.append(f"    - {c['command']}{rat}")
+            else:
+                lines.append(f"- exact_content: {p['exact_content']}")
+            lines.append("")
+
+        logger.info(
+            "UserPromptSubmit: %d verified pending approval(s) injected per-turn",
+            len(pendings),
+        )
+        return "\n".join(lines).rstrip()
+    except Exception as exc:
+        logger.debug(
+            "build_per_turn_pending_approvals_block failed (non-fatal): %s", exc
+        )
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Assembler
 # ---------------------------------------------------------------------------
 

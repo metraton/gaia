@@ -15,11 +15,13 @@ names the specific action. No exceptions. No brevity shortcuts.
 ```
 
 `orchestrator-present-approval` is the discipline the orchestrator follows when
-a subagent emits `APPROVAL_REQUEST` with an `approval_id`: relay the
-`sealed_payload` into AskUserQuestion -- fingerprint check, mandatory fields in
-the question, mandatory nonce in the option label. For the subagent side that
-produced the payload see `subagent-request-approval`; for the data contract
-itself see `agent-approval-protocol`.
+an approval needs the user's consent: relay the sealed fields into
+AskUserQuestion -- mandatory fields in the question, mandatory nonce in the
+option label. The orchestrator has no shell, so it never dispatches a subagent
+to derive or verify an approval; it presents from a trusted source it already
+holds. For the subagent side that produced the payload see
+`subagent-request-approval`; for the data contract itself see
+`agent-approval-protocol`.
 
 ## Mental Model
 
@@ -27,25 +29,53 @@ The orchestrator sits between the subagent and the user. The user cannot make
 an informed decision on data they have not seen -- a summary, a reference to
 "the plan above", or an offer to show details on request all push the decision
 without the data needed to decide. The job is **verbatim relay, not
-re-authoring**: rewriting any of the 7 sealed fields breaks the fingerprint and
-`verify_fingerprint` (`gaia/approvals/chain.py`) raises `ChainTamperError`.
+re-authoring**: rewriting any of the sealed fields would change the consent
+surface from what was recorded. Integrity of the payload is enforced at grant
+**activation** (`verify_fingerprint` in `gaia/approvals/chain.py`, called when
+the user selects the Approve label), not at presentation -- so presentation
+itself never needs a verify-dispatch.
 
-## Step 0 -- Verify the approval against the DB (mandatory before SHOWN)
+## Step 0 -- Present from a trusted source; never dispatch to verify or derive
 
-A subagent's reported `approval_id` is an unverified claim, not a fact. The agent runs in its own context and can relay an id that is stale, from another session, or simply wrong -- and a stale id presented as a fresh block walks the user into consenting to nothing real (or to a grant that no longer exists). The DB is the source of truth; the agent's report is a pointer into it that you must resolve, never the authority itself.
+The orchestrator has no shell. It MUST NOT dispatch a subagent solely to derive
+or verify an approval before presenting -- that dispatch is both unnecessary
+(the integrity check runs at activation, below) and harmful (its SubagentStop
+can sweep the very pending being verified). Instead, present from one of two
+**trusted** sources:
 
-So before AskUserQuestion, two checks against the DB, in order:
+1. **Primary -- the injected `[PENDING-APPROVALS-VERIFIED]` block.** A per-turn
+   hook (`hooks/modules/session/session_manifest.py`) injects, on every
+   `UserPromptSubmit`, every pending that has survived >= 1 turn. Each row in
+   that block has already been DB-read and fingerprint-verified by the hook
+   (`build_verified_pending_approvals` -- only rows whose payload re-canonicalizes
+   to the fingerprint stored on their `REQUESTED` event appear, each marked
+   `verified: true`). **Present directly from this block** -- the fields, the
+   full `approval_id`, and (for batches) the whole `command_set` with its minted
+   id are all there. No DB query, no `derive-id`, no dispatch.
+2. **Fallback -- same-turn relay.** A pending a subagent emits during the
+   CURRENT turn will not be in this turn's block yet: the block is built at
+   `UserPromptSubmit`, before the subagent ran. For that case present from the
+   subagent's relayed `approval_request`. This is justified because the pending
+   was freshly minted in THIS session by a trusted dispatch, AND integrity is
+   enforced at grant **activation** (`verify_fingerprint` fires when the user
+   selects the Approve label), not at presentation. The old pre-presentation
+   verify was redundant belt-and-suspenders; it is removed.
 
-1. **The approval exists, is fresh, and is from the current session.** Query `gaia approvals pending --session "$CLAUDE_SESSION_ID"` (or `--json` for parsing). The reported `approval_id` MUST appear in that result. If it appears only under `--all-sessions` but not the current session, it is leakage from another session (a test session such as `e2e-sim`, a prior run) -- **do not present**. If it does not appear at all, it does not exist or was already consumed/rejected -- **do not present**. Freshness is the `created_at` of the pending row plus its presence as still-`pending`; an id the agent reports that is not currently pending in *this* session is not a fresh block, whatever the agent says.
-2. **The payload is untampered.** Call `verify_fingerprint(approval_id, payload_json, con) -> bool` from `gaia/approvals/chain.py`. It raises `ChainTamperError` if the payload was modified between subagent emission and your relay (security boundary, do not present), and `ValueError` if no REQUESTED event exists for this `approval_id`. Either case: **do not present**, report the failure, stop.
+Once the pending survives a turn it appears in the injected block, so the relay
+is only ever needed for the same-turn case.
 
-**For a `command_set` (plan-first batch) the agent does not know the id at all -- so you DERIVE it deterministically, you do not search the DB.** The hook mints the `approval_id` at SubagentStop (`_intake_command_set_pending` -- see Rule 3) from the **content** of the command_set, not from a uuid4. The id is `P-<first 32 hex of sha256(canonical(command list))>` (`derive_command_set_id` in `gaia/approvals/store.py`). Because it is content-derived, you reproduce the EXACT minted id from the `command_set` you already hold in the contract -- with **no `gaia approvals pending --session` search**. Run:
-
-```
-gaia approvals derive-id --commands-json '<the command_set from the contract>'
-```
-
-It applies the SAME mutative filter the intake used and prints the `P-...` id (the same function `derive_command_set_id` the hook minted with). This closes the cross-session miss: the SubagentStop output never reaches the parent (Claude Code issue #5812), so a random id could not be recovered across sessions -- a content-derived one needs no recovery at all. Having derived the id, run Step 0's existence/fingerprint checks against it exactly as for a singular id (the row is now findable by that exact id). The shape: the DB mints content-derived, the orchestrator re-derives, the agent never owns the id and no search is needed.
+**For a `command_set` (plan-first batch) you do not derive the id -- you read it
+from the block.** The hook mints the `approval_id` at SubagentStop
+(`_intake_command_set_pending` -- see Rule 3) from the **content** of the
+command_set (`derive_command_set_id` in `gaia/approvals/store.py`,
+`P-<first 32 hex of sha256(canonical(command list))>`). Once that pending has
+survived a turn, the `[PENDING-APPROVALS-VERIFIED]` block carries it with its
+minted `approval_id` and all N commands already attached -- so you read the id
+and the commands straight from the block. **No `gaia approvals derive-id`
+dispatch is needed.** For a command_set emitted in the CURRENT turn (not yet in
+the block), present from the subagent's relayed `approval_request`, which carries
+the same `command_set`; the content-derived id reaches you when the pending
+appears in the next turn's block.
 
 ## Mandatory presentation -- 5 labeled fields + nonce-suffixed label
 
@@ -72,7 +102,13 @@ whose `id` starts with `P-{prefix}`. Without the suffix no grant is created.
 See `template.md` for the canonical layout and `reference.md` -> "GOOD vs BAD
 Examples" for full presentations.
 
-Fields above are extracted from the DB-stored canonical payload (`payload_json` on the REQUESTED row), not from the subagent's relayed `approval_request` — that's why `rollback_hint` is the field name here while the subagent contract uses `rollback`.
+Fields above are extracted from your trusted source. From the injected
+`[PENDING-APPROVALS-VERIFIED]` block (the primary path) they appear under the
+canonical names shown here (`operation`, `exact_content`, `scope`, `risk_level`,
+`rationale`, `rollback_hint`). From a same-turn relayed `approval_request` (the
+fallback) the rollback field arrives under the key `rollback` -- map it to
+ROLLBACK the same way. Either way you copy values verbatim; you do not re-author
+them.
 
 ## Rules
 
@@ -90,7 +126,12 @@ Fields above are extracted from the DB-stored canonical payload (`payload_json` 
    `APPROVAL_REQUEST` carrying a `command_set` of >= 2 `{command, rationale}`
    items and **no** `approval_id`, the SubagentStop processor
    (`handoff_persister._intake_command_set_pending`) mints ONE pending
-   `COMMAND_SET` with one `approval_id`. You present that single approval: list
+   `COMMAND_SET` with one content-derived `approval_id`. Once that pending has
+   survived a turn it appears in the injected `[PENDING-APPROVALS-VERIFIED]`
+   block with its minted `approval_id` and all N commands -- **read the id and
+   commands from the block; do not dispatch `gaia approvals derive-id`.** (A
+   command_set emitted in the current turn is presented from the subagent's
+   relayed `approval_request`.) You present that single approval: list
    **all N commands** in the question body, but use **one** Approve label with
    **one** `[P-{nonce8}]` suffix -- one consent covers the whole batch. On
    approval, `activate_db_pending_by_prefix` Step 3b creates a single
@@ -126,5 +167,5 @@ wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
 | "Similar command, slightly different path -- I'll reuse / wrap it" | Grants match the statement signature byte-for-byte. Any wrapper, redirect, flag, or path drift is a different signature and a fresh re-block. |
 | "The same command emitted a new approval_id" | Grants are single-use and consumed on the first retry. A second run is a new APPROVAL_REQUEST -- approve again. |
 | "I'll set batch_scope to approve many at once" | `batch_scope` is ignored -- but a real batch path exists: a plan-first `command_set` (>= 2 items, no `approval_id`) is intaken into ONE pending `COMMAND_SET`. Present that single approval (N commands shown, one `[P-...]` nonce, one consent), not N separate approvals. |
-| "I can paraphrase a field before relaying" | The fingerprint covers all 7 sealed fields; any modification raises `ChainTamperError` in Step 0 and the presentation is refused. |
-| **"The agent reported an `approval_id`, so it's a real fresh block"** -- trusting a nonce relayed by the subagent | The agent's reported id is an unverified pointer, not a fact. It can be stale or belong to another session -- subagents have presented a STALE nonce from a test session (`e2e-sim`) as if it were a fresh block. Resolve every reported id against `gaia approvals pending --session "$CLAUDE_SESSION_ID"` (Step 0): it must be currently pending in *this* session. Visible only under `--all-sessions`, or absent entirely, means do not present. For `command_set` the hook mints the id and the agent never has one -- you **derive** it deterministically from the command_set via `gaia approvals derive-id` (content-derived, no DB search), then run the same existence/fingerprint checks. |
+| "I can paraphrase a field before relaying" | The fingerprint covers all sealed fields and is checked at grant **activation** (`verify_fingerprint`, when the user selects the Approve label); a paraphrase there raises `ChainTamperError` and the grant never forms. Relay verbatim so activation succeeds. |
+| **"I'll dispatch a subagent to verify or derive the approval before presenting"** | The orchestrator has no shell and must NEVER dispatch to verify or derive an approval. The pending arrives **already verified** in the injected `[PENDING-APPROVALS-VERIFIED]` block (DB-read + fingerprint-checked by the per-turn hook, `verified: true`) -- present from it. For a same-turn pending not yet in the block, present from the subagent's relayed `approval_request`. A verify/derive dispatch is unnecessary (integrity is enforced at activation) and harmful (its SubagentStop can sweep the very pending). For `command_set`, read the minted `approval_id` and all commands from the block -- do not run `gaia approvals derive-id`. |
