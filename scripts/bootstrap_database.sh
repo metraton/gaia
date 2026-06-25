@@ -245,6 +245,48 @@ echo "[bootstrap] schema_version: current=${CURRENT_VERSION}, expected=${EXPECTE
 
 MIG_DIR="${SCRIPT_DIR}/migrations"
 
+# --- Idempotent ADD COLUMN guard (runner-level) ------------------------------
+#
+# Forward migrations are applied on EVERY fresh install: schema.sql produces the
+# EXPECTED shape, the ledger is stamped at the FLOOR, and Section 3c walks
+# FLOOR+1..EXPECTED (this is what test_fresh_install_stamps_floor and
+# test_bootstrap_idempotent_at_floor require). Because schema.sql already
+# carries each migration's target DDL (see migrations/README.md section 1:
+# "add the DDL to schema.sql AND create the migration"), a migration is always
+# replayed against a DB that already has its objects.
+#
+# CREATE ... IF NOT EXISTS makes CREATE statements idempotent under that replay
+# (v18_to_v19 relies on it). But SQLite has NO `ADD COLUMN IF NOT EXISTS`, so a
+# bare `ALTER TABLE t ADD COLUMN c` aborts with "duplicate column name" when the
+# column already exists from schema.sql. This guard restores idempotency for
+# ADD COLUMN at the RUNNER level (not by putting invalid SQL in the .sql file):
+# for each `ALTER TABLE <t> ADD COLUMN <c> ...` line, if column <c> already
+# exists on table <t> (PRAGMA table_info), the line is neutralised (commented
+# out) before the migration runs. Every other statement passes through verbatim.
+#
+# Pure bash + sqlite3, no python3 -- consistent with this script's principles.
+_filter_add_column_idempotent() {
+    # $1 = path to the migration .sql file. Emits the (possibly filtered) SQL on
+    # stdout. Lines that are `ALTER TABLE t ADD COLUMN c` for an existing column
+    # are replaced by a comment; all other lines are passed through unchanged.
+    local mig_file="$1"
+    local line lower table col exists
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Normalise whitespace for matching only (emit the ORIGINAL line).
+        lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$lower" =~ alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+) ]]; then
+            table="${BASH_REMATCH[1]}"
+            col="${BASH_REMATCH[2]}"
+            exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM pragma_table_info('${table}') WHERE name='${col}';")"
+            if [ "$exists" -gt 0 ]; then
+                printf -- '-- [bootstrap] skipped (column %s.%s already present): %s\n' "$table" "$col" "$line"
+                continue
+            fi
+        fi
+        printf '%s\n' "$line"
+    done < "$mig_file"
+}
+
 if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
     # Forward-only loop. Reaches here only when a FUTURE migration has been
     # added (EXPECTED_SCHEMA_VERSION > FLOOR) and the live DB is behind it.
@@ -263,15 +305,15 @@ if [ "$CURRENT_VERSION" -lt "$EXPECTED_VERSION" ]; then
             exit 1
         fi
 
-        # Forward-only: a DB at the FLOOR (or any version below N) is in the
-        # source state of this migration, so we apply it directly inside an
-        # explicit transaction. No per-version guard probe and no _fresh
-        # variant are needed -- the historical "schema.sql already created the
-        # target table" case only existed because the baseline was v1 and the
-        # whole chain was walked on every fresh install. Under the FLOOR model
-        # a fresh install is already at EXPECTED, so it never enters this loop.
+        # Apply the migration inside an explicit transaction. The SQL is passed
+        # through _filter_add_column_idempotent first so that `ADD COLUMN`
+        # statements for columns schema.sql already created are skipped (SQLite
+        # lacks `ADD COLUMN IF NOT EXISTS`). CREATE ... IF NOT EXISTS statements
+        # are already idempotent and pass through unchanged. This is what lets a
+        # fresh install (where schema.sql produced the EXPECTED shape) replay the
+        # FLOOR+1..EXPECTED migrations without aborting on duplicate columns.
         echo "[bootstrap] migration v${PREV}->v${N}: applying ${MIG_FILE}"
-        MIG_SQL="$(cat "$MIG_FILE")"
+        MIG_SQL="$(_filter_add_column_idempotent "$MIG_FILE")"
         if ! sqlite3 "$GAIA_DB" <<EOF
 BEGIN;
 ${MIG_SQL}
