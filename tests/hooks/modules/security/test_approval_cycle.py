@@ -820,21 +820,34 @@ class TestConditionalActivation:
 
 
 class TestConsumeGrantAtSubagentStop:
-    """Test 12: grants live for the full subagent session, consumed at SubagentStop."""
+    """Test 12: full DB-only grant cycle with single-use replay protection.
 
-    def test_full_cycle_grant_consumed_at_subagent_stop(self, approvals_test_db, monkeypatch):
-        """After deny -> activate -> passthrough -> confirm -> SubagentStop consume.
+    Lifecycle under test (the canonical consume-on-retry model -- the same
+    model proven in test_double_approval_redirect.py):
 
-        Grants survive PostToolUse (only confirmed there) and are consumed
-        when the subagent session ends via consume_session_grants().
+        deny (DB pending)
+          -> activate (DB grant via activate_db_pending_by_prefix)
+          -> retry ALLOWED + grant CONSUMED in the same step
+          -> second retry RE-BLOCKED (the consumed grant cannot match again)
+          -> consume_session_grants() at SubagentStop is an idempotent sweep
+             (nothing left to consume because the retry already consumed it).
 
-        M2 partial migration: DB-side deny (insert_requested) is asserted via
-        the patched store.  The activation-side (activate_grants_for_session)
-        is still filesystem-based; a filesystem pending is written manually so
-        the activation step works without requiring the activation migration.
-        Activation-side DB migration is tracked separately.
-        """
+    Single-use is the security invariant: a grant consumed by a matching
+    retry must never match a second time within its TTL window. There is no
+    "grant survives the session" semantics -- that was an obsolete model that
+    contradicted replay protection.
+
+    DB-only: both the approvals chain (insert_requested / get_pending) and the
+    grant chain (check_db_semantic_grant / consume_db_semantic_grant) read an
+    isolated test DB. No filesystem pending or filesystem grant is involved.
+    """
+
+    def test_full_cycle_grant_consumed_at_subagent_stop(self, approvals_test_db, monkeypatch, tmp_path):
+        import re
         import gaia.approvals.store as astore
+        import gaia.store.writer as gwriter
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from gaia.store.writer import check_db_semantic_grant
 
         command = "terraform apply"
         session_id = "test-cycle-session"
@@ -855,55 +868,86 @@ class TestConsumeGrantAtSubagentStop:
 
         monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
 
-        # Step 1: Subagent command denied (writes DB pending row).
+        # Build an isolated writer DB carrying the full v20 approval_grants
+        # shape (confirmed + multi_use columns) so the grant lifecycle never
+        # touches ~/.gaia/gaia.db.  Every gaia.store.writer DB access is
+        # redirected here (insert_semantic_grant / check_db_semantic_grant /
+        # consume_db_semantic_grant).
+        writer_db_path = tmp_path / "writer_grants.db"
+
+        def _make_writer_db():
+            con = sqlite3.connect(str(writer_db_path))
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA foreign_keys = ON")
+            con.create_function(
+                "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
+            )
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS approval_grants (
+                    approval_id          TEXT PRIMARY KEY,
+                    agent_id             TEXT,
+                    session_id           TEXT,
+                    command_set_json     TEXT NOT NULL,
+                    scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
+                    created_at           TEXT NOT NULL
+                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    expires_at           TEXT,
+                    status               TEXT NOT NULL DEFAULT 'PENDING',
+                    consumed_indexes_json TEXT,
+                    consumed_at          TEXT,
+                    revoked_at           TEXT,
+                    multi_use            INTEGER NOT NULL DEFAULT 0,
+                    confirmed            INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
+            con.commit()
+            return con
+
+        monkeypatch.setattr(
+            gwriter, "_connect", lambda db_path=None: _make_writer_db(),
+        )
+
+        # Step 1: Subagent command denied -> DB pending row + approval_id.
         result1 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
         assert not result1.allowed
+        reason = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        m = re.search(r"approval_id:\s*(P-[\w-]+)", reason)
+        assert m, f"no approval_id in deny reason: {reason}"
+        approval_id = m.group(1)
 
-        # DB-side assertion: pending row present.
         pending_rows = astore.get_pending(session_id=session_id, con=assert_con)
         assert len(pending_rows) >= 1, "DB pending row must exist after deny"
 
-        # Step 2: Activation-side bridge (filesystem pending for activate_grants_for_session).
-        # activate_grants_for_session still reads filesystem (pre-migration).
-        # M2 partial migration: this bridge will be removed when the activation
-        # side is migrated to DB in a future task.
-        fs_nonce = generate_nonce()
-        write_pending_approval(
-            nonce=fs_nonce,
-            command=command,
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            session_id=session_id,
+        # Step 2: User approves -> DB grant activated (no filesystem involved).
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        activation = activate_db_pending_by_prefix(
+            nonce_prefix, current_session_id=session_id,
         )
+        assert activation.success, f"activation failed: {activation.reason}"
 
-        results = activate_grants_for_session(session_id)
-        assert len(results) >= 1
-        assert results[0].success
-
-        # Step 3: Retry - passthrough (active filesystem grant)
+        # Step 3: Retry -> ALLOWED via the active grant, and CONSUMED in-step.
         result2 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
-        assert result2.allowed, "Active grant should passthrough"
+        assert result2.allowed, f"active grant should allow the retry, got: {result2.reason}"
 
-        # Step 4: Confirm the grant (as PostToolUse would after execution)
-        confirmed = confirm_grant(command, session_id=session_id)
-        assert confirmed
+        # Step 4: Single-use replay protection -- the consumed grant must not
+        # match again.  This is the security invariant the migration enforces.
+        assert check_db_semantic_grant(command, session_id=session_id) is None, (
+            "grant must be CONSUMED after the matching retry (single-use)"
+        )
 
-        # Step 5: Grant is still usable (not consumed yet -- lives for session)
+        # Step 5: A second retry re-blocks (no live grant remains).
         result3 = validate_bash_command(
             command, is_subagent=True, session_id=session_id,
         )
-        assert result3.allowed, "Confirmed grant should still be usable within the session"
+        assert not result3.allowed, "command must re-block after its grant is consumed"
 
-        # Step 6: SubagentStop consumes all confirmed grants
+        # Step 6: SubagentStop sweep is idempotent -- the retry already consumed
+        # the grant, so there is nothing confirmed-but-unused left to sweep.
         consumed = consume_session_grants(session_id)
-        assert consumed >= 1, "SubagentStop should consume confirmed grants"
-
-        # Step 7: Same command should now be blocked (grant consumed)
-        result4 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
-        )
-        assert not result4.allowed, "Command should be blocked after SubagentStop consumed grant"
+        assert consumed == 0, "no grant should remain to consume at SubagentStop"
