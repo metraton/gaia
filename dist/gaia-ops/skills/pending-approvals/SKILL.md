@@ -37,7 +37,7 @@ report "rejected" when nothing actually changed.
 | `gaia approvals list` | DB grants + filesystem pendings | `cmd_list` (mixed) |
 | `gaia approvals reject NONCE` | filesystem only | `reject_pending` in `hooks/modules/security/approval_grants.py` |
 | `gaia approvals reject-all` | filesystem only | loops `reject_pending` |
-| `gaia approvals clean` | filesystem only | `cleanup_expired_grants` |
+| `gaia approvals clean` | DB (cross-session stale pendings) + filesystem | `cmd_clean` in `bin/cli/approvals.py`: calls `store.list_pending(all_sessions=True)`, transitions every pending older than `DEFAULT_PENDING_TTL_MINUTES` (24 h) to `revoked` via `store.revoke()`, then calls `cleanup_expired_grants` for filesystem files |
 
 The practical consequence: `revoke` is the DB-aware single-id verb; `reject` and
 `reject-all` only touch the legacy filesystem queue. If you need to mark a DB
@@ -105,15 +105,19 @@ Offer bulk cleanup when the user says "limpia todos los pendings", "borra los
 pendientes", or when SessionStart surfaces 5+ orphaned pendings the user has
 not engaged with.
 
-- `gaia approvals reject-all` -- bulk reject across the **filesystem** queue.
-  Returns "0 rejected" when the queue is empty.
-- `gaia approvals clean` -- removes expired/stale **filesystem** files.
+- `gaia approvals reject-all` -- bulk soft-reject across the **filesystem** queue.
+  Returns "0 rejected" when the queue is empty. Does not touch DB rows.
+- `gaia approvals clean` -- the first-class cross-session bulk drain for stale
+  DB pendings: `cmd_clean` calls `store.list_pending(all_sessions=True)` and
+  transitions every pending older than 24 h (`DEFAULT_PENDING_TTL_MINUTES`) to
+  `revoked` via `store.revoke()`, then runs `cleanup_expired_grants` to clean
+  expired filesystem grant files. Runs without a T3 prompt (consent-reducing,
+  listed in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS`). Use this when
+  `gaia approvals pending --all-sessions` shows a backlog of stale rows.
 
-There is no first-class bulk-revoke for the DB queue. If `gaia approvals
-pending --all-sessions` shows rows that need clearing, either revoke each by id
-or call `store.revoke()` in a short Python loop. Do not report "bulk cleanup
-done" after `reject-all` if the DB queue still has pending rows -- check
-`gaia approvals pending --all-sessions` to confirm.
+Do not report "bulk cleanup done" after `reject-all` alone -- it only clears
+the filesystem queue. Run `gaia approvals clean` to drain the DB backlog, then
+confirm with `gaia approvals pending --all-sessions`.
 
 Do not offer `reject-all` when there are active same-session pendings the user
 may still want to approve.
@@ -123,8 +127,9 @@ may still want to approve.
 - Approving without showing the exact COMANDO -- the user consents on the
   verbatim string, not a summary. The full presentation discipline lives in
   `orchestrator-present-approval`; this skill does not restate it.
-- Treating `gaia approvals reject-all` as a DB cleanup -- it operates on the
-  filesystem queue only. DB rows survive the call.
+- Treating `gaia approvals reject-all` as a full cleanup -- it operates on the
+  filesystem queue only; DB rows survive the call. Use `gaia approvals clean`
+  to drain the DB backlog.
 - Reporting "rechazado" without verifying the store -- `revoke` returns
   `not_found` for filesystem-only pendings; the inverse happens for `reject` on
   DB rows. Pick the verb by store, or be ready to fall back.

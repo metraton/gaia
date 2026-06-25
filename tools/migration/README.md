@@ -19,7 +19,12 @@ desde el filesystem hacia `~/.gaia/gaia.db`.
 | 01 | Episodes | `.claude/project-context/episodic-memory/episodes.jsonl` | `episodes` (+`episodes_fts`) |
 | 02 | Memory | `~/.claude/projects/-home-jorge-ws-me/memory/*.md` | `memory` (+`memory_fts`) |
 | 03 | Context contracts | `.claude/project-context/project-context.json` | `context_contracts` |
-| 04 | Harness events | `.claude/events/events.jsonl` | `harness_events` |
+| 04 | Harness events | ~~`.claude/events/events.jsonl`~~ (ELIMINADO) | `harness_events` |
+
+> **Dominio 04 completado y eliminado.** `events.jsonl` y su archivo `.lock` fueron
+> retirados. El hook `event_writer` escribe directamente a `harness_events` en la DB.
+> El script `migrate_04_harness_events.py` y su wrapper `.sh` fueron borrados una vez
+> completada la absorción. Los datos vivos se leen desde `harness_events` en `~/.gaia/gaia.db`.
 
 Cada dominio tiene 2 archivos:
 
@@ -37,8 +42,8 @@ bootstrap.sh                             # crea/inicializa ~/.gaia/gaia.db con s
 ./migrate_01_episodes.sh                 # ~50-80 MB de SQL, batch 80
 ./migrate_02_memory.sh                   # 28 .md (MEMORY.md excluido)
 ./migrate_03_context_contracts.sh        # 12 secciones
-./migrate_04_harness_events.sh           # ~5-10 MB de SQL, batch 200
-./validate.sh                            # 5 aserciones read-only
+# migrate_04_harness_events.sh ELIMINADO — dominio 04 completado; eventos en DB-canonical
+./validate.sh                            # aserciones read-only (V4 eliminada junto con 04)
 ```
 
 Cada script imprime `[migrate_NN] OK` al terminar.
@@ -50,14 +55,7 @@ Cada script imprime `[migrate_NN] OK` al terminar.
 | 01 episodes | `INSERT OR IGNORE` (PK = `episode_id`) | sí |
 | 02 memory | `INSERT OR IGNORE` (PK = `(project, name)`) | sí |
 | 03 context_contracts | `INSERT OR IGNORE` (PK = `(project, section_name)`) | sí |
-| 04 harness_events | `INSERT` simple (sin PK natural) | **no — duplica filas** |
-
-Para re-ejecutar 04 limpiamente:
-
-```
-sqlite3 ~/.gaia/gaia.db "DELETE FROM harness_events WHERE project='me';"
-./migrate_04_harness_events.sh
-```
+| 04 harness_events | N/A — tool eliminado; escritura vía `event_writer` DB-direct | N/A |
 
 ## Validación
 
@@ -68,7 +66,7 @@ sqlite3 ~/.gaia/gaia.db "DELETE FROM harness_events WHERE project='me';"
 | V1 | `COUNT(*) FROM episodes` == líneas no vacías de `episodes.jsonl` |
 | V2 | `COUNT(*) FROM memory` == archivos `.md` (excluyendo `MEMORY.md`) |
 | V3 | `COUNT(*) FROM context_contracts` == 12 |
-| V4 | `COUNT(*) FROM harness_events` == líneas no vacías de `events.jsonl` |
+| ~~V4~~ | ~~`COUNT(*) FROM harness_events` == líneas no vacías de `events.jsonl`~~ — eliminado junto con el dominio 04 |
 | V5 | `COUNT(*) FROM episodes_fts` == `COUNT(*) FROM episodes` (FTS sync) |
 
 Exit code: 0 si todas pasan, 1 si alguna falla.

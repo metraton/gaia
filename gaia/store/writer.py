@@ -28,6 +28,7 @@ Public API::
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -939,6 +940,90 @@ def save_integration(
         return _applied()
     except Exception as exc:
         return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: write_harness_event
+# ---------------------------------------------------------------------------
+#
+# Brief 54 / Task 2.2: the harness event pipeline (every hook firing) writes
+# here instead of the legacy events.jsonl file. This is the hot path -- every
+# AGENT_DISPATCH / COMMAND_EXECUTED / AGENT_COMPLETE / SESSION_END event flows
+# through it -- so the contract is: non-blocking and silent-on-failure at the
+# call site (the hook wraps this in try/except: pass), append-only INSERT, no
+# permission gate (episodic audit events are not curated memory).
+#
+# Column mapping (harness_events, schema.sql ~L756):
+#   type      <- event_type
+#   source    <- source
+#   agent     <- agent
+#   result    <- result
+#   severity  <- severity
+#   payload   <- json.dumps(meta)   (NULL when meta is falsy)
+#   workspace <- workspace          (None-safe; column is nullable, no FK)
+#   ts        <- _now_iso()
+#
+# No _ensure_workspace_row call: harness_events.workspace is a plain nullable
+# TEXT column with no FK to workspaces, so an arbitrary or NULL workspace is
+# valid and must not trigger workspace-row creation.
+# ---------------------------------------------------------------------------
+
+def write_harness_event(
+    *,
+    event_type: str,
+    source: str | None = None,
+    agent: str | None = None,
+    result: str | None = None,
+    severity: str | None = "info",
+    meta: Mapping[str, Any] | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Append one row to ``harness_events`` and return its id.
+
+    This is the DB cutover of the historical ``EventWriter.write_event`` file
+    writer. It is append-only and not permission-gated. Callers in the hook
+    pipeline wrap it in ``try/except: pass`` -- this function itself does not
+    swallow exceptions, so tests and direct callers see real failures.
+
+    Args:
+        event_type: Dotted event category -> ``type`` column (NOT NULL).
+        source:     Who emitted the event (e.g. "hook").
+        agent:      Agent involved, or empty/None for non-agent events.
+        result:     Outcome summary string.
+        severity:   info | warning | error.
+        meta:       Optional structured data; serialized to JSON into the
+                    ``payload`` column. Falsy meta -> NULL payload.
+        workspace:  Workspace name or None (column is nullable, no FK).
+        db_path:    Optional explicit DB path (used by tests).
+
+    Returns:
+        Integer primary key of the inserted row.
+    """
+    payload = json.dumps(meta, separators=(",", ":")) if meta else None
+    con = _connect(db_path)
+    try:
+        cur = con.execute(
+            """
+            INSERT INTO harness_events
+                (workspace, ts, type, source, agent, result, severity, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                workspace,
+                _now_iso(),
+                event_type,
+                source,
+                agent,
+                result,
+                severity,
+                payload,
+            ),
+        )
+        con.commit()
+        return cur.lastrowid
     finally:
         con.close()
 

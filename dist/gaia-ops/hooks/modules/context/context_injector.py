@@ -450,17 +450,33 @@ def build_project_context(
         if critical_summary:
             context_string += critical_summary
 
-        # Inject recent operational events (non-blocking)
+        # Inject recent operational events (non-blocking).
+        # Brief 54 / Task 2.2: read from the harness_events DB table via
+        # gaia.store.reader.cross_surface_query instead of the legacy
+        # events.jsonl reader. The reader returns rows shaped as
+        # {surface, timestamp, type, agent, summary, raw} -- NOT the old
+        # {ts, type, agent, result} JSONL shape -- so the formatting loop
+        # below is remapped to those keys (audit Risk 4: without the remap
+        # the "Recent Events" block silently goes blank).
         try:
-            from ..events.event_writer import read_events
-            recent = read_events(hours=24, limit=20)
+            import sys as _sys
+            from pathlib import Path as _Path
+            try:
+                from gaia.store import reader as _reader
+            except ImportError:
+                _repo_root = _Path(__file__).resolve().parents[3]
+                _sys.path.insert(0, str(_repo_root))
+                from gaia.store import reader as _reader
+            recent = _reader.cross_surface_query(
+                surface="harness_events", since="24h", last=20,
+            )
             if recent:
                 lines = ["\n# Recent Events (last 24h)"]
                 for evt in recent:
-                    ts_short = evt.get("ts", "")[:16]
-                    etype = evt.get("type", "")
-                    agent_name = evt.get("agent", "")
-                    result_str = evt.get("result", "")
+                    ts_short = (evt.get("timestamp") or "")[:16]
+                    etype = evt.get("type") or ""
+                    agent_name = evt.get("agent") or ""
+                    result_str = evt.get("summary") or ""
                     label = f"{agent_name}: " if agent_name else ""
                     lines.append(f"- [{ts_short}] {etype}: {label}{result_str}")
                 context_string += "\n".join(lines) + "\n"

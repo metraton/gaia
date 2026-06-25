@@ -109,7 +109,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia memory` | `bin/cli/memory.py` | Episodic memory: FTS5 search, show episode, health checks |
 | `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
-| `gaia plans` | `bin/cli/plans.py` | List and display briefs/plans with status info |
+| `gaia plan` | `bin/cli/plan.py` | Manage plans (one per brief, DB-canonical): save, show, list, status |
 | `gaia workspace` | `bin/cli/workspace.py` | Workspace identity and consolidate operations |
 | `gaia scan` | `bin/cli/scan.py` | In-process project scan: detect stack, sync results to ~/.gaia/gaia.db (DB-canonical; no project-context.json written) |
 | `gaia status` | `bin/cli/status.py` | Quick installation snapshot: version, mode, DB path, registered workspace, last scan |
@@ -289,7 +289,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia history` | Session history viewer | Debugging past sessions |
 | `gaia memory` | Episodic memory inspect/search | Recall past episodes, memory health |
 | `gaia approvals` | List/accept/reject pending T3 approvals | Approval workflow |
-| `gaia brief` / `gaia plans` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
+| `gaia brief` / `gaia plan` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
 | `gaia context` | Display and refresh project context | Audit context state |
 | `gaia paths` | Print resolved storage paths | Path debugging |
 | `gaia workspace` | Workspace identity and consolidate operations | Multi-workspace setups |
