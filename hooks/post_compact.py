@@ -35,6 +35,7 @@ def _handle_post_compact(event) -> None:
 
     response = {
         "hookSpecificOutput": {
+            "hookEventName": "PostCompact",
             "additionalContext": context,
         }
     }
