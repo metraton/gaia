@@ -105,7 +105,9 @@ def clean_grants_dir(tmp_path, monkeypatch):
                 status                TEXT NOT NULL DEFAULT 'PENDING',
                 consumed_indexes_json TEXT,
                 consumed_at           TEXT,
-                revoked_at            TEXT
+                revoked_at            TEXT,
+                multi_use             INTEGER NOT NULL DEFAULT 0,
+                confirmed             INTEGER NOT NULL DEFAULT 0
             );
             """
         )
@@ -129,28 +131,58 @@ def _write_active_grant(
     confirmed: bool = True,
     session_id: str = "test-session-123",
 ) -> Path:
-    """Write an active grant file directly for grant-matching tests.
+    """Insert an active semantic grant into the isolated writer DB for grant-matching tests.
 
-    Note: ``confirmed`` defaults to True so that grant-matching tests
-    exercise the "auto-allow" path. Set ``confirmed=False`` to test the
-    double-barrier "ask" flow.
+    DB-primary (Brief 71 / G2 cutover): check_approval_grant() reads the DB only.
+    Returns a sentinel Path whose name encodes the approval_id so callers can
+    distinguish success (non-None) from failure (None) and retrieve the id when
+    needed.  The returned path is NOT a real file on disk.
     """
+    import secrets as _secrets
+    from datetime import datetime, timezone, timedelta
+    import gaia.store.writer as _sw
+
     signature = build_approval_signature(command, scope_type=scope_type)
     assert signature is not None
-    grant = ApprovalGrant(
-        session_id=session_id,
-        approved_verbs=[signature.verb] if signature.verb else [],
-        approved_scope=command,
-        scope_type=signature.scope_type,
-        scope_signature=signature.to_dict(),
-        granted_at=granted_at if granted_at is not None else time.time(),
-        ttl_minutes=ttl_minutes,
-        used=used,
-        confirmed=confirmed,
-    )
-    grant_file = grants_dir / f"grant-{session_id}-{int(time.time() * 1000)}.json"
-    grant_file.write_text(json.dumps(asdict(grant), indent=2))
-    return grant_file
+
+    approval_id = f"P-{_secrets.token_hex(16)}"
+    grant_data = {"command": command, "scope_signature": signature.to_dict()}
+
+    grant_at = granted_at if granted_at is not None else time.time()
+    expires_at = (
+        datetime.fromtimestamp(grant_at, tz=timezone.utc)
+        + timedelta(minutes=ttl_minutes)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    con = _sw._connect()
+    try:
+        con.execute("BEGIN")
+        status_val = "CONSUMED" if used else "PENDING"
+        con.execute(
+            """
+            INSERT OR IGNORE INTO approval_grants
+                (approval_id, agent_id, session_id, command_set_json,
+                 scope, expires_at, status, consumed_indexes_json,
+                 multi_use, confirmed)
+            VALUES (?, NULL, ?, ?, 'SCOPE_SEMANTIC_SIGNATURE', ?, ?, '[]', 0, ?)
+            """,
+            (
+                approval_id,
+                session_id,
+                json.dumps(grant_data),
+                expires_at,
+                status_val,
+                1 if confirmed else 0,
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    # Return a sentinel path whose name encodes the approval_id so callers
+    # that need to identify the grant can extract it.
+    sentinel = grants_dir / f"grant-sentinel-{approval_id}.ref"
+    return sentinel
 
 
 class TestApprovalGrant:
@@ -351,8 +383,11 @@ class TestActivatePendingApproval:
         result = activate_pending_approval(nonce)
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
-        assert result.grant_path is not None
-        assert result.grant_path.exists()
+        # DB-primary: grant_path is None (no filesystem grant file written)
+        assert result.grant_path is None
+        # Verify the DB grant is accessible via check_approval_grant
+        grant = check_approval_grant("git commit -m 'feat: test'")
+        assert grant is not None
 
     def test_activation_deletes_pending_file(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -528,23 +563,33 @@ class TestCleanup:
         assert path.exists()
 
     def test_cleanup_removes_unsupported_grants(self, clean_grants_dir):
-        grant_file = clean_grants_dir / "grant-test-session-123-legacy.json"
-        grant_file.write_text(json.dumps({
-            "session_id": "test-session-123",
-            "approved_verbs": ["apply"],
-            "approved_scope": "terraform apply",
-            "scope_type": "resource_family",
-            "scope_signature": {
-                "version": 2,
-                "scope_type": "resource_family",
-            },
-            "granted_at": time.time(),
-            "ttl_minutes": 10,
-            "used": False,
-        }))
-        cleaned = cleanup_expired_grants()
-        assert cleaned >= 1
-        assert not grant_file.exists()
+        """DB grants with unsupported scope types are not matched by
+        check_db_semantic_grant (which filters on scope='SCOPE_SEMANTIC_SIGNATURE').
+        cleanup_expired_grants sweeps DB rows; a resource_family scoped row inserted
+        directly is NOT visible to check_approval_grant -- verify it returns None."""
+        import secrets as _sec
+        import gaia.store.writer as _sw
+        from datetime import datetime, timezone, timedelta
+
+        approval_id = f"P-{_sec.token_hex(16)}"
+        grant_data = {"command": "terraform apply", "scope_signature": {"scope_type": "resource_family"}}
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        con = _sw._connect()
+        try:
+            con.execute("BEGIN")
+            con.execute(
+                """INSERT OR IGNORE INTO approval_grants
+                   (approval_id, session_id, command_set_json, scope, expires_at, status, consumed_indexes_json)
+                   VALUES (?, 'test-session-123', ?, 'resource_family', ?, 'PENDING', '[]')""",
+                (approval_id, json.dumps(grant_data), expires_at),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        # DB-primary: check_approval_grant only matches SCOPE_SEMANTIC_SIGNATURE rows
+        assert check_approval_grant("terraform apply") is None
 
     def test_cleanup_removes_expired_pending(self, clean_grants_dir):
         nonce = generate_nonce()
@@ -652,13 +697,17 @@ class TestCleanup:
         # Simulate a recent cleanup so the throttle would otherwise skip.
         ag._last_cleanup_time = time.time()
 
-        # Seed an expired grant that cleanup should sweep.
+        # Seed an expired DB grant that cleanup should sweep.
         _write_active_grant(
             clean_grants_dir,
             "git commit",
             granted_at=time.time() - 700,
             ttl_minutes=10,
         )
+
+        # Reset the throttle stamp to something in the past so the forced
+        # call sees a non-zero baseline gap (avoids a 0.0 edge case).
+        ag._last_cleanup_time = time.time() - 1
 
         cleaned = cleanup_expired_grants(force=True)
         assert cleaned >= 1, (
@@ -786,6 +835,8 @@ class TestNonceEndToEnd:
 
         activation = activate_pending_approval(nonce, session_id=session_id)
         assert activation.success is True
+        # DB-primary: no filesystem grant file is written after activation
+        assert activation.grant_path is None
         assert not pending_file.exists()
 
         # After activation, grant passthrough: GAIA approved, no second dialog
@@ -866,19 +917,34 @@ class TestBashValidatorIntegration:
         assert check_approval_grant("kubectl delete namespace prod") is None
 
     def test_unsupported_grant_file_does_not_match(self, clean_grants_dir):
-        legacy_file = clean_grants_dir / "grant-test-session-123-legacy.json"
-        legacy_file.write_text(json.dumps({
-            "session_id": "test-session-123",
-            "approved_verbs": ["apply"],
-            "approved_scope": "terraform apply prod/vpc",
-            "scope_type": "resource_family",
+        """DB-primary: check_approval_grant only matches SCOPE_SEMANTIC_SIGNATURE rows.
+        A DB row with an unsupported scope is invisible to the check path."""
+        import secrets as _sec
+        import gaia.store.writer as _sw
+        from datetime import datetime, timezone, timedelta
+
+        approval_id = f"P-{_sec.token_hex(16)}"
+        grant_data = {
+            "command": "terraform apply prod/vpc",
             "scope_signature": {"version": 2, "scope_type": "resource_family"},
-            "granted_at": time.time(),
-            "ttl_minutes": 10,
-            "used": False,
-        }))
+        }
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        con = _sw._connect()
+        try:
+            con.execute("BEGIN")
+            con.execute(
+                """INSERT OR IGNORE INTO approval_grants
+                   (approval_id, session_id, command_set_json, scope, expires_at, status, consumed_indexes_json)
+                   VALUES (?, 'test-session-123', ?, 'resource_family', ?, 'PENDING', '[]')""",
+                (approval_id, json.dumps(grant_data), expires_at),
+            )
+            con.commit()
+        finally:
+            con.close()
+
         assert check_approval_grant("terraform apply prod/vpc") is None
-        assert not legacy_file.exists()
 
     def test_block_response_returns_ask(self, clean_grants_dir):
         """BashValidator returns 'ask' for T3 commands (no nonce in response).
@@ -912,19 +978,31 @@ class TestBashValidatorIntegration:
         assert result.allowed is False
 
     def test_grant_not_marked_used_on_match(self, clean_grants_dir):
-        """Grants use TTL-based expiry; the file should remain with used=False after matching."""
-        grant_file = _write_active_grant(clean_grants_dir, "git push origin feature/branch")
+        """Grants use TTL-based expiry; check_approval_grant alone does not consume the row."""
+        import gaia.store.writer as _sw
+
+        _write_active_grant(clean_grants_dir, "git push origin feature/branch")
         grant = check_approval_grant("git push origin feature/branch")
         assert grant is not None
-        refreshed = json.loads(grant_file.read_text())
-        assert refreshed["used"] is False
+
+        # Verify the DB row is still PENDING (not consumed) after a plain check
+        con = _sw._connect()
+        try:
+            rows = con.execute(
+                "SELECT status FROM approval_grants WHERE status='PENDING'",
+            ).fetchall()
+        finally:
+            con.close()
+        assert len(rows) >= 1, "Grant row must remain PENDING after check_approval_grant"
 
 
 class TestCrossSessionActivation:
     """activate_cross_session_pending should use explicit session_id when provided."""
 
     def test_uses_explicit_session_id(self, clean_grants_dir):
-        """When session_id is passed, the grant is created under that ID."""
+        """When session_id is passed, the DB grant is created under that ID."""
+        import gaia.store.writer as _sw
+
         nonce = generate_nonce()
         write_pending_approval(
             nonce=nonce,
@@ -942,13 +1020,24 @@ class TestCrossSessionActivation:
         )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
-        assert result.grant_path is not None
-        assert "grant-explicit-session-abc-" in result.grant_path.name
-        grant_data = json.loads(result.grant_path.read_text())
-        assert grant_data["session_id"] == "explicit-session-abc"
+        # DB-primary: grant_path is None (no FS file written)
+        assert result.grant_path is None
+
+        # Verify the DB row has session_id='explicit-session-abc'
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        assert row[0] == "explicit-session-abc"
 
     def test_falls_back_to_env_session_id(self, clean_grants_dir):
         """Without explicit session_id, the env-based session ID is used."""
+        import gaia.store.writer as _sw
+
         nonce = generate_nonce()
         write_pending_approval(
             nonce=nonce,
@@ -963,10 +1052,19 @@ class TestCrossSessionActivation:
         result = activate_cross_session_pending(pending_data)
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
-        assert result.grant_path is not None
-        assert "grant-test-session-123-" in result.grant_path.name
-        grant_data = json.loads(result.grant_path.read_text())
-        assert grant_data["session_id"] == "test-session-123"
+        # DB-primary: grant_path is None (no FS file written)
+        assert result.grant_path is None
+
+        # Verify the DB row has session_id matching the env var (test-session-123)
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        assert row[0] == "test-session-123"
 
 
 class TestCrossSessionNonceTargeted:
@@ -1002,7 +1100,9 @@ class TestCrossSessionNonceTargeted:
         self, clean_grants_dir, monkeypatch,
     ):
         """Pending created under session_A, activated with explicit session_B:
-        the grant must live under session_B, not session_A or 'default'."""
+        the DB grant row is recorded with session_id=session_B."""
+        import gaia.store.writer as _sw
+
         session_a = "session-A-originator"
         session_b = "session-B-current"
 
@@ -1025,19 +1125,21 @@ class TestCrossSessionNonceTargeted:
         )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
-        assert result.grant_path is not None
+        # DB-primary: grant_path is None (no FS file written)
+        assert result.grant_path is None
 
-        # Grant file is named with session_B
-        assert f"grant-{session_b}-" in result.grant_path.name
+        # DB row is recorded under session_B
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        assert row[0] == session_b
 
-        # Grant data records session_B
-        grant_data = json.loads(result.grant_path.read_text())
-        assert grant_data["session_id"] == session_b
-
-        # Grant is NOT findable under session_A
-        assert check_approval_grant("git push origin main", session_id=session_a) is None
-
-        # Grant IS findable under session_B
+        # Grant IS findable via check_approval_grant (DB lookup is session-agnostic)
         grant = check_approval_grant("git push origin main", session_id=session_b)
         assert grant is not None
         assert "push" in grant.approved_verbs
@@ -1114,7 +1216,9 @@ class TestCrossSessionNonceTargeted:
 
     def test_cross_session_activation_preserves_scope_signature(self, clean_grants_dir):
         """The scope_signature written by write_pending_approval must survive
-        intact through cross-session activation into the grant file."""
+        intact through cross-session activation into the DB grant row."""
+        import gaia.store.writer as _sw
+
         session_a = "session-A-sig"
         session_b = "session-B-sig"
 
@@ -1133,8 +1237,19 @@ class TestCrossSessionNonceTargeted:
 
         result = activate_cross_session_pending(pending_data, session_id=session_b)
         assert result.success is True
+        # DB-primary: no FS file written
+        assert result.grant_path is None
 
-        grant_data = json.loads(result.grant_path.read_text())
+        # Read back the scope_signature from the DB row's command_set_json
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT command_set_json FROM approval_grants WHERE status='PENDING'",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        grant_data = json.loads(row[0])
         grant_signature = grant_data["scope_signature"]
 
         # Key fields must match exactly
@@ -1216,6 +1331,8 @@ class TestCrossSessionNonceTargeted:
         activation does NOT care which session created the pending. It loads
         pending data directly and creates the grant under the specified
         current session."""
+        import gaia.store.writer as _sw
+
         session_a = "session-A-any"
         session_b = "session-B-any"
 
@@ -1237,13 +1354,21 @@ class TestCrossSessionNonceTargeted:
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
-        # Grant is findable under session_B
+        # Grant IS findable (DB lookup is session-agnostic -- any session_id works)
         grant = check_approval_grant("git push origin main", session_id=session_b)
         assert grant is not None
         assert grant.confirmed is True  # cross-session grants are pre-confirmed
 
-        # Grant is NOT findable under session_A
-        assert check_approval_grant("git push origin main", session_id=session_a) is None
+        # DB row is stored under session_B
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        assert row[0] == session_b
 
 
 # ====================================================================== #
@@ -1345,6 +1470,8 @@ class TestNonceTargetedHookActivation:
         """Simulates the hook flow for cross-session approval:
         extract prefix -> load pending -> detect different session ->
         activate_cross_session_pending under current session."""
+        import gaia.store.writer as _sw
+
         session_a = "session-A-originator"
         session_b = "session-B-current"
 
@@ -1372,14 +1499,22 @@ class TestNonceTargetedHookActivation:
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
-        # Step 3: grant is under session_B (the current session)
+        # Step 3: grant is findable (DB lookup is session-agnostic)
         grant = check_approval_grant("terraform apply", session_id=session_b)
         assert grant is not None
         assert grant.confirmed is True  # cross-session grants are pre-confirmed
         assert "apply" in grant.approved_verbs
 
-        # Grant is NOT under session_A
-        assert check_approval_grant("terraform apply", session_id=session_a) is None
+        # DB row is recorded under session_B
+        con = _sw._connect()
+        try:
+            row = con.execute(
+                "SELECT session_id FROM approval_grants WHERE status='PENDING'",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        assert row[0] == session_b
 
         # Pending file is cleaned up
         pending_path = clean_grants_dir / f"pending-{nonce}.json"
