@@ -1,0 +1,69 @@
+# Permanent mutation-testing baseline for Gaia's security core.
+#
+# AC-3 (brief: fundamento-de-tests). Report-only (D1): this config is run on
+# demand to measure mutation score on the security-critical modules; it is NOT
+# wired into a CI gate.
+#
+# Scope -- the four security-core modules:
+#   - hooks/modules/security/tiers.py            (tier classification)
+#   - hooks/modules/security/mutative_verbs.py   (mutative-verb detection)
+#   - hooks/modules/security/blocked_commands.py (irreversible-command denial)
+#   - hooks/modules/security/approval_grants.py  (nonce/approval store)
+#
+# cosmic-ray's `module-path` is a single path. Pointed at the security package
+# it mutates every module in it, so `excluded-modules` (glob patterns) carves
+# the package down to exactly the four core modules above. When a non-core
+# security module gains test coverage worth measuring, drop its exclusion line.
+#
+# Re-init required after any change to module-path / excluded-modules /
+# timeout / test-command:
+#   uv run cosmic-ray init tests/evals/mutation-security-core.toml security-core.sqlite
+#   uv run cosmic-ray exec tests/evals/mutation-security-core.toml security-core.sqlite   # T3
+#   uv run cr-rate security-core.sqlite
+#
+# Known equivalent mutants on tiers.py (cannot be killed by any reachable input,
+# documented so a future low score is read correctly, not chased):
+#   - tiers.py:178 ReplaceOrWithAnd  -- outer empty/whitespace guard; the cached
+#     guard (tiers.py:89, covered by test) masks it through the public API.
+#   - tiers.py:132 Eq_Is            -- CPython interns the short category string,
+#     so `is` behaves identically to `==` here.
+#   - tiers.py:134 Eq_* (all)       -- both the matched branch and the
+#     safe-by-elimination default return T0, so no comparison change is
+#     observable.
+
+[cosmic-ray]
+module-path = "hooks/modules/security"
+timeout = 30.0
+excluded-modules = [
+    "**/__init__.py",
+    "**/approval_cleanup.py",
+    "**/approval_constants.py",
+    "**/approval_messages.py",
+    "**/approval_scopes.py",
+    "**/blocked_message_formatter.py",
+    "**/capability_classes.py",
+    "**/command_semantics.py",
+    "**/composition_rules.py",
+    "**/flag_classifiers.py",
+    "**/gaia_db_write_guard.py",
+    "**/inline_ast_analyzer.py",
+    "**/network_hosts.py",
+    "**/prompt_validator.py",
+    "**/shell_unwrapper.py",
+]
+test-command = "python3 -m pytest tests/hooks/modules/security/ -q -x --no-header"
+
+[cosmic-ray.distributor]
+name = "local"
+
+# NOTE on parallelism: the brief requested num-workers = 4, but cosmic-ray's
+# `local` distributor runs strictly serially -- it has no worker-count knob.
+# Parallelism requires the `http` distributor with separately-launched worker
+# processes, which the single-`exec` baseline run does not provision. We keep
+# `local` (the distributor the AC-3 spike validated end-to-end). If a 4-way
+# parallel run is later needed, switch to:
+#     [cosmic-ray.distributor]
+#     name = "http"
+#     [cosmic-ray.distributor.http]
+#     worker-urls = ["http://localhost:9876", ...]   # one URL per worker
+# and start the workers with `cosmic-ray http-worker` before `exec`.

@@ -75,5 +75,17 @@ probe-*.md
 # Pytest temp dir (basetemp in pyproject.toml)
 .pytest-tmp/
 
-# Evidence dir (repo-root, prevent re-accumulation)
-evidence/
+# Evidence dir (repo-root scratch, prevent re-accumulation).
+# Anchored with leading slash so tests/evals/evidence/ (the permanent
+# AC-evidence store) is NOT excluded by this rule.
+/evidence/
+
+# Cosmic-ray mutation-testing session databases (ephemeral per-run scratch).
+# The permanent config lives at tests/evals/mutation-security-core.toml and IS
+# tracked; the .sqlite session files it produces are regenerable and are not.
+*.sqlite
+# AC-3 spike scratch (superseded by tests/evals/mutation-security-core.toml)
+tiers-spike.sqlite
+mutation-tiers-spike.toml
+# Cosmic-ray working directory (mutated copies of source, never committed)
+mutants/
