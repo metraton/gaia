@@ -69,6 +69,32 @@ def _clear_plugin_mode_cache():
 
 
 @pytest.fixture(autouse=True)
+def _clear_path_cache():
+    """Clear path resolution cache before and after each test.
+
+    find_claude_dir() and get_plugin_data_dir() are decorated with
+    @lru_cache(maxsize=1) and resolve from Path.cwd(). Without clearing,
+    the first test to call either function caches a .claude path that
+    contaminates every subsequent test whose cwd differs.
+    """
+    try:
+        import sys
+        hooks_dir = str(Path(__file__).resolve().parent.parent / "hooks")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        from modules.core.paths import clear_path_cache
+        clear_path_cache()
+    except (ImportError, Exception):
+        pass
+    yield
+    try:
+        from modules.core.paths import clear_path_cache
+        clear_path_cache()
+    except (ImportError, Exception):
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _isolate_gaia_data_dir(tmp_path, monkeypatch):
     """Architectural test-DB isolation -- the personal ~/.gaia is unreachable.
 
