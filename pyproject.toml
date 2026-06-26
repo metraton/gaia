@@ -33,3 +33,8 @@ testpaths = ["tests", "tools/scan/tests"]
 markers = [
     "parity: JS-Python CLI parity comparison tests",
 ]
+
+[dependency-groups]
+dev = [
+    "cosmic-ray>=8.4.6",
+]
