@@ -386,6 +386,71 @@ _PYTHON_INTERPRETERS: FrozenSet[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Script-file interpreters (Step 3b2)
+# ---------------------------------------------------------------------------
+# Interpreters that take a SCRIPT FILE as a positional argument
+# (``python3 deploy.py``, ``bash setup.sh``, ``node migrate.js``).  Without
+# this set the verb scanner sees only the filename token -- which carries a
+# ``.`` and so is rejected as a non-subcommand -- and the command slips through
+# as safe by elimination, executing the file's mutations without approval.
+# The fix reads the file and classifies it by REAL invocation (AST for Python,
+# the blocked/mutative regex layer for shells and other interpreters), never by
+# the bare ``<interp> <file>`` shape.  ``ruby``/``perl``/``php``/``node`` have
+# no vendored AST, so their files go through the same regex layer as shells.
+_SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
+    "python", "python3",
+    "python3.10", "python3.11", "python3.12", "python3.13",
+    "bash", "sh", "zsh", "dash", "ksh",
+    "node", "ruby", "perl", "php",
+})
+
+# File extensions whose interpreter is implied by ``./script`` (no explicit
+# interpreter token).  Maps the extension to the analysis lane used for its
+# content: "python" routes through the AST analyzer, "shell" through the
+# blocked/mutative regex layer.
+_SHEBANG_EXT_LANES: Dict[str, str] = {
+    ".py": "python",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+    ".js": "shell",
+    ".mjs": "shell",
+    ".cjs": "shell",
+    ".rb": "shell",
+    ".pl": "shell",
+    ".php": "shell",
+}
+
+# Cap on bytes read from a script file during classification.  A script larger
+# than this is unusual for the inline-evasion case and reading it in full would
+# add latency to every hook invocation; we read a bounded prefix, which is
+# enough to catch the mutative calls an evasion script front-loads.
+_MAX_SCRIPT_READ_BYTES = 256 * 1024
+
+# Interpreter flags that CONSUME the next token as their value AND mean the
+# invocation has no script-file positional (the payload is inline code or a
+# module name).  When one of these is present the script-file lane defers --
+# the inline path (Step 3b) or ordinary verb scanning handles the command.
+#   python -c <code> / -m <module>   bash -c <code>   node -e <code>
+_INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "python": frozenset({"-c", "-m"}),
+    "python3": frozenset({"-c", "-m"}),
+    "python3.10": frozenset({"-c", "-m"}),
+    "python3.11": frozenset({"-c", "-m"}),
+    "python3.12": frozenset({"-c", "-m"}),
+    "python3.13": frozenset({"-c", "-m"}),
+    "bash": frozenset({"-c"}),
+    "sh": frozenset({"-c"}),
+    "zsh": frozenset({"-c"}),
+    "dash": frozenset({"-c"}),
+    "ksh": frozenset({"-c"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print", "-r", "--require"}),
+    "ruby": frozenset({"-e"}),
+    "perl": frozenset({"-e", "-E"}),
+    "php": frozenset({"-r"}),
+}
+
+# ---------------------------------------------------------------------------
 # Layer 1: Shell command extraction from string literals
 # ---------------------------------------------------------------------------
 _STRING_LITERAL_RE = _re.compile(r"""(?:['"])((?:[^'"\\\n]|\\.){3,})(?:['"])""")
@@ -1073,6 +1138,18 @@ def detect_mutative_command(command: str) -> MutativeResult:
                     reason=cap.reason,
                 )
 
+    # --- Step 1d: Script-file analysis (python3 deploy.py, bash setup.sh, ./x) ---
+    # An interpreter invoked with a script FILE as a positional argument, or a
+    # direct ``./script`` invocation, hides its mutations inside the file --
+    # the verb scanner sees only the filename.  Read the referenced file and
+    # classify it by REAL invocation, the same standard the inline -c path meets.
+    # Placed before the single-token early return so a bare ``./deploy.sh`` (one
+    # token) is still inspected.  Returns None when the command is not a
+    # recognized script-file shape, so detection continues normally.
+    script_result = _check_script_file(command, base_cmd, family, semantics)
+    if script_result is not None:
+        return script_result
+
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
         return MutativeResult(
@@ -1583,6 +1660,205 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
         # Strip a trailing matched quote pair if shlex left them in place.
         return m.group(1).strip().strip("'\"")
     return ""
+
+
+def _resolve_script_argument(
+    base_cmd: str, semantics: "CommandSemantics",
+) -> "Optional[Tuple[str, str]]":
+    """Identify a script-file invocation and return ``(path, lane)``.
+
+    Two shapes are recognized:
+
+    * ``<interpreter> <script-file>`` -- the first positional argument after a
+      known interpreter, whose lane (``"python"`` or ``"shell"``) is decided by
+      the interpreter, not the filename.
+    * ``./script`` / ``path/to/script`` -- a direct executable invocation whose
+      lane is inferred from the file extension via ``_SHEBANG_EXT_LANES``.
+
+    Returns ``None`` when the command is not a script-file invocation, so the
+    caller continues with ordinary verb detection.
+    """
+    raw_tokens = semantics.tokens
+    if not raw_tokens:
+        return None
+
+    if base_cmd in _SCRIPT_FILE_INTERPRETERS:
+        lane = "python" if base_cmd in _PYTHON_INTERPRETERS else "shell"
+        defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset())
+        # Walk the args (original casing) and return the first true positional
+        # -- the script file.  Standalone interpreter switches (-u, -O, -x, ...)
+        # are skipped; flags that consume the next token as inline code or a
+        # module name (-c, -m, -e, ...) mean there is NO script file, so we
+        # defer to the inline path / verb scanner by returning None.  The stdin
+        # sentinel "-" likewise defers (heredoc path owns it).
+        for token in raw_tokens[1:]:
+            if token == "-":
+                return None
+            if token in defer_flags:
+                return None
+            if token.startswith("-"):
+                continue
+            return (token, lane)
+        return None
+
+    # Direct ``./script`` or ``path/script.ext`` invocation: the executable
+    # token IS the script.  Use the original-case token so the path resolves
+    # correctly on case-sensitive filesystems.
+    invoked = raw_tokens[0]
+    if "/" in invoked:
+        for ext, lane in _SHEBANG_EXT_LANES.items():
+            if invoked.endswith(ext):
+                return (invoked, lane)
+    return None
+
+
+def _read_script_content(path: str) -> "Optional[str]":
+    """Read a bounded prefix of a script file for content classification.
+
+    Returns ``None`` when the path cannot be resolved to a readable regular
+    file -- the caller treats that as the conservative (mutative) case, because
+    an interpreter pointed at an un-inspectable payload could do anything.
+    """
+    import os
+
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(_MAX_SCRIPT_READ_BYTES)
+    except (OSError, ValueError):
+        return None
+
+
+def _check_script_file(
+    command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Classify ``<interpreter> <file>`` / ``./script`` by the file's content.
+
+    Closes the file-argument evasion: the verb scanner only sees the filename,
+    so a script that deletes files or calls the network would otherwise pass as
+    safe by elimination.  Classification is by REAL invocation, mirroring the
+    inline ``-c`` path -- an analytic Python script with no mutative calls and a
+    read-only shell script both stay non-mutative, so the existing
+    overbroad-classification complaint is not reintroduced.
+
+    Returns ``None`` when the command is not a script-file invocation.
+    """
+    resolved = _resolve_script_argument(base_cmd, semantics)
+    if resolved is None:
+        return None
+
+    script_path, lane = resolved
+    content = _read_script_content(script_path)
+    if content is None:
+        # Conservative default: an interpreter invoked on a missing or
+        # unreadable file is treated as mutative.  We cannot prove the payload
+        # is safe, and an un-inspectable executable payload requires consent.
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="script-file-unreadable",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"Interpreter '{base_cmd}' invoked on script "
+                f"'{script_path}' that is not a readable file -- cannot "
+                f"verify the payload, requiring approval (conservative default)"
+            ),
+        )
+
+    if lane == "python" and _analyze_python_inline is not None:
+        ast_result = _analyze_python_inline(content)
+        if ast_result.is_dangerous:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=ast_result.label,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"Script '{script_path}' invokes {ast_result.detail} "
+                    f"({ast_result.category})"
+                ),
+            )
+        if not ast_result.parse_failed:
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="script-file",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"Python script '{script_path}' has no mutative invocation "
+                    f"(AST analysis)"
+                ),
+            )
+        # parse_failed -> fall through to the shell/regex lane below.
+
+    return _classify_script_content_by_regex(content, script_path, family)
+
+
+def _classify_script_content_by_regex(
+    content: str, script_path: str, family: str,
+) -> MutativeResult:
+    """Classify shell / non-Python script content via the existing regex layer.
+
+    No AST parser is vendored for bash, node, ruby, perl, or php (see
+    ``inline_ast_analyzer`` docstring), so content is scanned line-by-line with
+    the same two engines the inline path uses:
+
+    * ``is_blocked_command`` -- catches permanently-blocked destructive lines
+      (``rm -rf /``, ``dd of=/dev/sda``, ...).
+    * ``detect_mutative_command`` -- the CLI-agnostic mutative engine, reused
+      per logical line so a ``kubectl apply`` or ``curl -X POST`` inside the
+      file is detected the same way it would be on the command line.
+
+    This reuses the existing layers rather than introducing a new parser, per
+    the design constraint.
+    """
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if _is_blocked_command is not None:
+            blocked = _is_blocked_command(line)
+            if blocked.is_blocked:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="script-blocked-cmd",
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Script '{script_path}' contains blocked command: "
+                        f"{blocked.category}"
+                    ),
+                )
+
+        line_result = detect_mutative_command(line)
+        if line_result.is_mutative:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=line_result.verb,
+                dangerous_flags=line_result.dangerous_flags,
+                cli_family=family,
+                confidence=line_result.confidence,
+                reason=(
+                    f"Script '{script_path}' line is mutative: "
+                    f"{line_result.reason}"
+                ),
+            )
+
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="script-file",
+        cli_family=family,
+        confidence="medium",
+        reason=f"Script '{script_path}' has no mutative or blocked line",
+    )
 
 
 def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:

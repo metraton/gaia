@@ -1861,3 +1861,146 @@ class TestGaiaPlanningBookkeepingException:
             f"Got: category={result.category}, verb={result.verb}, "
             f"reason={result.reason}"
         )
+
+
+class TestScriptFileEvasion:
+    """Closes the file-argument T3 evasion (Step 1d / _check_script_file).
+
+    Before the fix, an interpreter invoked with a script FILE as a positional
+    argument (``python3 deploy.py``, ``bash setup.sh``, ``./deploy.sh``,
+    ``node migrate.js``) was classified safe-by-elimination: the verb scanner
+    saw only the filename (which carries a ``.`` and is rejected as a
+    non-subcommand), so the file's mutations executed without approval. The
+    fix reads the file and classifies it by REAL invocation -- the same
+    standard the inline ``-c`` path already meets.
+    """
+
+    # ---- Python files: detected by AST invocation ----
+
+    def test_python_file_network_post_is_mutative(self, tmp_path):
+        script = tmp_path / "deploy.py"
+        script.write_text(
+            "import requests\nrequests.post('http://h/p', json={})\n"
+        )
+        result = detect_mutative_command(f"python3 {script}")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_python_file_os_remove_is_mutative(self, tmp_path):
+        script = tmp_path / "clean.py"
+        script.write_text("import os\nos.remove('/etc/hosts')\n")
+        result = detect_mutative_command(f"python3 {script}")
+        assert result.is_mutative is True
+
+    def test_python_file_subprocess_is_mutative(self, tmp_path):
+        script = tmp_path / "run.py"
+        script.write_text(
+            "import subprocess\nsubprocess.run(['kubectl', 'apply', '-f', 'x'])\n"
+        )
+        result = detect_mutative_command(f"python3 {script}")
+        assert result.is_mutative is True
+
+    def test_python_file_open_write_is_mutative(self, tmp_path):
+        script = tmp_path / "w.py"
+        script.write_text("f = open('out.txt', 'w')\nf.write('x')\n")
+        result = detect_mutative_command(f"python3 {script}")
+        assert result.is_mutative is True
+
+    def test_python_unbuffered_flag_still_inspects_file(self, tmp_path):
+        """``python3 -u script.py``: -u is a standalone switch, not -c/-m, so
+        the script file is still located and inspected (no evasion via -u)."""
+        script = tmp_path / "deploy.py"
+        script.write_text(
+            "import requests\nrequests.post('http://h/p', json={})\n"
+        )
+        result = detect_mutative_command(f"python3 -u {script}")
+        assert result.is_mutative is True
+
+    # ---- Shell / Node files: detected by the regex layer ----
+
+    def test_bash_file_with_kubectl_apply_is_mutative(self, tmp_path):
+        script = tmp_path / "setup.sh"
+        script.write_text("#!/bin/bash\nkubectl apply -f deploy.yaml\n")
+        result = detect_mutative_command(f"bash {script}")
+        assert result.is_mutative is True
+
+    def test_bash_file_with_rm_rf_is_mutative(self, tmp_path):
+        script = tmp_path / "deploy.sh"
+        script.write_text("#!/bin/bash\nrm -rf /tmp/build\naws s3 cp x s3://b\n")
+        result = detect_mutative_command(f"bash {script}")
+        assert result.is_mutative is True
+
+    def test_direct_shell_script_invocation_is_mutative(self, tmp_path):
+        """``path/to/deploy.sh`` direct invocation (single token) is inspected
+        before the single-token early return."""
+        script = tmp_path / "deploy.sh"
+        script.write_text("#!/bin/bash\nkubectl apply -f x.yaml\n")
+        result = detect_mutative_command(str(script))
+        assert result.is_mutative is True
+
+    def test_node_file_with_exec_is_mutative(self, tmp_path):
+        script = tmp_path / "migrate.js"
+        script.write_text(
+            "const cp = require('child_process')\n"
+            "cp.execSync('kubectl apply -f x')\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+
+    # ---- Conservative default: unreadable file ----
+
+    def test_missing_file_is_conservatively_mutative(self):
+        """An interpreter pointed at a missing/unreadable file cannot be proven
+        safe, so it is classified T3 (conservative default)."""
+        result = detect_mutative_command("python3 /nonexistent/ghost.py")
+        assert result.is_mutative is True
+        assert result.verb == "script-file-unreadable"
+
+    # ---- No false positives: invocation-based, not name-based ----
+
+    def test_analytic_python_file_stays_safe(self, tmp_path):
+        """A read-only analytic Python file (no mutative invocation) stays
+        non-mutative -- the fix classifies by invocation, not by being a
+        ``python3 <file>`` shape."""
+        script = tmp_path / "report.py"
+        script.write_text(
+            "import json\n"
+            "data = json.load(open('m.json'))\n"
+            "print(sum(d['v'] for d in data))\n"
+        )
+        result = detect_mutative_command(f"python3 {script}")
+        assert result.is_mutative is False
+
+    def test_readonly_shell_file_stays_safe(self, tmp_path):
+        script = tmp_path / "check.sh"
+        script.write_text("#!/bin/bash\nkubectl get pods\nls -la\ncat cfg.yaml\n")
+        result = detect_mutative_command(f"bash {script}")
+        assert result.is_mutative is False
+
+    def test_python_dash_m_module_is_not_a_script_file(self, tmp_path):
+        """``python3 -m pytest tests/x.py``: -m consumes the module name and
+        means there is no script-file positional, so the command defers to
+        ordinary scanning and is not flagged as an unreadable script."""
+        result = detect_mutative_command("python3 -m pytest tests/x.py")
+        assert result.is_mutative is False
+
+
+class TestScriptFileEvasionNoFalsePositiveRegression:
+    """Pins the explicitly-cited false-positive complaints
+    (atom_t3_classification_overbroad) so the file-argument fix never
+    reintroduces them."""
+
+    def test_sqlite3_readonly_still_safe(self):
+        result = detect_mutative_command("sqlite3 db.sqlite 'SELECT * FROM t'")
+        assert result.is_mutative is False
+
+    def test_python_dash_c_analytic_still_safe(self):
+        result = detect_mutative_command("python3 -c 'print(sum([1, 2, 3]))'")
+        assert result.is_mutative is False
+
+    def test_python_dash_c_network_still_blocked(self):
+        """The inline path that already worked must keep working."""
+        result = detect_mutative_command(
+            "python3 -c \"import requests; requests.post('http://h/p')\""
+        )
+        assert result.is_mutative is True
