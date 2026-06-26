@@ -23,12 +23,16 @@ from cli.cleanup import (
     _find_project_root,
     _matches_pattern,
     _apply_retention_policy,
+    _clean_settings_local_json,
     _remove_claude_md,
+    _remove_plugin_initialized,
+    _remove_plugin_registry_entry,
     _remove_settings_json,
     _remove_symlinks,
     register,
     cmd_cleanup,
     RETENTION_POLICY,
+    SYMLINKS_TO_REMOVE,
 )
 
 
@@ -341,6 +345,263 @@ class TestCmdCleanup(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     rc = cmd_cleanup(args)
             self.assertEqual(rc, 0)
+
+
+class TestSkillsSymlinkInFootprint(unittest.TestCase):
+    """The .claude/skills symlink (created by install) must be in the removal list."""
+
+    def test_skills_in_symlinks_to_remove(self):
+        self.assertIn(".claude/skills", SYMLINKS_TO_REMOVE)
+
+    def test_removes_skills_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_dir = root / ".claude"
+            claude_dir.mkdir()
+            target = root / "real_skills"
+            target.mkdir()
+            link = claude_dir / "skills"
+            link.symlink_to(target)
+            result = _remove_symlinks(root, dry_run=False)
+            self.assertIn(".claude/skills", result["removed"])
+            self.assertFalse(link.exists())
+
+
+class TestRemovePluginInitialized(unittest.TestCase):
+    def test_missing_returns_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            self.assertFalse(_remove_plugin_initialized(root, dry_run=False)["found"])
+
+    def test_removes_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_dir = root / ".claude"
+            claude_dir.mkdir()
+            marker = claude_dir / ".plugin-initialized"
+            marker.write_text('{"initialized_at":"2026-01-01","mode":"ops"}')
+            result = _remove_plugin_initialized(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertTrue(result["removed"])
+            self.assertFalse(marker.exists())
+
+    def test_dry_run_preserves_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_dir = root / ".claude"
+            claude_dir.mkdir()
+            marker = claude_dir / ".plugin-initialized"
+            marker.write_text("{}")
+            result = _remove_plugin_initialized(root, dry_run=True)
+            self.assertTrue(result["found"])
+            self.assertFalse(result["removed"])
+            self.assertTrue(marker.exists())
+
+    def test_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_dir = root / ".claude"
+            claude_dir.mkdir()
+            marker = claude_dir / ".plugin-initialized"
+            marker.write_text("{}")
+            _remove_plugin_initialized(root, dry_run=False)
+            # Second run finds nothing -- no error.
+            self.assertFalse(_remove_plugin_initialized(root, dry_run=False)["found"])
+
+
+class TestRemovePluginRegistryEntry(unittest.TestCase):
+    def _write_registry(self, root: Path, data: dict) -> Path:
+        claude_dir = root / ".claude"
+        claude_dir.mkdir(exist_ok=True)
+        path = claude_dir / "plugin-registry.json"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        return path
+
+    def test_missing_returns_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            self.assertFalse(_remove_plugin_registry_entry(root, dry_run=False)["found"])
+
+    def test_gaia_only_registry_file_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_registry(root, {
+                "installed": [{"name": "gaia-ops", "version": "4.4.0"}],
+                "source": "cli-install",
+            })
+            result = _remove_plugin_registry_entry(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertEqual(result["removed_entries"], ["gaia-ops"])
+            self.assertTrue(result["file_removed"])
+            self.assertFalse(path.exists())
+
+    def test_other_plugin_entry_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_registry(root, {
+                "installed": [
+                    {"name": "gaia-ops", "version": "4.4.0"},
+                    {"name": "some-other-plugin", "version": "1.0.0"},
+                ],
+                "source": "cli-install",
+            })
+            result = _remove_plugin_registry_entry(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertFalse(result.get("file_removed"))
+            self.assertTrue(path.exists())
+            data = json.loads(path.read_text())
+            names = [e["name"] for e in data["installed"]]
+            self.assertNotIn("gaia-ops", names)
+            self.assertIn("some-other-plugin", names)
+
+    def test_extra_top_level_keys_keep_file(self):
+        """If Claude Code added other top-level keys, never delete the file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_registry(root, {
+                "installed": [{"name": "gaia-ops", "version": "4.4.0"}],
+                "source": "cli-install",
+                "enabledPlugins": ["something"],
+            })
+            result = _remove_plugin_registry_entry(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertFalse(result["file_removed"])
+            self.assertTrue(path.exists())
+            data = json.loads(path.read_text())
+            self.assertEqual(data["installed"], [])
+            self.assertEqual(data["enabledPlugins"], ["something"])
+
+    def test_dry_run_preserves_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_registry(root, {
+                "installed": [{"name": "gaia-ops", "version": "4.4.0"}],
+                "source": "cli-install",
+            })
+            result = _remove_plugin_registry_entry(root, dry_run=True)
+            self.assertTrue(result["found"])
+            self.assertTrue(path.exists())
+
+    def test_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_registry(root, {
+                "installed": [
+                    {"name": "gaia-ops", "version": "4.4.0"},
+                    {"name": "other", "version": "1.0.0"},
+                ],
+                "source": "cli-install",
+            })
+            _remove_plugin_registry_entry(root, dry_run=False)
+            # Second run finds no Gaia entry.
+            self.assertFalse(_remove_plugin_registry_entry(root, dry_run=False)["found"])
+
+
+class TestCleanSettingsLocalJson(unittest.TestCase):
+    def _write_local(self, root: Path, data: dict) -> Path:
+        claude_dir = root / ".claude"
+        claude_dir.mkdir(exist_ok=True)
+        path = claude_dir / "settings.local.json"
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        return path
+
+    def test_missing_returns_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            self.assertFalse(_clean_settings_local_json(root, dry_run=False)["found"])
+
+    def test_preserves_user_keys_and_user_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {
+                "agent": "gaia-orchestrator",
+                "env": {
+                    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                    "MY_USER_VAR": "keepme",
+                },
+                "permissions": {
+                    "allow": ["Bash(*)", "Read", "MySpecialTool(foo)"],
+                    "deny": [],
+                    "ask": [],
+                },
+                "userOnlyKey": {"nested": True},
+            })
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertFalse(result.get("file_removed"))
+            data = json.loads(path.read_text())
+
+            # Gaia keys gone
+            self.assertNotIn("agent", data)
+            self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))
+            self.assertNotIn("CLAUDE_CODE_DISABLE_AUTO_MEMORY", data.get("env", {}))
+            # User env var preserved
+            self.assertEqual(data["env"]["MY_USER_VAR"], "keepme")
+            # User-managed tool preserved; Gaia tools (Bash/Read) removed
+            self.assertIn("MySpecialTool(foo)", data["permissions"]["allow"])
+            self.assertNotIn("Bash(*)", data["permissions"]["allow"])
+            self.assertNotIn("Read", data["permissions"]["allow"])
+            # Wholly-user top-level key preserved
+            self.assertEqual(data["userOnlyKey"], {"nested": True})
+
+    def test_user_overridden_env_value_preserved(self):
+        """If the user changed a Gaia env var's value, do not remove it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {
+                "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"},
+            })
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertFalse(result["found"])
+            data = json.loads(path.read_text())
+            self.assertEqual(data["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "0")
+
+    def test_gaia_only_file_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {
+                "agent": "gaia-orchestrator",
+                "env": {
+                    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                },
+                "permissions": {"allow": ["Bash(*)", "Read"], "deny": [], "ask": []},
+            })
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertTrue(result["file_removed"])
+            self.assertFalse(path.exists())
+
+    def test_dry_run_preserves_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {"agent": "gaia-orchestrator"})
+            result = _clean_settings_local_json(root, dry_run=True)
+            self.assertTrue(result["found"])
+            self.assertIn("agent", json.loads(path.read_text()))
+
+    def test_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_local(root, {
+                "agent": "gaia-orchestrator",
+                "permissions": {"allow": ["Bash(*)", "MyTool"], "deny": [], "ask": []},
+            })
+            _clean_settings_local_json(root, dry_run=False)
+            # Second run: nothing Gaia-owned remains.
+            self.assertFalse(_clean_settings_local_json(root, dry_run=False)["found"])
+
+    def test_non_gaia_agent_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {"agent": "my-custom-agent"})
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertFalse(result["found"])
+            self.assertEqual(json.loads(path.read_text())["agent"], "my-custom-agent")
 
 
 if __name__ == "__main__":

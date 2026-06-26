@@ -409,5 +409,141 @@ class TestPurgeWithSnapshot(unittest.TestCase):
             self.assertFalse(snapshot_dir.exists())
 
 
+class TestCmdUninstallFootprint(unittest.TestCase):
+    """End-to-end: the 4 footprint artifacts are cleaned and the DB is preserved."""
+
+    def _make_full_workspace(self, root: Path) -> Path:
+        """Build a workspace mirroring what `gaia install` writes."""
+        claude_dir = root / ".claude"
+        claude_dir.mkdir()
+
+        # skills symlink (install creates it via manage_symlinks)
+        skills_target = root / "real_skills"
+        skills_target.mkdir()
+        (claude_dir / "skills").symlink_to(skills_target)
+
+        # .plugin-initialized marker
+        (claude_dir / ".plugin-initialized").write_text(
+            json.dumps({"initialized_at": "2026-01-01", "mode": "ops"})
+        )
+
+        # plugin-registry.json with a co-installed third-party plugin
+        (claude_dir / "plugin-registry.json").write_text(
+            json.dumps({
+                "installed": [
+                    {"name": "gaia-ops", "version": "4.4.0"},
+                    {"name": "third-party", "version": "2.0.0"},
+                ],
+                "source": "cli-install",
+            }, indent=2) + "\n"
+        )
+
+        # settings.local.json with both Gaia + user content
+        (claude_dir / "settings.local.json").write_text(
+            json.dumps({
+                "agent": "gaia-orchestrator",
+                "env": {
+                    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                    "USER_VAR": "preserve",
+                },
+                "permissions": {
+                    "allow": ["Bash(*)", "Read", "UserTool(x)"],
+                    "deny": [],
+                    "ask": [],
+                },
+            }, indent=2) + "\n"
+        )
+        return claude_dir
+
+    def test_footprint_cleaned_db_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_dir = self._make_full_workspace(root)
+            db = root / "fake.db"
+            db.write_bytes(b"SQLite\x00")
+
+            args = _make_args(workspace=str(root), json=True, db_path=str(db))
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cmd_uninstall(args)
+
+            self.assertEqual(rc, 0)
+            data = json.loads(buf.getvalue())
+
+            # skills symlink removed
+            self.assertIn(".claude/skills", data["symlinks"]["removed"])
+            self.assertFalse((claude_dir / "skills").exists())
+
+            # .plugin-initialized removed
+            self.assertTrue(data["plugin_initialized"]["removed"])
+            self.assertFalse((claude_dir / ".plugin-initialized").exists())
+
+            # plugin-registry.json: Gaia entry gone, third-party preserved
+            self.assertEqual(data["plugin_registry"]["removed_entries"], ["gaia-ops"])
+            self.assertTrue((claude_dir / "plugin-registry.json").exists())
+            reg = json.loads((claude_dir / "plugin-registry.json").read_text())
+            names = [e["name"] for e in reg["installed"]]
+            self.assertEqual(names, ["third-party"])
+
+            # settings.local.json: Gaia keys gone, user keys preserved
+            self.assertTrue(data["settings_local_json"]["found"])
+            local = json.loads((claude_dir / "settings.local.json").read_text())
+            self.assertNotIn("agent", local)
+            self.assertEqual(local["env"]["USER_VAR"], "preserve")
+            self.assertIn("UserTool(x)", local["permissions"]["allow"])
+            self.assertNotIn("Bash(*)", local["permissions"]["allow"])
+
+            # DB preserved (no --purge)
+            self.assertTrue(db.exists())
+            self.assertTrue(data["db"]["preserved"])
+
+    def test_footprint_idempotent(self):
+        """Running uninstall twice is safe and a no-op the second time."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_full_workspace(root)
+            db = root / "fake.db"
+            db.write_bytes(b"SQLite\x00")
+
+            for _ in range(2):
+                args = _make_args(workspace=str(root), json=True, db_path=str(db))
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = cmd_uninstall(args)
+                self.assertEqual(rc, 0)
+
+            data = json.loads(buf.getvalue())
+            # Second pass: nothing Gaia-owned left to clean.
+            self.assertFalse(data["plugin_initialized"].get("found"))
+            self.assertFalse(data["plugin_registry"].get("found"))
+            self.assertFalse(data["settings_local_json"].get("found"))
+            self.assertTrue(db.exists())
+
+    def test_footprint_dry_run_touches_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claude_dir = self._make_full_workspace(root)
+            db = root / "fake.db"
+            db.write_bytes(b"SQLite\x00")
+
+            args = _make_args(
+                workspace=str(root), json=True, dry_run=True, db_path=str(db),
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cmd_uninstall(args)
+
+            self.assertEqual(rc, 0)
+            self.assertTrue((claude_dir / "skills").exists())
+            self.assertTrue((claude_dir / ".plugin-initialized").exists())
+            self.assertTrue((claude_dir / "plugin-registry.json").exists())
+            reg = json.loads((claude_dir / "plugin-registry.json").read_text())
+            self.assertEqual(len(reg["installed"]), 2)
+            local = json.loads((claude_dir / "settings.local.json").read_text())
+            self.assertIn("agent", local)
+            self.assertTrue(db.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

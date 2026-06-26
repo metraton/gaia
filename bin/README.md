@@ -33,7 +33,9 @@ npm uninstall @jaguilar87/gaia
         |
 preuninstall script -> python3 bin/gaia uninstall --preuninstall
         |
-Cleans temporary caches, old logs, __pycache__, preserves .claude/ symlinks
+Removes Gaia-owned symlinks (agents, hooks, skills, …), cleans caches /
+logs / __pycache__, and surgically removes only Gaia's contributions from
+settings.local.json and plugin-registry.json
 ```
 
 No Claude Code session is involved in either case. The subcommands run in a normal Python process and interact with the filesystem directly.
@@ -97,7 +99,7 @@ Modules whose name starts with `_` (e.g. `_install_helpers.py`) are private help
 
 **Exit codes:** `0` on success, `1` on warnings, `2` on errors. The release pipeline's sandbox harness relies on these -- do not print a success line and exit non-zero, or vice versa.
 
-**Preserved on cleanup:** `.claude/` symlinks are never touched by `gaia cleanup`. Project context is canonical in `~/.gaia/gaia.db` and persists across reinstalls independently of the filesystem. The preservation list for legacy filesystem artifacts lives in `cli/cleanup.py`.
+**Cleanup footprint:** Full cleanup (the default, used by `gaia uninstall`) removes everything `gaia install` wrote: `CLAUDE.md`, `.claude/settings.json`, all Gaia-owned symlinks (`.claude/agents`, `.claude/hooks`, `.claude/skills`, and siblings), and the `.claude/.plugin-initialized` marker. Two files are handled surgically because they are shared with Claude Code: `settings.local.json` has only Gaia-injected keys removed (agent identity, two env vars, Gaia's permission entries; user content is preserved); `plugin-registry.json` has only Gaia's `installed[]` entry removed and is deleted only if it contained nothing else. The user DB at `~/.gaia/gaia.db` is never touched; pass `--purge` to `gaia uninstall` to remove it. The canonical source for what gets removed is `cli/cleanup.py` (`SYMLINKS_TO_REMOVE`, `_clean_settings_local_json`, `_remove_plugin_registry_entry`).
 
 **`package.json` `bin` field:**
 
