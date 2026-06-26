@@ -38,8 +38,11 @@ from pathlib import Path
 # duplicating retention policy, symlink lists, or root detection.
 from cli.cleanup import (  # type: ignore  # noqa: E402
     _apply_retention_policy,
+    _clean_settings_local_json,
     _find_project_root,
     _remove_claude_md,
+    _remove_plugin_initialized,
+    _remove_plugin_registry_entry,
     _remove_settings_json,
     _remove_symlinks,
 )
@@ -250,6 +253,9 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     try:
         result["claude_md"] = _remove_claude_md(workspace, dry_run)
         result["settings_json"] = _remove_settings_json(workspace, dry_run)
+        result["settings_local_json"] = _clean_settings_local_json(workspace, dry_run)
+        result["plugin_initialized"] = _remove_plugin_initialized(workspace, dry_run)
+        result["plugin_registry"] = _remove_plugin_registry_entry(workspace, dry_run)
         result["symlinks"] = _remove_symlinks(workspace, dry_run)
         result["retention_actions"] = _apply_retention_policy(workspace, dry_run)
     except Exception as exc:  # noqa: BLE001
@@ -345,6 +351,9 @@ def _print_human(result: dict, *, preuninstall: bool, purge: bool, dry_run: bool
 
     claude_md = result.get("claude_md") or {}
     settings = result.get("settings_json") or {}
+    settings_local = result.get("settings_local_json") or {}
+    plugin_initialized = result.get("plugin_initialized") or {}
+    plugin_registry = result.get("plugin_registry") or {}
     symlinks = result.get("symlinks") or {}
     retention = result.get("retention_actions") or []
     db = result.get("db") or {}
@@ -355,6 +364,17 @@ def _print_human(result: dict, *, preuninstall: bool, purge: bool, dry_run: bool
     if settings.get("found"):
         verb = "Would remove" if dry_run else "Removed"
         print(f"  {verb}: .claude/settings.json")
+    if settings_local.get("found"):
+        verb = "Would clean" if dry_run else "Cleaned"
+        fields = ", ".join(settings_local.get("removed_fields", []))
+        print(f"  {verb}: .claude/settings.local.json ({fields})")
+    if plugin_initialized.get("found"):
+        verb = "Would remove" if dry_run else "Removed"
+        print(f"  {verb}: .claude/.plugin-initialized")
+    if plugin_registry.get("found"):
+        verb = "Would remove" if dry_run else "Removed"
+        entries = ", ".join(plugin_registry.get("removed_entries", []))
+        print(f"  {verb}: plugin-registry.json entry ({entries})")
     for rel in symlinks.get("removed", []):
         verb = "Would remove symlink" if dry_run else "Removed symlink"
         print(f"  {verb}: {rel}")

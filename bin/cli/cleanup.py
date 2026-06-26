@@ -1,10 +1,19 @@
 """
-gaia cleanup -- Remove temporary caches, old logs, and `__pycache__`;
-preserves project-context.json and .claude/ symlinks.
+gaia cleanup -- Remove Gaia's workspace footprint and apply data retention.
+
+The full-cleanup footprint mirrors what `gaia install` writes, in reverse:
+  - CLAUDE.md and .claude/settings.json (removed outright -- Gaia-owned)
+  - .claude/ symlinks incl. skills (removed -- Gaia-owned)
+  - .claude/.plugin-initialized marker (removed -- Gaia-owned)
+  - .claude/plugin-registry.json (surgical: only Gaia's installed[] entry is
+    removed; the file is shared with Claude Code's plugin system)
+  - .claude/settings.local.json (surgical: only Gaia-injected keys are removed
+    -- agent, two env vars, Gaia's permission entries; user config preserved)
+The user DB at ~/.gaia/gaia.db is never touched here.
 
 Modes:
-  --prune / --retain  Apply data retention policy only (no symlink/settings removal)
-  (default)           Remove CLAUDE.md, settings.json, symlinks + run retention
+  --prune / --retain  Apply data retention policy only (no footprint removal)
+  (default)           Remove the footprint above + run retention
 
 Flags:
   --dry-run           Print what would be pruned/removed without modifying files
@@ -15,6 +24,11 @@ import json
 import os
 import sys
 from pathlib import Path
+
+# bin/cli/cleanup.py -> bin/cli -> bin -> gaia/
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +348,7 @@ SYMLINKS_TO_REMOVE = [
     ".claude/hooks",
     ".claude/commands",
     ".claude/config",
+    ".claude/skills",
     ".claude/CHANGELOG.md",
     ".claude/README.en.md",
     ".claude/README.md",
@@ -356,6 +371,272 @@ def _remove_settings_json(root: Path, dry_run: bool) -> dict:
     if not dry_run:
         path.unlink()
     return {"found": True, "removed": not dry_run, "dry_run": dry_run}
+
+
+# ---------------------------------------------------------------------------
+# Gaia-owned data-dir markers (.plugin-initialized, plugin-registry.json)
+#
+# Both live in get_plugin_data_dir(), which falls back to .claude/ when
+# CLAUDE_PLUGIN_DATA is unset (the common npm-install case). The marker is a
+# pure Gaia artifact -- removed outright. The registry is shared with Claude
+# Code's plugin system, so only Gaia's own entry is removed surgically.
+# ---------------------------------------------------------------------------
+
+# Plugin names Gaia registers in plugin-registry.json (see _read_plugin_name
+# in _install_helpers.py: package "gaia" maps to the canonical "gaia-ops").
+_GAIA_PLUGIN_NAMES = {"gaia-ops", "gaia-security", "gaia"}
+
+
+def _remove_plugin_initialized(root: Path, dry_run: bool) -> dict:
+    """Remove the .plugin-initialized first-run marker.
+
+    Written by plugin_setup.mark_initialized() into get_plugin_data_dir().
+    A pure Gaia artifact (timestamp + mode), safe to delete outright.
+    """
+    path = root / ".claude" / ".plugin-initialized"
+    if not path.exists():
+        return {"found": False}
+    if not dry_run:
+        try:
+            path.unlink()
+        except OSError as exc:
+            return {"found": True, "removed": False, "error": str(exc)}
+    return {"found": True, "removed": not dry_run, "dry_run": dry_run}
+
+
+def _remove_plugin_registry_entry(root: Path, dry_run: bool) -> dict:
+    """Remove Gaia's entry from plugin-registry.json, preserving other plugins.
+
+    plugin-registry.json is shared with Claude Code's plugin system. Install
+    (register_plugin / ensure_plugin_registry) writes Gaia's entry into the
+    ``installed`` list. Uninstall is symmetric: drop only Gaia-owned entries
+    from ``installed``. If that empties the registry of all plugins, the file
+    is equivalent to its pre-Gaia state and is removed; otherwise it is
+    rewritten with the surviving entries.
+
+    Idempotent: a registry with no Gaia entry returns found=False.
+    """
+    path = root / ".claude" / "plugin-registry.json"
+    if not path.exists():
+        return {"found": False}
+
+    data = _read_json_file(path)
+    if not isinstance(data, dict):
+        # Malformed/unexpected shape -- leave it untouched rather than risk
+        # destroying a file Gaia did not write.
+        return {"found": False, "skipped": "registry not a JSON object"}
+
+    installed = data.get("installed")
+    if not isinstance(installed, list):
+        return {"found": False, "skipped": "no installed[] array"}
+
+    kept = [
+        e for e in installed
+        if not (isinstance(e, dict) and e.get("name") in _GAIA_PLUGIN_NAMES)
+    ]
+    removed_entries = [
+        e for e in installed
+        if isinstance(e, dict) and e.get("name") in _GAIA_PLUGIN_NAMES
+    ]
+
+    if not removed_entries:
+        return {"found": False}
+
+    # Only Gaia keys present (installed + source) and nothing survives ->
+    # the file existed solely for Gaia; remove it entirely.
+    only_gaia_keys = set(data.keys()) <= {"installed", "source"}
+    delete_file = not kept and only_gaia_keys
+
+    result = {
+        "found": True,
+        "removed_entries": [e.get("name") for e in removed_entries],
+        "file_removed": delete_file and not dry_run,
+        "dry_run": dry_run,
+    }
+
+    if dry_run:
+        return result
+
+    try:
+        if delete_file:
+            path.unlink()
+        else:
+            data["installed"] = kept
+            _write_json_file(path, data)
+    except OSError as exc:
+        result["error"] = str(exc)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# settings.local.json -- surgical removal of Gaia-injected config
+#
+# Install (merge_local_permissions) MERGES into a user-owned file: it sets
+# agent=gaia-orchestrator, adds two env vars, and authoritative-merges its
+# permission entries. Uninstall must mirror that injection key-for-key and
+# leave everything the user added intact -- never delete the whole file.
+#
+# Note on permissions: install's authoritative merge already overwrote any
+# user-scoped variants of tool names Gaia manages (e.g. a prior Edit(/tmp/*)
+# became Edit). That loss is not recoverable at uninstall time; the symmetric
+# action is to drop the tool names Gaia manages and its deny rules, leaving
+# only entries for tools Gaia never touched.
+# ---------------------------------------------------------------------------
+
+_GAIA_ENV_KEYS = {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+}
+
+
+def _gaia_managed_permission_sets():
+    """Return (managed_tool_names, deny_entries) Gaia injects into settings.
+
+    Pulled from the canonical OPS/SECURITY permission constants in
+    plugin_setup.py (the same source install merges from). Falls back to a
+    minimal set if the hooks package cannot be imported (partial install).
+    """
+    try:
+        from hooks.modules.core.plugin_setup import (  # type: ignore
+            OPS_PERMISSIONS,
+            SECURITY_PERMISSIONS,
+            _tool_name,
+        )
+        allow = (
+            set(OPS_PERMISSIONS["permissions"]["allow"])
+            | set(SECURITY_PERMISSIONS["permissions"]["allow"])
+        )
+        deny = (
+            set(OPS_PERMISSIONS["permissions"]["deny"])
+            | set(SECURITY_PERMISSIONS["permissions"]["deny"])
+        )
+        managed_names = {_tool_name(e) for e in allow}
+        return managed_names, deny
+    except Exception:  # noqa: BLE001
+        return {"Bash"}, set()
+
+
+def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
+    """Remove only Gaia-injected keys from settings.local.json; preserve user config.
+
+    Mirrors merge_local_permissions:
+      - agent: removed only if it equals "gaia-orchestrator".
+      - env: removes the two Gaia keys only when their value matches what
+        install set (a user override of the value is preserved).
+      - permissions.allow: drops entries whose tool name Gaia manages.
+      - permissions.deny: drops Gaia's deny rules.
+      - Empty containers (env / permissions / allow / deny) are pruned so the
+        file does not retain hollow Gaia scaffolding.
+
+    If nothing Gaia-owned remains and the file becomes ``{}``, it is removed.
+    Idempotent: a file with no Gaia keys returns found=False.
+    """
+    path = root / ".claude" / "settings.local.json"
+    if not path.exists():
+        return {"found": False}
+
+    data = _read_json_file(path)
+    if not isinstance(data, dict):
+        return {"found": False, "skipped": "settings.local.json not a JSON object"}
+
+    removed_fields: list[str] = []
+
+    # agent identity
+    if data.get("agent") == "gaia-orchestrator":
+        removed_fields.append("agent")
+        if not dry_run:
+            del data["agent"]
+
+    # env vars (only when value still matches what install set)
+    env = data.get("env")
+    if isinstance(env, dict):
+        for key, expected in _GAIA_ENV_KEYS.items():
+            if env.get(key) == expected:
+                removed_fields.append(f"env.{key}")
+                if not dry_run:
+                    del env[key]
+        if not dry_run and not env:
+            del data["env"]
+
+    # permissions
+    perms = data.get("permissions")
+    if isinstance(perms, dict):
+        managed_names, gaia_deny = _gaia_managed_permission_sets()
+
+        allow = perms.get("allow")
+        if isinstance(allow, list):
+            kept_allow = [e for e in allow if _perm_tool_name(e) not in managed_names]
+            if len(kept_allow) != len(allow):
+                removed_fields.append("permissions.allow")
+                if not dry_run:
+                    if kept_allow:
+                        perms["allow"] = kept_allow
+                    else:
+                        del perms["allow"]
+
+        deny = perms.get("deny")
+        if isinstance(deny, list):
+            kept_deny = [e for e in deny if e not in gaia_deny]
+            if len(kept_deny) != len(deny):
+                removed_fields.append("permissions.deny")
+                if not dry_run:
+                    if kept_deny:
+                        perms["deny"] = kept_deny
+                    else:
+                        del perms["deny"]
+
+        # Drop hollow empty lists (ask/allow/deny) and an empty permissions
+        # block -- these are Gaia scaffolding, not user data.
+        if not dry_run:
+            for empty_key in ("ask", "allow", "deny"):
+                if perms.get(empty_key) == []:
+                    del perms[empty_key]
+            if not perms:
+                del data["permissions"]
+
+    if not removed_fields:
+        return {"found": False}
+
+    result = {
+        "found": True,
+        "removed_fields": removed_fields,
+        "file_removed": False,
+        "dry_run": dry_run,
+    }
+
+    if dry_run:
+        return result
+
+    try:
+        if not data:
+            path.unlink()
+            result["file_removed"] = True
+        else:
+            _write_json_file(path, data)
+    except OSError as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def _perm_tool_name(entry: str) -> str:
+    """Base tool name from a permission entry (mirror of plugin_setup._tool_name)."""
+    if not isinstance(entry, str):
+        return ""
+    paren = entry.find("(")
+    return entry[:paren] if paren != -1 else entry
+
+
+def _read_json_file(path: Path):
+    """Read JSON, returning None on any error."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_json_file(path: Path, data) -> None:
+    """Write JSON with indent=2 + trailing newline (gaia convention)."""
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def _remove_symlinks(root: Path, dry_run: bool) -> dict:
@@ -513,11 +794,17 @@ def cmd_cleanup(args) -> int:
 
     claude_md = _remove_claude_md(root, dry_run)
     settings = _remove_settings_json(root, dry_run)
+    settings_local = _clean_settings_local_json(root, dry_run)
+    plugin_initialized = _remove_plugin_initialized(root, dry_run)
+    plugin_registry = _remove_plugin_registry_entry(root, dry_run)
     symlinks = _remove_symlinks(root, dry_run)
     retention_actions = _apply_retention_policy(root, dry_run)
 
     result["claude_md"] = claude_md
     result["settings_json"] = settings
+    result["settings_local_json"] = settings_local
+    result["plugin_initialized"] = plugin_initialized
+    result["plugin_registry"] = plugin_registry
     result["symlinks"] = symlinks
     result["retention_actions"] = retention_actions
     result["retention_policy"] = retention_policy_info
@@ -529,6 +816,9 @@ def cmd_cleanup(args) -> int:
         anything_done = (
             claude_md.get("found")
             or settings.get("found")
+            or settings_local.get("found")
+            or plugin_initialized.get("found")
+            or plugin_registry.get("found")
             or symlinks.get("removed")
             or retention_actions
         )
@@ -539,6 +829,17 @@ def cmd_cleanup(args) -> int:
         if settings.get("found"):
             verb = "Would remove" if dry_run else "Removed"
             print(f"  {verb}: .claude/settings.json")
+        if settings_local.get("found"):
+            verb = "Would clean" if dry_run else "Cleaned"
+            fields = ", ".join(settings_local.get("removed_fields", []))
+            print(f"  {verb}: .claude/settings.local.json ({fields})")
+        if plugin_initialized.get("found"):
+            verb = "Would remove" if dry_run else "Removed"
+            print(f"  {verb}: .claude/.plugin-initialized")
+        if plugin_registry.get("found"):
+            verb = "Would remove" if dry_run else "Removed"
+            entries = ", ".join(plugin_registry.get("removed_entries", []))
+            print(f"  {verb}: plugin-registry.json entry ({entries})")
         for rel in symlinks.get("removed", []):
             verb = "Would remove symlink" if dry_run else "Removed symlink"
             print(f"  {verb}: {rel}")
