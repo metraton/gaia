@@ -33,7 +33,10 @@ def isolated_nonce_env(tmp_path, monkeypatch):
     claude_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CLAUDE_SESSION_ID", "e2e-relay-session")
+    # No CLAUDE_SESSION_ID env: the grant cycle is session-agnostic (Brief 71).
+    # Every call below passes session_id explicitly, and the grant-match path
+    # (activate_db_pending_by_prefix / list_command_set_grants_agnostic) never
+    # filters on session, so a session env var would be dead weight here.
 
     import modules.core.paths as core_paths
     import modules.core.state as core_state

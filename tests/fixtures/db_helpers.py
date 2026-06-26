@@ -343,6 +343,9 @@ def bootstrap_m4_schema(db_path: Path) -> None:
         ON project_context_contracts(workspace);
 
     -- approval_grants table (v7 / M3, needed as FK for handoff_approvals)
+    -- Column set kept in lockstep with gaia/store/schema.sql (asserted by
+    -- tests/system/test_fixture_precondition_audit.py); multi_use/confirmed
+    -- are the v-later BOOLEAN flags production carries.
     CREATE TABLE IF NOT EXISTS approval_grants (
         approval_id          TEXT PRIMARY KEY,
         agent_id             TEXT,
@@ -354,7 +357,9 @@ def bootstrap_m4_schema(db_path: Path) -> None:
         status               TEXT NOT NULL DEFAULT 'PENDING',
         consumed_indexes_json TEXT,
         consumed_at          TEXT,
-        revoked_at           TEXT
+        revoked_at           TEXT,
+        multi_use            INTEGER NOT NULL DEFAULT 0,
+        confirmed            INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_approval_grants_agent   ON approval_grants(agent_id);
