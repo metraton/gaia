@@ -100,3 +100,25 @@ f4145e97bf6c42c98f71ec2e372543d0
 d0930b20681044978932645e6c7fa045
 10fb370acb474822aa6f504e82b6432c
 096aa0a08bfc4844bb60cd53a2650757
+# ===========================================================================
+# Category M7 — script-file / inline / layer3 comparison & loop residuals (10).
+# Killable siblings killed by TestLayer3LengthCheck / TestCheckInlineCode /
+# TestCheckScriptFilePythonLane. See equivalents-security-core.md M7.
+# -- L1988 idx != -1 NotEq_Gt (find >= -1, so >-1 == !=-1)
+8016d854a9024e7b9114b0049da9f74f
+# -- L1988 idx != -1 NotEq_IsNot (-1 interned; is-not coincides with !=)
+b403e03173ca4da599ade9c832768dc2
+# -- L1990 break->continue (single inline flag per interp; 2-flag distinction
+#    depends on randomized frozenset iteration order, not deterministic)
+f0e540574ba54e6f987ae46ac7155618
+# -- L1695 token == "-" Eq_Is / Eq_LtE (single-char interned "-" sentinel)
+6d2148b0c2d542c1ac735a8cce479dae
+6777262f6c3e4834adcd645fdb611d09
+# -- L1729 except (OSError, ValueError) ExceptionReplacer x2 (try body raises
+#    only those two on reachable inputs; unreachable-handler, same as M1)
+38374c72b45141aba7aa0bfaf8a776a0
+e68fbb7b08d14d39b73f1cacfa97371d
+# -- L1770 lane == "python" Eq_Is / Eq_LtE (lane in {python,shell}: interned
+#    literal + 2-element ordered domain coincide with ==)
+9766004adec84f74acec57d99b77a6fb
+0301d615e90646f8aeae10c6ed636676

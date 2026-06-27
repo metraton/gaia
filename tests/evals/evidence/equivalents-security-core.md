@@ -611,7 +611,73 @@ the verb/reason index mutants) are killed by `TestSubcommandTierException`.
   NumberReplacer occ54 = `1 -> 2`: identical argument; the returned `verb` is
   the first segment for any `maxsplit >= 1`.
 
+---
+
+## Category M7 — script-file / inline / layer3 comparison & loop residuals
+
+GRIND-TOTAL second pass. Survivors in the script-resolution and inline-code
+helpers whose mutated form cannot be distinguished from the original by any
+reachable input. The KILLABLE siblings in each helper are killed by honest
+tests in `test_mutative_verbs_mutants.py` (`TestLayer3LengthCheck`,
+`TestCheckInlineCode`, `TestCheckScriptFilePythonLane`).
+
+`_layer3_length_check` (L1988-1990):
+- `8016d854a9024e7b9114b0049da9f74f` — L1988 `idx != -1` NotEq_Gt (`idx > -1`).
+  `str.find` returns `-1` (absent) or an index `>= 0`; it never returns
+  `< -1`. So `idx > -1` is True iff `idx >= 0` iff `idx != -1`. Identical
+  truth table over the entire range of `find`. (The `<= -1`/`< -1`/`>= -1`/`==`
+  siblings ARE killed.)
+- `b403e03173ca4da599ade9c832768dc2` — L1988 `idx != -1` NotEq_IsNot
+  (`idx is not -1`). CPython interns the small int `-1`, and every value `find`
+  produces (`-1` or `>= 0`) is an interned small int for the reachable test
+  inputs, so `is not -1` coincides with `!= -1`. Identity-vs-equality cannot be
+  distinguished for the interned `-1` sentinel.
+- `f0e540574ba54e6f987ae46ac7155618` — L1990 `break` ReplaceBreakWithContinue.
+  For a single-flag interpreter (the python `-c` case, `_INLINE_CODE_MAP`
+  value is a one-element frozenset) the loop has at most one matching
+  iteration, so `continue` and `break` are identical. The only inputs that
+  could differ supply TWO inline flags of one interpreter (e.g. node
+  `-e`+`--eval`); under `continue` the textually-last matching flag wins, but
+  which flag the frozenset yields last depends on str-hash iteration order,
+  which is randomized per interpreter run (no `PYTHONHASHSEED` pin in the
+  harness). No deterministic honest input distinguishes break from continue.
+
+`_resolve_script_argument` (L1695):
+- `6d2148b0c2d542c1ac735a8cce479dae` — L1695 `token == "-"` Eq_Is
+  (`token is "-"`). The stdin sentinel `"-"` is a one-char interned string, and
+  the compared literal `"-"` is the same interned object, so `is` coincides
+  with `==` for the only value that makes either branch True.
+- `6777262f6c3e4834adcd645fdb611d09` — L1695 `token == "-"` Eq_LtE
+  (`token <= "-"`). Reached only after the loop has already `continue`d every
+  token starting with `-` (L1699) and returned on the first true positional
+  (L1701); the sole token whose comparison to `"-"` is evaluated and matters is
+  `"-"` itself. `"-" <= "-"` is True exactly when `"-" == "-"`, and no shorter
+  string precedes it here, so the arms coincide.
+
+`_read_script_content` (L1729):
+- `38374c72b45141aba7aa0bfaf8a776a0` / `e68fbb7b08d14d39b73f1cacfa97371d` —
+  L1729 `except (OSError, ValueError)` ExceptionReplacer (each tuple member
+  swapped for `CosmicRayTestingException`). The `try` body is `os.path.isfile`
+  + `open(...)` + `fh.read(...)`, which on the reachable inputs raise only
+  `OSError` (missing/unreadable path) or `ValueError` (bad mode/encoding) —
+  both already named. No reachable input raises a different exception type, so
+  narrowing one tuple member to the never-raised testing sentinel changes
+  nothing observable. (Same unreachable-handler reasoning as M1.)
+
+`_check_script_file` (L1770):
+- `9766004adec84f74acec57d99b77a6fb` — L1770 `lane == "python"` Eq_Is
+  (`lane is "python"`). `lane` is assigned the literal `"python"` or `"shell"`
+  in `_resolve_script_argument`; both are interned compile-time constants, so
+  `is "python"` coincides with `== "python"` for both possible values. (The
+  Eq_GtE sibling IS killed.)
+- `0301d615e90646f8aeae10c6ed636676` — L1770 `lane == "python"` Eq_LtE
+  (`lane <= "python"`). `lane` ranges over the two-element domain
+  `{"python", "shell"}`. `"python" <= "python"` is True; `"shell" <= "python"`
+  is False (`'s' > 'p'`). Same truth table as `== "python"` across the whole
+  reachable domain.
+
 **Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
-test. 38 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
-2 split_camel_case + 17 _scan_dangerous_flags + 9 _mkdir_targets_sensitive_path
-+ 4 detect_mutative_command Step-3e).
+test. 48 mutants proven equivalent across the categories (3 import-fallback +
+3 lru_cache + 2 split_camel_case + 17 _scan_dangerous_flags +
+9 _mkdir_targets_sensitive_path + 4 detect_mutative_command Step-3e +
+10 M7 script/inline/layer3 residuals).
