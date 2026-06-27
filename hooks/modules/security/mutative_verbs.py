@@ -52,8 +52,12 @@ except ImportError:
 
 try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
+    from .inline_ast_analyzer import (
+        is_provably_read_only_python as _is_provably_read_only_python,
+    )
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
+    _is_provably_read_only_python = None
     logging.getLogger(__name__).warning(
         "inline_ast_analyzer.analyze_python_inline not importable; "
         "AST-based Python inline analysis disabled (falling back to regex)"
@@ -2093,6 +2097,33 @@ def _layer3_length_check(
             break
 
     if not skip_length_check and len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
+        # AC-9 (Brief: endurecimiento-de-tests-del-security-core): the length
+        # heuristic is a *proxy* for "too complex to vet"; it must not flag
+        # inline code that is PROVABLY read-only just because it is long.  For
+        # Python payloads we re-parse the exact code and require a positive
+        # allowlist match (import + SELECT/PRAGMA + print + local assignments,
+        # no write call, no attribute/subscript assignment, no dynamic
+        # dispatch).  This is the inverse of analyze_python_inline's blocklist:
+        # a mutation never classifies as read-only, so the exemption cannot
+        # open a hole -- an AST-clean-but-mutating payload (``cur.execute(
+        # 'INSERT ...')``, ``con.commit()``) is NOT provably read-only and
+        # stays flagged.  Non-Python payloads are never exempted (no AST).
+        if (
+            base_cmd in _PYTHON_INTERPRETERS
+            and _is_provably_read_only_python is not None
+            and _is_provably_read_only_python(_extract_python_payload(command, base_cmd))
+        ):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="inline-code-readonly",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"Inline Python is long ({len(code_portion)} chars) but "
+                    "provably read-only (allowlisted constructs only)"
+                ),
+            )
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,

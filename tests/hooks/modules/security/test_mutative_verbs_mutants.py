@@ -605,14 +605,19 @@ class TestLayer3LengthCheck:
         assert "no dangerous patterns" in r.reason
 
     def test_long_code_flagged_with_exact_count(self):
-        # code_portion = command[idx + len("-c") + 2:] -> the substring after
-        # ' -c ' is the quoted payload. For a 505-char payload the quoted
+        # code_portion = command[idx + len("-e") + 2:] -> the substring after
+        # ' -e ' is the quoted payload. For a 505-char payload the quoted
         # portion is 507 chars. Asserting the EXACT count kills every
         # ReplaceBinaryOperator/NumberReplacer mutant on the slice arithmetic
         # (idx + len(flag) + 2) -- any change shifts the reported length.
+        # Uses ``node`` (2-char flag, same arithmetic as ``python3 -c``)
+        # because the AC-9 read-only exemption is Python-only: a bare-identifier
+        # ``python3 -c "xxx"`` payload now classifies as provably read-only and
+        # is intentionally NOT length-flagged. node is never AST-exempted, so
+        # it isolates the pure length mechanism this mutant test targets.
         payload = "x" * 505
-        cmd = 'python3 -c "%s"' % payload
-        r = self._l3(cmd)
+        cmd = 'node -e "%s"' % payload
+        r = self._l3(cmd, base="node")
         assert r.is_mutative is True
         assert r.category == "MUTATIVE"
         assert r.verb == "heuristic-long-code"
@@ -644,9 +649,12 @@ class TestLayer3LengthCheck:
 
     def test_boundary_one_over_limit_flagged(self):
         # 501 chars (payload 499 + 2 quotes) -> just over -> flagged.
+        # node base: the AC-9 read-only exemption is Python-only, and a bare
+        # ``python3 -c "xxx"`` identifier payload would now be exempted, so use
+        # node to isolate the strict ``>`` boundary on the length mechanism.
         payload = "x" * 499
-        cmd = 'python3 -c "%s"' % payload
-        r = self._l3(cmd)
+        cmd = 'node -e "%s"' % payload
+        r = self._l3(cmd, base="node")
         assert r.is_mutative is True
         assert r.reason == (
             "Inline code is unusually long (501 chars > 500 limit)"
