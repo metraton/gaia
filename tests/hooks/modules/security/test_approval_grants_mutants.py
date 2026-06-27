@@ -3051,3 +3051,154 @@ class TestStatusAppliedAndDivisorM1Final:
         mapped = _db_row_to_pending_dict(row)
         assert mapped is not None
         assert mapped["timestamp"] == 0.0
+
+
+class TestActivateBehavioralM1Final:
+    """activate_db_pending_by_prefix behavioral survivors reachable on the
+    SEMANTIC and FILE_PATH success paths. Reuses _AC1Driver and additionally
+    patches the writer-side inserts so the happy path returns ACTIVATED."""
+
+    _SEMANTIC = {
+        "operation": "MUTATIVE command intercepted: push",
+        "exact_content": "git push origin main",
+    }
+    _FILE = {
+        "operation": "FILE_WRITE command intercepted: write",
+        "exact_content": "/etc/hosts",
+        "scope": SCOPE_FILE_PATH,
+    }
+
+    def _semantic_applied(self, monkeypatch):
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: {"status": "applied"},
+        )
+
+    def test_semantic_success_path_command_or_chain(self, monkeypatch):
+        """Line 1171 `exact_content or commands[0] or ''` vs Or->And. With the
+        SEMANTIC payload (exact_content set, NO commands key) the `or` chain yields
+        the exact_content command and the activation SUCCEEDS (ACTIVATED). With
+        `and`, exact_content and commands.get default [None][0]==None -> command
+        None -> INVALID_PENDING. Pin ACTIVATED."""
+        _AC1Driver.drive(monkeypatch, self._SEMANTIC)
+        self._semantic_applied(monkeypatch)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+    def test_semantic_insert_status_eq_applied_not_le(self, monkeypatch):
+        """Line 1476 `result_sg.get('status') == 'applied'` vs Eq->LtE. A sub-
+        'applied' status ('aborted') must yield success=False/ACTIVATION_ERROR; a
+        `<=` flip would wrongly report success. Pin the failure."""
+        _AC1Driver.drive(monkeypatch, self._SEMANTIC)
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: {"status": "aborted"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+
+    def test_verb_parse_len_parts_eq_two(self, monkeypatch):
+        """Line 1426 `len(parts) == 2` vs Eq->LtE/GtE. The operation
+        'MUTATIVE command intercepted: push' splits on 'intercepted:' into EXACTLY
+        2 parts, so the verb 'push' is parsed and threaded into the signature.
+        A == flip would change which split lengths parse the verb. We assert the
+        success path completes (signature built from the parsed verb) -> ACTIVATED.
+        Combined with a single-part operation (below) this brackets the == 2."""
+        _AC1Driver.drive(monkeypatch, self._SEMANTIC)
+        self._semantic_applied(monkeypatch)
+        captured = {}
+        import modules.security.approval_scopes as _scopes
+        real_build = _scopes.build_approval_signature
+        def _spy(command, **k):
+            # capture the FIRST call's danger_verb (the parsed-verb attempt).
+            captured.setdefault("danger_verb", k.get("danger_verb"))
+            return real_build(command, **k)
+        # activate_db_pending_by_prefix re-imports build_approval_signature from
+        # .approval_scopes locally (line 1417), so patch it at the source module.
+        monkeypatch.setattr(_scopes, "build_approval_signature", _spy)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.status == ACTIVATION_ACTIVATED
+        # The 2-part split parsed the verb 'push' (not 'unknown'/empty).
+        assert captured["danger_verb"] == "push"
+
+    def test_file_path_insert_status_neq_applied(self, monkeypatch):
+        """Line 1392 `result_fp.get('status') != 'applied'` vs NotEq->Gt/IsNot.
+        A status that EQUALS 'applied' must NOT be treated as failure (proceeds to
+        ACTIVATED). With the FILE payload and insert returning applied, pin
+        ACTIVATED; a flip would wrongly enter the failure branch."""
+        _AC1Driver.drive(monkeypatch, self._FILE)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: MagicMock(to_dict=lambda: {"k": "v"}),
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_file_path_grant",
+            lambda **k: {"status": "applied"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+    def test_file_path_insert_failure_status_surfaced(self, monkeypatch):
+        """Other side of line 1392: a NON-applied file-path insert status must
+        yield ACTIVATION_ERROR (the != branch fires). Brackets the != against
+        Gt/IsNot so neither flip can hide a real insert failure."""
+        _AC1Driver.drive(monkeypatch, self._FILE)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: MagicMock(to_dict=lambda: {"k": "v"}),
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_file_path_grant",
+            lambda **k: {"status": "rejected", "reason": "nope"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+
+    def test_invalid_signature_returns_success_false(self, monkeypatch):
+        """Line 1365 (SCOPE_FILE_PATH invalid-signature) `success=False` vs
+        ReplaceFalseWithTrue. When build_file_path_signature returns None the
+        function returns success=False/ACTIVATION_INVALID_SIGNATURE; the
+        False->True flip would wrongly report success on an unbuildable signature."""
+        _AC1Driver.drive(monkeypatch, self._FILE)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: None,
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_SIGNATURE
+
+    def test_already_approved_status_neq_approved(self, monkeypatch):
+        """Line 1279 `current_row.get('status') != 'approved'` vs NotEq->Gt/IsNot.
+        When approve() raises ValueError (already processed) AND get_by_id reports
+        status 'approved', the function must NOT abort (the != is False) and should
+        still reach the grant-insert success. A flip would abort with ERROR. Pin
+        ACTIVATED on the already-approved-but-recoverable path."""
+        _AC1Driver.drive(
+            monkeypatch, self._SEMANTIC,
+            approve_raises=ValueError("already approved"),
+            get_by_id_row={"status": "approved"},
+        )
+        self._semantic_applied(monkeypatch)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+    def test_already_approved_other_status_aborts(self, monkeypatch):
+        """Other side of line 1279: when approve() raises AND get_by_id reports a
+        status OTHER than 'approved' (e.g. 'pending'), the != is True and the
+        function aborts with ACTIVATION_ERROR. Brackets the != so Gt/IsNot flips
+        cannot collapse the two outcomes."""
+        _AC1Driver.drive(
+            monkeypatch, self._SEMANTIC,
+            approve_raises=ValueError("transition failed"),
+            get_by_id_row={"status": "pending"},
+        )
+        self._semantic_applied(monkeypatch)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
