@@ -681,3 +681,72 @@ test. 48 mutants proven equivalent across the categories (3 import-fallback +
 3 lru_cache + 2 split_camel_case + 17 _scan_dangerous_flags +
 9 _mkdir_targets_sensitive_path + 4 detect_mutative_command Step-3e +
 10 M7 script/inline/layer3 residuals).
+
+## Category M8 — detect_mutative_command fast-path / early-branch residuals
+
+GRIND-TOTAL final pass closing the last `detect_mutative_command` survivors.
+The KILLABLE siblings in each branch are killed by honest tests in
+`TestDetectMutativeEarlyBranches` (and the existing `TestDetectMutativeCommand`
+cases). The mutants below cannot be distinguished from the original by any
+reachable input.
+
+mkdir path-token filter (L1048 `not t.startswith("-") and t != "--"`):
+- `728517f9f3784ccda2d410f0b65b76cc` — L1048 NotEq_IsNot (`t is not "--"`).
+  This clause is only evaluated for a token where `not t.startswith("-")` is
+  True, i.e. `t` does NOT start with `-`; such a token can never equal `"--"`,
+  so `t != "--"` is unconditionally True at every reachable evaluation.
+  `t is not "--"` is likewise True for every such token (none is the interned
+  `"--"` object), so identity coincides with inequality across the entire
+  reachable domain. (The NotEq_Gt / NotEq_GtE siblings, which compare ORDERING
+  rather than identity, ARE killed by `test_mkdir_single_path_sorting_before_
+  dashdash` via the arg `"!dir"` that sorts before `"--"`.)
+
+alias fast-path family ternary (L1069 `family if family != "unknown"
+else "system"`) and read-only base-cmd family ternary (L1102, identical
+expression):
+- L1069: `8835056f24be40138bbe8b40bf307cfb` (NotEq_Lt),
+  `1e8f2a5ef7a84c93bb46f2a2898bd50d` (NotEq_Gt),
+  `508523544c9e48c099e968deb0a0ca89` (NotEq_IsNot).
+- L1102: `3f76b1bfe4424ca097194556df6d845e` (NotEq_Lt),
+  `dda8023f873d414f9a07f94be870ad44` (NotEq_Gt),
+  `2cff04f6e25b44eb8a3bca4b418aafa8` (NotEq_IsNot).
+  Both ternaries gate on `family != "unknown"`. `family =
+  CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")`, and the intersection of
+  COMMAND_ALIASES (L1069's reachable base_cmds) with CLI_FAMILY_LOOKUP is
+  empty, as is the intersection of READ_ONLY_BASE_CMDS (L1102's) with it —
+  verified by enumerating both sets. So at BOTH branches `family` is always the
+  literal `"unknown"`, the condition `family != "unknown"` is always False, and
+  the ternary always yields `"system"`. The three surviving operators all
+  preserve that False when LHS == RHS == `"unknown"`: `"unknown" < "unknown"`
+  False, `"unknown" > "unknown"` False, `"unknown" is not "unknown"` False
+  (interned literal). The observable cli_family stays `"system"`.
+  (The AddNot siblings — which would flip the always-False condition to True
+  and yield `"unknown"` — and the GtE / Eq siblings — `"unknown" >= "unknown"`
+  is True — ARE killed; they were already killed by the existing alias/
+  read-only result-field assertions.)
+
+capability fast-path import guard (L1115 `_classify_capability is not None and
+_is_capability_verb is not None`):
+- `c254d1c81ced40aab48d1a4822def56d` — AndWithOr. Both names are bound at module
+  import from `capability_classes`, which always imports in-process (the
+  `except ImportError` fallback is unreachable, per M1), so both operands are
+  always non-None / True. `True and True` and `True or True` coincide; no
+  reachable input makes either operand None. (Same unreachable-fallback
+  reasoning as M1.)
+
+capability intent branch (L1119 `cap.intent == _CAP_READ_ONLY`):
+- `1db341d9b6f84e6d8d6ca4c3a48aa366` (Eq_GtE) and
+  `def6285393ae443ab77bd1acda629e06` (Eq_Is). `cap.intent` ranges over the
+  two-element interned-literal domain `{"MUTATIVE", "READ_ONLY"}`
+  (`CATEGORY_MUTATIVE` / `CATEGORY_READ_ONLY` in capability_classes).
+  `_CAP_READ_ONLY == "READ_ONLY"`. Eq_Is: identity coincides with equality for
+  interned literals. Eq_GtE: `"READ_ONLY" >= "READ_ONLY"` True (`==`);
+  `"MUTATIVE" >= "READ_ONLY"` False (`'M' < 'R'`, `==` also False). Same truth
+  table as `==` across the whole reachable domain.
+
+single-token guard (L1154 `len(tokens) == 1`):
+- `17993015687945ee8cc2f2416a54d96a` — Eq_LtE (`len(tokens) <= 1`). The empty /
+  whitespace-only command (`len(tokens) == 0`) is intercepted at the top of the
+  function (L1013, `not command or not command.strip()`), so every input that
+  reaches L1154 has `len(tokens) >= 1`. Over that range `<= 1` coincides with
+  `== 1`. (The Lt / NumberReplacer siblings ARE killed.)
