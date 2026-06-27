@@ -680,6 +680,24 @@ class TestMkdirTargetsSensitivePath:
         # the dash token would be skipped as a flag.
         assert self._m("mkdir", "--", "/sys/x") is True
 
+    # --- loop-bound + continue discriminators (L659, L677) ---------------
+    def test_trailing_mode_flag_no_value_terminates(self):
+        # Kills L659 `while i < len(tokens)` -> Lt_IsNot / Lt_NotEq.  A bare
+        # trailing "-m" (no mode value): the value-skip does `i += 1` again, so
+        # i overshoots to len+1.  `< len` stops cleanly (orig -> False, no path
+        # args).  `i is not len` / `i != len` are both True at i==len+1, so the
+        # loop re-enters and indexes tokens[len+1] -> IndexError, which the
+        # harness records as a non-survivor.  Either way the mutant cannot
+        # return False here.
+        assert self._m("mkdir", "-m") is False
+
+    def test_home_path_then_sensitive_continues_scan(self):
+        # Kills L677 ReplaceContinueWithBreak on the `~/`/`~` home-safe arm.
+        # A home-relative path followed by a sensitive absolute path: `continue`
+        # keeps scanning and finds "/etc" -> True.  `break` would stop at the
+        # home path and return False.
+        assert self._m("mkdir", "~/foo", "/etc/bar") is True
+
     def test_flag_skipped_before_end_of_opts(self):
         # `not seen_end_of_opts and token.startswith("-")` -> a flag is
         # skipped. A bare "-p" with no path -> no sensitive path -> False.

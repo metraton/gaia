@@ -547,6 +547,46 @@ own tokens, so the mutated branch is reached ONLY by the flag it tests for.
   because `"-"` is neither `r` nor `f`, so every membership test is unchanged.
   (The sibling `1->2` IS killable and is killed by `test_compound_rf_always`.)
 
+## Category M5 — `_mkdir_targets_sensitive_path` opt-handling residuals (9 mutants)
+
+`_mkdir_targets_sensitive_path` (lines 656-691) walks `tokens[1:]`, skipping
+flags and `-m`/`--mode` values, and returns True iff any absolute path argument
+falls under a `MKDIR_SENSITIVE_PATH_PREFIXES` prefix (all of which begin with
+`/`). The KILLABLE survivors (L659 `i < len` Lt_IsNot/Lt_NotEq via a bare
+trailing `-m` that overshoots into an IndexError; L677 ReplaceContinueWithBreak
+via `~/foo /etc/bar`) are killed by honest tests. The 9 below cannot be
+distinguished — every one of them only affects how a token *starting with*
+`"-"` or `"~"` is routed, and such a token can never be an absolute sensitive
+path (those start with `/`), so the boolean is unchanged:
+
+- `ff3997b9cadd457a8f57320422853710` — L658 `i = 1` NumberReplacer occ11 =
+  `1 -> 0` (`OFFSETS = [+1,-1]`, index 1). Starting at `i = 0` re-includes
+  `tokens[0]` (the base command, e.g. `mkdir`), which is a relative token →
+  `not os.path.isabs` → `continue`. No sensitive path is ever at index 0, so
+  the result is identical. (The sibling `1 -> 2` IS killable — it skips the
+  first real path — and is killed by `test_sensitive_etc_subpath`.)
+- `953277e88e35481faca487f955802ecf`, `05bc068879b34376b9f78b99dba3545c`,
+  `74c5e1eef62b46afaf5c8bc521d959b9` — L663 `token == "--"` Eq_Is/Eq_Lt/Eq_LtE.
+  The only effect of matching `"--"` is to set `seen_end_of_opts`, which only
+  changes whether a *later* `"-"`-prefixed token is treated as a path. A
+  `"-"`-prefixed token is never absolute-sensitive (sensitive prefixes start
+  with `/`), so the boolean is unchanged. (`is` never matches the non-interned
+  `"--"` literal; `< "--"` / `<= "--"` match no real path token since paths
+  start with `/` (0x2F) > `"-"` (0x2D).)
+- `1af025453dbf40a9b8d873ac3fb02706` — L664 `seen_end_of_opts = True`
+  ReplaceTrueWithFalse. Same argument: with it False, a post-`--` `"-x"` token
+  is treated as a flag and `continue`d; with it True it is treated as a path,
+  `isabs("-x")` is False → relative → `continue`. Both reach `continue`; the
+  only tokens affected start with `"-"` and are never sensitive.
+- `8208f029d06349eda2f6e2bb8a09d6d3`, `d52611a053134454b1dda31413cf164f`,
+  `781985fe92784142b48ece25144f5dbb`, `21da39c1c1e44f26a2a7e2c82f360134` —
+  L675 `token.startswith("~/") or token == "~"` Eq_Gt/Eq_GtE/Eq_Is + the
+  ReplaceOrWithAnd. The `~` guard is redundant for the boolean: a token that
+  fails it falls through to `os.path.isabs(token)`, and `~`/`~/...` are not
+  absolute → relative → `continue` (safe) — the same outcome the guard
+  produces. No `~`-token is ever an absolute sensitive path, so weakening or
+  inverting the guard changes nothing observable.
+
 **Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
-test. 25 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
-2 split_camel_case + 17 _scan_dangerous_flags).
+test. 34 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
+2 split_camel_case + 17 _scan_dangerous_flags + 9 _mkdir_targets_sensitive_path).
