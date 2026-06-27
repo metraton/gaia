@@ -1863,3 +1863,396 @@ class TestCheckApprovalGrantForFileMutants:
             raise RuntimeError("db down")
         monkeypatch.setattr("gaia.store.writer.check_db_file_path_grant", _boom)
         assert ag.check_approval_grant_for_file("/etc/hosts") is None
+
+
+# ===========================================================================
+# Batch 3: remaining behavioral survivors. Targets the genuinely observable
+# branches the first two batches left alive -- signature-fallback paths,
+# command_set guards, expiry boundaries, except handlers, sort directions,
+# and standalone comparisons. Type-annotation `str | None` BitOr mutants and
+# logging-only NumberReplacer slices are NOT targeted (equivalent mutants:
+# Python does not evaluate `|` in annotations, and a log truncation length
+# has no observable behavior).
+# ===========================================================================
+class TestActivateDbPendingSignatureFallback:
+    """activate_db_pending_by_prefix signature-rebuild branch (Step 4)."""
+
+    def _drive(self, monkeypatch, payload):
+        rows = [{
+            "id": "P-deadbeefcafe",
+            "payload_json": json.dumps(payload),
+            "session_id": "sub", "agent_id": "ag",
+        }]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        monkeypatch.setattr(
+            "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
+        )
+        monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
+        monkeypatch.setattr("gaia.approvals.store.record_event", MagicMock())
+        monkeypatch.setattr("gaia.approvals.store.approve", MagicMock())
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: None)
+
+    def test_unbuildable_signature_returns_invalid_signature(self, monkeypatch):
+        """When BOTH build_approval_signature calls return None, the function
+        returns success=False / INVALID_SIGNATURE (lines 1451-1456). Kills the
+        ReplaceFalseWithTrue on that success=False and pins the
+        signature-None terminal branch."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+        })
+        # Step 4 does a local `from .approval_scopes import build_approval_signature`,
+        # so the source module attribute is what the local import binds.
+        monkeypatch.setattr(
+            "modules.security.approval_scopes.build_approval_signature",
+            lambda *a, **k: None,
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_SIGNATURE
+
+    def test_operation_parse_threads_verb_and_category_into_signature(self, monkeypatch):
+        """The operation string 'FILE_WRITE command intercepted: write' is parsed
+        into danger_verb='write' and danger_category='FILE_WRITE' and passed to
+        build_approval_signature (lines 1424-1435). Kills the AddNot on
+        `if 'intercepted:' in ...`, the `len(parts) == 2` guard, and the
+        parts[0]/parts[1] index mutants -- observed via the call kwargs."""
+        self._drive(monkeypatch, {
+            "operation": "FILE_WRITE command intercepted: write",
+            "exact_content": "echo hi",
+        })
+        calls = []
+        import modules.security.approval_scopes as _scopes
+        real_sig = _scopes.build_approval_signature
+        def _spy(command, **kwargs):
+            calls.append(kwargs)
+            return real_sig(command, **kwargs)
+        # Step 4's local import binds from approval_scopes, so patch there.
+        monkeypatch.setattr(
+            "modules.security.approval_scopes.build_approval_signature", _spy
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: {"status": "applied"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        # First build call carries the parsed verb + category.
+        assert calls[0]["danger_verb"] == "write"
+        assert calls[0]["danger_category"] == "FILE_WRITE"
+
+
+class TestCreateCommandSetGrantBatch3:
+    """create_command_set_grant -- guard + status compare + except (extra)."""
+
+    def test_session_none_resolves_default(self, monkeypatch, writer_db):
+        """session_id=None resolves _get_session_id() (lines 1584-1585). Kills the
+        Is->IsNot flip on `if session_id is None` and the AddNot."""
+        called = MagicMock(return_value="resolved-sess")
+        monkeypatch.setattr(
+            "modules.security.approval_grants._get_session_id", called
+        )
+        ok = create_command_set_grant(
+            [{"command": "git push", "rationale": "r"}],
+            f"P-{secrets.token_hex(8)}",
+        )
+        assert ok is True
+        assert called.call_count == 1
+
+    def test_insert_failure_returns_false(self, monkeypatch, writer_db):
+        """When insert_approval_grant returns a non-'applied' status, the function
+        returns False (lines 1609-1612). Kills the Eq->Is/LtE/GtE flips on
+        `result.get('status') == 'applied'` (1603) and the ReplaceFalseWithTrue
+        on the failure return (1612)."""
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_approval_grant",
+            lambda **k: {"status": "rejected", "reason": "dup"},
+        )
+        ok = create_command_set_grant(
+            [{"command": "git push", "rationale": "r"}],
+            f"P-{secrets.token_hex(8)}",
+            session_id="s",
+        )
+        assert ok is False
+
+    def test_insert_exception_returns_false(self, monkeypatch, writer_db):
+        """A raising insert_approval_grant => False (lines 1613-1615). Kills the
+        ExceptionReplacer on that except and the ReplaceFalseWithTrue."""
+        def _boom(**k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.insert_approval_grant", _boom)
+        ok = create_command_set_grant(
+            [{"command": "git push", "rationale": "r"}],
+            f"P-{secrets.token_hex(8)}",
+            session_id="s",
+        )
+        assert ok is False
+
+
+class TestMatchCommandSetGrantBatch3:
+    """match_command_set_grant -- expiry boundary + except handlers (extra)."""
+
+    def _insert(self, db_path, approval_id, command_set, *, status="PENDING",
+                scope="COMMAND_SET", expires_at=None, consumed_indexes=None,
+                command_set_json=None):
+        if expires_at is None:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute(
+                """INSERT INTO approval_grants
+                   (approval_id, session_id, command_set_json, scope,
+                    expires_at, status, consumed_indexes_json)
+                   VALUES (?, 'test-session-mut', ?, ?, ?, ?, ?)""",
+                (
+                    approval_id,
+                    command_set_json if command_set_json is not None
+                    else json.dumps(command_set),
+                    scope, expires_at, status,
+                    json.dumps(consumed_indexes or []),
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def test_not_yet_expired_grant_still_matches(self, writer_db):
+        """A grant whose expires_at is in the FUTURE matches (line 1671
+        `expires_at < now_iso` is False -> not skipped). With the under-/over-
+        expiry test in batch 1 this brackets the Lt boundary, killing the
+        Lt->LtE flip: a future expiry must NOT be treated as expired."""
+        approval_id = f"P-{secrets.token_hex(16)}"
+        future = (
+            datetime.now(timezone.utc) + timedelta(minutes=60)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._insert(
+            writer_db, approval_id,
+            [{"command": "git push origin main", "rationale": "a"}],
+            expires_at=future,
+        )
+        assert match_command_set_grant("git push origin main") == (approval_id, 0)
+
+    def test_malformed_command_set_json_is_skipped(self, writer_db):
+        """A grant whose command_set_json is not valid JSON is skipped via the
+        inner except+continue (lines 1690-1691) and does not match. Kills the
+        ExceptionReplacer on that JSON-parse except."""
+        approval_id = f"P-{secrets.token_hex(16)}"
+        self._insert(
+            writer_db, approval_id, [],
+            command_set_json="{not valid json",
+        )
+        assert match_command_set_grant("git push origin main") is None
+
+
+class TestSmallBehavioralSurvivorsBatch3:
+    """Standalone behavioral survivors across several functions."""
+
+    # ----- _is_ttl_expired extra boundaries -----
+    def test_ttl_negative_is_not_no_expiry(self):
+        """ttl == 0 short-circuits to no-expiry; a ttl of 5 with an old stamp is
+        expired. Pins the `== 0` (line 175) against the Eq->LtE flip: with `<= 0`
+        a positive ttl is unaffected, but the zero-vs-positive discrimination is
+        held by the ttl=0 (no expiry) + ttl=5 (expired) pair."""
+        assert _is_ttl_expired(time.time() - 10_000, 5) is True
+        assert _is_ttl_expired(time.time() - 10_000, 0) is False
+
+    def test_timestamp_one_is_not_treated_as_zero(self):
+        """timestamp == 0 means 'never stamped' -> expired; a timestamp of 1.0
+        (epoch+1s, ancient) is also expired BUT via the elapsed path, not the
+        zero guard. A fresh stamp is NOT. Pins the `timestamp == 0` against
+        Eq->Lt/LtE: a flip changes which timestamps hit the zero guard."""
+        # A genuinely fresh timestamp must not be caught by the zero guard.
+        assert _is_ttl_expired(time.time(), 60) is False
+
+    # ----- consume_grant guard -----
+    def test_consume_grant_logs_only_on_success(self, monkeypatch):
+        """consume_grant returns the consume result; when the grant exists and
+        consume returns True the function returns True (line 542 `if consumed`
+        gate around the success log). Pins that a True consume threads back."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: True
+        )
+        assert ag.consume_grant("git push") is True
+
+    # ----- consume_session_grants default session -----
+    def test_consume_session_grants_resolves_default_session(self, monkeypatch):
+        """session_id falsy => _get_session_id() is used (lines 578-579). Kills
+        the AddNot / Delete_Not on `if not session_id`."""
+        called = MagicMock(return_value="resolved")
+        monkeypatch.setattr(
+            "modules.security.approval_grants._get_session_id", called
+        )
+        # _connect raises so the body short-circuits to 0, but the session
+        # resolution at the top has already run.
+        def _boom(*a, **k):
+            raise RuntimeError("stop")
+        monkeypatch.setattr("gaia.store.writer._connect", _boom)
+        ag.consume_session_grants()  # no session
+        assert called.call_count == 1
+
+    # ----- load_pending_by_nonce_prefix all_sessions + continue + sort -----
+    def test_load_pending_queries_all_sessions(self, monkeypatch):
+        """get_pending is called with all_sessions=True (line 338). Kills the
+        ReplaceTrueWithFalse: with all_sessions=False a cross-session pending
+        would be missed. Observed via the call kwargs."""
+        captured = {}
+        def _gp(**kw):
+            captured.update(kw)
+            return []
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _gp)
+        ag.load_pending_by_nonce_prefix("deadbeef")
+        assert captured.get("all_sessions") is True
+
+    def test_load_pending_skips_nonmatching_then_matches(self, monkeypatch):
+        """A non-matching pending followed by a matching one is still resolved --
+        pins the `continue` advances (kills ReplaceContinueWithBreak on line 345)
+        rather than breaking out before the match."""
+        rows = [
+            {"id": "P-ffffffff", "session_id": "s", "created_at": "2026-01-01T00:00:00Z",
+             "payload_json": json.dumps({"operation": "x: y", "exact_content": "c"})},
+            {"id": "P-deadbeefcafe", "session_id": "s", "created_at": "2026-01-01T00:00:00Z",
+             "payload_json": json.dumps({"operation": "x: y", "exact_content": "c"})},
+        ]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: rows)
+        out = ag.load_pending_by_nonce_prefix("deadbeef")
+        assert out is not None
+        assert out["nonce"] == "deadbeefcafe"
+
+    # ----- find_pending_for_command continue + except -----
+    def test_find_pending_for_command_skips_bad_sig_via_except(self, monkeypatch):
+        """A pending whose scope_signature cannot be deserialized hits the
+        try/except+continue (lines 858-859) and a later valid match still wins.
+        Kills the ExceptionReplacer on that except and the
+        ReplaceContinueWithBreak."""
+        cmd = "git push origin main"
+        good_sig = build_approval_signature(
+            cmd, scope_type=SCOPE_SEMANTIC_SIGNATURE
+        ).to_dict()
+        pending = [
+            {"nonce": "bad", "scope_signature": {"garbage": True, "version": "x"}},
+            {"nonce": "good", "scope_signature": good_sig},
+        ]
+        monkeypatch.setattr(
+            ag, "get_pending_approvals_for_session", lambda s: pending
+        )
+        assert find_pending_for_command("sess", cmd) == "good"
+
+    # ----- find_pending_for_file except -----
+    def test_find_pending_for_file_db_exception_returns_none(self, monkeypatch):
+        """A raising list_pending => None (lines 1042-1043 except). Kills the
+        ExceptionReplacer on that except."""
+        def _boom(**k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.approvals.store.list_pending", _boom)
+        assert find_pending_for_file("sess", "/home/u/file") is None
+
+    def test_find_pending_for_file_queries_all_sessions(self, monkeypatch):
+        """list_pending is called with all_sessions=True (line 1022). Kills the
+        ReplaceTrueWithFalse: a session-scoped query would miss the subagent's
+        pending. Observed via call kwargs."""
+        captured = {}
+        def _lp(**kw):
+            captured.update(kw)
+            return []
+        monkeypatch.setattr("gaia.approvals.store.list_pending", _lp)
+        find_pending_for_file("sess", "/home/u/file")
+        assert captured.get("all_sessions") is True
+
+    # ----- write_pending session-None guard -----
+    def test_write_pending_resolves_default_session(self, monkeypatch):
+        """session_id=None resolves _get_session_id() (lines 901-902). Kills the
+        Is->IsNot flip and AddNot on `if session_id is None`."""
+        called = MagicMock(return_value="resolved")
+        monkeypatch.setattr(
+            "modules.security.approval_grants._get_session_id", called
+        )
+        fake_sig = MagicMock()
+        fake_sig.to_dict.return_value = {"sig": "ok"}
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: fake_sig,
+        )
+        monkeypatch.setattr(
+            "gaia.approvals.store.insert_requested", lambda *a, **k: "P-n"
+        )
+        ag.write_pending_approval_for_file("n", "/etc/hosts")  # no session
+        assert called.call_count == 1
+
+    # ----- cleanup AddNot on `if cleaned` -----
+    def test_cleanup_returns_cleaned_count(self, monkeypatch):
+        """When the DB sweep reports N expired rows, cleanup returns N (lines
+        706-715). Kills the AddNot on `if cleaned` and pins the count threads
+        back (not hardcoded)."""
+        monkeypatch.setattr(
+            "gaia.store.writer.cleanup_expired_db_grants", lambda: 4
+        )
+        ag._last_cleanup_time = 0.0
+        assert ag.cleanup_expired_grants(force=True) == 4
+
+    # ----- _run_git_query returncode boundary -----
+    @patch("modules.security.approval_grants.subprocess.run")
+    def test_git_query_negative_returncode_is_none(self, mock_run):
+        """A returncode of -1 (signal) => None, not stdout (line 387 Eq vs LtE:
+        with `<= 0`, a negative returncode would wrongly be treated as success).
+        Pins the strict `== 0`."""
+        result = MagicMock()
+        result.returncode = -1
+        result.stdout = "partial\n"
+        mock_run.return_value = result
+        assert _run_git_query(["rev-parse", "HEAD"]) is None
+
+    # ----- get_pending sort reverse (NumberReplacer on the sort key default) -----
+    def test_get_pending_orders_by_timestamp_desc(self, monkeypatch):
+        """Two pendings with different timestamps come back newest-first (line
+        810). The two-element ordering pins the reverse=True sort direction."""
+        def _row(ts):
+            return {"id": "P-x", "session_id": "s", "created_at": ts,
+                    "payload_json": json.dumps({"operation": "x: y", "exact_content": "c"})}
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: [
+            _row("2025-01-01T00:00:00Z"), _row("2026-01-01T00:00:00Z"),
+        ])
+        out = ag.get_pending_approvals_for_session(session_id="s")
+        assert out[0]["timestamp"] >= out[1]["timestamp"]
+
+    # ----- capture_environment_snapshot except (non-git returns {}) -----
+    @patch("modules.security.approval_grants._run_git_query")
+    def test_capture_snapshot_try_body_runs(self, mock_q):
+        """For a git command the try body executes and builds the snapshot dict
+        (line 439 ExceptionReplacer guards the whole body). With a real value for
+        the first query and None for the rest, command_class + local_head are
+        present -- pins the try body is not swallowed."""
+        mock_q.side_effect = ["sha1", None, None]
+        snap = capture_environment_snapshot("git commit -am x")
+        assert snap["command_class"] == "git"
+        assert snap["local_head"] == "sha1"
+        assert "branch" not in snap
+
+    # ----- ApprovalGrant confirmed default -----
+    def test_approval_grant_confirmed_defaults_false(self):
+        """The confirmed field defaults to False (line 216). Kills the
+        ReplaceFalseWithTrue on that default: a default-constructed grant must
+        not claim to be user-confirmed."""
+        assert ApprovalGrant().confirmed is False
+
+    # ----- _get_grants_dir exist_ok / parents on a pre-existing dir -----
+    def test_get_grants_dir_idempotent_when_exists(self, monkeypatch, tmp_path):
+        """Calling _get_grants_dir when the dir already exists must NOT raise
+        (exist_ok=True, line 272). Kills the True->False flip on exist_ok: with
+        exist_ok=False a second materialization of an existing dir raises
+        FileExistsError. We pre-create the dir and force the create-once flag
+        off so mkdir runs against an existing path."""
+        base = tmp_path / "plugin3"
+        target = base / "cache" / "approvals"
+        target.mkdir(parents=True, exist_ok=True)  # already exists
+        monkeypatch.setattr(
+            "modules.security.approval_grants.get_plugin_data_dir", lambda: base
+        )
+        ag._grants_dir_created = False  # force mkdir to run
+        d = ag._get_grants_dir()  # must not raise
+        assert d == target
