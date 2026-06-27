@@ -1209,3 +1209,60 @@ class TestDetectMutativeEarlyBranches:
         assert r.category == "UNKNOWN"
         assert r.verb == "checkout"
         assert r.reason == "Unknown verb 'checkout' with no dangerous flags"
+
+
+# ===========================================================================
+# detect_mutative_command -- Step 4 hyphen-split position boundary
+# (L1416 `semantic_index <= 2 and "-" in stripped_token and is_subcmd_shape`,
+#  L1417 `stripped_token.split("-", 1)[0]`,
+#  L1425 `confidence = "high" if semantic_index <= 2 else "medium"`).
+#
+# The boundary `<= 2` controls WHETHER a hyphenated token is split into its
+# first fragment: at subcommand positions (index 1,2) "delete-thing" splits to
+# "delete" and is flagged; at deeper positions (index >= 3) the token is an
+# argument slug and is left whole (no false positive).  The legacy suite only
+# ever exercised index 1/2, so the comparison/number/and mutants that move the
+# boundary or invert the and-chain survived.  These tests pin both sides of the
+# boundary AND the confidence arm that shares it.
+# ===========================================================================
+class TestHyphenSplitPositionBoundary:
+    def test_hyphen_split_at_index_two_high_confidence(self):
+        # head = (gh, repo, delete-thing); delete-thing is at semantic_index 2.
+        # Original `<= 2` is True -> split to "delete" -> MUTATIVE, high.
+        # Kills L1416 LtE_Lt (`< 2` -> False at idx 2 -> no split -> not
+        # flagged), LtE_NotEq (`!= 2` -> False at idx 2 -> no split), and the
+        # NumberReplacer `2 -> 1` (`<= 1` -> False at idx 2 -> no split).
+        # Kills L1425 LtE_Lt / LtE_NotEq / `2 -> 1` (all flip high -> medium).
+        r = detect_mutative_command("gh repo delete-thing")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "delete"
+        assert r.cli_family == "cloud"
+        assert r.confidence == "high"
+        assert r.reason == "Mutative verb 'delete'"
+
+    def test_hyphenated_slug_at_index_three_not_split(self):
+        # head = (gh, repo, subgroup, delete-thing); delete-thing is at
+        # semantic_index 3.  Original `<= 2` is False -> NO split -> candidate
+        # "delete-thing" is not in MUTATIVE_VERBS -> falls through to the
+        # safe-by-elimination terminal (is_mutative False).
+        # Kills L1416 NumberReplacer `2 -> 3` (`<= 3` -> True at idx 3 -> would
+        # split to "delete" -> MUTATIVE) and the first AndWithOr arm
+        # (`<= 2 or "-" in ...` -> True at idx 3 -> would split).
+        r = detect_mutative_command("gh repo subgroup delete-thing")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.verb == "repo"
+        assert r.reason == "Unknown verb 'repo' with no dangerous flags"
+
+    def test_bare_verb_at_index_three_medium_confidence(self):
+        # head = (gh, repo, subgroup, delete); plain "delete" at semantic_index
+        # 3 IS in MUTATIVE_VERBS regardless of splitting -> MUTATIVE, but the
+        # position is > 2 so confidence is "medium".  Kills L1425 NumberReplacer
+        # `2 -> 3` (`<= 3` -> True at idx 3 -> would flip medium -> high).
+        r = detect_mutative_command("gh repo subgroup delete")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "delete"
+        assert r.confidence == "medium"
+        assert r.reason == "Mutative verb 'delete'"
