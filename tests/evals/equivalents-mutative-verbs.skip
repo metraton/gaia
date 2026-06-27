@@ -28,3 +28,11 @@
 0a92fbce93084dee862d41bedee91f99
 56957e5de53c4785b32c7afe9f7c0cc8
 bb8fe5f7d7184699b97978221d36a6c8
+# ===========================================================================
+# Category M3 — split_camel_case len-guard boundary (2 mutants).
+# `return [...] if len(parts) > 1 else [token.lower()]` (line 932). Gt_GtE
+# (>=1) and NumberReplacer 1->0 (>0) both differ from `>1` only at len 0/1,
+# where the two arms coincide. The sibling 1->2 (>2) IS killed. See
+# equivalents-security-core.md M3.
+8906953c388444e1a064abdf71c98f81
+b016396e9473411799beae17fa2003c9

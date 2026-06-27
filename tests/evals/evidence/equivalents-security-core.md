@@ -450,5 +450,33 @@ output:
   never a return value. (An unbounded or smaller cache yields identical
   results for the test population.)
 
+## Category M3 — `split_camel_case` len-guard boundary (2 mutants)
+
+`split_camel_case` (line 932) ends in:
+
+```python
+return [p.lower() for p in parts] if len(parts) > 1 else [token.lower()]
+```
+
+`parts = re.sub(r"([a-z])([A-Z])", r"\1 \2", token).split()`. Two survivors on
+the `len(parts) > 1` guard are equivalent because the two arms produce the
+SAME value for every `len(parts)` the original guard could route differently:
+
+- `8906953c388444e1a064abdf71c98f81` — `Gt_GtE` (`len(parts) >= 1`): the only
+  lengths that change branch are `len == 1` and `len == 0`. At `len == 1`,
+  `[p.lower() for p in parts]` is a one-element list of the same lowercased
+  word that `[token.lower()]` produces (the single part *is* the token,
+  lowercased). At `len == 0` (empty token `""`), `parts == []` so the
+  comprehension is `[]` — but `>= 1` is also False for `len 0`, so that arm is
+  never reached; both operators take the `else` branch → `[""]`. No input
+  distinguishes `>=` from `>`.
+- `b016396e9473411799beae17fa2003c9` — `NumberReplacer` occ25 = `1 -> 0`
+  (`len(parts) > 0`; cosmic-ray `OFFSETS = [+1, -1]`, occurrence index 1 →
+  `-1`). Identical argument to Gt_GtE: only `len == 1` and `len == 0` change
+  branch, and at both the two arms coincide as above. (The sibling `1 -> 2`
+  mutant `> 2` IS killable and is killed by `test_camel_split_two_parts`
+  asserting `["batch","delete"]`; it is NOT listed here.)
+
 **Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
-test. 6 mutants proven equivalent here (3 import-fallback + 3 lru_cache).
+test. 8 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
+2 split_camel_case).
