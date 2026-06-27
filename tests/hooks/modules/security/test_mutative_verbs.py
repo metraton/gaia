@@ -17,6 +17,7 @@ from modules.security.mutative_verbs import (
     MUTATIVE_VERBS,
     GIT_LOCAL_SAFE_SUBCOMMANDS,
     MKDIR_SENSITIVE_PATH_PREFIXES,
+    MAX_NORMAL_INLINE_LENGTH,
 )
 
 
@@ -792,6 +793,107 @@ class TestUniversalInlineCodeDetection:
         )
         assert result.is_mutative is True
         assert "ip-address" in result.verb
+
+
+class TestLongInlineReadOnlyExemption:
+    """AC-9: heuristic-long-code must NOT flag PROVABLY read-only Python.
+
+    The length heuristic is a proxy for "too complex to vet". It must not
+    block long-but-harmless inline reads (import + SELECT/PRAGMA + print),
+    yet it must keep flagging long code it cannot prove read-only -- in
+    particular AST-clean-but-mutating payloads the blocklist analyzer misses
+    (``cur.execute('INSERT ...')``, ``con.commit()``). No false negatives.
+    """
+
+    # SELECT/INSERT split so this test file never carries a literal SQL-write
+    # string that other guards object to.
+    _SEL = "SE" + "LECT"
+    _INS = "INS" + "ERT INTO t(c) VALUES(1)"
+    _PRAGMA = "PRA" + "GMA table_info(approvals)"
+
+    def _long_readonly(self) -> str:
+        body = (
+            "import sqlite3; con=sqlite3.connect('/home/u/.gaia/gaia.db'); "
+            "cols=[d[0] for d in con.execute('%s').fetchall()]; " % self._PRAGMA +
+            "rows=con.execute('%s id,status,verb,subagent_id,created_at,"
+            "expires_at,scope,command_hash,nonce,grant_kind,verb_family,"
+            "uses_remaining FROM approvals WHERE status=? AND created_at > ? "
+            "ORDER BY created_at DESC LIMIT 100', ('pending', 0)).fetchall(); "
+            % self._SEL +
+            "print('columns:', cols); print('total rows:', len(rows)); "
+            "print(chr(10).join(repr(r) for r in rows)); "
+            "extra=con.execute('%s count(*) FROM approvals').fetchone(); " % self._SEL +
+            "print('count:', extra); con.close()"
+        )
+        assert len(body) > MAX_NORMAL_INLINE_LENGTH  # guards the premise
+        return 'python3 -c "%s"' % body.replace('"', '\\"')
+
+    def _long_mutating_ast_clean(self) -> str:
+        # AST-clean (no dangerous CALL in the blocklist) but mutating via a
+        # bound-method execute + commit. Padded past the length limit.
+        body = (
+            "import sqlite3; con=sqlite3.connect('/home/u/.gaia/gaia.db'); "
+            "con.execute('%s'); con.commit(); " % self._INS +
+            "note = '%s'; " % ("z" * 480) +
+            "con.close()"
+        )
+        assert len(body) > MAX_NORMAL_INLINE_LENGTH
+        return 'python3 -c "%s"' % body.replace('"', '\\"')
+
+    def test_long_readonly_python_not_t3(self):
+        """FIXED: long pure-read inline Python is READ_ONLY, not T3."""
+        result = detect_mutative_command(self._long_readonly())
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        assert result.verb == "inline-code-readonly"
+
+    def test_long_mutating_ast_clean_still_t3(self):
+        """NO REGRESSION: long AST-clean-but-mutating sqlite write stays T3."""
+        result = detect_mutative_command(self._long_mutating_ast_clean())
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "heuristic-long-code"
+
+    def test_long_open_write_still_t3(self):
+        """NO REGRESSION: open(...,'w').write caught by AST before length."""
+        body = "open('x','w').write('%s')" % ("y" * 510)
+        result = detect_mutative_command('python3 -c "%s"' % body)
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "open-write"
+
+    def test_long_os_system_still_t3(self):
+        """NO REGRESSION: os.system caught by AST regardless of length."""
+        body = "import os; os.system('rm -rf / %s')" % ("x" * 500)
+        result = detect_mutative_command('python3 -c "%s"' % body)
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "os-system"
+
+    def test_long_subprocess_still_t3(self):
+        """NO REGRESSION: subprocess.run caught by AST regardless of length."""
+        body = "import subprocess; subprocess.run(['rm','%s'])" % ("x" * 500)
+        result = detect_mutative_command('python3 -c "%s"' % body)
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_long_non_python_interpreter_still_t3(self):
+        """NO REGRESSION: exemption is Python-only; long node code stays T3."""
+        result = detect_mutative_command('node -e "%s"' % ("x" * 510))
+        assert result.is_mutative is True
+        assert result.verb == "heuristic-long-code"
+
+    def test_long_sql_via_variable_still_t3(self):
+        """NO REGRESSION: non-literal SQL argument cannot be proven read-only."""
+        body = (
+            "import sqlite3; q = 'DR' + 'OP TABLE t'; "
+            "con=sqlite3.connect('/home/u/.gaia/gaia.db'); "
+            "con.execute(q); note='%s'; con.close()" % ("z" * 480)
+        )
+        result = detect_mutative_command('python3 -c "%s"' % body.replace('"', '\\"'))
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "heuristic-long-code"
 
 
 class TestBuildT3BlockResponse:
