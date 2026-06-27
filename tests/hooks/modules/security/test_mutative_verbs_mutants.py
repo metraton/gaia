@@ -593,3 +593,80 @@ class TestFindFirstNonFlag:
         # `range(1, len)` must NOT return tokens[0] even when it is the only
         # truthy token. Kills the range-start NumberReplacer (1 -> 0).
         assert self._ff(["onlybase", "", ""]) == ("", -1)
+
+
+# ===========================================================================
+# _mkdir_targets_sensitive_path -- 19 survivors.
+#
+# Scans mkdir path args; returns True iff any absolute path arg falls under a
+# MKDIR_SENSITIVE_PATH_PREFIXES prefix. Survivors: the i=1 init, the i<len
+# bound, the `== "--"` / seen_end_of_opts=True, the `-m`/`--mode` value skip
+# (i += 1), the `~/` or `~` guard, and the `norm == prefix or startswith` are
+# never pinned. These call the function directly and assert the bool.
+# ===========================================================================
+class TestMkdirTargetsSensitivePath:
+    def _m(self, *tokens):
+        return mv._mkdir_targets_sensitive_path(tokens)
+
+    def test_sensitive_etc_subpath(self):
+        assert self._m("mkdir", "/etc/foo") is True
+
+    def test_sensitive_etc_exact(self):
+        # `norm == prefix` arm (line 688): an exact "/etc" is sensitive.
+        assert self._m("mkdir", "/etc") is True
+
+    def test_relative_path_safe(self):
+        # `not os.path.isabs` -> relative is working-tree, not sensitive.
+        assert self._m("mkdir", "subdir") is False
+
+    def test_home_slash_safe(self):
+        # `token.startswith("~/")` arm of the `or`.
+        assert self._m("mkdir", "~/foo") is False
+
+    def test_home_bare_safe(self):
+        # `token == "~"` arm of the `or` (line 675). Kills ReplaceOrWithAnd:
+        # with `and`, "~" alone (startswith("~/") False) would fall through
+        # to isabs (False) -> still False here, so use the etc-after to anchor.
+        assert self._m("mkdir", "~") is False
+
+    def test_abs_nonsensitive_safe(self):
+        assert self._m("mkdir", "/home/user/x") is False
+
+    def test_etc_custom_not_sensitive(self):
+        # `norm.startswith(prefix + "/")` requires the slash: "/etc_custom"
+        # must NOT match "/etc". Kills the startswith-without-slash drift.
+        assert self._m("mkdir", "/etc_custom/x") is False
+
+    def test_path_after_double_dash(self):
+        # `token == "--"` sets seen_end_of_opts=True (line 663-664) so the
+        # following "/etc/foo" is treated as a PATH, not a flag -> sensitive.
+        assert self._m("mkdir", "--", "/etc/foo") is True
+
+    def test_double_dash_makes_dashlike_token_a_path(self):
+        # After --, a token that starts with "-" is still a path. This pins
+        # ReplaceTrueWithFalse on seen_end_of_opts=True: if it stayed False,
+        # the dash token would be skipped as a flag.
+        assert self._m("mkdir", "--", "/sys/x") is True
+
+    def test_flag_skipped_before_end_of_opts(self):
+        # `not seen_end_of_opts and token.startswith("-")` -> a flag is
+        # skipped. A bare "-p" with no path -> no sensitive path -> False.
+        assert self._m("mkdir", "-p") is False
+
+    def test_mode_value_is_skipped(self):
+        # `-m`/`--mode` consume their value (i += 1, line 670). Here the mode
+        # VALUE is itself "/etc": it must be SKIPPED, so only the real arg
+        # "subdir" is checked -> False. If the skip were removed, "/etc" would
+        # be read as a path -> True. Kills the NumberReplacer on i += 1.
+        assert self._m("mkdir", "-m", "/etc", "subdir") is False
+
+    def test_mode_long_flag_value_skipped(self):
+        assert self._m("mkdir", "--mode", "/etc", "subdir") is False
+
+    def test_mode_value_skipped_real_path_still_caught(self):
+        # The mode value is skipped but a later real sensitive path is caught.
+        assert self._m("mkdir", "-m", "/etc", "/sys/x") is True
+
+    def test_normpath_double_slash(self):
+        # os.path.normpath collapses "//" so "/etc//foo" matches "/etc/".
+        assert self._m("mkdir", "/etc//foo") is True
