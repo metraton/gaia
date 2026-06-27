@@ -248,6 +248,32 @@ persisted row), never log text, so none is distinguishable.
 
 ---
 
+## Category E13 — `len(parts) == 2` guard where the outer `in`-check makes `len < 2` unreachable (1 mutant)
+
+`activate_db_pending_by_prefix` line 1426:
+```python
+if "intercepted:" in operation_str:
+    parts = operation_str.split("intercepted:")
+    if len(parts) == 2:   # <-- mutated to <= 2
+```
+
+`ReplaceComparisonOperator_Eq_LtE` mutates `== 2` to `<= 2`. The outer guard (line 1424) ensures `"intercepted:"` is present before `split("intercepted:")` executes. When the separator IS present, `.split()` always returns **at least 2 parts** — `len(parts) >= 2` for every reachable call. Therefore:
+
+- `len(parts) == 2` (one occurrence of the separator): `== 2` → True; `<= 2` → True. Same.
+- `len(parts) >= 3` (multiple occurrences of the separator): `== 2` → False; `<= 2` → False (3 ≤ 2 is False). Same.
+- `len(parts) == 1` is **unreachable** (the outer guard guarantees separator presence).
+- `len(parts) == 0` is **impossible** (`.split()` always returns ≥ 1 element).
+
+No reachable input yields a `len` value that distinguishes `== 2` from `<= 2`.
+
+**Proof by suite:** hand-applied `<= 2` to line 1426 and ran the full security test suite (1313 tests + 1 skipped). Result: **all green**. No honest test can distinguish the mutant from the original.
+
+| Function | Line | Expression | Operator | job_id |
+|----------|-----:|------------|----------|--------|
+| `activate_db_pending_by_prefix` | 1426 | `if len(parts) == 2:` | Eq→LtE | 0ef52574 |
+
+---
+
 ## CANDIDATES UNDER VERIFICATION (NOT yet excluded)
 
 The following survivors are **provisionally** behavioral and are being killed by
@@ -281,17 +307,15 @@ excludes those specs from both the denominator and the numerator. The skip file
 is the materialization of this document: every job_id proven equivalent above is
 listed there, one per line, with category comments.
 
-**Denominator composition (after sync E1–E7):**
+**Denominator composition (after grind-total, E1–E13):**
 
 | Population | Count |
 |------------|------:|
 | Total specs in DB | 653 |
 | INCOMPETENT (excluded by cosmic-ray) | 2 |
-| Proven-equivalent excluded (E1–E7, skip file) | 99 |
-| **Killable denominator** | **552** |
+| Proven-equivalent excluded (E1–E13, skip file) | 121 |
+| **Killable denominator** | **530** |
 
-**AC-1 result (pre-E2–E7 sync, E1 only):** 518 killed / 618 killable = **83.82%** killable kill rate.
-
-After sync, the new denominator will differ (equivalents removed from both
-killed and survived buckets depending on which category survived). The updated
-kill rate is reported in the commit that lands the sync.
+**Grind-total closure:** all surviving mutants triaged. 0 untriaged survivors remain in `approval_grants.py`.
+- Mutant `a498bdeea402498c9686e78f97441903` (line 1212 Eq→LtE): **KILLED** by new test `TestActivateDbPendingIntegrityLabelAC1::test_lexically_early_class_name_not_treated_as_tamper` using `AttributeError` as the discriminating input (`"AttributeError" < "ChainTamperError"` → `<=` returns True wrongly labeling a non-tamper error).
+- Mutant `0ef52574fe5b441da1331068f689f727` (line 1426 Eq→LtE): **EQUIVALENT** (E13). Proven by suite (1313 tests green under mutant); outer `"intercepted:" in` guard makes `len < 2` unreachable.

@@ -2688,6 +2688,32 @@ class TestActivateDbPendingIntegrityLabelAC1:
         assert meta is not None
         assert meta["integrity_check"] == "missing_requested_event"
 
+    def test_lexically_early_class_name_not_treated_as_tamper(self, monkeypatch):
+        """Line 1212 `_fp_exc.__class__.__name__ == 'ChainTamperError'` vs the
+        Eq->LtE survivor `<= 'ChainTamperError'` (job_id a498bdeea402498c9686e78f97441903).
+
+        The discriminating input is an exception whose __name__ sorts lexically
+        BEFORE 'ChainTamperError' in ASCII order: 'AttributeError' starts with 'A'
+        (65) while 'ChainTamperError' starts with 'C' (67), so:
+          == 'ChainTamperError' -> False -> label = 'missing_requested_event'  (correct)
+          <= 'ChainTamperError' -> True  -> label = 'fingerprint_mismatch'     (WRONG)
+
+        The test pins the correct label for a lexically-early non-tamper exception,
+        killing the LtE mutant."""
+        # 'AttributeError' < 'ChainTamperError' in lexicographic order.
+        assert "AttributeError" < "ChainTamperError"
+        rec = _AC1Driver.drive(
+            monkeypatch, self._SEMANTIC,
+            fingerprint_exc=AttributeError("chain DB missing REQUESTED event"),
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
+        assert "missing_requested_event" in result.reason
+        assert "fingerprint_mismatch" not in result.reason
+        meta = self._failed_metadata(rec)
+        assert meta is not None
+        assert meta["integrity_check"] == "missing_requested_event"
+
 
 # ===========================================================================
 # M1-FINAL behavioral survivor closure (AC-1, branch harden/approval-grants-m1-loop)
