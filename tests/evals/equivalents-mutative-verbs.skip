@@ -148,3 +148,9 @@ def6285393ae443ab77bd1acda629e06
 # -- L1154 len(tokens) == 1 Eq_LtE (len 0 intercepted at L1013; over len>=1
 #    `<= 1` coincides with `== 1`)
 17993015687945ee8cc2f2416a54d96a
+# -- L1240 non_flag_tokens[0] == "-" Eq_IsNot/Eq_LtE/Eq_GtE (heredoc branch
+#    only reached when nft[0] is "-"; non-dash positional intercepted by
+#    script-file Step 1d. Operand fixed at "-": all three coincide with ==)
+d767207733e3492fb2427fb3f586ae99
+aa2946f0ceae4376a139633ed76142ba
+960d9259724d4ac39015d82224003693

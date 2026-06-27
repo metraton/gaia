@@ -1145,3 +1145,67 @@ class TestDetectMutativeEarlyBranches:
         assert r.category == "MUTATIVE"
         assert r.verb == "install"
         assert r.reason == "Mutative verb 'install'"
+
+    # --- L1238/1239/1240: heredoc guard `and` chain (AndWithOr x3) -----------
+    def test_stdin_dash_without_heredoc_not_inline_analyzed(self):
+        # Heredoc guard (Step 3c):
+        #   base_cmd in _INLINE_CODE_CLIS  (C1)
+        #   and "<<" in command            (C2)
+        #   and semantics.non_flag_tokens  (C3)
+        #   and non_flag_tokens[0] == "-"  (C4)
+        # `python3 - os.system('rm -rf /')` reaches the guard (stdin "-" is not a
+        # script file, no -c flag) with C1=True, C2=False (no "<<"), C3=True,
+        # C4=True.  The original guard is False -> detection falls through to the
+        # verb scanner, which finds no subcommand verb and returns UNKNOWN /
+        # non-mutative.  Each of the three AndWithOr mutants on the `and` chain
+        # re-associates so that C1 (or C4) alone forces the guard True, routing
+        # the string through _check_inline_code(skip_length_check=True), which
+        # detects the embedded `rm -rf /` and returns MUTATIVE -- a False->True
+        # flip the original never makes for this input.
+        r = detect_mutative_command("python3 - os.system('rm -rf /')")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.verb == "-"
+
+    # --- L1242: heredoc routes with skip_length_check=True (TrueWithFalse) ---
+    def test_long_safe_heredoc_not_length_flagged(self):
+        # The heredoc branch calls
+        #   _check_inline_code(..., skip_length_check=True)
+        # so a long multi-line heredoc body is NOT flagged on size alone.  The
+        # TrueWithFalse mutant flips it to skip_length_check=False, which makes
+        # the >500-char length heuristic fire and return MUTATIVE
+        # 'heuristic-long-code'.  A long-but-benign heredoc (80 assignment
+        # lines) stays READ_ONLY under the original and flips to MUTATIVE under
+        # the mutant.
+        body = "\n".join(f"x{i} = {i}" for i in range(80))
+        r = detect_mutative_command(f"python3 - <<EOF\n{body}\nEOF")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "inline-code"
+
+    # --- L1251: git local-safe guard `base_cmd == "git" and ...` ------------
+    # The Step-3d git-local-safe branch is anchored to base_cmd == "git".  The
+    # subcommand "checkout" is in GIT_LOCAL_SAFE_SUBCOMMANDS but is NOT a global
+    # MUTATIVE/READ_ONLY/SIMULATION verb, so a NON-git CLI carrying it falls
+    # through to the "Unknown verb" terminal.  If a mutant on the `== "git"`
+    # comparison (or the `and`) lets a non-git base_cmd enter the git branch,
+    # the reason flips to "Git local-only subcommand 'checkout' is safe".
+    def test_helm_checkout_not_treated_as_git_local(self):
+        # `helm` sorts AFTER "git" ("h" > "g"): kills Eq_GtE (`base_cmd >=
+        # "git"`) and AndWithOr (`base_cmd == "git" or non_flag_tokens`), both
+        # of which would route helm into the git-local-safe branch.
+        r = detect_mutative_command("helm checkout thing")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.verb == "checkout"
+        assert r.reason == "Unknown verb 'checkout' with no dangerous flags"
+
+    def test_aws_checkout_not_treated_as_git_local(self):
+        # `aws` sorts BEFORE "git" ("a" < "g"): kills Eq_LtE (`base_cmd <=
+        # "git"`) and Eq_IsNot (`base_cmd is not "git"`), both of which would
+        # route aws into the git-local-safe branch.
+        r = detect_mutative_command("aws checkout thing")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.verb == "checkout"
+        assert r.reason == "Unknown verb 'checkout' with no dangerous flags"

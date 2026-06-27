@@ -750,3 +750,21 @@ single-token guard (L1154 `len(tokens) == 1`):
   function (L1013, `not command or not command.strip()`), so every input that
   reaches L1154 has `len(tokens) >= 1`. Over that range `<= 1` coincides with
   `== 1`. (The Lt / NumberReplacer siblings ARE killed.)
+
+heredoc-guard positional comparison (L1240 `non_flag_tokens[0] == "-"`):
+- `d767207733e3492fb2427fb3f586ae99` (Eq_IsNot), `aa2946f0ceae4376a139633ed76142ba`
+  (Eq_LtE), `960d9259724d4ac39015d82224003693` (Eq_GtE). The heredoc branch
+  (Step 3c) is only reached when `_check_script_file` (Step 1d) returned None.
+  An interpreter invocation with a positional first token that is NOT `"-"`
+  (e.g. `python3 deploy.py <<EOF`) IS recognized as a script-file shape and
+  returns at Step 1d, never reaching L1240. So on every input that DOES reach
+  L1240, `non_flag_tokens[0]` is `"-"` (the stdin sentinel) — verified: a
+  non-dash positional is intercepted upstream. With the operand fixed at `"-"`:
+  Eq_LtE `"-" <= "-"` True, Eq_GtE `"-" >= "-"` True, both coincide with `==`.
+  Eq_IsNot `"-" is not "-"` — the shlex-produced `"-"` is NOT the same object as
+  the literal (confirmed `nft[0] is "-"` is False), so `is not "-"` is True,
+  which still keeps the guard True exactly as `== "-"` does. All three preserve
+  the always-True branch. (The three AndWithOr siblings on the `and` chain ARE
+  killed by `test_stdin_dash_without_heredoc_not_inline_analyzed`, which drives
+  a `"-"`-positional input with no `"<<"` so the chain re-association is
+  observable.)
