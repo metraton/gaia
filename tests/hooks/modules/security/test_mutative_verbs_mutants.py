@@ -475,3 +475,121 @@ class TestScanDangerousFlags:
         # ReplaceContinueWithBreak (line 879) and append ordering: both flags
         # must be collected, in encounter order.
         assert self._scan(["x", "-D", "--force"], "git") == ("-D", "--force")
+
+
+# ===========================================================================
+# _layer3_length_check -- 36 survivors.
+#
+# Extracts the code portion after the inline flag, then flags it MUTATIVE when
+# longer than MAX_NORMAL_INLINE_LENGTH (unless skip_length_check). Survivors:
+# the `idx + len(flag) + 2` slice arithmetic, the `> MAX` boundary, the
+# `not skip_length_check and ...` guard, the `idx != -1` check, and the
+# break/zero-iteration loop mutants are never pinned because the legacy suite
+# only checks is_mutative. These tests pin the exact reported char-count
+# (which the slice arithmetic determines) and both boundary sides.
+# ===========================================================================
+class TestLayer3LengthCheck:
+    def _l3(self, command, base="python3", family="unknown", skip=False):
+        return mv._layer3_length_check(command, base, family, skip)
+
+    def test_short_code_safe(self):
+        r = self._l3('python3 -c "print(1)"')
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "inline-code"
+        assert r.confidence == "medium"
+        assert "no dangerous patterns" in r.reason
+
+    def test_long_code_flagged_with_exact_count(self):
+        # code_portion = command[idx + len("-c") + 2:] -> the substring after
+        # ' -c ' is the quoted payload. For a 505-char payload the quoted
+        # portion is 507 chars. Asserting the EXACT count kills every
+        # ReplaceBinaryOperator/NumberReplacer mutant on the slice arithmetic
+        # (idx + len(flag) + 2) -- any change shifts the reported length.
+        payload = "x" * 505
+        cmd = 'python3 -c "%s"' % payload
+        r = self._l3(cmd)
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "heuristic-long-code"
+        assert r.confidence == "low"
+        # 505 payload + 2 surrounding quote chars = 507.
+        assert r.reason == (
+            "Inline code is unusually long (507 chars > 500 limit)"
+        )
+
+    def test_skip_length_check_never_flags(self):
+        # `not skip_length_check and len > MAX` -> skip=True forces the safe
+        # arm even for an over-length payload. Kills the AddNot on the guard
+        # and the ReplaceTrueWithFalse upstream that feeds skip_length_check.
+        payload = "x" * 505
+        cmd = 'python3 -c "%s"' % payload
+        r = self._l3(cmd, skip=True)
+        assert r.is_mutative is False
+        assert r.verb == "inline-code"
+
+    def test_boundary_at_limit_not_flagged(self):
+        # `> MAX_NORMAL_INLINE_LENGTH` is strict: a code_portion of EXACTLY
+        # 500 chars must NOT flag. Kills the Gt_GtE / Gt_Eq comparison mutants
+        # and the NumberReplacer on 500. Payload 498 + 2 quotes = 500.
+        payload = "x" * 498
+        cmd = 'python3 -c "%s"' % payload
+        r = self._l3(cmd)
+        assert r.is_mutative is False
+        assert r.verb == "inline-code"
+
+    def test_boundary_one_over_limit_flagged(self):
+        # 501 chars (payload 499 + 2 quotes) -> just over -> flagged.
+        payload = "x" * 499
+        cmd = 'python3 -c "%s"' % payload
+        r = self._l3(cmd)
+        assert r.is_mutative is True
+        assert r.reason == (
+            "Inline code is unusually long (501 chars > 500 limit)"
+        )
+
+    def test_flag_not_found_uses_whole_command(self):
+        # When the inline flag is absent (idx == -1), code_portion stays the
+        # whole command. Kills the `idx != -1` comparison + break mutants:
+        # build a long command with NO ' -c ' so the loop never assigns, and
+        # the whole (long) command is measured.
+        long_cmd = "node " + ("y" * 600)  # base node, but no ' -e '/'--eval '
+        r = self._l3(long_cmd, base="node")
+        assert r.is_mutative is True
+        assert r.verb == "heuristic-long-code"
+        # whole command measured: len("node " + 600 y) = 5 + 600 = 605
+        assert "605 chars" in r.reason
+
+
+# ===========================================================================
+# _find_first_non_flag -- 10 survivors.
+#
+# Returns (first_truthy_token_after_index_0, its_index) or ("", -1).
+# Survivors: the `range(1, len)` bounds, the `if tokens[i]` truthiness guard,
+# and the ("", -1) sentinel are never pinned. These assert the exact tuple.
+# ===========================================================================
+class TestFindFirstNonFlag:
+    def _ff(self, tokens):
+        return mv._find_first_non_flag(tokens)
+
+    def test_first_token_returned_with_index(self):
+        # range starts at 1 (skip tokens[0]); first truthy is index 1.
+        assert self._ff(["cmd", "verb", "x"]) == ("verb", 1)
+
+    def test_empty_token_skipped(self):
+        # `if tokens[i]` truthiness: an empty string at index 1 is skipped,
+        # the real verb at index 2 is returned. Kills the AddNot on the guard.
+        assert self._ff(["cmd", "", "verb"]) == ("verb", 2)
+
+    def test_no_non_flag_returns_sentinel(self):
+        # Single token -> loop body never runs -> ("", -1) sentinel.
+        assert self._ff(["cmd"]) == ("", -1)
+
+    def test_all_empty_returns_sentinel(self):
+        # All-empty tail -> sentinel. Kills the NumberReplacer on -1.
+        assert self._ff(["cmd", "", ""]) == ("", -1)
+
+    def test_index_zero_token_not_returned(self):
+        # `range(1, len)` must NOT return tokens[0] even when it is the only
+        # truthy token. Kills the range-start NumberReplacer (1 -> 0).
+        assert self._ff(["onlybase", "", ""]) == ("", -1)
