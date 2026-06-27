@@ -20,6 +20,7 @@ test_blocked_commands_mutants.py / test_approval_grants_mutants.py layout).
 """
 
 import sys
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -670,3 +671,31 @@ class TestMkdirTargetsSensitivePath:
     def test_normpath_double_slash(self):
         # os.path.normpath collapses "//" so "/etc//foo" matches "/etc/".
         assert self._m("mkdir", "/etc//foo") is True
+
+
+# ===========================================================================
+# Module-level survivors -- frozen dataclass + read-cap constant.
+# (Import-fallback ExceptionReplacers on lines 34/46/55 are proven equivalent
+# in equivalents-mutative-verbs.skip: the sibling modules always import
+# in-process, so the except bodies never run.)
+# ===========================================================================
+class TestModuleLevel:
+    def test_mutative_result_is_frozen(self):
+        # `@dataclass(frozen=True)` -> ReplaceTrueWithFalse makes the dataclass
+        # mutable. Assert immutability so the mutant raises (or fails to raise).
+        r = MutativeResult(is_mutative=True, category="MUTATIVE")
+        with pytest.raises(FrozenInstanceError):
+            r.is_mutative = False  # type: ignore[misc]
+
+    def test_max_safe_inline_length_value(self):
+        # Pin the constant so NumberReplacer on `150` flips the assertion.
+        assert mv.MAX_SAFE_INLINE_LENGTH == 150
+
+    def test_max_normal_inline_length_value(self):
+        assert mv.MAX_NORMAL_INLINE_LENGTH == 500
+
+    def test_max_script_read_bytes_value(self):
+        # `256 * 1024` -> ReplaceBinaryOperator (Mul->Add/...) and
+        # NumberReplacer on 256/1024 all change the product. Pin the literal
+        # value (NOT `256*1024`, which would re-evaluate the mutated source).
+        assert mv._MAX_SCRIPT_READ_BYTES == 262144
