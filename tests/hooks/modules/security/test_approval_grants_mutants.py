@@ -56,6 +56,9 @@ from modules.security.approval_grants import (
     match_command_set_grant,
     find_pending_for_command,
     get_pending_approvals_for_session,
+    activate_db_pending_by_prefix,
+    ACTIVATION_NOT_FOUND,
+    ACTIVATION_INVALID_PENDING,
     DEFAULT_COMMAND_SET_TTL_MINUTES,
     SCOPE_SEMANTIC_SIGNATURE,
 )
@@ -696,3 +699,85 @@ class TestMatchCommandSetGrantMutants:
             consumed_indexes=[0],
         )
         assert match_command_set_grant("git push origin main") == (approval_id, 1)
+
+
+# ===========================================================================
+# activate_db_pending_by_prefix -- early error branches (cluster C/D, 120 surv)
+#
+# These tests drive the error-return paths that fire BEFORE the fingerprint
+# integrity check (Step 2b), so they need only `gaia.approvals.store.get_pending`
+# mocked. Each pins both the boolean `success` flag (kills ReplaceFalseWithTrue
+# on the `success=False` returns) and the exact `status` enum (kills the AddNot /
+# Or<->And / comparison flips on the guards that select which error branch runs).
+# `activate_db_pending_by_prefix` does `from gaia.approvals.store import get_pending`
+# lazily inside the body, so patching the attribute on the source module is what
+# the call resolves at runtime.
+# ===========================================================================
+class TestActivateDbPendingEarlyErrors:
+    """activate_db_pending_by_prefix error returns before the fingerprint check."""
+
+    def _patch_pending(self, monkeypatch, rows):
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+
+    def test_no_pending_match_returns_not_found(self, monkeypatch):
+        """No DB row whose id starts with 'P-<prefix>' => success=False,
+        status=NOT_FOUND (lines 1106-1119). Kills the ReplaceFalseWithTrue on
+        the NOT_FOUND `success=False` and the `if matched_row is None` guard:
+        with the flip a missing approval would report success."""
+        # A row that does NOT match the prefix the caller asks for.
+        self._patch_pending(monkeypatch, [
+            {"id": "P-ffffffffffff", "payload_json": "{}",
+             "session_id": "s", "agent_id": None},
+        ])
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_NOT_FOUND
+
+    def test_empty_pending_list_returns_not_found(self, monkeypatch):
+        """An empty pending list => NOT_FOUND (the for-loop runs zero times and
+        matched_row stays None). Kills ZeroIterationForLoop on the match loop
+        combined with the None guard."""
+        self._patch_pending(monkeypatch, [])
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_NOT_FOUND
+
+    def test_matched_row_without_payload_returns_invalid_pending(self, monkeypatch):
+        """A matched row whose payload_json is falsy => success=False,
+        status=INVALID_PENDING (lines 1127-1136). Kills the ReplaceFalseWithTrue
+        on that `success=False` and the `if not payload_json_str` guard
+        (AddNot/Delete_Not): an inverted guard would skip the early return."""
+        self._patch_pending(monkeypatch, [
+            {"id": "P-deadbeefcafe", "payload_json": None,
+             "session_id": "s", "agent_id": None},
+        ])
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_PENDING
+
+    def test_unparseable_payload_returns_invalid_pending(self, monkeypatch):
+        """A matched row whose payload_json is not valid JSON => INVALID_PENDING
+        (lines 1138-1149 except). Kills the ExceptionReplacer on that except and
+        the ReplaceFalseWithTrue on its `success=False`."""
+        self._patch_pending(monkeypatch, [
+            {"id": "P-deadbeefcafe", "payload_json": "{not json",
+             "session_id": "s", "agent_id": None},
+        ])
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_PENDING
+
+    def test_payload_without_command_returns_invalid_pending(self, monkeypatch):
+        """A parseable payload carrying no exact_content/commands/command_set =>
+        no command extracted => INVALID_PENDING (lines 1171-1185). Kills the
+        ReplaceFalseWithTrue on that `success=False`, the `if not command` guard
+        (AddNot), and exercises the command_set detection or-chain (1158-1169)
+        in its empty form so the is_command_set=False path is pinned."""
+        self._patch_pending(monkeypatch, [
+            {"id": "P-deadbeefcafe",
+             "payload_json": json.dumps({"operation": "MUTATIVE x: y"}),
+             "session_id": "s", "agent_id": None},
+        ])
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_PENDING
