@@ -1133,18 +1133,25 @@ class TestDetectMutativeEarlyBranches:
     # --- L1227: inline-code-CLI gate `in ... and ... & ...` (AndWithOr) ------
     def test_inline_cli_without_inline_flag_is_not_inline_analyzed(self):
         # `base_cmd in _INLINE_CODE_CLIS and cli_flags & set(flag_tokens)`.
-        # `python3 -m pip install requests`: python3 IS an inline CLI but the
-        # `-c` inline flag is ABSENT, so cli_flags ({-c}) & flag tokens is
-        # empty -> the guard is False and detection falls through to the verb
-        # scanner, which flags the mutative verb "install".  The AndWithOr
-        # mutant turns the guard into `in ... or (empty & ...)` = True, routing
-        # the whole string through _check_inline_code, which finds no dangerous
-        # pattern and returns READ_ONLY -- silently un-gating the install.
-        r = detect_mutative_command("python3 -m pip install requests")
+        # `python3 -m flask deploy`: python3 IS an inline CLI but the `-c`
+        # inline flag is ABSENT, so cli_flags ({-c}) & flag tokens is empty ->
+        # the guard is False and detection falls through to the verb scanner,
+        # which flags the mutative verb "deploy".  The AndWithOr mutant turns
+        # the guard into `in ... or (empty & ...)` = True, routing the whole
+        # string through _check_inline_code, which finds no dangerous pattern
+        # and returns READ_ONLY -- silently un-gating the mutative verb.
+        #
+        # NOTE: this used to use `python3 -m pip install requests`, but Brief 91
+        # AC-7 added a `-m <pkg-mgr>` re-dispatch (Step 1c-py) that intercepts
+        # pip/poetry/uv module invocations BEFORE the inline gate.  `flask` is
+        # not a package manager, so it still reaches the inline gate and keeps
+        # this mutant covered.  The dedicated re-dispatch path is pinned in
+        # test_mutative_verbs.py::TestPythonModulePipReDispatch.
+        r = detect_mutative_command("python3 -m flask deploy")
         assert r.is_mutative is True
         assert r.category == "MUTATIVE"
-        assert r.verb == "install"
-        assert r.reason == "Mutative verb 'install'"
+        assert r.verb == "deploy"
+        assert r.reason == "Mutative verb 'deploy'"
 
     # --- L1238/1239/1240: heredoc guard `and` chain (AndWithOr x3) -----------
     def test_stdin_dash_without_heredoc_not_inline_analyzed(self):

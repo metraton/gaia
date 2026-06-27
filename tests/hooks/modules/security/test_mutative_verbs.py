@@ -2004,3 +2004,80 @@ class TestScriptFileEvasionNoFalsePositiveRegression:
             "python3 -c \"import requests; requests.post('http://h/p')\""
         )
         assert result.is_mutative is True
+
+
+class TestPythonModulePipReDispatch:
+    """Brief 91, AC-7: ``python -m pip install`` must classify IDENTICALLY to
+    ``pip install`` (MUTATIVE/T3).  Before the fix, the module name ``pip`` was
+    swallowed into flag_tokens as the value of ``-m`` and the command was
+    classified only by whatever generic verb happened to follow -- an accidental,
+    incomplete defense (``python3 -m poetry add`` slipped through entirely).
+    The re-dispatch in ``_check_python_module_runner`` reclassifies the command
+    as the package-manager invocation it actually is."""
+
+    # --- The evasion that AC-7 closes ----------------------------------------
+    def test_python3_m_pip_install_is_mutative(self):
+        result = detect_mutative_command("python3 -m pip install requests")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "install"
+
+    def test_python3_m_pip_install_matches_direct_pip_install(self):
+        """Re-dispatch must produce the SAME classification as the direct CLI
+        form -- that equivalence is the whole point of the fix."""
+        via_module = detect_mutative_command("python3 -m pip install x")
+        direct = detect_mutative_command("pip install x")
+        assert via_module.is_mutative == direct.is_mutative is True
+        assert via_module.category == direct.category == "MUTATIVE"
+        assert via_module.verb == direct.verb == "install"
+
+    def test_python_m_pip_install_is_mutative(self):
+        """Bare ``python`` (no version suffix) is covered too."""
+        result = detect_mutative_command("python -m pip install x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_versioned_interpreter_m_pip_install_is_mutative(self):
+        result = detect_mutative_command("python3.11 -m pip install x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_python3_m_pip_uninstall_is_mutative(self):
+        result = detect_mutative_command("python3 -m pip uninstall x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+        assert result.verb == "uninstall"
+
+    def test_interpreter_switch_before_m_still_caught(self):
+        """A harmless interpreter switch (-u) before ``-m`` must not let the
+        install slip past the re-dispatch."""
+        result = detect_mutative_command("python3 -u -m pip install x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    # --- Real pip read-only subcommands stay read-only -----------------------
+    def test_python3_m_pip_list_is_read_only(self):
+        result = detect_mutative_command("python3 -m pip list")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_python3_m_pip_download_is_read_only(self):
+        result = detect_mutative_command("python3 -m pip download x")
+        assert result.is_mutative is False
+
+    # --- Control: non-package-manager modules must NOT be made mutative -------
+    def test_python3_m_pytest_not_mutative(self):
+        """``python3 -m pytest`` runs the test suite -- it is NOT a package
+        install and must not be re-dispatched into a mutative verb."""
+        result = detect_mutative_command("python3 -m pytest")
+        assert result.is_mutative is False
+
+    def test_python3_m_http_server_not_mutative(self):
+        result = detect_mutative_command("python3 -m http.server")
+        assert result.is_mutative is False
+
+    def test_python3_script_file_path_not_rerouted(self):
+        """A script-file invocation (no ``-m``) must keep going through the
+        script-file lane, not the module re-dispatch."""
+        result = detect_mutative_command("python3 -m pytest tests/x.py")
+        assert result.is_mutative is False

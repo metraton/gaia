@@ -1,0 +1,95 @@
+AC-7 — Close the T3 evasion of `python3 -m pip install` (brief #91)
+===================================================================
+Date: 2026-06-27
+Branch: harden/approval-grants-m1-loop
+Status: DONE — `python -m pip install/uninstall` now classifies MUTATIVE/T3,
+        identical to the direct `pip install` CLI form; read-only pip
+        subcommands and non-package-manager modules (pytest) stay non-T3.
+
+The gap
+-------
+The security core caught the direct `pip`/`pip3` binary as T3 (mutative) and
+caught `uv sync`, but the `python -m pip` form depended on an ACCIDENT:
+`-m` is a single-letter short flag that, appearing before the first positional,
+consumes its value (`pip`) into flag_tokens (command_semantics.analyze_command,
+_is_short_value_flag). The module name `pip` was thus erased, and the command
+was classified ONLY by whatever generic verb survived after it. That worked for
+`install` by luck, but:
+  * the command reported cli_family=runtime, never recognized as `package`;
+  * `python3 -m poetry add x` slipped through entirely (`add` was removed from
+    MUTATIVE_VERBS as a git-add false-positive) — no T3 gate at all.
+
+The fix
+-------
+hooks/modules/security/mutative_verbs.py
+  New Step 1c-py in detect_mutative_command(): recognizes the
+  `<python> [interp-flags] -m <pkg-mgr> <args...>` shape and RE-DISPATCHES it as
+  `<pkg-mgr> <args...>`, re-running detect_mutative_command on the rewrite so the
+  result is IDENTICAL to the direct CLI form. Scoped to a package-manager allow
+  set (_PY_MODULE_PACKAGE_MANAGERS = pip, pip3, pipenv, poetry, uv), so
+  `python3 -m pytest` / `python3 -m http.server` are NOT rerouted.
+  Helper: _check_python_module_runner(base_cmd, semantics).
+
+Verification — classifier (hooks.modules.security.mutative_verbs)
+-----------------------------------------------------------------
+BEFORE (HEAD b04ae31, accidental coverage only):
+  'python3 -m pip install x'    -> True  MUTATIVE  install   (verb scanner, by luck)
+  'python3 -m poetry add x'     -> False UNKNOWN   add        <-- SLIPPED, NO GATE
+  cli_family reported as `runtime`, never `package`.
+
+AFTER (this change, by design via re-dispatch):
+  'python3 -m pip install x'        -> True  MUTATIVE  install   "'python3 -m pip' re-dispatched as 'pip': Mutative verb 'install'"
+  'python3 -m pip install requests' -> True  MUTATIVE  install
+  'python3 -m pip uninstall x'      -> True  MUTATIVE  uninstall
+  'python -m pip install x'         -> True  MUTATIVE  install   (bare python covered)
+  'python3.11 -m pip install x'     -> True  MUTATIVE  install   (versioned interp covered)
+  'python3 -u -m pip install x'     -> True  MUTATIVE  install   (interp switch before -m covered)
+  'python3 -m poetry add x'         -> re-dispatched as 'poetry add' (same as direct poetry add)
+  Controls (must stay NON-mutative):
+  'python3 -m pip list'             -> False READ_ONLY list
+  'python3 -m pip download x'       -> False READ_ONLY download
+  'python3 -m pytest'               -> False  (NOT rerouted)
+  'python3 -m http.server'          -> False  (NOT rerouted)
+  'python3 script.py'               -> unchanged (script-file lane)
+
+Verification — tier layer (hooks.modules.security.tiers)
+--------------------------------------------------------
+$ _classify_command_tier_cached(cmd)
+  'python3 -m pip install requests' -> T3_BLOCKED      (needs approval)
+  'python3 -m pip uninstall x'      -> T3_BLOCKED      (needs approval)
+  'pip install requests'            -> T3_BLOCKED      (parity with direct form)
+  'python3 -m pip list'             -> T0_READ_ONLY    (NOT T3)
+  'python3 -m pytest'               -> T0_READ_ONLY    (NOT T3)
+  'python3 -m pytest tests/x.py'    -> T0_READ_ONLY    (NOT T3)
+
+Live block proof
+----------------
+Attempting the command verbatim through the runtime hook produced a T3 block
+(this is the intended behavior — the evasion is closed):
+  $ python3 -m pip install requests
+  [T3_BLOCKED] This command requires user approval.
+
+Tests
+-----
+tests/hooks/modules/security/test_mutative_verbs.py
+  New class TestPythonModulePipReDispatch (11 tests): install/uninstall variants
+  MUTATIVE, parity with direct pip install, read-only subcommands stay read-only,
+  and pytest / http.server controls stay non-mutative.
+tests/hooks/modules/security/test_mutative_verbs_mutants.py
+  test_inline_cli_without_inline_flag_is_not_inline_analyzed retargeted from
+  `python3 -m pip install requests` (now intercepted by Step 1c-py) to
+  `python3 -m flask deploy` (flask is not a pkg-mgr, still reaches the inline
+  gate) so the AndWithOr mutant on the inline-code gate stays covered.
+
+$ pytest tests/hooks/modules/security/ -q
+  1548 passed, 1 skipped in 7.53s
+
+Re-hardening note (cosmic-ray, DEFERRED to consolidated pass)
+-------------------------------------------------------------
+This change ADDS new lines to mutative_verbs.py = new mutants to triage. Per the
+task instruction, the cosmic-ray session was NOT re-initialized this pass. New
+surface to re-hardenize in the consolidated re-hardening pass:
+  hooks/modules/security/mutative_verbs.py
+    - _check_python_module_runner()        (new function — full body)
+    - detect_mutative_command()            (new Step 1c-py call + early return)
+    - module constant _PY_MODULE_PACKAGE_MANAGERS

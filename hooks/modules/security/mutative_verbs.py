@@ -451,6 +451,28 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Python ``-m <package-manager>`` re-dispatch (Brief 91, AC-7)
+# ---------------------------------------------------------------------------
+# ``python3 -m pip install x`` is the SAME operation as ``pip install x`` -- the
+# ``-m`` form merely runs the package manager as a module of the interpreter.
+# Before this guard, the interpreter (``python3``) was the base command, the
+# module name (``pip``) was swallowed into flag_tokens as the value of ``-m``,
+# and classification limped along ONLY when a generic verb (``install``)
+# happened to remain in MUTATIVE_VERBS.  That is accidental, not robust:
+#   * ``python3 -m poetry add x`` slipped through (``add`` was removed from
+#     MUTATIVE_VERBS as a git-add false-positive), bypassing T3 entirely.
+#   * the command reported cli_family=runtime, never recognized as ``package``.
+# The fix recognizes ``<python> -m <pkg-mgr> <args...>`` and RE-DISPATCHES it as
+# ``<pkg-mgr> <args...>`` so it classifies identically to the direct CLI form:
+# ``install``/``uninstall``/``add`` -> MUTATIVE/T3, ``list``/``download`` ->
+# READ_ONLY (matching real pip semantics).  Scoped to the package-manager
+# modules below so ``python3 -m pytest`` / ``python3 -m http.server`` are NOT
+# rerouted -- they fall through to ordinary detection unchanged.
+_PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
+    "pip", "pip3", "pipenv", "poetry", "uv",
+})
+
+# ---------------------------------------------------------------------------
 # Layer 1: Shell command extraction from string literals
 # ---------------------------------------------------------------------------
 _STRING_LITERAL_RE = _re.compile(r"""(?:['"])((?:[^'"\\\n]|\\.){3,})(?:['"])""")
@@ -1138,6 +1160,18 @@ def detect_mutative_command(command: str) -> MutativeResult:
                     reason=cap.reason,
                 )
 
+    # --- Step 1c-py: Python ``-m <pkg-mgr>`` re-dispatch (Brief 91, AC-7) ---
+    # ``python3 -m pip install x`` is the same operation as ``pip install x``.
+    # Recognize the ``<python> -m <package-manager> <args...>`` shape and re-run
+    # detection on the rewritten ``<package-manager> <args...>`` command so it
+    # classifies IDENTICALLY to the direct CLI form (install/uninstall -> T3,
+    # list/download -> read-only).  Returns None when the command is not a
+    # package-manager module invocation, so detection continues unchanged --
+    # ``python3 -m pytest`` and ``python3 -m http.server`` are NOT rerouted.
+    py_module_result = _check_python_module_runner(base_cmd, semantics)
+    if py_module_result is not None:
+        return py_module_result
+
     # --- Step 1d: Script-file analysis (python3 deploy.py, bash setup.sh, ./x) ---
     # An interpreter invoked with a script FILE as a positional argument, or a
     # direct ``./script`` invocation, hides its mutations inside the file --
@@ -1660,6 +1694,75 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
         # Strip a trailing matched quote pair if shlex left them in place.
         return m.group(1).strip().strip("'\"")
     return ""
+
+
+def _check_python_module_runner(
+    base_cmd: str, semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Re-dispatch ``python -m <pkg-mgr> ...`` as the package-manager command.
+
+    Closes the AC-7 evasion (Brief 91): ``python3 -m pip install x`` is the same
+    operation as ``pip install x``, but the verb scanner sees ``python3`` as the
+    base command and the module name (``pip``) gets absorbed into flag_tokens as
+    the value of ``-m`` -- so the command was classified only by whatever generic
+    verb happened to follow, missing cases like ``python3 -m poetry add x``.
+
+    This helper recognizes ``<python> [interp-flags] -m <pkg-mgr> <args...>``,
+    rewrites it to ``<pkg-mgr> <args...>``, and re-runs ``detect_mutative_command``
+    on the rewrite so the result is IDENTICAL to the direct CLI form.  The verb
+    ``-m`` consumes the immediately following token as the module name (POSIX
+    short-flag-with-value), which ``analyze_command`` already lands as
+    ``flag_tokens[i+1]``; here we read the module directly from the raw token
+    stream so the re-dispatch is robust to interpreter switches before ``-m``.
+
+    Returns ``None`` when the command is not a recognized package-manager module
+    invocation, so ordinary detection continues unchanged (``python3 -m pytest``,
+    ``python3 -m http.server``, ``python3 -m pip`` with no args).
+    """
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+
+    raw_tokens = semantics.tokens
+    # Walk args after the interpreter; find the ``-m`` flag and the module token
+    # it consumes.  Standalone interpreter switches (-u, -O, -E, ...) are skipped.
+    module = None
+    module_idx = None
+    for i in range(1, len(raw_tokens)):
+        if raw_tokens[i] == "-m":
+            if i + 1 < len(raw_tokens):
+                module = raw_tokens[i + 1]
+                module_idx = i + 1
+            break
+        # A non-flag token before any ``-m`` means a script-file / positional
+        # invocation, not ``-m`` module mode -- defer to the script-file lane.
+        if not raw_tokens[i].startswith("-"):
+            return None
+
+    if module is None or module_idx is None:
+        return None
+    if module.lower() not in _PY_MODULE_PACKAGE_MANAGERS:
+        return None
+
+    # Rewrite ``python3 [flags] -m <pkg-mgr> <rest...>`` -> ``<pkg-mgr> <rest...>``
+    # and re-classify.  ``shlex.quote`` keeps argument boundaries intact so a
+    # rewritten command tokenizes the same way the direct CLI form would.
+    import shlex
+    rest = raw_tokens[module_idx + 1:]
+    rewritten = " ".join(shlex.quote(t) for t in (module, *rest))
+    inner = detect_mutative_command(rewritten)
+    # Re-wrap the reason so the audit trail shows the re-dispatch explicitly,
+    # but preserve the inner classification verbatim (category, verb, flags).
+    return MutativeResult(
+        is_mutative=inner.is_mutative,
+        category=inner.category,
+        verb=inner.verb,
+        dangerous_flags=inner.dangerous_flags,
+        cli_family=inner.cli_family,
+        confidence=inner.confidence,
+        reason=(
+            f"'{base_cmd} -m {module}' re-dispatched as '{module}': {inner.reason}"
+        ),
+    )
 
 
 def _resolve_script_argument(
