@@ -398,6 +398,15 @@ This invariant is what makes the following equivalent.
   at call time), so the handler body is unreachable and the mutation has no
   observable effect (confirmed in `_probe_equiv.py`).
 
+**Denominator (blocked_commands.py, after grind-total):**
+
+| Population | Count |
+|------------|------:|
+| Total specs in DB | 157 |
+| INCOMPETENT (excluded by cosmic-ray) | 0 |
+| Proven-equivalent excluded (B1–B3, skip file) | 21 |
+| **Killable denominator** | **136** |
+
 **Endpoint:** 0 untriaged survivors in `blocked_commands.py`. 37 killed by
 honest tests, 21 proven equivalent (listed above) and excluded via
 `equivalents-blocked-commands.skip`.
@@ -587,7 +596,7 @@ path (those start with `/`), so the boolean is unchanged:
   produces. No `~`-token is ever an absolute sensitive path, so weakening or
   inverting the guard changes nothing observable.
 
-## Category M6 — `detect_mutative_command` Step-3e/3f maxsplit/len residuals (5 mutants)
+## Category M6 — `detect_mutative_command` Step-3e/3f maxsplit/len residuals (6 mutants)
 
 Step 3e (command+subcommand tier exception, L1282-1337) extracts
 `group_verb = non_flag_tokens[1] if len(non_flag_tokens) > 1 else ""` and tests
@@ -699,11 +708,23 @@ tests in `test_mutative_verbs_mutants.py` (`TestLayer3LengthCheck`,
   is False (`'s' > 'p'`). Same truth table as `== "python"` across the whole
   reachable domain.
 
-**Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
-test. 48 mutants proven equivalent across the categories (3 import-fallback +
-3 lru_cache + 2 split_camel_case + 17 _scan_dangerous_flags +
-9 _mkdir_targets_sensitive_path + 4 detect_mutative_command Step-3e +
-10 M7 script/inline/layer3 residuals).
+**Endpoint (M1–M7, partial):** 50 mutants proven equivalent across the first
+seven categories (3 import-fallback + 3 lru_cache + 2 split_camel_case +
+17 _scan_dangerous_flags + 9 _mkdir_targets_sensitive_path + 6
+detect_mutative_command Step-3e/3f + 10 M7 script/inline/layer3 residuals).
+Categories M8–M10 (below) add 24 more for a **grand total of 74 equivalents**,
+matching the `equivalents-mutative-verbs.skip` count.
+
+**Denominator (mutative_verbs.py, after grind-total):**
+
+| Population | Count |
+|------------|------:|
+| Total specs in DB | 735 |
+| INCOMPETENT (excluded by cosmic-ray) | 0 |
+| Proven-equivalent excluded (M1–M10, skip file) | 74 |
+| **Killable denominator** | **661** |
+
+**Grind-total closure:** 0 untriaged survivors remain in `mutative_verbs.py`.
 
 ## Category M8 — detect_mutative_command fast-path / early-branch residuals
 

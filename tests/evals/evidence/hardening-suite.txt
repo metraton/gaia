@@ -1,0 +1,28 @@
+AC-6 — Full suite green (brief #91)
+====================================
+Date: 2026-06-27
+Branch: harden/approval-grants-m1-loop
+Status: CLOSED — exit 0
+
+Command
+-------
+uv run pytest -q  (from /home/jorge/ws/me/gaia)
+
+Result
+------
+5182 passed, 42 skipped in 304.55s (0:05:04)
+exit code: 0
+
+No failures. No errors. The 42 skipped tests are pre-existing
+(LLM-budget-gated l2 tests + existing skip markers in the mutant harness);
+none were newly skipped for this run.
+
+Suite composition (approximate, from collection):
+- hooks/   (security, audit, agents, tools, session, context modules)
+- tests/   (unit, integration, cli, orchestrator, skills, paths, project,
+            snapshots, e2e, evals, layer1_prompt_regression)
+- Mutant harness: test_approval_grants_mutants.py,
+                  test_blocked_commands_mutants.py,
+                  test_mutative_verbs_mutants.py,
+                  test_tiers_mutants.py
+  (all skip-file entries honoured; 0 ghost skips introduced)
