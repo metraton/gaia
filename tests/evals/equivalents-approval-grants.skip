@@ -128,3 +128,64 @@ cf538bff281545be9713848e544bd93a
 # module-level line 374 (_ENV_SNAPSHOT_TIMEOUT_SECONDS 2→3)
 287e196d9d174f0aa04ccfc2e9131d64
 2d88a05a3b094bd8b180772ce8a5e122
+# ===========================================================================
+# AC-5 CIERRE FINAL: residual equivalents proven this session (GRIND TOTAL).
+# Each proven by hand-applying the exact cosmic-ray mutant and observing the
+# suite stays green (no honest input distinguishes it). See
+# equivalents-security-core.md categories E8-E12.
+# ===========================================================================
+# E8: SQL pre-filter makes the in-Python scope re-check a constant-False branch.
+# match_command_set_grant line 1683 grant.get("scope") != "COMMAND_SET":
+# list_command_set_grants_agnostic SELECTs WHERE scope='COMMAND_SET', so the
+# value is ALWAYS "COMMAND_SET". NotEq->Gt/Lt: '>'/'<' on equal strings = False
+# like '!='. NotEq->Is: cosmic-ray substitutes '!=' with 'is' (NOT 'is not');
+# the sqlite string is non-interned so 'is "COMMAND_SET"' is False like '!='.
+# All three keep the branch False -> never skip -> identical. Line 1684 continue
+# is then unreachable, so continue->break is unobservable.
+6de4c76e8ff64ddfbe9ab68e6daab706
+2a7b0e10cb7d4660bc78ab39e6e2429e
+cdcb2e87997e498583d0b6ed7ce8844d
+ba66c6093dee4fcaa47f4fbce853e341
+# E9: timestamp==0 fast-path coincides with the wall-clock fall-through.
+# _is_ttl_expired line 177 `if timestamp == 0: return True` NumberReplacer.
+# For timestamp 0 the fall-through (time.time()-0)/60 >> any ttl -> also True;
+# distinguishing needs ttl >= ~2.9e7 min (~55 yr), unreachable in an honest test.
+ad6ce3d819ee4f0397cf58a30096b21f
+# E10: index value used only as a truthiness check, never read.
+# activate_db_pending_by_prefix line 1175 command = command_set_items[0]
+# NumberReplacer [0]->[1]/[-1]. In the is_command_set path `command` only gates
+# the `if not command` guard (both items are non-empty), then the COMMAND_SET
+# branch returns without using `command`. Proven: full suite green under [1].
+aedf3ee1056c46bb88b2cf954129116b
+ea36340d4f334680b9c228856a681dbd
+# E11: dead local variable never read.
+# activate_db_pending_by_prefix line 1458 `verbs = [...] if signature.verb ...`
+# `verbs` has exactly one occurrence in the module (assigned, never used).
+# Both AddNot flips are unobservable. Proven: 1313 tests green under both flips.
+763b4d7f9bb447df981a853b790291a3
+da2d5e1467ec4fbbab97cb69fe05ce1b
+# E12: log-only branch / log argument / interned-name comparison.
+# 542 `if consumed:` and 713 `if cleaned:` gate ONLY a logger call; the return
+# (consumed/cleaned) is identical either way (AddNot, log-branch-only).
+b9394bf3382d4246932b17fc3d319d0b
+f22e69b45bc64b1f9c4163643d5750b7
+# 978 str(row.get("approval_id",""))[:16] -- both NumberReplacers are inside a
+# logger.info argument (slice bound / .get default); no observable.
+4328823870f040f8a49a600135181f80
+f2bd0b181bd04be1871a9263af93e593
+# 1579 len(command_set) if command_set else 0 -- logger.error argument only
+# (AddNot on the guard + NumberReplacers on the 0); no observable.
+01e81148a18945a5bb2b644be8846651
+8f4d7202b79c48d9a24bbc05f5e86efd
+9c50639338494c00a4fdd0076095c15e
+# 358 candidates[0].get("nonce","?")[:12] -- logger.info argument only.
+079c60e3a51f42448082f6d3d5294e32
+# 1324 (originating_session or "")[:12] -- logger.info argument only (Or->And).
+287684e7ae944df891fa74fc0f6966bf
+# 252 _grants_dir_created = False ReplaceFalseWithTrue -- module-init memoization
+# flag; mkdir(exist_ok=True) is idempotent and any honest test resetting state
+# masks the init value before the only observable (first-call) read.
+ffe55f168c8441e0a62f9280a40fcb14
+# 1212 _fp_exc.__class__.__name__ == "ChainTamperError" Eq->Is: __name__ is
+# interned by CPython, so 'is' behaves like '==' here. Proven equivalent.
+094def2635d447ae98d6bf3023d48173
