@@ -36,3 +36,35 @@ bb8fe5f7d7184699b97978221d36a6c8
 # equivalents-security-core.md M3.
 8906953c388444e1a064abdf71c98f81
 b016396e9473411799beae17fa2003c9
+# ===========================================================================
+# Category M4 — _scan_dangerous_flags elif-chain + compound guard (17 mutants).
+# Killable siblings (L882 Eq_GtE, L879 break, L906 Gt_NotEq) are killed by
+# tests. The 17 below cannot be distinguished by any reachable input:
+# chain-position (a mutated later elif only ever sees its own flag), identical
+# flag-sets ({git} for -D/-M/--hard), token[0] always "-", single-char
+# interning, and no 2-char r/f token reaching the compound branch. See
+# equivalents-security-core.md M4.
+# -- L877 flag_type == "ALWAYS" (values in {ALWAYS,CONTEXT}): Eq_LtE, Eq_Is
+a6459cf24d7d4ed5ad41b8222c619482
+b8760d57037346a98bbdcc8f87838063
+# -- L888/L891/L897 Eq_GtE, L894 Eq_LtE (later elif sees only its own flag)
+fc297946fa01418d9813ca9dd85276fc
+fbb4d57bf9a7406db289bb3962fd5fae
+1a2b7526eedc4de5ac3d441914f234fc
+f6732a8a95c44082bfa12bea279dbecb
+# -- L900 == "--hard" (last branch, only --hard reaches): GtE, LtE, IsNot
+623e513f6cdb467ba2ddeaa533e135d0
+b5ee483338e0425e95272c265403feb3
+91f8c803fc59470191e6e29dbc41d5ac
+# -- L906 token[0] == "-" (always "-"): Eq_GtE, Eq_LtE, Eq_Is
+c87e28a7c0d24683b3b2519612471c3c
+5bf4fa3db4ad431a9ca273a613caad5d
+a99439b9869940b59aca7a494a4ebfbd
+# -- L906 len(token) > 2 Gt_GtE + NumberReplacer occ17 (2->1)
+6e86bd17c87a459ca2eb22946035e90a
+598d13384cd743a28a3315e3cc1420d8
+# -- L906 token[1] != "-": NotEq_Gt, NotEq_IsNot
+622281fc5fb24945b8a7b169b6eceef3
+009761a0ba2742c5a8e45b8ac284ca16
+# -- L907 token[1:] NumberReplacer occ23 (1->0, token[0:])
+d8b12902fb014791b253cfae6909cefb

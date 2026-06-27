@@ -477,6 +477,37 @@ class TestScanDangerousFlags:
         # must be collected, in encounter order.
         assert self._scan(["x", "-D", "--force"], "git") == ("-D", "--force")
 
+    # --- elif-chain comparison discriminators (L882 GtE, L879 break) -----
+    def test_dash_r_not_captured_by_dash_f_branch(self):
+        # Kills L882 `token == "-f"` -> Eq_GtE.  "-r" >= "-f" is True (r>f), so
+        # the GtE mutant enters the `-f` branch and checks F_FLAG_MEANS_FORCE
+        # (gsutil absent) instead of the `-r` branch (gsutil IS in
+        # R_FLAG_MEANS_RECURSIVE_DELETE).  Original collects "-r"; mutant drops
+        # it.  gsutil is chosen because it is in R_RECURSIVE but NOT F_FORCE,
+        # so the two branches diverge.
+        assert self._scan(["x", "-r"], "gsutil") == ("-r",)
+
+    def test_two_context_flags_both_collected_continue(self):
+        # Kills L879 ReplaceContinueWithBreak on the ALWAYS arm: with `break`,
+        # a leading ALWAYS flag would stop the loop and the trailing context
+        # flag would be lost.  Both must appear, in order.
+        assert self._scan(["x", "--force", "-D"], "git") == ("--force", "-D")
+
+    def test_force_then_context_continue_not_break(self):
+        # Same ReplaceContinueWithBreak target with ALWAYS first then a context
+        # flag in a force CLI: `break` would truncate to ("--force",).
+        assert self._scan(["x", "--force", "-f"], "rm") == ("--force", "-f")
+
+    def test_bare_dash_token_not_compound(self):
+        # Kills L906 `len(token) > 2` -> Gt_NotEq (`len(token) != 2`).  A bare
+        # "-" token (stdin marker): startswith("-") so it is not skipped, is
+        # not a DANGEROUS_FLAGS key, and len 1.  Original `> 2` is False so the
+        # compound branch is skipped -> ().  The `!= 2` mutant is True for
+        # len 1, enters the branch, and evaluates `token[1]` -> IndexError,
+        # which the harness records as a non-survivor.  Either way the mutant
+        # cannot return () for this input.
+        assert self._scan(["x", "-"], "rm") == ()
+
 
 # ===========================================================================
 # _layer3_length_check -- 36 survivors.
