@@ -699,3 +699,161 @@ class TestModuleLevel:
         # NumberReplacer on 256/1024 all change the product. Pin the literal
         # value (NOT `256*1024`, which would re-evaluate the mutated source).
         assert mv._MAX_SCRIPT_READ_BYTES == 262144
+
+
+# ===========================================================================
+# split_camel_case -- L932 survivors.
+#   `return [...] if len(parts) > 1 else [token.lower()]`
+# Gt_NotEq (len != 1) and the NumberReplacer on `1` discriminate only when
+# parts has length 0 (empty token) or exactly 1. Gt_GtE is equivalent (see
+# equivalents-mutative-verbs.skip M3) because at len==1 both arms yield the
+# same single lowercased element and at len==0 both yield [token.lower()].
+# ===========================================================================
+class TestSplitCamelCase:
+    def test_empty_token_returns_single_empty(self):
+        # parts = "".split() -> []. orig `len > 1` is False -> [token.lower()]
+        # = [""].  Gt_NotEq (`!= 1`) is True for len 0 -> would return the
+        # comprehension over [] = [].  NumberReplacer `1->0` (`> 0`) is True
+        # for len 0 -> [] as well.  Asserting [""] kills both.
+        assert mv.split_camel_case("") == [""]
+
+    def test_single_word_lowercased(self):
+        # parts = ["GET"] (no camel boundary), len 1. orig -> [token.lower()].
+        # Gt_NotEq `!= 1` is False -> [token.lower()] (same). This pins the
+        # len==1 arm so a `1->2` NumberReplacer (`> 2`) still returns
+        # [token.lower()] for len 1 (no change) -- but `> 0` would take the
+        # comprehension; here both happen to lower the same single element,
+        # so the discriminating case is the empty-token test above.
+        assert mv.split_camel_case("GET") == ["get"]
+
+    def test_camel_split_two_parts(self):
+        # parts length 2 -> comprehension. Pins the >1 True arm.
+        assert mv.split_camel_case("batchDelete") == ["batch", "delete"]
+
+
+# ===========================================================================
+# _extract_embedded_shell_commands -- L461 survivor.
+#   `return [m.group(1) for m in _STRING_LITERAL_RE.finditer(code)]`
+# NumberReplacer on the group index `1`. group(0) returns the whole match
+# (quotes included); group(1) returns the inner literal (quotes stripped).
+# Asserting the quote-stripped content kills the `1->0` mutant.
+# ===========================================================================
+class TestExtractEmbeddedShellCommands:
+    def test_group_one_strips_quotes(self):
+        out = mv._extract_embedded_shell_commands("x = 'rm -rf /tmp/foo'")
+        # group(1) -> inner literal (no surrounding quotes).
+        assert out == ["rm -rf /tmp/foo"]
+        assert not out[0].startswith("'")
+
+
+# ===========================================================================
+# _extract_python_payload -- L1659/L1661 survivors.
+#   fallback: `m = _re.search(r"-c\s+(\S.*)$", ...)`; `return m.group(1)...`
+# AddNot on `if m:` (L1659) and NumberReplacer on the group index `1` (L1661).
+# ===========================================================================
+class TestExtractPythonPayload:
+    def test_inline_c_quoted_payload(self):
+        # Canonical -c quoted form -> group(2) of the quoted regex.
+        out = mv._extract_python_payload('python3 -c "print(1)"', "python3")
+        assert out == "print(1)"
+
+    def test_fallback_unquoted_payload_group_one(self):
+        # No surrounding quote pair -> falls to the greedy `-c\s+(\S.*)$`
+        # branch; AddNot on `if m:` flips entry, NumberReplacer on group(1)
+        # changes what is returned. An unquoted payload exercises this arm.
+        out = mv._extract_python_payload("pybin -c foo_bar_baz", "pybin")
+        assert out == "foo_bar_baz"
+
+
+# ===========================================================================
+# _is_subcommand_identifier -- L983/L984/L986 survivors.
+#   empty -> False (L983 ReplaceFalseWithTrue); loop scans chars; on a
+#   NON_SUBCOMMAND char return False (L986 ReplaceFalseWithTrue); else True.
+#   L984 ZeroIterationForLoop skips the loop -> always True for non-empty.
+# ===========================================================================
+class TestIsSubcommandIdentifier:
+    def test_empty_is_false(self):
+        # L983 ReplaceFalseWithTrue would make "" return True.
+        assert mv._is_subcommand_identifier("") is False
+
+    def test_path_like_is_false(self):
+        # Contains "/" (a NON_SUBCOMMAND char) -> False. L986
+        # ReplaceFalseWithTrue makes this True; L984 ZeroIterationForLoop
+        # skips the char scan so the "/" is never seen -> also True. Both die.
+        assert mv._is_subcommand_identifier("tests/foo.py") is False
+
+    def test_plain_word_is_true(self):
+        assert mv._is_subcommand_identifier("delete") is True
+
+    def test_internal_hyphen_is_true(self):
+        assert mv._is_subcommand_identifier("force-delete") is True
+
+
+# ===========================================================================
+# build_t3_block_response -- L2054 survivor.
+#   `if danger.dangerous_flags:`  AddNot inverts the flag-warning branch.
+# ===========================================================================
+class TestBuildT3BlockResponse:
+    def test_dangerous_flags_warning_present(self):
+        danger = MutativeResult(
+            is_mutative=True, category="MUTATIVE", verb="rm",
+            dangerous_flags=("-rf",), cli_family="system", confidence="high",
+            reason="x",
+        )
+        resp = mv.build_t3_block_response("rm -rf /tmp/x", danger)
+        assert "Dangerous flags detected: -rf" in resp["message"]
+
+    def test_no_dangerous_flags_no_warning(self):
+        danger = MutativeResult(
+            is_mutative=True, category="MUTATIVE", verb="kubectl",
+            dangerous_flags=(), cli_family="k8s", confidence="high", reason="x",
+        )
+        resp = mv.build_t3_block_response("kubectl apply -f x", danger)
+        assert "Dangerous flags detected" not in resp["message"]
+
+
+# ===========================================================================
+# _classify_script_content_by_regex -- L1821/L1824/L1828 survivors.
+#   per-line: `if not line or line.startswith("#"): continue` (L1821 Or->And),
+#   blocked-command guard `if _is_blocked_command is not None:` (L1824 AddNot,
+#   IsNot_Is), and the no-match terminal is_mutative=False (L1828 True->False).
+# Driven through detect_mutative_command on a `./script.sh` invocation so the
+# real file content is classified.
+# ===========================================================================
+class TestClassifyScriptContentByRegex:
+    def _run(self, tmp_path, body, name="s.sh"):
+        # Invoke via the `bash <file>` interpreter shape so
+        # _resolve_script_argument returns the script path (shell lane) and
+        # _check_script_file reads the real file content.
+        p = tmp_path / name
+        p.write_text(body, encoding="utf-8")
+        return detect_mutative_command(f"bash {p}")
+
+    def test_comment_and_blank_lines_skipped_then_safe(self, tmp_path):
+        # Only comments + blanks -> no mutative/blocked line -> safe terminal.
+        # L1828 True->False on the empty-result is_mutative=False would flip
+        # this to is_mutative=True. L1821 Or->And: with `and`, a blank line
+        # ("" -> startswith("#") False) would NOT be skipped and could be
+        # parsed as a (non-mutative) command, but a comment line "# x"
+        # ("" is truthy so `not line` False; with `and` the whole guard is
+        # False) would NOT continue -> parsed as command. Asserting the safe
+        # terminal verb/reason pins the skip + terminal arms.
+        r = self._run(tmp_path, "# comment only\n\n#another\n")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "script-file"
+        assert "no mutative or blocked line" in r.reason
+
+    def test_blocked_line_detected(self, tmp_path):
+        # A blocked destructive line -> verb 'script-blocked-cmd'. L1824 AddNot
+        # / IsNot_Is on `_is_blocked_command is not None` would skip the
+        # blocked check; asserting the blocked verb kills it.
+        r = self._run(tmp_path, "#!/bin/sh\nrm -rf /\n")
+        assert r.is_mutative is True
+        assert r.verb == "script-blocked-cmd"
+        assert "blocked command" in r.reason
+
+    def test_mutative_line_detected(self, tmp_path):
+        r = self._run(tmp_path, "#!/bin/sh\nkubectl apply -f x.yaml\n")
+        assert r.is_mutative is True
+        assert "line is mutative" in r.reason
