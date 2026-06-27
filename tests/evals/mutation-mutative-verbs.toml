@@ -15,7 +15,7 @@
 module-path = "hooks/modules/security/mutative_verbs.py"
 timeout = 30.0
 excluded-modules = []
-test-command = "python3 -m pytest tests/hooks/modules/security/test_mutative_verbs.py -q -x --no-header"
+test-command = "python3 -m pytest tests/hooks/modules/security/test_mutative_verbs.py tests/hooks/modules/security/test_mutative_verbs_mutants.py -q -x --no-header"
 
 [cosmic-ray.distributor]
 name = "local"

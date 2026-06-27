@@ -1,0 +1,12 @@
+# GRIND-TOTAL equivalents for mutative_verbs.py — see equivalents-security-core.md
+# (Category M* sections, added this session). Each job_id below is a mutant
+# proven GENUINELY EQUIVALENT by hand: apply the exact cosmic-ray mutant ->
+# full suite stays green -> revert. Listed here it is excluded from the
+# kill-rate denominator. A mutant is listed ONLY if no honest input can
+# distinguish it from the original for ANY reachable input.
+#
+# Baseline: 55.78% (410 killed / 325 survived / 735 total).
+#
+# Endpoint: every mutative_verbs.py survivor is either killed by a test in
+# tests/hooks/modules/security/test_mutative_verbs_mutants.py OR proven
+# equivalent here.
