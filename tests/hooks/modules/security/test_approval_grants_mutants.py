@@ -55,12 +55,18 @@ from modules.security.approval_grants import (
     create_command_set_grant,
     match_command_set_grant,
     find_pending_for_command,
+    find_pending_for_file,
     get_pending_approvals_for_session,
     activate_db_pending_by_prefix,
     ACTIVATION_NOT_FOUND,
     ACTIVATION_INVALID_PENDING,
+    ACTIVATION_ACTIVATED,
+    ACTIVATION_ERROR,
+    ACTIVATION_INVALID_SIGNATURE,
+    ACTIVATION_CHAIN_TAMPER_DETECTED,
     DEFAULT_COMMAND_SET_TTL_MINUTES,
     SCOPE_SEMANTIC_SIGNATURE,
+    SCOPE_FILE_PATH,
 )
 from modules.security.approval_scopes import build_approval_signature
 
@@ -781,3 +787,434 @@ class TestActivateDbPendingEarlyErrors:
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_PENDING
+
+
+# ===========================================================================
+# activate_db_pending_by_prefix -- POST-fingerprint branches.
+#
+# These drive the function PAST the Step 2b fingerprint integrity check into the
+# terminal branches that were left as survivors after the M1 early-error tests:
+#
+#   * COMMAND_SET grant creation     (Step 3b, lines ~1299-1335)
+#   * SCOPE_FILE_PATH grant insert    (Step 3c, lines ~1343-1413)
+#   * SCOPE_SEMANTIC signature rebuild + grant insert (Steps 4/5, ~1415-1510)
+#   * the ValueError "already approved" recovery branch (Step 3, ~1269-1284)
+#   * the command_set detection or-chain / is_command_set length test (~1158-1175)
+#
+# To reach them, all four lazy DB collaborators are mocked so no real gaia.db is
+# touched: get_pending (the row), verify_fingerprint (passes), the SHOWN/APPROVED
+# writers (record_event/approve), and the writer-side grant inserts. Each test
+# pins the EXACT success flag + status enum AND the call that the branch is
+# supposed to make (e.g. insert_semantic_grant vs insert_file_path_grant vs
+# create_command_set_grant), so a branch-selection mutant (AddNot, Or<->And,
+# comparison flip, NumberReplacer on the >1 length test) flips the observable.
+# ===========================================================================
+class _DummyCon:
+    """Stand-in for the sqlite3 connection verify_fingerprint receives."""
+    def close(self):
+        pass
+
+
+class TestActivateDbPendingPostFingerprint:
+    """activate_db_pending_by_prefix terminal branches after the integrity check."""
+
+    def _drive(self, monkeypatch, payload, *, approval_id="P-deadbeefcafe",
+               session_id="sub-sess", agent_id="ag1",
+               fingerprint_ok=True, approve_raises=None,
+               get_by_id_row=None):
+        """Patch every lazy collaborator so the function runs to a terminal
+        branch. Returns a dict of MagicMock recorders for call assertions."""
+        rows = [{
+            "id": approval_id,
+            "payload_json": json.dumps(payload),
+            "session_id": session_id,
+            "agent_id": agent_id,
+        }]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+
+        # Step 2b: fingerprint check. verify_fingerprint returns True (or raises).
+        def _verify(approval_id_arg, payload_json_arg, con):
+            if not fingerprint_ok:
+                from gaia.approvals.chain import ChainTamperError
+                raise ChainTamperError("simulated tamper")
+            return True
+        monkeypatch.setattr("gaia.approvals.chain.verify_fingerprint", _verify)
+        monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
+
+        # Step 3: SHOWN + APPROVED writers.
+        record_event = MagicMock()
+        monkeypatch.setattr("gaia.approvals.store.record_event", record_event)
+
+        def _approve(*a, **k):
+            if approve_raises is not None:
+                raise approve_raises
+        approve = MagicMock(side_effect=_approve)
+        monkeypatch.setattr("gaia.approvals.store.approve", approve)
+        monkeypatch.setattr(
+            "gaia.approvals.store.get_by_id", lambda *a, **k: get_by_id_row
+        )
+        return {"record_event": record_event, "approve": approve}
+
+    # ----- COMMAND_SET branch (Step 3b) -----
+    def test_command_set_payload_creates_command_set_grant(self, monkeypatch):
+        """A payload whose command_set has >1 item activates into a COMMAND_SET
+        grant via create_command_set_grant() and returns ACTIVATED. Kills:
+          - the `len(command_set_items) > 1` NumberReplacer / Gt flips (1169):
+            a flip to >=1 or <1 would change is_command_set and route elsewhere;
+          - the AddNot on `if is_command_set` (1299);
+          - the ReplaceFalseWithTrue on the failure return inside the branch."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "command_set": [
+                {"command": "git push origin main", "rationale": "a"},
+                {"command": "git tag v1", "rationale": "b"},
+            ],
+        })
+        create = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.create_command_set_grant", create
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        # The COMMAND_SET branch (not the semantic one) must have run.
+        assert create.call_count == 1
+        items_arg = create.call_args[0][0]
+        assert [i["command"] for i in items_arg] == [
+            "git push origin main", "git tag v1"
+        ]
+
+    def test_command_set_creation_failure_returns_error(self, monkeypatch):
+        """When create_command_set_grant returns False, the branch returns
+        success=False / ACTIVATION_ERROR (lines 1307-1317). Kills the
+        ReplaceFalseWithTrue on that `success=False` and the AddNot on
+        `if not created`."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "command_set": [
+                {"command": "git push origin main", "rationale": "a"},
+                {"command": "git tag v1", "rationale": "b"},
+            ],
+        })
+        monkeypatch.setattr(
+            "modules.security.approval_grants.create_command_set_grant",
+            lambda *a, **k: False,
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+
+    def test_single_command_set_item_is_not_command_set(self, monkeypatch):
+        """A command_set of exactly ONE item must NOT mint a COMMAND_SET grant --
+        it falls through to the singular SCOPE_SEMANTIC path. This is the only
+        input that discriminates the `> 1` boundary (1169): with `>= 1` a
+        one-item set would wrongly route to create_command_set_grant. We assert
+        the semantic insert ran and create_command_set_grant did NOT."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+            "command_set": [
+                {"command": "git push origin main", "rationale": "a"},
+            ],
+        })
+        create = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.create_command_set_grant", create
+        )
+        insert_sem = MagicMock(return_value={"status": "applied"})
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert create.call_count == 0
+        assert insert_sem.call_count == 1
+
+    # ----- SCOPE_FILE_PATH branch (Step 3c) -----
+    def test_file_path_payload_inserts_file_path_grant(self, monkeypatch):
+        """A payload with scope == SCOPE_FILE_PATH activates via
+        insert_file_path_grant() and returns ACTIVATED (lines 1343-1413). Kills
+        the NotEq->Eq / AddNot on the `payload.get('scope') == SCOPE_FILE_PATH`
+        guard (1343) and the ReplaceFalseWithTrue on its failure returns."""
+        self._drive(monkeypatch, {
+            "operation": "FILE_WRITE command intercepted: write",
+            "exact_content": "/etc/hosts",
+            "scope": SCOPE_FILE_PATH,
+        })
+        insert_fp = MagicMock(return_value={"status": "applied"})
+        insert_sem = MagicMock(return_value={"status": "applied"})
+        monkeypatch.setattr("gaia.store.writer.insert_file_path_grant", insert_fp)
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        # The file-path branch ran, not the semantic one.
+        assert insert_fp.call_count == 1
+        assert insert_sem.call_count == 0
+        # The file path threads through to the insert verbatim.
+        assert insert_fp.call_args.kwargs["file_path"] == "/etc/hosts"
+
+    def test_file_path_insert_not_applied_returns_error(self, monkeypatch):
+        """When insert_file_path_grant returns a non-'applied' status the branch
+        returns success=False / ACTIVATION_ERROR (lines 1392-1401). Kills the
+        Eq->NotEq flip on `result_fp.get('status') != 'applied'` and the
+        ReplaceFalseWithTrue on that return."""
+        self._drive(monkeypatch, {
+            "operation": "FILE_WRITE command intercepted: write",
+            "exact_content": "/etc/hosts",
+            "scope": SCOPE_FILE_PATH,
+        })
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_file_path_grant",
+            lambda **k: {"status": "rejected", "reason": "dup"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+
+    def test_file_path_missing_exact_content_returns_invalid_pending(self, monkeypatch):
+        """A SCOPE_FILE_PATH payload with empty exact_content => INVALID_PENDING
+        (lines 1345-1355). The function reaches this only because the EARLIER
+        command-extraction (line 1171) used commands[0]; here exact_content is
+        empty but commands carries the path so command extraction passes, then
+        the file-path branch's own emptiness guard fires. Pins that guard's
+        AddNot and its success=False."""
+        self._drive(monkeypatch, {
+            "operation": "FILE_WRITE command intercepted: write",
+            "exact_content": "",
+            "commands": ["/some/path"],
+            "scope": SCOPE_FILE_PATH,
+        })
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_PENDING
+
+    # ----- SCOPE_SEMANTIC branch (Steps 4 / 5) -----
+    def test_semantic_payload_inserts_semantic_grant(self, monkeypatch):
+        """A plain semantic payload (no command_set, scope not SCOPE_FILE_PATH)
+        rebuilds the signature and inserts a semantic grant, returning ACTIVATED
+        (lines 1415-1490). Kills the ReplaceFalseWithTrue-on-failure and the
+        Eq flips on `result_sg.get('status') == 'applied'` (1476)."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+        })
+        insert_sem = MagicMock(return_value={"status": "applied"})
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert insert_sem.call_count == 1
+        # The exact command threads through to the semantic insert.
+        assert insert_sem.call_args.kwargs["command"] == "git push origin main"
+
+    def test_semantic_insert_not_applied_returns_error(self, monkeypatch):
+        """insert_semantic_grant returning non-'applied' => success=False /
+        ACTIVATION_ERROR (lines 1491-1500). Kills the Eq->NotEq flip on the
+        status compare and the else-branch ReplaceFalseWithTrue."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+        })
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: {"status": "rejected", "reason": "dup"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+
+    def test_semantic_insert_exception_returns_error(self, monkeypatch):
+        """When insert_semantic_grant raises, the except returns success=False /
+        ACTIVATION_ERROR (lines 1501-1510). Kills the ExceptionReplacer on that
+        except and its ReplaceFalseWithTrue."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+        })
+        def _boom(**k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", _boom)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+
+    # ----- fingerprint integrity (Step 2b) -----
+    def test_fingerprint_mismatch_refuses_activation(self, monkeypatch):
+        """A failing verify_fingerprint (ChainTamperError) => activation refused
+        with success=False / CHAIN_TAMPER_DETECTED, and a FAILED audit event is
+        recorded (lines 1210-1249). Kills the ReplaceFalseWithTrue on that
+        return and pins that the integrity branch is taken on a raise."""
+        rec = self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+        }, fingerprint_ok=False)
+        # Even if a downstream insert exists, it must NOT be reached.
+        insert_sem = MagicMock(return_value={"status": "applied"})
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
+        assert insert_sem.call_count == 0
+        # A FAILED audit event was recorded for the refusal.
+        failed_calls = [
+            c for c in rec["record_event"].call_args_list
+            if len(c[0]) >= 2 and c[0][1] == "FAILED"
+        ]
+        assert len(failed_calls) == 1
+
+    # ----- ValueError "already approved" recovery (Step 3) -----
+    def test_already_approved_non_approved_status_returns_error(self, monkeypatch):
+        """When approve() raises ValueError AND get_by_id shows the row is NOT
+        'approved', the function aborts with success=False / ACTIVATION_ERROR
+        (lines 1278-1284). Kills the NotEq->Eq flip on
+        `current_row.get('status') != 'approved'` and the AddNot on the guard:
+        with the flip an unprocessed row would wrongly continue to grant
+        creation."""
+        self._drive(
+            monkeypatch,
+            {
+                "operation": "MUTATIVE command intercepted: push",
+                "exact_content": "git push origin main",
+            },
+            approve_raises=ValueError("not pending"),
+            get_by_id_row={"id": "P-deadbeefcafe", "status": "rejected"},
+        )
+        insert_sem = MagicMock(return_value={"status": "applied"})
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+        # The grant insert must NOT have run since we aborted.
+        assert insert_sem.call_count == 0
+
+    def test_already_approved_continues_to_grant(self, monkeypatch):
+        """When approve() raises ValueError but get_by_id shows status ==
+        'approved', the function does NOT abort -- it proceeds to create the
+        grant (the recovery path). Pins that the `!= 'approved'` guard lets an
+        already-approved row through (kills the AddNot that would invert it and
+        abort here)."""
+        self._drive(
+            monkeypatch,
+            {
+                "operation": "MUTATIVE command intercepted: push",
+                "exact_content": "git push origin main",
+            },
+            approve_raises=ValueError("already approved"),
+            get_by_id_row={"id": "P-deadbeefcafe", "status": "approved"},
+        )
+        insert_sem = MagicMock(return_value={"status": "applied"})
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert insert_sem.call_count == 1
+
+
+# ===========================================================================
+# find_pending_for_file -- DB query, scope filter, path match (29 survivors)
+#
+# find_pending_for_file does `from gaia.approvals.store import list_pending`
+# lazily, so patching gaia.approvals.store.list_pending is what the call binds.
+# ===========================================================================
+class TestFindPendingForFileMutants:
+    """find_pending_for_file(session_id, file_path) -- every branch pinned."""
+
+    def _patch_list(self, monkeypatch, rows):
+        monkeypatch.setattr("gaia.approvals.store.list_pending", lambda **kw: rows)
+
+    def _row(self, *, approval_id, scope, exact_content, session_id="s"):
+        return {
+            "id": approval_id,
+            "session_id": session_id,
+            "payload_json": json.dumps({
+                "scope": scope,
+                "exact_content": exact_content,
+            }),
+        }
+
+    def test_empty_file_path_returns_none_without_query(self, monkeypatch):
+        """An empty/whitespace file_path => None BEFORE any DB query (lines
+        1013-1015). Kills the AddNot on `if not stripped` and pins the early
+        return: list_pending must not even be called."""
+        called = MagicMock()
+        monkeypatch.setattr("gaia.approvals.store.list_pending", called)
+        assert find_pending_for_file("sess", "   ") is None
+        assert called.call_count == 0
+
+    def test_matching_file_path_returns_nonce(self, monkeypatch):
+        """A SCOPE_FILE_PATH pending whose exact_content equals the target path
+        returns the nonce (approval_id without 'P-') (lines 1030-1041). Kills:
+          - the NotEq->Eq flip on the scope filter (1030),
+          - the NotEq/Eq flip on the path-equality compare (1033),
+          - the slice NumberReplacer on `approval_id[2:]` (1034),
+          - the AddNot on `if approval_id.startswith('P-')`."""
+        self._patch_list(monkeypatch, [
+            self._row(approval_id="P-cafef00dbabe", scope=SCOPE_FILE_PATH,
+                      exact_content="/home/u/secret.txt"),
+        ])
+        assert find_pending_for_file("sess", "/home/u/secret.txt") == "cafef00dbabe"
+
+    def test_path_is_stripped_before_compare(self, monkeypatch):
+        """The target path is stripped (line 1013) and the row's exact_content is
+        stripped (line 1033) before comparison, so surrounding whitespace still
+        matches. Pins both .strip() calls -- a removed strip would miss the row."""
+        self._patch_list(monkeypatch, [
+            self._row(approval_id="P-aaaabbbbcccc", scope=SCOPE_FILE_PATH,
+                      exact_content="  /home/u/file  "),
+        ])
+        assert find_pending_for_file("sess", "  /home/u/file  ") == "aaaabbbbcccc"
+
+    def test_non_file_path_scope_is_skipped(self, monkeypatch):
+        """A pending whose scope is NOT SCOPE_FILE_PATH must be skipped even if
+        its exact_content matches the path (line 1030 `continue`). Kills the
+        Eq<->NotEq flip on the scope guard and the ReplaceContinueWithBreak."""
+        self._patch_list(monkeypatch, [
+            self._row(approval_id="P-1111", scope=SCOPE_SEMANTIC_SIGNATURE,
+                      exact_content="/home/u/file"),
+        ])
+        assert find_pending_for_file("sess", "/home/u/file") is None
+
+    def test_different_path_returns_none(self, monkeypatch):
+        """A SCOPE_FILE_PATH pending for a DIFFERENT path does not match => None
+        (the loop runs and finds nothing). Pins the path-equality compare: a
+        NotEq->Eq flip would wrongly match a different path."""
+        self._patch_list(monkeypatch, [
+            self._row(approval_id="P-2222", scope=SCOPE_FILE_PATH,
+                      exact_content="/home/u/OTHER"),
+        ])
+        assert find_pending_for_file("sess", "/home/u/file") is None
+
+    def test_skips_first_nonmatching_then_matches_second(self, monkeypatch):
+        """A non-matching row followed by a matching one still resolves the match
+        -- pins that `continue` advances rather than breaks (kills
+        ReplaceContinueWithBreak on the scope-filter continue, line 1030) and
+        ZeroIterationForLoop on the row loop."""
+        self._patch_list(monkeypatch, [
+            self._row(approval_id="P-3333", scope=SCOPE_SEMANTIC_SIGNATURE,
+                      exact_content="/home/u/file"),
+            self._row(approval_id="P-deadbeef0000", scope=SCOPE_FILE_PATH,
+                      exact_content="/home/u/file"),
+        ])
+        assert find_pending_for_file("sess", "/home/u/file") == "deadbeef0000"
+
+    def test_unparseable_payload_is_skipped(self, monkeypatch):
+        """A row whose payload_json is invalid JSON is skipped (continue, lines
+        1025-1027) and a later valid match is still found. Kills the
+        ExceptionReplacer on the JSON guard and the ReplaceContinueWithBreak."""
+        monkeypatch.setattr("gaia.approvals.store.list_pending", lambda **kw: [
+            {"id": "P-bad", "session_id": "s", "payload_json": "{not json"},
+            self._row(approval_id="P-feedface0000", scope=SCOPE_FILE_PATH,
+                      exact_content="/home/u/file"),
+        ])
+        assert find_pending_for_file("sess", "/home/u/file") == "feedface0000"
+
+    def test_approval_id_without_p_prefix_yields_none(self, monkeypatch):
+        """A matching file-path row whose id does NOT start with 'P-' yields None
+        (the `if approval_id.startswith('P-')` guard, line 1035 -- no nonce is
+        returned). Kills the AddNot on that guard: an inverted guard would slice
+        a non-prefixed id and return a bogus nonce."""
+        self._patch_list(monkeypatch, [
+            self._row(approval_id="XX-noprefix", scope=SCOPE_FILE_PATH,
+                      exact_content="/home/u/file"),
+        ])
+        assert find_pending_for_file("sess", "/home/u/file") is None
