@@ -122,3 +122,29 @@ e68fbb7b08d14d39b73f1cacfa97371d
 #    literal + 2-element ordered domain coincide with ==)
 9766004adec84f74acec57d99b77a6fb
 0301d615e90646f8aeae10c6ed636676
+# ===========================================================================
+# Category M8 — detect_mutative_command fast-path / early-branch residuals.
+# Killable siblings killed by TestDetectMutativeEarlyBranches + existing
+# TestDetectMutativeCommand. See equivalents-security-core.md M8.
+# -- L1048 t != "--" NotEq_IsNot (clause only seen for non-dash tokens; never
+#    equals "--", identity coincides with !=)
+728517f9f3784ccda2d410f0b65b76cc
+# -- L1069/L1102 `family if family != "unknown" else "system"`: family is
+#    ALWAYS "unknown" (no alias/read-only base cmd is in CLI_FAMILY_LOOKUP), so
+#    the condition is always False; Lt/Gt/IsNot all preserve False at ==.
+8835056f24be40138bbe8b40bf307cfb
+1e8f2a5ef7a84c93bb46f2a2898bd50d
+508523544c9e48c099e968deb0a0ca89
+3f76b1bfe4424ca097194556df6d845e
+dda8023f873d414f9a07f94be870ad44
+2cff04f6e25b44eb8a3bca4b418aafa8
+# -- L1115 capability import guard AndWithOr (both names always non-None;
+#    except ImportError unreachable, same as M1)
+c254d1c81ced40aab48d1a4822def56d
+# -- L1119 cap.intent == _CAP_READ_ONLY Eq_GtE / Eq_Is (intent in
+#    {MUTATIVE,READ_ONLY} interned literals; identity + ordered domain == ==)
+1db341d9b6f84e6d8d6ca4c3a48aa366
+def6285393ae443ab77bd1acda629e06
+# -- L1154 len(tokens) == 1 Eq_LtE (len 0 intercepted at L1013; over len>=1
+#    `<= 1` coincides with `== 1`)
+17993015687945ee8cc2f2416a54d96a

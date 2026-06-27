@@ -1077,3 +1077,71 @@ class TestClassifyScriptContentByRegex:
         r = self._run(tmp_path, "#!/bin/sh\nkubectl apply -f x.yaml\n")
         assert r.is_mutative is True
         assert "line is mutative" in r.reason
+
+
+# ===========================================================================
+# detect_mutative_command -- early fast-path branch residuals (Chunk 1).
+#
+# The mkdir path-token filter (L1048), the `find -delete` base-cmd guard
+# (L1086), and the inline-code-CLI gate (L1227). The legacy suite never drove
+# inputs that distinguish these branch directions, so comparison-operator and
+# boolean mutants on them survived. Each test pins one branch with a concrete
+# input whose classification flips under the mutant.
+# ===========================================================================
+class TestDetectMutativeEarlyBranches:
+    # --- L1048: mkdir path-token filter `t != "--"` (NotEq_Gt / NotEq_GtE) ---
+    def test_mkdir_single_path_sorting_before_dashdash(self):
+        # path_tokens = [t for t in tokens[1:]
+        #                if not t.startswith("-") and t != "--"].
+        # The arg "!dir" does not start with "-" so it reaches the `t != "--"`
+        # clause, which is always True there (it cannot equal "--").  The
+        # NotEq_Gt (`t > "--"`) and NotEq_GtE (`t >= "--"`) mutants instead test
+        # ordering: "!dir" < "--" (ASCII "!"=0x21 < "-"=0x2d), so both mutants
+        # DROP the only path token, leaving path_tokens empty -> the
+        # working-tree override is skipped -> mkdir falls through to T3.
+        # The original keeps it READ_ONLY.
+        r = detect_mutative_command("mkdir '!dir'")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "mkdir"
+        assert "working-tree paths only" in r.reason
+
+    # --- L1086: `base_cmd == "find"` guard (Eq_LtE / Eq_GtE / Eq_IsNot) ------
+    def test_cat_delete_flag_stays_read_only(self):
+        # The find-only `-delete` destructive guard fires only when
+        # base_cmd == "find".  `cat` is a read-only base cmd that sorts
+        # BEFORE "find" ("c" < "f"): the Eq_LtE mutant (`base_cmd <= "find"`)
+        # and Eq_IsNot mutant (`base_cmd is not "find"`) both make
+        # `cat -delete f` enter the find branch and return MUTATIVE.  The
+        # original keeps cat on the read-only fast-path.
+        r = detect_mutative_command("cat -delete f")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "cat"
+        assert "Read-only base command" in r.reason
+
+    def test_grep_delete_flag_stays_read_only(self):
+        # `grep` sorts AFTER "find" ("g" > "f"): the Eq_GtE mutant
+        # (`base_cmd >= "find"`) makes `grep -delete f` enter the find branch
+        # and return MUTATIVE.  The original keeps grep read-only.
+        r = detect_mutative_command("grep -delete f")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "grep"
+        assert "Read-only base command" in r.reason
+
+    # --- L1227: inline-code-CLI gate `in ... and ... & ...` (AndWithOr) ------
+    def test_inline_cli_without_inline_flag_is_not_inline_analyzed(self):
+        # `base_cmd in _INLINE_CODE_CLIS and cli_flags & set(flag_tokens)`.
+        # `python3 -m pip install requests`: python3 IS an inline CLI but the
+        # `-c` inline flag is ABSENT, so cli_flags ({-c}) & flag tokens is
+        # empty -> the guard is False and detection falls through to the verb
+        # scanner, which flags the mutative verb "install".  The AndWithOr
+        # mutant turns the guard into `in ... or (empty & ...)` = True, routing
+        # the whole string through _check_inline_code, which finds no dangerous
+        # pattern and returns READ_ONLY -- silently un-gating the install.
+        r = detect_mutative_command("python3 -m pip install requests")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.reason == "Mutative verb 'install'"
