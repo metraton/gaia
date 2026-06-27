@@ -23,6 +23,11 @@ def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line("markers", "llm: LLM evaluation tests (require ANTHROPIC_API_KEY)")
     config.addinivalue_line("markers", "e2e: E2E headless tests (require claude CLI)")
+    config.addinivalue_line(
+        "markers",
+        "ci_subset: small, budget-bounded subset of L2/L3 (LLM) tests that runs in "
+        "CI under a controlled token budget (brief #89 AC-6)",
+    )
 
 
 @pytest.fixture(autouse=True, scope="session")

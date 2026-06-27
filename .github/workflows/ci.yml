@@ -29,6 +29,37 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e --ignore=tests/evals
 
+  l2-ci-subset:
+    name: L2 ci_subset (budget-bounded LLM)
+    runs-on: ubuntu-latest
+    # Budget guard: the subset only spends tokens on push to main, and only when
+    # the ANTHROPIC_API_KEY secret is configured. On secretless runs the step
+    # no-ops, so the subset never burns budget unexpectedly (brief #89 AC-6).
+    if: ${{ github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest==8.3.5
+
+      - name: Run L2 ci_subset under controlled budget
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY not configured -- skipping L2 ci_subset (no budget spent)."
+            exit 0
+          fi
+          # Bounded subset only: -m ci_subset selects the marked L2 tests; the
+          # subset is intentionally tiny (2 single-filter routing cases) to keep
+          # per-CI token spend small. No full-suite L2 run here.
+          python -m pytest tests/layer2_llm_evaluation -m ci_subset -q --tb=short
+
   lint-js:
     name: ESLint (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest

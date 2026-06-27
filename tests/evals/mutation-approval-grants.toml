@@ -1,0 +1,27 @@
+# Per-module mutation config for approval_grants.py — AC-3 full-core inventory
+#
+# Extends AC-3-mutation-baseline.md. Scope narrowed to approval_grants.py only;
+# test-command narrowed to test_approval_grants.py (Option A from the baseline).
+# This reduces per-mutant time from ~60s (full suite) to ~1s.
+#
+# NOTE: approval_grants.py has 653 mutants. With ~1s per mutant the run is
+# approximately 11-15 minutes. If test_approval_grants.py alone does not reach
+# enough code paths (low kill rate), broaden to:
+#   test-command = "python3 -m pytest tests/hooks/modules/security/test_approval_grants.py tests/hooks/modules/security/test_approval_cycle.py tests/hooks/modules/security/test_batch_approval.py -q -x --no-header"
+#
+# Init:
+#   cd gaia && uv run cosmic-ray init tests/evals/mutation-approval-grants.toml approval-grants.sqlite
+# Exec (T3 — requires approval):
+#   uv run cosmic-ray exec tests/evals/mutation-approval-grants.toml approval-grants.sqlite
+# Score:
+#   uv run cr-rate approval-grants.sqlite
+
+[cosmic-ray]
+module-path = "hooks/modules/security/approval_grants.py"
+timeout = 30.0
+excluded-modules = []
+# Plan 16 / M1: added test_approval_grants_mutants.py (survivor-closure tests).
+test-command = "python3 -m pytest tests/hooks/modules/security/test_approval_grants.py tests/hooks/modules/security/test_approval_cycle.py tests/hooks/modules/security/test_batch_approval.py tests/hooks/modules/security/test_approval_grants_mutants.py -q -x --no-header"
+
+[cosmic-ray.distributor]
+name = "local"
