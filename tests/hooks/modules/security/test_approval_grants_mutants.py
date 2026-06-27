@@ -3415,3 +3415,74 @@ class TestActivateCommandSelectionAC5:
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
         assert result.success is True
         assert captured["command"] == "git push origin main"
+
+
+class TestMatchExceptionHandlersAC5:
+    """match_command_set_grant best-effort except handlers (lines 1678, 1711).
+    cosmic-ray's ExceptionReplacer rewrites `except Exception` to
+    `except CosmicRayTestingException` -- a type real code never raises -- so the
+    handler stops catching. A real raise then escapes: line 1678's escape lands
+    in the outer 1711 handler (-> None instead of continuing); line 1711's escape
+    propagates OUT of the function (an exception instead of a graceful None)."""
+
+    def _insert(self, db_path, approval_id, commands, *, expires_at, created_at):
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute(
+                """INSERT INTO approval_grants
+                   (approval_id, session_id, command_set_json, scope,
+                    expires_at, status, consumed_indexes_json, created_at)
+                   VALUES (?, 'test-session-mut', ?, 'COMMAND_SET', ?, 'PENDING', '[]', ?)""",
+                (approval_id, json.dumps(commands), expires_at, created_at),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def test_expired_status_update_failure_does_not_abort_scan(
+        self, monkeypatch, writer_db
+    ):
+        """Line 1678 `except Exception: pass` around update_approval_grant_status.
+        An EXPIRED grant sorts first (created_at DESC); marking it EXPIRED raises.
+        The healthy handler swallows the error and `continue`s to the still-valid
+        grant -> the retried command matches it. The CosmicRayTestingException
+        mutant lets the raise escape to the OUTER handler -> None. Pin the match."""
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        future = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        expired_id = f"P-{secrets.token_hex(16)}"
+        valid_id = f"P-{secrets.token_hex(16)}"
+        self._insert(
+            writer_db, expired_id,
+            [{"command": "git push origin main", "rationale": "x"}],
+            expires_at=past, created_at="2030-01-01T00:00:00Z",
+        )
+        self._insert(
+            writer_db, valid_id,
+            [{"command": "git push origin main", "rationale": "y"}],
+            expires_at=future, created_at="2029-01-01T00:00:00Z",
+        )
+
+        def _boom(*a, **k):
+            raise RuntimeError("status update DB offline")
+        monkeypatch.setattr(
+            "gaia.store.writer.update_approval_grant_status", _boom
+        )
+        # Healthy: inner handler swallows the raise, loop continues, valid matches.
+        assert match_command_set_grant("git push origin main") == (valid_id, 0)
+
+    def test_outer_handler_returns_none_on_unexpected_error(self, monkeypatch):
+        """Line 1711 `except Exception: return None`. list_command_set_grants_
+        agnostic raising an unexpected error must be caught -> graceful None. The
+        CosmicRayTestingException mutant lets the error propagate OUT of the
+        function. Pin the graceful None (no exception escapes)."""
+        def _boom(*a, **k):
+            raise RuntimeError("grant listing exploded")
+        monkeypatch.setattr(
+            "gaia.store.writer.list_command_set_grants_agnostic", _boom
+        )
+        # Healthy code catches and returns None; the mutant would raise here.
+        assert match_command_set_grant("git push origin main") is None
