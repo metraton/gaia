@@ -3369,3 +3369,49 @@ class TestEqIsStatusAppliedAC5:
             session_id="s",
         )
         assert ok is True
+
+
+class TestActivateCommandSelectionAC5:
+    """activate_db_pending_by_prefix command-extraction survivors (lines 1171,
+    1175). The extracted `command` feeds build_approval_signature, so a wrong
+    index/operator yields a signature for a DIFFERENT command -- observable in
+    the scope_signature persisted via insert_semantic_grant."""
+
+    def _capture_inserted(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: captured.update(k) or {"status": "applied"},
+        )
+        return captured
+
+    def test_commands_list_index_zero_selected(self, monkeypatch):
+        """Line 1171 `payload.get('exact_content') or payload.get('commands',
+        [None])[0] or ''` NumberReplacer on the [0] index. With NO exact_content
+        and a 2-element commands list, the singular command MUST be commands[0].
+        The `0->1` mutant would select commands[1] (a different command) -> the
+        persisted scope_signature.command would change. Pin commands[0]."""
+        payload = {
+            "operation": "MUTATIVE command intercepted: push",
+            "commands": ["git push origin main", "rm -rf /tmp/x"],
+        }
+        _AC1Driver.drive(monkeypatch, payload)
+        captured = self._capture_inserted(monkeypatch)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert captured["command"] == "git push origin main"
+
+    def test_commands_or_chain_is_disjunction_not_conjunction(self, monkeypatch):
+        """Line 1171 Or->And. exact_content is absent (None); `None or
+        commands[0] or ''` yields commands[0]. With `and`, `None and ... ` short
+        circuits to None -> no command -> INVALID_PENDING. Pin the success path
+        proving the chain is a disjunction (commands[0] survives to signature)."""
+        payload = {
+            "operation": "MUTATIVE command intercepted: push",
+            "commands": ["git push origin main"],
+        }
+        _AC1Driver.drive(monkeypatch, payload)
+        captured = self._capture_inserted(monkeypatch)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert captured["command"] == "git push origin main"
