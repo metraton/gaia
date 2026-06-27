@@ -1450,3 +1450,416 @@ class TestLoadPendingByNoncePrefixMutants:
             raise RuntimeError("db down")
         monkeypatch.setattr("gaia.approvals.store.get_pending", _boom)
         assert ag.load_pending_by_nonce_prefix("deadbeef") is None
+
+
+# ===========================================================================
+# Batch 2: behavioral survivors across the DB-wrapper / FS helper functions.
+# These pin guards, path construction, default-session resolution, and grant
+# reconstruction details that the first batch left alive. NumberReplacer
+# mutants on logging-only truncation slices (command[:80], approval_id[:16])
+# are intentionally NOT targeted: they alter only a log string, produce no
+# observable behavior, and are equivalent mutants -- an honest test cannot kill
+# them without asserting on log text, which is brittle and meaningless.
+# ===========================================================================
+class TestGetGrantsDirMutants:
+    """_get_grants_dir() -- path construction + the create-once guard."""
+
+    def test_dir_is_plugin_data_cache_approvals(self, monkeypatch, tmp_path):
+        """The grants dir is get_plugin_data_dir() / 'cache' / 'approvals' (line
+        270). Kills the ReplaceBinaryOperator_Div_* mutants on the two Path
+        joins: any non-'/' operator changes the resolved path (or raises), so
+        pinning the exact path observes the join."""
+        monkeypatch.setattr(
+            "modules.security.approval_grants.get_plugin_data_dir",
+            lambda: tmp_path / "plugin",
+        )
+        ag._grants_dir_created = False
+        d = ag._get_grants_dir()
+        assert d == tmp_path / "plugin" / "cache" / "approvals"
+
+    def test_dir_created_on_first_call(self, monkeypatch, tmp_path):
+        """On the first call (_grants_dir_created False) the dir is created with
+        parents=True/exist_ok=True (lines 271-273). Kills the AddNot on
+        `if not _grants_dir_created`, the True->False flips on the mkdir kwargs,
+        and the True->False on the flag assignment: the dir must exist after."""
+        monkeypatch.setattr(
+            "modules.security.approval_grants.get_plugin_data_dir",
+            lambda: tmp_path / "plugin2",
+        )
+        ag._grants_dir_created = False
+        d = ag._get_grants_dir()
+        assert d.exists() and d.is_dir()
+        # The create-once flag flipped to True (line 273 True->False mutant).
+        assert ag._grants_dir_created is True
+
+
+class TestConsumeSessionGrantsMutants:
+    """consume_session_grants() -- the sweep loop over PENDING confirmed rows.
+
+    The function opens gaia.store.writer._connect() and iterates the result of
+    cur.fetchall(). We patch _connect to return a fake connection yielding
+    TUPLE rows (the branch the code handles via row[0]) and mock
+    consume_db_semantic_grant, so the loop / guard / count mutants are observed.
+    """
+
+    class _FakeCur:
+        def __init__(self, rows):
+            self._rows = rows
+        def execute(self, *a, **k):
+            return self
+        def fetchall(self):
+            return self._rows
+        def close(self):
+            pass
+
+    class _FakeCon:
+        def __init__(self, rows):
+            self._rows = rows
+        def execute(self, *a, **k):
+            return TestConsumeSessionGrantsMutants._FakeCur(self._rows)
+        def close(self):
+            pass
+
+    def _patch_con(self, monkeypatch, rows):
+        monkeypatch.setattr(
+            "gaia.store.writer._connect",
+            lambda *a, **k: TestConsumeSessionGrantsMutants._FakeCon(rows),
+        )
+
+    def test_counts_each_successfully_consumed_grant(self, monkeypatch):
+        """Two PENDING rows both consume => count 2 (lines 605-612). Kills the
+        ZeroIterationForLoop on the sweep, the AddNot on `if not approval_id`,
+        and pins the per-success increment (count must equal consumed count)."""
+        self._patch_con(monkeypatch, [("P-a",), ("P-b",)])
+        monkeypatch.setattr(
+            "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: True
+        )
+        assert ag.consume_session_grants(session_id="s") == 2
+
+    def test_only_consumed_grants_are_counted(self, monkeypatch):
+        """When consume returns False the count does NOT increment (line 611
+        `if consumed`). With two rows where consume returns False, count is 0.
+        Kills the AddNot on `if consumed` (an inverted guard would count the
+        failures)."""
+        self._patch_con(monkeypatch, [("P-a",), ("P-b",)])
+        monkeypatch.setattr(
+            "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: False
+        )
+        assert ag.consume_session_grants(session_id="s") == 0
+
+    def test_falsy_approval_id_is_skipped(self, monkeypatch):
+        """A row with a falsy approval_id is skipped via continue (lines 607-608)
+        and does not reach consume. Kills the AddNot on `if not approval_id` and
+        the ReplaceContinueWithBreak: the second (valid) row must still consume."""
+        self._patch_con(monkeypatch, [("",), ("P-b",)])
+        consume = MagicMock(return_value=True)
+        monkeypatch.setattr("gaia.store.writer.consume_db_semantic_grant", consume)
+        assert ag.consume_session_grants(session_id="s") == 1
+        consume.assert_called_once_with("P-b")
+
+    def test_per_row_consume_exception_is_non_fatal(self, monkeypatch):
+        """When consume raises for one row, the inner except swallows it and the
+        sweep continues to the next row (lines 617-621). Kills the
+        ExceptionReplacer on that inner except: a propagated error would abort
+        the sweep and the surviving good row would not be counted."""
+        self._patch_con(monkeypatch, [("P-bad",), ("P-good",)])
+
+        def _consume(aid):
+            if aid == "P-bad":
+                raise RuntimeError("boom")
+            return True
+        monkeypatch.setattr("gaia.store.writer.consume_db_semantic_grant", _consume)
+        assert ag.consume_session_grants(session_id="s") == 1
+
+    def test_outer_exception_returns_zero(self, monkeypatch):
+        """When _connect raises, the outer except returns 0 (lines 623-624).
+        Kills the ExceptionReplacer on the outer except."""
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer._connect", _boom)
+        assert ag.consume_session_grants(session_id="s") == 0
+
+
+class TestCheckApprovalGrantSessionAndDetail:
+    """check_approval_grant -- default-session branch + granted_at + verb except."""
+
+    def test_resolves_default_session_when_none(self, monkeypatch):
+        """When session_id is falsy the function resolves _get_session_id()
+        (lines 466-467). Kills the AddNot / Delete_Not on `if not session_id`:
+        the resolver must be invoked when no session is passed."""
+        called = MagicMock(return_value="resolved-sess")
+        monkeypatch.setattr(
+            "modules.security.approval_grants._get_session_id", called
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: None
+        )
+        ag.check_approval_grant("git push origin main")  # no session_id
+        assert called.call_count == 1
+
+    def test_granted_at_default_is_zero(self, monkeypatch):
+        """The reconstructed grant has granted_at == 0.0 (line 496 NumberReplacer):
+        TTL is enforced by the DB, so the in-memory grant carries 0.0. A non-zero
+        default would change is_expired semantics."""
+        sig = build_approval_signature(
+            "git push origin main", scope_type=SCOPE_SEMANTIC_SIGNATURE
+        ).to_dict()
+        row = {
+            "approval_id": "P-x",
+            "session_id": "owner",
+            "command_set_json": json.dumps({
+                "command": "git push origin main",
+                "scope_signature": sig,
+            }),
+        }
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: row
+        )
+        grant = ag.check_approval_grant("git push origin main", session_id="s")
+        assert grant.granted_at == 0.0
+
+    def test_bad_signature_in_row_still_returns_grant(self, monkeypatch):
+        """A scope_signature that ApprovalSignature.from_dict cannot parse is
+        swallowed (lines 483-489 except) and the grant is still returned with
+        empty approved_verbs. Kills the ExceptionReplacer on that verb-derivation
+        except: a propagated error would make the whole lookup fail."""
+        row = {
+            "approval_id": "P-x",
+            "session_id": "owner",
+            "command_set_json": json.dumps({
+                "command": "git push origin main",
+                "scope_signature": {"garbage": True, "version": "bad"},
+            }),
+        }
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: row
+        )
+        grant = ag.check_approval_grant("git push origin main", session_id="s")
+        assert grant is not None
+        assert grant.approved_verbs == []
+
+
+class TestConfirmGrantSessionMutants:
+    """confirm_grant default-session resolution (line 646 guard)."""
+
+    def test_resolves_default_session_when_none(self, monkeypatch):
+        """When session_id is falsy, _get_session_id() is called (lines 646-647).
+        Kills the AddNot / Delete_Not on `if not session_id`."""
+        called = MagicMock(return_value="resolved")
+        monkeypatch.setattr(
+            "modules.security.approval_grants._get_session_id", called
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: None
+        )
+        ag.confirm_grant("git push origin main")  # no session_id
+        assert called.call_count == 1
+
+    def test_status_must_equal_applied_not_other(self, monkeypatch):
+        """confirm_db_grant returning 'pending' (a status that is NOT 'applied')
+        => False (line 659 Eq). Kills the Eq->Is / Eq->LtE flips: 'pending' must
+        not be treated as success."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.confirm_db_grant",
+            lambda *a, **k: {"status": "pending"},
+        )
+        assert ag.confirm_grant("git push origin main", session_id="s") is False
+
+
+class TestWritePendingApprovalForFileMutants:
+    """write_pending_approval_for_file -- guards, ctx or-chains, insert except."""
+
+    def test_returns_none_when_signature_unbuildable(self, monkeypatch):
+        """When build_file_path_signature returns None => None (lines 904-910).
+        Kills the Is->IsNot flip on `if signature is None` and the AddNot."""
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: None,
+        )
+        assert ag.write_pending_approval_for_file("nonce", "/x", session_id="s") is None
+
+    def test_success_returns_sentinel_path(self, monkeypatch):
+        """A buildable signature + a successful insert_requested => a non-None
+        sentinel Path whose name encodes the approval_id (lines 927-942). Pins
+        the success return; kills mutants that would drop it to None."""
+        fake_sig = MagicMock()
+        fake_sig.to_dict.return_value = {"sig": "ok"}
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: fake_sig,
+        )
+        insert = MagicMock(return_value="P-nonce")
+        monkeypatch.setattr("gaia.approvals.store.insert_requested", insert)
+        out = ag.write_pending_approval_for_file(
+            "nonce", "/etc/hosts", session_id="s"
+        )
+        assert out is not None
+        assert str(out) == "P-nonce"
+
+    def test_insert_exception_returns_none(self, monkeypatch):
+        """When insert_requested raises => None (lines 944-946 except). Kills the
+        ExceptionReplacer on that except."""
+        fake_sig = MagicMock()
+        fake_sig.to_dict.return_value = {"sig": "ok"}
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: fake_sig,
+        )
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.approvals.store.insert_requested", _boom)
+        assert ag.write_pending_approval_for_file(
+            "nonce", "/etc/hosts", session_id="s"
+        ) is None
+
+    def test_risk_falls_back_to_medium(self, monkeypatch):
+        """The risk_level or-chain (line 918 `ctx.get('risk','medium') or
+        'medium'`) yields 'medium' when ctx has no risk. We observe it through
+        the sealed_payload passed to insert_requested. Kills the Or->And flip:
+        with `and`, an absent risk would yield a falsy value, not 'medium'."""
+        fake_sig = MagicMock()
+        fake_sig.to_dict.return_value = {"sig": "ok"}
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: fake_sig,
+        )
+        captured = {}
+        def _insert(payload, **k):
+            captured["payload"] = payload
+            return "P-nonce"
+        monkeypatch.setattr("gaia.approvals.store.insert_requested", _insert)
+        ag.write_pending_approval_for_file("nonce", "/etc/hosts", session_id="s")
+        assert captured["payload"]["risk_level"] == "medium"
+
+    def test_rationale_falls_back_to_default_text(self, monkeypatch):
+        """The rationale or-chain (lines 920-923) uses the default text when ctx
+        has no description. Pins the Or->And flip on that chain: with `and` an
+        absent description would yield a falsy rationale."""
+        fake_sig = MagicMock()
+        fake_sig.to_dict.return_value = {"sig": "ok"}
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: fake_sig,
+        )
+        captured = {}
+        def _insert(payload, **k):
+            captured["payload"] = payload
+            return "P-nonce"
+        monkeypatch.setattr("gaia.approvals.store.insert_requested", _insert)
+        ag.write_pending_approval_for_file("nonce", "/etc/hosts", session_id="s")
+        assert "/etc/hosts" in captured["payload"]["rationale"]
+        assert "requires user approval" in captured["payload"]["rationale"]
+
+
+class TestCleanupExpiredGrantsMutants:
+    """cleanup_expired_grants -- throttle comparison + force bypass + except."""
+
+    def test_throttle_skips_when_recent(self, monkeypatch):
+        """Within _CLEANUP_INTERVAL_SECONDS of the last run, cleanup is skipped
+        and returns 0 without calling the DB sweep (line 697 `now - last <
+        interval`). Kills the Lt->Eq/Is/LtE flips and the Sub->Add on the
+        throttle arithmetic."""
+        called = MagicMock(return_value=5)
+        monkeypatch.setattr("gaia.store.writer.cleanup_expired_db_grants", called)
+        # Pretend the last run was 1 second ago (well within the 60s interval).
+        ag._last_cleanup_time = time.time() - 1
+        assert ag.cleanup_expired_grants(force=False) == 0
+        assert called.call_count == 0
+
+    def test_force_bypasses_throttle(self, monkeypatch):
+        """force=True runs the sweep even when recently run (line 697 guard short
+        -circuits on `not force`). Kills the ReplaceFalseWithTrue on the force
+        default (line 675) and pins that force overrides the throttle."""
+        monkeypatch.setattr(
+            "gaia.store.writer.cleanup_expired_db_grants", lambda: 3
+        )
+        ag._last_cleanup_time = time.time()  # just ran
+        assert ag.cleanup_expired_grants(force=True) == 3
+
+    def test_db_sweep_exception_is_non_fatal(self, monkeypatch):
+        """A raising cleanup_expired_db_grants is swallowed (lines 710-711) and
+        the function returns 0. Kills the ExceptionReplacer on that except."""
+        def _boom():
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.cleanup_expired_db_grants", _boom)
+        ag._last_cleanup_time = 0.0  # force past throttle
+        assert ag.cleanup_expired_grants(force=True) == 0
+
+
+class TestGetPendingApprovalsForSessionMutants:
+    """get_pending_approvals_for_session -- session default, except, sort."""
+
+    def _row(self, *, ts):
+        return {
+            "id": "P-x",
+            "session_id": "s",
+            "created_at": ts,
+            "payload_json": json.dumps({
+                "operation": "MUTATIVE command intercepted: push",
+                "exact_content": "git push",
+            }),
+        }
+
+    def test_resolves_default_session_when_none(self, monkeypatch):
+        """When session_id is None, _get_session_id() is used (lines 796-797).
+        Kills the Is->IsNot flip on `if session_id is None` and the AddNot."""
+        called = MagicMock(return_value="resolved")
+        monkeypatch.setattr(
+            "modules.security.approval_grants._get_session_id", called
+        )
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: [])
+        ag.get_pending_approvals_for_session()  # no session
+        assert called.call_count == 1
+
+    def test_results_sorted_newest_first(self, monkeypatch):
+        """Results are sorted by timestamp descending (line 810 reverse=True).
+        Kills the ReplaceTrueWithFalse on that reverse: oldest would come first."""
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: [
+            self._row(ts="2026-01-01T00:00:00Z"),
+            self._row(ts="2026-06-01T00:00:00Z"),
+        ])
+        out = ag.get_pending_approvals_for_session(session_id="s")
+        assert len(out) == 2
+        # Newest (2026-06) first.
+        assert out[0]["timestamp"] > out[1]["timestamp"]
+
+    def test_db_exception_returns_empty_list(self, monkeypatch):
+        """A raising get_pending => [] (lines 807-808 except). Kills the
+        ExceptionReplacer on that except."""
+        def _boom(**k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _boom)
+        assert ag.get_pending_approvals_for_session(session_id="s") == []
+
+
+class TestCheckApprovalGrantForFileMutants:
+    """check_approval_grant_for_file -- DB row guard + except."""
+
+    def test_returns_row_when_grant_found(self, monkeypatch):
+        """A DB row => that row is returned (lines 974-980, `if row is not
+        None`). Kills the IsNot->Is flip on the guard and the AddNot: a flip
+        would return None when a grant exists."""
+        row = {"approval_id": "P-x", "file_path": "/etc/hosts"}
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_file_path_grant", lambda fp: row
+        )
+        assert ag.check_approval_grant_for_file("/etc/hosts") is row
+
+    def test_returns_none_when_no_grant(self, monkeypatch):
+        """No DB row (None) => None. Pins the guard direction."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_file_path_grant", lambda fp: None
+        )
+        assert ag.check_approval_grant_for_file("/etc/hosts") is None
+
+    def test_db_exception_returns_none(self, monkeypatch):
+        """A raising lookup => None (lines 981-984 except). Kills the
+        ExceptionReplacer on that except."""
+        def _boom(fp):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.check_db_file_path_grant", _boom)
+        assert ag.check_approval_grant_for_file("/etc/hosts") is None
