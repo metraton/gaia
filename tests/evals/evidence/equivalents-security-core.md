@@ -587,6 +587,31 @@ path (those start with `/`), so the boolean is unchanged:
   produces. No `~`-token is ever an absolute sensitive path, so weakening or
   inverting the guard changes nothing observable.
 
+## Category M6 — `detect_mutative_command` Step-3e maxsplit/len residuals (4 mutants)
+
+Step 3e (command+subcommand tier exception, L1282-1337) extracts
+`group_verb = non_flag_tokens[1] if len(non_flag_tokens) > 1 else ""` and tests
+destructiveness via `group_verb.split("-", 1)[0]`. Four survivors here are
+equivalent; the KILLABLE siblings (the `or`->`and` chain, the maxsplit `1->0`,
+the verb/reason index mutants) are killed by `TestSubcommandTierException`.
+
+- `f4145e97bf6c42c98f71ec2e372543d0` — L1286 `len(non_flag_tokens) > 1`
+  Gt_NotEq (`!= 1`): control is inside `if semantics.non_flag_tokens`, so
+  `len >= 1` always. At `len == 1`, both `> 1` and `!= 1` are False →
+  `group_verb = ""`. At `len >= 2`, both are True → `group_verb = nft[1]`. No
+  reachable length distinguishes them.
+- `d0930b20681044978932645e6c7fa045` — L1294 `split("-", 1)[0]` NumberReplacer
+  occ46 = `1 -> 2` (`split("-", 2)[0]`). `str.split(sep, maxsplit)[0]` is the
+  text before the FIRST separator for any `maxsplit >= 1`, so `maxsplit = 2`
+  yields the same `[0]` as `maxsplit = 1`. (The `1 -> 0` sibling splits nothing
+  and IS killed by `test_plan_hyphenated_destroy_verb_stays_t3`.)
+- `10fb370acb474822aa6f504e82b6432c` — L1296 `split("-", 1)[0]` (arm3, the
+  EXTRA_DENY check) NumberReplacer occ50 = `1 -> 2`: identical argument.
+- `096aa0a08bfc4844bb60cd53a2650757` — L1313 `verb = group_verb.split("-", 1)[0]`
+  NumberReplacer occ54 = `1 -> 2`: identical argument; the returned `verb` is
+  the first segment for any `maxsplit >= 1`.
+
 **Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
-test. 34 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
-2 split_camel_case + 17 _scan_dangerous_flags + 9 _mkdir_targets_sensitive_path).
+test. 38 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
+2 split_camel_case + 17 _scan_dangerous_flags + 9 _mkdir_targets_sensitive_path
++ 4 detect_mutative_command Step-3e).
