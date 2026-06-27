@@ -2687,3 +2687,164 @@ class TestActivateDbPendingIntegrityLabelAC1:
         meta = self._failed_metadata(rec)
         assert meta is not None
         assert meta["integrity_check"] == "missing_requested_event"
+
+
+# ===========================================================================
+# M1-FINAL behavioral survivor closure (AC-1, branch harden/approval-grants-m1-loop)
+#
+# Targets the precise behavioral survivors the scoped harness still reports
+# SURVIVED after the AC1 batch, each with a DISCRIMINATING input chosen so the
+# specific operator/comparison flip is observable. The companion equivalents are
+# documented in tests/evals/evidence/equivalents-security-core.md (NOT killed).
+#
+# Where an existing test brackets a `==`/`!=` boundary, the flip that survives
+# is the one whose discriminator the existing test did NOT supply (e.g. a
+# NEGATIVE ttl for `ttl == 0` -> `<= 0`, or an out-of-order lexical class name
+# for `name == "ChainTamperError"` -> `<=`). Those gaps are closed here.
+# ===========================================================================
+class TestPureLogicBehavioralM1Final:
+    """Pure comparison/boundary survivors with no DB collaborator."""
+
+    def test_ttl_eq_zero_not_le_zero_negative_ttl(self):
+        """Line 175 `ttl_minutes == 0` vs the Eq->LtE survivor `<= 0`. The ONLY
+        discriminator is a NEGATIVE ttl: `== 0` falls through (computes elapsed),
+        `<= 0` short-circuits to no-expiry. A negative ttl with an ancient stamp
+        must be EXPIRED (elapsed > negative threshold), not 'no expiry'."""
+        ancient = time.time() - 10_000
+        # == 0 path: ttl=-1 is not 0, so it computes elapsed; elapsed >> -1 -> True
+        assert _is_ttl_expired(ancient, -1) is True
+
+    def test_ttl_eq_zero_not_lt_zero(self):
+        """Same line 175 against an Eq->Lt flip (`< 0`): ttl == 0 must still mean
+        no-expiry. With `< 0`, ttl=0 would NOT short-circuit and would compute
+        elapsed -> a 0-ttl ancient stamp would wrongly be 'expired'. Pin ttl=0
+        ancient -> NOT expired."""
+        ancient = time.time() - 10_000
+        assert _is_ttl_expired(ancient, 0) is False
+
+    def test_timestamp_eq_zero_not_le_or_lt(self):
+        """Line 177 `timestamp == 0` vs Eq->LtE/Lt survivors. A small POSITIVE
+        timestamp (e.g. 0.5) is NOT the 'never stamped' sentinel: under `== 0` it
+        falls through to the elapsed path (ancient -> expired anyway), but under
+        `<= 0` it would hit the zero-guard `return True` for a DIFFERENT reason.
+        The discriminator that separates them: a FRESH tiny-but-future-ish stamp
+        cannot be built, so we pin that timestamp just above 0 with a huge ttl is
+        treated by the elapsed path. With ttl huge, ancient stamp 0.5 -> elapsed
+        (now-0.5)/60 which is enormous; ttl=10**9 minutes -> NOT expired. Under
+        `<= 0` timestamp 0.5 is not <=0 so same; the REAL discriminator for LtE is
+        a negative timestamp."""
+        # negative timestamp: `== 0` is False (compute elapsed, huge ttl -> not
+        # expired); `<= 0` is True (return expired). Pin NOT expired.
+        assert _is_ttl_expired(-1.0, 10**9) is False
+
+    def test_cleanup_throttle_boundary_lt_not_le(self, monkeypatch):
+        """Line 697 `now - _last_cleanup_time < _CLEANUP_INTERVAL_SECONDS` vs the
+        Lt->LtE survivor. At elapsed EXACTLY == interval (60s), `<` is False
+        (cleanup RUNS) but `<=` is True (cleanup SKIPS, returns 0). Pin the clock
+        so elapsed is exactly 60.0 and assert cleanup RUNS (calls the sweep)."""
+        import modules.security.approval_grants as _ag
+        _ag._last_cleanup_time = 1_000_000.0
+        monkeypatch.setattr(_ag.time, "time", lambda: 1_000_000.0 + 60.0)
+        swept = MagicMock(return_value=0)
+        monkeypatch.setattr("gaia.store.writer.cleanup_expired_db_grants", swept)
+        _ag.cleanup_expired_grants(force=False)
+        # With `<` the throttle does NOT skip at exactly 60s -> sweep called once.
+        assert swept.call_count == 1
+
+    def test_cleanup_interval_is_sixty_not_other(self, monkeypatch):
+        """Line 143 `_CLEANUP_INTERVAL_SECONDS = 60` NumberReplacer. At elapsed
+        59s the throttle MUST skip (return 0, no sweep): with the constant
+        mutated to a smaller value, 59s would exceed it and the sweep would run.
+        Pins the constant to its 60 floor via the just-under-boundary."""
+        import modules.security.approval_grants as _ag
+        _ag._last_cleanup_time = 1_000_000.0
+        monkeypatch.setattr(_ag.time, "time", lambda: 1_000_000.0 + 59.0)
+        swept = MagicMock(return_value=0)
+        monkeypatch.setattr("gaia.store.writer.cleanup_expired_db_grants", swept)
+        result = _ag.cleanup_expired_grants(force=False)
+        assert result == 0
+        assert swept.call_count == 0
+
+
+class TestFindPendingForFileBehavioralM1Final:
+    """find_pending_for_file scope + path comparison survivors (lines 1030/1033)."""
+
+    def _rows(self, monkeypatch, rows):
+        monkeypatch.setattr("gaia.approvals.store.list_pending", lambda **kw: rows)
+
+    def test_scope_filter_neq_not_gt(self, monkeypatch):
+        """Line 1030 `payload.get('scope') != SCOPE_FILE_PATH` vs NotEq->Gt. A
+        pending whose scope IS SCOPE_FILE_PATH must NOT be skipped (it matches).
+        With `>` the equal-scope row would be `'SCOPE_FILE_PATH' > 'SCOPE_FILE_PATH'`
+        == False -> NOT skipped (same), BUT a row with a scope lexically less than
+        SCOPE_FILE_PATH would wrongly pass. Discriminator: a matching FILE_PATH
+        row must resolve to its nonce."""
+        import modules.security.approval_grants as _ag
+        rows = [{
+            "id": "P-abc123",
+            "payload_json": json.dumps({
+                "scope": SCOPE_FILE_PATH, "exact_content": "/etc/hosts",
+            }),
+        }]
+        self._rows(monkeypatch, rows)
+        assert _ag.find_pending_for_file("sess", "/etc/hosts") == "abc123"
+
+    def test_scope_filter_skips_non_file_path(self, monkeypatch):
+        """A non-FILE_PATH pending for the same path must NOT match (line 1030
+        skips it). Kills NotEq->Gt: SCOPE_FILE_PATH == 'file_path'; a scope that
+        sorts BEFORE it (uppercase 'COMMAND_SET' < lowercase 'file_path' in ASCII)
+        makes `!= 'file_path'` True (skip -> None) but `> 'file_path'` False (NOT
+        skipped -> would return the nonce). The discriminating low-sorting scope
+        with a MATCHING path forces real=None vs mutant=nonce."""
+        import modules.security.approval_grants as _ag
+        assert "COMMAND_SET" < SCOPE_FILE_PATH  # ASCII: 'C'(67) < 'f'(102)
+        rows = [{
+            "id": "P-abc123",
+            "payload_json": json.dumps({
+                "scope": "COMMAND_SET", "exact_content": "/etc/hosts",
+            }),
+        }]
+        self._rows(monkeypatch, rows)
+        assert _ag.find_pending_for_file("sess", "/etc/hosts") is None
+
+    def test_path_match_eq_not_ge(self, monkeypatch):
+        """Line 1033 `exact_content.strip() == stripped` vs Eq->GtE. A row whose
+        path does NOT equal the target must NOT match. With `>=` a path lexically
+        greater than the target would wrongly match. Discriminator: a FILE_PATH
+        row with a DIFFERENT path returns None; the exact path returns the nonce."""
+        import modules.security.approval_grants as _ag
+        rows = [{
+            "id": "P-def456",
+            "payload_json": json.dumps({
+                "scope": SCOPE_FILE_PATH, "exact_content": "/var/zzz",
+            }),
+        }]
+        self._rows(monkeypatch, rows)
+        # target '/var/aaa' < '/var/zzz' lexically: == False (no match);
+        # >= would be '/var/zzz' >= '/var/aaa' True (wrong match).
+        assert _ag.find_pending_for_file("sess", "/var/aaa") is None
+
+
+class TestWritePendingBehavioralM1Final:
+    """write_pending_approval_for_file risk-default or-chain (line 918)."""
+
+    def test_risk_default_or_chain_not_and(self, monkeypatch, writer_db):
+        """Line 918 `ctx.get('risk', 'medium') or 'medium'` vs Or->And. When ctx
+        carries an explicit falsy risk ('' ), the `or 'medium'` must coerce it to
+        'medium'; with `and` it would coerce a TRUTHY risk to 'medium' instead.
+        Observe via the sealed payload passed to insert_requested."""
+        import modules.security.approval_grants as _ag
+        captured = {}
+        def _ins(payload, **kw):
+            captured.update(payload)
+            return "P-zzz"
+        monkeypatch.setattr("gaia.approvals.store.insert_requested", _ins)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.build_file_path_signature",
+            lambda fp: MagicMock(to_dict=lambda: {"k": "v"}),
+        )
+        # explicit truthy risk must be PRESERVED by `or` (and would clobber it).
+        _ag.write_pending_approval_for_file(
+            "nonce123", "/etc/hosts", session_id="s", context={"risk": "high"},
+        )
+        assert captured.get("risk_level") == "high"
