@@ -355,6 +355,78 @@ class TestDetectMutativeCommand:
 
 
 # ===========================================================================
+# detect_mutative_command -- Step 3e subcommand tier-exception residuals.
+#
+# `verb_is_destructive` (L1293-1298) is a 4-arm OR over
+# group_verb.split("-",1)[0] / group_verb against the global DENY set and the
+# per-group EXTRA_DENY set. Survivors: the `or` chain (ReplaceOrWithAnd L1295-
+# 1297), the split maxsplit `1` (NumberReplacer L1294/1313), and the `> 1`
+# group-verb-presence guard (L1286 Gt_NotEq). These pin the destructive vs
+# bookkeeping decision for hyphenated and per-group-deny verbs.
+# ===========================================================================
+class TestSubcommandTierException:
+    def test_plan_hyphenated_destroy_verb_stays_t3(self):
+        # group_verb = "delete-foo": arm1 split("-",1)[0]="delete" IS in DENY,
+        # arm2 "delete-foo" is NOT.  The `or`->`and` mutants (L1295-1297) make
+        # the whole guard False (arm1 and arm2 = T and F = F), dropping the
+        # command to local bookkeeping (is_mutative False).  The split `1->0`
+        # mutant makes arm1 split the whole token ("delete-foo" not in DENY),
+        # same effect.  Original keeps it MUTATIVE / whole-record destruction.
+        r = detect_mutative_command("gaia plan delete-foo 3")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "delete"
+        # Pin the FULL reason: the f-string interpolates non_flag_tokens[0]
+        # ("plan") and group_verb ("delete-foo"); NumberReplacer on the [0]
+        # index (L1319) flips "plan" to "delete-foo"/the last token.
+        assert r.reason == (
+            "Whole-record destruction 'gaia plan delete-foo' "
+            "stays T3 despite the local bookkeeping exception"
+        )
+
+    def test_task_remove_extra_deny_stays_t3(self):
+        # `gaia task remove` is in COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS (not the
+        # global DENY set).  Pins the per-group EXTRA_DENY path: remove must
+        # stay T3 for task.
+        r = detect_mutative_command("gaia task remove 7")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "remove"
+        assert "Whole-record destruction" in r.reason
+
+    def test_task_hyphenated_remove_extra_deny_stays_t3(self):
+        # group_verb = "remove-foo": arm3 split("-",1)[0]="remove" IS in task's
+        # EXTRA_DENY, arm4 "remove-foo" is NOT.  Kills the arm3/arm4 OrWithAnd
+        # mutants (L1296/L1297) and the L1296 split maxsplit `1->0` (which would
+        # split the whole token and miss "remove").  Original stays T3.
+        r = detect_mutative_command("gaia task remove-foo 7")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "remove"
+        assert "Whole-record destruction" in r.reason
+
+    def test_ac_remove_reversible_bookkeeping(self):
+        # `gaia ac remove` is NOT in DENY nor in ac's EXTRA_DENY -> reversible
+        # bookkeeping, stays non-T3.  Anchors the negative side of the deny
+        # guard so an over-broad mutant (e.g. arm that always fires) is caught.
+        r = detect_mutative_command("gaia ac remove 2")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "ac"
+        assert "Local-only planning bookkeeping" in r.reason
+
+    def test_plan_edit_no_group_verb_bookkeeping(self):
+        # group_verb present (len(non_flag_tokens) > 1).  L1286 Gt_NotEq
+        # (`!= 1`) flips the `len(...) > 1` group-verb extraction guard; the
+        # bookkeeping reason naming the subcommand pins the non-destructive arm.
+        r = detect_mutative_command("gaia plan edit 4")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "plan"
+        assert "'gaia plan'" in r.reason
+
+
+# ===========================================================================
 # _scan_dangerous_flags -- 63 survivors.
 #
 # Returns the tuple of dangerous flags present, honouring per-CLI context.

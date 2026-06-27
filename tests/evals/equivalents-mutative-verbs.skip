@@ -89,3 +89,14 @@ ff3997b9cadd457a8f57320422853710
 d52611a053134454b1dda31413cf164f
 781985fe92784142b48ece25144f5dbb
 21da39c1c1e44f26a2a7e2c82f360134
+# ===========================================================================
+# Category M6 — detect_mutative_command Step-3e maxsplit/len residuals (4).
+# Killable siblings (or->and chain, maxsplit 1->0, verb/reason index) are
+# killed by TestSubcommandTierException. See equivalents-security-core.md M6.
+# -- L1286 len(non_flag_tokens) > 1 Gt_NotEq (coincides at len 1 / >=2)
+f4145e97bf6c42c98f71ec2e372543d0
+# -- split("-",1)[0] maxsplit 1->2 (split[0] is first segment for maxsplit>=1):
+#    L1294 (arm1), L1296 (arm3 EXTRA_DENY), L1313 (verb=)
+d0930b20681044978932645e6c7fa045
+10fb370acb474822aa6f504e82b6432c
+096aa0a08bfc4844bb60cd53a2650757
