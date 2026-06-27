@@ -68,3 +68,24 @@ a99439b9869940b59aca7a494a4ebfbd
 009761a0ba2742c5a8e45b8ac284ca16
 # -- L907 token[1:] NumberReplacer occ23 (1->0, token[0:])
 d8b12902fb014791b253cfae6909cefb
+# ===========================================================================
+# Category M5 — _mkdir_targets_sensitive_path opt-handling residuals (9).
+# Killable siblings (L659 Lt_IsNot/Lt_NotEq via bare trailing -m; L677
+# ContinueWithBreak via ~/foo /etc/bar) are killed by tests. The 9 below only
+# affect how a token starting with "-" or "~" is routed; such a token can
+# never be an absolute sensitive path (those start with "/"), so the boolean
+# is unchanged. See equivalents-security-core.md M5.
+# -- L658 i=1 NumberReplacer occ11 (1->0; tokens[0] is relative base cmd)
+ff3997b9cadd457a8f57320422853710
+# -- L663 token == "--" (only gates dash-token routing): Eq_Is, Eq_Lt, Eq_LtE
+953277e88e35481faca487f955802ecf
+05bc068879b34376b9f78b99dba3545c
+74c5e1eef62b46afaf5c8bc521d959b9
+# -- L664 seen_end_of_opts = True ReplaceTrueWithFalse (same dash-only effect)
+1af025453dbf40a9b8d873ac3fb02706
+# -- L675 ~ guard (redundant; failing it falls to isabs->relative->continue):
+#    Eq_Gt, Eq_GtE, Eq_Is, ReplaceOrWithAnd
+8208f029d06349eda2f6e2bb8a09d6d3
+d52611a053134454b1dda31413cf164f
+781985fe92784142b48ece25144f5dbb
+21da39c1c1e44f26a2a7e2c82f360134
