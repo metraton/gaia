@@ -10,3 +10,21 @@
 # Endpoint: every mutative_verbs.py survivor is either killed by a test in
 # tests/hooks/modules/security/test_mutative_verbs_mutants.py OR proven
 # equivalent here.
+#
+# ===========================================================================
+# Category M1 — import-fallback `except ImportError` handlers (3 mutants).
+# The 3 sibling modules (capability_classes, blocked_commands,
+# inline_ast_analyzer) always import in-process, so the except body is
+# unreachable. ExceptionReplacer on an unreachable handler is unobservable.
+# (Same pattern as blocked_commands B3.) See equivalents-security-core.md M1.
+5973c2d7f577477ea68ca846e34322cb
+7032f9b90c1c4dceb03b15ff2387b05f
+147eb27c5a254c6ab0d3b92600f1a333
+# ===========================================================================
+# Category M2 — @functools.lru_cache(maxsize=128) transparency (3 mutants).
+# detect_mutative_command is a pure function; the cache is transparent
+# memoization. RemoveDecorator and the maxsize NumberReplacers change only
+# caching, never a return value. See equivalents-security-core.md M2.
+0a92fbce93084dee862d41bedee91f99
+56957e5de53c4785b32c7afe9f7c0cc8
+bb8fe5f7d7184699b97978221d36a6c8

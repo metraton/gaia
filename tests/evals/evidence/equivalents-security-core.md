@@ -401,3 +401,54 @@ This invariant is what makes the following equivalent.
 **Endpoint:** 0 untriaged survivors in `blocked_commands.py`. 37 killed by
 honest tests, 21 proven equivalent (listed above) and excluded via
 `equivalents-blocked-commands.skip`.
+
+---
+
+# Equivalent Mutants — `mutative_verbs.py` (GRIND-TOTAL, this session)
+
+**Module:** `hooks/modules/security/mutative_verbs.py`
+**Session DB:** `mutative-verbs.sqlite`
+**Baseline:** 55.78% (410 killed / 325 survived / 735 total).
+
+Survivors are killed by honest tests in
+`tests/hooks/modules/security/test_mutative_verbs_mutants.py`. Mutants listed
+below are genuinely equivalent — no honest input distinguishes them for ANY
+reachable input — and are excluded via `equivalents-mutative-verbs.skip`.
+
+## Category M1 — import-fallback `except ImportError` handlers (3 mutants)
+
+The module imports three sibling modules at load time, each guarded by
+`try / except ImportError`:
+
+- line 34: `from .capability_classes import ...`
+- line 46: `from .blocked_commands import is_blocked_command`
+- line 55: `from .inline_ast_analyzer import analyze_python_inline`
+
+All three siblings always import successfully in-process (confirmed: a direct
+`import` of `capability_classes`, `blocked_commands`, and `inline_ast_analyzer`
+from `modules.security` succeeds). The `except ImportError:` body therefore
+never executes. `ExceptionReplacer` swaps the caught type, but since the body
+is unreachable the mutation has no observable effect — identical to the
+`blocked_commands` B3 case above.
+
+- `5973c2d7f577477ea68ca846e34322cb` (line 34)
+- `7032f9b90c1c4dceb03b15ff2387b05f` (line 46)
+- `147eb27c5a254c6ab0d3b92600f1a333` (line 55)
+
+## Category M2 — `@functools.lru_cache` transparency (3 mutants)
+
+`detect_mutative_command` is decorated with `@functools.lru_cache(maxsize=128)`
+(line 994). `lru_cache` is a transparent memoization of a pure function: for
+identical arguments it returns identical results whether the cache is present,
+absent, or sized differently. None of these mutants change any observable
+output:
+
+- `0a92fbce93084dee862d41bedee91f99` — `RemoveDecorator`: removing the cache
+  only forgoes memoization; every call recomputes the same `MutativeResult`.
+- `56957e5de53c4785b32c7afe9f7c0cc8`, `bb8fe5f7d7184699b97978221d36a6c8` —
+  `NumberReplacer` on `maxsize=128`: changes only the cache eviction capacity,
+  never a return value. (An unbounded or smaller cache yields identical
+  results for the test population.)
+
+**Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
+test. 6 mutants proven equivalent here (3 import-fallback + 3 lru_cache).
