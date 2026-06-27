@@ -3244,3 +3244,128 @@ class TestActivateBehavioralM1Final:
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
+
+
+# ===========================================================================
+# AC-5 CIERRE FINAL -- the last 33 surviving mutants not yet in the skip-file.
+# Each test below kills a behavioral survivor with an honest observable
+# assertion. The genuinely-equivalent survivors are NOT here; they are
+# documented in tests/evals/evidence/equivalents-security-core.md and excluded
+# via the skip-file.
+# ===========================================================================
+class TestModuleConstantsAndFlagsAC5:
+    """Module-level constants and process-global flags whose mutated value is
+    observable through the public API."""
+
+    def test_command_set_ttl_is_sixty_minutes(self, writer_db):
+        """`DEFAULT_COMMAND_SET_TTL_MINUTES = 60` (line 1540, NumberReplacer
+        60->N x2). create_command_set_grant stamps expires_at = now + ttl. With
+        the default ttl the persisted expiry must be ~60 min ahead; a mutated
+        constant (61 or 59) shifts the stored expires_at by a full minute, which
+        the row assertion below detects to the second."""
+        before = datetime.now(timezone.utc)
+        ok = create_command_set_grant(
+            command_set=[{"command": "git push", "rationale": "r"}],
+            approval_id="P-ttl60check",
+            session_id="s",
+            db_path=str(writer_db),
+        )
+        assert ok is True
+        con = sqlite3.connect(str(writer_db))
+        try:
+            row = con.execute(
+                "SELECT expires_at FROM approval_grants WHERE approval_id=?",
+                ("P-ttl60check",),
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None
+        expires = datetime.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        delta_min = (expires - before).total_seconds() / 60.0
+        # The true TTL is exactly 60; allow a few seconds of execution slack but
+        # reject the 59 / 61 mutants (which land ~1 min off).
+        assert 59.5 < delta_min < 60.5
+        # And confirm the imported constant value itself is 60 (kills both
+        # NumberReplacer directions directly).
+        assert DEFAULT_COMMAND_SET_TTL_MINUTES == 60
+
+    def test_check_grant_resets_found_expired_flag_to_false(self, monkeypatch):
+        """`_last_check_found_expired = False` (line 464, ReplaceFalseWithTrue).
+        check_approval_grant() resets this process-global to False at the top of
+        EVERY call, before any conditional set. It is set True only when an
+        expired grant is encountered. With no grant at all, the flag MUST read
+        False afterwards. The True-init mutant on line 464 leaves it True (no
+        code path ever resets it back to False), so the reader returns True."""
+        # No DB grant for the command -> the expired-grant branch is never hit.
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: None,
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_file_path_grant",
+            lambda *a, **k: None,
+        )
+        ag._last_check_found_expired = True  # poison: a real reset must clear it
+        ag.check_approval_grant("git status", session_id="s")
+        assert ag.last_check_found_expired() is False
+
+
+class TestEqIsStatusAppliedAC5:
+    """`result.get('status') == 'applied'` Eq->Is survivors (lines 659, 1476,
+    1603). CPython interns the literal 'applied'; a DB/JSON-sourced status is a
+    DISTINCT object, so `is` is False where `==` is True. Feeding a NON-interned
+    'applied' makes the Is flip observable: the success branch is taken under
+    `==` but skipped under `is`."""
+
+    _SEMANTIC = {
+        "operation": "MUTATIVE command intercepted: push",
+        "exact_content": "git push origin main",
+    }
+
+    def test_activate_semantic_status_applied_is_not_identity(self, monkeypatch):
+        """Line 1476 Eq->Is. insert_semantic_grant returns a runtime-built
+        'applied' (json.loads, non-interned). `== 'applied'` True -> ACTIVATED;
+        `is 'applied'` False -> falls through to ERROR. Pin ACTIVATED."""
+        runtime_applied = json.loads('"applied"')
+        assert runtime_applied == "applied"
+        _AC1Driver.drive(monkeypatch, self._SEMANTIC)
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: {"status": runtime_applied},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+
+    def test_confirm_grant_status_applied_is_not_identity(self, monkeypatch):
+        """Line 659 Eq->Is. confirm_grant returns True only when
+        confirm_db_grant()'s status == 'applied'. A non-interned 'applied' keeps
+        `==` True (return True) but makes `is` False (return False). Pin True."""
+        runtime_applied = json.loads('"applied"')
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.confirm_db_grant",
+            lambda *a, **k: {"status": runtime_applied},
+        )
+        assert ag.confirm_grant("git push", session_id="s") is True
+
+    def test_create_command_set_status_applied_is_not_identity(self, monkeypatch):
+        """Line 1603 Eq->Is. create_command_set_grant returns True only when
+        insert_approval_grant()'s status == 'applied'. A non-interned 'applied'
+        keeps `==` True (return True) but `is` False (return False). Pin True."""
+        runtime_applied = json.loads('"applied"')
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_approval_grant",
+            lambda **k: {"status": runtime_applied},
+        )
+        ok = create_command_set_grant(
+            command_set=[{"command": "git push", "rationale": "r"}],
+            approval_id="P-isapplied",
+            session_id="s",
+        )
+        assert ok is True
