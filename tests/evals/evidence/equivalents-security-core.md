@@ -776,3 +776,48 @@ heredoc-guard positional comparison (L1240 `non_flag_tokens[0] == "-"`):
   killed by `test_stdin_dash_without_heredoc_not_inline_analyzed`, which drives
   a `"-"`-positional input with no `"<<"` so the chain re-association is
   observable.)
+
+## Category M9 — detect_mutative_command Step-4 camelCase guard residuals (7)
+
+Step 4's camelCase split (L1506-1511) reads
+`raw_token = semantic_head_tokens_raw[semantic_index] if semantic_index <
+len(semantic_head_tokens_raw) else token`, then gates the split on
+`semantic_index == 1 and len(camel_parts) > 1 and
+_is_subcommand_identifier(raw_token)`. The KILLABLE siblings (L1509 Eq_GtE,
+L1510 first AndWithOr + NumberReplacer `1 -> 2`, L1511 second AndWithOr) are
+killed by `TestCamelCaseSplitGuard`. The 7 below cannot be distinguished by any
+reachable input.
+
+raw-token index guard (L1506 `semantic_index < len(semantic_head_tokens_raw)`):
+- `5263334d0da24f459a9ef3ccf52d5299` (Lt_NotEq), `571cb131f5bf40bebeb30c78ff7d2177`
+  (Lt_LtE), `9c94f3bcd6c84162b0178d5c92c0b415` (Lt_IsNot). `semantic_head_tokens`
+  and `semantic_head_tokens_raw` are built in lockstep in `analyze_command`
+  (`non_flag_tokens` / `non_flag_tokens_raw` appended together, both prefixed
+  with the base token, both sliced `[:head_size]`), so they ALWAYS have equal
+  length. The loop variable `semantic_index` ranges over
+  `semantic_head_tokens[1:]` indices, i.e. `1 .. len-1`, so `semantic_index <
+  len(semantic_head_tokens_raw)` is unconditionally True and the `else token`
+  fallback is dead code. `< len`, `!= len`, `<= len`, and `is not len` all
+  coincide over the reachable range `idx in [1, len-1]` (they differ only at
+  `idx == len`, never reached).
+
+position comparison (L1509 `semantic_index == 1`):
+- `22a5912baf624747ad852cc587507e65` (Eq_LtE, `<= 1`). The loop starts at
+  `start=1`, so `semantic_index >= 1` always. Over that range `== 1` and `<= 1`
+  coincide (both True only at idx 1, both False at idx >= 2). (Eq_GtE, which
+  would also fire at idx >= 2, IS killed by `test_camelcase_at_index_two_not_
+  split`.)
+
+len boundary (L1510 `len(camel_parts) > 1`):
+- `da85192593f646ecb8bac27eb6519122` (Gt_NotEq, `!= 1`), `2db03bd8b74849a5b785ecad3582afbc`
+  (Gt_GtE, `>= 1`), `3418b07e5de94d6ba28ca0e0e5c331ec` (NumberReplacer `1 -> 0`,
+  `> 0`). `split_camel_case` returns at least one element, so `len(camel_parts)
+  >= 1` always; the three mutants differ from `> 1` only at `len == 1` (they all
+  enter the loop where `> 1` skips it) and `!= 1` additionally at `len == 0`
+  (impossible). At `len == 1` the single camel part equals the whole token
+  lowercased; were that part a MUTATIVE verb it would already have matched at
+  Step 4's primary check (L1439) BEFORE reaching the camelCase block, so the
+  loop entered on a 1-part token never finds a mutative fragment — the result is
+  identical whether the loop runs or is skipped. (The NumberReplacer `1 -> 2`
+  sibling, `> 2`, DOES change a 2-part token's outcome and IS killed by
+  `test_camelcase_two_part_at_index_one_split`.)

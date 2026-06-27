@@ -1358,3 +1358,60 @@ class TestCamelCaseOverrideExceptionArms:
             "CamelCase verb 'delete' (from 'fooDelete') "
             "with dangerous flags ('--force',)"
         )
+
+
+# ===========================================================================
+# detect_mutative_command -- camelCase split GUARD (L1509-1511).
+#
+#   if (semantic_index == 1            # L1509
+#       and len(camel_parts) > 1       # L1510
+#       and _is_subcommand_identifier(raw_token)):  # L1511
+#
+# The guard restricts camelCase verb-splitting to the FIRST non-flag token
+# (subcommand position) AND to real identifier tokens, so an argument value
+# like a path-y or deep-position token is never split into a phantom mutative
+# verb.  The legacy suite only exercised the true path (idx 1, clean
+# identifier), so the position comparison (L1509 Eq_GtE), the len boundary
+# (L1510 NumberReplacer `1 -> 2`), and both `and` joins (L1510/L1511 AndWithOr)
+# survived.  These tests drive the FALSE side of each clause with an input
+# whose camel parts DO contain a mutative verb, so any mutant that wrongly
+# enters the split loop flips is_mutative.
+# ===========================================================================
+class TestCamelCaseSplitGuard:
+    def test_camelcase_at_index_two_not_split(self):
+        # head_raw = (gh, repo, fooDelete); the camel token is at semantic_index
+        # 2, NOT 1.  Original `== 1` is False -> guard False -> no split -> the
+        # command is safe-by-elimination.  Kills L1509 Eq_GtE (`>= 1` -> True at
+        # idx 2 -> would split "fooDelete" -> "delete" -> MUTATIVE) and the
+        # FIRST AndWithOr at L1510 (`== 1 or len > 1 ...` -> True -> would split).
+        r = detect_mutative_command("gh repo fooDelete")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.verb == "repo"
+        assert r.reason == "Unknown verb 'repo' with no dangerous flags"
+
+    def test_camelcase_two_part_at_index_one_split(self):
+        # head_raw = (gh, fooDelete); camel parts [foo, delete], len 2 > 1 ->
+        # split -> "delete" MUTATIVE.  Kills L1510 NumberReplacer `1 -> 2`
+        # (`len(camel_parts) > 2` -> False for a 2-part token -> would skip the
+        # split loop and leave the command unflagged).
+        r = detect_mutative_command("gh fooDelete")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "delete"
+        assert r.confidence == "high"
+        assert r.reason == "CamelCase verb 'delete' (from 'fooDelete')"
+
+    def test_camelcase_non_identifier_token_not_split(self):
+        # head_raw = (gh, deleteFoo/bar); camel parts [delete, foo/bar] (so a
+        # clean "delete" fragment IS present), but the raw token carries "/" so
+        # _is_subcommand_identifier is False -> guard False -> NOT split (the
+        # token is an argument value, not a subcommand).  Kills the SECOND
+        # AndWithOr at L1511 (`... and is_subcmd` -> `... or is_subcmd`):
+        # `(== 1 and len > 1) or False` = True -> would enter the loop and flag
+        # the "delete" fragment as MUTATIVE.
+        r = detect_mutative_command("gh deleteFoo/bar")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.verb == "deletefoo/bar"
+        assert r.reason == "Unknown verb 'deletefoo/bar' with no dangerous flags"
