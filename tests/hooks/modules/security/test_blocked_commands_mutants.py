@@ -337,6 +337,44 @@ class TestSemanticRuleMatches:
         # forbidden flag present (exact match) => rule does NOT match.
         assert rule.matches(sem) is False
 
+    # --- forbidden-flag inequality flips (Eq_GtE / Eq_LtE), line 111 ----
+    # The exact-equality test above cannot kill `>=`/`<=` because for EQUAL
+    # strings ==, >=, <= are all True. To isolate them we use a flag_token
+    # that is NOT equal to the forbidden flag and does NOT start with it+"="
+    # so the honest branch is NOT exempt (rule matches -> would block), and
+    # the mutated comparison wrongly exempts it.
+    #   "-targetz" >= "-target" is True  -> Eq_GtE wrongly returns False
+    #   "-targetz" == "-target" is False, startswith("-target=") False
+    #     -> honest: not exempt -> matches() True
+    def test_forbidden_flag_gte_does_not_falsely_exempt(self):
+        rule = SemanticBlockedRule(
+            "terraform_destroy", ("terraform", "destroy"), "k",
+            forbidden_flags=("-target",),
+        )
+        sem = CommandSemantics(
+            base_cmd="terraform",
+            flag_tokens=("-targetz",),
+            non_flag_tokens=("destroy",),
+            semantic_tokens=("terraform", "destroy"),
+            semantic_head_tokens=("terraform", "destroy"),
+        )
+        assert rule.matches(sem) is True
+
+    #   "-targes" <= "-target" is True   -> Eq_LtE wrongly returns False
+    def test_forbidden_flag_lte_does_not_falsely_exempt(self):
+        rule = SemanticBlockedRule(
+            "terraform_destroy", ("terraform", "destroy"), "k",
+            forbidden_flags=("-target",),
+        )
+        sem = CommandSemantics(
+            base_cmd="terraform",
+            flag_tokens=("-targes",),
+            non_flag_tokens=("destroy",),
+            semantic_tokens=("terraform", "destroy"),
+            semantic_head_tokens=("terraform", "destroy"),
+        )
+        assert rule.matches(sem) is True
+
     # --- and the SAME rule DOES match when the forbidden flag is absent --
     # Anchors the other direction so the exact-match test cannot pass
     # vacuously: with no -target the rule matches (would block).

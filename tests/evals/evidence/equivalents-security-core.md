@@ -319,3 +319,85 @@ listed there, one per line, with category comments.
 **Grind-total closure:** all surviving mutants triaged. 0 untriaged survivors remain in `approval_grants.py`.
 - Mutant `a498bdeea402498c9686e78f97441903` (line 1212 Eq→LtE): **KILLED** by new test `TestActivateDbPendingIntegrityLabelAC1::test_lexically_early_class_name_not_treated_as_tamper` using `AttributeError` as the discriminating input (`"AttributeError" < "ChainTamperError"` → `<=` returns True wrongly labeling a non-tamper error).
 - Mutant `0ef52574fe5b441da1331068f689f727` (line 1426 Eq→LtE): **EQUIVALENT** (E13). Proven by suite (1313 tests green under mutant); outer `"intercepted:" in` guard makes `len < 2` unreachable.
+
+---
+
+# Equivalent Mutants — `blocked_commands.py` (GRIND-TOTAL)
+
+**Date:** 2026-06-27
+**Branch:** `harden/approval-grants-m1-loop`
+**Module:** `hooks/modules/security/blocked_commands.py`
+**Session DB:** `blocked-commands.sqlite` (cosmic-ray init, 157 specs, 0 INCOMPETENT)
+**Baseline:** 99 killed / 58 survived (63.06%). Closure adds
+`tests/hooks/modules/security/test_blocked_commands_mutants.py`.
+
+**Scoped recheck after closure** (`--only-survivors` over the 58 baseline
+survivors): **37 killed / 21 survived**. The 21 survivors are all proven
+equivalent below — no honest input distinguishes them for ANY reachable
+input. Method: exhaustive input search (`_explore_sep.py`, 70+ inputs covering
+leading/mid/trailing separators, quoted/escaped/long(>256)/tight-packed cases)
+plus closed-form reasoning on the index walk; the two non-cluster ones proven
+by control-flow analysis (`_probe_equiv.py`).
+
+## Category B1 — `_has_unquoted_separator` quote-walk equivalents (19)
+
+The walk advances `i` by 1 (normal / quote-toggle) or by 2 (escape), starting
+at 0, and the escape branch is gated by `i + 1 < n` so it is only taken when
+`i <= n-2`. Therefore **`i` always lands EXACTLY on `n`, never overshoots**.
+This invariant is what makes the following equivalent.
+
+### B1a — loop bound `while i < n` (line 705)
+
+- `Lt_NotEq` `6b7d47abdbec4c66a1c7946dd2758f8b`: `i != n` ≡ `i < n` because `i`
+  never exceeds `n` (lands exactly on it).
+- `Lt_IsNot` `4483941e37c8479d8ea0df6823f7bace`: `i is not n`. For all reachable
+  `n` (small-int cached at the boundary) behaves like `!=`; distinguishing
+  would require relying on CPython int-identity for `n > 256`, which is not an
+  honest behavioral test (implementation detail, not a security property).
+
+### B1b — escape guard `if ch == "\\" and i + 1 < n` (line 707)
+
+- `Eq_Is` (col 14, occ2) `5f9ffde261a348dd9bf671f3f8df2f64`: `ch is "\\"`.
+  Single-char strings are interned by CPython, so `is` ≡ `==`.
+- `Add_*` on `i + 1` (col 28, occ1) — Sub/Mul/Div/FloorDiv/Mod/Pow/RShift/
+  BitOr/BitAnd/BitXor: `2f99fabe...`, `7eb86068...`, `17f76459...`,
+  `2731fa40...`, `af4edb4f...`, `424f34c9...`, `4bda2c16...`, `5295f6ad...`,
+  `c61e470c...`, `e83d90ae...`. The guard `<n` is only False for a TRAILING
+  backslash; for every reachable `i` these alternate ops keep `expr < n` at the
+  same truth value as `i+1 < n` (all reduce to "enter escape unless trailing").
+  (Add_LShift `i<<1` was NOT equivalent — KILLED by `aaaa\|`; only the listed
+  ops are equivalent.)
+- `Number 1→0` (col 30, occ5) `515dfe842d2940bc999b7ad237905462`: `i + 0 < n` =
+  `i < n`, always True inside the loop; a trailing backslash then enters escape
+  (`i+=2` past EOF) → still returns False. (Occ4, `1→2`, was KILLED by `\|`.)
+- `Lt_*` on `i + 1 < n` (col 32, occ1) — NotEq `496b5550...`, LtE `39d9bb39...`,
+  IsNot `4778615b...`: `i+1` never exceeds `n`, so `!=`/`<=` match `<` at every
+  reachable point; `is not` is the int-identity case as in B1a.
+
+### B1c — quote-toggle Eq_Is (lines 710, 714)
+
+- `710 Eq_Is` (occ3) `4f56c3a963d84a69800b12db9744a5a3`: `ch is "'"`.
+- `714 Eq_Is` (occ4) `665257f4dee34e1484edd229caa236cc`: `ch is '"'`.
+  Both compare a single-char string indexed from `command` to a single-char
+  literal; CPython interns single-char latin1 strings so `is` ≡ `==`.
+
+## Category B2 — `is_blocked_command` empty-guard or→and (line 596)
+
+- `ReplaceOrWithAnd` `792699f458f2460d84a1cdd4252f145b`:
+  `not command or not command.strip()` → `... and ...`. The two diverge ONLY
+  for whitespace-only inputs: `or` returns early (`is_blocked=False`); `and`
+  falls through, but `command.strip()` is then `""` which matches no pattern,
+  so the function still returns `is_blocked=False`. Identical observable for
+  every input class (confirmed in `_probe_equiv.py`).
+
+## Category B3 — `_read_only_base_cmds` unreachable except (line 74)
+
+- `ExceptionReplacer` `3667c2b2771244e6b5a9201a67e2f4fa`: mutates the
+  `except ImportError:` handler. The `from .mutative_verbs import
+  READ_ONLY_BASE_CMDS` always succeeds in-process (no circular-import failure
+  at call time), so the handler body is unreachable and the mutation has no
+  observable effect (confirmed in `_probe_equiv.py`).
+
+**Endpoint:** 0 untriaged survivors in `blocked_commands.py`. 37 killed by
+honest tests, 21 proven equivalent (listed above) and excluded via
+`equivalents-blocked-commands.skip`.
