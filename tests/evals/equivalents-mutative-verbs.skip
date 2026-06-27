@@ -158,3 +158,19 @@ def6285393ae443ab77bd1acda629e06
 d767207733e3492fb2427fb3f586ae99
 aa2946f0ceae4376a139633ed76142ba
 960d9259724d4ac39015d82224003693
+# ===========================================================================
+# Category M9 — detect_mutative_command Step-4 camelCase guard residuals (7).
+# Killable siblings (L1509 Eq_GtE, L1510 AndWithOr + NumberReplacer 1->2, L1511
+# AndWithOr) killed by TestCamelCaseSplitGuard. See equivalents-security-core.md M9.
+# -- L1506 semantic_index < len(head_raw) (always True; head & head_raw equal
+#    length, idx in [1,len-1]; else-branch dead): Lt_NotEq, Lt_LtE, Lt_IsNot
+5263334d0da24f459a9ef3ccf52d5299
+571cb131f5bf40bebeb30c78ff7d2177
+9c94f3bcd6c84162b0178d5c92c0b415
+# -- L1509 semantic_index == 1 Eq_LtE (loop starts at 1; <=1 coincides with ==1)
+22a5912baf624747ad852cc587507e65
+# -- L1510 len(camel_parts) > 1 Gt_NotEq/Gt_GtE/NumberReplacer 1->0 (>=1 always;
+#    1-part token entering loop never matches a verb -- it'd match at L1439 first)
+da85192593f646ecb8bac27eb6519122
+2db03bd8b74849a5b785ecad3582afbc
+3418b07e5de94d6ba28ca0e0e5c331ec
