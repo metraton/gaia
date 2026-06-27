@@ -93,7 +93,7 @@ class TestMergeLocalPermissions(unittest.TestCase):
             data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
             self.assertEqual(data["agent"], "gaia-orchestrator")
             self.assertIn("Bash(*)", data["permissions"]["allow"])
-            self.assertIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data["env"])
+            self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))
 
     def test_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,12 +135,13 @@ class TestMergeLocalPermissions(unittest.TestCase):
             (workspace / ".claude").mkdir()
             local = workspace / ".claude" / "settings.local.json"
             local.write_text(json.dumps({
-                "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0", "CUSTOM_VAR": "x"},
+                "env": {"CUSTOM_VAR": "x"},
             }))
             helpers.merge_local_permissions(workspace, mode="ops")
             data = json.loads(local.read_text())
-            # Existing values preserved
-            self.assertEqual(data["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "0")
+            # AGENT_TEAMS is not injected regardless of prior state
+            self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))
+            # Unrelated user env var preserved
             self.assertEqual(data["env"]["CUSTOM_VAR"], "x")
 
 

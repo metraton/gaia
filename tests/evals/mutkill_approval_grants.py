@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""Fast, cosmic-ray-faithful mutation-kill harness for approval_grants.
+
+PURPOSE
+-------
+Eval harness for an agentic hardening loop. The loop writes tests that kill
+surviving mutants and re-runs this harness to measure progress. The harness
+must be FAITHFUL to cosmic-ray: same mutants, same "kill" semantics. It is NOT
+a reimplementation -- it reuses cosmic-ray's own machinery:
+
+  * Mutation specs are read from the cosmic-ray session DB
+    (tests/evals/approval-grants.sqlite, table `mutation_specs`), which is the
+    authoritative inventory cosmic-ray itself produced via `cosmic-ray init`.
+  * Each mutant is applied + tested via cosmic_ray.mutating.mutate_and_test --
+    the exact function at the heart of `cosmic-ray exec`. This guarantees
+    byte-identical mutants and identical KILLED/SURVIVED/INCOMPETENT outcomes.
+  * The test-command is read from the per-module toml
+    (tests/evals/mutation-approval-grants.toml), so it tracks whatever the
+    loop configures there.
+
+It does NOT run `cosmic-ray exec` (T3). All work is local: a process pool of
+workers, each operating in its own isolated clone of hooks/ + tests/ so that
+concurrent on-disk mutation of approval_grants.py never collides. Cloning and
+cleanup are done in-process via shutil (not shell verbs), so the harness itself
+triggers no T3 approval.
+
+OUTPUT
+------
+Prints a final block ending with EXACTLY one line:
+
+    METRIC kill_rate=XX.XX
+
+plus killed/survived/incompetent/total counts, for an agentic loop to parse.
+
+The kill_rate matches cosmic-ray's `cr-rate`: killed / (total - incompetent).
+
+USAGE
+-----
+    uv run python tests/evals/mutkill_approval_grants.py            # full, parallel
+    uv run python tests/evals/mutkill_approval_grants.py -j 8       # 8 workers
+    uv run python tests/evals/mutkill_approval_grants.py --limit 40 # quick smoke
+    uv run python tests/evals/mutkill_approval_grants.py --operators core/AddNot
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Paths (resolved relative to this file -> gaia repo root)
+# --------------------------------------------------------------------------
+HERE = Path(__file__).resolve().parent              # tests/evals
+REPO_ROOT = HERE.parent.parent                      # gaia/
+# cosmic-ray session lives at the repo root (where `cosmic-ray init/exec` runs),
+# per tests/evals/mutation-approval-grants.toml header. Fall back to tests/evals
+# if a copy is placed alongside the toml.
+_SESSION_ROOT = REPO_ROOT / "approval-grants.sqlite"
+_SESSION_LOCAL = HERE / "approval-grants.sqlite"
+DEFAULT_SESSION = _SESSION_ROOT if _SESSION_ROOT.exists() else _SESSION_LOCAL
+DEFAULT_TOML = HERE / "mutation-approval-grants.toml"
+MODULE_REL = "hooks/modules/security/approval_grants.py"
+
+# A worker clone must reproduce cosmic-ray's environment: it runs pytest with
+# cwd = repo root, where `import gaia` (the ./gaia source package) and the
+# tests/ fixtures resolve via cwd on sys.path. So the clone mirrors the whole
+# working tree EXCEPT heavy/irrelevant dirs and the .claude security boundary.
+# The mutated file path stays at MODULE_REL inside the clone.
+CLONE_IGNORE_DIRS = frozenset({
+    "node_modules", ".venv", ".git", "dist", "mutants",
+    "logs", ".pytest_cache", "__pycache__", ".claude",
+    "gaia.egg-info", ".mypy_cache", ".ruff_cache",
+})
+
+
+def _clone_ignore(dirpath, names):
+    """shutil.copytree ignore callback: prune heavy/irrelevant dirs, pyc, and
+    cosmic-ray session sqlites (large, not needed inside the clone)."""
+    skip = set()
+    for n in names:
+        if n in CLONE_IGNORE_DIRS:
+            skip.add(n)
+        elif n.endswith((".pyc", ".sqlite")):
+            skip.add(n)
+    return skip
+
+
+# --------------------------------------------------------------------------
+# Faithful config readers
+# --------------------------------------------------------------------------
+def read_test_command(toml_path: Path) -> str:
+    """Read test-command from the cosmic-ray per-module toml.
+
+    Uses tomllib (3.11+) when available, else a minimal line scan. We only need
+    the single `test-command` key under [cosmic-ray]; full TOML parsing is not
+    required, but tomllib is preferred for fidelity.
+    """
+    text = toml_path.read_text(encoding="utf-8")
+    try:
+        import tomllib  # py311+
+        data = tomllib.loads(text)
+        cmd = data.get("cosmic-ray", {}).get("test-command")
+        if cmd:
+            return cmd
+    except Exception:
+        pass
+    # Fallback: scan for `test-command = "..."`
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("test-command"):
+            _, _, rhs = s.partition("=")
+            return rhs.strip().strip('"').strip("'")
+    raise SystemExit(f"Could not find test-command in {toml_path}")
+
+
+def read_timeout(toml_path: Path, default: float = 30.0) -> float:
+    text = toml_path.read_text(encoding="utf-8")
+    try:
+        import tomllib
+        data = tomllib.loads(text)
+        t = data.get("cosmic-ray", {}).get("timeout")
+        if t is not None:
+            return float(t)
+    except Exception:
+        pass
+    return default
+
+
+def load_specs(session_path: Path):
+    """Load mutation specs from the cosmic-ray session DB.
+
+    Returns a list of plain dicts (picklable for the process pool). Each row is
+    the authoritative spec cosmic-ray itself generated; we reconstruct the
+    MutationSpec inside the worker so we don't depend on cosmic_ray being
+    importable in the parent before fork semantics matter.
+    """
+    con = sqlite3.connect(f"file:{session_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            """
+            SELECT job_id, module_path, operator_name, operator_args, occurrence,
+                   start_pos_row, start_pos_col, end_pos_row, end_pos_col,
+                   definition_name
+            FROM mutation_specs
+            ORDER BY start_pos_row, start_pos_col, occurrence
+            """
+        ).fetchall()
+    finally:
+        con.close()
+    specs = []
+    for r in rows:
+        # operator_args is stored double-encoded: SQLAlchemy's Column(JSON)
+        # serializes the value, and cosmic-ray's work_db json.dumps()'d it
+        # before that. cosmic-ray reads it back with two json.loads layers.
+        # We read raw TEXT via sqlite3, so decode repeatedly until we land on
+        # a dict (the operator-args mapping mutate_and_test expects).
+        args = r["operator_args"]
+        for _ in range(3):
+            if isinstance(args, dict):
+                break
+            if args is None or args == "":
+                args = {}
+                break
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+                break
+        if not isinstance(args, dict):
+            args = {}
+        specs.append(
+            {
+                "job_id": r["job_id"],
+                "operator_name": r["operator_name"],
+                "operator_args": args,
+                "occurrence": r["occurrence"],
+                "start_pos": (r["start_pos_row"], r["start_pos_col"]),
+                "end_pos": (r["end_pos_row"], r["end_pos_col"]),
+                "definition_name": r["definition_name"],
+            }
+        )
+    return specs
+
+
+def load_baseline_survivor_ids(session_path: Path) -> set:
+    """job_ids of mutants the cosmic-ray session recorded as SURVIVED.
+
+    These are the mutants the hardening loop is trying to kill. Restricting to
+    them gives a fast incremental eval (the kill_rate over the survivor subset =
+    fraction of the original survivors that new tests now kill)."""
+    con = sqlite3.connect(f"file:{session_path}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT job_id FROM work_results WHERE test_outcome = 'SURVIVED'"
+        ).fetchall()
+    finally:
+        con.close()
+    return {r[0] for r in rows}
+
+
+# --------------------------------------------------------------------------
+# Worker: runs a shard of specs inside its own clone
+# --------------------------------------------------------------------------
+def _clone_repo_subset(dst: Path) -> None:
+    """Clone the repo working tree (minus heavy/irrelevant dirs and .claude)
+    into dst, preserving the relative layout cosmic-ray's pytest run depends on
+    (import gaia, tests/ fixtures, conftest path resolution)."""
+    shutil.copytree(
+        REPO_ROOT,
+        dst,
+        symlinks=True,
+        ignore=_clone_ignore,
+        dirs_exist_ok=True,
+    )
+
+
+def _run_shard(shard, test_command: str, timeout: float, keep_clone: bool):
+    """Run a shard of mutation specs in an isolated clone. Returns list of
+    (job_id, operator_name, outcome_str)."""
+    # cosmic_ray must be importable inside the worker (uv-managed venv).
+    from cosmic_ray.work_item import MutationSpec
+    from cosmic_ray.mutating import mutate_and_test, TestOutcome
+
+    clone = Path(tempfile.mkdtemp(prefix="mutkill_wk_"))
+    results = []
+    try:
+        _clone_repo_subset(clone)
+        module_path = str(clone / MODULE_REL)
+        # Run tests from the clone root so relative path resolution in tests +
+        # conftest binds to the clone's hooks/, not the live repo.
+        prev_cwd = os.getcwd()
+        os.chdir(clone)
+        # Ensure mutated source is re-read, never cached as .pyc.
+        os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+        try:
+            for spec in shard:
+                ms = MutationSpec(
+                    module_path=module_path,
+                    operator_name=spec["operator_name"],
+                    occurrence=spec["occurrence"],
+                    start_pos=spec["start_pos"],
+                    end_pos=spec["end_pos"],
+                    operator_args=spec["operator_args"],
+                    definition_name=spec["definition_name"],
+                )
+                wr = mutate_and_test([ms], test_command, timeout)
+                outcome = wr.test_outcome
+                # WorkerOutcome NO_TEST -> mutation not applicable; mirror
+                # cosmic-ray which records such as no-op (skipped). We map a
+                # None test_outcome to "skipped".
+                if outcome is None:
+                    label = "skipped"
+                else:
+                    label = TestOutcome(outcome).value  # survived/killed/incompetent
+                results.append((spec["job_id"], spec["operator_name"], label))
+        finally:
+            os.chdir(prev_cwd)
+    finally:
+        if not keep_clone:
+            shutil.rmtree(clone, ignore_errors=True)
+    return results
+
+
+def _chunk(seq, n):
+    """Split seq into n round-robin shards (balances long-running operators)."""
+    shards = [[] for _ in range(n)]
+    for i, item in enumerate(seq):
+        shards[i % n].append(item)
+    return [s for s in shards if s]
+
+
+# --------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--session", type=Path, default=DEFAULT_SESSION,
+                    help="cosmic-ray session sqlite (read-only)")
+    ap.add_argument("--toml", type=Path, default=DEFAULT_TOML,
+                    help="cosmic-ray per-module toml (for test-command/timeout)")
+    ap.add_argument("-j", "--jobs", type=int, default=min(8, os.cpu_count() or 4),
+                    help="parallel workers (each gets an isolated clone)")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="only run first N specs (smoke); 0 = all")
+    ap.add_argument("--operators", nargs="*", default=None,
+                    help="restrict to these operator_name values (incremental loop use)")
+    ap.add_argument("--only-survivors", action="store_true",
+                    help="restrict to the mutants that SURVIVED in the cosmic-ray "
+                         "session DB. Fast incremental loop mode: only re-test the "
+                         "476 baseline survivors, the population the loop is trying "
+                         "to kill. kill_rate is then computed over that subset.")
+    ap.add_argument("--timeout", type=float, default=None,
+                    help="per-mutant test timeout (default: from toml)")
+    ap.add_argument("--keep-clones", action="store_true",
+                    help="do not delete worker clones (debug)")
+    ap.add_argument("--quiet", action="store_true",
+                    help="suppress per-survivor listing")
+    ap.add_argument("--dump-json", type=Path, default=None,
+                    help="write per-mutant {job_id: outcome} to this file "
+                         "(fidelity cross-check against cosmic-ray session)")
+    args = ap.parse_args()
+
+    if not args.session.exists():
+        raise SystemExit(f"session not found: {args.session}")
+    if not args.toml.exists():
+        raise SystemExit(f"toml not found: {args.toml}")
+
+    test_command = read_test_command(args.toml)
+    timeout = args.timeout if args.timeout is not None else read_timeout(args.toml)
+
+    specs = load_specs(args.session)
+    if args.only_survivors:
+        survivor_ids = load_baseline_survivor_ids(args.session)
+        specs = [s for s in specs if s["job_id"] in survivor_ids]
+    if args.operators:
+        wanted = set(args.operators)
+        specs = [s for s in specs if s["operator_name"] in wanted]
+    if args.limit:
+        specs = specs[: args.limit]
+
+    total = len(specs)
+    if total == 0:
+        raise SystemExit("no specs selected")
+
+    jobs = max(1, min(args.jobs, total))
+    shards = _chunk(specs, jobs)
+
+    print(f"# mutkill_approval_grants harness", file=sys.stderr)
+    print(f"# session       : {args.session}", file=sys.stderr)
+    print(f"# test-command  : {test_command}", file=sys.stderr)
+    print(f"# timeout       : {timeout}s   workers: {jobs}   mutants: {total}",
+          file=sys.stderr)
+
+    t0 = time.time()
+    all_results = []
+    if jobs == 1:
+        all_results.extend(_run_shard(shards[0], test_command, timeout, args.keep_clones))
+    else:
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            futs = [ex.submit(_run_shard, sh, test_command, timeout, args.keep_clones)
+                    for sh in shards]
+            done = 0
+            for fut in as_completed(futs):
+                part = fut.result()
+                all_results.extend(part)
+                done += 1
+                print(f"# shard {done}/{len(futs)} done "
+                      f"({len(all_results)}/{total} mutants, "
+                      f"{time.time()-t0:.1f}s)", file=sys.stderr)
+    elapsed = time.time() - t0
+
+    killed = sum(1 for _, _, o in all_results if o == "killed")
+    survived = sum(1 for _, _, o in all_results if o == "survived")
+    incompetent = sum(1 for _, _, o in all_results if o == "incompetent")
+    skipped = sum(1 for _, _, o in all_results if o == "skipped")
+    n = len(all_results)
+
+    # cr-rate semantics: killed / (total - incompetent - skipped). Survivors
+    # and killed are the testable population; incompetent/skipped are excluded.
+    denom = n - incompetent - skipped
+    kill_rate = (killed / denom * 100.0) if denom else 0.0
+
+    print()
+    print("=" * 64)
+    print(f"MUTATION KILL REPORT  (approval_grants)")
+    print(f"  total mutants     : {n}")
+    print(f"  killed            : {killed}")
+    print(f"  survived          : {survived}")
+    print(f"  incompetent       : {incompetent}")
+    if skipped:
+        print(f"  skipped (no-op)   : {skipped}")
+    print(f"  testable (denom)  : {denom}")
+    print(f"  elapsed           : {elapsed:.1f}s")
+    print("=" * 64)
+
+    if not args.quiet and survived:
+        print(f"\n# {survived} SURVIVORS (job_id  operator):")
+        for jid, op, o in sorted(all_results, key=lambda r: r[1]):
+            if o == "survived":
+                print(f"  {jid}  {op}")
+
+    if args.dump_json:
+        args.dump_json.write_text(
+            json.dumps({jid: o for jid, _, o in all_results}, indent=0),
+            encoding="utf-8",
+        )
+
+    # The single machine-parseable line the loop greps for.
+    print(f"METRIC kill_rate={kill_rate:.2f}")
+    print(f"METRIC killed={killed} survived={survived} "
+          f"incompetent={incompetent} skipped={skipped} total={n}")
+
+
+if __name__ == "__main__":
+    main()

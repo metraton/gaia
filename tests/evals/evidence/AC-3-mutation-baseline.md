@@ -102,6 +102,113 @@ be counted against the mutation score.
 
 ---
 
+---
+
+## Full-core batch — preliminary results (2026-06-26)
+
+The three full-core modules were run using per-module toml configs with narrowed
+test commands, making per-mutant time practical (~2-5 s/mutant vs ~60 s serial).
+
+### Completeness state at snapshot time
+
+| Module DB | Total mutants | Completed | Pending | Status |
+|-----------|--------------|-----------|---------|--------|
+| `mutative-verbs.sqlite` | 735 | 735 | 0 | **COMPLETE** |
+| `blocked-commands.sqlite` | 157 | 157 | 0 | **COMPLETE** |
+| `approval-grants.sqlite` | 653 | 513 | 140 | **PARTIAL — run still active (PID 429547)** |
+
+### Scores (cr-rate = survival rate; mutation score = 100 - survival rate)
+
+| Module | Survival rate (`cr-rate`) | Mutation score | Killed | Survived |
+|--------|--------------------------|---------------|--------|----------|
+| `mutative_verbs.py` | 44.22% | **55.78%** | 410/735 | 325/735 |
+| `blocked_commands.py` | 36.94% | **63.06%** | 99/157 | 58/157 |
+| `approval_grants.py` | 73.33% (partial) | ~26.67% (partial) | 135/513 | 376/513 |
+
+Note: `approval_grants` had 2 INCOMPETENT mutants (worker EXCEPTION outcome);
+those are excluded from both the survival rate and mutation score denominators.
+The partial score for `approval_grants` is calculated over the 511 competent
+completed mutants; it will shift as the remaining 140 mutants resolve.
+
+### Survivor inventory — mutative_verbs.py (COMPLETE, 325 survivors)
+
+Key surviving locations grouped by function:
+
+**No-op / equivalent survivors (NumberReplacer, ExceptionReplacer):**
+- Lines 34, 46, 55: `ExceptionReplacer` on import/constant blocks — equivalent, no reachable path distinguishes exceptions at module level.
+- Lines 428:25, 428:31: `NumberReplacer` — constant substitutions that do not change test-observable behavior.
+- Lines 461:20, 523:25, 524:27: `NumberReplacer` in `_extract_embedded_shell_commands` — length constants; tests do not exercise boundary values precisely.
+
+**Logic gaps in `_mkdir_targets_sensitive_path`:**
+- Line 657:23 `ReplaceFalseWithTrue` — default guard; needs a test calling the function when no sensitive path is involved.
+- Lines 659:12, 663:17: comparison operator variants — loop boundary conditions not precisely tested.
+- Lines 665:12, 677:12: `ReplaceContinueWithBreak` — early-exit vs full-scan semantics untested.
+- Lines 667:11, 675:34, 675:43: `AddNot` / `ReplaceOrWithAnd` — compound conditions in inner loop.
+
+**Logic gaps in `_scan_dangerous_flags`:**
+- Lines 877-912: multiple `ReplaceComparisonOperator_Eq_*` and `ReplaceAndWithOr` survivors — the flag scanning loop's boundary conditions (length comparisons, multi-token flag matching) have weak assertions.
+
+**Logic gaps in `detect_mutative_command`:**
+- Lines 1013, 1193, 1238-1240: `ReplaceOrWithAnd` — conditional branches in the main detection path lack tests that distinguish `or` from `and` behavior.
+- Lines 1025, 1156, 1211, 1520, 1530: `ReplaceFalseWithTrue` — return-false branches never exercised.
+- Lines 1048, 1069, 1102, 1119: `ReplaceComparisonOperator_NotEq_*` — equality checks on verb category constants; many operator variants survive because tests do not assert on near-miss commands.
+
+**Logic gaps in `_layer3_length_check`:**
+- Lines 1986-1992: `ZeroIterationForLoop`, `ReplaceComparisonOperator_*`, arithmetic operator variants — the Layer 3 pipeline length analysis has broad operator survival.
+
+**Other functions with survivors:**
+- `split_camel_case` (lines 932): boundary comparisons weak.
+- `_is_subcommand_identifier` (lines 983-986): ReplaceFalseWithTrue survivors.
+- `_extract_python_payload` (lines 1659-1661): guard condition and index constants.
+- `_read_script_content` (lines 1729): ExceptionReplacer — exception handling paths untested.
+- `_check_script_file` (lines 1770-1784): comparison and logic operators.
+- `_classify_script_content_by_regex` (lines 1821-1828): guard and return-value mutations.
+- `_check_inline_code` (lines 1892-1910): guards and loop iteration.
+
+**Full line-level survivor list:** see `tool-results/b55872def.txt` (persisted output) for all 325 entries.
+
+### Survivor inventory — blocked_commands.py (COMPLETE, 58 survivors)
+
+Key surviving locations:
+
+**No-op / equivalent:**
+- Line 74:11 `ExceptionReplacer` on `_read_only_base_cmds` — exception path unreachable in tests.
+- Lines 703:8 (x2): `NumberReplacer` in `_has_unquoted_separator` — index constants.
+
+**Logic gaps in `SemanticBlockedRule` / `matches`:**
+- Line 87:18 `ReplaceTrueWithFalse` — boolean default value in dataclass field.
+- Line 96:22 `ReplaceTrueWithFalse` on `SemanticBlockedRule.matches` default.
+- Line 99:51 `AddNot` — guard negation in `matches`.
+- Lines 111:23, 111:34: `AddNot` and `ReplaceComparisonOperator_Eq_*` — the comparison against 0 at the conclusion of the match chain; 6 operator variants survive because tests do not probe near-miss lengths.
+
+**Logic gaps in `is_blocked_command`:**
+- Line 596:19 `ReplaceOrWithAnd` — short-circuit join of blocking conditions.
+- Lines 622:50, 623:23, 625:24: loop body iteration control — ZeroIterationForLoop, AddNot on guard, ReplaceBreakWithContinue.
+
+**Logic gaps in `_is_false_positive_carrier`:**
+- Lines 685:16 (x3), 685:25: comparison operator mutations and `ReplaceAndWithOr` — boolean composition in false-positive carrier detection.
+
+**Logic gaps in `_has_unquoted_separator`:**
+- Lines 705-718: extensive comparison operator and arithmetic operator survivors — the quote-state scanner has many index arithmetic mutations that survive because tests use only simple unquoted inputs without exercising the boundary counting precisely.
+
+### approval-grants.sqlite — PARTIAL (513/653, run active)
+
+Status at snapshot: **still advancing** (confirmed — count grew from 488 to 513 in ~15 minutes while this evidence was being collected; cosmic-ray PID 429547 is live).
+
+Partial score: **~26.67% killed** (135/511 competent mutants killed). This is a preliminary figure; 140 mutants remain untested. The final score will be lower-bounded by the partial result and could shift significantly as the high-density untested region resolves.
+
+If the run completes naturally, re-run `uv run cr-rate approval-grants.sqlite` from `gaia/` to get the final survival rate. No new `cosmic-ray exec` is needed — the run is already in progress.
+
+If the run dies before completing the remaining 140 mutants, the command to continue (requiring a new T3 approval) would be:
+
+```bash
+# From gaia/ — do NOT re-init (that would wipe partial results)
+# T3 — requires approval
+uv run cosmic-ray exec tests/evals/mutation-approval-grants.toml approval-grants.sqlite
+```
+
+---
+
 ## FOLLOW-UP — Full-core inventory (deferred)
 
 **Modules not yet covered by mutation testing:**

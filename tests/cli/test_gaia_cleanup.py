@@ -519,7 +519,6 @@ class TestCleanSettingsLocalJson(unittest.TestCase):
             path = self._write_local(root, {
                 "agent": "gaia-orchestrator",
                 "env": {
-                    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
                     "MY_USER_VAR": "keepme",
                 },
@@ -537,6 +536,7 @@ class TestCleanSettingsLocalJson(unittest.TestCase):
 
             # Gaia keys gone
             self.assertNotIn("agent", data)
+            # AGENT_TEAMS is not managed by Gaia so is never injected or removed
             self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))
             self.assertNotIn("CLAUDE_CODE_DISABLE_AUTO_MEMORY", data.get("env", {}))
             # User env var preserved
@@ -548,16 +548,18 @@ class TestCleanSettingsLocalJson(unittest.TestCase):
             # Wholly-user top-level key preserved
             self.assertEqual(data["userOnlyKey"], {"nested": True})
 
-    def test_user_overridden_env_value_preserved(self):
-        """If the user changed a Gaia env var's value, do not remove it."""
+    def test_unmanaged_env_var_untouched(self):
+        """AGENT_TEAMS is no longer managed by Gaia -- cleanup never touches it."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = self._write_local(root, {
                 "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "0"},
             })
             result = _clean_settings_local_json(root, dry_run=False)
+            # File has no Gaia-managed content, so nothing found/removed
             self.assertFalse(result["found"])
             data = json.loads(path.read_text())
+            # Value passes through completely untouched
             self.assertEqual(data["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"], "0")
 
     def test_gaia_only_file_removed(self):
@@ -566,7 +568,6 @@ class TestCleanSettingsLocalJson(unittest.TestCase):
             path = self._write_local(root, {
                 "agent": "gaia-orchestrator",
                 "env": {
-                    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
                 },
                 "permissions": {"allow": ["Bash(*)", "Read"], "deny": [], "ask": []},

@@ -1,0 +1,45 @@
+AC-2 — Golden security-decision catalog with human-curated oracle (brief #89)
+==============================================================================
+Date: 2026-06-27
+Status: PARTIAL — first concrete artifact landed (structural green); live
+        replay oracle DEFERRED to follow-up (hook_log_replay backend missing).
+
+Artifacts created
+-----------------
+- tests/evals/catalogs/security_decisions.yaml   (18 cases, curated oracle)
+- tests/evals/test_security_golden.py            (4 structural tests + 1 xfail)
+
+Oracle property (why this is an oracle, not a regression detector)
+------------------------------------------------------------------
+Every expected_decision is curated by a human against security-tiers policy
+and the enforcement anchors in hooks/modules/security/{tiers,mutative_verbs,
+blocked_commands,approval_grants}.py. It is NOT extracted from a recorded log
+(contrast tools/gaia_simulator extractor.py:330 expected_decision=outcome
+['decision'], which makes that path a regression detector). Decision
+vocabulary = Claude Code PreToolUse permissionDecision {allow, ask, deny}.
+Coverage: T0 read-only, T1/T2 validate/plan, local-safe writes (git add/commit,
+gaia ac add), T3 mutations (git push, kubectl/terraform apply, gaia approvals
+approve), consent-reducing exception (gaia approvals revoke -> allow),
+flag-dependent (curl -X POST, git branch -D), dangerous composition
+(curl | sh), and never-approvable deny (rm -rf /, dd of=/dev/sda).
+
+Command run (pytest tests/evals/test_security_golden.py -q)  -> exit 0
+-----------------------------------------------------------------------
+tests/evals/test_security_golden.py::TestGoldenCatalogStructure::test_catalog_loads PASSED
+tests/evals/test_security_golden.py::TestGoldenCatalogStructure::test_case_ids_unique PASSED
+tests/evals/test_security_golden.py::TestGoldenCatalogStructure::test_every_case_has_curated_decision PASSED
+tests/evals/test_security_golden.py::TestGoldenCatalogStructure::test_all_decision_classes_present PASSED
+tests/evals/test_security_golden.py::TestGoldenLiveReplay::test_decisions_match_oracle XFAIL
+========================= 4 passed, 1 xfailed in 0.11s =========================
+
+FOLLOW-UP (deferred, NOT done in this pass)
+-------------------------------------------
+The brief specifies backend hook_log_replay + contract grader, asserting the
+LIVE permissionDecision against the curated expected_decision. Blockers:
+  1. hook_log_replay is in catalog.VALID_BACKENDS but is NOT implemented in
+     tests/evals/runner.py (only subprocess / routing_sim / FakeBackend exist).
+  2. expected_decision is not yet a field on catalog.CaseModel (load_catalog
+     silently drops it).
+TestGoldenLiveReplay is a strict xfail asserting hasattr(CaseModel,
+"expected_decision"); it flips to xpass exactly when the field + backend land,
+signalling AC-2 is fully closeable. Until then, AC-2 status = pending.
