@@ -3123,11 +3123,41 @@ class TestActivateBehavioralM1Final:
         # The 2-part split parsed the verb 'push' (not 'unknown'/empty).
         assert captured["danger_verb"] == "push"
 
+    def test_verb_parse_three_parts_not_ge_two(self, monkeypatch):
+        """Line 1426 `len(parts) == 2` vs Eq->GtE. An operation containing
+        'intercepted:' TWICE splits into 3 parts. Under `== 2` the verb is NOT
+        parsed (danger_verb stays '' -> fallback first-token). Under `>= 2` the
+        3-part split WOULD parse parts[1] as the verb. Discriminator: assert the
+        first build call's danger_verb is '' (empty) for a 3-part operation, which
+        `>= 2` would violate by threading parts[1]. (Eq->LtE is EQUIVALENT here:
+        len(parts) is always >= 2 under the 'intercepted:' guard, so `<= 2` and
+        `== 2` agree for every reachable length -- documented in equivalents.)"""
+        payload = {
+            "operation": "MUTATIVE intercepted: x intercepted: y",
+            "exact_content": "git push origin main",
+        }
+        _AC1Driver.drive(monkeypatch, payload)
+        self._semantic_applied(monkeypatch)
+        captured = {}
+        import modules.security.approval_scopes as _scopes
+        real_build = _scopes.build_approval_signature
+        def _spy(command, **k):
+            captured.setdefault("danger_verb", k.get("danger_verb"))
+            return real_build(command, **k)
+        monkeypatch.setattr(_scopes, "build_approval_signature", _spy)
+        activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        # 3 parts: `== 2` False -> verb '' ; `>= 2` True -> would be 'x'.
+        assert captured["danger_verb"] == ""
+
     def test_file_path_insert_status_neq_applied(self, monkeypatch):
         """Line 1392 `result_fp.get('status') != 'applied'` vs NotEq->Gt/IsNot.
-        A status that EQUALS 'applied' must NOT be treated as failure (proceeds to
-        ACTIVATED). With the FILE payload and insert returning applied, pin
-        ACTIVATED; a flip would wrongly enter the failure branch."""
+        A status EQUAL to 'applied' must NOT be treated as failure (-> ACTIVATED).
+        The status is built at RUNTIME ('app'+'lied') so it is a DISTINCT object
+        from the interned literal: discriminates NotEq->IsNot (`!=` False -> proceed
+        vs `is not` True -> wrongly fail). With Gt covered by the sub-'applied'
+        test, this brackets all three flips."""
+        runtime_applied = json.loads('"applied"')  # non-interned (see above)
+        assert runtime_applied == "applied"
         _AC1Driver.drive(monkeypatch, self._FILE)
         monkeypatch.setattr(
             "modules.security.approval_grants.build_file_path_signature",
@@ -3135,16 +3165,18 @@ class TestActivateBehavioralM1Final:
         )
         monkeypatch.setattr(
             "gaia.store.writer.insert_file_path_grant",
-            lambda **k: {"status": "applied"},
+            lambda **k: {"status": runtime_applied},
         )
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
     def test_file_path_insert_failure_status_surfaced(self, monkeypatch):
-        """Other side of line 1392: a NON-applied file-path insert status must
-        yield ACTIVATION_ERROR (the != branch fires). Brackets the != against
-        Gt/IsNot so neither flip can hide a real insert failure."""
+        """Other side of line 1392 `status != 'applied'` vs NotEq->Gt/IsNot.
+        Discriminator: a status sorting BEFORE 'applied' ('aborted': 'ab'<'ap')
+        makes `!=` True (ERROR) but `>` False (would NOT enter the failure branch
+        and would wrongly report ACTIVATED). Pin ERROR for a sub-'applied' status."""
+        assert "aborted" < "applied"
         _AC1Driver.drive(monkeypatch, self._FILE)
         monkeypatch.setattr(
             "modules.security.approval_grants.build_file_path_signature",
@@ -3152,7 +3184,7 @@ class TestActivateBehavioralM1Final:
         )
         monkeypatch.setattr(
             "gaia.store.writer.insert_file_path_grant",
-            lambda **k: {"status": "rejected", "reason": "nope"},
+            lambda **k: {"status": "aborted", "reason": "nope"},
         )
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
         assert result.success is False
@@ -3175,13 +3207,20 @@ class TestActivateBehavioralM1Final:
     def test_already_approved_status_neq_approved(self, monkeypatch):
         """Line 1279 `current_row.get('status') != 'approved'` vs NotEq->Gt/IsNot.
         When approve() raises ValueError (already processed) AND get_by_id reports
-        status 'approved', the function must NOT abort (the != is False) and should
-        still reach the grant-insert success. A flip would abort with ERROR. Pin
-        ACTIVATED on the already-approved-but-recoverable path."""
+        a status EQUAL to 'approved', the function must NOT abort (`!=` False) and
+        proceeds to ACTIVATED. The status is built at RUNTIME ('appr'+'oved') so it
+        is a DISTINCT object from the interned 'approved' literal: this is the only
+        input that discriminates NotEq->IsNot, since `value != 'approved'` is False
+        (proceed) while `value is not 'approved'` is True (would wrongly abort)."""
+        # json.loads yields a NON-interned string (mirrors DB/JSON status reads),
+        # defeating CPython's compile-time constant folding that would re-intern
+        # a literal-concatenation. This is what makes `is not` observable.
+        runtime_approved = json.loads('"approved"')
+        assert runtime_approved == "approved"
         _AC1Driver.drive(
             monkeypatch, self._SEMANTIC,
             approve_raises=ValueError("already approved"),
-            get_by_id_row={"status": "approved"},
+            get_by_id_row={"status": runtime_approved},
         )
         self._semantic_applied(monkeypatch)
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
@@ -3189,14 +3228,17 @@ class TestActivateBehavioralM1Final:
         assert result.status == ACTIVATION_ACTIVATED
 
     def test_already_approved_other_status_aborts(self, monkeypatch):
-        """Other side of line 1279: when approve() raises AND get_by_id reports a
-        status OTHER than 'approved' (e.g. 'pending'), the != is True and the
-        function aborts with ACTIVATION_ERROR. Brackets the != so Gt/IsNot flips
-        cannot collapse the two outcomes."""
+        """Other side of line 1279 `status != 'approved'` vs NotEq->Gt/IsNot.
+        Discriminator: a status that sorts BEFORE 'approved' ('aborted': 'ab'<'ap')
+        makes `!= 'approved'` True (abort -> ERROR) but `> 'approved'` False (do
+        NOT abort -> would proceed to ACTIVATED). 'is not' on a non-interned dynamic
+        string is True (abort) -- but the Gt flip is the live discriminator. Pin
+        the abort (ERROR) for a sub-'approved' status after approve() raises."""
+        assert "aborted" < "approved"
         _AC1Driver.drive(
             monkeypatch, self._SEMANTIC,
             approve_raises=ValueError("transition failed"),
-            get_by_id_row={"status": "pending"},
+            get_by_id_row={"status": "aborted"},
         )
         self._semantic_applied(monkeypatch)
         result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
