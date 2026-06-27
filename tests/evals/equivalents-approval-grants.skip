@@ -36,3 +36,95 @@ a4a8e39b8263452ca1d16cbee560d5e2
 a56cdc0d9e984a2e92b4bf2a38b70d98
 e3156f4dfb234d22bda0791d2045c3f5
 bc4e015c64e34c81948c07766028da2d
+# Category E2: keyword-only marker * mis-parsed as binary operator (2 mutants)
+# create_command_set_grant line 1546 (kw-only marker Mul→Div)
+b428c87aed9a4b43af0c5eacb70289dc
+# match_command_set_grant line 1620 (kw-only marker Mul→Div)
+2b5e69e882f54cb9a517c94124054eab
+# Category E3: log-only [:N] slice / format-argument NumberReplacer (50 mutants)
+# check_approval_grant line 506 (command[:80], approval_id[:16], or chain)
+08254cd31ee1400baa5bf12cc7f298a0
+924b67b37979492b9e3678e2590e6343
+4b700bb65dba414ca2ea95ff941b0432
+3d46fdb2502a4f44877444ecc9e4fb53
+4d8740745b1d4093a3c992672db7e0a8
+# consume_grant lines 545,550 (command[:80], approval_id[:16])
+edd3f40307a746cc9237ecc2b65994b7
+f933984bfe504553a28e98b6804e21b9
+027aa989f98f4713a6c4e435c6b6eef6
+fe588bc6447446aa8c26aa27185d3139
+0040edaf6a094f01b07709d795b0fec4
+fda13a8011f3495abe4a25b6cdafd705
+# consume_session_grants lines 615,620 (approval_id[:16])
+469fa8b68c11442b99b92916b1efd66f
+51caa09e537b496ebd32371ea05b7d6a
+f69286d88375447cbe9eca51b580aea9
+9a3935d2b4394615a70d7cf682d36727
+# confirm_grant lines 653,662,667 (command[:80], approval_id[:16])
+aef5ff1764b34adabad8387d60523610
+01a71ff6e1fb40ea9fe0f3d642fb7de9
+bf077f282aab4ab28825b40a51951ec2
+9f23f88efdc0477291a3638ee2db2712
+92bf0291f8d642fcaf874e4c662ec94d
+63ed529b1209444a91aef9b0a1a803f0
+c72623899dc64f73b2cf950499fdaeb8
+74f913a36e7d40d6bc09e089b8ca9266
+# find_pending_for_command line 855 (command[:80])
+a869075afc5c40d691dec3f6d4ccaf83
+b09df88999ed4eaa906ec17173b0fd7e
+# create_command_set_grant line 1606 (approval_id[:12] logger.info)
+c7fc471a5d5246f9a5de49cc3dcc186c
+05bf57a0a80f4d939829ed1dee7fd765
+# match_command_set_grant line 1707 (retried_command[:80], approval_id[:12])
+59ad69e0f0ac4bf19c45a262106cd66e
+0004997ecce94e8cba4aa4b9794c182f
+cc89c0081c4c42689df7a502505fc9d8
+f51c113787d046849ee64c170249668e
+# activate_db_pending_by_prefix lines 1311,1322,1325,1406,1441,1480
+b59a629de3b04473bb51cb577941c72d
+637e4e87278545a9877e96cb6f14064c
+b51a989ac4bb46d8b9bc27072908da03
+9891ad4aad1042e398ba0d67ee0769cb
+afceeaafadcc4eef856931e4baaa4af2
+605db82e4bd74598ab2f65f25725af9d
+ee4ad789e32e42b5baff9923ce3edfcd
+1bdcc1e9d15d4653921ca083abd7c3aa
+52da3e88541f4c8db424cdcddb2a558f
+5c8bee0d27ba4d1f8eb7b7567c5eaea2
+09e08800c02c4e4e8ee3783ca45b9d41
+24e5ace20d3e47be84c843c57235d85e
+f5e4718da0224fdc86c12b925828703a
+597521aa8387492c95131717e99a4647
+52660f367f8c43b696c41d780601dfd2
+89eabfb491264692a3c6963c3c41a55b
+286cdb818832426e817a4d90f5a3f0f1
+db2c654623d94a96a32555cb3a3d1efb
+# load_pending_by_nonce_prefix line 358 (candidates[0].get("nonce","?")[:12])
+f385964d154a4b648598b8f4d0bba876
+13a6dd3a73cd4f278b1893e296bd20d2
+# Category E4: .get(key, DEFAULT) default-NumberReplacer where key always present (4 mutants)
+# get_pending_approvals_for_session line 810 (d.get("timestamp", 0))
+4eec568e154d47b1b2f1609d703fcabe
+e5a274b0100140a79c224e9b8f494d27
+# load_pending_by_nonce_prefix line 355 (d.get("timestamp", 0))
+4785c396ce65430eaf4dee3402f1c14b
+b7b0a33979ac44dabc9fa04f3b7e1c6d
+# Category E5: module-init constants overwritten before first read (3 mutants)
+# _last_cleanup_time = 0.0 line 142 (Number 0.0→N)
+713e04066c924f8db90495f392cd1299
+ed6f765fcddd4735a2d5bde1aa8ef53e
+# _last_check_found_expired = False line 258 (False→True)
+4ba3a150d6c94e84b8017e6bb2ba8568
+# Category E6: index [-1] vs [1] coincide under guard (3 mutants)
+# _db_row_to_pending_dict line 746 (rsplit exactly 2 parts)
+36c687e6e8674fb195e014d2f2f34ebe
+d2c506f9349d414cbd0b6872fa812c61
+58b9323095424e74aec3c51f492f48e6
+# Category E7: exc_info / best-effort except-handler with no reachable raising path (4 mutants)
+# activate_db_pending_by_prefix line 1515 (exc_info=True→False)
+cf538bff281545be9713848e544bd93a
+# capture_environment_snapshot line 439 (except Exception narrowed)
+869f0f871e694730ab870214995e1ab2
+# module-level line 374 (_ENV_SNAPSHOT_TIMEOUT_SECONDS 2→3)
+287e196d9d174f0aa04ccfc2e9131d64
+2d88a05a3b094bd8b180772ce8a5e122
