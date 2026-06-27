@@ -664,6 +664,26 @@ class TestLayer3LengthCheck:
         # whole command measured: len("node " + 600 y) = 5 + 600 = 605
         assert "605 chars" in r.reason
 
+    def test_long_flag_exact_count_pins_slice_arithmetic(self):
+        # The `idx + len(flag) + 2` slice survives a 2-char `-c` probe because
+        # `len("-c") * 2`, `** 2`, `| 2`, `^ 2` happen to coincide with `+ 2`
+        # at flag-length 2 (or collapse into the 507-char window). A SIX-char
+        # flag (`node --eval`) breaks every coincidence:
+        #   idx=4, len("--eval")=6  ->  offset = 4 + 6 + 2 = 12, code_portion 507
+        #   *2  -> 4 + 12 = 16  -> 503 chars   (Mul)
+        #   **2 -> 4 + 36 = 40  -> 479 chars, NOT > 500 -> is_mutative False (Pow)
+        #   |2  -> 4 + (6|2)=10 -> 509 chars   (BitOr)
+        #   ^2  -> 4 + (6^2)= 8 -> 511 chars   (BitXor)
+        # Pinning is_mutative AND the exact 507 count kills all four.
+        payload = "x" * 505
+        cmd = 'node --eval "%s"' % payload
+        r = self._l3(cmd, base="node")
+        assert r.is_mutative is True
+        assert r.verb == "heuristic-long-code"
+        assert r.reason == (
+            "Inline code is unusually long (507 chars > 500 limit)"
+        )
+
 
 # ===========================================================================
 # _find_first_non_flag -- 10 survivors.
@@ -931,6 +951,71 @@ class TestBuildT3BlockResponse:
         )
         resp = mv.build_t3_block_response("kubectl apply -f x", danger)
         assert "Dangerous flags detected" not in resp["message"]
+
+
+# ===========================================================================
+# _check_inline_code -- L1892/L1894/L1910 survivors.
+#   Layer-1 guard `if _is_blocked_command is not None:` (L1892 AddNot,
+#   IsNot_Is) and the per-literal `for literal in embedded_strings:` (L1894
+#   ZeroIterationForLoop): all three disable Layer 1, which catches a blocked
+#   shell command embedded as a STRING LITERAL that no Layer-2b API pattern
+#   matches (dd/mkfs). With Layer 1 live the verb is 'embedded-blocked-cmd';
+#   disabling it falls through to the safe 'inline-code' terminal.
+#   Layer-2 guard `base_cmd in _PYTHON_INTERPRETERS and _analyze_python_inline
+#   is not None` (L1910 And->Or): `_analyze_python_inline` is always imported
+#   in-process, so `or` makes the AST block run for a NON-python interpreter.
+#   A `node -c <subprocess payload>` is classified by Layer-2b (verb
+#   'process-module', confidence 'medium') under the original `and`; under `or`
+#   the AST lane would claim it (verb 'subprocess-run', confidence 'high').
+# ===========================================================================
+class TestCheckInlineCode:
+    def test_embedded_blocked_literal_caught_by_layer1(self):
+        # 'dd if=/dev/zero of=/dev/sda' is blocked by blocked_commands but is
+        # NOT one of the Layer-2b API keyword patterns, so it can ONLY be
+        # caught by Layer 1 (string-literal extraction). Kills the AddNot /
+        # IsNot_Is on the Layer-1 guard and the ZeroIterationForLoop on the
+        # per-literal loop -- each disables Layer 1, dropping to safe inline.
+        cmd = 'node -e "dd if=/dev/zero of=/dev/sda"'
+        r = mv._check_inline_code(cmd, "node", "unknown")
+        assert r.is_mutative is True
+        assert r.verb == "embedded-blocked-cmd"
+        assert r.confidence == "high"
+        assert "blocked shell command" in r.reason
+
+    def test_non_python_interpreter_skips_ast_lane(self):
+        # base_cmd 'node' is NOT a python interpreter, so under the original
+        # `and` guard the AST lane is skipped and Layer-2b classifies the
+        # payload (verb 'process-module', confidence 'medium'). The And->Or
+        # mutant would enter the AST lane (verb 'subprocess-run', high). Pin
+        # the Layer-2b verb + confidence to kill the And->Or.
+        cmd = 'node -c "import subprocess\nsubprocess.run([\'ls\'])"'
+        r = mv._check_inline_code(cmd, "node", "unknown")
+        assert r.is_mutative is True
+        assert r.verb == "process-module"
+        assert r.confidence == "medium"
+
+
+# ===========================================================================
+# _check_script_file -- L1784 survivors (Delete_Not, AddNot on
+# `if not ast_result.parse_failed:`). A clean-parsing, non-dangerous PYTHON
+# script returns the AST-analysis safe result ("(AST analysis)" reason).
+# Inverting the guard to `if parse_failed:` drops through to the regex lane,
+# whose safe terminal reads "has no mutative or blocked line" instead. Pinning
+# the "(AST analysis)" reason kills both unary mutants.
+# ===========================================================================
+class TestCheckScriptFilePythonLane:
+    def _run(self, tmp_path, body, name="s.py"):
+        p = tmp_path / name
+        p.write_text(body, encoding="utf-8")
+        return detect_mutative_command(f"python3 {p}")
+
+    def test_clean_python_script_uses_ast_analysis(self, tmp_path):
+        r = self._run(tmp_path, "x = 1\nprint(x + 2)\n")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "script-file"
+        assert "(AST analysis)" in r.reason
+        assert "no mutative invocation" in r.reason
 
 
 # ===========================================================================
