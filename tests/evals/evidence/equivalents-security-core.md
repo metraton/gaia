@@ -167,6 +167,87 @@ input that reaches this line distinguishes them.
 
 ---
 
+## AC-5 CIERRE FINAL — residual equivalents proven this session (E8–E12)
+
+GRIND-TOTAL pass over the 33 survivors not previously in the skip-file. Each
+equivalent below was proven by **hand-applying the exact cosmic-ray mutant** to
+`approval_grants.py` and observing the test suite stay green (no honest input
+distinguishes it), then reverting. This is the exhaustive-proof bar, not a
+log-only hand-wave.
+
+### Category E8 — SQL pre-filter makes an in-Python re-check a constant-False branch
+
+`match_command_set_grant` line 1683 `if grant.get("scope") != "COMMAND_SET":`.
+The grants come from `gaia.store.writer.list_command_set_grants_agnostic`, whose
+SQL is `SELECT * FROM approval_grants WHERE scope = 'COMMAND_SET' AND status = ?`.
+Every returned row therefore has `scope == "COMMAND_SET"`, so the Python re-check
+is **always False** (never `continue`s). Operator flips:
+
+| Operator | Mutant | Why equivalent | job_id |
+|----------|--------|----------------|--------|
+| NotEq→Gt | `scope > "COMMAND_SET"` | equal strings → `>` is False, like `!=` | 6de4c76e |
+| NotEq→Lt | `scope < "COMMAND_SET"` | equal strings → `<` is False, like `!=` | cdcb2e87 |
+| NotEq→Is | `scope is "COMMAND_SET"` | the sqlite value is **non-interned**, so `is` is False, like `!=` | 2a7b0e10 |
+| ContinueWithBreak (1684) | `continue`→`break` | line 1684 is unreachable (1683 always False) | ba66c609 |
+
+**NotEq_Is puzzle — VERDICT: genuine equivalence (cause c), NOT a harness bug.**
+The harness reported NotEq_Is SURVIVED. I suspected a fidelity bug, but the
+minimal experiment settled it: cosmic-ray's `ReplaceComparisonOperator_NotEq_Is`
+substitutes `!=` with **`is`** (not `is not`). Hand-applying
+`grant.get("scope") is "COMMAND_SET"` and running the COMMAND_SET match tests:
+they **PASS** — because the sqlite-sourced scope string is non-interned, so `is`
+is False exactly like `!=`. (A separate hand-test confirmed that `is not` — which
+the operator does NOT produce — *would* kill it, which is what misled the first
+analysis.) The harness is faithful; new tests ARE re-collected per run (verified
+by the Eq_Is 6/7 and Or→And 13/14 kills landing). No harness fix needed.
+
+### Category E9 — fast-path boundary coincides with the wall-clock fall-through
+
+`_is_ttl_expired` line 177 `if timestamp == 0: return True` (NumberReplacer
+0→±1). For `timestamp == 0` the fall-through `(time.time() - 0) / 60` is ≈ 2.9e7
+minutes, which exceeds any honest `ttl_minutes`, so it ALSO returns True.
+Distinguishing the fast-path from the fall-through would require
+`ttl_minutes >= time.time()/60` (~55 years) — unreachable. Proven: all 28
+ttl/expiry tests green under `timestamp == 1`. job_id: ad6ce3d8.
+
+### Category E10 — index value used only as a truthiness check, never read
+
+`activate_db_pending_by_prefix` line 1175 `command = command_set_items[0]["command"]`
+(NumberReplacer [0]→[1]/[-1]). Reached only when `is_command_set and not command`.
+In the `is_command_set` path `command` only gates the `if not command` guard
+(both set items are non-empty command strings → truthy either way), and the
+COMMAND_SET branch (line 1299) returns without ever using `command` for the
+signature. Proven: the full activation suite (295 tests) is green under
+`command_set_items[1]`. job_ids: aedf3ee1, ea36340d.
+
+### Category E11 — dead local variable
+
+`activate_db_pending_by_prefix` line 1458
+`verbs = [signature.verb] if signature.verb else ([danger_verb.lower()] if danger_verb else ["write"])`.
+`verbs` has **exactly one occurrence** in the module (assigned, never read).
+Both AddNot flips (on `if signature.verb` and the inner `if danger_verb`) change
+only the value of a dead variable. Proven: 1313 security tests green under both
+flips applied simultaneously. job_ids: 763b4d7f, da2d5e14.
+
+### Category E12 — log-only branch / log argument / interned-name comparison
+
+These mutate a constant or branch whose ONLY consumer is a `logger.*` call (or an
+interned attribute). An honest test asserts observable behaviour (return / state /
+persisted row), never log text, so none is distinguishable.
+
+| Site | Mutant | Why equivalent | job_ids |
+|------|--------|----------------|---------|
+| `consume_grant` 542 | `if consumed:` AddNot | gates only a log line; `return consumed` identical | b9394bf3 |
+| `cleanup_expired_grants` 713 | `if cleaned:` AddNot | gates only a log line; `return cleaned` identical | f22e69b4 |
+| `check_approval_grant_for_file` 978 | `str(row.get("approval_id",""))[:16]` NumberReplacer ×2 | slice bound / `.get` default inside `logger.info` arg | 43288238, f2bd0b18 |
+| `create_command_set_grant` 1579 | `len(command_set) if command_set else 0` AddNot + NumberReplacer ×2 | entirely inside the `logger.error` argument | 01e81148, 8f4d7202, 9c506393 |
+| `load_pending_by_nonce_prefix` 358 | `candidates[0].get("nonce","?")[:12]` NumberReplacer | `logger.info` argument only | 079c60e3 |
+| `activate_db_pending_by_prefix` 1324 | `(originating_session or "")[:12]` Or→And | `logger.info` argument only | 287684e7 |
+| `_get_grants_dir` 252 | `_grants_dir_created = False` ReplaceFalseWithTrue | module-init memoization flag; `mkdir(exist_ok=True)` idempotent and any state-resetting test masks the init before the only (first-call) observable read | ffe55f16 |
+| `activate_db_pending_by_prefix` 1212 | `_fp_exc.__class__.__name__ == "ChainTamperError"` Eq→Is | `__name__` is interned by CPython, so `is` behaves like `==` | 094def26 |
+
+---
+
 ## CANDIDATES UNDER VERIFICATION (NOT yet excluded)
 
 The following survivors are **provisionally** behavioral and are being killed by
