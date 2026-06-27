@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast, cosmic-ray-faithful mutation-kill harness for approval_grants.
+"""Fast, cosmic-ray-faithful mutation-kill harness (generic, any module).
 
 PURPOSE
 -------
@@ -9,18 +9,19 @@ must be FAITHFUL to cosmic-ray: same mutants, same "kill" semantics. It is NOT
 a reimplementation -- it reuses cosmic-ray's own machinery:
 
   * Mutation specs are read from the cosmic-ray session DB
-    (tests/evals/approval-grants.sqlite, table `mutation_specs`), which is the
-    authoritative inventory cosmic-ray itself produced via `cosmic-ray init`.
+    (table `mutation_specs`), which is the authoritative inventory cosmic-ray
+    itself produced via `cosmic-ray init`.
   * Each mutant is applied + tested via cosmic_ray.mutating.mutate_and_test --
     the exact function at the heart of `cosmic-ray exec`. This guarantees
     byte-identical mutants and identical KILLED/SURVIVED/INCOMPETENT outcomes.
-  * The test-command is read from the per-module toml
-    (tests/evals/mutation-approval-grants.toml), so it tracks whatever the
-    loop configures there.
+  * The test-command is read from the per-module toml (--toml), so it tracks
+    whatever the loop configures there.
+  * The module to mutate is derived from `module-path` in the toml (under
+    [cosmic-ray]) -- no hardcoded module. Override with --module if needed.
 
 It does NOT run `cosmic-ray exec` (T3). All work is local: a process pool of
 workers, each operating in its own isolated clone of hooks/ + tests/ so that
-concurrent on-disk mutation of approval_grants.py never collides. Cloning and
+concurrent on-disk mutation of the target module never collides. Cloning and
 cleanup are done in-process via shutil (not shell verbs), so the harness itself
 triggers no T3 approval.
 
@@ -36,10 +37,17 @@ The kill_rate matches cosmic-ray's `cr-rate`: killed / (total - incompetent).
 
 USAGE
 -----
-    uv run python tests/evals/mutkill_approval_grants.py            # full, parallel
-    uv run python tests/evals/mutkill_approval_grants.py -j 8       # 8 workers
-    uv run python tests/evals/mutkill_approval_grants.py --limit 40 # quick smoke
-    uv run python tests/evals/mutkill_approval_grants.py --operators core/AddNot
+    # approval_grants (original use-case -- defaults still work):
+    uv run python tests/evals/mutkill_approval_grants.py --session approval-grants.sqlite --toml tests/evals/mutation-approval-grants.toml
+
+    # blocked_commands (new -- module derived from toml):
+    uv run python tests/evals/mutkill_approval_grants.py --session blocked-commands.sqlite --toml tests/evals/mutation-blocked-commands.toml
+
+    # quick smoke:
+    uv run python tests/evals/mutkill_approval_grants.py --session blocked-commands.sqlite --toml tests/evals/mutation-blocked-commands.toml --limit 3 --quiet
+
+    # explicit module override:
+    uv run python tests/evals/mutkill_approval_grants.py --session foo.sqlite --toml tests/evals/mutation-foo.toml --module hooks/modules/security/foo.py
 """
 
 from __future__ import annotations
@@ -67,13 +75,12 @@ _SESSION_ROOT = REPO_ROOT / "approval-grants.sqlite"
 _SESSION_LOCAL = HERE / "approval-grants.sqlite"
 DEFAULT_SESSION = _SESSION_ROOT if _SESSION_ROOT.exists() else _SESSION_LOCAL
 DEFAULT_TOML = HERE / "mutation-approval-grants.toml"
-MODULE_REL = "hooks/modules/security/approval_grants.py"
 
 # A worker clone must reproduce cosmic-ray's environment: it runs pytest with
 # cwd = repo root, where `import gaia` (the ./gaia source package) and the
 # tests/ fixtures resolve via cwd on sys.path. So the clone mirrors the whole
 # working tree EXCEPT heavy/irrelevant dirs and the .claude security boundary.
-# The mutated file path stays at MODULE_REL inside the clone.
+# The mutated file path stays at module_rel (derived from toml) inside the clone.
 CLONE_IGNORE_DIRS = frozenset({
     "node_modules", ".venv", ".git", "dist", "mutants",
     "logs", ".pytest_cache", "__pycache__", ".claude",
@@ -132,6 +139,31 @@ def read_timeout(toml_path: Path, default: float = 30.0) -> float:
     except Exception:
         pass
     return default
+
+
+def read_module_path(toml_path: Path) -> str | None:
+    """Read module-path from the cosmic-ray per-module toml.
+
+    Returns the value of `[cosmic-ray] module-path` (a relative path such as
+    ``hooks/modules/security/approval_grants.py`` or a package directory such
+    as ``hooks/modules/security``), or None if the key is absent.
+    """
+    text = toml_path.read_text(encoding="utf-8")
+    try:
+        import tomllib  # py311+
+        data = tomllib.loads(text)
+        mp = data.get("cosmic-ray", {}).get("module-path")
+        if mp:
+            return str(mp)
+    except Exception:
+        pass
+    # Fallback: scan for `module-path = "..."`
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("module-path"):
+            _, _, rhs = s.partition("=")
+            return rhs.strip().strip('"').strip("'")
+    return None
 
 
 def load_specs(session_path: Path):
@@ -223,9 +255,14 @@ def _clone_repo_subset(dst: Path) -> None:
     )
 
 
-def _run_shard(shard, test_command: str, timeout: float, keep_clone: bool):
+def _run_shard(shard, test_command: str, timeout: float, keep_clone: bool,
+               module_rel: str):
     """Run a shard of mutation specs in an isolated clone. Returns list of
-    (job_id, operator_name, outcome_str)."""
+    (job_id, operator_name, outcome_str).
+
+    ``module_rel`` is the repo-relative path to the module being mutated,
+    derived from ``[cosmic-ray] module-path`` in the toml (or --module).
+    """
     # cosmic_ray must be importable inside the worker (uv-managed venv).
     from cosmic_ray.work_item import MutationSpec
     from cosmic_ray.mutating import mutate_and_test, TestOutcome
@@ -234,7 +271,7 @@ def _run_shard(shard, test_command: str, timeout: float, keep_clone: bool):
     results = []
     try:
         _clone_repo_subset(clone)
-        module_path = str(clone / MODULE_REL)
+        module_path = str(clone / module_rel)
         # Run tests from the clone root so relative path resolution in tests +
         # conftest binds to the clone's hooks/, not the live repo.
         prev_cwd = os.getcwd()
@@ -287,7 +324,11 @@ def main():
     ap.add_argument("--session", type=Path, default=DEFAULT_SESSION,
                     help="cosmic-ray session sqlite (read-only)")
     ap.add_argument("--toml", type=Path, default=DEFAULT_TOML,
-                    help="cosmic-ray per-module toml (for test-command/timeout)")
+                    help="cosmic-ray per-module toml (for test-command/timeout/module-path)")
+    ap.add_argument("--module", type=str, default=None,
+                    help="repo-relative path to the module to mutate "
+                         "(overrides module-path from toml; required when toml "
+                         "lacks a module-path key)")
     ap.add_argument("-j", "--jobs", type=int, default=min(8, os.cpu_count() or 4),
                     help="parallel workers (each gets an isolated clone)")
     ap.add_argument("--limit", type=int, default=0,
@@ -320,6 +361,19 @@ def main():
         raise SystemExit(f"session not found: {args.session}")
     if not args.toml.exists():
         raise SystemExit(f"toml not found: {args.toml}")
+
+    # Derive the module to mutate: --module wins; fall back to module-path in toml.
+    module_rel: str
+    if args.module:
+        module_rel = args.module
+    else:
+        mp = read_module_path(args.toml)
+        if not mp:
+            raise SystemExit(
+                f"Could not find module-path in {args.toml}. "
+                "Pass --module <repo-relative-path> explicitly."
+            )
+        module_rel = mp
 
     # Load equivalent-mutant exclusions (AC-5 skip list).
     skip_ids: set[str] = set()
@@ -354,7 +408,8 @@ def main():
     jobs = max(1, min(args.jobs, total))
     shards = _chunk(specs, jobs)
 
-    print(f"# mutkill_approval_grants harness", file=sys.stderr)
+    print(f"# mutkill harness", file=sys.stderr)
+    print(f"# module        : {module_rel}", file=sys.stderr)
     print(f"# session       : {args.session}", file=sys.stderr)
     print(f"# test-command  : {test_command}", file=sys.stderr)
     if skip_ids:
@@ -366,10 +421,12 @@ def main():
     t0 = time.time()
     all_results = []
     if jobs == 1:
-        all_results.extend(_run_shard(shards[0], test_command, timeout, args.keep_clones))
+        all_results.extend(_run_shard(shards[0], test_command, timeout,
+                                      args.keep_clones, module_rel))
     else:
         with ProcessPoolExecutor(max_workers=jobs) as ex:
-            futs = [ex.submit(_run_shard, sh, test_command, timeout, args.keep_clones)
+            futs = [ex.submit(_run_shard, sh, test_command, timeout,
+                              args.keep_clones, module_rel)
                     for sh in shards]
             done = 0
             for fut in as_completed(futs):
@@ -394,7 +451,8 @@ def main():
 
     print()
     print("=" * 64)
-    print(f"MUTATION KILL REPORT  (approval_grants)")
+    module_label = Path(module_rel).name
+    print(f"MUTATION KILL REPORT  ({module_label})")
     if skip_ids:
         print(f"  equivalents excl  : {len(skip_ids)}  (AC-5 skip list, not in denom)")
     print(f"  total mutants     : {n}  (killable population)")
