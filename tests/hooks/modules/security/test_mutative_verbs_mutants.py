@@ -1017,6 +1017,20 @@ class TestCheckScriptFilePythonLane:
         assert "(AST analysis)" in r.reason
         assert "no mutative invocation" in r.reason
 
+    def test_direct_invocation_uses_first_token_not_last(self):
+        # _resolve_script_argument's direct-invocation branch reads
+        # `invoked = raw_tokens[0]` -- the executable token IS the script.
+        # The NumberReplacer mutant `raw_tokens[-1]` would instead treat a
+        # trailing ./script.sh ARGUMENT of an unrelated command as the script,
+        # reading it as an unreadable file and flagging the whole command
+        # MUTATIVE 'script-file-unreadable'. `mytool` is not a script
+        # interpreter and `raw_tokens[0]` ('mytool') has no '/', so the
+        # original returns None -> ordinary detection -> non-mutative unknown
+        # verb 'foo'. Pinning that result kills the [0]->[-1] mutant.
+        r = detect_mutative_command("mytool foo ./evil.sh")
+        assert r.is_mutative is False
+        assert r.verb == "foo"
+
 
 # ===========================================================================
 # _classify_script_content_by_regex -- L1821/L1824/L1828 survivors.
