@@ -2486,3 +2486,204 @@ class TestMatchCommandSetExceptHandlersBatch4:
             consumed_json="{not valid json",
         )
         assert match_command_set_grant("git push origin main") == (approval_id, 0)
+
+
+# ===========================================================================
+# activate_db_pending_by_prefix -- AC-1 survivor closure (M1 loop, AaXIS #91).
+#
+# The 70/120 of this function's baseline survivors that the earlier batches
+# already kill stay killed; this section closes the remaining behavioral ones
+# the scoped harness still reports SURVIVED. Two structural facts drive the
+# design here:
+#
+#   (a) Nested except handlers. ExceptionReplacer narrows a `except Exception`
+#       to a sentinel type, so a real error raised inside an INNER try escapes
+#       to the function's OUTER `except Exception` (line 1512). Both return
+#       ACTIVATION_ERROR, so a status-only assertion can NOT tell them apart and
+#       the inner mutant survives. The discriminator is the `reason` string:
+#       each handler builds a DISTINCT reason. Every test below pins the reason
+#       substring so the inner-vs-outer handler is observable.
+#
+#   (b) The integrity-violation label. verify_fingerprint failing with a
+#       ChainTamperError vs any other error selects _tamper_label =
+#       "fingerprint_mismatch" vs "missing_requested_event" (line 1213). The
+#       label is surfaced in BOTH the returned reason and the FAILED audit
+#       metadata `integrity_check`, so the AddNot/== on that line is killable
+#       via either observable.
+#
+# All collaborators are mocked (no real gaia.db): get_pending, verify_fingerprint,
+# _open_db, record_event, approve, get_by_id, and the writer-side inserts.
+# ===========================================================================
+class _AC1Driver:
+    """Shared driver: patch every lazy collaborator and return recorders."""
+
+    @staticmethod
+    def drive(monkeypatch, payload, *, approval_id="P-deadbeefcafe",
+              session_id="sub", agent_id="ag", fingerprint_exc=None,
+              approve_raises=None, get_by_id_row=None, record_event_raises=None):
+        rows = [{
+            "id": approval_id,
+            "payload_json": json.dumps(payload) if not isinstance(payload, str) else payload,
+            "session_id": session_id,
+            "agent_id": agent_id,
+        }]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+
+        def _verify(approval_id_arg, payload_json_arg, con):
+            if fingerprint_exc is not None:
+                raise fingerprint_exc
+            return True
+        monkeypatch.setattr("gaia.approvals.chain.verify_fingerprint", _verify)
+        monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
+
+        def _record_event(*a, **k):
+            if record_event_raises is not None:
+                raise record_event_raises
+        rec = MagicMock(side_effect=_record_event)
+        monkeypatch.setattr("gaia.approvals.store.record_event", rec)
+
+        def _approve(*a, **k):
+            if approve_raises is not None:
+                raise approve_raises
+        monkeypatch.setattr("gaia.approvals.store.approve", MagicMock(side_effect=_approve))
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: get_by_id_row)
+        return {"record_event": rec}
+
+
+class TestActivateDbPendingExceptionHandlersAC1:
+    """Inner-vs-outer except handlers, discriminated by the reason string."""
+
+    _SEMANTIC = {
+        "operation": "MUTATIVE command intercepted: push",
+        "exact_content": "git push origin main",
+    }
+    _FILE = {
+        "operation": "FILE_WRITE command intercepted: write",
+        "exact_content": "/etc/hosts",
+        "scope": SCOPE_FILE_PATH,
+    }
+
+    def test_semantic_insert_exception_uses_inner_reason_not_outer(self, monkeypatch):
+        """insert_semantic_grant raising hits the INNER except (line 1501), whose
+        reason starts 'DB semantic grant insert error'. ExceptionReplacer on that
+        handler lets the error escape to the OUTER except (1512), whose reason is
+        'Unexpected error activating DB pending'. Pinning the inner reason kills
+        the inner ExceptionReplacer (status alone cannot, both are ERROR)."""
+        _AC1Driver.drive(monkeypatch, self._SEMANTIC)
+
+        def _boom(**k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", _boom)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+        assert "DB semantic grant insert error" in result.reason
+        assert "Unexpected error activating DB pending" not in result.reason
+
+    def test_file_path_insert_exception_uses_inner_reason_not_outer(self, monkeypatch):
+        """insert_file_path_grant raising hits the INNER except (line 1381), whose
+        reason starts 'SCOPE_FILE_PATH DB grant insert error'. ExceptionReplacer
+        lets it escape to the outer handler. Pin the inner reason."""
+        _AC1Driver.drive(monkeypatch, self._FILE)
+
+        def _boom(**k):
+            raise RuntimeError("fp down")
+        monkeypatch.setattr("gaia.store.writer.insert_file_path_grant", _boom)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+        assert "SCOPE_FILE_PATH DB grant insert error" in result.reason
+        assert "Unexpected error activating DB pending" not in result.reason
+
+    def test_failed_audit_event_exception_does_not_break_tamper_return(self, monkeypatch):
+        """When the integrity check fails AND the FAILED-audit record_event raises,
+        the INNER audit except (line 1234) swallows it and the function still
+        returns CHAIN_TAMPER_DETECTED. ExceptionReplacer on that handler lets the
+        audit error escape to the outer except (-> ACTIVATION_ERROR / 'Unexpected
+        error' reason). Pin the tamper status + reason to keep the inner handler."""
+        from gaia.approvals.chain import ChainTamperError
+        _AC1Driver.drive(
+            monkeypatch, self._SEMANTIC,
+            fingerprint_exc=ChainTamperError("tamper"),
+            record_event_raises=RuntimeError("audit chain offline"),
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
+        assert "integrity check failed" in result.reason
+        assert "Unexpected error activating DB pending" not in result.reason
+
+    def test_outer_except_handles_unexpected_early_error(self, monkeypatch):
+        """An error raised in the early body (get_pending) BEFORE any inner try is
+        caught by the function's OUTER except (line 1512): success=False,
+        ACTIVATION_ERROR, reason 'Unexpected error activating DB pending'. Kills
+        the ExceptionReplacer on the outer handler (the error would otherwise
+        propagate out of the function) and the ReplaceFalseWithTrue on its
+        `success=False` (line 1518)."""
+        def _boom(**k):
+            raise RuntimeError("store unreachable")
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _boom)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_ERROR
+        assert "Unexpected error activating DB pending" in result.reason
+
+
+class TestActivateDbPendingIntegrityLabelAC1:
+    """Tamper-vs-missing label selection at the integrity check (line 1213).
+
+    `_is_tamper = _fp_exc.__class__.__name__ == 'ChainTamperError'` (line 1212)
+    and `_tamper_label = 'fingerprint_mismatch' if _is_tamper else
+    'missing_requested_event'` (line 1213). Both observables -- the returned
+    reason and the FAILED audit event's `integrity_check` metadata -- carry the
+    label, so the `==` comparison flips and the AddNot are killable by raising
+    a ChainTamperError (tamper) vs a ValueError (missing) and asserting the
+    label flips accordingly."""
+
+    _SEMANTIC = {
+        "operation": "MUTATIVE command intercepted: push",
+        "exact_content": "git push origin main",
+    }
+
+    def _failed_metadata(self, rec):
+        """Extract the integrity_check label from the FAILED audit record_event."""
+        for c in rec["record_event"].call_args_list:
+            if len(c[0]) >= 2 and c[0][1] == "FAILED":
+                return json.loads(c.kwargs["metadata_json"])
+        return None
+
+    def test_chain_tamper_labels_fingerprint_mismatch(self, monkeypatch):
+        """A ChainTamperError selects label 'fingerprint_mismatch'. Kills the
+        Eq->{Is,IsNot,Gt,GtE,Lt,LtE,NotEq} flips on the class-name comparison
+        (line 1212) and the AddNot/branch flip on line 1213: any flip would
+        mislabel a genuine tamper as 'missing_requested_event'."""
+        from gaia.approvals.chain import ChainTamperError
+        rec = _AC1Driver.drive(
+            monkeypatch, self._SEMANTIC,
+            fingerprint_exc=ChainTamperError("payload altered"),
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
+        assert "fingerprint_mismatch" in result.reason
+        assert "missing_requested_event" not in result.reason
+        meta = self._failed_metadata(rec)
+        assert meta is not None
+        assert meta["integrity_check"] == "fingerprint_mismatch"
+
+    def test_non_tamper_error_labels_missing_requested_event(self, monkeypatch):
+        """A non-ChainTamperError (here ValueError -- the missing-REQUESTED-event
+        case the source documents) selects label 'missing_requested_event'. This
+        is the OTHER side of the line-1212 comparison / line-1213 branch: with
+        the comparison flipped, this ValueError would be mislabeled as a
+        fingerprint_mismatch. Pinning both labels closes the branch."""
+        rec = _AC1Driver.drive(
+            monkeypatch, self._SEMANTIC,
+            fingerprint_exc=ValueError("no REQUESTED event for approval"),
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
+        assert "missing_requested_event" in result.reason
+        assert "fingerprint_mismatch" not in result.reason
+        meta = self._failed_metadata(rec)
+        assert meta is not None
+        assert meta["integrity_check"] == "missing_requested_event"
