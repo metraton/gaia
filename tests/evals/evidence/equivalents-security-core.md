@@ -477,6 +477,76 @@ SAME value for every `len(parts)` the original guard could route differently:
   mutant `> 2` IS killable and is killed by `test_camel_split_two_parts`
   asserting `["batch","delete"]`; it is NOT listed here.)
 
+## Category M4 — `_scan_dangerous_flags` elif-chain + compound guard (17 mutants)
+
+`_scan_dangerous_flags` (lines 867-915) walks tokens. For a token that is a
+DANGEROUS_FLAGS key it runs an `if flag_type == "ALWAYS": ... elif token ==
+"-f": ... elif token in ("-r","-R"): ... elif token == "-D": ... elif "-M" ...
+elif "--delete" ... elif "--recursive" ... elif "--hard"`. The context
+flag-sets are: `F_FLAG_MEANS_FORCE` (rm/cp/mv/...), `R_FLAG_MEANS_RECURSIVE_
+DELETE` (rm/cp/chmod/find/gsutil/...), and `D_FLAG_MEANS_FORCE_DELETE ==
+M_FLAG_MEANS_FORCE_MOVE == HARD_FLAG_IS_DESTRUCTIVE == {git}`, `DELETE_FLAG_IS_
+DESTRUCTIVE == {git, rsync}`. The KILLABLE survivors (L882 `==-f` Eq_GtE; L879
+ReplaceContinueWithBreak; L906 `len>2` Gt_NotEq) are killed by honest tests;
+the 17 below cannot be distinguished by any reachable input:
+
+**L877 `flag_type == "ALWAYS"` — values ∈ {"ALWAYS","CONTEXT"} only:**
+- `a6459cf24d7d4ed5ad41b8222c619482` — Eq_LtE: `"CONTEXT" <= "ALWAYS"` is False
+  ("C" > "A"), `"ALWAYS" <= "ALWAYS"` True → identical truth table to `==`.
+- `b8760d57037346a98bbdcc8f87838063` — Eq_Is: both values are module-level
+  identifier-like string literals (interned); `is` reproduces `==`.
+
+**L888/L891/L897/L894 — later elif branches only ever see their own flag:**
+A single `==` is mutated in isolation; the earlier branches still match their
+own tokens, so the mutated branch is reached ONLY by the flag it tests for.
+- `fc297946fa01418d9813ca9dd85276fc` — L888 `==-D` Eq_GtE: tokens reaching L888
+  that are `>= "-D"` are `-D` (match) and `-M`; `-M` enters the `-D` branch but
+  `D_FLAG_MEANS_FORCE_DELETE == M_FLAG_MEANS_FORCE_MOVE == {git}`, so the append
+  decision is identical for every cli.
+- `fbb4d57bf9a7406db289bb3962fd5fae` — L891 `==-M` Eq_GtE: only `-M` reaches
+  L891 with `>= "-M"` (`--*` flags sort below `-M`; `-D` matched earlier).
+- `1a2b7526eedc4de5ac3d441914f234fc` — L897 `==--recursive` Eq_GtE: only
+  `--recursive` reaches it `>= "--recursive"` (`--hard` < `--recursive`).
+- `f6732a8a95c44082bfa12bea279dbecb` — L894 `==--delete` Eq_LtE: only
+  `--delete` is `<= "--delete"` among tokens reaching L894 (`--hard`,
+  `--recursive` both sort above `--delete`).
+
+**L900 `token == "--hard"` — last branch, only `--hard` reaches:**
+- `623e513f6cdb467ba2ddeaa533e135d0` — Eq_GtE: `"--hard" >= "--hard"` True.
+- `b5ee483338e0425e95272c265403feb3` — Eq_LtE: `"--hard" <= "--hard"` True.
+- `91f8c803fc59470191e6e29dbc41d5ac` — Eq_IsNot: `"--hard"` (runtime token from
+  the list) is a different object from the non-interned literal `"--hard"` (it
+  contains `-`, so it is not auto-interned), so `token is not "--hard"` is True
+  exactly when the branch should be entered — same observable as `==` here, and
+  no other token reaches L900.
+
+**L906 compound-flag guard `len(token) > 2 and token[0] == "-" and token[1] != "-"`:**
+- `c87e28a7c0d24683b3b2519612471c3c`, `5bf4fa3db4ad431a9ca273a613caad5d`,
+  `a99439b9869940b59aca7a494a4ebfbd` — `token[0] == "-"` Eq_GtE/Eq_LtE/Eq_Is:
+  control reaches L906 only after L870 confirmed `token.startswith("-")`, so
+  `token[0]` is ALWAYS `"-"`; `>=`, `<=`, and `is` (single-char interned) all
+  reproduce `== "-"`.
+- `6e86bd17c87a459ca2eb22946035e90a` — `len(token) > 2` Gt_GtE (`>= 2`): a
+  2-char token reaching L906 cannot be `-f`/`-r`/`-R`/`-D`/`-M` (those are
+  DANGEROUS_FLAGS keys, matched at L874) — so its single flag char is never
+  `r`/`f`, and both `> 2` and `>= 2` leave it uncollected.
+- `598d13384cd743a28a3315e3cc1420d8` — `len > 2` NumberReplacer occ17 = `2->1`
+  (`> 1`): same argument; the only extra token it would admit (len 2) carries
+  no `r`/`f` flag char, so the result is unchanged. (The sibling `2->3` IS
+  killable and is killed by `test_compound_f_only_force_cli`.)
+- `a631cd17e4f2471a967224f99ff39c3a` is NOT here — Gt_NotEq is killed by
+  `test_bare_dash_token_not_compound`.
+- `622281fc5fb24945b8a7b169b6eceef3`, `009761a0ba2742c5a8e45b8ac284ca16` —
+  `token[1] != "-"` NotEq_Gt / NotEq_IsNot: `token[1]` is a single char; every
+  flag letter sorts above `"-"` (0x2D) so `> "-"` matches `!= "-"`, and single
+  chars are interned so `is not "-"` matches `!= "-"`.
+
+**L907 `flag_chars = token[1:]` NumberReplacer occ23 = `1->0` (`token[0:]`):**
+- `d8b12902fb014791b253cfae6909cefb` — `token[0:]` is the whole token (leading
+  `"-"` included); `"r" in flag_chars` / `"f" in flag_chars` are unaffected
+  because `"-"` is neither `r` nor `f`, so every membership test is unchanged.
+  (The sibling `1->2` IS killable and is killed by `test_compound_rf_always`.)
+
 **Endpoint:** every other `mutative_verbs.py` survivor is killed by an honest
-test. 8 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
-2 split_camel_case).
+test. 25 mutants proven equivalent here (3 import-fallback + 3 lru_cache +
+2 split_camel_case + 17 _scan_dangerous_flags).
