@@ -16,22 +16,24 @@ What runs GREEN today (pure-Python, zero LLM / subprocess budget):
   in the allowed vocabulary ``{allow, ask, deny}``.
 - The catalog exercises every decision class (allow / ask / deny).
 
-What is DEFERRED (xfail until the backend lands -- see the catalog's NOTE):
+What runs GREEN now that the replay backend landed (brief #89 AC-2 close):
 
 - Live replay through the real PreToolUse entry point via the
-  ``hook_log_replay`` backend, comparing the observed ``permissionDecision``
-  to the curated ``expected_decision``. ``hook_log_replay`` is declared in
-  ``catalog.VALID_BACKENDS`` but is not implemented in ``runner.py``, and
-  ``expected_decision`` is not yet a field on ``catalog.CaseModel``. Wiring
-  both into the runner is the follow-up unit; this test reaches xpass the
-  moment the backend exists, signalling the work is done.
+  ``hook_log_replay`` backend (:class:`tests.evals.runner.HookLogReplayBackend`),
+  comparing the observed ``permissionDecision`` to the curated
+  ``expected_decision``. ``hook_log_replay`` is declared in
+  ``catalog.VALID_BACKENDS`` and implemented in ``runner.py``;
+  ``expected_decision`` is now a field on ``catalog.CaseModel``. The backend
+  shells out to ``hooks/pre_tool_use.py`` (subprocess, never an import -- the
+  runner's "MUST NOT import from hooks/" contract holds) and reports the
+  literal allow/ask/deny decision for each case.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import pytest
 import yaml
 
 from tests.evals.catalog import load_catalog
@@ -83,24 +85,71 @@ class TestGoldenCatalogStructure:
         )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "hook_log_replay backend not implemented in runner.py and "
-        "expected_decision not yet a CaseModel field (brief #89 AC-2 follow-up). "
-        "This xpasses once the backend + field land."
-    ),
-    strict=True,
-)
 class TestGoldenLiveReplay:
-    """Live oracle assertion -- deferred until the replay backend exists."""
+    """Live oracle assertion -- replays every case through the real
+    PreToolUse hook and compares the observed decision to the curated
+    ``expected_decision``.
+
+    This is the AC-2 close: the ``hook_log_replay`` backend is wired and
+    ``expected_decision`` is a ``CaseModel`` field, so the deferred
+    assertion now runs for real instead of being an xfail placeholder.
+    """
+
+    def test_wiring_preconditions(self):
+        """The two follow-up blockers are gone: the field exists and the
+        backend is exported."""
+        from tests.evals.catalog import CaseModel
+        from tests.evals.runner import HookLogReplayBackend  # noqa: F401
+
+        assert hasattr(CaseModel, "expected_decision"), (
+            "CaseModel must carry expected_decision for the replay oracle"
+        )
 
     def test_decisions_match_oracle(self):
-        from tests.evals.catalog import CaseModel  # noqa: F401
-        from tests.evals.runner import dispatch  # noqa: F401
+        """Replay each curated case through ``pre_tool_use.py`` and assert
+        the observed allow/ask/deny matches the human oracle.
 
-        # The CaseModel today has no expected_decision field and the runner has
-        # no hook_log_replay backend, so this cannot be wired yet. Assert the
-        # precondition so the xfail flips to xpass exactly when it is satisfiable.
-        assert hasattr(CaseModel, "expected_decision"), (
-            "CaseModel still lacks expected_decision -- replay oracle not wireable"
+        The ``contract_grader`` validates response *shape* and is exercised
+        by the broader eval suite; here the load-bearing assertion is the
+        decision comparison itself -- a single mismatch is a real security
+        defect (the core enforced something other than the curated policy).
+        """
+        from tests.evals.runner import HookLogReplayBackend, dispatch
+
+        cases = load_catalog(GOLDEN_CATALOG)
+        backend = HookLogReplayBackend()
+
+        observed: dict[str, str] = {}
+        mismatches: list[str] = []
+        for case in cases:
+            assert case.backend == "hook_log_replay", (
+                f"{case.id}: golden catalog must use hook_log_replay backend"
+            )
+            assert case.expected_decision in VALID_DECISIONS, (
+                f"{case.id}: expected_decision not loaded onto CaseModel"
+            )
+            result = dispatch(
+                agent_type=case.agent,
+                task=case.task,
+                backend=backend,
+            )
+            payload = json.loads(result.stdout)
+            decision = payload.get("decision")
+            observed[case.id] = decision
+            if decision != case.expected_decision:
+                mismatches.append(
+                    f"{case.id}: expected {case.expected_decision!r}, "
+                    f"observed {decision!r} (raw={payload.get('raw_decision')!r}, "
+                    f"reason={payload.get('reason', '')[:80]!r})"
+                )
+
+        assert not mismatches, (
+            "live security decisions diverge from the curated oracle:\n"
+            + "\n".join(mismatches)
+        )
+
+        # Sanity: the corpus actually exercised every decision class live.
+        assert set(observed.values()) >= VALID_DECISIONS, (
+            f"replay did not cover every decision class; observed: "
+            f"{sorted(set(observed.values()))}"
         )

@@ -20,16 +20,19 @@ produces.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +450,296 @@ class RoutingSimBackend:
 
 
 # ---------------------------------------------------------------------------
+# Hook-log replay backend (brief #89 AC-2)
+# ---------------------------------------------------------------------------
+
+
+# The security oracle vocabulary is the Claude Code PreToolUse
+# permissionDecision space: {allow, ask, deny}. Mapping the hook's observed
+# outcome onto it requires distinguishing two refusals that look identical
+# at the exit-code level but are categorically different policy decisions:
+#
+#   * CONSENT-REQUIRED (oracle ``ask``) -- a T3 mutation. The security core
+#     expresses this two ways depending on plugin mode: security-only mode
+#     emits a native ``permissionDecision: ask`` (reason ``[T3] ...``); ops
+#     mode emits an *approvable* hard block carrying an ``approval_id``
+#     (reason ``[T3_BLOCKED] ... requires user approval ... Report
+#     APPROVAL_REQUEST``). Both are the same decision -- "the user must
+#     consent before this proceeds" -- so both map to ``ask``. The oracle is
+#     therefore plugin-mode-independent, which is the point: the curated
+#     decision asserts policy, not a transport detail.
+#
+#   * PERMANENT BLOCK (oracle ``deny``) -- a ``blocked_commands.py`` match
+#     (reason ``[BLOCKED] ...``, exit 2, never approvable). This is the only
+#     outcome that maps to ``deny``.
+#
+# Discrimination is by the reason prefix the hook stamps, not by exit code,
+# because the ops-mode T3 block and a permanent block share exit code 2.
+_T3_CONSENT_MARKERS = ("[T3]", "[T3_BLOCKED]")
+_PERMANENT_BLOCK_MARKER = "[BLOCKED]"
+
+# Fallback when no reason marker is present: the HookRunner's exit-code
+# vocabulary ({ALLOW, BLOCK, DENY}). Only reached if the hook emitted no
+# recognizable reason text.
+_REPLAY_DECISION_TO_ORACLE = {
+    "ALLOW": "allow",
+    "BLOCK": "deny",
+    "DENY": "deny",
+}
+
+
+@contextlib.contextmanager
+def _isolated_gaia_data_dir() -> Iterator[None]:
+    """Point ``GAIA_DATA_DIR`` at a throwaway dir for the duration.
+
+    The PreToolUse hook reads/writes the approval store in ``gaia.db``
+    (resolved by ``gaia.paths.resolver`` from ``GAIA_DATA_DIR`` on each
+    call). Without isolation, the first replayed T3 command writes a
+    pending approval grant that a later replay sees as prior state and
+    escalates from ``ask`` to a hard ``deny`` -- the 18 cases would
+    contaminate one another. Each dispatch runs against a fresh, empty
+    data dir so every replay observes the *cold-start* security decision,
+    which is exactly what the curated oracle asserts (``_connect()``
+    materializes the schema lazily on first use, so an empty dir
+    suffices).
+
+    The child hook process inherits ``os.environ``, so setting it here
+    propagates into the ``HookRunner`` subprocess; the prior value is
+    restored on exit.
+
+    ``GAIA_PLUGIN_MODE`` is pinned to ``ops`` so the replay deterministically
+    exercises Gaia's own T3 nonce path (the full-capability mode gaia-ops
+    ships) regardless of the ambient mode the test process inherited. The
+    oracle decision is mode-independent -- a T3 maps to ``ask`` whether it
+    surfaces as the native consent prompt (security mode) or the approvable
+    nonce block (ops mode) -- so pinning a mode only removes a flaky
+    dependency on the caller's environment, it does not change the asserted
+    decision.
+    """
+    overrides = {
+        "GAIA_DATA_DIR": tempfile.mkdtemp(prefix="eval_gaia_data_"),
+        "GAIA_PLUGIN_MODE": "ops",
+    }
+    prev = {k: os.environ.get(k) for k in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, original in prev.items():
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+        shutil.rmtree(overrides["GAIA_DATA_DIR"], ignore_errors=True)
+
+
+def _last_json_line(stdout: str) -> Optional[dict]:
+    """Return the last JSON object emitted on ``stdout``, or ``None``.
+
+    The PreToolUse hook may print human-readable lines before its JSON
+    payload; the operative ``hookSpecificOutput`` is always the last
+    ``{...}`` line. Mirrors ``gaia_simulator.runner._parse_last_json_line``
+    without importing a private symbol across the tool boundary.
+    """
+    for line in reversed((stdout or "").strip().splitlines()):
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+@dataclass
+class HookLogReplayBackend:
+    """Replay a command through the real ``pre_tool_use.py`` entry point.
+
+    Purpose (brief #89 AC-2): the golden security catalog
+    (``catalogs/security_decisions.yaml``) pairs each ``(tool, command)``
+    with a human-curated ``expected_decision``. This backend feeds the
+    command to the *real* PreToolUse hook -- as a subprocess, never an
+    in-process import, so the runner's "MUST NOT import from ``hooks/``"
+    contract holds -- and reports the observed ``permissionDecision`` so a
+    grader can compare it to the curated oracle.
+
+    The subprocess plumbing (isolated work dir with a minimal ``.claude/``
+    tree, ``CLAUDE_PLUGIN_ROOT`` scrubbing, stdin payload, exit-code
+    mapping) is delegated to
+    :class:`tools.gaia_simulator.runner.HookRunner` so this backend stays
+    consistent with the existing replay path instead of duplicating it.
+    On top of that, the backend re-reads the hook's own stdout JSON to
+    recover the literal ``permissionDecision`` -- the HookRunner only
+    distinguishes ALLOW/BLOCK/DENY, but the oracle needs ``ask`` (T3
+    consent, exit 0) kept distinct from ``allow``.
+
+    ``DispatchResult.stdout`` is a JSON object
+    ``{"decision": "<allow|ask|deny>", "reason": "...",
+       "exit_code": N, "raw_decision": "<ALLOW|BLOCK|DENY|ERROR>"}``
+    so a decision grader can parse it the same way ``RoutingSimBackend``
+    emits routing JSON.
+
+    Attributes:
+        repo_root: gaia-ops repo root. ``hooks/`` and ``tools/`` resolve
+            relative to this. Defaults to the repo inferred from this
+            file's location.
+        hooks_dir: Overrides the ``<repo_root>/hooks`` default.
+        runner: Optional pre-constructed ``HookRunner``. Tests inject a
+            stub here; normal callers leave it ``None`` and let the
+            backend build one lazily on first dispatch.
+    """
+
+    repo_root: Path = field(default_factory=_default_repo_root)
+    hooks_dir: Optional[Path] = None
+    runner: Optional[Any] = None
+
+    def _get_runner(self) -> Any:
+        if self.runner is not None:
+            return self.runner
+
+        # Lazy import: keep the runner module importable in environments
+        # that never exercise hook replay. We import the gaia_simulator
+        # *tool* (a sibling subprocess driver), not ``hooks/`` itself --
+        # the hook is only ever executed as a child process.
+        tools_dir = self.repo_root / "tools"
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        try:
+            from gaia_simulator.runner import HookRunner
+        except ImportError as exc:  # pragma: no cover - defensive
+            raise EvalError(f"hook replay runner unavailable: {exc}") from exc
+
+        hooks_dir = self.hooks_dir or self.repo_root / "hooks"
+        if not hooks_dir.is_dir():
+            raise EvalError(f"hooks dir not found: {hooks_dir}")
+
+        self.runner = HookRunner(hooks_dir=hooks_dir)
+        return self.runner
+
+    @staticmethod
+    def _oracle_decision(replay_result: Any) -> tuple[str, str]:
+        """Map a HookRunner ReplayResult to the (oracle_decision, reason).
+
+        Decision precedence (most specific signal first):
+
+        1. The reason marker the security core stamps. ``[BLOCKED]`` is a
+           permanent, never-approvable refusal -> ``deny``. ``[T3]`` /
+           ``[T3_BLOCKED]`` are consent-required mutations (the ops-mode
+           hard block is still approvable via an ``approval_id``) -> ``ask``.
+           This is what makes the oracle plugin-mode-independent.
+        2. A literal native ``permissionDecision`` of ``allow``/``ask``/
+           ``deny`` on the hook's stdout JSON. ``ask`` here is the
+           security-only-mode native consent prompt.
+        3. The HookRunner's exit-code-derived ALLOW/BLOCK/DENY fallback,
+           used only when neither a marker nor a literal decision is present.
+
+        The reason text is collected from both the structured stdout JSON
+        and stderr -- the ops-mode hard block prints its ``[T3_BLOCKED]``
+        message on stderr, while the native ask carries it in
+        ``permissionDecisionReason``.
+        """
+        reason = ""
+        literal: Optional[str] = None
+        payload = _last_json_line(replay_result.actual_stdout)
+        if isinstance(payload, dict):
+            hook_output = payload.get("hookSpecificOutput")
+            if isinstance(hook_output, dict):
+                literal = hook_output.get("permissionDecision")
+                reason = str(hook_output.get("permissionDecisionReason", "") or "")
+
+        # Combine every text channel the hook may have used to stamp its
+        # reason marker so the classification does not depend on transport.
+        marker_text = " ".join(
+            t for t in (reason, replay_result.actual_stdout, replay_result.actual_stderr)
+            if t
+        )
+
+        # 1. Reason-marker classification (mode-independent, most specific).
+        if _PERMANENT_BLOCK_MARKER in marker_text:
+            return "deny", reason or _PERMANENT_BLOCK_MARKER
+        if any(marker in marker_text for marker in _T3_CONSENT_MARKERS):
+            return "ask", reason or _T3_CONSENT_MARKERS[0]
+
+        # 2. Native permissionDecision literal.
+        if literal in ("allow", "ask", "deny"):
+            return literal, reason
+
+        # 3. Exit-code fallback.
+        raw = replay_result.actual_decision
+        mapped = _REPLAY_DECISION_TO_ORACLE.get(raw)
+        if mapped is not None:
+            return mapped, reason or raw
+        # ERROR or anything unexpected -- surface verbatim so the grader
+        # records a clear mismatch rather than silently coercing to allow.
+        return raw.lower(), reason or (replay_result.actual_stderr or raw)
+
+    def dispatch(
+        self,
+        agent_type: str,
+        task: str,
+        timeout: int = 60,
+    ) -> DispatchResult:
+        """Replay ``task`` (a Bash command) through the PreToolUse hook.
+
+        ``agent_type`` is accepted for protocol symmetry and stamped into
+        the payload as the ``agent_id`` so delegate-mode classification
+        sees subagent context (matching how the HookRunner primes
+        ``agent_id`` for replayed tool calls). ``timeout`` is forwarded to
+        the HookRunner subprocess.
+        """
+
+        _ = timeout  # HookRunner owns its own subprocess timeout
+        if not agent_type or not isinstance(agent_type, str):
+            raise EvalError(f"invalid agent_type: {agent_type!r}")
+        if not task or not isinstance(task, str):
+            raise EvalError(f"invalid task (command): {task!r}")
+
+        runner = self._get_runner()
+
+        from gaia_simulator.extractor import ReplayEvent
+
+        event = ReplayEvent(
+            timestamp=iso_now(),
+            hook_name="pre_tool_use",
+            tool_name="Bash",
+            stdin_payload={
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": task},
+                "session_id": "eval-hook-replay",
+                "agent_id": agent_type,
+            },
+            expected_decision="",  # we grade against the catalog oracle, not this
+            expected_exit_code=0,
+            expected_tier="",
+            source_file="<security_decisions catalog>",
+        )
+
+        try:
+            with _isolated_gaia_data_dir():
+                replay_result = runner.run(event)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise EvalError(f"hook replay failed: {exc}") from exc
+
+        decision, reason = self._oracle_decision(replay_result)
+
+        payload = {
+            "decision": decision,
+            "reason": reason,
+            "exit_code": replay_result.actual_exit_code,
+            "raw_decision": replay_result.actual_decision,
+        }
+
+        return DispatchResult(
+            stdout=json.dumps(payload, sort_keys=True),
+            session_path=None,
+            audit_paths=[],
+            exit_code=replay_result.actual_exit_code,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Public dispatch function
 # ---------------------------------------------------------------------------
 
@@ -517,6 +810,7 @@ __all__ = [
     "DispatchResult",
     "EvalError",
     "FakeBackend",
+    "HookLogReplayBackend",
     "RoutingSimBackend",
     "SubprocessBackend",
     "dispatch",
