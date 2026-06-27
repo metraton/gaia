@@ -2256,3 +2256,233 @@ class TestSmallBehavioralSurvivorsBatch3:
         ag._grants_dir_created = False  # force mkdir to run
         d = ag._get_grants_dir()  # must not raise
         assert d == target
+
+
+# ===========================================================================
+# Batch 4: final high-confidence behavioral kills. These target the few
+# remaining branches with a genuine observable: the signature double-build
+# fallback, the command_set item filter, all_sessions/break/continue control
+# flow, error-path excepts, the frozen dataclass, force default, and the
+# _db_row or-chain / verb-index. Mutants that are string-comparison-operator
+# flips equivalent for all inputs, type-annotation `| None` BitOr, and
+# logging-only slice NumberReplacers are NOT targeted -- they are equivalent
+# mutants no honest assertion can distinguish.
+# ===========================================================================
+class TestActivateDbPendingBatch4:
+    """activate_db_pending_by_prefix remaining observable branches."""
+
+    def _drive(self, monkeypatch, payload, *, get_by_id_row=None):
+        rows = [{
+            "id": "P-deadbeefcafe",
+            "payload_json": json.dumps(payload),
+            "session_id": "sub", "agent_id": "ag",
+        }]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        monkeypatch.setattr(
+            "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
+        )
+        monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
+        monkeypatch.setattr("gaia.approvals.store.record_event", MagicMock())
+        monkeypatch.setattr("gaia.approvals.store.approve", MagicMock())
+        monkeypatch.setattr(
+            "gaia.approvals.store.get_by_id", lambda *a, **k: get_by_id_row
+        )
+
+    def test_signature_fallback_second_build_succeeds(self, monkeypatch):
+        """When the FIRST build_approval_signature returns None but the fallback
+        (first-token verb) build succeeds, the function proceeds to insert and
+        returns ACTIVATED (lines 1437-1450). Kills the AddNot / Is->IsNot on
+        `if signature is None` (1437): a flipped guard would skip the fallback
+        and the first None would propagate to INVALID_SIGNATURE."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "exact_content": "git push origin main",
+        })
+        import modules.security.approval_scopes as _scopes
+        real = _scopes.build_approval_signature
+        calls = {"n": 0}
+        def _sig(command, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None  # first attempt fails
+            return real(command, **kwargs)  # fallback succeeds
+        monkeypatch.setattr(
+            "modules.security.approval_scopes.build_approval_signature", _sig
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_semantic_grant",
+            lambda **k: {"status": "applied"},
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        assert result.status == ACTIVATION_ACTIVATED
+        assert calls["n"] == 2  # both builds were attempted
+
+    def test_command_set_filter_excludes_non_command_dicts(self, monkeypatch):
+        """The command_set item filter keeps only dicts WITH a 'command' key
+        (line 1162 `isinstance(_item, dict) and _item.get('command')`). A set of
+        [valid, dict-without-command, valid] yields exactly 2 items, so it is a
+        COMMAND_SET (len>1). Kills the And->Or flip: with `or`, the
+        dict-without-command would be included and _item['command'] would
+        KeyError -- here we assert the clean 2-item activation succeeds."""
+        self._drive(monkeypatch, {
+            "operation": "MUTATIVE command intercepted: push",
+            "command_set": [
+                {"command": "git push origin main", "rationale": "a"},
+                {"rationale": "no command key"},
+                {"command": "git tag v1", "rationale": "b"},
+            ],
+        })
+        create = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "modules.security.approval_grants.create_command_set_grant", create
+        )
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        # Exactly the two command-bearing items survived the filter.
+        items = create.call_args[0][0]
+        assert [i["command"] for i in items] == ["git push origin main", "git tag v1"]
+
+    def test_get_pending_queried_all_sessions(self, monkeypatch):
+        """get_pending is called with all_sessions=True (line 1101). Kills the
+        ReplaceTrueWithFalse: a session-scoped query would miss the subagent's
+        pending row. Observed via call kwargs."""
+        captured = {}
+        def _gp(**kw):
+            captured.update(kw)
+            return []
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _gp)
+        monkeypatch.setattr(
+            "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
+        )
+        activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert captured.get("all_sessions") is True
+
+    def test_first_prefix_match_wins_via_break(self, monkeypatch):
+        """The match loop breaks on the FIRST prefix hit (line 1108). With two
+        rows sharing the prefix, the FIRST is used. Kills the
+        ReplaceBreakWithContinue: a continue would let the second row overwrite
+        matched_row. We give the rows distinguishable commands and assert the
+        first one's command drove the (semantic) activation."""
+        rows = [
+            {"id": "P-deadbeef1111",
+             "payload_json": json.dumps({
+                 "operation": "MUTATIVE command intercepted: push",
+                 "exact_content": "FIRST-command"}),
+             "session_id": "s", "agent_id": "a"},
+            {"id": "P-deadbeef2222",
+             "payload_json": json.dumps({
+                 "operation": "MUTATIVE command intercepted: push",
+                 "exact_content": "SECOND-command"}),
+             "session_id": "s", "agent_id": "a"},
+        ]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        monkeypatch.setattr(
+            "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
+        )
+        monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
+        monkeypatch.setattr("gaia.approvals.store.record_event", MagicMock())
+        monkeypatch.setattr("gaia.approvals.store.approve", MagicMock())
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: None)
+        captured = {}
+        def _insert(**k):
+            captured.update(k)
+            return {"status": "applied"}
+        monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", _insert)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is True
+        # The FIRST matched row's command must be the one inserted.
+        assert captured["command"] == "FIRST-command"
+
+
+class TestDbRowToPendingDictBatch4:
+    """_db_row_to_pending_dict -- or-chain end + verb [-1] index."""
+
+    def _row(self, payload):
+        return {
+            "id": "P-cafe", "session_id": "s",
+            "created_at": "2026-06-26T12:00:00Z",
+            "payload_json": json.dumps(payload),
+        }
+
+    def test_command_empty_string_when_all_sources_absent(self):
+        """With no exact_content / commands / operation, command falls to '' (the
+        final `or ''`, line 739). Kills the Or->And flip on that terminal arm."""
+        out = _db_row_to_pending_dict(self._row({}))
+        assert out["command"] == ""
+
+    def test_danger_verb_is_last_segment_after_colon_space(self):
+        """danger_verb = operation.rsplit(': ', 1)[-1] (line 746). With an
+        operation 'PREFIX: MIDDLE: deploy', the [-1] index picks 'deploy'. Kills
+        the USub/UAdd unary mutants on the [-1] index and the rsplit maxsplit:
+        a wrong index picks the wrong segment."""
+        out = _db_row_to_pending_dict(self._row({
+            "exact_content": "x",
+            "operation": "PREFIX: MIDDLE: deploy",
+        }))
+        assert out["danger_verb"] == "deploy"
+
+
+class TestModuleLevelDefaultsBatch4:
+    """Module-level dataclass / flag defaults with an observable."""
+
+    def test_activation_result_is_frozen(self):
+        """ApprovalActivationResult is declared frozen (line 183
+        @dataclass(frozen=True)). Kills the ReplaceTrueWithFalse on frozen=True:
+        a non-frozen dataclass would allow attribute assignment. Assigning to a
+        field must raise FrozenInstanceError."""
+        import dataclasses
+        r = ag.ApprovalActivationResult(success=True, status="x", reason="y")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            r.success = False
+
+    def test_cleanup_force_default_is_false(self, monkeypatch):
+        """cleanup_expired_grants(force) defaults to False (line 675). With the
+        default and a recent last-run, the throttle skips the sweep. Kills the
+        ReplaceFalseWithTrue on the force default: if force defaulted to True the
+        throttle would never apply and the sweep would run."""
+        called = MagicMock(return_value=9)
+        monkeypatch.setattr("gaia.store.writer.cleanup_expired_db_grants", called)
+        ag._last_cleanup_time = time.time()  # just ran
+        # Call WITHOUT passing force -> must use the default (False) -> throttled.
+        assert ag.cleanup_expired_grants() == 0
+        assert called.call_count == 0
+
+
+class TestMatchCommandSetExceptHandlersBatch4:
+    """match_command_set_grant -- inner consumed-index except handler."""
+
+    def _insert(self, db_path, approval_id, *, command_set_json, status="PENDING",
+                scope="COMMAND_SET", expires_at=None, consumed_json="[]"):
+        if expires_at is None:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute(
+                """INSERT INTO approval_grants
+                   (approval_id, session_id, command_set_json, scope,
+                    expires_at, status, consumed_indexes_json)
+                   VALUES (?, 'test-session-mut', ?, ?, ?, ?, ?)""",
+                (approval_id, command_set_json, scope, expires_at, status,
+                 consumed_json),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def test_malformed_consumed_indexes_defaults_empty_and_matches(self, writer_db):
+        """When consumed_indexes_json is invalid JSON, the inner except leaves
+        consumed_indexes = [] (lines 1694-1698) and the command still matches at
+        index 0. Kills the ExceptionReplacer on that except: a propagated error
+        would skip the grant entirely and the command would NOT match."""
+        approval_id = f"P-{secrets.token_hex(16)}"
+        self._insert(
+            writer_db, approval_id,
+            command_set_json=json.dumps([
+                {"command": "git push origin main", "rationale": "a"}
+            ]),
+            consumed_json="{not valid json",
+        )
+        assert match_command_set_grant("git push origin main") == (approval_id, 0)
