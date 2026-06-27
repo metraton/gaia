@@ -100,6 +100,10 @@ f4145e97bf6c42c98f71ec2e372543d0
 d0930b20681044978932645e6c7fa045
 10fb370acb474822aa6f504e82b6432c
 096aa0a08bfc4844bb60cd53a2650757
+# -- L1417 candidate = stripped_token.split("-",1)[0] maxsplit 1->2 (Step-4
+#    hyphen-split; same first-segment argument). 1->0 / [0]->1 killed by the
+#    idx-2 split test (test_hyphen_split_at_index_two_high_confidence).
+74dffbf83b0f4c7fa3892548fda1591d
 # ===========================================================================
 # Category M7 — script-file / inline / layer3 comparison & loop residuals (10).
 # Killable siblings killed by TestLayer3LengthCheck / TestCheckInlineCode /

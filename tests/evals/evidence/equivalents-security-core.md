@@ -610,6 +610,14 @@ the verb/reason index mutants) are killed by `TestSubcommandTierException`.
 - `096aa0a08bfc4844bb60cd53a2650757` — L1313 `verb = group_verb.split("-", 1)[0]`
   NumberReplacer occ54 = `1 -> 2`: identical argument; the returned `verb` is
   the first segment for any `maxsplit >= 1`.
+- `74dffbf83b0f4c7fa3892548fda1591d` — L1417 `candidate = stripped_token.split("-", 1)[0]`
+  (Step-4 hyphen-split) NumberReplacer occ78 = `1 -> 2`: same argument as the
+  three above — `[0]` is the text before the FIRST separator for any
+  `maxsplit >= 1`. Proven by elimination: the idx-2 split test
+  (`test_hyphen_split_at_index_two_high_confidence`, input `gh repo
+  delete-thing`) kills the `1 -> 0` sibling (which would leave `candidate =
+  "delete-thing"`, not a verb) and the `[0] -> [1]` sibling (`candidate =
+  "thing"`); occ78 survives both, so it is the `1 -> 2` no-op.
 
 ---
 
