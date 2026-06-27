@@ -192,6 +192,25 @@ is complete and the next iteration can pick them up:
 
 ## Exclusion mechanism (AC-1 denominator)
 
-*To be filled in once applied:* the cosmic-ray skip / filter used to remove the
-proven-equivalent job_ids above from the kill-rate denominator, and the
-resulting kill_rate over the killable population (scoped harness).
+**Skip file:** `tests/evals/equivalents-approval-grants.skip`
+
+The scoped harness (`tests/evals/mutkill_approval_grants.py`) accepts
+`--skip-file <path>` which reads one 32-char job_id per non-comment line and
+excludes those specs from both the denominator and the numerator. The skip file
+is the materialization of this document: every job_id proven equivalent above is
+listed there, one per line, with category comments.
+
+**Denominator composition (after sync E1–E7):**
+
+| Population | Count |
+|------------|------:|
+| Total specs in DB | 653 |
+| INCOMPETENT (excluded by cosmic-ray) | 2 |
+| Proven-equivalent excluded (E1–E7, skip file) | 99 |
+| **Killable denominator** | **552** |
+
+**AC-1 result (pre-E2–E7 sync, E1 only):** 518 killed / 618 killable = **83.82%** killable kill rate.
+
+After sync, the new denominator will differ (equivalents removed from both
+killed and survived buckets depending on which category survived). The updated
+kill rate is reported in the commit that lands the sync.
