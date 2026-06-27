@@ -47,6 +47,7 @@ from modules.security.blocked_commands import (
     SemanticBlockedRule,
     BlockedCommandResult,
 )
+from modules.security.command_semantics import CommandSemantics
 
 
 # ===========================================================================
@@ -242,7 +243,16 @@ class TestIsFalsePositiveCarrier:
     # `kubectl` is neither a read-only base cmd nor git, so the honest result
     # is False; only the `or` mutant flips it to True.
     def test_non_git_command_with_commit_token_not_carrier(self):
+        # `kubectl` sorts AFTER "git" -- kills the Eq_GtE / Eq_IsNot flips.
         assert _is_false_positive_carrier("kubectl commit foo") is False
+
+    # --- non-git command sorting BEFORE "git", first token "commit" ------
+    # Kills the Eq_LtE flip on `base_cmd == "git"` (line 685): "aws" <= "git"
+    # is True, so with `<=` the guard wrongly enters the git branch, reads
+    # git_subcmd "commit", and returns True. `aws` is not a read-only base
+    # cmd and not git, so the honest result is False.
+    def test_non_git_lexically_lower_with_commit_token_not_carrier(self):
+        assert _is_false_positive_carrier("aws commit foo") is False
 
     # --- git with NO subcommand tokens => not a carrier -----------------
     # Kills the `and semantics.non_flag_tokens` truthiness: bare `git` (no
@@ -299,6 +309,71 @@ class TestSemanticRuleMatches:
         assert is_blocked_command("docker system prune").is_blocked is False
         assert is_blocked_command("docker system prune -a").is_blocked is True
 
+    # --- DIRECT unit test: forbidden-flag EXACT equality (line 111) -----
+    # End-to-end the real tokenizer explodes "-target" into single-char flags
+    # (-t -a -r ...) so SOME token always differs from "-target", masking the
+    # `==` operator. To isolate the exact-equality branch we construct a
+    # CommandSemantics whose flag_tokens is EXACTLY ("-target",): now the
+    # `flag_token == forbidden` half is the sole decider.
+    #   original: "-target" == "-target" -> True -> return False (exempt)
+    #   Eq_NotEq: "-target" != "-target" -> False, startswith("-target=")
+    #             False -> loop ends -> return True (WRONG)
+    #   Eq_Gt/GtE/Lt/LtE/Is: string compare/identity is False -> return True
+    #   AddNot:   not("-target"=="-target") -> False -> return True
+    def test_forbidden_flag_exact_match_exempts(self):
+        rule = SemanticBlockedRule(
+            "terraform_destroy",
+            ("terraform", "destroy"),
+            "terraform destroy",
+            forbidden_flags=("-target",),
+        )
+        sem = CommandSemantics(
+            base_cmd="terraform",
+            flag_tokens=("-target",),
+            non_flag_tokens=("destroy",),
+            semantic_tokens=("terraform", "destroy"),
+            semantic_head_tokens=("terraform", "destroy"),
+        )
+        # forbidden flag present (exact match) => rule does NOT match.
+        assert rule.matches(sem) is False
+
+    # --- and the SAME rule DOES match when the forbidden flag is absent --
+    # Anchors the other direction so the exact-match test cannot pass
+    # vacuously: with no -target the rule matches (would block).
+    def test_forbidden_flag_absent_matches(self):
+        rule = SemanticBlockedRule(
+            "terraform_destroy",
+            ("terraform", "destroy"),
+            "terraform destroy",
+            forbidden_flags=("-target",),
+        )
+        sem = CommandSemantics(
+            base_cmd="terraform",
+            flag_tokens=(),
+            non_flag_tokens=("destroy",),
+            semantic_tokens=("terraform", "destroy"),
+            semantic_head_tokens=("terraform", "destroy"),
+        )
+        assert rule.matches(sem) is True
+
+    # --- DIRECT unit test: head_only selects head tokens (line 99) ------
+    # Kills AddNot on `self.head_only` (col 51): a head_only rule scans
+    # semantic_head_tokens. We build a semantics where the rule sequence is
+    # in the HEAD but NOT in the full semantic_tokens.
+    #   original (head_only True): scans head -> sequence present -> matches
+    #   AddNot (head_only False):  scans semantic_tokens -> sequence absent
+    #                              -> _contains_ordered_sequence False -> no match
+    def test_head_only_scans_head_tokens(self):
+        rule = SemanticBlockedRule(
+            "x", ("terraform", "destroy"), "k", head_only=True,
+        )
+        sem = CommandSemantics(
+            base_cmd="terraform",
+            semantic_tokens=("terraform", "plan"),          # NO destroy
+            semantic_head_tokens=("terraform", "destroy"),  # destroy in head
+        )
+        assert rule.matches(sem) is True
+
 
 # ===========================================================================
 # is_blocked_command -- top-level orchestration (4 survivors).
@@ -313,28 +388,46 @@ class TestIsBlockedCommand:
     def test_empty_or_whitespace_not_blocked(self, command):
         assert is_blocked_command(command).is_blocked is False
 
-    # --- suggestion loop iterates and breaks on first match -------------
-    # Kills ZeroIterationForLoop (line 622) and BreakWithContinue (line 625):
-    # a blocked command must surface a populated suggestion string from the
-    # FIRST matching prefix. ZeroIteration would leave suggestion None.
-    def test_blocked_command_has_suggestion(self):
-        result = is_blocked_command("aws ec2 delete-vpc --vpc-id vpc-123")
+    # --- suggestion loop iterates (REGEX branch) ------------------------
+    # The semantic-rule branch (lines 607-615) builds the suggestion via
+    # .get(suggestion_key) and returns BEFORE the regex loop, so it does NOT
+    # exercise the L622 for-loop. `dd if=...` is a REGEX-only block: it falls
+    # through to the loop at lines 617-632. Kills ZeroIterationForLoop
+    # (line 622): with zero iterations the suggestion stays None.
+    def test_regex_blocked_command_has_suggestion(self):
+        # Build from fragments so the source line is not a verbatim block cmd.
+        cmd = " ".join(["dd", "if=/dev/zero", "of=/dev/sda"])
+        result = is_blocked_command(cmd)
         assert result.is_blocked is True
         assert result.suggestion is not None
         assert isinstance(result.suggestion, str)
-        assert len(result.suggestion) > 0
+        assert "disk" in result.suggestion.lower()
 
-    # --- prefix-match guard (line 623 AddNot) ----------------------------
-    # `if cmd_prefix in command.lower()` -- AddNot would invert membership,
-    # producing a suggestion from a NON-matching prefix (or None). We assert
-    # the suggestion is the one keyed to this command, not an arbitrary one.
-    def test_suggestion_matches_command_prefix(self):
-        result = is_blocked_command("kubectl delete namespace prod")
+    # --- prefix-match guard, REGEX branch (line 623 AddNot) -------------
+    # `if cmd_prefix in command.lower()` -- AddNot inverts membership, so the
+    # suggestion would come from the first NON-matching prefix instead of the
+    # matching one. The mkfs block carries a filesystem-specific suggestion;
+    # an inverted membership cannot land on it.
+    def test_regex_suggestion_matches_prefix(self):
+        cmd = " ".join(["mkfs.ext4", "/dev/sda1"])
+        result = is_blocked_command(cmd)
         assert result.is_blocked is True
         assert result.suggestion is not None
-        # The suggestion must mention the relevant resource, proving the
-        # prefix-membership branch selected the correct entry.
-        assert "namespace" in result.suggestion.lower() or "delete" in result.suggestion.lower()
+        assert "filesystem" in result.suggestion.lower()
+
+    # --- break stops at the FIRST matching prefix (line 625) ------------
+    # `drop table users ; dd` is blocked by the drop-table regex and its
+    # lowercase contains TWO suggestion-key substrings: "drop table" (earlier
+    # in the dict) and "dd" (later). The loop assigns the first match then
+    # BREAKS, so the suggestion is the DROP TABLE one. Kills break->continue:
+    # without the break the loop keeps overwriting and ends on the "dd"
+    # (disk) suggestion instead.
+    def test_suggestion_breaks_on_first_match(self):
+        cmd = " ".join(["drop", "table", "users", ";", "dd"])
+        result = is_blocked_command(cmd)
+        assert result.is_blocked is True
+        assert result.suggestion is not None
+        assert "table" in result.suggestion.lower()
 
 
 # ===========================================================================
