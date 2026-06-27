@@ -305,6 +305,12 @@ def main():
                     help="do not delete worker clones (debug)")
     ap.add_argument("--quiet", action="store_true",
                     help="suppress per-survivor listing")
+    ap.add_argument("--skip-file", type=Path, default=None,
+                    help="path to a file with job_ids to exclude from the "
+                         "kill-rate denominator (one per line; lines starting "
+                         "with '#' are ignored). Excluded mutants are not "
+                         "counted in total, killed, or survived — the kill_rate "
+                         "is measured over the remaining killable population.")
     ap.add_argument("--dump-json", type=Path, default=None,
                     help="write per-mutant {job_id: outcome} to this file "
                          "(fidelity cross-check against cosmic-ray session)")
@@ -314,6 +320,16 @@ def main():
         raise SystemExit(f"session not found: {args.session}")
     if not args.toml.exists():
         raise SystemExit(f"toml not found: {args.toml}")
+
+    # Load equivalent-mutant exclusions (AC-5 skip list).
+    skip_ids: set[str] = set()
+    if args.skip_file is not None:
+        if not args.skip_file.exists():
+            raise SystemExit(f"skip-file not found: {args.skip_file}")
+        for raw_line in args.skip_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if line and not line.startswith("#"):
+                skip_ids.add(line)
 
     test_command = read_test_command(args.toml)
     timeout = args.timeout if args.timeout is not None else read_timeout(args.toml)
@@ -325,6 +341,9 @@ def main():
     if args.operators:
         wanted = set(args.operators)
         specs = [s for s in specs if s["operator_name"] in wanted]
+    # Apply equivalent-mutant exclusions: remove from the population entirely.
+    if skip_ids:
+        specs = [s for s in specs if s["job_id"] not in skip_ids]
     if args.limit:
         specs = specs[: args.limit]
 
@@ -338,6 +357,9 @@ def main():
     print(f"# mutkill_approval_grants harness", file=sys.stderr)
     print(f"# session       : {args.session}", file=sys.stderr)
     print(f"# test-command  : {test_command}", file=sys.stderr)
+    if skip_ids:
+        print(f"# skip-file     : {args.skip_file}  ({len(skip_ids)} equivalents excluded)",
+              file=sys.stderr)
     print(f"# timeout       : {timeout}s   workers: {jobs}   mutants: {total}",
           file=sys.stderr)
 
@@ -373,7 +395,9 @@ def main():
     print()
     print("=" * 64)
     print(f"MUTATION KILL REPORT  (approval_grants)")
-    print(f"  total mutants     : {n}")
+    if skip_ids:
+        print(f"  equivalents excl  : {len(skip_ids)}  (AC-5 skip list, not in denom)")
+    print(f"  total mutants     : {n}  (killable population)")
     print(f"  killed            : {killed}")
     print(f"  survived          : {survived}")
     print(f"  incompetent       : {incompetent}")
