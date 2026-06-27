@@ -15,7 +15,8 @@
 module-path = "hooks/modules/security/blocked_commands.py"
 timeout = 30.0
 excluded-modules = []
-test-command = "python3 -m pytest tests/hooks/modules/security/test_blocked_commands.py -q -x --no-header"
+# GRIND-TOTAL: added test_blocked_commands_mutants.py (survivor-closure tests).
+test-command = "python3 -m pytest tests/hooks/modules/security/test_blocked_commands.py tests/hooks/modules/security/test_blocked_commands_mutants.py -q -x --no-header"
 
 [cosmic-ray.distributor]
 name = "local"

@@ -1,0 +1,10 @@
+# GRIND-TOTAL equivalents for blocked_commands.py — see equivalents-security-core.md
+# (Category B* sections, added this session). Each job_id below is a mutant
+# proven GENUINELY EQUIVALENT by hand: apply the exact cosmic-ray mutant ->
+# full suite stays green -> revert. Listed here it is excluded from the
+# kill-rate denominator. A mutant is listed ONLY if no honest input can
+# distinguish it from the original for ANY reachable input.
+#
+# Endpoint: every blocked_commands.py survivor is either killed by a test in
+# tests/hooks/modules/security/test_blocked_commands_mutants.py OR proven
+# equivalent here.
