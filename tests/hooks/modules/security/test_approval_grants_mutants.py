@@ -2966,3 +2966,88 @@ class TestMatchCommandSetBehavioralM1Final:
             created_at="2029-01-01T00:00:00Z",
         )
         assert match_command_set_grant("git push origin main") == (good_id, 0)
+
+
+class TestStatusAppliedAndDivisorM1Final:
+    """confirm_grant/create_command_set_grant status==applied LtE flips, the /60
+    divisor, the row[0] index, and the ts-init constant."""
+
+    @patch("modules.security.approval_grants.time.time")
+    def test_ttl_divisor_is_sixty_not_sixtyone(self, mock_time):
+        """Line 179 `(now - ts) / 60` NumberReplacer 60->61. Pin the clock so
+        elapsed is exactly 3660s. Under /60 that is 61.0 min (> ttl 60 -> EXPIRED);
+        under /61 that is 60.0 min (NOT > 60 -> not expired). ttl=60 discriminates
+        the divisor; the existing 90s test does not (90/60 and 90/61 both clear 1)."""
+        now = 1_000_000.0
+        mock_time.return_value = now
+        ts = now - 3660.0  # 61 min under /60, 60 min under /61
+        assert _is_ttl_expired(ts, 60) is True
+
+    def test_confirm_grant_status_eq_applied_not_le(self, monkeypatch):
+        """Line 659 `result.get('status') == 'applied'` vs Eq->LtE. A status that
+        sorts BEFORE 'applied' ('aborted': 'ab' < 'ap') makes `==` False (return
+        False) but `<= 'applied'` True (return True). Pin a sub-'applied' status
+        -> confirm_grant must return False."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.confirm_db_grant",
+            lambda *a, **k: {"status": "aborted"},
+        )
+        assert "aborted" < "applied"
+        assert ag.confirm_grant("git push") is False
+
+    def test_create_command_set_status_eq_applied_not_le(self, monkeypatch, writer_db):
+        """Line 1603 `result.get('status') == 'applied'` vs Eq->LtE in
+        create_command_set_grant. A sub-'applied' status from insert must yield
+        return False; `<=` would wrongly return True."""
+        monkeypatch.setattr(
+            "gaia.store.writer.insert_approval_grant",
+            lambda **k: {"status": "aborted"},
+        )
+        ok = create_command_set_grant(
+            [{"command": "git push", "rationale": "r"}],
+            f"P-{secrets.token_hex(16)}",
+            session_id="s",
+        )
+        assert ok is False
+
+    def test_consume_session_grants_row_index_zero(self, monkeypatch):
+        """Line 606 `row[0]` NumberReplacer. The SELECT projects approval_id as
+        column 0. A 3-element tuple row where each slot differs discriminates ALL
+        NumberReplacer variants: index 0 -> 'P-want', index 1 -> 'P-wrong-1',
+        index -1 -> 'P-wrong-last'. We assert the id PASSED to consume is the
+        column-0 value, so `row[0]`->`row[1]`/`row[-1]` (any flip) is caught."""
+        seen = []
+        class _Cur:
+            def execute(self, *a, **k): return self
+            def fetchall(self):
+                return [("P-want", "P-wrong-1", "P-wrong-last")]
+        class _Con:
+            def execute(self, *a, **k): return _Cur()
+            def close(self): pass
+        monkeypatch.setattr("gaia.store.writer._connect", lambda *a, **k: _Con())
+        def _consume(approval_id, *a, **k):
+            seen.append(approval_id)
+            return True
+        monkeypatch.setattr(
+            "gaia.store.writer.consume_db_semantic_grant", _consume
+        )
+        count = ag.consume_session_grants("sess")
+        assert count == 1
+        assert seen == ["P-want"]  # column 0; any index flip selects a wrong id
+
+    def test_db_row_ts_init_zero_when_no_created_at(self):
+        """Line 751 `ts: float = 0.0` NumberReplacer. A row with NO created_at
+        leaves ts at its init 0.0, surfaced as the dict's 'timestamp'. A mutated
+        init (0.0->1.0) would surface 1.0. Pin timestamp == 0.0 for a created_at-
+        less row."""
+        row = {
+            "id": "P-abc",
+            "payload_json": json.dumps({"operation": "MUTATIVE command intercepted: push"}),
+        }
+        mapped = _db_row_to_pending_dict(row)
+        assert mapped is not None
+        assert mapped["timestamp"] == 0.0
