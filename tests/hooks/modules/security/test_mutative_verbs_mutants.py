@@ -351,3 +351,127 @@ class TestDetectMutativeCommand:
         r = detect_mutative_command("gh api repos/foo -X POST")
         assert r.is_mutative is True
         assert r.verb == "post"
+
+
+# ===========================================================================
+# _scan_dangerous_flags -- 63 survivors.
+#
+# Returns the tuple of dangerous flags present, honouring per-CLI context.
+# Survivors: the legacy suite never asserts the EXACT returned tuple, so the
+# `token == "-f"` / `cli in X` / `len(token) > 2` / `token[1] != "-"` /
+# `"r" in flag_chars and "f" in flag_chars` mutants survive. These tests pin
+# the tuple for each flag in both its dangerous-CLI and inert-CLI context, so
+# every comparison/membership/and/length/index mutant flips an assertion.
+# ===========================================================================
+class TestScanDangerousFlags:
+    def _scan(self, *args):
+        return mv._scan_dangerous_flags(*args)
+
+    # --- non-flag tokens are skipped (line 870 `not startswith("-")`) ----
+    def test_non_flag_tokens_skipped(self):
+        # Kills AddNot on the `if not token.startswith("-")` guard: a bare
+        # positional arg must NOT be collected.
+        assert self._scan(["rm", "file"], "rm") == ()
+
+    # --- ALWAYS flags (line 877 == "ALWAYS") -----------------------------
+    def test_always_force(self):
+        assert self._scan(["x", "--force"], "anything") == ("--force",)
+
+    def test_always_no_preserve_root(self):
+        assert self._scan(["x", "--no-preserve-root"], "anything") == (
+            "--no-preserve-root",
+        )
+
+    # --- -f context (lines 882-884) --------------------------------------
+    def test_f_force_cli(self):
+        # token == "-f" AND cli in F_FLAG_MEANS_FORCE -> collected.
+        assert self._scan(["x", "-f"], "rm") == ("-f",)
+
+    def test_f_inert_cli(self):
+        # cli NOT in F_FLAG_MEANS_FORCE -> NOT collected. Kills the
+        # `cli in F_FLAG_MEANS_FORCE` membership AddNot.
+        assert self._scan(["x", "-f"], "ls") == ()
+
+    # --- -r / -R context (lines 885-887) ---------------------------------
+    def test_r_recursive_cli(self):
+        assert self._scan(["x", "-r"], "rm") == ("-r",)
+
+    def test_R_recursive_cli(self):
+        # token in ("-r", "-R") tuple membership.
+        assert self._scan(["x", "-R"], "rm") == ("-R",)
+
+    def test_r_inert_cli(self):
+        assert self._scan(["x", "-r"], "ls") == ()
+
+    # --- -D context (lines 888-890) --------------------------------------
+    def test_D_force_delete_git(self):
+        assert self._scan(["x", "-D"], "git") == ("-D",)
+
+    def test_D_inert_cli(self):
+        assert self._scan(["x", "-D"], "ls") == ()
+
+    # --- -M context (lines 891-893) --------------------------------------
+    def test_M_force_move_git(self):
+        assert self._scan(["x", "-M"], "git") == ("-M",)
+
+    def test_M_inert_cli(self):
+        assert self._scan(["x", "-M"], "ls") == ()
+
+    # --- --delete context (lines 894-896) --------------------------------
+    def test_delete_destructive_git(self):
+        assert self._scan(["x", "--delete"], "git") == ("--delete",)
+
+    def test_delete_inert_cli(self):
+        assert self._scan(["x", "--delete"], "ls") == ()
+
+    # --- --recursive context (lines 897-899) -----------------------------
+    def test_recursive_destructive_cli(self):
+        assert self._scan(["x", "--recursive"], "rm") == ("--recursive",)
+
+    def test_recursive_inert_cli(self):
+        assert self._scan(["x", "--recursive"], "ls") == ()
+
+    # --- --hard context (lines 900-902) ----------------------------------
+    def test_hard_destructive_git(self):
+        assert self._scan(["x", "--hard"], "git") == ("--hard",)
+
+    def test_hard_inert_cli(self):
+        assert self._scan(["x", "--hard"], "ls") == ()
+
+    # --- compound short flags (lines 906-913) ----------------------------
+    def test_compound_rf_always(self):
+        # `len(token) > 2 and token[0] == "-" and token[1] != "-"` then
+        # `"r" in flag_chars and "f" in flag_chars`. -rf is also an exact
+        # ALWAYS match, so use a non-listed compound to exercise the elif.
+        assert self._scan(["x", "-rfi"], "anything") == ("-rfi",)
+
+    def test_compound_f_only_force_cli(self):
+        # elif `"f" in flag_chars and cli in F_FLAG_MEANS_FORCE`.
+        assert self._scan(["x", "-fv"], "mv") == ("-fv",)
+
+    def test_compound_f_only_inert_cli(self):
+        assert self._scan(["x", "-fv"], "ls") == ()
+
+    def test_compound_r_only_recursive_cli(self):
+        # elif `"r" in flag_chars and cli in R_FLAG_MEANS_RECURSIVE_DELETE`.
+        assert self._scan(["x", "-rv"], "rm") == ("-rv",)
+
+    def test_compound_r_only_inert_cli(self):
+        assert self._scan(["x", "-rv"], "ls") == ()
+
+    def test_compound_length_boundary(self):
+        # `len(token) > 2`: a 2-char short flag "-v" is NOT a compound and
+        # (not being in DANGEROUS_FLAGS) must yield (). Kills the `> 2`
+        # NumberReplacer/comparison mutants.
+        assert self._scan(["x", "-v"], "rm") == ()
+
+    def test_long_flag_not_treated_as_compound(self):
+        # `token[1] != "-"`: a long flag like "--verbose" has token[1]=="-"
+        # so the compound branch must be skipped -> ().
+        assert self._scan(["x", "--verbose"], "rm") == ()
+
+    # --- ordering / multiplicity -----------------------------------------
+    def test_multiple_flags_in_order(self):
+        # ReplaceContinueWithBreak (line 879) and append ordering: both flags
+        # must be collected, in encounter order.
+        assert self._scan(["x", "-D", "--force"], "git") == ("-D", "--force")
