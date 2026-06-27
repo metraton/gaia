@@ -1218,3 +1218,235 @@ class TestFindPendingForFileMutants:
                       exact_content="/home/u/file"),
         ])
         assert find_pending_for_file("sess", "/home/u/file") is None
+
+
+# ===========================================================================
+# check_approval_grant -- DB wrapper return shape (16 survivors)
+#
+# check_approval_grant does `from gaia.store.writer import check_db_semantic_grant`
+# lazily, so patching that attribute on the writer module is what binds.
+# ===========================================================================
+class TestCheckApprovalGrantMutants:
+    """check_approval_grant(command) -- grant reconstruction from a DB row."""
+
+    def test_returns_grant_when_db_row_found(self, monkeypatch):
+        """A DB row => an ApprovalGrant with confirmed=True, multi_use=False,
+        ttl_minutes=0, used=False (lines 490-503). Kills the ReplaceFalseWithTrue
+        on used=False / multi_use=False, the ReplaceTrueWithFalse on
+        confirmed=True, and the NumberReplacer on ttl/granted defaults."""
+        sig = build_approval_signature(
+            "git push origin main", scope_type=SCOPE_SEMANTIC_SIGNATURE
+        ).to_dict()
+        row = {
+            "approval_id": "P-abc123",
+            "session_id": "owner-sess",
+            "command_set_json": json.dumps({
+                "command": "git push origin main",
+                "scope_signature": sig,
+            }),
+        }
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: row
+        )
+        grant = ag.check_approval_grant("git push origin main", session_id="s")
+        assert grant is not None
+        assert grant.confirmed is True
+        assert grant.multi_use is False
+        assert grant.used is False
+        assert grant.ttl_minutes == 0
+        assert grant.approved_scope == "git push origin main"
+        # The approval_id is attached for bash_validator to consume.
+        assert grant._db_approval_id == "P-abc123"
+
+    def test_returns_none_when_no_db_row(self, monkeypatch):
+        """No DB row (None) => None (the `if db_row is not None` guard, line 472).
+        Kills the AddNot / Delete_Not on that guard: an inverted guard would try
+        to dereference None and crash, or fall through to return None anyway --
+        we pin the clean None and that the expired flag is reset."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: None
+        )
+        assert ag.check_approval_grant("git push origin main", session_id="s") is None
+
+    def test_db_exception_returns_none(self, monkeypatch):
+        """A raising check_db_semantic_grant => None (lines 509-513 except). Kills
+        the ExceptionReplacer on that except: a swallowed/replaced handler would
+        propagate the error instead of returning None."""
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.check_db_semantic_grant", _boom)
+        assert ag.check_approval_grant("git push origin main", session_id="s") is None
+
+
+# ===========================================================================
+# consume_grant -- DB consume wrapper (8 survivors)
+# ===========================================================================
+class TestConsumeGrantMutants:
+    """consume_grant(command) -- returns the consume bool from the DB."""
+
+    def test_consumes_and_returns_true(self, monkeypatch):
+        """A matching grant whose consume returns True => True (line 552). Kills
+        the AddNot on `if db_row is not None` (542) and pins the consumed bool is
+        threaded back, not hardcoded."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        consume = MagicMock(return_value=True)
+        monkeypatch.setattr("gaia.store.writer.consume_db_semantic_grant", consume)
+        assert ag.consume_grant("git push origin main") is True
+        consume.assert_called_once_with("P-x")
+
+    def test_returns_false_when_consume_returns_false(self, monkeypatch):
+        """When consume_db_semantic_grant returns False (already consumed) the
+        wrapper returns False, NOT True. Pins that the real bool is returned
+        (kills a ReplaceFalseWithTrue / hardcoded-True mutant)."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: False
+        )
+        assert ag.consume_grant("git push origin main") is False
+
+    def test_returns_false_when_no_grant(self, monkeypatch):
+        """No matching grant => False (falls through to the final return). Kills
+        the AddNot on the `if db_row is not None` guard."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: None
+        )
+        assert ag.consume_grant("git push origin main") is False
+
+    def test_db_exception_returns_false(self, monkeypatch):
+        """A raising lookup => False (lines 553-554 except). Kills the
+        ExceptionReplacer on that except."""
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.check_db_semantic_grant", _boom)
+        assert ag.consume_grant("git push origin main") is False
+
+
+# ===========================================================================
+# confirm_grant -- DB confirm wrapper (27 survivors)
+# ===========================================================================
+class TestConfirmGrantMutants:
+    """confirm_grant(command) -- sets confirmed=1 on the matching PENDING grant."""
+
+    def test_confirms_and_returns_true_on_applied(self, monkeypatch):
+        """A matched grant whose confirm_db_grant returns status 'applied' => True
+        (line 659 `result.get('status') == 'applied'`). Kills the Eq->NotEq/Is/Lt
+        flips on that compare and the ReplaceTrueWithFalse on the True return."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.confirm_db_grant",
+            lambda *a, **k: {"status": "applied"},
+        )
+        assert ag.confirm_grant("git push origin main", session_id="s") is True
+
+    def test_returns_false_when_no_grant(self, monkeypatch):
+        """No matching grant (db_row is None) => False (lines 652-654). Kills the
+        Is->IsNot flip on `if db_row is None` and the AddNot: an inverted guard
+        would dereference None."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant", lambda *a, **k: None
+        )
+        assert ag.confirm_grant("git push origin main", session_id="s") is False
+
+    def test_returns_false_when_status_not_applied(self, monkeypatch):
+        """confirm_db_grant returning a non-'applied' status => False (the Eq
+        compare on 659 fails -> falls through to the final False return, line
+        672). Pins that only 'applied' yields True."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": "P-x"},
+        )
+        monkeypatch.setattr(
+            "gaia.store.writer.confirm_db_grant",
+            lambda *a, **k: {"status": "noop"},
+        )
+        assert ag.confirm_grant("git push origin main", session_id="s") is False
+
+    def test_returns_false_when_no_approval_id(self, monkeypatch):
+        """A matched row with a falsy approval_id => False (lines 656-657). Kills
+        the AddNot on `if not approval_id`: an inverted guard would call
+        confirm_db_grant(None)."""
+        monkeypatch.setattr(
+            "gaia.store.writer.check_db_semantic_grant",
+            lambda *a, **k: {"approval_id": ""},
+        )
+        called = MagicMock()
+        monkeypatch.setattr("gaia.store.writer.confirm_db_grant", called)
+        assert ag.confirm_grant("git push origin main", session_id="s") is False
+        assert called.call_count == 0
+
+    def test_db_exception_returns_false(self, monkeypatch):
+        """A raising lookup => False (lines 669-670 except). Kills the
+        ExceptionReplacer on that except."""
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.store.writer.check_db_semantic_grant", _boom)
+        assert ag.confirm_grant("git push origin main", session_id="s") is False
+
+
+# ===========================================================================
+# load_pending_by_nonce_prefix -- prefix match + newest-wins (10 survivors)
+# ===========================================================================
+class TestLoadPendingByNoncePrefixMutants:
+    """load_pending_by_nonce_prefix(prefix) -- matches DB rows by nonce prefix."""
+
+    def _row(self, *, approval_id, ts_created):
+        return {
+            "id": approval_id,
+            "session_id": "s",
+            "created_at": ts_created,
+            "payload_json": json.dumps({
+                "operation": "MUTATIVE command intercepted: push",
+                "exact_content": "git push origin main",
+            }),
+        }
+
+    def test_returns_none_when_no_prefix_match(self, monkeypatch):
+        """No row whose nonce starts with the prefix => None (lines 350-351).
+        Kills the AddNot on `if not nonce.startswith(prefix)` (an inverted guard
+        would match everything)."""
+        monkeypatch.setattr(
+            "gaia.approvals.store.get_pending",
+            lambda **k: [self._row(approval_id="P-ffffffff", ts_created="2026-01-01T00:00:00Z")],
+        )
+        assert ag.load_pending_by_nonce_prefix("deadbeef") is None
+
+    def test_matches_prefix_and_returns_pending_dict(self, monkeypatch):
+        """A row whose nonce starts with the prefix is returned as a pending dict
+        with the stripped nonce. Pins the prefix match and the mapping."""
+        monkeypatch.setattr(
+            "gaia.approvals.store.get_pending",
+            lambda **k: [self._row(approval_id="P-deadbeefcafe", ts_created="2026-01-01T00:00:00Z")],
+        )
+        out = ag.load_pending_by_nonce_prefix("deadbeef")
+        assert out is not None
+        assert out["nonce"] == "deadbeefcafe"
+
+    def test_newest_candidate_wins_on_multiple_matches(self, monkeypatch):
+        """When several rows match, the newest by timestamp is returned (line 355
+        `reverse=True`). Kills the ReplaceTrueWithFalse on the reverse sort: with
+        reverse=False the OLDEST would be returned."""
+        rows = [
+            self._row(approval_id="P-deadbeef1111", ts_created="2026-01-01T00:00:00Z"),
+            self._row(approval_id="P-deadbeef2222", ts_created="2026-06-01T00:00:00Z"),
+        ]
+        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: rows)
+        out = ag.load_pending_by_nonce_prefix("deadbeef")
+        # The 2026-06 row is newest -> its nonce must win.
+        assert out["nonce"] == "deadbeef2222"
+
+    def test_db_exception_returns_none(self, monkeypatch):
+        """A raising get_pending => None (lines 362-364 except). Kills the
+        ExceptionReplacer on that except."""
+        def _boom(**k):
+            raise RuntimeError("db down")
+        monkeypatch.setattr("gaia.approvals.store.get_pending", _boom)
+        assert ag.load_pending_by_nonce_prefix("deadbeef") is None
