@@ -1415,3 +1415,45 @@ class TestCamelCaseSplitGuard:
         assert r.category == "UNKNOWN"
         assert r.verb == "deletefoo/bar"
         assert r.reason == "Unknown verb 'deletefoo/bar' with no dangerous flags"
+
+
+# ===========================================================================
+# detect_mutative_command -- Step 4b API implicit-GET arm (L1581-1587).
+#
+#   if (not any(t in MUTATIVE_VERBS for t in semantic_head_tokens[1:])  # L1584
+#       and len(semantic_head_tokens) > 1                               # L1586
+#       and semantic_head_tokens[1] == "api"):                          # L1587
+#
+# `gh api repos/...` defaults to GET and is read-only.  The existing
+# `test_gh_api_implicit_get` exercises the True path but its head has length 3,
+# so the `> 1` boundary number mutants and the `[1:]` slice-start mutant on the
+# `not any(...)` membership scan survived.  These tests pin the exact boundary:
+# a length-2 head (`gh api`) for the `> 1` number mutant, and a base command
+# that is itself a mutative verb (`post api`) for the `[1:]` slice-start mutant.
+# ===========================================================================
+class TestApiImplicitGetArm:
+    def test_gh_api_bare_length_two_head(self):
+        # head = (gh, api), length exactly 2.  Original `len(...) > 1` is True ->
+        # api arm fires -> READ_ONLY.  Kills L1586 NumberReplacer `1 -> 2`
+        # (`> 2` -> False for a length-2 head -> would skip the api arm and fall
+        # through to the "unknown verb" terminal).
+        r = detect_mutative_command("gh api")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "api"
+        assert r.confidence == "high"
+        assert r.reason == "API call with implicit GET method"
+
+    def test_mutative_base_cmd_before_api_blocks_arm(self):
+        # base_cmd "post" IS in MUTATIVE_VERBS; head = (post, api).  The Step-4
+        # loop scans head[1:] = (api,) and finds no verb, so it reaches Step 4b.
+        # Original `not any(t in MUTATIVE_VERBS for t in head[1:])` scans only
+        # (api,) -> not any -> True -> api arm fires -> READ_ONLY.
+        # Kills L1584 NumberReplacer `1 -> 0` (`head[0:]` includes base "post",
+        # which IS mutative -> any True -> not any False -> arm skipped ->
+        # command falls through to the "unknown verb" terminal).
+        r = detect_mutative_command("post api")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "api"
+        assert r.reason == "API call with implicit GET method"

@@ -821,3 +821,36 @@ len boundary (L1510 `len(camel_parts) > 1`):
   identical whether the loop runs or is skipped. (The NumberReplacer `1 -> 2`
   sibling, `> 2`, DOES change a 2-part token's outcome and IS killed by
   `test_camelcase_two_part_at_index_one_split`.)
+
+## Category M10 — detect_mutative_command Step-4b api-arm residuals (4)
+
+Step 4b (L1581-1587) classifies an `api` subcommand with no explicit mutative
+HTTP verb as an implicit-GET read-only call:
+`not any(t in MUTATIVE_VERBS for t in semantic_head_tokens[1:]) and
+len(semantic_head_tokens) > 1 and semantic_head_tokens[1] == "api"`. The
+KILLABLE siblings (L1584 `[1:] -> [0:]`, L1586 NumberReplacer `1 -> 2`, L1587
+Eq_LtE) are killed by `TestApiImplicitGetArm` + the existing
+`test_gh_api_implicit_get`. The 4 below cannot be distinguished by any reachable
+input.
+
+membership-scan slice (L1584 `for t in semantic_head_tokens[1:]`):
+- `97bf3e54f2f54b2a9867d495517f5ffc` — NumberReplacer occ88 = `1 -> 2`
+  (`head[2:]`). Step 4b is reached only AFTER the Step-4 verb loop (which scans
+  `head[1:]`) finds no MUTATIVE verb; otherwise it returns at L1439. So at L1584
+  NO token in `head[1:]` is in MUTATIVE_VERBS, making `not any(...)`
+  unconditionally True over `[1:]`. `[2:]` is a subset of `[1:]`, so its scan is
+  also empty of mutative verbs and `not any` stays True — the result is
+  identical. (The `1 -> 0` sibling, `head[0:]`, ADDS the base token, which CAN
+  be a mutative verb such as `post`, and IS killed by
+  `test_mutative_base_cmd_before_api_blocks_arm`.)
+
+head-length boundary (L1586 `len(semantic_head_tokens) > 1`):
+- `59a439a308dd49178eb748e797f5a1e7` (Gt_NotEq, `!= 1`),
+  `6989a8c962b14d99825926412a3f7899` (Gt_GtE, `>= 1`),
+  `c06edf0cf25043e39a64daca93f1d6b8` (NumberReplacer occ91 = `1 -> 0`, `> 0`).
+  This arm is reached only when `semantic_head_tokens[1]` exists (the third
+  conjunct indexes `[1]`), and the single-token case (`len == 1`) returns far
+  earlier at Step 2 (L1154). So every input reaching L1586 has `len >= 2`, where
+  `> 1`, `!= 1`, `>= 1`, and `> 0` all coincide (all True). (The `1 -> 2`
+  sibling, `> 2`, is False for a length-2 head and IS killed by
+  `test_gh_api_bare_length_two_head`.)
