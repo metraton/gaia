@@ -587,13 +587,17 @@ path (those start with `/`), so the boolean is unchanged:
   produces. No `~`-token is ever an absolute sensitive path, so weakening or
   inverting the guard changes nothing observable.
 
-## Category M6 — `detect_mutative_command` Step-3e maxsplit/len residuals (4 mutants)
+## Category M6 — `detect_mutative_command` Step-3e/3f maxsplit/len residuals (5 mutants)
 
 Step 3e (command+subcommand tier exception, L1282-1337) extracts
 `group_verb = non_flag_tokens[1] if len(non_flag_tokens) > 1 else ""` and tests
-destructiveness via `group_verb.split("-", 1)[0]`. Four survivors here are
-equivalent; the KILLABLE siblings (the `or`->`and` chain, the maxsplit `1->0`,
-the verb/reason index mutants) are killed by `TestSubcommandTierException`.
+destructiveness via `group_verb.split("-", 1)[0]`. Step 3f (consent-reducing
+operations, L1350-1372) has an identical extraction pattern:
+`consent_verb = non_flag_tokens[1] if len(non_flag_tokens) > 1 else ""`.
+Five survivors are equivalent; the KILLABLE siblings (the `or`->`and` chain,
+the maxsplit `1->0`, the verb/reason index mutants, and the L1286/L1368
+NumberReplacers) are killed by `TestSubcommandTierException` and
+`TestStep4VerbArmsAndGuards`.
 
 - `f4145e97bf6c42c98f71ec2e372543d0` — L1286 `len(non_flag_tokens) > 1`
   Gt_NotEq (`!= 1`): control is inside `if semantics.non_flag_tokens`, so
@@ -618,6 +622,17 @@ the verb/reason index mutants) are killed by `TestSubcommandTierException`.
   delete-thing`) kills the `1 -> 0` sibling (which would leave `candidate =
   "delete-thing"`, not a verb) and the `[0] -> [1]` sibling (`candidate =
   "thing"`); occ78 survives both, so it is the `1 -> 2` no-op.
+- `586bbe030ab74491a235b78d3a276c87` — L1354 `len(non_flag_tokens) > 1`
+  Gt_NotEq (`!= 1`) in Step 3f (consent-reducing operations): exactly the same
+  structural argument as the L1286 Gt_NotEq above. Control is inside
+  `if semantics.non_flag_tokens` so `len >= 1` always. At `len == 1`, both
+  `> 1` and `!= 1` are False → `consent_verb = ""`. At `len >= 2`, both are
+  True → `consent_verb = nft[1]`. No reachable length distinguishes them.
+  The KILLABLE sibling is the L1286 NumberReplacer `5f50e2a6` (changes `1` to
+  `2` or `0`), killed by `test_plan_delete_nft_len2_stays_t3` in
+  `TestStep4VerbArmsAndGuards`. The analogous L1354 NumberReplacer would also
+  be killed by `test_approvals_revoke_reason_exact` (same class), but the DB
+  shows only the Gt_NotEq variant survived; it is proven equivalent here.
 
 ---
 

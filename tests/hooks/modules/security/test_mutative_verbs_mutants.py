@@ -1457,3 +1457,158 @@ class TestApiImplicitGetArm:
         assert r.category == "READ_ONLY"
         assert r.verb == "api"
         assert r.reason == "API call with implicit GET method"
+
+
+# ===========================================================================
+# detect_mutative_command -- Chunk E: Step-3e/3f len-guard, Step-4 or-arms,
+# Step-5 dangerous-flags boolean, and CLI_VERB_TIER_EXCEPTIONS is_mutative.
+#
+# Group 1 (L1286 NumberReplacer 5f50e2a6):
+#   `group_verb = nft[1] if len(nft) > 1 else ""`
+#   Mutation `> 1` -> `> 2` makes group_verb="" for nft len=2, bypassing the
+#   destructive-verb guard and falling to bookkeeping (READ_ONLY) for
+#   `gaia plan delete` (nft len=2). Pin MUTATIVE for the len=2 input.
+#
+# Group 2 (L1354 Gt_NotEq 586bbe03):
+#   Equivalent — see below / equivalents-mutative-verbs.skip.
+#
+# Group 3 (L1368 NumberReplacer x2 13508495, 39add3ca):
+#   `'{base_cmd} {nft[0]} {consent_verb}'` inside the consent-reducing reason.
+#   Mutation `[0]` -> `[1]` / `[-1]` gives "gaia revoke revoke" instead of
+#   "gaia approvals revoke". Pin the EXACT reason to kill both.
+#
+# Group 4 (L1428 OrWithAnd 6c4323b2 + L1429 AddNot 717789b1):
+#   SIMULATION check `candidate in SIMULATION_VERBS or full_lower in SIM_VERBS`.
+#   OrWithAnd makes it `and` -> True AND False = False -> no SIMULATION match.
+#   AddNot on the ternary `verb = candidate if candidate in SIM else full_lower`
+#   -> `verb = "test-foo"` instead of `"test"`.
+#   Input: `gh test-foo` (candidate="test" via hyphen-split, full_lower="test-foo").
+#
+# Group 5 (L1552 OrWithAnd 4f42a729 + L1553 AddNot 5c63adec):
+#   READ_ONLY check `candidate in READ_ONLY_VERBS or full_lower in RO_VERBS`.
+#   OrWithAnd: True AND False = False -> no READ_ONLY match -> falls through.
+#   AddNot on ternary -> `verb = "list-foo"` instead of `"list"`.
+#   Input: `gh list-foo` (candidate="list", full_lower="list-foo").
+#
+# Group 6 (L1464 FalseWithTrue 05fbd2d7):
+#   `is_mutative=False` in CLI_VERB_TIER_EXCEPTIONS return path -> flips to True.
+#   Input: `gws workspace modify` (("workspace","modify") in exceptions -> READ_ONLY).
+#
+# Group 7 (L1604 TrueWithFalse 7617d6ef):
+#   `is_mutative=True` in the dangerous-flags-no-verb Step-5 arm -> flips False.
+#   Input: `weirdcli something --force` (no known verb, --force is dangerous).
+# ===========================================================================
+class TestStep4VerbArmsAndGuards:
+
+    # --- Group 1: L1286 NumberReplacer (5f50e2a6) ---
+    def test_plan_delete_nft_len2_stays_t3(self):
+        # `gaia plan delete` has non_flag_tokens = ('plan','delete'), len=2.
+        # Original `len(nft) > 1` is True -> group_verb="delete" -> destructive
+        # -> MUTATIVE.  Mutation `> 1` -> `> 2` is False for len=2 ->
+        # group_verb="" -> not destructive -> bookkeeping READ_ONLY. Kills it.
+        r = detect_mutative_command("gaia plan delete")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "delete"
+        assert r.confidence == "high"
+        assert r.reason == (
+            "Whole-record destruction 'gaia plan delete' "
+            "stays T3 despite the local bookkeeping exception"
+        )
+
+    def test_plan_nft_len1_bookkeeping(self):
+        # `gaia plan` has non_flag_tokens = ('plan',), len=1.
+        # Original `> 1` is False -> group_verb="" -> non-destructive ->
+        # bookkeeping READ_ONLY.  The mutation `> 2` is also False at len=1,
+        # so both take the same READ_ONLY path.  This pins the len=1 arm so
+        # a `> 0` mutation (occ where 1->0, always True inside `if nft`) would
+        # set group_verb=nft[1] -> IndexError -> non-survivor.
+        r = detect_mutative_command("gaia plan")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "plan"
+        assert r.confidence == "high"
+        assert "Local-only planning bookkeeping" in r.reason
+        assert "'gaia plan'" in r.reason
+
+    # --- Group 3: L1368 NumberReplacer x2 (13508495, 39add3ca) ---
+    def test_approvals_revoke_reason_exact(self):
+        # Pin the EXACT reason string for `gaia approvals revoke`.
+        # The reason embeds `nft[0]` ("approvals"). NumberReplacer on `[0]`
+        # to `[1]` gives "revoke" or to `[-1]` also gives "revoke" (nft has
+        # 2 elements), so the reason becomes "gaia revoke revoke ...".
+        # Asserting the full verbatim reason kills both NumberReplacer mutants.
+        r = detect_mutative_command("gaia approvals revoke")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "revoke"
+        assert r.confidence == "high"
+        assert r.reason == (
+            "Consent-reducing operation "
+            "'gaia approvals revoke' "
+            "only revokes/rejects capability already granted — "
+            "not state-granting, so not T3"
+        )
+
+    # --- Group 4: L1428 OrWithAnd (6c4323b2) + L1429 AddNot (717789b1) ---
+    def test_gh_test_foo_classified_simulation(self):
+        # `gh test-foo`: candidate="test" (hyphen-split at idx 1), full_lower=
+        # "test-foo".  SIMULATION check: `"test" in SIM or "test-foo" in SIM`.
+        # Original: True or False = True -> SIMULATION.
+        # OrWithAnd mutant: True and False = False -> skips SIMULATION.
+        # AddNot mutant: `verb = candidate if not (candidate in SIM) else full_lower`
+        #   -> verb = "test-foo" instead of "test".
+        # Pin category, verb, confidence, is_mutative to kill both.
+        r = detect_mutative_command("gh test-foo")
+        assert r.is_mutative is False
+        assert r.category == "SIMULATION"
+        assert r.verb == "test"
+        assert r.confidence == "high"
+        assert r.reason == "Simulation verb 'test'"
+
+    # --- Group 5: L1552 OrWithAnd (4f42a729) + L1553 AddNot (5c63adec) ---
+    def test_gh_list_foo_classified_read_only(self):
+        # `gh list-foo`: candidate="list" (hyphen-split at idx 1), full_lower=
+        # "list-foo".  READ_ONLY check: `"list" in RO or "list-foo" in RO`.
+        # Original: True or False = True -> READ_ONLY, verb="list".
+        # OrWithAnd mutant: True and False = False -> skips READ_ONLY arm ->
+        #   falls through to command-alias check or safe-by-elimination.
+        # AddNot mutant: `verb = candidate if not (candidate in RO) else full_lower`
+        #   -> verb = "list-foo" instead of "list".
+        # Pin category, verb, confidence, is_mutative to kill both.
+        r = detect_mutative_command("gh list-foo")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "list"
+        assert r.confidence == "high"
+        assert r.reason == "Read-only verb 'list'"
+
+    # --- Group 6: L1464 FalseWithTrue (05fbd2d7) ---
+    def test_gws_workspace_modify_cli_exception_read_only(self):
+        # ("workspace","modify") is in CLI_VERB_TIER_EXCEPTIONS -> READ_ONLY.
+        # FalseWithTrue mutant flips `is_mutative=False` to `True`.
+        # Pin is_mutative=False plus category and reason to kill it.
+        r = detect_mutative_command("gws workspace modify")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "modify"
+        assert r.cli_family == "workspace"
+        assert r.confidence == "high"
+        assert r.reason == (
+            "Verb 'modify' for 'workspace' CLI excepted to read_only by config"
+        )
+
+    # --- Group 7: L1604 TrueWithFalse (7617d6ef) ---
+    def test_dangerous_flag_no_verb_is_mutative(self):
+        # Step 5: no verb found, but --force is a dangerous flag.
+        # TrueWithFalse mutant flips `is_mutative=True` to `False`.
+        # Input: `weirdcli something --force`.  "something" is not a known
+        # verb; "--force" is ALWAYS-dangerous -> is_mutative True.
+        # Pin is_mutative=True and category to kill the mutant.
+        r = detect_mutative_command("weirdcli something --force")
+        assert r.is_mutative is True
+        assert r.category == "UNKNOWN"
+        assert r.verb == "something"
+        assert r.dangerous_flags == ("--force",)
+        assert r.confidence == "low"
+        assert r.reason == "Unknown verb 'something' with dangerous flags ('--force',)"

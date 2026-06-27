@@ -90,10 +90,13 @@ d52611a053134454b1dda31413cf164f
 781985fe92784142b48ece25144f5dbb
 21da39c1c1e44f26a2a7e2c82f360134
 # ===========================================================================
-# Category M6 — detect_mutative_command Step-3e maxsplit/len residuals (4).
+# Category M6 — detect_mutative_command Step-3e/3f maxsplit/len residuals (5).
 # Killable siblings (or->and chain, maxsplit 1->0, verb/reason index) are
-# killed by TestSubcommandTierException. See equivalents-security-core.md M6.
+# killed by TestSubcommandTierException / TestStep4VerbArmsAndGuards.
+# See equivalents-security-core.md M6.
 # -- L1286 len(non_flag_tokens) > 1 Gt_NotEq (coincides at len 1 / >=2)
+#    Step-3e; killed sibling L1286 NumberReplacer (5f50e2a6) by
+#    test_plan_delete_nft_len2_stays_t3.
 f4145e97bf6c42c98f71ec2e372543d0
 # -- split("-",1)[0] maxsplit 1->2 (split[0] is first segment for maxsplit>=1):
 #    L1294 (arm1), L1296 (arm3 EXTRA_DENY), L1313 (verb=)
@@ -104,6 +107,10 @@ d0930b20681044978932645e6c7fa045
 #    hyphen-split; same first-segment argument). 1->0 / [0]->1 killed by the
 #    idx-2 split test (test_hyphen_split_at_index_two_high_confidence).
 74dffbf83b0f4c7fa3892548fda1591d
+# -- L1354 len(non_flag_tokens) > 1 Gt_NotEq Step-3f consent-verb extraction
+#    (same pattern as L1286 Gt_NotEq M6): inside `if semantics.non_flag_tokens`
+#    len>=1 always; `> 1` and `!= 1` both False at len=1 and True at len>=2.
+586bbe030ab74491a235b78d3a276c87
 # ===========================================================================
 # Category M7 — script-file / inline / layer3 comparison & loop residuals (10).
 # Killable siblings killed by TestLayer3LengthCheck / TestCheckInlineCode /
