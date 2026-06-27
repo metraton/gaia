@@ -3486,3 +3486,36 @@ class TestMatchExceptionHandlersAC5:
         )
         # Healthy code catches and returns None; the mutant would raise here.
         assert match_command_set_grant("git push origin main") is None
+
+
+class TestActivateFallbackVerbAC5:
+    """activate_db_pending_by_prefix fallback-verb guard (line 1444):
+    `first_token = command.split()[0] if command.strip() else 'unknown'`.
+
+    For any normal command build_approval_signature yields a verb, so the
+    fallback never runs. The ONE reachable input is a WHITESPACE-ONLY command:
+    it is truthy (passes the `if not command` guard at 1176) but
+    build_approval_signature('   ') returns None (no exact_tokens) -> the
+    fallback at 1444 IS entered. There `command.strip()` is FALSY, so the
+    healthy ternary picks 'unknown'. The AddNot mutant (`if not command.strip()`)
+    instead evaluates `command.split()[0]` on whitespace -> IndexError, which the
+    outer handler turns into ACTIVATION_ERROR. The healthy path rebuilds with
+    'unknown', which still has empty tokens -> ACTIVATION_INVALID_SIGNATURE. The
+    distinct status discriminates the mutant."""
+
+    def test_whitespace_command_takes_unknown_branch_not_split(self, monkeypatch):
+        """Line 1444 AddNot. A whitespace-only command reaches the fallback with
+        a falsy command.strip(). Healthy -> 'unknown' -> second signature also
+        None -> ACTIVATION_INVALID_SIGNATURE. Mutant -> command.split()[0] on
+        '   ' -> IndexError -> outer handler -> ACTIVATION_ERROR. Pin the
+        INVALID_SIGNATURE status (and assert it is NOT the ERROR the mutant
+        produces)."""
+        payload = {
+            "operation": "blocked command awaiting consent",
+            "exact_content": "   ",  # truthy, but .strip() is empty
+        }
+        _AC1Driver.drive(monkeypatch, payload)
+        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        assert result.success is False
+        assert result.status == ACTIVATION_INVALID_SIGNATURE
+        assert result.status != ACTIVATION_ERROR
