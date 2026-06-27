@@ -1,0 +1,48 @@
+# GRIND-TOTAL equivalents for tiers.py — see equivalents-security-core.md
+# (Category T1, added this session). Each job_id below is a mutant proven
+# GENUINELY EQUIVALENT: no honest test can distinguish it from the original for
+# ANY reachable input. Listed here it is excluded from the kill-rate
+# denominator. A mutant is listed ONLY if no honest input distinguishes it.
+#
+# Module:  hooks/modules/security/tiers.py
+# Session: tiers-spike.sqlite (87 specs)
+# Baseline: 91.95% (80/87, 7 survivors). After closure: 1 killed by
+#           tests/hooks/modules/security/test_tiers_mutants.py
+#           (L82 ReplaceFalseWithTrue, 87dc4edb), 6 proven equivalent below.
+#
+# Verification: tests/evals/_probe_tiers_mutants.py (per-mutant, deterministic).
+# Each equivalent below was probed against the full security suite (with the
+# new closure test in place) and SURVIVED; the genuine-equivalence argument is
+# in equivalents-security-core.md Category T1.
+#
+# ===========================================================================
+# Category T1 — tiers.py SecurityTier / cached-classifier residuals (6 mutants).
+#
+# -- L40 `return self == SecurityTier.T3_BLOCKED` (requires_approval).
+#    The domain of `self` is exactly the 4 SecurityTier enum singletons.
+#    Eq_Is: enum members are singletons, so `is` coincides with `==`.
+#    Eq_GtE: SecurityTier is (str, Enum) with values "T0".."T3"; "T3" is the
+#    maximum, so `self >= T3` is True iff `self == T3`. Identical truth table
+#    over all 4 members (verified).
+0a83c4b85a5a4c2cb26e55bdd5aab0f7
+65027875c42446aea4bc2a43239f5bf8
+# -- L79 `@lru_cache(maxsize=512)` on _classify_command_tier_cached.
+#    The function is pure over (command, has_blocked_patterns). lru_cache is
+#    transparent memoization. RemoveDecorator only forgoes caching; the maxsize
+#    NumberReplacer only changes eviction capacity. Neither changes any return
+#    value. (Same as mutative_verbs M2.)
+396d44cba1df47d89f462d4c080f59ce
+89d6fca995304878b6c4b5782d40d019
+# -- L178 `not command or not command.strip()` ReplaceOrWithAnd (public guard
+#    in classify_command_tier). Diverges from `or` only for whitespace-only
+#    input; with `and` it short-circuits False, falls through to
+#    command.strip() == "", the blocked-pattern loop matches nothing, and
+#    _classify_command_tier_cached("") hits its OWN (unmutated) L89 guard and
+#    returns T3 — identical observable. The cached guard masks the public guard.
+9465e182adbf4528b0142380a38c395b
+# -- L193 `break` ReplaceBreakWithContinue (blocked-pattern loop in
+#    classify_command_tier). Once a pattern matches, has_blocked=True is set;
+#    continuing the loop only re-scans the remaining patterns, leaving
+#    has_blocked True. The return value _classify_command_tier_cached(command,
+#    has_blocked) is identical whether the loop breaks or continues.
+440dc30c5a904e14af077eb8af2e239c

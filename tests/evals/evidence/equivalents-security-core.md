@@ -869,3 +869,123 @@ head-length boundary (L1586 `len(semantic_head_tokens) > 1`):
   `> 1`, `!= 1`, `>= 1`, and `> 0` all coincide (all True). (The `1 -> 2`
   sibling, `> 2`, is False for a length-2 head and IS killed by
   `test_gh_api_bare_length_two_head`.)
+
+---
+
+# Equivalent Mutants — `tiers.py` (GRIND-TOTAL, last module of the mutation network)
+
+**Date:** 2026-06-27
+**Branch:** `harden/approval-grants-m1-loop`
+**Module:** `hooks/modules/security/tiers.py`
+**Session DB:** `tiers-spike.sqlite` (87 specs)
+**Baseline:** 91.95% (80 killed / 7 survived / 87 total).
+
+**Closure:** of the 7 survivors, **1 killed** by an honest test in
+`tests/hooks/modules/security/test_tiers_mutants.py`; **6 proven equivalent**
+below and excluded via `equivalents-tiers.skip`.
+
+**Killed survivor:**
+- `87dc4edb0d4347648b52e5e75638a602` — L82 `ReplaceFalseWithTrue` on the
+  default argument `has_blocked_patterns=False` of
+  `_classify_command_tier_cached`. **KILLED** by
+  `TestTiersMutantClosure::test_cached_default_no_blocked_is_safe_by_elimination`:
+  calling the cached classifier with the DEFAULT argument on an unknown,
+  non-mutative, non-keyword command (`"some_unknown_command --flag"`) must
+  return T0 (safe by elimination). With the mutated default `True`, the
+  `if has_blocked_patterns: return T3` branch (L105) fires and the command is
+  mis-classified T3. The public API `classify_command_tier` always passes
+  `has_blocked` explicitly (L196), so the mutant is observable only via the
+  cached function's documented internal contract — which the test exercises
+  directly. Verified KILLED with `_probe_tiers_mutants.py 87dc4edb`.
+
+**Verification method:** every equivalent below was probed against the full
+security test suite (with the closure test in place) via
+`tests/evals/_probe_tiers_mutants.py <prefix>` (per-mutant, deterministic — each
+mutant applied alone in an isolated clone) and confirmed SURVIVED. The harness
+`pytest -x` test-command is non-deterministic under sharding, so the per-mutant
+probe is the authority, not a full run.
+
+## Category T1 — `SecurityTier` / cached-classifier residuals (6 mutants)
+
+### T1a — `requires_approval` comparison over the fixed enum domain (L40)
+
+`requires_approval` (L40) is `return self == SecurityTier.T3_BLOCKED`. The
+domain of `self` is exactly the 4 `SecurityTier` enum singletons
+(`T0_READ_ONLY`, `T1_VALIDATION`, `T2_DRY_RUN`, `T3_BLOCKED`); the type system
+guarantees no other value reaches it.
+
+| Operator | Mutant | Why equivalent | job_id |
+|----------|--------|----------------|--------|
+| Eq_Is | `self is T3_BLOCKED` | Enum members are singletons, so `is` reproduces `==` exactly. | `0a83c4b85a5a4c2cb26e55bdd5aab0f7` |
+| Eq_GtE | `self >= T3_BLOCKED` | `SecurityTier(str, Enum)`; comparison is on the string values `"T0".."T3"`. `"T3"` is the maximum, so `self >= "T3"` is True iff `self == "T3"`. Identical truth table over all 4 members. | `65027875c42446aea4bc2a43239f5bf8` |
+
+**Verified:** for all 4 members, `==`, `is`, and `>=` against `T3_BLOCKED`
+produce the identical truth table (False, False, False, True).
+
+### T1b — `@lru_cache(maxsize=512)` transparency (L79, 2 mutants)
+
+`_classify_command_tier_cached` is a pure function of
+`(command, has_blocked_patterns)`. `lru_cache` is transparent memoization:
+for identical arguments it returns identical results whether the cache is
+present, absent, or sized differently. (Same as `mutative_verbs.py` M2.)
+
+| Operator | Mutant | Why equivalent | job_id |
+|----------|--------|----------------|--------|
+| RemoveDecorator | drop `@lru_cache` | Only forgoes memoization; every call recomputes the same `SecurityTier`. | `396d44cba1df47d89f462d4c080f59ce` |
+| NumberReplacer | `maxsize=512`→N | Changes only the cache eviction capacity, never a return value. | `89d6fca995304878b6c4b5782d40d019` |
+
+### T1c — public empty/whitespace guard masked by the cached guard (L178)
+
+`classify_command_tier` L178: `if not command or not command.strip(): return T3`.
+`ReplaceOrWithAnd` diverges from `or` only for whitespace-only input. With
+`and`, whitespace (`"   "`) makes `not command` False → short-circuits to
+False → NOT returned early → falls through to `command = command.strip()` →
+`""`. The blocked-pattern loop then matches nothing, and
+`_classify_command_tier_cached("")` hits its OWN (unmutated) L89 guard
+`not command or not command.strip()` → returns T3. The observable result is
+identical: whitespace is still T3. The cached guard masks the public guard.
+
+| Function | Line | Operator | job_id |
+|----------|-----:|----------|--------|
+| `classify_command_tier` | 178 | ReplaceOrWithAnd | `9465e182adbf4528b0142380a38c395b` |
+
+(The L89 cached-guard `ReplaceOrWithAnd` IS killable and is killed by
+`test_tiers.py::TestMutationBaselineSurvivors::test_cached_classifier_whitespace_is_t3`,
+which calls the cached function directly with whitespace.)
+
+### T1d — blocked-pattern loop `break`→`continue` no-op (L193)
+
+`classify_command_tier` blocked-pattern loop (L190-193):
+```python
+for pattern in blocked_patterns:
+    if pattern.search(command):
+        has_blocked = True
+        break   # <-- mutated to continue
+```
+Once a pattern matches, `has_blocked = True` is set. `ReplaceBreakWithContinue`
+only changes whether the loop scans the remaining patterns; `has_blocked` stays
+True regardless, and nothing else in the loop body depends on continuing. The
+return value `_classify_command_tier_cached(command, has_blocked)` is identical
+whether the loop breaks early or runs to completion.
+
+| Function | Line | Operator | job_id |
+|----------|-----:|----------|--------|
+| `classify_command_tier` | 193 | ReplaceBreakWithContinue | `440dc30c5a904e14af077eb8af2e239c` |
+
+---
+
+## Exclusion mechanism — tiers.py (AC-1 denominator)
+
+**Skip file:** `tests/evals/equivalents-tiers.skip` (6 job_ids, Category T1).
+
+| Population | Count |
+|------------|------:|
+| Total specs in DB | 87 |
+| Killed by honest tests (baseline + closure) | 81 |
+| Proven-equivalent excluded (T1, skip file) | 6 |
+| **Untriaged survivors** | **0** |
+
+**Endpoint:** 0 untriaged survivors in `tiers.py`. 1 of the 7 spike survivors
+killed by `test_tiers_mutants.py`; the other 6 proven equivalent (T1a–T1d) and
+excluded via `equivalents-tiers.skip`. This closes the last module of the
+security-core mutation network.
