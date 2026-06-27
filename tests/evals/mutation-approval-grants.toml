@@ -9,6 +9,26 @@
 # enough code paths (low kill rate), broaden to:
 #   test-command = "python3 -m pytest tests/hooks/modules/security/test_approval_grants.py tests/hooks/modules/security/test_approval_cycle.py tests/hooks/modules/security/test_batch_approval.py -q -x --no-header"
 #
+# ANTI-STALENESS RULE (AC-10):
+#   A cosmic-ray session (.sqlite) records the test-command results from the
+#   moment `cosmic-ray init`/`exec` ran. If you change test files or the
+#   source module WITHOUT re-running `cosmic-ray init`, `cr-rate` will report
+#   a STALE kill_rate -- computed against the OLD test set, not the current one.
+#
+#   RE-INIT IS OBLIGATORY after any of:
+#     - editing any test file listed in test-command below
+#     - editing the source module (approval_grants.py)
+#     - changing test-command or module-path in this toml
+#
+#   The `mutkill_approval_grants.py` harness does NOT suffer from this
+#   staleness: it re-runs `mutate_and_test` against the current tests on every
+#   invocation. Use it (not `cr-rate`) for an up-to-date kill_rate during the
+#   hardening loop. Run `--check-stale` to detect stale sessions:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session approval-grants.sqlite \
+#       --toml tests/evals/mutation-approval-grants.toml \
+#       --check-stale
+#
 # Init:
 #   cd gaia && uv run cosmic-ray init tests/evals/mutation-approval-grants.toml approval-grants.sqlite
 # Exec (T3 — requires approval):

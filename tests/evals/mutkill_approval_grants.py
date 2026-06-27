@@ -35,6 +35,22 @@ plus killed/survived/incompetent/total counts, for an agentic loop to parse.
 
 The kill_rate matches cosmic-ray's `cr-rate`: killed / (total - incompetent).
 
+ANTI-STALENESS RULE (AC-10)
+---------------------------
+A cosmic-ray session (.sqlite) stores mutation inventory + test results from
+when `cosmic-ray init`/`exec` last ran. If you change test files or the source
+module WITHOUT re-running `cosmic-ray init`, `cr-rate` will report a STALE
+kill_rate (computed from old test results). This harness re-runs `mutate_and_test`
+against the current tests on every invocation, so IT IS NEVER STALE -- but the
+session's mutant inventory still comes from the last `cosmic-ray init`. If the
+source module changed shape (lines shifted, functions renamed), the mutant specs
+may no longer map correctly either.
+
+Rule: **re-run `cosmic-ray init` after any change to test files, the source
+module, or the test-command in the toml.** Use `--check-stale` to detect this.
+
+See also: tests/evals/mutation-*.toml headers for the full re-init obligation.
+
 USAGE
 -----
     # approval_grants (original use-case -- defaults still work):
@@ -48,6 +64,9 @@ USAGE
 
     # explicit module override:
     uv run python tests/evals/mutkill_approval_grants.py --session foo.sqlite --toml tests/evals/mutation-foo.toml --module hooks/modules/security/foo.py
+
+    # staleness check only (no mutation run):
+    uv run python tests/evals/mutkill_approval_grants.py --session approval-grants.sqlite --toml tests/evals/mutation-approval-grants.toml --check-stale
 """
 
 from __future__ import annotations
@@ -164,6 +183,90 @@ def read_module_path(toml_path: Path) -> str | None:
             _, _, rhs = s.partition("=")
             return rhs.strip().strip('"').strip("'")
     return None
+
+
+def _extract_test_paths_from_command(test_command: str, repo_root: Path) -> list[Path]:
+    """Extract test file paths from a pytest test-command string.
+
+    Scans the command tokens for tokens that look like test paths (start with
+    'tests/' or end with '.py', and exist on disk relative to repo_root).
+    Returns a list of resolved Paths for files that actually exist.
+    """
+    paths = []
+    for token in test_command.split():
+        # Skip flags and the pytest invocation itself.
+        if token.startswith("-") or token in ("python3", "-m", "pytest", "uv", "run"):
+            continue
+        candidate = repo_root / token
+        if candidate.is_file():
+            paths.append(candidate)
+    return paths
+
+
+def check_session_staleness(
+    session_path: Path,
+    toml_path: Path,
+    module_rel: str | None,
+    repo_root: Path,
+) -> list[str]:
+    """Compare session mtime against test files, source module, and toml.
+
+    Returns a list of human-readable warning strings (empty = session is fresh).
+    Each entry names the file that is newer than the session and explains why
+    this matters (the session's recorded outcomes may not reflect current tests).
+
+    Does NOT abort or raise; callers decide how to act on the warnings.
+    """
+    try:
+        session_mtime = session_path.stat().st_mtime
+    except OSError:
+        return [f"cannot stat session file: {session_path}"]
+
+    warnings: list[str] = []
+
+    def _check(path: Path, label: str) -> None:
+        try:
+            m = path.stat().st_mtime
+        except OSError:
+            return
+        if m > session_mtime:
+            import datetime
+            sess_ts = datetime.datetime.fromtimestamp(session_mtime).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            file_ts = datetime.datetime.fromtimestamp(m).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            warnings.append(
+                f"STALE SESSION: {label} is newer than the session\n"
+                f"  session mtime : {sess_ts}  ({session_path.name})\n"
+                f"  file mtime    : {file_ts}  ({path})\n"
+                f"  -> cr-rate results from `cosmic-ray exec` may not reflect\n"
+                f"     the current tests. Re-run: cosmic-ray init <toml> <session>"
+            )
+
+    # 1. The toml itself (test-command or module-path may have changed).
+    _check(toml_path, "toml config")
+
+    # 2. The source module under mutation.
+    if module_rel:
+        module_path = repo_root / module_rel
+        if module_path.is_file():
+            _check(module_path, f"source module ({module_rel})")
+        elif module_path.is_dir():
+            # Package path: check all .py files in the package.
+            for py in module_path.rglob("*.py"):
+                _check(py, f"source module ({py.relative_to(repo_root)})")
+
+    # 3. Test files referenced by the test-command in the toml.
+    try:
+        test_command = read_test_command(toml_path)
+        for tp in _extract_test_paths_from_command(test_command, repo_root):
+            _check(tp, f"test file ({tp.relative_to(repo_root)})")
+    except SystemExit:
+        pass  # toml missing test-command; skip test-file checks
+
+    return warnings
 
 
 def load_specs(session_path: Path):
@@ -355,12 +458,39 @@ def main():
     ap.add_argument("--dump-json", type=Path, default=None,
                     help="write per-mutant {job_id: outcome} to this file "
                          "(fidelity cross-check against cosmic-ray session)")
+    ap.add_argument("--check-stale", action="store_true",
+                    help="compare session mtime against test files, source module, "
+                         "and toml; warn on stderr if any are newer than the session "
+                         "(= cr-rate results may be stale). When used alone (without "
+                         "running mutants), exit 0 if fresh, exit 1 if stale.")
     args = ap.parse_args()
 
     if not args.session.exists():
         raise SystemExit(f"session not found: {args.session}")
     if not args.toml.exists():
         raise SystemExit(f"toml not found: {args.toml}")
+
+    # AC-10 staleness guard: always run (warns on stderr); --check-stale exits
+    # after the check without running any mutants (exit 1 = stale, 0 = fresh).
+    _stale_module = args.module if args.module else read_module_path(args.toml)
+    stale_warnings = check_session_staleness(
+        args.session, args.toml, _stale_module, REPO_ROOT
+    )
+    if stale_warnings:
+        print("", file=sys.stderr)
+        print("WARNING: cosmic-ray session may be STALE (AC-10 anti-staleness rule):",
+              file=sys.stderr)
+        for w in stale_warnings:
+            print(f"  {w}", file=sys.stderr)
+        print("  -> Use `mutkill` (this harness) for fresh kill_rate; "
+              "re-init session before using `cr-rate`.", file=sys.stderr)
+        print("", file=sys.stderr)
+        if args.check_stale:
+            raise SystemExit(1)
+    else:
+        if args.check_stale:
+            print("session is FRESH (no staleness detected)", file=sys.stderr)
+            raise SystemExit(0)
 
     # Derive the module to mutate: --module wins; fall back to module-path in toml.
     module_rel: str

@@ -156,6 +156,36 @@ Semantic cases (S1-S3, S8, S9, S10) produce a score in `[0, 1]` and pass at
 delta greater than `0.10` flags drift. Protocol cases (S4-S7) are binary --
 no partial credit, and drift is exact-match compare.
 
+## Anti-staleness rule for cosmic-ray sessions (AC-10)
+
+A cosmic-ray session (`.sqlite`) records the test-command results from when
+`cosmic-ray init`/`exec` last ran. Changing test files or the source module
+WITHOUT re-running `cosmic-ray init` means `cr-rate` will report a stale
+kill_rate — based on old results, not the current tests. This caused the
+hardening loop to believe approval_grants "had not improved" when +101
+mutants had actually been killed by new tests (AC-10 incident).
+
+**RE-INIT IS OBLIGATORY** after any change to:
+- any test file referenced in `test-command` (in the per-module `.toml`)
+- the source module under mutation
+- `test-command`, `module-path`, or `excluded-modules` in the `.toml`
+
+**The `mutkill_approval_grants.py` harness does NOT suffer from this**: it
+re-runs `mutate_and_test` against the current tests on every invocation.
+Use it (not `cr-rate`) for an up-to-date kill_rate during the hardening loop.
+
+**Detect stale sessions** with `--check-stale` (exits 1 if stale, 0 if fresh):
+
+```
+uv run python tests/evals/mutkill_approval_grants.py \
+    --session approval-grants.sqlite \
+    --toml tests/evals/mutation-approval-grants.toml \
+    --check-stale
+```
+
+Without `--check-stale`, the guard still runs and prints a WARNING to stderr
+if the session is older than any tracked file — but execution continues.
+
 ## How to run
 
 All commands assume the repo root is `/home/jorge/ws/me/gaia-dev`.

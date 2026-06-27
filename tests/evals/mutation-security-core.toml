@@ -15,6 +15,27 @@
 # the package down to exactly the four core modules above. When a non-core
 # security module gains test coverage worth measuring, drop its exclusion line.
 #
+# ANTI-STALENESS RULE (AC-10):
+#   A cosmic-ray session (.sqlite) records the test-command results from the
+#   moment `cosmic-ray init`/`exec` ran. If you change test files or any of
+#   the four core modules WITHOUT re-running `cosmic-ray init`, `cr-rate` will
+#   report a STALE kill_rate — the session's recorded outcomes do not reflect
+#   your new tests. This is a known trap: it caused kill_rate to appear
+#   unchanged after +101 additional kills in the hardening loop (AC-10).
+#
+#   RE-INIT IS OBLIGATORY after any of:
+#     - editing any test file in tests/hooks/modules/security/
+#     - editing any of the four core modules above
+#     - changing test-command, module-path, or excluded-modules in this toml
+#
+#   The `mutkill_approval_grants.py` harness does NOT suffer from staleness:
+#   it re-runs `mutate_and_test` on every invocation using the current tests.
+#   Use it (not `cr-rate`) for an up-to-date kill_rate during the hardening
+#   loop. Detect stale sessions with --check-stale:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session security-core.sqlite \
+#       --toml tests/evals/mutation-security-core.toml --check-stale
+#
 # Re-init required after any change to module-path / excluded-modules /
 # timeout / test-command:
 #   uv run cosmic-ray init tests/evals/mutation-security-core.toml security-core.sqlite
