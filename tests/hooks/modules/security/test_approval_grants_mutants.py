@@ -2848,3 +2848,121 @@ class TestWritePendingBehavioralM1Final:
             "nonce123", "/etc/hosts", session_id="s", context={"risk": "high"},
         )
         assert captured.get("risk_level") == "high"
+
+
+class TestMatchCommandSetBehavioralM1Final:
+    """match_command_set_grant behavioral survivors that the SQL pre-filter
+    leaves reachable (expiry boundary + ordering across expired/malformed grants).
+
+    NOTE: lines 1683 (scope != 'COMMAND_SET') and 1684 (its continue->break) are
+    EQUIVALENT, not behavioral: list_command_set_grants_agnostic's SQL already
+    filters `scope = 'COMMAND_SET'`, so the in-Python scope check is constantly
+    False and no operator flip on it is observable. Documented in
+    equivalents-security-core.md (category E-SQL-redundant), not killed here.
+    """
+
+    def _insert(self, db_path, approval_id, command_set, *, status="PENDING",
+                expires_at=None, created_at=None, command_set_json=None):
+        if expires_at is None:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(str(db_path))
+        try:
+            if created_at is not None:
+                con.execute(
+                    """INSERT INTO approval_grants
+                       (approval_id, session_id, command_set_json, scope,
+                        expires_at, status, consumed_indexes_json, created_at)
+                       VALUES (?, 'test-session-mut', ?, 'COMMAND_SET', ?, ?, '[]', ?)""",
+                    (approval_id,
+                     command_set_json if command_set_json is not None
+                     else json.dumps(command_set),
+                     expires_at, status, created_at),
+                )
+            else:
+                con.execute(
+                    """INSERT INTO approval_grants
+                       (approval_id, session_id, command_set_json, scope,
+                        expires_at, status, consumed_indexes_json)
+                       VALUES (?, 'test-session-mut', ?, 'COMMAND_SET', ?, ?, '[]')""",
+                    (approval_id,
+                     command_set_json if command_set_json is not None
+                     else json.dumps(command_set),
+                     expires_at, status),
+                )
+            con.commit()
+        finally:
+            con.close()
+
+    def test_expiry_lt_not_le_boundary(self, monkeypatch, writer_db):
+        """Line 1671 `expires_at < now_iso` vs Lt->LtE. At expires_at EXACTLY ==
+        now_iso the grant is NOT expired (`<` False -> still matches) but `<=`
+        would treat it as expired (skipped -> no match). The function does a local
+        `from datetime import datetime` (line 1659), so we freeze
+        `datetime.datetime.now` on the stdlib module to a fixed instant and set
+        the grant's expires_at to the SAME instant's iso string."""
+        import datetime as _dtmod
+        frozen = _dtmod.datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        fixed_iso = frozen.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        real_datetime = _dtmod.datetime
+
+        class _FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+        monkeypatch.setattr(_dtmod, "datetime", _FrozenDateTime)
+
+        approval_id = f"P-{secrets.token_hex(16)}"
+        self._insert(
+            writer_db, approval_id,
+            [{"command": "git push origin main", "rationale": "a"}],
+            expires_at=fixed_iso,  # == now_iso at call time
+        )
+        # expires_at == now_iso: `<` False (not expired -> matches); `<=` True
+        # (expired -> skipped -> None). Healthy code returns the match.
+        result = match_command_set_grant("git push origin main")
+        assert result == (approval_id, 0)
+
+    def test_expired_grant_continue_not_break(self, writer_db):
+        """Line 1680 `continue` (skip expired) vs ReplaceContinueWithBreak. An
+        EXPIRED grant created LATER (sorts first by created_at DESC) followed by a
+        valid grant: the expired one must be SKIPPED (continue) so the loop reaches
+        the valid grant. With `break` the loop aborts at the expired grant and the
+        valid command never matches -> None."""
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        future = (datetime.now(timezone.utc) + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        expired_id = f"P-{secrets.token_hex(16)}"
+        valid_id = f"P-{secrets.token_hex(16)}"
+        # expired created NOW (sorts first under created_at DESC); valid created
+        # earlier so it is reached only if the expired one is `continue`d past.
+        self._insert(
+            writer_db, expired_id,
+            [{"command": "git push origin main", "rationale": "x"}],
+            expires_at=past, created_at="2030-01-01T00:00:00Z",
+        )
+        self._insert(
+            writer_db, valid_id,
+            [{"command": "git push origin main", "rationale": "y"}],
+            expires_at=future, created_at="2029-01-01T00:00:00Z",
+        )
+        assert match_command_set_grant("git push origin main") == (valid_id, 0)
+
+    def test_malformed_json_continue_not_break(self, writer_db):
+        """Line 1691 `continue` (skip malformed command_set_json) vs
+        ReplaceContinueWithBreak. A grant with invalid command_set_json created
+        LATER (sorts first) followed by a valid grant: the malformed one is
+        skipped so the valid command matches. With `break` the loop aborts -> None."""
+        bad_id = f"P-{secrets.token_hex(16)}"
+        good_id = f"P-{secrets.token_hex(16)}"
+        self._insert(
+            writer_db, bad_id, [],
+            command_set_json="{not valid json", created_at="2030-01-01T00:00:00Z",
+        )
+        self._insert(
+            writer_db, good_id,
+            [{"command": "git push origin main", "rationale": "y"}],
+            created_at="2029-01-01T00:00:00Z",
+        )
+        assert match_command_set_grant("git push origin main") == (good_id, 0)
