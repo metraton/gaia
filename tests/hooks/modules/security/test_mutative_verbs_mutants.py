@@ -1266,3 +1266,95 @@ class TestHyphenSplitPositionBoundary:
         assert r.verb == "delete"
         assert r.confidence == "medium"
         assert r.reason == "Mutative verb 'delete'"
+
+
+# ===========================================================================
+# detect_mutative_command -- camelCase verb override / exception / danger arms
+# (L1518 `override_flags & frozenset(semantics.flag_tokens)`,
+#  L1520 `is_mutative=False` override result,
+#  L1530 `is_mutative=False` CLI_VERB_TIER_EXCEPTIONS result,
+#  L1540 `" with dangerous flags ..." if dangerous_flags else ""`).
+#
+# When the FIRST non-flag token is camelCase (semantic_index == 1) and a
+# fragment is a mutative verb, three result arms can fire: a verb+flag
+# read-only override, an unconditional tier exception, or a plain MUTATIVE with
+# dangerous-flag detail.  The legacy suite only asserted is_mutative on the
+# plain path, so the set-intersection operator (L1518), the two boolean result
+# literals (L1520/L1530) and the dangerous-flag conditional (L1540) survived.
+# The override path uses `git tagCreate` because ("git","tag") is the sole
+# VERB_FLAG_READ_ONLY_OVERRIDES entry ({-l,--list}); the exception path uses
+# `gws fooModify` because ("workspace","modify") is the sole
+# CLI_VERB_TIER_EXCEPTIONS entry.
+# ===========================================================================
+class TestCamelCaseOverrideExceptionArms:
+    def test_camelcase_tag_with_list_flag_overridden_read_only(self):
+        # head_raw[1] = "tagCreate" -> camel parts [tag, create]; "tag" in
+        # MUTATIVE_VERBS and ("git","tag") override flags {-l,--list} intersect
+        # the present flag {-l} -> READ_ONLY.
+        # L1518 set-intersection `&`: any arithmetic mutant (Add/Sub/Mul/Div/
+        #   FloorDiv/Mod/Pow/RShift/LShift) raises TypeError on frozensets ->
+        #   detect_mutative_command propagates -> mutant killed.
+        # L1518 AddNot (`not (override & flags)`) -> False -> skips override ->
+        #   would flag MUTATIVE; pinned READ_ONLY kills it.
+        # L1520 FalseWithTrue (`is_mutative=True`) -> pinned False kills it.
+        r = detect_mutative_command("git tagCreate -l")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "tag"
+        assert r.cli_family == "git"
+        assert r.confidence == "high"
+        assert r.reason == (
+            "CamelCase verb 'tag' (from 'tagCreate') "
+            "overridden to read-only by flag"
+        )
+
+    def test_camelcase_tag_no_flag_stays_mutative(self):
+        # No override flag present: `override_flags & frozenset()` is the empty
+        # set (falsy) -> skip override -> plain MUTATIVE.  Kills L1518
+        # BitAnd_BitOr: `override_flags | frozenset()` = {-l,--list} (truthy) ->
+        # would wrongly downgrade to READ_ONLY.
+        r = detect_mutative_command("git tagCreate")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "tag"
+        assert r.reason == "CamelCase verb 'tag' (from 'tagCreate')"
+
+    def test_camelcase_tag_both_override_flags_stays_read_only(self):
+        # Both override flags present: `{-l,--list} & {-l,--list}` = {-l,--list}
+        # (truthy) -> READ_ONLY.  Kills L1518 BitAnd_BitXor: `^` on two equal
+        # sets is the empty set (falsy) -> would skip override -> MUTATIVE.
+        r = detect_mutative_command("git tagCreate -l --list")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "tag"
+        assert "overridden to read-only by flag" in r.reason
+
+    def test_camelcase_modify_workspace_exception_read_only(self):
+        # head_raw[1] = "fooModify" -> camel parts [foo, modify]; "modify" in
+        # MUTATIVE_VERBS and ("workspace","modify") in CLI_VERB_TIER_EXCEPTIONS
+        # -> READ_ONLY.  Kills L1530 FalseWithTrue (`is_mutative=True`).
+        r = detect_mutative_command("gws fooModify")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "modify"
+        assert r.cli_family == "workspace"
+        assert r.reason == (
+            "CamelCase verb 'modify' (from 'fooModify') "
+            "excepted to read_only by config"
+        )
+
+    def test_camelcase_mutative_verb_with_dangerous_flag_detail(self):
+        # head_raw[1] = "fooDelete" -> camel parts [foo, delete]; "delete" in
+        # MUTATIVE_VERBS, no override/exception, --force is a dangerous flag ->
+        # MUTATIVE with the flag detail appended.  Kills L1540 AddNot
+        # (`if not dangerous_flags`), which would drop the " with dangerous
+        # flags (...)" suffix from the reason.
+        r = detect_mutative_command("mytool fooDelete --force")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "delete"
+        assert r.dangerous_flags == ("--force",)
+        assert r.reason == (
+            "CamelCase verb 'delete' (from 'fooDelete') "
+            "with dangerous flags ('--force',)"
+        )
