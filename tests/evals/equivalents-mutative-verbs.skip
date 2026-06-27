@@ -174,3 +174,16 @@ aa2946f0ceae4376a139633ed76142ba
 da85192593f646ecb8bac27eb6519122
 2db03bd8b74849a5b785ecad3582afbc
 3418b07e5de94d6ba28ca0e0e5c331ec
+# ===========================================================================
+# Category M10 — detect_mutative_command Step-4b api-arm residuals (4).
+# Killable siblings (L1584 [1:]->[0:], L1586 NumberReplacer 1->2, L1587 Eq_LtE)
+# killed by TestApiImplicitGetArm + test_gh_api_implicit_get. See M10.
+# -- L1584 not any(t in MUTATIVE_VERBS for t in head[1:]) occ88 (1->2, head[2:]);
+#    no head[1:] token is mutative at this point (else returns at L1439), so the
+#    subset scan stays vacuously True. [0:] (adds base 'post') killed.
+97bf3e54f2f54b2a9867d495517f5ffc
+# -- L1586 len(head) > 1 Gt_NotEq/Gt_GtE/NumberReplacer 1->0 (len>=2 always here:
+#    [1] is indexed by the 3rd conjunct, len==1 returns at Step 2 L1154)
+59a439a308dd49178eb748e797f5a1e7
+6989a8c962b14d99825926412a3f7899
+c06edf0cf25043e39a64daca93f1d6b8
