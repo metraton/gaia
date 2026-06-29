@@ -1,0 +1,55 @@
+AC-1 — Integration test: grant cycle is session-agnostic (brief #89)
+======================================================================
+Date: 2026-06-29
+Branch: main (HEAD 60565b1)
+Status: CLOSED — test file exists and passes with exit 0.
+
+Test file
+---------
+tests/integration/test_grant_cycle_no_session_env.py
+  (landed in commit 1e1b1df — "test(security): characterize session-agnostic grant cycle")
+
+Supporting fixture
+------------------
+tests/fixtures/grant_cycle_harness.py
+  Runs pre_tool_use.py as a real subprocess with CLAUDE_SESSION_ID stripped from
+  the environment, so the hook can only learn the session from the JSON event on
+  stdin — the exact production path.
+
+What the tests cover
+--------------------
+Two planes of the T3 grant cycle (block -> activate -> retry), both exercises
+crossing a session boundary (BLOCK_SESSION != RETRY_SESSION):
+
+  TestBashSemanticGrantCycleNoSessionEnv
+    test_block_activates_grant_consumed_by_cross_session_retry
+    Planes: Bash T3 command (git push)
+    Invariant: grant activated under RETRY_SESSION is found by the retry even
+    though the block recorded BLOCK_SESSION — proves session_id is NOT a match
+    criterion in check_db_semantic_grant.
+
+  TestWriteEditFilePathGrantCycleNoSessionEnv
+    test_protected_path_write_allowed_after_cross_session_activation
+    Plane: protected-path Write (hooks/pre_tool_use.py)
+    Invariant: same cross-session guarantee for check_db_file_path_grant.
+
+Command run
+-----------
+$ uv run pytest tests/integration/test_grant_cycle_no_session_env.py -v
+
+Transcript
+----------
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/jorge/ws/me/gaia/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/jorge/ws/me/gaia
+configfile: pyproject.toml
+plugins: cov-7.1.0
+collecting ... collected 2 items
+
+tests/integration/test_grant_cycle_no_session_env.py::TestBashSemanticGrantCycleNoSessionEnv::test_block_activates_grant_consumed_by_cross_session_retry PASSED [ 50%]
+tests/integration/test_grant_cycle_no_session_env.py::TestWriteEditFilePathGrantCycleNoSessionEnv::test_protected_path_write_allowed_after_cross_session_activation PASSED [100%]
+
+============================== 2 passed in 1.28s ================================
+
+Exit code: 0
