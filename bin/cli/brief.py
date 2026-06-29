@@ -380,16 +380,44 @@ def _cmd_edit(args) -> int:
 
 
 def _cmd_show(args) -> int:
-    from gaia.briefs import get_brief, serialize_brief_to_markdown
+    from gaia.briefs import (
+        get_brief,
+        get_brief_by_id,
+        find_brief_workspaces,
+        serialize_brief_to_markdown,
+    )
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    as_json = getattr(args, "json", False)
+
+    # FIX 1: when the argument is all-digits, resolve by numeric id first.
+    if name.isdigit():
+        brief = get_brief_by_id(int(name))
+        if brief is not None:
+            if as_json:
+                out = {k: v for k, v in brief.items() if k != "id"}
+                print(json.dumps(out, indent=2, default=str))
+                return 0
+            print(serialize_brief_to_markdown(brief))
+            return 0
+        # Numeric id not found -- fall through to the slug path so that a
+        # name that happens to look like a number still gets a useful error.
 
     brief = get_brief(workspace, name)
     if brief is None:
-        return _err(f"brief '{name}' not found in workspace '{workspace}'",
-                    as_json=getattr(args, "json", False))
+        # FIX 2: cross-workspace hint instead of bare "not found".
+        other_workspaces = find_brief_workspaces(name)
+        if other_workspaces:
+            hint = ", ".join(repr(w) for w in other_workspaces)
+            msg = (
+                f"brief '{name}' not found in workspace '{workspace}', "
+                f"but exists in: {hint} -- use --workspace=<workspace> to show it"
+            )
+        else:
+            msg = f"brief '{name}' not found in workspace '{workspace}'"
+        return _err(msg, as_json=as_json)
 
-    if getattr(args, "json", False):
+    if as_json:
         # Drop internal SQL columns for cleanliness
         out = {k: v for k, v in brief.items() if k != "id"}
         print(json.dumps(out, indent=2, default=str))
