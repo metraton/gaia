@@ -891,6 +891,64 @@ head-length boundary (L1586 `len(semantic_head_tokens) > 1`):
   sibling, `> 2`, is False for a length-2 head and IS killed by
   `test_gh_api_bare_length_two_head`.)
 
+## Category M11 — `_check_python_module_runner` index-walk residuals (3)
+
+**NEW CODE** (Brief 91 AC-7). `_check_python_module_runner` recognizes
+`<python> [interp-flags] -m <pkg-mgr> <args...>`, reads the module token by
+walking `raw_tokens` from index 1, and re-dispatches the rewrite through
+`detect_mutative_command`. After the re-init the helper has 71 mutants; 68 are
+killed by `TestCheckPythonModuleRunner` in `test_mutative_verbs_mutants.py`
+(reason-pinned: each test asserts the exact re-dispatch reason, which encodes
+`base_cmd`, `module`, and — via `rest` — `module_idx`). The 3 below are
+genuinely equivalent.
+
+bounds guard `if i + 1 < len(raw_tokens):` (the `-m`-consumes-next check):
+- `30044b2886ce42d6afa482ab8fd2d983` — Lt_NotEq (`i + 1 != len`).
+- `43c451848db44f2bb623ad8b306b8949` — Lt_IsNot (`i + 1 is not len`).
+  The loop is `for i in range(1, len(raw_tokens))`, so `i ∈ [1, len-1]` and
+  `i + 1 ∈ [2, len]`. Over that range `i + 1 < len` is True exactly when
+  `i + 1 != len` and (small ints interned) when `i + 1 is not len`; `i + 1`
+  can never EXCEED `len`, so no reachable input separates the three. The
+  killable siblings — Lt_LtE (`<= len` → reads `raw_tokens[len]` → IndexError),
+  Lt_Gt, Lt_GtE, Lt_Eq, Lt_Is — flip the boundary at `i + 1 == len` (the `-m`
+  is the last token) and are killed by
+  `test_m_as_last_token_does_not_redispatch`.
+
+None-guard `if module is None or module_idx is None:`:
+- `0fc4ec63a9b346b091bb4304085548f0` — ReplaceOrWithAnd. `module` and
+  `module_idx` are initialized `None` together and assigned together in the
+  same `if` body (`module = raw_tokens[i + 1]; module_idx = i + 1`); there is
+  no path where exactly one is `None`. So `A or B` and `A and B` coincide
+  whenever `A == B`, which is always. The Is_IsNot siblings on each operand
+  (`module is not None`, `module_idx is not None`) ARE killed by
+  `test_non_package_module_returns_none_not_redispatched`.
+
+(Arithmetic residuals: the LShift on the bounds `i + 1`, and the BitOr/BitXor
+on the `module_idx + 1` slice start, coincide with `+1` only at `i == 1` /
+`module_idx == 2`; they are killed by inputs that place `-m` / the module at
+index 2 — `test_bounds_lshift_with_m_at_index_two_no_args`,
+`test_rest_slice_bitop_with_module_idx_three`.)
+
+---
+
+## RE-INIT note (822-spec session)
+
+The denominator table above (735 specs / 74 equivalents) is from the original
+session. After re-init for the AC-7/AC-9 new code the session holds **822
+specs**; baseline **82.60% (679 killed / 143 survived)**. The 74 old
+equivalents re-mapped to new job_ids (matching function + operator + line
+content), with one change: M10 L1624 `len(head) > 1` Gt_GtE is now **KILLED**
+by the re-init'd suite, so it left the skip file; M11 added 3. Net: **75
+equivalents** in `equivalents-mutative-verbs.skip`. Grind-total closure holds:
+0 untriaged survivors remain in `mutative_verbs.py`.
+
+| Population (re-init) | Count |
+|----------------------|------:|
+| Total specs in DB | 822 |
+| INCOMPETENT | 0 |
+| Proven-equivalent excluded (M1–M11, skip file) | 75 |
+| **Killable denominator** | **747** |
+
 ---
 
 # Equivalent Mutants — `tiers.py` (GRIND-TOTAL, last module of the mutation network)
