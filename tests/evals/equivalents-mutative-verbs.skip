@@ -1,196 +1,176 @@
-# GRIND-TOTAL equivalents for mutative_verbs.py — see equivalents-security-core.md
-# (Category M* sections, added this session). Each job_id below is a mutant
-# proven GENUINELY EQUIVALENT by hand: apply the exact cosmic-ray mutant ->
-# full suite stays green -> revert. Listed here it is excluded from the
-# kill-rate denominator. A mutant is listed ONLY if no honest input can
-# distinguish it from the original for ANY reachable input.
+# GRIND-TOTAL equivalents for mutative_verbs.py (RE-INIT'd session: 822 specs).
+# See tests/evals/evidence/equivalents-security-core.md, Categories M*.
+# Each job_id below is a mutant proven GENUINELY EQUIVALENT: no honest
+# input distinguishes it from the original for ANY reachable input.
+# Re-mapped to NEW job_ids by matching (function, operator, line
+# content), NOT line number (the +134-line shift from the AC-7/AC-9 new
+# code invalidated the old ids).  NumberReplacer +1/-1 offsets are
+# disambiguated by survivor status against the current test suite.
 #
-# Baseline: 55.78% (410 killed / 325 survived / 735 total).
-#
-# Endpoint: every mutative_verbs.py survivor is either killed by a test in
-# tests/hooks/modules/security/test_mutative_verbs_mutants.py OR proven
-# equivalent here.
+# Re-init baseline: 82.60% (679 killed / 143 survived / 822 total).
+# After grind: 75 equivalents excluded; 0 untriaged survivors remain.
 #
 # ===========================================================================
-# Category M1 — import-fallback `except ImportError` handlers (3 mutants).
+# Category M1 — import-fallback `except ImportError` handlers (3).
 # The 3 sibling modules (capability_classes, blocked_commands,
 # inline_ast_analyzer) always import in-process, so the except body is
-# unreachable. ExceptionReplacer on an unreachable handler is unobservable.
-# (Same pattern as blocked_commands B3.) See equivalents-security-core.md M1.
-5973c2d7f577477ea68ca846e34322cb
-7032f9b90c1c4dceb03b15ff2387b05f
-147eb27c5a254c6ab0d3b92600f1a333
+# unreachable; ExceptionReplacer on an unreachable handler is unobservable.
+20fe2cda8cc142fea8bef19e3cf11c36
+d89b9a414af94d7495f92010af537d9c
+75abc87c838344569eba4c690106ad69
 # ===========================================================================
-# Category M2 — @functools.lru_cache(maxsize=128) transparency (3 mutants).
+# Category M2 — @functools.lru_cache(maxsize=128) transparency (3).
 # detect_mutative_command is a pure function; the cache is transparent
 # memoization. RemoveDecorator and the maxsize NumberReplacers change only
-# caching, never a return value. See equivalents-security-core.md M2.
-0a92fbce93084dee862d41bedee91f99
-56957e5de53c4785b32c7afe9f7c0cc8
-bb8fe5f7d7184699b97978221d36a6c8
+# caching, never a return value.
+049e879da99f466e96cea34779d95389
+ea52d7767b5640cb9cfa178d8c72685d
+822399f8d2924177b6661ebfc7cb6e02
 # ===========================================================================
-# Category M3 — split_camel_case len-guard boundary (2 mutants).
-# `return [...] if len(parts) > 1 else [token.lower()]` (line 932). Gt_GtE
-# (>=1) and NumberReplacer 1->0 (>0) both differ from `>1` only at len 0/1,
-# where the two arms coincide. The sibling 1->2 (>2) IS killed. See
-# equivalents-security-core.md M3.
-8906953c388444e1a064abdf71c98f81
-b016396e9473411799beae17fa2003c9
+# Category M3 — split_camel_case len-guard boundary (2).
+# `return [...] if len(parts) > 1 else [token.lower()]`. Gt_GtE (>=1) and
+# NumberReplacer 1->0 (>0) differ from `>1` only at len 0/1, where the two
+# arms coincide. The sibling 1->2 (>2) IS killed.
+112bbd54a744461e9014a2418acee3d9
+ae5ae558a3754d8bb6a8acee21f08e92
 # ===========================================================================
-# Category M4 — _scan_dangerous_flags elif-chain + compound guard (17 mutants).
-# Killable siblings (L882 Eq_GtE, L879 break, L906 Gt_NotEq) are killed by
-# tests. The 17 below cannot be distinguished by any reachable input:
+# Category M4 — _scan_dangerous_flags elif-chain + compound guard (17).
+# Killable siblings are killed by tests. The 17 below cannot be distinguished:
 # chain-position (a mutated later elif only ever sees its own flag), identical
 # flag-sets ({git} for -D/-M/--hard), token[0] always "-", single-char
-# interning, and no 2-char r/f token reaching the compound branch. See
-# equivalents-security-core.md M4.
-# -- L877 flag_type == "ALWAYS" (values in {ALWAYS,CONTEXT}): Eq_LtE, Eq_Is
-a6459cf24d7d4ed5ad41b8222c619482
-b8760d57037346a98bbdcc8f87838063
-# -- L888/L891/L897 Eq_GtE, L894 Eq_LtE (later elif sees only its own flag)
-fc297946fa01418d9813ca9dd85276fc
-fbb4d57bf9a7406db289bb3962fd5fae
-1a2b7526eedc4de5ac3d441914f234fc
-f6732a8a95c44082bfa12bea279dbecb
-# -- L900 == "--hard" (last branch, only --hard reaches): GtE, LtE, IsNot
-623e513f6cdb467ba2ddeaa533e135d0
-b5ee483338e0425e95272c265403feb3
-91f8c803fc59470191e6e29dbc41d5ac
-# -- L906 token[0] == "-" (always "-"): Eq_GtE, Eq_LtE, Eq_Is
-c87e28a7c0d24683b3b2519612471c3c
-5bf4fa3db4ad431a9ca273a613caad5d
-a99439b9869940b59aca7a494a4ebfbd
-# -- L906 len(token) > 2 Gt_GtE + NumberReplacer occ17 (2->1)
-6e86bd17c87a459ca2eb22946035e90a
-598d13384cd743a28a3315e3cc1420d8
-# -- L906 token[1] != "-": NotEq_Gt, NotEq_IsNot
-622281fc5fb24945b8a7b169b6eceef3
-009761a0ba2742c5a8e45b8ac284ca16
-# -- L907 token[1:] NumberReplacer occ23 (1->0, token[0:])
-d8b12902fb014791b253cfae6909cefb
+# interning, and no 2-char r/f token reaching the compound branch.
+# -- flag_type == "ALWAYS" (values in {ALWAYS,CONTEXT}): Eq_LtE, Eq_Is
+a39fd53fc3124198ae1279d57471050e
+1892b2fae22e4c3ca6825258dd2bc5f0
+# -- token == "--hard" (last branch, only --hard reaches): Eq_GtE, Eq_LtE, Eq_IsNot
+b202b9618b2d4c638dc87614b617c779
+0a32706502714bb18ceb01e65e5362b5
+f35fff6b0acd4228a053932cc071319a
+# -- compound guard token[0] == "-" (always "-"): Eq_GtE, Eq_LtE, Eq_Is
+1e67e3bc0afa4598a299869fdb537941
+ae5047b42c234f22beb5d3615c06cc9f
+79a7374baeb04979b9d0aca52eafb9ac
+# -- compound guard len(token) > 2 Gt_GtE + NumberReplacer 2->1
+bec9ee770ffa4d3b8aeed904f86c5d80
+17abfc874d2e409faaa9e0707321c7dd
+# -- compound guard token[1] != "-": NotEq_Gt, NotEq_IsNot
+892689316a8147f3a7e16859e6fe4cc8
+fd1f0932c8c24f588525b1726404dbe4
+# -- flag_chars = token[1:] NumberReplacer 1->0 (token[0:])
+a3b6ae0e33834b51af9bb1a46400435d
+# -- later elif == branches (each only ever sees its own flag): -D/-M/--recursive Eq_GtE, --delete Eq_LtE
+27c5d57cec834277a0e098ad46e4e65b
+9503ecb7baa54055bde12caaa88d9ad5
+9f52e363af864ae2837218fbd8a3776d
+8d1c4ade39734b62a15c3a120315a49d
 # ===========================================================================
 # Category M5 — _mkdir_targets_sensitive_path opt-handling residuals (9).
-# Killable siblings (L659 Lt_IsNot/Lt_NotEq via bare trailing -m; L677
-# ContinueWithBreak via ~/foo /etc/bar) are killed by tests. The 9 below only
-# affect how a token starting with "-" or "~" is routed; such a token can
-# never be an absolute sensitive path (those start with "/"), so the boolean
-# is unchanged. See equivalents-security-core.md M5.
-# -- L658 i=1 NumberReplacer occ11 (1->0; tokens[0] is relative base cmd)
-ff3997b9cadd457a8f57320422853710
-# -- L663 token == "--" (only gates dash-token routing): Eq_Is, Eq_Lt, Eq_LtE
-953277e88e35481faca487f955802ecf
-05bc068879b34376b9f78b99dba3545c
-74c5e1eef62b46afaf5c8bc521d959b9
-# -- L664 seen_end_of_opts = True ReplaceTrueWithFalse (same dash-only effect)
-1af025453dbf40a9b8d873ac3fb02706
-# -- L675 ~ guard (redundant; failing it falls to isabs->relative->continue):
-#    Eq_Gt, Eq_GtE, Eq_Is, ReplaceOrWithAnd
-8208f029d06349eda2f6e2bb8a09d6d3
-d52611a053134454b1dda31413cf164f
-781985fe92784142b48ece25144f5dbb
-21da39c1c1e44f26a2a7e2c82f360134
+# Each only affects how a token starting with "-" or "~" is routed; such a
+# token can never be an absolute sensitive path (those start with "/"), so the
+# boolean is unchanged.
+# -- i = 1 NumberReplacer 1->0 (tokens[0] is relative base cmd)
+94d3817b85fc46e9ae89a5e3ff49a9fb
+# -- token == "--" (only gates dash-token routing): Eq_Is, Eq_Lt, Eq_LtE
+2285e15ab9d544c89da3f76476f731de
+ecc92218249045b3a744a24192caf137
+95d98320e5164f36adf5b290823f4c03
+# -- seen_end_of_opts = True ReplaceTrueWithFalse (same dash-only effect)
+b9ea916744fa48c29498d977472257e8
+# -- ~ guard (redundant; failing it falls to isabs->relative->continue): Eq_Gt, Eq_GtE, Eq_Is, OrWithAnd
+6b7b3a0a322f4a009b71c0d7b60e2456
+d5708dcea4594343b47b945749abb795
+d35858765fe14a2485640e696277ac09
+86b9b1c5254f4d909561b57ddf2adbcd
 # ===========================================================================
-# Category M6 — detect_mutative_command Step-3e/3f maxsplit/len residuals (5).
-# Killable siblings (or->and chain, maxsplit 1->0, verb/reason index) are
-# killed by TestSubcommandTierException / TestStep4VerbArmsAndGuards.
-# See equivalents-security-core.md M6.
-# -- L1286 len(non_flag_tokens) > 1 Gt_NotEq (coincides at len 1 / >=2)
-#    Step-3e; killed sibling L1286 NumberReplacer (5f50e2a6) by
-#    test_plan_delete_nft_len2_stays_t3.
-f4145e97bf6c42c98f71ec2e372543d0
-# -- split("-",1)[0] maxsplit 1->2 (split[0] is first segment for maxsplit>=1):
-#    L1294 (arm1), L1296 (arm3 EXTRA_DENY), L1313 (verb=)
-d0930b20681044978932645e6c7fa045
-10fb370acb474822aa6f504e82b6432c
-096aa0a08bfc4844bb60cd53a2650757
-# -- L1417 candidate = stripped_token.split("-",1)[0] maxsplit 1->2 (Step-4
-#    hyphen-split; same first-segment argument). 1->0 / [0]->1 killed by the
-#    idx-2 split test (test_hyphen_split_at_index_two_high_confidence).
-74dffbf83b0f4c7fa3892548fda1591d
-# -- L1354 len(non_flag_tokens) > 1 Gt_NotEq Step-3f consent-verb extraction
-#    (same pattern as L1286 Gt_NotEq M6): inside `if semantics.non_flag_tokens`
-#    len>=1 always; `> 1` and `!= 1` both False at len=1 and True at len>=2.
-586bbe030ab74491a235b78d3a276c87
+# Category M6 — detect_mutative_command Step-3e/3f maxsplit/len residuals (6).
+# `> 1` vs `!= 1` coincide inside `if semantics.non_flag_tokens` (len>=1
+# always); split("-", N)[0] is the first segment for any maxsplit>=1.
+# -- Step-3e len(non_flag_tokens) > 1 Gt_NotEq
+e4df3b3992ec464f8a41d6c1eb541baf
+# -- split("-",1)[0] maxsplit 1->2: arm1, arm3 EXTRA_DENY, verb=
+b97a164554724f43b107ae5e99baf805
+703b6736d369416193bb7f0ba02a0a1b
+81f33f713a024dbbbfad743a65554973
+# -- Step-4 candidate = stripped_token.split("-",1)[0] maxsplit 1->2
+c3ad7153b62c48e49ac8047249ec4aac
+# -- Step-3f consent_verb len(non_flag_tokens) > 1 Gt_NotEq
+f1262c76a10f4d988b5a590f8b19a817
 # ===========================================================================
 # Category M7 — script-file / inline / layer3 comparison & loop residuals (10).
-# Killable siblings killed by TestLayer3LengthCheck / TestCheckInlineCode /
-# TestCheckScriptFilePythonLane. See equivalents-security-core.md M7.
-# -- L1988 idx != -1 NotEq_Gt (find >= -1, so >-1 == !=-1)
-8016d854a9024e7b9114b0049da9f74f
-# -- L1988 idx != -1 NotEq_IsNot (-1 interned; is-not coincides with !=)
-b403e03173ca4da599ade9c832768dc2
-# -- L1990 break->continue (single inline flag per interp; 2-flag distinction
-#    depends on randomized frozenset iteration order, not deterministic)
-f0e540574ba54e6f987ae46ac7155618
-# -- L1695 token == "-" Eq_Is / Eq_LtE (single-char interned "-" sentinel)
-6d2148b0c2d542c1ac735a8cce479dae
-6777262f6c3e4834adcd645fdb611d09
-# -- L1729 except (OSError, ValueError) ExceptionReplacer x2 (try body raises
-#    only those two on reachable inputs; unreachable-handler, same as M1)
-38374c72b45141aba7aa0bfaf8a776a0
-e68fbb7b08d14d39b73f1cacfa97371d
-# -- L1770 lane == "python" Eq_Is / Eq_LtE (lane in {python,shell}: interned
-#    literal + 2-element ordered domain coincide with ==)
-9766004adec84f74acec57d99b77a6fb
-0301d615e90646f8aeae10c6ed636676
+# find>=-1, interned "-"/"python" sentinels, unreachable except handlers, and a
+# single-inline-flag loop where break/continue coincide.
+# -- _layer3_length_check idx != -1: NotEq_Gt, NotEq_IsNot
+06e445c934fe4aefbbd3cbc00096266c
+b3ba77389a5249f8af0ccf3af7ac84ca
+# -- _resolve_script_argument token == "-": Eq_Is, Eq_LtE
+274e6a087683467fb9f32bdcdee79e99
+769ec4b1c2c448d098a83ab86aaee453
+# -- _read_script_content except (OSError, ValueError) ExceptionReplacer x2
+642861f6f25744a7a70c6dd1d331cd07
+d415792653f641dfb9f38368ea9b6654
+# -- _check_script_file lane == "python": Eq_Is, Eq_LtE
+9bdb7fa3b864499ba4d3b19cbc0ccc2d
+09160c13ede8464abaaf07a615a4e343
+# -- _layer3_length_check inline-flag loop break->continue (single flag per interp)
+05612876b6fd4ee38153d581f1370241
 # ===========================================================================
-# Category M8 — detect_mutative_command fast-path / early-branch residuals.
-# Killable siblings killed by TestDetectMutativeEarlyBranches + existing
-# TestDetectMutativeCommand. See equivalents-security-core.md M8.
-# -- L1048 t != "--" NotEq_IsNot (clause only seen for non-dash tokens; never
-#    equals "--", identity coincides with !=)
-728517f9f3784ccda2d410f0b65b76cc
-# -- L1069/L1102 `family if family != "unknown" else "system"`: family is
-#    ALWAYS "unknown" (no alias/read-only base cmd is in CLI_FAMILY_LOOKUP), so
-#    the condition is always False; Lt/Gt/IsNot all preserve False at ==.
-8835056f24be40138bbe8b40bf307cfb
-1e8f2a5ef7a84c93bb46f2a2898bd50d
-508523544c9e48c099e968deb0a0ca89
-3f76b1bfe4424ca097194556df6d845e
-dda8023f873d414f9a07f94be870ad44
-2cff04f6e25b44eb8a3bca4b418aafa8
-# -- L1115 capability import guard AndWithOr (both names always non-None;
-#    except ImportError unreachable, same as M1)
-c254d1c81ced40aab48d1a4822def56d
-# -- L1119 cap.intent == _CAP_READ_ONLY Eq_GtE / Eq_Is (intent in
-#    {MUTATIVE,READ_ONLY} interned literals; identity + ordered domain == ==)
-1db341d9b6f84e6d8d6ca4c3a48aa366
-def6285393ae443ab77bd1acda629e06
-# -- L1154 len(tokens) == 1 Eq_LtE (len 0 intercepted at L1013; over len>=1
-#    `<= 1` coincides with `== 1`)
-17993015687945ee8cc2f2416a54d96a
-# -- L1240 non_flag_tokens[0] == "-" Eq_IsNot/Eq_LtE/Eq_GtE (heredoc branch
-#    only reached when nft[0] is "-"; non-dash positional intercepted by
-#    script-file Step 1d. Operand fixed at "-": all three coincide with ==)
-d767207733e3492fb2427fb3f586ae99
-aa2946f0ceae4376a139633ed76142ba
-960d9259724d4ac39015d82224003693
+# Category M8 — detect_mutative_command fast-path / early-branch residuals (13).
+# Fixed operands, always-"unknown" family, unreachable capability import,
+# interned literals, len>=1 range.
+# -- mkdir path-token filter t != "--" NotEq_IsNot (never "--" for non-dash token)
+21231cd7d6e241f2b7ff81e17332087f
+# -- alias / read-only family ternary family != "unknown" (always "unknown"): NotEq_Lt/Gt/IsNot x2
+3b00dccf8d1347b3b904589586fdb9e2
+cc34753b911446269bf99282b2e6466b
+f982d8bd5bdc481a9e932933cc40b6a8
+93dc0be2330d421887c91e086eabbe33
+72c615c0f5c845aa987b173f6e54b9c6
+5d569751fceb4359adfe210e33fc696a
+# -- capability import guard AndWithOr (both names always non-None)
+3e2b537b1a254d0c85d507f1df4eee57
+# -- cap.intent == _CAP_READ_ONLY: Eq_GtE, Eq_Is (interned 2-element domain)
+4ab4b8622f384730a47955fda7fd94c5
+f5cc42bf8e6f485ba10ef5f4bda048d4
+# -- len(tokens) == 1 Eq_LtE (len 0 intercepted earlier; over len>=1, <=1 == ==1)
+8f0684a12a3d44b692fdfe3dc034287e
+# -- heredoc-guard non_flag_tokens[0] == "-": Eq_IsNot, Eq_LtE, Eq_GtE (operand fixed "-")
+5c4004d5b9cd4248bef729dc77723cae
+70ac005150b84b16bb5f92b649806c6a
+e6e24fbd0e55415c8d5bc6864e2a4a8f
 # ===========================================================================
 # Category M9 — detect_mutative_command Step-4 camelCase guard residuals (7).
-# Killable siblings (L1509 Eq_GtE, L1510 AndWithOr + NumberReplacer 1->2, L1511
-# AndWithOr) killed by TestCamelCaseSplitGuard. See equivalents-security-core.md M9.
-# -- L1506 semantic_index < len(head_raw) (always True; head & head_raw equal
-#    length, idx in [1,len-1]; else-branch dead): Lt_NotEq, Lt_LtE, Lt_IsNot
-5263334d0da24f459a9ef3ccf52d5299
-571cb131f5bf40bebeb30c78ff7d2177
-9c94f3bcd6c84162b0178d5c92c0b415
-# -- L1509 semantic_index == 1 Eq_LtE (loop starts at 1; <=1 coincides with ==1)
-22a5912baf624747ad852cc587507e65
-# -- L1510 len(camel_parts) > 1 Gt_NotEq/Gt_GtE/NumberReplacer 1->0 (>=1 always;
-#    1-part token entering loop never matches a verb -- it'd match at L1439 first)
-da85192593f646ecb8bac27eb6519122
-2db03bd8b74849a5b785ecad3582afbc
-3418b07e5de94d6ba28ca0e0e5c331ec
+# Lockstep raw/head lengths (else-branch dead), loop starts at 1, split returns
+# >=1 part.
+# -- semantic_index < len(...): Lt_NotEq, Lt_LtE, Lt_IsNot (idx in [1,len-1])
+0db1f65e0ba54de0909714a12f6dd974
+bb2f73ca794d46a2b12482c05ae86c85
+a1721ead8a9544a2b0fa2ab184cf39d4
+# -- semantic_index == 1 Eq_LtE (loop starts at 1)
+744705019a2e462b805b50f3bf70973e
+# -- len(camel_parts) > 1: Gt_NotEq, Gt_GtE, NumberReplacer 1->0 (>=1 always; 1-part matched earlier)
+3939001110dd41ac8866719bf9e95282
+5c12eea967f944f1b36653ee257c5eeb
+9f6fa3f637fe4e3783b2c627f3814db2
 # ===========================================================================
-# Category M10 — detect_mutative_command Step-4b api-arm residuals (4).
-# Killable siblings (L1584 [1:]->[0:], L1586 NumberReplacer 1->2, L1587 Eq_LtE)
-# killed by TestApiImplicitGetArm + test_gh_api_implicit_get. See M10.
-# -- L1584 not any(t in MUTATIVE_VERBS for t in head[1:]) occ88 (1->2, head[2:]);
-#    no head[1:] token is mutative at this point (else returns at L1439), so the
-#    subset scan stays vacuously True. [0:] (adds base 'post') killed.
-97bf3e54f2f54b2a9867d495517f5ffc
-# -- L1586 len(head) > 1 Gt_NotEq/Gt_GtE/NumberReplacer 1->0 (len>=2 always here:
-#    [1] is indexed by the 3rd conjunct, len==1 returns at Step 2 L1154)
-59a439a308dd49178eb748e797f5a1e7
-6989a8c962b14d99825926412a3f7899
-c06edf0cf25043e39a64daca93f1d6b8
+# Category M10 — detect_mutative_command Step-4b api-arm residuals (3).
+# (The doc lists 4, but L1624 len(head)>1 Gt_GtE is now KILLED by the re-init'd
+# suite — excluded here.) Vacuous subset scan over head[1:]; len>=2 at this arm.
+# -- head[1:] membership-scan slice NumberReplacer 1->2 (subset stays mutative-free)
+7974ec306d2545bb9d4397d150349f3c
+# -- len(semantic_head_tokens) > 1 Gt_NotEq (len>=2 here, all coincide)
+cd5a5bc649b24f1f8539b67c31bd9d24
+# ===========================================================================
+# Category M11 — _check_python_module_runner index-walk residuals (3). NEW CODE.
+# Brief 91 AC-7 `<python> -m <pkg-mgr> ...` re-dispatch.
+# -- bounds i + 1 < len(raw_tokens): Lt_NotEq, Lt_IsNot. The loop is
+#    `range(1, len)` so i+1 in [2,len]; over that range `< len` == `!= len` ==
+#    `is not len` (i+1 never exceeds len; small ints interned). The `<=` / `>` /
+#    `>=` / `==` / `is` siblings ARE killed (test_m_as_last_token_does_not_redispatch).
+30044b2886ce42d6afa482ab8fd2d983
+43c451848db44f2bb623ad8b306b8949
+# -- None-guard `module is None or module_idx is None` OrWithAnd. module and
+#    module_idx are assigned together (L1737-1738) or both stay None — never one
+#    without the other — so `A or B` == `A and B` when A == B always. The
+#    Is_IsNot siblings on each operand ARE killed.
+0fc4ec63a9b346b091bb4304085548f0
+# ===========================================================================
