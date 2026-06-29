@@ -1,6 +1,6 @@
 {
   "name": "gaia-ops",
-  "version": "5.0.9",
+  "version": "5.0.10",
   "description": "Security-first orchestrator with specialized agents, hooks, and governance for AI coding",
   "author": {
     "name": "jaguilar87",
