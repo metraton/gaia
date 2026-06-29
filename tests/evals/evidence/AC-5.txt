@@ -1,0 +1,68 @@
+AC-5 — Equivalents documented (brief #91)
+==========================================
+Date: 2026-06-27
+Branch: harden/approval-grants-m1-loop
+Status: CLOSED
+
+This is the AC-5 deliverable: for every surviving mutant across the 4
+security-core modules that is genuinely equivalent (no honest test can
+distinguish it from the original for any reachable input), the skip-file
+entry and the justification in equivalents-security-core.md together
+constitute the AC-5 proof.
+
+Module summary
+--------------
+| Module              | Skip file                          | Equivalents | Killable denom | Document section |
+|---------------------|------------------------------------|-------------|----------------|------------------|
+| approval_grants.py  | equivalents-approval-grants.skip   | 121         | 530            | E1–E13           |
+| blocked_commands.py | equivalents-blocked-commands.skip  | 21          | 136            | B1–B3            |
+| mutative_verbs.py   | equivalents-mutative-verbs.skip    | 74          | 661            | M1–M10           |
+| tiers.py            | equivalents-tiers.skip             | 6           | 81             | T1               |
+| **TOTAL**           |                                    | **222**     | **1408**       |                  |
+
+Skip-file counts verified
+-------------------------
+equivalents-approval-grants.skip:  121 job_ids (grep -c "^[a-f0-9]")
+equivalents-blocked-commands.skip:  21 job_ids
+equivalents-mutative-verbs.skip:    74 job_ids
+equivalents-tiers.skip:              6 job_ids
+
+Denominator derivation
+-----------------------
+approval_grants:  653 specs − 2 INCOMPETENT − 121 equivalents = 530 killable
+blocked_commands: 157 specs − 0 INCOMPETENT −  21 equivalents = 136 killable
+mutative_verbs:   735 specs − 0 INCOMPETENT −  74 equivalents = 661 killable
+tiers:             87 specs − 0 INCOMPETENT −   6 equivalents =  81 killable
+TOTAL:           1632 specs − 2 INCOMPETENT − 222 equivalents = 1408 killable
+
+Untriaged survivors per module
+-------------------------------
+approval_grants.py:   0 untriaged (documented in equivalents-security-core.md,
+                       section "AC-5 CIERRE FINAL — residual equivalents proven
+                       this session (E8–E13)"; all CANDIDATES UNDER VERIFICATION
+                       entries resolved)
+blocked_commands.py:  0 untriaged
+mutative_verbs.py:    0 untriaged (M1–M10, including M8/M9/M10 added in final
+                       grind passes)
+tiers.py:             0 untriaged
+
+CONFIRMATION: 0 survivors remain un-triaged across all 4 modules of the
+security-core mutation network.
+
+Document coherence fixes applied this session
+---------------------------------------------
+- equivalents-security-core.md § M6 header: "(5 mutants)" corrected to
+  "(6 mutants)" — 586bbe030 (L1354 Gt_NotEq) was the 6th entry present in the
+  text and the skip-file but not counted in the header.
+- equivalents-security-core.md § M7 endpoint: stale "48 mutants" claim replaced
+  with accurate "74 equivalents" total + a denominator table (M1–M10).
+- equivalents-security-core.md § blocked_commands endpoint: added denominator
+  table (was missing; only narrative endpoint existed).
+
+Evidence
+--------
+equivalents-security-core.md: /home/jorge/ws/me/gaia/tests/evals/evidence/equivalents-security-core.md
+equivalents-approval-grants.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-approval-grants.skip
+equivalents-blocked-commands.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-blocked-commands.skip
+equivalents-mutative-verbs.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-mutative-verbs.skip
+equivalents-tiers.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-tiers.skip

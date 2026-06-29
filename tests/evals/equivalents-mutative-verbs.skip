@@ -1,0 +1,176 @@
+# GRIND-TOTAL equivalents for mutative_verbs.py (RE-INIT'd session: 822 specs).
+# See tests/evals/evidence/equivalents-security-core.md, Categories M*.
+# Each job_id below is a mutant proven GENUINELY EQUIVALENT: no honest
+# input distinguishes it from the original for ANY reachable input.
+# Re-mapped to NEW job_ids by matching (function, operator, line
+# content), NOT line number (the +134-line shift from the AC-7/AC-9 new
+# code invalidated the old ids).  NumberReplacer +1/-1 offsets are
+# disambiguated by survivor status against the current test suite.
+#
+# Re-init baseline: 82.60% (679 killed / 143 survived / 822 total).
+# After grind: 75 equivalents excluded; 0 untriaged survivors remain.
+#
+# ===========================================================================
+# Category M1 — import-fallback `except ImportError` handlers (3).
+# The 3 sibling modules (capability_classes, blocked_commands,
+# inline_ast_analyzer) always import in-process, so the except body is
+# unreachable; ExceptionReplacer on an unreachable handler is unobservable.
+20fe2cda8cc142fea8bef19e3cf11c36
+d89b9a414af94d7495f92010af537d9c
+75abc87c838344569eba4c690106ad69
+# ===========================================================================
+# Category M2 — @functools.lru_cache(maxsize=128) transparency (3).
+# detect_mutative_command is a pure function; the cache is transparent
+# memoization. RemoveDecorator and the maxsize NumberReplacers change only
+# caching, never a return value.
+049e879da99f466e96cea34779d95389
+ea52d7767b5640cb9cfa178d8c72685d
+822399f8d2924177b6661ebfc7cb6e02
+# ===========================================================================
+# Category M3 — split_camel_case len-guard boundary (2).
+# `return [...] if len(parts) > 1 else [token.lower()]`. Gt_GtE (>=1) and
+# NumberReplacer 1->0 (>0) differ from `>1` only at len 0/1, where the two
+# arms coincide. The sibling 1->2 (>2) IS killed.
+112bbd54a744461e9014a2418acee3d9
+ae5ae558a3754d8bb6a8acee21f08e92
+# ===========================================================================
+# Category M4 — _scan_dangerous_flags elif-chain + compound guard (17).
+# Killable siblings are killed by tests. The 17 below cannot be distinguished:
+# chain-position (a mutated later elif only ever sees its own flag), identical
+# flag-sets ({git} for -D/-M/--hard), token[0] always "-", single-char
+# interning, and no 2-char r/f token reaching the compound branch.
+# -- flag_type == "ALWAYS" (values in {ALWAYS,CONTEXT}): Eq_LtE, Eq_Is
+a39fd53fc3124198ae1279d57471050e
+1892b2fae22e4c3ca6825258dd2bc5f0
+# -- token == "--hard" (last branch, only --hard reaches): Eq_GtE, Eq_LtE, Eq_IsNot
+b202b9618b2d4c638dc87614b617c779
+0a32706502714bb18ceb01e65e5362b5
+f35fff6b0acd4228a053932cc071319a
+# -- compound guard token[0] == "-" (always "-"): Eq_GtE, Eq_LtE, Eq_Is
+1e67e3bc0afa4598a299869fdb537941
+ae5047b42c234f22beb5d3615c06cc9f
+79a7374baeb04979b9d0aca52eafb9ac
+# -- compound guard len(token) > 2 Gt_GtE + NumberReplacer 2->1
+bec9ee770ffa4d3b8aeed904f86c5d80
+17abfc874d2e409faaa9e0707321c7dd
+# -- compound guard token[1] != "-": NotEq_Gt, NotEq_IsNot
+892689316a8147f3a7e16859e6fe4cc8
+fd1f0932c8c24f588525b1726404dbe4
+# -- flag_chars = token[1:] NumberReplacer 1->0 (token[0:])
+a3b6ae0e33834b51af9bb1a46400435d
+# -- later elif == branches (each only ever sees its own flag): -D/-M/--recursive Eq_GtE, --delete Eq_LtE
+27c5d57cec834277a0e098ad46e4e65b
+9503ecb7baa54055bde12caaa88d9ad5
+9f52e363af864ae2837218fbd8a3776d
+8d1c4ade39734b62a15c3a120315a49d
+# ===========================================================================
+# Category M5 — _mkdir_targets_sensitive_path opt-handling residuals (9).
+# Each only affects how a token starting with "-" or "~" is routed; such a
+# token can never be an absolute sensitive path (those start with "/"), so the
+# boolean is unchanged.
+# -- i = 1 NumberReplacer 1->0 (tokens[0] is relative base cmd)
+94d3817b85fc46e9ae89a5e3ff49a9fb
+# -- token == "--" (only gates dash-token routing): Eq_Is, Eq_Lt, Eq_LtE
+2285e15ab9d544c89da3f76476f731de
+ecc92218249045b3a744a24192caf137
+95d98320e5164f36adf5b290823f4c03
+# -- seen_end_of_opts = True ReplaceTrueWithFalse (same dash-only effect)
+b9ea916744fa48c29498d977472257e8
+# -- ~ guard (redundant; failing it falls to isabs->relative->continue): Eq_Gt, Eq_GtE, Eq_Is, OrWithAnd
+6b7b3a0a322f4a009b71c0d7b60e2456
+d5708dcea4594343b47b945749abb795
+d35858765fe14a2485640e696277ac09
+86b9b1c5254f4d909561b57ddf2adbcd
+# ===========================================================================
+# Category M6 — detect_mutative_command Step-3e/3f maxsplit/len residuals (6).
+# `> 1` vs `!= 1` coincide inside `if semantics.non_flag_tokens` (len>=1
+# always); split("-", N)[0] is the first segment for any maxsplit>=1.
+# -- Step-3e len(non_flag_tokens) > 1 Gt_NotEq
+e4df3b3992ec464f8a41d6c1eb541baf
+# -- split("-",1)[0] maxsplit 1->2: arm1, arm3 EXTRA_DENY, verb=
+b97a164554724f43b107ae5e99baf805
+703b6736d369416193bb7f0ba02a0a1b
+81f33f713a024dbbbfad743a65554973
+# -- Step-4 candidate = stripped_token.split("-",1)[0] maxsplit 1->2
+c3ad7153b62c48e49ac8047249ec4aac
+# -- Step-3f consent_verb len(non_flag_tokens) > 1 Gt_NotEq
+f1262c76a10f4d988b5a590f8b19a817
+# ===========================================================================
+# Category M7 — script-file / inline / layer3 comparison & loop residuals (10).
+# find>=-1, interned "-"/"python" sentinels, unreachable except handlers, and a
+# single-inline-flag loop where break/continue coincide.
+# -- _layer3_length_check idx != -1: NotEq_Gt, NotEq_IsNot
+06e445c934fe4aefbbd3cbc00096266c
+b3ba77389a5249f8af0ccf3af7ac84ca
+# -- _resolve_script_argument token == "-": Eq_Is, Eq_LtE
+274e6a087683467fb9f32bdcdee79e99
+769ec4b1c2c448d098a83ab86aaee453
+# -- _read_script_content except (OSError, ValueError) ExceptionReplacer x2
+642861f6f25744a7a70c6dd1d331cd07
+d415792653f641dfb9f38368ea9b6654
+# -- _check_script_file lane == "python": Eq_Is, Eq_LtE
+9bdb7fa3b864499ba4d3b19cbc0ccc2d
+09160c13ede8464abaaf07a615a4e343
+# -- _layer3_length_check inline-flag loop break->continue (single flag per interp)
+05612876b6fd4ee38153d581f1370241
+# ===========================================================================
+# Category M8 — detect_mutative_command fast-path / early-branch residuals (13).
+# Fixed operands, always-"unknown" family, unreachable capability import,
+# interned literals, len>=1 range.
+# -- mkdir path-token filter t != "--" NotEq_IsNot (never "--" for non-dash token)
+21231cd7d6e241f2b7ff81e17332087f
+# -- alias / read-only family ternary family != "unknown" (always "unknown"): NotEq_Lt/Gt/IsNot x2
+3b00dccf8d1347b3b904589586fdb9e2
+cc34753b911446269bf99282b2e6466b
+f982d8bd5bdc481a9e932933cc40b6a8
+93dc0be2330d421887c91e086eabbe33
+72c615c0f5c845aa987b173f6e54b9c6
+5d569751fceb4359adfe210e33fc696a
+# -- capability import guard AndWithOr (both names always non-None)
+3e2b537b1a254d0c85d507f1df4eee57
+# -- cap.intent == _CAP_READ_ONLY: Eq_GtE, Eq_Is (interned 2-element domain)
+4ab4b8622f384730a47955fda7fd94c5
+f5cc42bf8e6f485ba10ef5f4bda048d4
+# -- len(tokens) == 1 Eq_LtE (len 0 intercepted earlier; over len>=1, <=1 == ==1)
+8f0684a12a3d44b692fdfe3dc034287e
+# -- heredoc-guard non_flag_tokens[0] == "-": Eq_IsNot, Eq_LtE, Eq_GtE (operand fixed "-")
+5c4004d5b9cd4248bef729dc77723cae
+70ac005150b84b16bb5f92b649806c6a
+e6e24fbd0e55415c8d5bc6864e2a4a8f
+# ===========================================================================
+# Category M9 — detect_mutative_command Step-4 camelCase guard residuals (7).
+# Lockstep raw/head lengths (else-branch dead), loop starts at 1, split returns
+# >=1 part.
+# -- semantic_index < len(...): Lt_NotEq, Lt_LtE, Lt_IsNot (idx in [1,len-1])
+0db1f65e0ba54de0909714a12f6dd974
+bb2f73ca794d46a2b12482c05ae86c85
+a1721ead8a9544a2b0fa2ab184cf39d4
+# -- semantic_index == 1 Eq_LtE (loop starts at 1)
+744705019a2e462b805b50f3bf70973e
+# -- len(camel_parts) > 1: Gt_NotEq, Gt_GtE, NumberReplacer 1->0 (>=1 always; 1-part matched earlier)
+3939001110dd41ac8866719bf9e95282
+5c12eea967f944f1b36653ee257c5eeb
+9f6fa3f637fe4e3783b2c627f3814db2
+# ===========================================================================
+# Category M10 — detect_mutative_command Step-4b api-arm residuals (3).
+# (The doc lists 4, but L1624 len(head)>1 Gt_GtE is now KILLED by the re-init'd
+# suite — excluded here.) Vacuous subset scan over head[1:]; len>=2 at this arm.
+# -- head[1:] membership-scan slice NumberReplacer 1->2 (subset stays mutative-free)
+7974ec306d2545bb9d4397d150349f3c
+# -- len(semantic_head_tokens) > 1 Gt_NotEq (len>=2 here, all coincide)
+cd5a5bc649b24f1f8539b67c31bd9d24
+# ===========================================================================
+# Category M11 — _check_python_module_runner index-walk residuals (3). NEW CODE.
+# Brief 91 AC-7 `<python> -m <pkg-mgr> ...` re-dispatch.
+# -- bounds i + 1 < len(raw_tokens): Lt_NotEq, Lt_IsNot. The loop is
+#    `range(1, len)` so i+1 in [2,len]; over that range `< len` == `!= len` ==
+#    `is not len` (i+1 never exceeds len; small ints interned). The `<=` / `>` /
+#    `>=` / `==` / `is` siblings ARE killed (test_m_as_last_token_does_not_redispatch).
+30044b2886ce42d6afa482ab8fd2d983
+43c451848db44f2bb623ad8b306b8949
+# -- None-guard `module is None or module_idx is None` OrWithAnd. module and
+#    module_idx are assigned together (L1737-1738) or both stay None — never one
+#    without the other — so `A or B` == `A and B` when A == B always. The
+#    Is_IsNot siblings on each operand ARE killed.
+0fc4ec63a9b346b091bb4304085548f0
+# ===========================================================================

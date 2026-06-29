@@ -1,0 +1,46 @@
+# Per-module mutation config for inline_ast_analyzer.py — Fase B re-harden
+#
+# Companion to mutation-security-core.toml, which excludes inline_ast_analyzer.py
+# (see excluded-modules list). This file gives the module its own session so
+# the grind can be scoped exclusively to its ~237 lines / ~15 decision branches.
+#
+# Module overview:
+#   analyze_python_inline()    -- blocklist AST walk; Call-node only
+#   is_provably_read_only_python() -- positive allowlist; every construct must
+#                                     be proven safe or returns False
+#   _ReadOnlyChecker           -- walker used by is_provably_read_only_python
+#   _AliasResolver             -- import-alias resolution for analyze_python_inline
+#   helpers: _build_open_aware_result, _extract_open_mode
+#
+# Test coverage sources:
+#   test_mutative_verbs.py              -- TestLongInlineReadOnlyExemption (6 tests)
+#                                          exercises is_provably_read_only_python via
+#                                          _layer3_length_check; also exercises
+#                                          analyze_python_inline via detect_mutative_command
+#   test_mutative_verbs_mutants.py      -- survivor-closure tests; includes Layer-2
+#                                          guard tests referencing _analyze_python_inline
+#   test_inline_ast_analyzer_mutants.py -- stub; survivor-closure tests added during grind
+#
+# ANTI-STALENESS RULE (AC-10):
+#   RE-INIT IS OBLIGATORY after any change to the test files listed in
+#   test-command, the source module, or this toml. A stale session produces a
+#   stale kill_rate. Use --check-stale to detect:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session inline-ast.sqlite \
+#       --toml tests/evals/mutation-inline-ast.toml --check-stale
+#
+# Init (T3 — requires approval):
+#   cd gaia && uv run cosmic-ray init tests/evals/mutation-inline-ast.toml inline-ast.sqlite
+# Exec (T3 — requires approval):
+#   uv run cosmic-ray exec tests/evals/mutation-inline-ast.toml inline-ast.sqlite
+# Score:
+#   uv run cr-rate inline-ast.sqlite
+
+[cosmic-ray]
+module-path = "hooks/modules/security/inline_ast_analyzer.py"
+timeout = 30.0
+excluded-modules = []
+test-command = "python3 -m pytest tests/hooks/modules/security/test_mutative_verbs.py tests/hooks/modules/security/test_mutative_verbs_mutants.py tests/hooks/modules/security/test_inline_ast_analyzer_mutants.py -q -x --no-header"
+
+[cosmic-ray.distributor]
+name = "local"

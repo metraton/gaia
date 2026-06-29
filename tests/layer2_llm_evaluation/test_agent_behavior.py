@@ -60,8 +60,14 @@ class TestPromptfooAvailability:
 class TestRoutingBehavior:
     """Test that the orchestrator routes correctly."""
 
+    @pytest.mark.ci_subset
     def test_terraform_routing(self, promptfoo_config):
-        """Terraform-related requests should route to platform-architect."""
+        """Terraform-related requests should route to platform-architect.
+
+        Part of the ``ci_subset`` budget-bounded L2 subset (brief #89 AC-6):
+        a single promptfoo filter, one of the two cheapest end-to-end signals
+        that the agent-behavior harness works under a controlled token budget.
+        """
         result = run_promptfoo(
             config_path=promptfoo_config,
             filter_description="Route terraform",
@@ -72,8 +78,12 @@ class TestRoutingBehavior:
         assert result.passed > 0, \
             f"Terraform routing test failed: {result.raw_output[:500]}"
 
+    @pytest.mark.ci_subset
     def test_kubectl_routing(self, promptfoo_config):
-        """Kubectl-related requests should route to gitops-operator."""
+        """Kubectl-related requests should route to gitops-operator.
+
+        Part of the ``ci_subset`` budget-bounded L2 subset (brief #89 AC-6).
+        """
         result = run_promptfoo(
             config_path=promptfoo_config,
             filter_description="Route kubectl",

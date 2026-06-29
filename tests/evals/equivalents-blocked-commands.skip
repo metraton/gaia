@@ -1,0 +1,51 @@
+# GRIND-TOTAL equivalents for blocked_commands.py — see equivalents-security-core.md
+# (Category B* sections, added this session). Each job_id below is a mutant
+# proven GENUINELY EQUIVALENT by hand: apply the exact cosmic-ray mutant ->
+# full suite stays green -> revert. Listed here it is excluded from the
+# kill-rate denominator. A mutant is listed ONLY if no honest input can
+# distinguish it from the original for ANY reachable input.
+#
+# Endpoint: every blocked_commands.py survivor is either killed by a test in
+# tests/hooks/modules/security/test_blocked_commands_mutants.py OR proven
+# equivalent here.
+#
+# ===========================================================================
+# Category B1 — _has_unquoted_separator quote-walk equivalents (19)
+# Invariant: i advances by 1 or 2 and the escape branch is gated by i+1<n, so
+# i lands EXACTLY on n (never overshoots). See equivalents-security-core.md B1.
+# ---------------------------------------------------------------------------
+# B1a loop bound `while i < n` (line 705): != / is-not equivalent
+6b7d47abdbec4c66a1c7946dd2758f8b
+4483941e37c8479d8ea0df6823f7bace
+# B1b escape guard `if ch == "\\" and i + 1 < n` (line 707)
+#   Eq_Is on ch (single-char interning)
+5f9ffde261a348dd9bf671f3f8df2f64
+#   Add_* on i+1 (Sub/Mul/Div/FloorDiv/Mod/Pow/RShift/BitOr/BitAnd/BitXor)
+#   NOTE: Add_LShift was KILLED (aaaa\|), it is NOT in this list.
+2f99fabe81734abf9bdd8533aa8f6829
+7eb8606890ae4f978f4beab7595fa828
+17f7645966c7424686893ac7387dad8c
+2731fa4064bb40a5a5733715277382b2
+af4edb4fc1bd41e6a84410618bce0112
+424f34c99024409ea4615aad2fe372c9
+4bda2c16772744dcb4119e864530ddce
+5295f6ad67cd40809c4a9b57df552963
+c61e470cdcff4872b43edcd105bb7e34
+e83d90ae48a0437dabf1a766c5edf62e
+#   NumberReplacer 1->0 on i+1 (occ5); occ4 1->2 was KILLED
+515dfe842d2940bc999b7ad237905462
+#   Lt_* on `i + 1 < n` (NotEq / LtE / IsNot)
+496b55507cff49d1ac103af0c9bbbedf
+39d9bb39bcad412d83d4be2f2c0fe791
+4778615b1a164a14a72fb073f96ee3d8
+# B1c quote-toggle Eq_Is (single-char interning) lines 710, 714
+4f56c3a963d84a69800b12db9744a5a3
+665257f4dee34e1484edd229caa236cc
+# ===========================================================================
+# Category B2 — is_blocked_command empty-guard or->and (line 596)
+# Diverges only for whitespace-only inputs; both yield is_blocked=False.
+792699f458f2460d84a1cdd4252f145b
+# ===========================================================================
+# Category B3 — _read_only_base_cmds unreachable except ImportError (line 74)
+# The import always succeeds in-process; the handler body never runs.
+3667c2b2771244e6b5a9201a67e2f4fa

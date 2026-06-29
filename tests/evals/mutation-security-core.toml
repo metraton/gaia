@@ -15,21 +15,47 @@
 # the package down to exactly the four core modules above. When a non-core
 # security module gains test coverage worth measuring, drop its exclusion line.
 #
+# ANTI-STALENESS RULE (AC-10):
+#   A cosmic-ray session (.sqlite) records the test-command results from the
+#   moment `cosmic-ray init`/`exec` ran. If you change test files or any of
+#   the four core modules WITHOUT re-running `cosmic-ray init`, `cr-rate` will
+#   report a STALE kill_rate — the session's recorded outcomes do not reflect
+#   your new tests. This is a known trap: it caused kill_rate to appear
+#   unchanged after +101 additional kills in the hardening loop (AC-10).
+#
+#   RE-INIT IS OBLIGATORY after any of:
+#     - editing any test file in tests/hooks/modules/security/
+#     - editing any of the four core modules above
+#     - changing test-command, module-path, or excluded-modules in this toml
+#
+#   The `mutkill_approval_grants.py` harness does NOT suffer from staleness:
+#   it re-runs `mutate_and_test` on every invocation using the current tests.
+#   Use it (not `cr-rate`) for an up-to-date kill_rate during the hardening
+#   loop. Detect stale sessions with --check-stale:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session security-core.sqlite \
+#       --toml tests/evals/mutation-security-core.toml --check-stale
+#
 # Re-init required after any change to module-path / excluded-modules /
 # timeout / test-command:
 #   uv run cosmic-ray init tests/evals/mutation-security-core.toml security-core.sqlite
 #   uv run cosmic-ray exec tests/evals/mutation-security-core.toml security-core.sqlite   # T3
 #   uv run cr-rate security-core.sqlite
 #
-# Known equivalent mutants on tiers.py (cannot be killed by any reachable input,
-# documented so a future low score is read correctly, not chased):
-#   - tiers.py:178 ReplaceOrWithAnd  -- outer empty/whitespace guard; the cached
-#     guard (tiers.py:89, covered by test) masks it through the public API.
-#   - tiers.py:132 Eq_Is            -- CPython interns the short category string,
-#     so `is` behaves identically to `==` here.
-#   - tiers.py:134 Eq_* (all)       -- both the matched branch and the
-#     safe-by-elimination default return T0, so no comparison change is
-#     observable.
+# Equivalent mutants are NOT chased: they are documented with a rigorous
+# why-unkillable argument and excluded from the kill-rate denominator via
+# per-module skip files. The full proofs live in
+# tests/evals/evidence/equivalents-security-core.md; the skip files are its
+# materialization (one job_id per non-comment line):
+#   - equivalents-tiers.skip            (tiers.py, Category T1 — 6 mutants)
+#   - equivalents-mutative-verbs.skip   (mutative_verbs.py, M1–M10)
+#   - equivalents-blocked-commands.skip (blocked_commands.py, B1–B3)
+#   - equivalents-approval-grants.skip  (approval_grants.py, E1–E13)
+# Honest closure tests for the killable survivors live in
+# tests/hooks/modules/security/test_*_mutants.py (test_tiers_mutants.py for
+# tiers.py). Per-mutant verification: tests/evals/_probe_*_mutants.py — the
+# deterministic single-mutant probe, NOT a full `pytest -x` run (which is
+# non-deterministic under sharding).
 
 [cosmic-ray]
 module-path = "hooks/modules/security"

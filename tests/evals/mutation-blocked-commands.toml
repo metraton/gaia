@@ -1,0 +1,35 @@
+# Per-module mutation config for blocked_commands.py — AC-3 full-core inventory
+#
+# Extends AC-3-mutation-baseline.md. Scope narrowed to blocked_commands.py only;
+# test-command narrowed to test_blocked_commands.py (Option A from the baseline).
+# This reduces per-mutant time from ~60s (full suite) to ~1s.
+#
+# ANTI-STALENESS RULE (AC-10):
+#   A cosmic-ray session (.sqlite) records the test-command results from the
+#   moment `cosmic-ray init`/`exec` ran. If you change test files or the
+#   source module WITHOUT re-running `cosmic-ray init`, `cr-rate` will report
+#   a STALE kill_rate. RE-INIT IS OBLIGATORY after any change to test files
+#   listed in test-command, the source module, or this toml.
+#   Use `mutkill_approval_grants.py` (not `cr-rate`) for a fresh kill_rate;
+#   it re-runs mutate_and_test against the current tests on every invocation.
+#   Detect stale sessions with:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session blocked-commands.sqlite \
+#       --toml tests/evals/mutation-blocked-commands.toml --check-stale
+#
+# Init:
+#   cd gaia && uv run cosmic-ray init tests/evals/mutation-blocked-commands.toml blocked-commands.sqlite
+# Exec (T3 — requires approval):
+#   uv run cosmic-ray exec tests/evals/mutation-blocked-commands.toml blocked-commands.sqlite
+# Score:
+#   uv run cr-rate blocked-commands.sqlite
+
+[cosmic-ray]
+module-path = "hooks/modules/security/blocked_commands.py"
+timeout = 30.0
+excluded-modules = []
+# GRIND-TOTAL: added test_blocked_commands_mutants.py (survivor-closure tests).
+test-command = "python3 -m pytest tests/hooks/modules/security/test_blocked_commands.py tests/hooks/modules/security/test_blocked_commands_mutants.py -q -x --no-header"
+
+[cosmic-ray.distributor]
+name = "local"

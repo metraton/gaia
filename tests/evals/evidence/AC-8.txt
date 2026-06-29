@@ -1,0 +1,131 @@
+AC-8 — Multi-T3 `&&` chains are covered by ONE COMMAND_SET, not re-blocked
+          sub-command by sub-command (brief: endurecimiento-de-tests-del-security-core)
+==========================================================================================
+Date: 2026-06-27
+Branch: harden/approval-grants-m1-loop
+Status: DONE — a chain `cmd1 && cmd2 [&& ...]` whose sub-commands are all
+        ungranted T3 now mints ONE COMMAND_SET pending at hook-block intake, so a
+        single user approval covers the whole chain. Each sub-command is still
+        consumed byte-for-byte by its own signature at retry (no consent widened).
+
+The gap (confirmed this session)
+--------------------------------
+When a subagent ran `cmd1 && cmd2 && cmd3` with several T3 sub-commands, the
+single-signature grant minted for the FIRST verb was consumed on cmd1, and cmd2
+re-blocked: bash_validator's `_validate_compound_command` evaluated each
+sub-command SEPARATELY via `_validate_single_command`, and the first ungranted T3
+short-circuited with a SINGLE-command block (`_build_sealed_payload` with no
+`command_set`). One approval thus covered only cmd1; cmd2 minted a fresh single
+pending and the user had to approve again (double-approval).
+
+The COMMAND_SET machinery already existed end-to-end EXCEPT this intake:
+  - gaia/approvals/store.py            derive_command_set_id(), insert_requested(approval_id=)
+  - bash_validator._build_sealed_payload(command_set=...)   builds the COMMAND_SET envelope
+  - approval_grants.activate_db_pending_by_prefix()  branches on payload.command_set
+                                                     -> create_command_set_grant()
+  - approval_grants.match_command_set_grant() / mark_command_set_item_consumed()
+                                                     consume each sub-command byte-for-byte
+What was missing: a `&&`/`;` chain with >= 2 ungranted T3 sub-commands was never
+INTAKEN as ONE COMMAND_SET pending. (The only producer of COMMAND_SET pendings
+was the PLAN-FIRST path in handoff_persister._intake_command_set_pending, which
+requires the agent to declare a `command_set` up front.)
+
+The fix (most-bounded; reuses the existing mechanism)
+-----------------------------------------------------
+hooks/modules/tools/bash_validator.py
+
+  1. decide_t3_outcome(): new optional `command_set` param. When it carries
+     >= 2 items, the pending is minted as ONE COMMAND_SET envelope
+     (_build_sealed_payload(command_set=...)) using a CONTENT-derived id
+     (derive_command_set_id over the sub-command list) so a retry of the same
+     chain reuses the pending via fingerprint dedup -- identical to the
+     plan-first intake. The singular reuse probe (_find_pending_in_db) is
+     skipped for the chain (it matches a SINGLE command's signature and would
+     degrade the chain back to a single grant). Singular T3 path is unchanged
+     (uuid4 id, _find_pending_in_db reuse).
+
+  2. _is_ungranted_t3_component(): NEW non-minting, non-consuming probe. Returns
+     True iff a component is T3 (mutative verb OR flag-dependent mutation, git
+     excluded as elsewhere) AND no active grant already covers it
+     (match_command_set_grant / check_approval_grant are pure lookups).
+
+  3. _validate_compound_command(): a NON-MINTING pre-pass runs FIRST (only in
+     subagent + ops context). If >= 2 components are ungranted T3, it mints ONE
+     COMMAND_SET pending over exactly those sub-commands via
+     decide_t3_outcome(command_set=...) and returns -- the per-component
+     minting path (_validate_single_command) is NEVER entered for the batch, so
+     no stray single pendings are minted alongside the COMMAND_SET. Every other
+     shape (0 or 1 ungranted T3, no orchestrator above, hard-blocked component)
+     keeps the original fail-fast per-component pass byte-for-byte.
+
+No hole is opened: each sub-command still requires consent; they are only
+GROUPED under one approval_id, and each is still consumed by its own signature.
+
+Scope note — cloud-CLI chains never reach this path (by design)
+---------------------------------------------------------------
+cloud_pipe_validator (phase 3e, BEFORE compound dispatch) rejects ALL chaining
+of cloud CLIs (gcloud/kubectl/aws/terraform/helm/flux) with a corrective
+"one-command-per-step" deny:
+  terraform apply && kubectl apply -f x.yaml   -> cloud_pipe block: True
+So the chains that legitimately reach the COMMAND_SET intake are NON-cloud T3
+verbs -- git push, docker push, npm publish, etc.:
+  git push origin main && docker push registry/app:1.0  -> cloud_pipe block: False
+
+Verification — new integration test (tests/integration/test_command_set_chain_ac8.py)
+-------------------------------------------------------------------------------------
+$ uv run pytest tests/integration/test_command_set_chain_ac8.py -q
+  7 passed in 0.39s
+
+  TestChainTwoT3MintsOneCommandSet
+    - test_two_t3_chain_denies_with_single_approval_id
+        `git push origin main && docker push registry/app:1.0` (subagent) ->
+        deny with ONE approval_id.
+    - test_two_t3_chain_persists_exactly_one_command_set_pending
+        EXACTLY ONE pending row; its payload.command_set has 2 items, in order:
+        ["git push origin main", "docker push registry/app:1.0"].
+        (Pre-fix this site minted ONE single-signature pending and a SECOND on
+        the next sub-command's retry.)
+    - test_semicolon_chain_also_groups_into_command_set
+        `a ; b` groups the same way (`;` is a chain operator).
+
+  TestOneApprovalCoversWholeChain
+    - test_one_approval_then_both_subcommands_allowed
+        INTAKE (deny, 1 pending) -> activate_db_pending_by_prefix (ONE
+        COMMAND_SET grant created) -> RETRY of the WHOLE chain is ALLOWED.
+        ONE approval covers both sub-commands; no re-block, no second approval.
+
+  TestControlsUnchanged
+    - test_single_t3_in_chain_keeps_singular_pending
+        `echo starting && git push origin main` -> ONE pending, payload has NO
+        command_set key (singular semantic-signature path owns the lone T3).
+    - test_chain_with_no_t3_is_allowed_and_mints_no_pending
+        `echo hello && ls -la` -> allowed, zero pendings.
+    - test_single_standalone_t3_unchanged
+        `git push origin main` (not a chain) -> ONE pending, NO command_set key.
+
+Verification — no regression
+----------------------------
+$ uv run pytest tests/hooks/modules/tools/ tests/hooks/modules/security/ \
+      tests/hooks/test_approval_grants.py tests/hooks/test_command_set_deterministic_id.py \
+      tests/hooks/test_db_grant_cutover.py tests/integration/test_agent_contract_handoff_m4.py -q
+  1912 passed, 1 skipped in 14.95s
+
+$ uv run pytest -q     (full suite, AC-6)
+  5207 passed, 42 skipped in 298.78s
+
+Re-hardening note (cosmic-ray, DEFERRED to consolidated pass)
+-------------------------------------------------------------
+This change ADDS new lines/branches to bash_validator.py = new mutants to
+triage. Per the task instruction, the cosmic-ray session was NOT re-initialized
+this pass. New surface to re-hardenize in the consolidated re-hardening pass:
+  hooks/modules/tools/bash_validator.py
+    - _is_ungranted_t3_component()        (NEW function — full body)
+    - _validate_compound_command()        (NEW non-minting pre-pass: the
+                                           `if is_subagent and is_ops_mode()`
+                                           block building ungranted_t3_idx and
+                                           the `>= 2` COMMAND_SET branch)
+    - decide_t3_outcome()                 (NEW `command_set` param: the
+                                           _normalized_set / is_chain_command_set
+                                           guard, the `if not is_chain_command_set`
+                                           gate around _find_pending_in_db, and the
+                                           supplied_id = derive_command_set_id branch)

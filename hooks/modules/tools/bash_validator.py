@@ -911,6 +911,57 @@ class BashValidator:
             reason="Safe by elimination (not blocked, not mutative)",
         )
 
+    def _is_ungranted_t3_component(
+        self, component: str, session_id: str
+    ) -> bool:
+        """Classify a chain component as ungranted-T3 WITHOUT minting or consuming.
+
+        Returns True when the component is a T3 (mutative-verb or
+        flag-dependent) operation for which NO active grant exists -- i.e. the
+        component would, on its own, be blocked pending approval. This is a
+        read-only probe used by the chain COMMAND_SET intake (AC-8) to decide
+        whether >= 2 sub-commands need grouping under ONE consent, BEFORE any
+        per-component minting happens.
+
+        It deliberately does NOT call decide_t3_outcome (no pending minted) and
+        does NOT consume any grant (match_command_set_grant /
+        check_approval_grant are pure lookups; consumption happens later in the
+        real _validate_single_command pass at retry). A component that already
+        matches a COMMAND_SET or semantic grant is treated as NOT ungranted, so
+        it is excluded from a fresh batch.
+        """
+        component = component.strip()
+        if not component:
+            return False
+
+        # Is this T3 (mutative verb or flag-dependent mutation)?
+        detect = detect_mutative_command(component)
+        is_t3 = detect.is_mutative
+        if not is_t3:
+            flag_result = classify_by_flags(component)
+            if (
+                flag_result is not None
+                and flag_result.outcome == FLAG_MUTATIVE
+                and not flag_result.command_family.startswith("git_")
+            ):
+                is_t3 = True
+        if not is_t3:
+            return False
+
+        # Already covered by an active grant? Then it is NOT ungranted -- exclude
+        # it from a fresh batch (pure lookups, no consumption).
+        try:
+            if match_command_set_grant(component) is not None:
+                return False
+        except Exception:
+            pass
+        try:
+            if check_approval_grant(component, session_id=session_id) is not None:
+                return False
+        except Exception:
+            pass
+        return True
+
     def _validate_compound_command(
         self,
         components: List[str],
@@ -918,8 +969,67 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
     ) -> BashValidationResult:
-        """Validate a compound command (multiple components)."""
+        """Validate a compound command (multiple components).
+
+        Chain COMMAND_SET intake (AC-8): when a chain ``a && b && c`` has TWO OR
+        MORE sub-commands that are ungranted T3, classifying them one-at-a-time
+        mints a single-signature pending for the FIRST and short-circuits -- so
+        one approval covers only the first sub-command and the next re-blocks
+        (the double-approval the user hit). To group them, a NON-MINTING
+        classification pass runs FIRST (``_is_ungranted_t3_component``); if >= 2
+        sub-commands are ungranted-T3 (and we are a subagent under the
+        orchestrator), ONE COMMAND_SET pending is minted over exactly those T3
+        sub-commands via ``decide_t3_outcome(command_set=...)``. One approval
+        then covers the chain; each sub-command is still consumed byte-for-byte
+        by its own signature at retry (no consent is widened -- the commands are
+        only grouped). Critically, the per-component minting path
+        (_validate_single_command) is NEVER entered for the batch, so no stray
+        single pendings are minted alongside the COMMAND_SET.
+
+        For every other shape (0 or 1 ungranted-T3, no orchestrator above, or a
+        component that is hard-blocked) the original per-component pass runs
+        unchanged: a hard block fails the chain fast, a lone T3 keeps the
+        singular grant path, and an all-granted/safe chain is allowed.
+        """
         logger.info(f"Compound command detected with {len(components)} components")
+
+        # NON-MINTING pre-pass: which components are ungranted T3? (AC-8)
+        if is_subagent and is_ops_mode():
+            ungranted_t3_idx = [
+                idx
+                for idx, comp in enumerate(components)
+                if self._is_ungranted_t3_component(comp, session_id)
+            ]
+            if len(ungranted_t3_idx) >= 2:
+                chain_set = [
+                    {"command": components[idx].strip(), "rationale": ""}
+                    for idx in ungranted_t3_idx
+                ]
+                first_cmd = chain_set[0]["command"]
+                first_detect = detect_mutative_command(first_cmd)
+                verb = first_detect.verb or "command"
+                category = first_detect.category or "MUTATIVE"
+                native_ask_reason = (
+                    f"[T3_APPROVAL_REQUIRED] Chain of {len(chain_set)} T3 commands.\n"
+                    f"Commands:\n"
+                    + "\n".join(f"  - {it['command']}" for it in chain_set)
+                )
+                logger.info(
+                    "Chain COMMAND_SET intake: %d T3 sub-commands grouped under "
+                    "one consent (chain=%s)",
+                    len(chain_set),
+                    " && ".join(it["command"][:30] for it in chain_set),
+                )
+                return decide_t3_outcome(
+                    first_cmd,
+                    verb=verb,
+                    category=category,
+                    has_orchestrator_above=True,
+                    native_ask_reason=native_ask_reason,
+                    session_id=session_id,
+                    agent_type=agent_type,
+                    command_set=chain_set,
+                )
 
         component_results: List[BashValidationResult] = []
         for i, component in enumerate(components, 1):
@@ -1385,6 +1495,7 @@ def decide_t3_outcome(
     native_ask_reason: str,
     session_id: str = "",
     agent_type: str = "",
+    command_set: list | None = None,
 ) -> BashValidationResult:
     """Single decision point for the outcome of a T3 (state-mutating) command.
 
@@ -1416,34 +1527,68 @@ def decide_t3_outcome(
         native_ask_reason: Reason text for the native-ask fallback branch.
         session_id: Session ID for pending-approval scoping.
         agent_type: Originating agent name (for the sealed payload).
+        command_set: Optional list of ``{command, rationale}`` dicts. When it
+            carries MORE THAN ONE item, this T3 decision covers a chain
+            (``a && b && c``) whose sub-commands are all T3, and the pending is
+            minted as ONE COMMAND_SET envelope (the chain-intake path, AC-8)
+            instead of a single semantic-signature pending. ONE user approval
+            then covers the whole chain; each sub-command is still consumed
+            byte-for-byte by its own signature at retry. A None / single-item
+            set keeps the singular behaviour. Only honoured in the
+            subagent-under-orchestrator branch (the native-ask branch has no
+            COMMAND_SET concept).
 
     Returns:
         A blocked BashValidationResult (allowed=False, tier T3) whose
         block_response is either a "deny" (with approval_id) or an "ask".
     """
+    # A genuine multi-command chain is a set of >= 2 items. Anything else
+    # collapses to the singular path so we never mint a COMMAND_SET for one
+    # command (mirrors _build_sealed_payload's is_command_set guard).
+    _normalized_set: list = []
+    if command_set:
+        for _item in command_set:
+            if isinstance(_item, dict) and _item.get("command"):
+                _normalized_set.append(
+                    {
+                        "command": _item["command"],
+                        "rationale": _item.get("rationale", ""),
+                    }
+                )
+    is_chain_command_set = len(_normalized_set) > 1
+
     if has_orchestrator_above:
         # Subagent-under-orchestrator: deny + persisted approval_id so the
         # orchestrator can run the approval cycle.  Reuse an existing pending
         # approval on retry to avoid generating duplicates while the user reviews.
-        approval_id = _find_pending_in_db(session_id or "", command)
-        if approval_id:
-            logger.info(
-                "Reusing pending approval_id=%s for retry: %s",
-                approval_id, command[:80],
-            )
-            reason = build_t3_blocked_denial_message(
-                approval_id=approval_id,
-                command=command,
-                verb=verb,
-                category=category,
-            )
-            hook_deny = build_hook_permission_response("deny", reason)
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=f"T3 {category.lower()} command: {command[:60]}",
-                block_response=hook_deny,
-            )
+        #
+        # For a COMMAND_SET chain the pending id is CONTENT-derived (matching the
+        # plan-first intake), so a retry of the same chain produces the same id
+        # and the fingerprint-dedup in insert_requested reuses the pending. The
+        # singular reuse probe (_find_pending_in_db) matches a SINGLE command's
+        # signature and must NOT be consulted for the chain -- it would match one
+        # leftover single pending of a sub-command and degrade the chain back to
+        # a single grant. So the chain path skips it entirely.
+        if not is_chain_command_set:
+            approval_id = _find_pending_in_db(session_id or "", command)
+            if approval_id:
+                logger.info(
+                    "Reusing pending approval_id=%s for retry: %s",
+                    approval_id, command[:80],
+                )
+                reason = build_t3_blocked_denial_message(
+                    approval_id=approval_id,
+                    command=command,
+                    verb=verb,
+                    category=category,
+                )
+                hook_deny = build_hook_permission_response("deny", reason)
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"T3 {category.lower()} command: {command[:60]}",
+                    block_response=hook_deny,
+                )
 
         # No existing pending -- insert via DB (D16: exclusive path).
         sealed_payload = _build_sealed_payload(
@@ -1451,13 +1596,25 @@ def decide_t3_outcome(
             verb=verb,
             category=category,
             agent_type=agent_type,
+            command_set=_normalized_set if is_chain_command_set else None,
         )
         try:
             from gaia.approvals.store import insert_requested
+            # COMMAND_SET chains use a CONTENT-derived id (deterministic over the
+            # sub-command list) so a retry of the same chain reproduces the same
+            # id and reuses the pending via fingerprint dedup -- identical to the
+            # plan-first intake in handoff_persister. Singular T3 keeps uuid4.
+            supplied_id = None
+            if is_chain_command_set:
+                from gaia.approvals.store import derive_command_set_id
+                supplied_id = derive_command_set_id(
+                    [it["command"] for it in _normalized_set]
+                )
             approval_id = insert_requested(
                 sealed_payload,
                 agent_id=agent_type or None,
                 session_id=session_id or None,
+                approval_id=supplied_id,
             )
         except Exception as _store_err:
             logger.warning(
