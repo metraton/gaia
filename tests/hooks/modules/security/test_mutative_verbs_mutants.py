@@ -1627,3 +1627,200 @@ class TestStep4VerbArmsAndGuards:
         assert r.dangerous_flags == ("--force",)
         assert r.confidence == "low"
         assert r.reason == "Unknown verb 'something' with dangerous flags ('--force',)"
+
+
+# ===========================================================================
+# _check_python_module_runner -- Brief 91 AC-7 `<python> -m <pkg-mgr> ...`
+# re-dispatch (L1703-1769).  The existing functional class in
+# test_mutative_verbs.py::TestPythonModulePipReDispatch asserts only
+# is_mutative/category/verb on the happy path, so the arithmetic (`i + 1`),
+# bounds (`i + 1 < len`), comparison (`raw_tokens[i] == "-m"`), guard-negation
+# (AddNot / Is_IsNot / OrWithAnd), and loop-bound mutants on the index walk all
+# survive.  These tests pin the re-dispatch REASON (which encodes base_cmd,
+# module, and -- via `rest` -- module_idx) and the full structured result, so
+# any mutant that shifts which token becomes the module, where `rest` starts,
+# or whether the loop runs flips an assertion.
+# ===========================================================================
+class TestCheckPythonModuleRunner:
+    # The signature reason of a successful re-dispatch; encodes base_cmd +
+    # module and is absent whenever the helper bails to None.
+    _PIP_REDISPATCH = "'python3 -m pip' re-dispatched as 'pip': Mutative verb 'install'"
+
+    # --- L1726 `base_cmd not in _PYTHON_INTERPRETERS` AddNot -----------------
+    def test_interpreter_guard_redispatches_pip_install(self):
+        # AddNot makes the guard `not (base_cmd not in _PI)` == `base_cmd in
+        # _PI`, which is True for python3 -> the helper returns None and the
+        # command never gets the re-dispatch reason.  Also kills the L1734
+        # ZeroIterationForLoop / NumberReplacer (loop start 1->0 / 1->2): each
+        # misses the `-m` at index 1 so module stays None and the helper bails.
+        r = detect_mutative_command("python3 -m pip install requests")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.cli_family == "package"
+        assert r.confidence == "high"
+        assert r.reason == self._PIP_REDISPATCH
+
+    # --- L1735 `raw_tokens[i] == "-m"` ordering / identity mutants -----------
+    def test_flag_lt_m_before_m_still_redispatches(self):
+        # `-X` (0x58 'X' < 'm') precedes `-m`.  The original skips `-X` as a
+        # flag and matches `-m` at index 2.  Eq_Lt (`tok < "-m"`) / Eq_LtE
+        # (`tok <= "-m"`) match `-X` at index 1 first -> module becomes the
+        # token after `-X` ("-m"), not "pip", so the helper bails to None and
+        # the re-dispatch reason is lost.
+        r = detect_mutative_command("python3 -X -m pip install x")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.reason == self._PIP_REDISPATCH
+
+    def test_flag_gt_m_before_m_still_redispatches(self):
+        # `-v` (0x76 'v' > 'm') precedes `-m`.  Eq_Gt (`tok > "-m"`) / Eq_GtE
+        # (`tok >= "-m"`) / Eq_NotEq (`tok != "-m"`) / Eq_Is (`tok is "-m"`,
+        # false for the non-interned "-m") / Eq_IsNot (`tok is not "-m"`, true
+        # for every token) all mis-handle the `-v` at index 1: they either
+        # match it prematurely (Gt/GtE/NotEq/IsNot) so module becomes "-m", or
+        # never match `-m` at all (Is) so module stays None.  Either way the
+        # re-dispatch reason disappears.
+        r = detect_mutative_command("python3 -v -m pip install x")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.reason == self._PIP_REDISPATCH
+
+    # --- L1736 `i + 1 < len(raw_tokens)` bounds + arithmetic -----------------
+    def test_m_as_last_token_does_not_redispatch(self):
+        # `python3 -m` -- `-m` is the LAST token, so `i + 1 == len` and the
+        # bounds guard `i + 1 < len` is False: no module is read, the helper
+        # returns None, and detection falls through to the generic scanner
+        # ("Unknown verb '' ...").  The Lt_LtE mutant (`i + 1 <= len`) makes
+        # the guard True, reads raw_tokens[i+1] -> IndexError; Lt_Gt / Lt_GtE /
+        # Lt_NotEq / Lt_Eq / Lt_Is / Lt_IsNot all change the truth at the
+        # boundary.  The AddNot on this guard, and the Add_* / NumberReplacer
+        # on the `i + 1` operand, likewise are observable here.
+        r = detect_mutative_command("python3 -m")
+        assert r.is_mutative is False
+        assert r.category == "UNKNOWN"
+        assert r.reason == "Unknown verb '' with no dangerous flags"
+
+    # --- L1737/L1738 `module = raw_tokens[i+1]`, `module_idx = i+1` ----------
+    def test_module_index_arithmetic_with_switch_before_m(self):
+        # `python3 -u -m pip install x`: raw_tokens =
+        # [python3, -u, -m, pip, install, x], `-m` at i=2.  The original reads
+        # module = raw_tokens[3] = "pip" and module_idx = 3, so
+        # rest = raw_tokens[4:] = [install, x] -> rewritten "pip install x" ->
+        # verb "install".  Any Add_* substitution or NumberReplacer on the
+        # `i + 1` in module / module_idx shifts the module token (to "-m" / "-u"
+        # / "install") -- none of which is a package manager -> helper bails;
+        # or shifts `rest` so the rewritten verb is no longer "install".
+        # Pinning the exact re-dispatch reason (which names module "pip" and,
+        # via the inner "install" verb, the correct `rest` start) kills them.
+        r = detect_mutative_command("python3 -u -m pip install x")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.cli_family == "package"
+        assert r.reason == self._PIP_REDISPATCH
+
+    # --- L1739 `break` (ReplaceBreakWithContinue) ----------------------------
+    def test_first_m_wins_break_not_continue(self):
+        # After matching the first `-m`, the loop `break`s.  Replacing break
+        # with continue keeps walking: the next iterations hit `install`
+        # (a non-flag token at L1742) -> `return None`, losing the re-dispatch.
+        # `python3 -m pip install x` exercises this (a non-flag token follows).
+        r = detect_mutative_command("python3 -m pip install x")
+        assert r.is_mutative is True
+        assert r.verb == "install"
+        assert r.reason == self._PIP_REDISPATCH
+
+    # --- L1742 `not raw_tokens[i].startswith("-")` (Delete_Not / AddNot) -----
+    def test_positional_before_m_defers_to_script_lane(self):
+        # `python3 setup.py -m pip install x`: the first arg "setup.py" is a
+        # positional (does not start with "-"), so the helper returns None and
+        # defers to the script-file lane.  Delete_Not / AddNot invert the
+        # guard: with the negation removed the helper would treat the
+        # positional as a flag and keep scanning, eventually mis-reading the
+        # `-m pip` and re-dispatching -- which must NOT happen for a script
+        # invocation.  The original routes it to the script-file lane (the
+        # bare "<interp> <file>" shape), never the module re-dispatch.
+        r = detect_mutative_command("python3 setup.py -m pip install x")
+        assert "re-dispatched as" not in r.reason
+
+    # --- L1745 `module is None or module_idx is None` guard ------------------
+    def test_non_package_module_returns_none_not_redispatched(self):
+        # `python3 -m pytest tests/` finds module = "pytest", which is NOT in
+        # _PY_MODULE_PACKAGE_MANAGERS, so the helper returns None at L1747 and
+        # the command is classified by the ordinary lanes -- never carrying a
+        # re-dispatch reason.  This anchors the Is_IsNot / OrWithAnd mutants on
+        # the L1745 None-guard: any of them that lets a None module / module_idx
+        # through reaches the `module.lower()` at L1747 and raises, or routes a
+        # non-package module into the rewrite.
+        r = detect_mutative_command("python3 -m pytest tests/")
+        assert "re-dispatched as" not in r.reason
+        assert r.is_mutative is False
+
+    def test_pip_module_only_no_args_redispatches_as_single_token(self):
+        # `python3 -m pip` (module present, no rest): module = "pip",
+        # module_idx = 2, rest = raw_tokens[3:] = [] -> rewritten "pip" ->
+        # single-token command, READ-y "Single-token command 'pip'".  This pins
+        # the OrWithAnd on L1745 (`module is None and module_idx is None`):
+        # with `and`, a present module + present module_idx makes the guard
+        # False either way here, but the rewrite still happens -- the reason
+        # naming module "pip" and the empty `rest` (single-token) is the anchor
+        # that the L1754 `module_idx + 1` slice arithmetic is correct.
+        r = detect_mutative_command("python3 -m pip")
+        assert r.reason == (
+            "'python3 -m pip' re-dispatched as 'pip': "
+            "Single-token command 'pip' with no verb"
+        )
+        assert r.verb == "pip"
+        assert r.confidence == "low"
+
+    # --- L1754 `rest = raw_tokens[module_idx + 1:]` slice arithmetic ---------
+    def test_rest_slice_start_preserves_full_verb_and_args(self):
+        # `python3 -m uv pip install x`: module = "uv", module_idx = 2,
+        # rest = raw_tokens[3:] = [pip, install, x] -> rewritten "uv pip
+        # install x" -> verb "install".  Any Add_* substitution or
+        # NumberReplacer on the `module_idx + 1` slice start drops or duplicates
+        # a leading token of `rest` -- e.g. start at module_idx (includes the
+        # module "uv" twice) or module_idx+2 (drops "pip") -- changing the
+        # rewritten command and hence the inner verb away from "install".
+        r = detect_mutative_command("python3 -m uv pip install x")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.reason == (
+            "'python3 -m uv' re-dispatched as 'uv': Mutative verb 'install'"
+        )
+
+    def test_bounds_lshift_with_m_at_index_two_no_args(self):
+        # `python3 -u -m pip`: `-m` at i=2, len(raw_tokens)=4.  The bounds guard
+        # `i + 1 < len` is `3 < 4` True, so module = "pip" is read and the
+        # command re-dispatches as the single-token "pip".  The Add_LShift
+        # mutant turns `i + 1` into `i << 1` = `2 << 1` = 4, so the guard
+        # becomes `4 < 4` False -> module stays None -> the helper bails and the
+        # re-dispatch reason is lost.  (At i == 1 LShift coincides with +1, so
+        # this i == 2 / last-module input is what exposes it.)
+        r = detect_mutative_command("python3 -u -m pip")
+        assert r.reason == (
+            "'python3 -m pip' re-dispatched as 'pip': "
+            "Single-token command 'pip' with no verb"
+        )
+        assert r.verb == "pip"
+
+    def test_rest_slice_bitop_with_module_idx_three(self):
+        # `python3 -u -m uv pip install`: module = "uv", module_idx = 3,
+        # rest = raw_tokens[module_idx + 1:] = raw_tokens[4:] = [pip, install]
+        # -> rewritten "uv pip install" -> verb "install".  The Add_BitOr
+        # (`module_idx | 1` = 3) and Add_BitXor (`module_idx ^ 1` = 2) mutants
+        # change the slice start away from 4, re-including "uv"/"-m"/"pip" and
+        # shifting the rewritten command -- so the inner verb is no longer
+        # "install".  (At module_idx == 2, `2 | 1 == 2 ^ 1 == 3 == 2 + 1`, so
+        # only module_idx == 3 exposes both bit-ops.)
+        r = detect_mutative_command("python3 -u -m uv pip install")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "install"
+        assert r.reason == (
+            "'python3 -m uv' re-dispatched as 'uv': Mutative verb 'install'"
+        )
