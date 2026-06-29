@@ -42,12 +42,21 @@ as follows:
 1. If a redirect-input token (``<``) or a pipe-input is present, the
    payload is considered external and uninspected -- keep MUTATIVE.
 2. If a positional argument starts with a sqlite-style dot-command that
-   loads a script (``.read``, ``.import``, ``.restore``), keep MUTATIVE.
-3. If a flag override matches (e.g. ``-readonly``), classify as READ_ONLY.
-4. If the command exposes an inline payload via a recognised flag pair
+   loads or executes a script / writes to disk (``.read``, ``.import``,
+   ``.restore``, ``.clone``, ``.load``, ``.system``, ``.shell``, ``.save``),
+   keep MUTATIVE.
+3. If every dot-command present is a strictly read-only sqlite3 schema /
+   metadata command (``.schema``, ``.tables``, ``.databases``,
+   ``.indexes`` / ``.indices``, ``.dbinfo``, ``.show``, ``.fullschema``),
+   classify as READ_ONLY.  This check runs *after* rule 2, so the
+   write-capable dot-commands above are caught first and never downgraded;
+   ``.dump`` / ``.output`` / ``.once`` / ``.backup`` are deliberately left
+   out of the read-only set (conservative) and fall through to MUTATIVE.
+4. If a flag override matches (e.g. ``-readonly``), classify as READ_ONLY.
+5. If the command exposes an inline payload via a recognised flag pair
    (``-c``, ``-e``, ``--eval``) and the payload matches the read-only
    regex, classify as READ_ONLY.
-5. Otherwise return ``default_intent`` (MUTATIVE).
+6. Otherwise return ``default_intent`` (MUTATIVE).
 
 A future Nivel 2 (`sql_payload_analyzer.py`) will parse external SQL files
 and inline payloads into an AST and downgrade more cases -- e.g., a file
@@ -103,6 +112,29 @@ _JS_MUTATIVE_KEYWORDS = re.compile(
 #: shell redirect, because the payload is still external.
 _SQLITE_MUTATIVE_DOT_COMMANDS: FrozenSet[str] = frozenset({
     ".read", ".import", ".restore", ".clone", ".load", ".system", ".shell", ".save",
+})
+
+#: SQLite dot-commands that are strictly read-only schema/metadata introspection.
+#: These produce no side effects on the database file and write nothing to disk.
+#:
+#: NOT included (remain MUTATIVE):
+#:   .import, .restore, .backup, .clone, .save  -- write to db/file
+#:   .read                                       -- executes an arbitrary script
+#:   .output / .once                             -- redirects output to a file
+#:   .load                                       -- loads a native extension (exec)
+#:   .system / .shell                            -- arbitrary OS command execution
+#:   .dump                                       -- NOT included: commonly piped to
+#:                                                  files and by default prints the
+#:                                                  full db; conservative exclusion.
+_SQLITE_READONLY_DOT_COMMANDS: FrozenSet[str] = frozenset({
+    ".schema",      # prints CREATE statements for tables/indexes
+    ".tables",      # lists tables in the database
+    ".databases",   # lists attached databases
+    ".indexes",     # lists indexes for a table or all tables
+    ".indices",     # alias for .indexes
+    ".dbinfo",      # prints low-level metadata about the db file
+    ".show",        # prints current settings (not data)
+    ".fullschema",  # prints CREATE statements including schema_table
 })
 
 #: Tokens shlex emits for unquoted shell redirects.  Their presence in the
@@ -258,6 +290,29 @@ def _has_sqlite_load_dot_command(tokens: Tuple[str, ...]) -> bool:
     return False
 
 
+def _has_sqlite_readonly_dot_command(tokens: Tuple[str, ...]) -> bool:
+    """Return True when ALL dot-commands present in the tokens are
+    strictly read-only schema/metadata commands.
+
+    Returns False (falls through) when no dot-command is present so the
+    regular inline-payload and default rules continue to apply.
+    Returns False when a dot-command outside the read-only allowlist is
+    found -- the caller should treat those as MUTATIVE.
+    """
+    dot_cmds_found = []
+    for tok in tokens:
+        stripped = tok.strip().strip('"').strip("'")
+        first_word = stripped.split(None, 1)[0] if stripped else ""
+        if first_word.startswith("."):
+            dot_cmds_found.append(first_word.lower())
+
+    if not dot_cmds_found:
+        return False
+
+    # Every dot-command present must be in the read-only set.
+    return all(cmd in _SQLITE_READONLY_DOT_COMMANDS for cmd in dot_cmds_found)
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -271,8 +326,16 @@ def classify_capability(semantics: CommandSemantics) -> CapabilityResult:
 
     Resolution order (mirrors module docstring):
 
-    1. External payload (redirect ``<`` or sqlite ``.read``-style command)
-       -> MUTATIVE.
+    1. External payload (redirect ``<``) -> MUTATIVE.
+    1b. sqlite write-capable dot-command (``.read`` / ``.import`` /
+        ``.restore`` / ``.clone`` / ``.load`` / ``.system`` / ``.shell`` /
+        ``.save``) -> MUTATIVE.
+    1c. sqlite read-only schema/metadata dot-command (``.schema`` /
+        ``.tables`` / ``.databases`` / ``.indexes`` / ``.indices`` /
+        ``.dbinfo`` / ``.show`` / ``.fullschema``) -> READ_ONLY.  Runs after
+        1b so write-capable dot-commands are never downgraded; ``.dump`` /
+        ``.output`` / ``.once`` / ``.backup`` are excluded (conservative)
+        and fall through to the default.
     2. Flag override -> READ_ONLY.
     3. Inline-payload override -> READ_ONLY.
     4. Default -> ``default_intent`` (always MUTATIVE today).
@@ -311,6 +374,20 @@ def classify_capability(semantics: CommandSemantics) -> CapabilityResult:
             reason=(
                 f"{class_name}: sqlite dot-command loads an external script "
                 "(.read / .import / .restore)"
+            ),
+        )
+
+    # --- Rule 1c: sqlite read-only dot-commands -> READ_ONLY ----------------
+    # Must run after the mutative-dot-command check so that write-capable
+    # dot-commands (.read, .import, ...) are never downgraded here.
+    if base_cmd in {"sqlite3", "sqlite"} and _has_sqlite_readonly_dot_command(tokens):
+        return CapabilityResult(
+            matched=True,
+            capability_class=class_name,
+            intent=CATEGORY_READ_ONLY,
+            reason=(
+                f"{class_name}: sqlite dot-command is a read-only schema/metadata "
+                "introspection command (.schema / .tables / .databases / ...)"
             ),
         )
 

@@ -42,7 +42,7 @@ The runtime, not this skill, enforces tiers. Three modules layer the decision:
 
 - `tiers.py` -- the `SecurityTier` enum (`T0_READ_ONLY`, `T1_VALIDATION`, `T2_DRY_RUN`, `T3_BLOCKED`) and `_classify_command_tier_cached` assign every command a tier.
 - `blocked_commands.py` -- pattern-matches irreversible commands and permanently denies them (exit 2, never approvable).
-- `mutative_verbs.py` -- CLI-agnostic detection of mutative verbs; drives the nonce / approval flow for T3.
+- `mutative_verbs.py` -- CLI-agnostic detection of mutative verbs; drives the nonce / approval flow for T3. Includes script-file detection (Step 1d, `_check_script_file`): when a command is `<interpreter> <script-file>` (`python3 deploy.py`, `bash setup.sh`, `node migrate.js`) or `./script.ext`, the file is read and classified by its real invocations -- AST analysis for Python, the blocked/mutative regex layer for shells and other interpreters. A script that is missing, unreadable, or whose interpreter is unrecognized defaults to T3 (conservative). This prevents the evasion path where `<interp> <file>` bypasses the verb scanner because the filename token has no recognizable subcommand.
 - `composition_rules.py` -- `check_composition` / `classify_stage` classify pipe compositions (FILE_READ→EXEC_SINK, network→exec, decode→exec); triggers T3 on dangerous pipelines such as `file_to_exec`.
 - `flag_classifiers.py` -- `_classify_curl` / `classify_by_flags` detect flag-dependent mutations; triggers T3 on commands whose flags make them mutative (e.g., `curl -X POST`).
 
