@@ -1,0 +1,111 @@
+# Equivalent-mutant skip list for inline_ast_analyzer.py (Fase B GRIND).
+#
+# One job_id per line (cosmic-ray session: inline-ast.sqlite). Lines starting
+# with '#' are comments. Each id below is a mutant that NO input can
+# distinguish from the original -- killing it is impossible, so it is excluded
+# from the kill-rate denominator (AC-5). Every entry carries a rationale and,
+# where relevant, the structural finding it exposed.
+#
+# Usage:
+#   uv run python tests/evals/mutkill_approval_grants.py \
+#     --session inline-ast.sqlite --toml tests/evals/mutation-inline-ast.toml \
+#     --skip-file tests/evals/equivalents-inline-ast.skip -j 8 --quiet
+#
+# ---------------------------------------------------------------------------
+# _sql_arg_is_read_only
+# ---------------------------------------------------------------------------
+# L452 NumberReplacer: `sql.split(None, 1)[0]` -> `sql.split(None, 2)[0]`.
+#   Only element [0] is used; split(None, 1) and split(None, 2) yield the same
+#   first token for every input. The maxsplit count cannot change [0].
+ea3305bfeec04096b4a8ea17f389fd6d
+#
+# ---------------------------------------------------------------------------
+# _extract_open_mode -- HARNESS NO-OP ARTIFACT (not a semantic equivalent)
+# ---------------------------------------------------------------------------
+# L502 NumberReplacer (occurrence 15): the `1` index in `node.args[1]`.
+#   This job is UN-APPLICABLE under the harness: verified by applying the exact
+#   MutationSpec (occurrence=15, pos 502:52-502:53) via cosmic_ray.mutating.
+#   mutate_and_test -- the module behaves identically to baseline (open('w','p')
+#   stays SAFE, i.e. args[1] is still read), so no test can ever distinguish
+#   mutant from original. The NumberReplacer offset at this occurrence resolves
+#   to a no-op when mutate_and_test re-walks the source; the parso occurrence /
+#   position binding does not land an effective index change. It is therefore
+#   un-killable in this harness and excluded from the denominator.
+#   (Distinct from the L502 GtE_Eq job, which IS killed by the open(...) 3-arg
+#    write-mode test.)
+df2b27f8a78343129260a0682e614005
+# L502 NumberReplacer (occurrence 14): the SAME `1` index in `node.args[1]`,
+#   the other NumberReplacer offset on that literal. Identical situation to
+#   occurrence 15 above: verified un-applicable via mutate_and_test (open('w','p')
+#   stays SAFE and open('p','w',1) stays dangerous -- baseline behavior), so it
+#   is a harness no-op and un-killable. Both offsets on this literal resolve to
+#   no-ops because the parso occurrence/position binding does not land an
+#   effective index change in mutate_and_test.
+89c6497a985e45138713749e7cb1797c
+#
+# ---------------------------------------------------------------------------
+# _ReadOnlyChecker.is_read_only
+# ---------------------------------------------------------------------------
+# L365 ReplaceFalseWithTrue: `if isinstance(node, ast.Delete): return False`
+#   -> `return True`. DEAD CODE: ast.Delete is NOT in _ALLOWED_STMT_TYPES, so
+#   the prior guard (L361 `if not isinstance(node, self._ALLOWED_STMT_TYPES)`)
+#   already returns False for every Delete node before L364 is ever reached.
+#   The Delete special-case is unreachable; the mutant return is never executed.
+#   FINDING: L363-L365 is redundant and could be removed.
+bf803182a4944276a8bdfe3443e4fca7
+#
+# ---------------------------------------------------------------------------
+# analyze_python_inline
+# ---------------------------------------------------------------------------
+# L191 ReplaceOrWithAnd: `if not code or not code.strip()` -> `and`. The only
+#   inputs where the two short-circuits differ are non-empty whitespace-only
+#   strings. For those, the early branch returns InlineAstResult() (safe), and
+#   the fall-through parses the whitespace into an empty Module that contains
+#   no Call nodes and also returns InlineAstResult(). Identical result; no
+#   observable difference (contrast is_provably_read_only_python L330, where the
+#   fall-through DOES differ and is killable).
+d628bbd7f2ec4a288c381a9aed37eea9
+# L230 ReplaceComparisonOperator_Eq_Is: `dotted == "open"` -> `dotted is "open"`.
+#   `dotted` for a bare `open(...)` call is the parser-produced identifier
+#   `func.id`, which CPython interns; `is "open"` is therefore True exactly when
+#   `== "open"` is True. No reachable input makes value-equality and identity
+#   diverge.
+0a8de624f7fb41a19fbf306fa1df653c
+#
+# ---------------------------------------------------------------------------
+# _extract_open_mode
+# ---------------------------------------------------------------------------
+# L507 ReplaceComparisonOperator_Eq_Is: `kw.arg == "mode"` -> `kw.arg is "mode"`.
+#   kw.arg is a parser-produced interned identifier string; `is "mode"` equals
+#   `== "mode"` for every keyword the parser can emit. Equivalent.
+d94699c3af674768b35862fa26b14bdb
+#
+# ---------------------------------------------------------------------------
+# Module-level catalog construction
+# ---------------------------------------------------------------------------
+# L158 NumberReplacer (x2): `{entry[0]: entry for entry in _DANGEROUS_CALLS}` --
+#   the `[0]` subscript mutated to another index, re-keying _DANGEROUS_BY_DOTTED
+#   by label/category instead of dotted name. DETECTION IS UNCHANGED: every
+#   dotted entry is ALSO present in _DANGEROUS_LEAVES_BY_MODULE (the module-leaf
+#   fallback at L222-227), which reproduces the identical (label, category) for
+#   any `mod.leaf(...)` call when the direct-map lookup misses. Verified: all
+#   catalog entries (direct and aliased) stay detected with the direct map
+#   re-keyed.
+#   FINDING: the direct _DANGEROUS_BY_DOTTED map is redundant with the leaf map
+#   for detection; it only shortcuts the lookup.
+8107ef0abbff467781b9451922a10861
+f04c9918e6a74a86a6a22bdf99cff681
+# L164 ZeroIterationForLoop: the `for _dotted,_label,_category in
+#   _DANGEROUS_CALLS` loop that builds _DANGEROUS_LEAVES_BY_MODULE is skipped,
+#   leaving the leaf map EMPTY. DETECTION IS UNCHANGED: every catalog entry is a
+#   direct key in _DANGEROUS_BY_DOTTED, and alias resolution reconstructs the
+#   full dotted name before lookup, so the direct map alone catches all
+#   dangerous calls (including aliased imports). Verified empirically.
+#   FINDING: the leaf-map fallback is dead weight for detection given that
+#   alias resolution always rebuilds the dotted name.
+4b8c392260504d9e8fb28646cf6fc94b
+# L165 AddNot: `if "." in _dotted:` -> `if not "." in _dotted:`. Every entry in
+#   _DANGEROUS_CALLS contains a ".", so the negated guard selects none and the
+#   leaf map ends up EMPTY -- identical to L164 above, and equivalent for the
+#   same reason.
+d092490125e248039a8535c73f91fa8d

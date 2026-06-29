@@ -484,7 +484,6 @@ def _remove_plugin_registry_entry(root: Path, dry_run: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 _GAIA_ENV_KEYS = {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
 }
 

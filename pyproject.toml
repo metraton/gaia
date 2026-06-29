@@ -12,7 +12,9 @@ readme = "README.md"
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.5",
+    "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
+    "pyyaml>=6.0",
 ]
 
 [tool.ruff]
@@ -32,7 +34,19 @@ include = ["gaia*"]
 testpaths = ["tests", "tools/scan/tests"]
 markers = [
     "parity: JS-Python CLI parity comparison tests",
+    "ci_subset: budget-bounded subset of L2/L3 (LLM) tests run in CI under a controlled token budget (brief #89 AC-6)",
 ]
+
+# Branch coverage (brief #89 AC-4): coverage is a DIAGNOSTIC to locate unexercised
+# wiring in the security layer + entry points, NOT a metric-target / vanity gate.
+# No fail_under threshold is set on purpose.
+[tool.coverage.run]
+branch = true
+source = ["hooks/modules/security", "hooks"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [dependency-groups]
 dev = [

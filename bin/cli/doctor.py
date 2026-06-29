@@ -854,10 +854,6 @@ def check_settings(project_root: Path) -> dict:
     if deny_count == 0:
         issues.append("No deny rules (destructive commands not blocked)")
 
-    env = data.get("env", {})
-    if not env.get("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"):
-        infos.append("AGENT_TEAMS env not set")
-
     if issues:
         return _result("Settings", "error", "; ".join(issues), "Run `gaia scan` or `gaia update`")
 

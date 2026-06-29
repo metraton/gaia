@@ -22,6 +22,12 @@ VALID_BACKENDS = ("subprocess", "routing_sim", "hook_log_replay")
 # Allowed scoring modes.
 VALID_SCORING = ("binary", "semantic")
 
+# Allowed values for CaseModel.expected_decision -- the Claude Code
+# PreToolUse permissionDecision vocabulary. Only the security oracle
+# catalog (security_decisions.yaml, brief #89 AC-2) carries this field;
+# it is optional everywhere else, so ``None`` is also valid.
+VALID_DECISIONS = ("allow", "ask", "deny")
+
 # Allowed grader names. ``routing_grader`` is used by the routing-sim
 # backend (T3d); ``skill_injection_consumer`` is the S7 hook-log path
 # (T4). Every grader listed in a case's ``grader`` field must be in
@@ -72,6 +78,11 @@ class CaseModel:
         trace_expect: Expectations for :func:`graders.tool_trace_grader`.
         routing_expect: Expectations for the routing-sim grader (T3d).
         anomaly_expect: Expectations for the skill_injection consumer (T4).
+        expected_decision: Human-curated oracle decision for the
+            ``hook_log_replay`` backend (brief #89 AC-2) -- one of
+            ``allow`` / ``ask`` / ``deny`` (Claude Code PreToolUse
+            ``permissionDecision`` vocabulary), or ``None`` for catalogs
+            that do not assert a security decision.
     """
 
     id: str
@@ -87,6 +98,7 @@ class CaseModel:
     trace_expect: dict = field(default_factory=dict)
     routing_expect: dict = field(default_factory=dict)
     anomaly_expect: dict = field(default_factory=dict)
+    expected_decision: Optional[str] = None
 
 
 def _validate_top_level(data: Any, path: Path) -> dict:
@@ -144,6 +156,13 @@ def _case_from_raw(raw: Any, path: Path, index: int) -> CaseModel:
             f"valid set: {list(VALID_SCORING)}"
         )
 
+    expected_decision = raw.get("expected_decision")
+    if expected_decision is not None and expected_decision not in VALID_DECISIONS:
+        raise CatalogError(
+            f"{path}: case {raw['id']} has invalid expected_decision "
+            f"{expected_decision!r}; valid set: {list(VALID_DECISIONS)}"
+        )
+
     threshold = raw.get("threshold", 0.8)
     if not isinstance(threshold, (int, float)):
         raise CatalogError(
@@ -183,6 +202,7 @@ def _case_from_raw(raw: Any, path: Path, index: int) -> CaseModel:
         trace_expect=_dict_field("trace_expect"),
         routing_expect=_dict_field("routing_expect"),
         anomaly_expect=_dict_field("anomaly_expect"),
+        expected_decision=expected_decision,
     )
 
 

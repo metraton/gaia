@@ -1,0 +1,138 @@
+AC-4 — Branch coverage measured and reported for the security layer + entry points (brief #89)
+================================================================================================
+Date: 2026-06-28
+Status: DONE — coverage re-run post-hardening (approval_grants M1 loop + inline_ast + mutative_verbs
+        + tiers + blocked_commands mutant suites), exit 0, updated branch table captured below.
+
+Previous run (2026-06-26): 68% overall / 4618 passed
+This run    (2026-06-28): 71% overall / 5050 passed  (+3 pp, +432 tests)
+
+Command run
+-----------
+uv run pytest --cov=hooks/modules/security --cov=hooks --cov-branch -q --ignore=tests/evals
+
+Result: 5050 passed, 32 skipped in ~285s
+
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.11.15-final-0 _______________
+
+Name                                                  Stmts   Miss Branch BrPart  Cover   Missing
+-------------------------------------------------------------------------------------------------
+hooks/adapters/__init__.py                                5      0      0      0   100%
+hooks/adapters/base.py                                   34      0      0      0   100%
+hooks/adapters/channel.py                                 6      0      0      0   100%
+hooks/adapters/claude_code.py                           702    388    230     25    43%   411-414, 446, 459-530, 549-634, 650-726, 737-780, 810-927, 941-942, 955-1057, 1080-1101, 1136->1138, 1159-1160, 1188-1189, 1240->1252, 1248-1249, 1254-1256, 1271-1275, 1296-1304, 1341-1346, 1368-1373, 1391-1408, 1422-1433, 1469, 1471-1473, 1490->1519, 1520-1521, 1524-1726, 1740-1741, 1767-1768, 1834, 1843->1854, 1858-1877, 1887, 1889-1894, 1914-1919, 1937->1968, 1951->1968, 1962-1963
+hooks/adapters/types.py                                 107      0      0      0   100%
+hooks/adapters/utils.py                                   7      3      2      0    44%   20-23
+hooks/elicitation_result.py                              75     25     38      4    62%   24, 63->66, 68-70, 121-156
+hooks/modules/__init__.py                                 1      0      0      0   100%
+hooks/modules/agents/__init__.py                          2      0      0      0   100%
+hooks/modules/agents/contract_validator.py              372     96    206     17    70%   100->102, 103-104, 145, 148, 150, 154->157, 162->176, 181-184, 346, 355, 420-421, 430-431, 443, 537-539, 547-549, 637-638, 702->704, 738, 743->740, 747-749, 797->795, 801->798, 836-843, 848-850, 864-909, 956-992
+hooks/modules/agents/handoff_persister.py               129     40     50      9    68%   29->38, 31->30, 60-66, 74-77, 123, 174-180, 254-255, 265-268, 281->289, 284->283, 287-288, 291-294, 326->exit, 335-350, 359-360
+hooks/modules/agents/response_contract.py               293     37    122     17    86%   34-38, 194, 199-201, 214, 308-309, 358, 369, 378-384, 399, 422, 425, 477->479, 507, 510, 515, 517, 542, 567, 581, 630-633, 638-645
+hooks/modules/agents/skill_injection_verifier.py         19      0     10      0   100%
+hooks/modules/agents/state_tracker.py                    88     11     28      3    88%   35-36, 87, 95-96, 105-107, 120, 135, 140
+hooks/modules/agents/task_info_builder.py                21      1      6      2    89%   53, 60->63
+hooks/modules/agents/transcript_analyzer.py             234     23    108     20    86%   89-90, 92-93, 98-99, 130, 145, 152, 167->173, 185->exit, 188-191, 192->186, 196->194, 224, 233-235, 252, 256-258, 261, 265->274, 267->274, 276, 287->298, 304->308, 320->325
+hooks/modules/agents/transcript_reader.py                89      9     44      4    89%   43, 56->41, 60-63, 108-109, 153->167, 165-166
+hooks/modules/audit/__init__.py                           4      0      0      0   100%
+hooks/modules/audit/event_detector.py                    67     42     24      0    27%   35-36, 39, 57-83, 100-118, 134-146, 156-158, 168
+hooks/modules/audit/logger.py                            48     31     12      0    28%   32-37, 59-82, 86-97, 101-105, 115-117, 129
+hooks/modules/audit/metrics.py                           57      7     20      2    88%   47-49, 57, 67-68, 90
+hooks/modules/audit/workflow_auditor.py                 168     23     94     12    83%   235, 257->266, 284, 290-300, 309, 326-327, 347-348, 421-429, 446->476, 461->476, 481-497, 576->exit
+hooks/modules/audit/workflow_recorder.py                103     24     40     11    74%   39-42, 48, 52-53, 69->60, 85->88, 94, 97, 118, 121, 129, 158, 245-253, 257-258
+hooks/modules/context/__init__.py                         1      0      0      0   100%
+hooks/modules/context/agentic_loop_detector.py           80     65     22      0    15%   37-41, 46-59, 68-69, 81-107, 116-141, 150-165
+hooks/modules/context/anchor_tracker.py                 146     19     70      9    87%   65, 75->exit, 119-121, 144-146, 178, 191, 195, 197, 199, 212-213, 217-219, 276->282, 313->exit, 316-317
+hooks/modules/context/compact_context_builder.py        146    146     54      0     0%   6-261
+hooks/modules/context/context_freshness.py               67     67     10      0     0%   13-141
+hooks/modules/context/context_injector.py               230     57     78     18    74%   34, 73-74, 79-84, 114->110, 118, 209, 212-213, 217-218, 235, 252-253, 286-287, 312, 318-319, 323-324, 334-336, 344-346, 352-358, 396->398, 399, 401, 402->404, 414-415, 451, 466-469, 474-482, 498-500
+hooks/modules/context/context_writer.py                 186     48     50      8    76%   43-47, 72-74, 90-96, 139-144, 181-183, 216-222, 262, 267-269, 310-311, 334-335, 343-344, 350, 355, 359, 415, 418-422, 449-452
+hooks/modules/context/contracts_loader.py                64     36     12      2    42%   22-23, 52-53, 69-91, 95-100, 124, 130-139
+hooks/modules/core/__init__.py                            6      0      0      0   100%
+hooks/modules/core/hook_entry.py                         29     10      2      1    65%   53-57, 69-70, 72-73, 76-78
+hooks/modules/core/paths.py                              58      2     12      0    97%   159-160
+hooks/modules/core/plugin_mode.py                        85     30     32      4    61%   50-56, 64-70, 92-93, 98-108, 113, 132-133
+hooks/modules/core/plugin_setup.py                      184    158     58      0    11%   261-262, 267-272, 314-353, 365-413, 424-456, 468-543, 555-572
+hooks/modules/core/state.py                              73      3      8      0    96%   171-173
+hooks/modules/core/stdin.py                              12      2      2      1    79%   19, 22
+hooks/modules/core/workspace_bootstrap.py                44     22     12      4    46%   39-41, 46-47, 55, 59-72, 80-91
+hooks/modules/events/__init__.py                          0      0      0      0   100%
+hooks/modules/events/event_writer.py                     64     13     10      2    80%   56-59, 152, 155-156, 163-164, 168, 175-177
+hooks/modules/install_detector.py                        36      1     14      1    96%   123
+hooks/modules/memory/__init__.py                         1      0      0      0   100%
+hooks/modules/memory/episode_writer.py                   98     46     38     10    49%   37-89, 121->134, 122->121, 125->121, 130-132, 135-136, 154-163, 168-169, 180-181, 182->187, 189-190, 211-212, 221-223
+hooks/modules/orchestrator/__init__.py                    0      0      0      0   100%
+hooks/modules/orchestrator/delegate_mode.py              25      0      4      0   100%
+hooks/modules/scanning/__init__.py                        1      1      0      0     0%   8
+hooks/modules/scanning/scan_trigger.py                   35     35      6      0     0%   16-86
+hooks/modules/security/__init__.py                       13      0      0      0   100%
+hooks/modules/security/approval_cleanup.py              110     58     24      1    46%   59-88, 120-198, 249, 278
+hooks/modules/security/approval_constants.py              4      0      0      0   100%
+hooks/modules/security/approval_grants.py               561      6    170     10    98%   271->274, 347->341, 439-441, 483->490, 486->490, 540->556, 805->803, 842, 852->844, 1091, 1684
+hooks/modules/security/approval_messages.py              21      4      0      0    81%   19, 31, 44, 53
+hooks/modules/security/approval_scopes.py                75     10     26      6    82%   86, 98, 118, 124, 151, 170, 200-203
+hooks/modules/security/blocked_commands.py              109      2     56      0    99%   74-75
+hooks/modules/security/blocked_message_formatter.py      25      0     10      0   100%
+hooks/modules/security/capability_classes.py             82      3     36      4    94%   231-232, 283, 337->371, 346->345
+hooks/modules/security/command_semantics.py             106      3     36      1    97%   63-66, 186
+hooks/modules/security/composition_rules.py             208     16    118     17    90%   184, 187, 192, 285, 288-289, 295, 298, 312->340, 315, 324->327, 329, 331, 362, 367, 389, 413, 442
+hooks/modules/security/flag_classifiers.py              296     41    174     36    84%   84, 87-88, 112, 132, 173, 195, 208, 226, 257, 293, 347, 370, 405, 411, 467, 476-477, 482-483, 504, 515, 547->556, 556->537, 571-574, 585, 614, 629-630, 641-642, 669, 676, 699-700, 710-711, 714, 748, 756, 783->782, 821, 867
+hooks/modules/security/gaia_db_write_guard.py            22      1      8      1    93%   64
+hooks/modules/security/inline_ast_analyzer.py           189      5    106      6    96%   165->164, 226-227, 365, 385-386, 504->506, 509->506
+hooks/modules/security/mutative_verbs.py                430      7    258     11    97%   46-48, 926->895, 1141->1175, 1144->1175, 1551->1590, 1684->1688, 1700, 1790, 1836-1837, 1891->1905, 1931->1946, 1999->2017, 2019->2044
+hooks/modules/security/network_hosts.py                 179     29     96     16    82%   132-135, 156, 164-166, 174-176, 182, 232, 389, 411, 421-424, 429-430, 432-433, 435-436, 463, 473, 476, 481
+hooks/modules/security/prompt_validator.py               11      0      6      0   100%
+hooks/modules/security/shell_unwrapper.py                48      1     16      2    95%   117->124, 165
+hooks/modules/security/tiers.py                         69      1     36      2    97%   100->105, 176
+hooks/modules/session/__init__.py                         1      0      0      0   100%
+hooks/modules/session/pending_scanner.py                120     50     40      9    53%   51-56, 59-61, 75-76, 91-97, 104->106, 106->110, 120-129, 151-153, 184-186, 192, 204->206, 214-236, 244, 249-250
+hooks/modules/session/session_context_writer.py          38     38      4      0     0%   11-100
+hooks/modules/session/session_event_injector.py          65     49     30      2    19%   39-51, 64-94, 119-120, 129-158
+hooks/modules/session/session_manager.py                 15      6      2      1    59%   25-30
+hooks/modules/session/session_manifest.py               349    176    112     14    47%   59-60, 64-67, 79-116, 126-135, 160-161, 167-169, 175->177, 177->179, 180->182, 183, 188, 239-240, 289-333, 364-452, 568-575, 580-582, 595, 611, 615-616, 626->634, 628->627, 651-659, 661->668, 664-665, 709->711, 711->713, 730-734
+hooks/modules/session/session_registry.py               115     13     42      2    89%   92, 135-136, 146-152, 296, 329-330
+hooks/modules/tools/__init__.py                           5      0      0      0   100%
+hooks/modules/tools/bash_validator.py                   432     84    190     31    80%   196->212, 215, 226-230, 241->248, 272-275, 325-326, 332-333, 342-348, 353-376, 444-445, 526, 542-545, 610, 649, 662-663, 698-704, 712-713, 780, 801-815, 827->861, 838-844, 855-856, 874-879, 935, 947, 956-957, 960-962, 1242, 1278-1281, 1303-1308, 1316, 1319, 1377, 1380-1381, 1384, 1400-1403, 1455->1454, 1551->1550, 1619-1627
+hooks/modules/tools/cloud_pipe_validator.py              52      0     20      0   100%
+hooks/modules/tools/hook_response.py                     16      1      4      1    90%   22
+hooks/modules/tools/shell_parser.py                      84      0     28      3    97%   140->143, 149->152, 160->163
+hooks/modules/tools/stage_decomposer.py                 157      5     50      5    95%   127, 194-197, 241->244, 286->289, 295->298
+hooks/modules/tools/task_validator.py                    90      2     22      4    95%   98, 117, 144->146, 150->152
+hooks/modules/validation/__init__.py                      2      0      0      0   100%
+hooks/modules/validation/commit_validator.py            130     40     46     10    60%   104, 131, 215, 225, 233->258, 251, 271-290, 297->306, 301->303, 308, 322, 329, 341-364, 407-415
+hooks/post_compact.py                                    24     24      4      0     0%   4-48
+hooks/post_tool_use.py                                   24     24      6      0     0%   11-58
+hooks/pre_compact.py                                     32     32      8      0     0%   12-65
+hooks/pre_tool_use.py                                   196    101     62     10    45%   26, 69, 90, 92, 98-107, 121, 146-147, 176-177, 197-202, 208->216, 286-299, 314-328, 333-353, 362-417
+hooks/session_end_hook.py                                31      2      6      2    89%   28, 81
+hooks/session_start.py                                  122     73     50      5    42%   16, 61, 70->89, 78->75, 80-83, 93-94, 115-231
+hooks/stop_hook.py                                       27      2      4      2    87%   27, 74
+hooks/subagent_start.py                                  27     27      4      0     0%   9-59
+hooks/subagent_stop.py                                  115     35     26      3    66%   35, 45-47, 146-147, 221->225, 239-240, 255-257, 276-287, 296-325, 333-336
+hooks/task_completed.py                                  26     26      4      0     0%   15-74
+hooks/user_prompt_submit.py                             106    106     34      0     0%   4-230
+-------------------------------------------------------------------------------------------------
+TOTAL                                                  9261   2624   3502    403    71%
+5050 passed, 32 skipped in ~285s
+
+================================ security module highlights ================================
+
+Module                                        Cover   Delta vs prev run
+----------------------------------------------------------------------
+approval_grants.py                             98%    +29 pp  (was 69%)
+inline_ast_analyzer.py                         96%    +7 pp   (was 89%)
+mutative_verbs.py                              97%    +9 pp   (was 88%)
+tiers.py                                       97%    =       (was 97%)
+blocked_commands.py                            99%    =       (was 99%)
+composition_rules.py                           90%    =       (was 90%)
+command_semantics.py                           97%    +3 pp   (was 94%)
+flag_classifiers.py                            84%    =       (was 84%)
+approval_scopes.py                             82%    +2 pp   (was 80%)
+network_hosts.py                               82%    =       (was 82%)
+capability_classes.py                          94%    =       (was 94%)
+shell_unwrapper.py                             95%    =       (was 95%)
+gaia_db_write_guard.py                         93%    =       (was 93%)
+blocked_message_formatter.py                  100%    =       (was 100%)
+approval_constants.py                         100%    =       (was 100%)
+prompt_validator.py                           100%    =       (was 100%)

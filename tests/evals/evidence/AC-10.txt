@@ -1,0 +1,94 @@
+AC-10: Anti-staleness guard for cosmic-ray sessions
+====================================================
+
+Brief: endurecimiento-de-tests-del-security-core
+Status: done
+Date: 2026-06-27
+
+PROBLEM (confirmed this session)
+---------------------------------
+A cosmic-ray session (.sqlite) stores mutation-spec inventory AND test results
+from when `cosmic-ray init`/`exec` last ran. If test files or the source module
+are changed without re-running `cosmic-ray init`, `cr-rate` reports a STALE
+kill_rate — computed against old results. This caused the loop to believe
+approval_grants "had not improved" when in fact +101 additional mutants had
+been killed by new tests written but not re-init'd.
+
+The `mutkill_approval_grants.py` harness is NOT affected by this: it re-runs
+`mutate_and_test` against the current tests on every invocation. `cr-rate` is.
+
+DELIVERABLES
+------------
+
+1. STALENESS GUARD (tests/evals/mutkill_approval_grants.py)
+   - New function: `check_session_staleness(session_path, toml_path, module_rel, repo_root)`
+     Compares sqlite mtime vs mtime of: toml config, source module (.py files),
+     and test files extracted from `test-command` in the toml.
+     Returns a list of warning strings (empty = fresh).
+   - New function: `_extract_test_paths_from_command(test_command, repo_root)`
+     Parses pytest test-command tokens into existing file paths.
+   - New CLI flag: `--check-stale`
+     Runs the staleness check; exits 1 if stale, 0 if fresh.
+     Without this flag, the check still runs and warns on stderr, but
+     execution continues (does not break existing invocations).
+   - Always-on behavior: even without `--check-stale`, stale sessions produce
+     a clearly labeled WARNING block on stderr before any mutation run.
+
+2. DOCUMENTATION (mutation-*.toml headers + this file)
+   The anti-staleness rule is documented in the header of:
+     - tests/evals/mutation-approval-grants.toml
+     - tests/evals/mutation-blocked-commands.toml
+     - tests/evals/mutation-mutative-verbs.toml
+     - tests/evals/mutation-security-core.toml
+   Each header now states:
+     "RE-INIT IS OBLIGATORY after any change to test files, the source module,
+      or this toml. Use mutkill (not cr-rate) for a fresh kill_rate."
+
+HONEST TEST OF THE GUARD
+-------------------------
+
+Test 1 — STALE scenario (session older than test files):
+  Session : approval-grants.sqlite  mtime 2026-06-26 19:59:09
+  Test    : test_approval_grants_mutants.py  mtime 2026-06-27 15:03:22
+  Command : uv run python tests/evals/mutkill_approval_grants.py \
+              --session approval-grants.sqlite \
+              --toml tests/evals/mutation-approval-grants.toml \
+              --check-stale
+
+  Output (stderr):
+    WARNING: cosmic-ray session may be STALE (AC-10 anti-staleness rule):
+      STALE SESSION: toml config is newer than the session
+        session mtime : 2026-06-26 19:59:09  (approval-grants.sqlite)
+        file mtime    : 2026-06-27 19:34:05  (tests/evals/mutation-approval-grants.toml)
+        -> cr-rate results from `cosmic-ray exec` may not reflect
+           the current tests. Re-run: cosmic-ray init <toml> <session>
+      STALE SESSION: source module (hooks/modules/security/approval_grants.py) is newer than the session
+        session mtime : 2026-06-26 19:59:09  (approval-grants.sqlite)
+        file mtime    : 2026-06-27 15:03:36  (hooks/modules/security/approval_grants.py)
+        -> ...
+      STALE SESSION: test file (tests/hooks/modules/security/test_approval_grants_mutants.py) is newer
+        session mtime : 2026-06-26 19:59:09  (approval-grants.sqlite)
+        file mtime    : 2026-06-27 15:03:22  (tests/hooks/modules/security/test_approval_grants_mutants.py)
+        -> ...
+      -> Use `mutkill` (this harness) for fresh kill_rate; re-init session before using `cr-rate`.
+  Exit code: 1  (stale detected)
+
+Test 2 — FRESH scenario (session newer than all tracked files):
+  Session : approval-grants-fresh.sqlite  mtime 2026-06-27 (just created)
+  Command : uv run python tests/evals/mutkill_approval_grants.py \
+              --session /tmp/approval-grants-fresh.sqlite \
+              --toml tests/evals/mutation-approval-grants.toml \
+              --check-stale
+
+  Output (stderr):
+    session is FRESH (no staleness detected)
+  Exit code: 0  (fresh)
+
+NOTES
+-----
+- The harness is in tests/evals/ (not under security-core coverage).
+  No mutation coverage regression to report.
+- The staleness guard adds ~0 overhead to normal runs (pure stat() calls,
+  no I/O beyond file metadata).
+- `--check-stale` is an opt-in flag; existing invocations are not broken.
+  The always-on warning (without --check-stale) requires no flag change.
