@@ -1568,6 +1568,136 @@ class TestCapabilityClasses:
         assert result.is_mutative is True
 
 
+class TestSqliteReadonlyDotCommands:
+    """Regression suite for sqlite3 read-only dot-command classification.
+
+    Previously `.schema` and `.tables` (and other schema/metadata dot-commands)
+    were incorrectly classified as T3 (MUTATIVE) because:
+      - They are not SQL keywords (SELECT/EXPLAIN/PRAGMA), so the inline-payload
+        regex did not match them.
+      - The only dot-command check was the mutative-dot-command guard, which
+        correctly blocked .read/.import/.restore but left the read-only ones to
+        fall through to the default MUTATIVE classification.
+
+    Fix (atom_t3_classification_overbroad): _SQLITE_READONLY_DOT_COMMANDS
+    allowlist + Rule 1c in classify_capability().
+    """
+
+    # ---- Positive: commands that MUST classify as READ_ONLY (not T3) --------
+
+    def test_sqlite3_schema_table_is_read_only(self):
+        """Exact reproduction of the blocked command: sqlite3 ~/.gaia/gaia.db ".schema plans"
+        This was wrongly classified as T3 before the fix."""
+        result = detect_mutative_command(
+            'sqlite3 ~/.gaia/gaia.db ".schema plans"'
+        )
+        assert result.is_mutative is False, (
+            f"Expected READ_ONLY but got is_mutative={result.is_mutative}, "
+            f"category={result.category!r}, reason={result.reason!r}"
+        )
+        assert result.category == "READ_ONLY"
+
+    def test_sqlite3_tables_is_read_only(self):
+        """Exact reproduction of the blocked command: sqlite3 /home/jorge/.gaia/gaia.db ".tables"
+        This was wrongly classified as T3 before the fix."""
+        result = detect_mutative_command(
+            "sqlite3 /home/jorge/.gaia/gaia.db \".tables\""
+        )
+        assert result.is_mutative is False, (
+            f"Expected READ_ONLY but got is_mutative={result.is_mutative}, "
+            f"category={result.category!r}, reason={result.reason!r}"
+        )
+        assert result.category == "READ_ONLY"
+
+    @pytest.mark.parametrize("dot_cmd", [
+        ".schema",
+        ".tables",
+        ".databases",
+        ".indexes",
+        ".indices",
+        ".dbinfo",
+        ".show",
+        ".fullschema",
+    ])
+    def test_each_readonly_dot_command_is_read_only(self, dot_cmd):
+        """Every command in _SQLITE_READONLY_DOT_COMMANDS must classify as READ_ONLY."""
+        cmd = f'sqlite3 /tmp/x.db "{dot_cmd}"'
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is False, (
+            f"{dot_cmd}: expected READ_ONLY but got is_mutative={result.is_mutative}, "
+            f"category={result.category!r}, reason={result.reason!r}"
+        )
+        assert result.category == "READ_ONLY"
+
+    def test_sqlite3_schema_with_table_argument_is_read_only(self):
+        """`.schema tablename` -- table name argument must not affect classification."""
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db ".schema users"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_sqlite3_indexes_with_table_argument_is_read_only(self):
+        """`.indexes tablename` -- same; argument is metadata, not a mutation."""
+        result = detect_mutative_command(
+            'sqlite3 /tmp/x.db ".indexes plans"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    # ---- Negative: write-capable dot-commands MUST stay MUTATIVE (T3) -------
+
+    @pytest.mark.parametrize("write_cmd,label", [
+        (".import data.csv mytable", "import"),
+        (".restore backup.db",       "restore"),
+        (".read /tmp/migration.sql", "read"),
+        (".clone /tmp/clone.db",     "clone"),
+        (".save /tmp/copy.db",       "save"),
+        (".load /tmp/ext.so",        "load"),
+        (".system ls",               "system"),
+        (".shell echo hi",           "shell"),
+    ])
+    def test_write_capable_dot_commands_stay_mutative(self, write_cmd, label):
+        """Write-capable dot-commands must never be downgraded to READ_ONLY."""
+        cmd = f'sqlite3 /tmp/x.db "{write_cmd}"'
+        result = detect_mutative_command(cmd)
+        assert result.is_mutative is True, (
+            f".{label}: expected MUTATIVE but got is_mutative={result.is_mutative}, "
+            f"category={result.category!r}, reason={result.reason!r}"
+        )
+
+    def test_sqlite3_dump_stays_mutative(self):
+        """.dump is conservative-excluded from the read-only allowlist.
+        It outputs the full database schema and data; by default it prints to
+        stdout but can be trivially piped to a file, so we treat it as MUTATIVE."""
+        result = detect_mutative_command('sqlite3 /tmp/x.db ".dump"')
+        assert result.is_mutative is True, (
+            f"Expected MUTATIVE but got is_mutative={result.is_mutative}, "
+            f"category={result.category!r}"
+        )
+
+    def test_sqlite3_output_redirect_dot_command_stays_mutative(self):
+        """.output redirects query results to a file -- clearly not read-only."""
+        result = detect_mutative_command('sqlite3 /tmp/x.db ".output /tmp/out.txt"')
+        assert result.is_mutative is True
+
+    def test_sqlite3_once_redirect_dot_command_stays_mutative(self):
+        """.once redirects the next query result to a file -- must stay MUTATIVE."""
+        result = detect_mutative_command('sqlite3 /tmp/x.db ".once /tmp/out.txt"')
+        assert result.is_mutative is True
+
+    # ---- Boundary: redirect input overrides read-only dot-command ----------
+
+    def test_redirect_input_with_readonly_dot_command_still_mutative(self):
+        """A shell redirect (< file) overrides the dot-command classification --
+        the payload is external and must remain MUTATIVE (Rule 1 fires first)."""
+        result = detect_mutative_command(
+            "sqlite3 /tmp/x.db < /tmp/script.sql"
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+
 class TestSlugAndFlagFalsePositives:
     """Regression suite for slug/flag false-positive fix.
 

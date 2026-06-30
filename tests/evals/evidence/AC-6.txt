@@ -1,41 +1,56 @@
 AC-6 — L2/L3 subset running in CI under a controlled budget (brief #89)
 =======================================================================
-Date: 2026-06-27
-Status: PREP — subset marked + CI job wired + selection verified. NO LLM
-        budget spent this pass (collection-only). Closure = a CI run with
-        ANTHROPIC_API_KEY present producing pytest exit 0 on the subset.
+Date: 2026-06-29
+Branch: main (HEAD 60565b1)
+Status: DEFERRED (deliberate descope) — NOT a pending gap.
 
-Artifacts changed
------------------
-- tests/conftest.py
-    Registered the `ci_subset` marker (config.addinivalue_line).
-- pyproject.toml
-    Added `ci_subset` to [tool.pytest.ini_options] markers.
-- tests/layer2_llm_evaluation/test_agent_behavior.py
-    Marked the two single-filter routing tests with @pytest.mark.ci_subset:
-      TestRoutingBehavior::test_terraform_routing
-      TestRoutingBehavior::test_kubectl_routing
-    Chosen as the cheapest end-to-end L2 signals (one promptfoo filter each).
-- .github/workflows/ci.yml
-    Added job `l2-ci-subset`:
-      * runs only on push to main (`if: github.event_name == 'push'`)
-      * budget guard: skips with exit 0 when ANTHROPIC_API_KEY is unset, so
-        secretless / fork runs never burn tokens
-      * runs `pytest tests/layer2_llm_evaluation -m ci_subset -q`
-    (The existing test-python job still --ignore=tests/layer2_llm_evaluation;
-     the new job is the controlled-budget on-ramp the brief asked for.)
+DECISION
+--------
+The real LLM run (tier L2/L3 with live ANTHROPIC_API_KEY calls) is deliberately
+descoped from this release cycle by explicit decision. It is NOT executed in this
+cycle and is NOT a blocking gap. The real-spend evals work will be addressed later
+in a dedicated evals framework, scoped as a separate project. Treat AC-6's state
+as DEFERRED (deliberate), not PENDING.
 
-Verification (collection-only, zero budget)
--------------------------------------------
-$ pytest tests/layer2_llm_evaluation -m ci_subset --co -q
+Rationale
+---------
+- Running L2/L3 burns real Anthropic token budget; the deliberate decision is to
+  consolidate all live-LLM evaluation into a purpose-built evals framework rather
+  than running an ad-hoc subset inside this release cycle.
+- The CI on-ramp (subset selection + budget-guarded CI job) is already wired and
+  remains in place for that future work; only the real-spend execution is deferred.
+
+What is already wired (the on-ramp, kept for the future framework)
+------------------------------------------------------------------
+- tests/conftest.py — registered the `ci_subset` marker (config.addinivalue_line).
+- pyproject.toml — added `ci_subset` to [tool.pytest.ini_options] markers.
+- tests/layer2_llm_evaluation/test_agent_behavior.py — two single-filter routing
+  tests marked @pytest.mark.ci_subset (the cheapest end-to-end L2 signals):
+    TestRoutingBehavior::test_terraform_routing
+    TestRoutingBehavior::test_kubectl_routing
+- .github/workflows/ci.yml — job `l2-ci-subset`:
+    * runs only on push to main (if: github.event_name == 'push')
+    * budget guard: skips with exit 0 when ANTHROPIC_API_KEY is unset, so
+      secretless / fork runs never burn tokens
+    * runs `pytest tests/layer2_llm_evaluation -m ci_subset -q`
+
+Subset selection verified (collection-only, zero budget) — 2026-06-29
+---------------------------------------------------------------------
+$ uv run pytest tests/layer2_llm_evaluation -m ci_subset --co -q
 tests/layer2_llm_evaluation/test_agent_behavior.py::TestRoutingBehavior::test_terraform_routing
 tests/layer2_llm_evaluation/test_agent_behavior.py::TestRoutingBehavior::test_kubectl_routing
+
 2/11 tests collected (9 deselected) in 0.02s
 
-The marker selects exactly the intended subset (2 selected, 9 deselected).
+The marker still selects exactly the intended subset (2 selected, 9 deselected).
+Environment check at this date: ANTHROPIC_API_KEY is NOT set in the working
+environment — consistent with the deliberate decision not to run live LLM calls
+in this cycle.
 
-FOLLOW-UP (deferred, costs real budget — NOT done this pass)
-------------------------------------------------------------
-Run `pytest tests/layer2_llm_evaluation -m ci_subset -q` with ANTHROPIC_API_KEY
-set (and promptfoo/npx available) to capture the green run; append the exit-0
-transcript here. The brief explicitly scoped real LLM spend OUT of this pass.
+Closure path (for the future dedicated evals framework, NOT this cycle)
+-----------------------------------------------------------------------
+When the dedicated evals framework runs it: with ANTHROPIC_API_KEY set (and
+promptfoo/npx available), run
+  pytest tests/layer2_llm_evaluation -m ci_subset -q
+and capture the exit-0 transcript with real LLM calls. That work is OUT of scope
+for this release cycle by deliberate decision.

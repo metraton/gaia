@@ -1,68 +1,71 @@
-AC-5 — Equivalents documented (brief #91)
-==========================================
-Date: 2026-06-27
-Branch: harden/approval-grants-m1-loop
-Status: CLOSED
+AC-5 — Fixture-precondition audit: test-DB fixtures must not drift from production schema (brief #89)
+======================================================================================================
+Date: 2026-06-29
+Branch: main (HEAD 60565b1)
+Status: CLOSED — guard implemented and green (exit 0). Absorbed in commit 2ffec47
+        ("test(security): add fixture precondition audit + align relay fixture").
 
-This is the AC-5 deliverable: for every surviving mutant across the 4
-security-core modules that is genuinely equivalent (no honest test can
-distinguish it from the original for any reachable input), the skip-file
-entry and the justification in equivalents-security-core.md together
-constitute the AC-5 proof.
+RELABELING NOTE
+---------------
+The prior content of this file documented the brief #91 "equivalents" deliverable
+(mutation-survivor equivalence proofs), NOT the brief #89 fixture-precondition
+audit. That content has been preserved verbatim at:
+  tests/evals/evidence/AC-5-equivalents-brief91.txt
+This file now carries the correct brief #89 AC-5 evidence.
 
-Module summary
---------------
-| Module              | Skip file                          | Equivalents | Killable denom | Document section |
-|---------------------|------------------------------------|-------------|----------------|------------------|
-| approval_grants.py  | equivalents-approval-grants.skip   | 121         | 530            | E1–E13           |
-| blocked_commands.py | equivalents-blocked-commands.skip  | 21          | 136            | B1–B3            |
-| mutative_verbs.py   | equivalents-mutative-verbs.skip    | 74          | 661            | M1–M10           |
-| tiers.py            | equivalents-tiers.skip             | 6           | 81             | T1               |
-| **TOTAL**           |                                    | **222**     | **1408**       |                  |
+Where the AC-5 work lives (absorbed, already implemented)
+---------------------------------------------------------
+tests/system/test_fixture_precondition_audit.py
+  (landed in commit 2ffec47 — Fri Jun 26 2026)
 
-Skip-file counts verified
--------------------------
-equivalents-approval-grants.skip:  121 job_ids (grep -c "^[a-f0-9]")
-equivalents-blocked-commands.skip:  21 job_ids
-equivalents-mutative-verbs.skip:    74 job_ids
-equivalents-tiers.skip:              6 job_ids
+What the guard does
+-------------------
+A reusable, table-agnostic guard that asserts every test-DB fixture which
+hand-rolls a CREATE TABLE for a production table declares a column shape
+consistent with the production schema (gaia/store/schema.sql). It fails on:
+  - MISSING column (present in production, absent from fixture) — the
+    OperationalError-in-waiting this guard exists to catch
+  - type / NOT NULL / DEFAULT shape drift on shared columns
+  - stale allowlist entries (a documented intentional-divergence that is no
+    longer actually divergent)
 
-Denominator derivation
------------------------
-approval_grants:  653 specs − 2 INCOMPETENT − 121 equivalents = 530 killable
-blocked_commands: 157 specs − 0 INCOMPETENT −  21 equivalents = 136 killable
-mutative_verbs:   735 specs − 0 INCOMPETENT −  74 equivalents = 661 killable
-tiers:             87 specs − 0 INCOMPETENT −   6 equivalents =  81 killable
-TOTAL:           1632 specs − 2 INCOMPETENT − 222 equivalents = 1408 killable
+Mechanism: materializes gaia/store/schema.sql in-memory (PRAGMA table_info) for
+the production spec, extracts each fixture's CREATE TABLE (works for both .sql
+files and DDL embedded in Python string literals, via balanced-paren scan),
+introspects it the same way, and diffs the two column specs. New (fixture, table)
+pairs are added to FIXTURES_UNDER_AUDIT — no logic changes needed per fixture.
 
-Untriaged survivors per module
--------------------------------
-approval_grants.py:   0 untriaged (documented in equivalents-security-core.md,
-                       section "AC-5 CIERRE FINAL — residual equivalents proven
-                       this session (E8–E13)"; all CANDIDATES UNDER VERIFICATION
-                       entries resolved)
-blocked_commands.py:  0 untriaged
-mutative_verbs.py:    0 untriaged (M1–M10, including M8/M9/M10 added in final
-                       grind passes)
-tiers.py:             0 untriaged
+Fixtures currently under audit (FIXTURES_UNDER_AUDIT)
+----------------------------------------------------
+  relay_e2e_inline_approval_grants
+    tests/integration/test_nonce_approval_relay_e2e.py  (table: approval_grants)
+    allowed_missing={} — must match production exactly
+  bootstrap_m4_schema_approval_grants
+    tests/fixtures/db_helpers.py                         (table: approval_grants)
+    allowed_missing={} — must match production exactly
 
-CONFIRMATION: 0 survivors remain un-triaged across all 4 modules of the
-security-core mutation network.
+Drive-out captured in the same commit (2ffec47): bootstrap_m4_schema's
+approval_grants builder was aligned to production by adding the missing
+multi_use / confirmed BOOLEAN columns. The relay fixture's inline schema already
+carried them, so it passed as-is.
 
-Document coherence fixes applied this session
----------------------------------------------
-- equivalents-security-core.md § M6 header: "(5 mutants)" corrected to
-  "(6 mutants)" — 586bbe030 (L1354 Gt_NotEq) was the 6th entry present in the
-  text and the skip-file but not counted in the header.
-- equivalents-security-core.md § M7 endpoint: stale "48 mutants" claim replaced
-  with accurate "74 equivalents" total + a denominator table (M1–M10).
-- equivalents-security-core.md § blocked_commands endpoint: added denominator
-  table (was missing; only narrative endpoint existed).
+Command run
+-----------
+$ uv run pytest tests/system/test_fixture_precondition_audit.py -v
 
-Evidence
---------
-equivalents-security-core.md: /home/jorge/ws/me/gaia/tests/evals/evidence/equivalents-security-core.md
-equivalents-approval-grants.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-approval-grants.skip
-equivalents-blocked-commands.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-blocked-commands.skip
-equivalents-mutative-verbs.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-mutative-verbs.skip
-equivalents-tiers.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-tiers.skip
+Transcript
+----------
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/jorge/ws/me/gaia/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/jorge/ws/me/gaia
+configfile: pyproject.toml
+plugins: cov-7.1.0
+collecting ... collected 2 items
+
+tests/system/test_fixture_precondition_audit.py::TestFixturePreconditionAudit::test_fixture_schema_matches_production[relay_e2e_inline_approval_grants] PASSED [ 50%]
+tests/system/test_fixture_precondition_audit.py::TestFixturePreconditionAudit::test_fixture_schema_matches_production[bootstrap_m4_schema_approval_grants] PASSED [100%]
+
+============================== 2 passed in 0.04s ===============================
+
+Exit code: 0

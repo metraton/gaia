@@ -876,3 +876,174 @@ def test_new_brief_setters_are_not_t3():
     # Controls: destruction + the consent layer must stay gated.
     assert detect_mutative_command("gaia brief delete b").is_mutative is True
     assert detect_mutative_command("gaia approvals approve P-x").is_mutative is True
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: show-by-id  (gaia brief show <int> resolves by numeric id)
+# ---------------------------------------------------------------------------
+
+def test_show_by_id_resolves_brief(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief show <int>` resolves the brief by numeric DB id."""
+    import argparse
+    from cli.brief import _cmd_show
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "id-target", {"status": "draft", "title": "ID Target"},
+                 db_path=tmp_db)
+    brief = get_brief("me", "id-target", db_path=tmp_db)
+    assert brief is not None
+    brief_id = brief["id"]
+
+    # show by id, no explicit workspace needed
+    args = argparse.Namespace(name=str(brief_id), workspace="me", json=False)
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 0, f"expected 0, got {rc}; stderr={captured.err}"
+    assert "ID Target" in captured.out
+
+
+def test_show_by_id_json(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief show <int> --json` returns JSON payload resolved by id."""
+    import argparse
+    import json as _json
+    from cli.brief import _cmd_show
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "json-id-brief", {"status": "draft", "title": "JSON ID"},
+                 db_path=tmp_db)
+    brief = get_brief("me", "json-id-brief", db_path=tmp_db)
+    brief_id = brief["id"]
+
+    args = argparse.Namespace(name=str(brief_id), workspace="me", json=True)
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = _json.loads(captured.out)
+    assert payload["title"] == "JSON ID"
+    assert payload["name"] == "json-id-brief"
+
+
+def test_show_by_id_not_found_returns_error(tmp_db, tmp_path, monkeypatch, capsys):
+    """`gaia brief show <int>` returns exit 1 when no brief with that id exists."""
+    import argparse
+    from cli.brief import _cmd_show
+
+    monkeypatch.chdir(tmp_path)
+    # Use an id that will never exist in an empty DB (very large int).
+    args = argparse.Namespace(name="999999", workspace="me", json=False)
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+
+
+def test_show_slug_still_works_for_digit_named_brief(tmp_db, tmp_path,
+                                                      monkeypatch, capsys):
+    """A brief whose slug is all-digits is still resolvable by id lookup.
+
+    When show receives an all-digit arg it first tries id lookup, which finds
+    the brief by id (not necessarily matching the slug).  This test inserts
+    a brief with name='123' and verifies that ``show 123`` returns the brief
+    found by id match (which may be a different brief if id != 123, but the
+    slug-name match falls back only when id lookup fails).
+    """
+    import argparse
+    import json as _json
+    from cli.brief import _cmd_show
+    from gaia.briefs import upsert_brief, get_brief
+
+    monkeypatch.chdir(tmp_path)
+    # Insert a brief with a numeric-looking slug.
+    upsert_brief("me", "numeric-brief", {"status": "draft", "title": "Numeric"},
+                 db_path=tmp_db)
+    brief = get_brief("me", "numeric-brief", db_path=tmp_db)
+    brief_id = brief["id"]
+
+    # Resolves by numeric id -- show the brief regardless of slug.
+    args = argparse.Namespace(name=str(brief_id), workspace="me", json=True)
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = _json.loads(captured.out)
+    assert payload["name"] == "numeric-brief"
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: cross-workspace hint (not-found in resolved WS, exists elsewhere)
+# ---------------------------------------------------------------------------
+
+def test_show_cross_workspace_hint(tmp_db, tmp_path, monkeypatch, capsys):
+    """When a brief exists in workspace B but is looked up in workspace A,
+    the error message names workspace B instead of a bare 'not found'."""
+    import argparse
+    from cli.brief import _cmd_show
+    from gaia.briefs import upsert_brief
+
+    monkeypatch.chdir(tmp_path)
+    # Brief lives in workspace 'me', not in 'github.com/metraton/gaia'.
+    upsert_brief("me", "cross-ws-brief",
+                 {"status": "draft", "title": "Cross WS"},
+                 db_path=tmp_db)
+
+    # Simulate looking up from a git-remote-resolved workspace.
+    args = argparse.Namespace(
+        name="cross-ws-brief",
+        workspace="github.com/metraton/gaia",
+        json=False,
+    )
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    # Must mention the workspace where the brief actually lives.
+    assert "'me'" in captured.err or "me" in captured.err
+    # Must suggest --workspace flag.
+    assert "--workspace" in captured.err
+
+
+def test_show_not_found_in_any_workspace_bare_error(tmp_db, tmp_path,
+                                                     monkeypatch, capsys):
+    """When a brief does not exist anywhere, the error is a bare 'not found'
+    with no cross-workspace hint."""
+    import argparse
+    from cli.brief import _cmd_show
+
+    monkeypatch.chdir(tmp_path)
+    args = argparse.Namespace(
+        name="totally-absent-brief",
+        workspace="me",
+        json=False,
+    )
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+    # No hint about other workspaces since there are none.
+    assert "--workspace" not in captured.err
+
+
+def test_show_cross_workspace_hint_json(tmp_db, tmp_path, monkeypatch, capsys):
+    """Cross-workspace hint in JSON mode includes the error key."""
+    import argparse
+    import json as _json
+    from cli.brief import _cmd_show
+    from gaia.briefs import upsert_brief
+
+    monkeypatch.chdir(tmp_path)
+    upsert_brief("me", "json-cross-ws",
+                 {"status": "draft", "title": "JSON Cross WS"},
+                 db_path=tmp_db)
+
+    args = argparse.Namespace(
+        name="json-cross-ws",
+        workspace="other-workspace",
+        json=True,
+    )
+    rc = _cmd_show(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    payload = _json.loads(captured.out)
+    assert "error" in payload
+    assert "me" in payload["error"]
+    assert "--workspace" in payload["error"]

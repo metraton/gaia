@@ -52,8 +52,12 @@ except ImportError:
 
 try:
     from .inline_ast_analyzer import analyze_python_inline as _analyze_python_inline
+    from .inline_ast_analyzer import (
+        is_provably_read_only_python as _is_provably_read_only_python,
+    )
 except ImportError:  # pragma: no cover -- defensive
     _analyze_python_inline = None
+    _is_provably_read_only_python = None
     logging.getLogger(__name__).warning(
         "inline_ast_analyzer.analyze_python_inline not importable; "
         "AST-based Python inline analysis disabled (falling back to regex)"
@@ -383,6 +387,93 @@ _INLINE_CODE_CLIS: FrozenSet[str] = frozenset(_INLINE_CODE_MAP.keys())
 _PYTHON_INTERPRETERS: FrozenSet[str] = frozenset({
     "python", "python3",
     "python3.10", "python3.11", "python3.12", "python3.13",
+})
+
+# ---------------------------------------------------------------------------
+# Script-file interpreters (Step 3b2)
+# ---------------------------------------------------------------------------
+# Interpreters that take a SCRIPT FILE as a positional argument
+# (``python3 deploy.py``, ``bash setup.sh``, ``node migrate.js``).  Without
+# this set the verb scanner sees only the filename token -- which carries a
+# ``.`` and so is rejected as a non-subcommand -- and the command slips through
+# as safe by elimination, executing the file's mutations without approval.
+# The fix reads the file and classifies it by REAL invocation (AST for Python,
+# the blocked/mutative regex layer for shells and other interpreters), never by
+# the bare ``<interp> <file>`` shape.  ``ruby``/``perl``/``php``/``node`` have
+# no vendored AST, so their files go through the same regex layer as shells.
+_SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
+    "python", "python3",
+    "python3.10", "python3.11", "python3.12", "python3.13",
+    "bash", "sh", "zsh", "dash", "ksh",
+    "node", "ruby", "perl", "php",
+})
+
+# File extensions whose interpreter is implied by ``./script`` (no explicit
+# interpreter token).  Maps the extension to the analysis lane used for its
+# content: "python" routes through the AST analyzer, "shell" through the
+# blocked/mutative regex layer.
+_SHEBANG_EXT_LANES: Dict[str, str] = {
+    ".py": "python",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+    ".js": "shell",
+    ".mjs": "shell",
+    ".cjs": "shell",
+    ".rb": "shell",
+    ".pl": "shell",
+    ".php": "shell",
+}
+
+# Cap on bytes read from a script file during classification.  A script larger
+# than this is unusual for the inline-evasion case and reading it in full would
+# add latency to every hook invocation; we read a bounded prefix, which is
+# enough to catch the mutative calls an evasion script front-loads.
+_MAX_SCRIPT_READ_BYTES = 256 * 1024
+
+# Interpreter flags that CONSUME the next token as their value AND mean the
+# invocation has no script-file positional (the payload is inline code or a
+# module name).  When one of these is present the script-file lane defers --
+# the inline path (Step 3b) or ordinary verb scanning handles the command.
+#   python -c <code> / -m <module>   bash -c <code>   node -e <code>
+_INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "python": frozenset({"-c", "-m"}),
+    "python3": frozenset({"-c", "-m"}),
+    "python3.10": frozenset({"-c", "-m"}),
+    "python3.11": frozenset({"-c", "-m"}),
+    "python3.12": frozenset({"-c", "-m"}),
+    "python3.13": frozenset({"-c", "-m"}),
+    "bash": frozenset({"-c"}),
+    "sh": frozenset({"-c"}),
+    "zsh": frozenset({"-c"}),
+    "dash": frozenset({"-c"}),
+    "ksh": frozenset({"-c"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print", "-r", "--require"}),
+    "ruby": frozenset({"-e"}),
+    "perl": frozenset({"-e", "-E"}),
+    "php": frozenset({"-r"}),
+}
+
+# ---------------------------------------------------------------------------
+# Python ``-m <package-manager>`` re-dispatch (Brief 91, AC-7)
+# ---------------------------------------------------------------------------
+# ``python3 -m pip install x`` is the SAME operation as ``pip install x`` -- the
+# ``-m`` form merely runs the package manager as a module of the interpreter.
+# Before this guard, the interpreter (``python3``) was the base command, the
+# module name (``pip``) was swallowed into flag_tokens as the value of ``-m``,
+# and classification limped along ONLY when a generic verb (``install``)
+# happened to remain in MUTATIVE_VERBS.  That is accidental, not robust:
+#   * ``python3 -m poetry add x`` slipped through (``add`` was removed from
+#     MUTATIVE_VERBS as a git-add false-positive), bypassing T3 entirely.
+#   * the command reported cli_family=runtime, never recognized as ``package``.
+# The fix recognizes ``<python> -m <pkg-mgr> <args...>`` and RE-DISPATCHES it as
+# ``<pkg-mgr> <args...>`` so it classifies identically to the direct CLI form:
+# ``install``/``uninstall``/``add`` -> MUTATIVE/T3, ``list``/``download`` ->
+# READ_ONLY (matching real pip semantics).  Scoped to the package-manager
+# modules below so ``python3 -m pytest`` / ``python3 -m http.server`` are NOT
+# rerouted -- they fall through to ordinary detection unchanged.
+_PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
+    "pip", "pip3", "pipenv", "poetry", "uv",
 })
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1164,30 @@ def detect_mutative_command(command: str) -> MutativeResult:
                     reason=cap.reason,
                 )
 
+    # --- Step 1c-py: Python ``-m <pkg-mgr>`` re-dispatch (Brief 91, AC-7) ---
+    # ``python3 -m pip install x`` is the same operation as ``pip install x``.
+    # Recognize the ``<python> -m <package-manager> <args...>`` shape and re-run
+    # detection on the rewritten ``<package-manager> <args...>`` command so it
+    # classifies IDENTICALLY to the direct CLI form (install/uninstall -> T3,
+    # list/download -> read-only).  Returns None when the command is not a
+    # package-manager module invocation, so detection continues unchanged --
+    # ``python3 -m pytest`` and ``python3 -m http.server`` are NOT rerouted.
+    py_module_result = _check_python_module_runner(base_cmd, semantics)
+    if py_module_result is not None:
+        return py_module_result
+
+    # --- Step 1d: Script-file analysis (python3 deploy.py, bash setup.sh, ./x) ---
+    # An interpreter invoked with a script FILE as a positional argument, or a
+    # direct ``./script`` invocation, hides its mutations inside the file --
+    # the verb scanner sees only the filename.  Read the referenced file and
+    # classify it by REAL invocation, the same standard the inline -c path meets.
+    # Placed before the single-token early return so a bare ``./deploy.sh`` (one
+    # token) is still inspected.  Returns None when the command is not a
+    # recognized script-file shape, so detection continues normally.
+    script_result = _check_script_file(command, base_cmd, family, semantics)
+    if script_result is not None:
+        return script_result
+
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
         return MutativeResult(
@@ -1585,6 +1700,274 @@ def _extract_python_payload(command: str, base_cmd: str) -> str:
     return ""
 
 
+def _check_python_module_runner(
+    base_cmd: str, semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Re-dispatch ``python -m <pkg-mgr> ...`` as the package-manager command.
+
+    Closes the AC-7 evasion (Brief 91): ``python3 -m pip install x`` is the same
+    operation as ``pip install x``, but the verb scanner sees ``python3`` as the
+    base command and the module name (``pip``) gets absorbed into flag_tokens as
+    the value of ``-m`` -- so the command was classified only by whatever generic
+    verb happened to follow, missing cases like ``python3 -m poetry add x``.
+
+    This helper recognizes ``<python> [interp-flags] -m <pkg-mgr> <args...>``,
+    rewrites it to ``<pkg-mgr> <args...>``, and re-runs ``detect_mutative_command``
+    on the rewrite so the result is IDENTICAL to the direct CLI form.  The verb
+    ``-m`` consumes the immediately following token as the module name (POSIX
+    short-flag-with-value), which ``analyze_command`` already lands as
+    ``flag_tokens[i+1]``; here we read the module directly from the raw token
+    stream so the re-dispatch is robust to interpreter switches before ``-m``.
+
+    Returns ``None`` when the command is not a recognized package-manager module
+    invocation, so ordinary detection continues unchanged (``python3 -m pytest``,
+    ``python3 -m http.server``, ``python3 -m pip`` with no args).
+    """
+    if base_cmd not in _PYTHON_INTERPRETERS:
+        return None
+
+    raw_tokens = semantics.tokens
+    # Walk args after the interpreter; find the ``-m`` flag and the module token
+    # it consumes.  Standalone interpreter switches (-u, -O, -E, ...) are skipped.
+    module = None
+    module_idx = None
+    for i in range(1, len(raw_tokens)):
+        if raw_tokens[i] == "-m":
+            if i + 1 < len(raw_tokens):
+                module = raw_tokens[i + 1]
+                module_idx = i + 1
+            break
+        # A non-flag token before any ``-m`` means a script-file / positional
+        # invocation, not ``-m`` module mode -- defer to the script-file lane.
+        if not raw_tokens[i].startswith("-"):
+            return None
+
+    if module is None or module_idx is None:
+        return None
+    if module.lower() not in _PY_MODULE_PACKAGE_MANAGERS:
+        return None
+
+    # Rewrite ``python3 [flags] -m <pkg-mgr> <rest...>`` -> ``<pkg-mgr> <rest...>``
+    # and re-classify.  ``shlex.quote`` keeps argument boundaries intact so a
+    # rewritten command tokenizes the same way the direct CLI form would.
+    import shlex
+    rest = raw_tokens[module_idx + 1:]
+    rewritten = " ".join(shlex.quote(t) for t in (module, *rest))
+    inner = detect_mutative_command(rewritten)
+    # Re-wrap the reason so the audit trail shows the re-dispatch explicitly,
+    # but preserve the inner classification verbatim (category, verb, flags).
+    return MutativeResult(
+        is_mutative=inner.is_mutative,
+        category=inner.category,
+        verb=inner.verb,
+        dangerous_flags=inner.dangerous_flags,
+        cli_family=inner.cli_family,
+        confidence=inner.confidence,
+        reason=(
+            f"'{base_cmd} -m {module}' re-dispatched as '{module}': {inner.reason}"
+        ),
+    )
+
+
+def _resolve_script_argument(
+    base_cmd: str, semantics: "CommandSemantics",
+) -> "Optional[Tuple[str, str]]":
+    """Identify a script-file invocation and return ``(path, lane)``.
+
+    Two shapes are recognized:
+
+    * ``<interpreter> <script-file>`` -- the first positional argument after a
+      known interpreter, whose lane (``"python"`` or ``"shell"``) is decided by
+      the interpreter, not the filename.
+    * ``./script`` / ``path/to/script`` -- a direct executable invocation whose
+      lane is inferred from the file extension via ``_SHEBANG_EXT_LANES``.
+
+    Returns ``None`` when the command is not a script-file invocation, so the
+    caller continues with ordinary verb detection.
+    """
+    raw_tokens = semantics.tokens
+    if not raw_tokens:
+        return None
+
+    if base_cmd in _SCRIPT_FILE_INTERPRETERS:
+        lane = "python" if base_cmd in _PYTHON_INTERPRETERS else "shell"
+        defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset())
+        # Walk the args (original casing) and return the first true positional
+        # -- the script file.  Standalone interpreter switches (-u, -O, -x, ...)
+        # are skipped; flags that consume the next token as inline code or a
+        # module name (-c, -m, -e, ...) mean there is NO script file, so we
+        # defer to the inline path / verb scanner by returning None.  The stdin
+        # sentinel "-" likewise defers (heredoc path owns it).
+        for token in raw_tokens[1:]:
+            if token == "-":
+                return None
+            if token in defer_flags:
+                return None
+            if token.startswith("-"):
+                continue
+            return (token, lane)
+        return None
+
+    # Direct ``./script`` or ``path/script.ext`` invocation: the executable
+    # token IS the script.  Use the original-case token so the path resolves
+    # correctly on case-sensitive filesystems.
+    invoked = raw_tokens[0]
+    if "/" in invoked:
+        for ext, lane in _SHEBANG_EXT_LANES.items():
+            if invoked.endswith(ext):
+                return (invoked, lane)
+    return None
+
+
+def _read_script_content(path: str) -> "Optional[str]":
+    """Read a bounded prefix of a script file for content classification.
+
+    Returns ``None`` when the path cannot be resolved to a readable regular
+    file -- the caller treats that as the conservative (mutative) case, because
+    an interpreter pointed at an un-inspectable payload could do anything.
+    """
+    import os
+
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(_MAX_SCRIPT_READ_BYTES)
+    except (OSError, ValueError):
+        return None
+
+
+def _check_script_file(
+    command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Classify ``<interpreter> <file>`` / ``./script`` by the file's content.
+
+    Closes the file-argument evasion: the verb scanner only sees the filename,
+    so a script that deletes files or calls the network would otherwise pass as
+    safe by elimination.  Classification is by REAL invocation, mirroring the
+    inline ``-c`` path -- an analytic Python script with no mutative calls and a
+    read-only shell script both stay non-mutative, so the existing
+    overbroad-classification complaint is not reintroduced.
+
+    Returns ``None`` when the command is not a script-file invocation.
+    """
+    resolved = _resolve_script_argument(base_cmd, semantics)
+    if resolved is None:
+        return None
+
+    script_path, lane = resolved
+    content = _read_script_content(script_path)
+    if content is None:
+        # Conservative default: an interpreter invoked on a missing or
+        # unreadable file is treated as mutative.  We cannot prove the payload
+        # is safe, and an un-inspectable executable payload requires consent.
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="script-file-unreadable",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"Interpreter '{base_cmd}' invoked on script "
+                f"'{script_path}' that is not a readable file -- cannot "
+                f"verify the payload, requiring approval (conservative default)"
+            ),
+        )
+
+    if lane == "python" and _analyze_python_inline is not None:
+        ast_result = _analyze_python_inline(content)
+        if ast_result.is_dangerous:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=ast_result.label,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"Script '{script_path}' invokes {ast_result.detail} "
+                    f"({ast_result.category})"
+                ),
+            )
+        if not ast_result.parse_failed:
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="script-file",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"Python script '{script_path}' has no mutative invocation "
+                    f"(AST analysis)"
+                ),
+            )
+        # parse_failed -> fall through to the shell/regex lane below.
+
+    return _classify_script_content_by_regex(content, script_path, family)
+
+
+def _classify_script_content_by_regex(
+    content: str, script_path: str, family: str,
+) -> MutativeResult:
+    """Classify shell / non-Python script content via the existing regex layer.
+
+    No AST parser is vendored for bash, node, ruby, perl, or php (see
+    ``inline_ast_analyzer`` docstring), so content is scanned line-by-line with
+    the same two engines the inline path uses:
+
+    * ``is_blocked_command`` -- catches permanently-blocked destructive lines
+      (``rm -rf /``, ``dd of=/dev/sda``, ...).
+    * ``detect_mutative_command`` -- the CLI-agnostic mutative engine, reused
+      per logical line so a ``kubectl apply`` or ``curl -X POST`` inside the
+      file is detected the same way it would be on the command line.
+
+    This reuses the existing layers rather than introducing a new parser, per
+    the design constraint.
+    """
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if _is_blocked_command is not None:
+            blocked = _is_blocked_command(line)
+            if blocked.is_blocked:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="script-blocked-cmd",
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Script '{script_path}' contains blocked command: "
+                        f"{blocked.category}"
+                    ),
+                )
+
+        line_result = detect_mutative_command(line)
+        if line_result.is_mutative:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=line_result.verb,
+                dangerous_flags=line_result.dangerous_flags,
+                cli_family=family,
+                confidence=line_result.confidence,
+                reason=(
+                    f"Script '{script_path}' line is mutative: "
+                    f"{line_result.reason}"
+                ),
+            )
+
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="script-file",
+        cli_family=family,
+        confidence="medium",
+        reason=f"Script '{script_path}' has no mutative or blocked line",
+    )
+
+
 def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
     """Check inline code for dangerous patterns.
 
@@ -1714,6 +2097,33 @@ def _layer3_length_check(
             break
 
     if not skip_length_check and len(code_portion) > MAX_NORMAL_INLINE_LENGTH:
+        # AC-9 (Brief: endurecimiento-de-tests-del-security-core): the length
+        # heuristic is a *proxy* for "too complex to vet"; it must not flag
+        # inline code that is PROVABLY read-only just because it is long.  For
+        # Python payloads we re-parse the exact code and require a positive
+        # allowlist match (import + SELECT/PRAGMA + print + local assignments,
+        # no write call, no attribute/subscript assignment, no dynamic
+        # dispatch).  This is the inverse of analyze_python_inline's blocklist:
+        # a mutation never classifies as read-only, so the exemption cannot
+        # open a hole -- an AST-clean-but-mutating payload (``cur.execute(
+        # 'INSERT ...')``, ``con.commit()``) is NOT provably read-only and
+        # stays flagged.  Non-Python payloads are never exempted (no AST).
+        if (
+            base_cmd in _PYTHON_INTERPRETERS
+            and _is_provably_read_only_python is not None
+            and _is_provably_read_only_python(_extract_python_payload(command, base_cmd))
+        ):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="inline-code-readonly",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"Inline Python is long ({len(code_portion)} chars) but "
+                    "provably read-only (allowlisted constructs only)"
+                ),
+            )
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,
