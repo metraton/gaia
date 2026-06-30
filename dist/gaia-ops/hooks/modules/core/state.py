@@ -5,7 +5,6 @@ Uses a temporary file to pass information from pre_tool_use to post_tool_use,
 since they run in separate processes.
 """
 
-import os
 import json
 import logging
 import time
@@ -13,6 +12,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict, field
+
+from adapters.host_session import read_host_session_id
 
 from .paths import find_claude_dir
 
@@ -23,15 +24,16 @@ STATE_FILE_NAME = ".hooks_state.json"
 
 
 def get_session_id() -> str:
-    """Return the current Claude session ID, defaulting to 'default'.
+    """Return the current host session ID, defaulting to 'default'.
 
-    Reads only CLAUDE_SESSION_ID. Hook entry points that have the parsed
+    Reads only the host session environment variable (via the adapter-owned
+    ``read_host_session_id`` helper). Hook entry points that have the parsed
     stdin event in hand should prefer ``resolve_session_id(event_data)``
-    because Claude Code does not always set CLAUDE_SESSION_ID in the hook
-    subprocess; it does, however, always include ``session_id`` in the
+    because the host CLI does not always export the session env var into the
+    hook subprocess; it does, however, always include ``session_id`` in the
     JSON event piped to stdin.
     """
-    return os.environ.get("CLAUDE_SESSION_ID", "default")
+    return read_host_session_id()
 
 
 def resolve_session_id(event_data: Optional[Dict[str, Any]] = None) -> str:
@@ -39,20 +41,20 @@ def resolve_session_id(event_data: Optional[Dict[str, Any]] = None) -> str:
 
     Order:
       1. ``event_data["session_id"]`` when present and non-empty.
-      2. ``CLAUDE_SESSION_ID`` environment variable.
+      2. The host session environment variable (via the adapter helper).
       3. Literal ``"default"`` (matches ``get_session_id()`` for back-compat).
 
     Hook entry points should call this immediately after parsing stdin so
     downstream calls (``register_session``, ``touch_session``,
-    ``unregister_session``) reach the registry with the real id.
-    ``CLAUDE_SESSION_ID`` is not guaranteed to be exported into the hook
+    ``unregister_session``) reach the registry with the real id. The host
+    session env var is not guaranteed to be exported into the hook
     subprocess; the stdin event always carries ``session_id``.
     """
     if isinstance(event_data, dict):
         candidate = event_data.get("session_id")
         if isinstance(candidate, str) and candidate:
             return candidate
-    return os.environ.get("CLAUDE_SESSION_ID", "default")
+    return read_host_session_id()
 
 
 @dataclass

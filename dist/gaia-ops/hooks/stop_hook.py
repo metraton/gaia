@@ -26,7 +26,7 @@ _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
-from adapters.claude_code import ClaudeCodeAdapter
+from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
 
@@ -49,7 +49,7 @@ def _handle_stop(event) -> None:
     Args:
         event: Parsed HookEvent from the adapter layer.
     """
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
 
     quality_result = adapter.adapt_stop(event.payload)
     stop_reason = event.payload.get("stop_reason", "unknown")

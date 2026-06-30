@@ -21,7 +21,7 @@ if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
 from modules.core.paths import get_logs_dir
-from adapters.claude_code import ClaudeCodeAdapter
+from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 
 # Configure logging
@@ -42,7 +42,7 @@ def _handle_post_tool_use(event) -> None:
     Args:
         event: Parsed HookEvent from the adapter layer.
     """
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
     response = adapter.adapt_post_tool_use(event)
 
     if response.output:

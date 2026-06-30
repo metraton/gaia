@@ -887,7 +887,7 @@ def write_pending_approval_for_file(
         nonce: Cryptographic nonce from generate_nonce().  The DB row is stored
             under approval_id = "P-" + nonce.
         file_path: The absolute path of the file being written/edited.
-        session_id: Session ID (defaults to CLAUDE_SESSION_ID env var).
+        session_id: Session ID (defaults to the current host session id).
         ttl_minutes: How long the pending approval is valid before expiry
             (0 = no expiry; ignored by DB which uses TTL at query time).
         context: Optional dict with enriched context (source, description,
@@ -1015,8 +1015,8 @@ def find_pending_for_file(
         return None
 
     # DB path: query all pending rows (all_sessions=True -- see scan_pending_db
-    # for the rationale: CLAUDE_SESSION_ID inside a subagent is the subagent's id,
-    # not the orchestrator's, so session-scoping would silently miss the row).
+    # for the rationale: the host session id inside a subagent is the subagent's
+    # id, not the orchestrator's, so session-scoping would silently miss the row).
     try:
         from gaia.approvals.store import list_pending
         rows = list_pending(all_sessions=True)
@@ -1564,7 +1564,7 @@ def create_command_set_grant(
     Args:
         command_set: List of dicts [{"command": str, "rationale": str}, ...].
         approval_id: Unique nonce (32-char hex from generate_nonce()).
-        session_id: CLAUDE_SESSION_ID (defaults to current session).
+        session_id: Host session id (defaults to current session).
         agent_id: Agent identifier for audit trail.
         ttl_minutes: Grant lifetime (default 10 min). Enforced at query time.
         db_path: Optional explicit DB path override (used by tests).
@@ -1634,9 +1634,9 @@ def match_command_set_grant(
 
     The lookup is SESSION-AGNOSTIC (Brief 71), exactly like the singular path
     (``check_db_semantic_grant``). The block-approve-retry flow legitimately
-    spans sessions, and CLAUDE_SESSION_ID is not guaranteed to be exported into
-    the bash subprocess -- where ``get_session_id()`` falls back to the literal
-    ``"default"``. A session_id filter therefore silently dropped every grant
+    spans sessions, and the host session id is not guaranteed to be exported
+    into the bash subprocess -- where ``get_session_id()`` falls back to the
+    literal ``"default"``. A session_id filter therefore silently dropped every grant
     created under the real session, letting approved COMMAND_SET commands run
     WITHOUT being consumed (the consumption-bypass bug). Replay protection is
     preserved by the conjunction of the byte-for-byte match, status='PENDING'

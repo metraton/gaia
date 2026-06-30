@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.11] - 2026-06-30
+
+### Changed
+
+- Host decoupling (#88): la lógica del core (clasificación T0–T3, grants, validación, audit) queda desacoplada de Claude Code tras la capa adapter. Lo específico del host vive en seams: `host_session`, `host_transcript`, `registry`/`get_adapter`, `request_consent`/`ConsentRequest`, `HostCapability`/degradación, `HostDistribution`. Soportar un host nuevo de la familia hook-interception = escribir un adapter + declarar capacidades, sin tocar el core.
+
+### Added
+
+- Estado terminal `descoped` para acceptance criteria (descope deliberado, hard-terminal) más invariantes de `verify_brief` (`closed_brief_nonterminal_ac`, `closed_brief_open_plan`) para coherencia brief/plan/AC al cerrar.
+
+### Fixed
+
+- Endurecimiento del security-core a 100% killable (mutation testing) en `blocked_commands`, `mutative_verbs`, `tiers` y `approval_grants`. Arreglado el mecanismo de skip-file de equivalentes para casar por identidad estable (`operator|posición|occurrence`) en vez de `job_ids` regenerados — elimina la exclusión-cero silenciosa ("falso 100%") tras cada `cosmic-ray init`.
+- Corregido el help de `brief close` (verify advisory, sin cascade de estado).
+
 ## [5.0.10] - 2026-06-29
 
 ## [5.0.9] - 2026-06-25
