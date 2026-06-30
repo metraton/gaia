@@ -206,10 +206,16 @@ class TestCmdStatusJson:
     """Test JSON output mode."""
 
     def test_json_output_is_valid(self, project_dir, monkeypatch, capsys):
-        """--json flag should produce valid JSON with expected keys."""
-        monkeypatch.chdir(project_dir)
-        args = SimpleNamespace(json=True, subcommand="status")
-        rc = status_mod.cmd_status(args)
+        """--json flag should produce valid JSON with expected keys.
+
+        Patch _find_project_root to return project_dir. A chdir alone is not
+        enough: npm sets INIT_CWD for lifecycle scripts, and _find_project_root
+        honours $INIT_CWD/.claude before walking from cwd, so under `npm test`
+        it would resolve to the real repo instead of the fixture.
+        """
+        with patch.object(status_mod, "_find_project_root", return_value=project_dir):
+            args = SimpleNamespace(json=True, subcommand="status")
+            rc = status_mod.cmd_status(args)
 
         assert rc == 0
         out = capsys.readouterr().out
