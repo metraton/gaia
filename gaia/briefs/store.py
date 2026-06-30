@@ -268,6 +268,97 @@ def list_briefs(
 # get_brief
 # ---------------------------------------------------------------------------
 
+def get_brief_by_id(
+    brief_id: int,
+    *,
+    db_path: Path | None = None,
+) -> dict | None:
+    """Return the full brief dict by numeric primary key, or None.
+
+    Like :func:`get_brief` but resolves by ``id`` instead of
+    ``(workspace, name)``. Used by ``gaia brief show <int>`` so users can
+    look up a brief by its DB id without knowing which workspace it lives in.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT * FROM briefs WHERE id = ?",
+            (brief_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        brief: dict[str, Any] = dict(row)
+        brief.pop("workspace", None)
+
+        ac_rows = con.execute(
+            "SELECT ac_id, description, evidence_type, evidence_shape, artifact_path "
+            "FROM acceptance_criteria WHERE brief_id = ? ORDER BY id",
+            (brief["id"],),
+        ).fetchall()
+        acs: list[dict] = []
+        for ar in ac_rows:
+            shape = ar["evidence_shape"]
+            if shape:
+                try:
+                    shape = json.loads(shape)
+                except Exception:
+                    pass
+            acs.append({
+                "ac_id": ar["ac_id"],
+                "description": ar["description"],
+                "evidence_type": ar["evidence_type"],
+                "evidence_shape": shape,
+                "artifact_path": ar["artifact_path"],
+            })
+        brief["acceptance_criteria"] = acs
+
+        ms_rows = con.execute(
+            "SELECT order_num, name, description FROM milestones "
+            "WHERE brief_id = ? ORDER BY order_num",
+            (brief["id"],),
+        ).fetchall()
+        brief["milestones"] = [
+            {"order_num": m["order_num"], "name": m["name"],
+             "description": m["description"]}
+            for m in ms_rows
+        ]
+
+        dep_rows = con.execute(
+            "SELECT b2.name FROM brief_dependencies bd "
+            "JOIN briefs b2 ON b2.id = bd.depends_on_id "
+            "WHERE bd.brief_id = ? ORDER BY b2.name",
+            (brief["id"],),
+        ).fetchall()
+        brief["dependencies"] = [r["name"] for r in dep_rows]
+
+        return brief
+    finally:
+        con.close()
+
+
+def find_brief_workspaces(
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> list[str]:
+    """Return all workspace names that contain a brief with the given slug.
+
+    Used by ``gaia brief show`` to emit a helpful cross-workspace hint when
+    a brief is not found in the resolved workspace.  Returns an empty list
+    when no brief with that name exists anywhere.
+    """
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT workspace FROM briefs WHERE name = ? ORDER BY workspace",
+            (name,),
+        ).fetchall()
+        return [r["workspace"] for r in rows]
+    finally:
+        con.close()
+
+
 def get_brief(
     workspace: str,
     name: str,

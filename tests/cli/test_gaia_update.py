@@ -3,6 +3,7 @@ Tests for bin/cli/update.py -- gaia update subcommand.
 """
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -30,7 +31,12 @@ class TestFindProjectRoot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
-            with patch("os.getcwd", return_value=str(root)):
+            # INIT_CWD is set by npm for lifecycle scripts; if it leaks into
+            # the test environment, _find_project_root() short-circuits to it
+            # before the os.getcwd walk runs. Clear it so the walk is exercised.
+            env_no_init = {k: v for k, v in os.environ.items() if k != "INIT_CWD"}
+            with patch.dict("os.environ", env_no_init, clear=True), \
+                    patch("os.getcwd", return_value=str(root)):
                 result = _find_project_root()
             self.assertEqual(result, root)
 
