@@ -2170,9 +2170,10 @@ def build_t3_block_response(
 ) -> dict:
     """Build an internal block response dict for T3 commands.
 
-    Returns an internal dict consumed by bash_validator, which wraps the
-    'message' field into a hookSpecificOutput with permissionDecision: "deny".
-    The 'decision' key is internal only and never sent to Claude Code.
+    Returns a CLI-agnostic internal dict ('decision' + 'message'). The adapter
+    layer is responsible for formatting the 'message' into the host-specific
+    deny response; this business module never assembles that host shape itself.
+    The 'decision' key is internal only and never sent to the host.
 
     Args:
         command: The original shell command.

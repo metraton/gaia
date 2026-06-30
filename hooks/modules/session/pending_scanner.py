@@ -36,9 +36,10 @@ def scan_pending_db() -> List[Dict]:
       * The DB is per-machine (~/.gaia/gaia.db), so cross-machine leakage is
         impossible.
       * The session_id stored in approvals rows is the main session_id, while
-        $CLAUDE_SESSION_ID inside a subagent is the subagent's id — filtering
-        by session would silently drop all subagent-originated pendings (the
-        known bug owned by another task; see CONFIRMED FINDINGS, Task C).
+        the host session id seen inside a subagent is the subagent's id —
+        filtering by session would silently drop all subagent-originated
+        pendings (the known bug owned by another task; see CONFIRMED FINDINGS,
+        Task C).
 
     Returns [] on any error (never raises) so the caller's fail-safe catches it.
     """

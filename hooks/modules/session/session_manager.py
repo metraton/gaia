@@ -5,10 +5,9 @@ Provides:
     - get_or_create_session_id(): Get existing session ID or create new one
 """
 
-import hashlib
 import logging
-import os
-from datetime import datetime
+
+from adapters.host_session import get_or_create_host_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +15,8 @@ logger = logging.getLogger(__name__)
 def get_or_create_session_id() -> str:
     """Get existing session ID or create new one.
 
-    Checks the CLAUDE_SESSION_ID env var first.  If absent, generates a
-    new session ID from the current time and PID, stores it in the env var,
-    and returns it.
+    Delegates to the adapter-owned host-session helper, which reads the host
+    session env var first and, if absent, generates a new session id from the
+    current time and PID, stores it back, and returns it.
     """
-    session_id = os.environ.get("CLAUDE_SESSION_ID")
-    if not session_id:
-        timestamp = datetime.now().strftime("%H%M%S")
-        hash_input = f"{timestamp}-{os.getpid()}"
-        session_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
-        session_id = f"session-{timestamp}-{session_hash}"
-        os.environ["CLAUDE_SESSION_ID"] = session_id
-        logger.debug(f"Generated new session_id: {session_id}")
-    return session_id
+    return get_or_create_host_session_id()

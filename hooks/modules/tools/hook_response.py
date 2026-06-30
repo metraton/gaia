@@ -1,14 +1,14 @@
 """
-Shared builder for hookSpecificOutput responses.
+Shared builder for PreToolUse permission responses.
 
-Claude Code hooks communicate permission decisions via a standard JSON
-structure.  This module provides a single builder so the three call sites
-(bash_validator allow, bash_validator deny, cloud_pipe_validator deny)
-share the same shape and field names.
+Hooks communicate permission decisions via a host-specific JSON structure.
+This module provides a single builder so the call sites (bash_validator allow,
+bash_validator deny, cloud_pipe_validator deny) share one entry point.
 
-Internally delegates to the adapter layer's ``format_validation_response``
-for structural consistency, while preserving the original function signature
-so callers (bash_validator.py, cloud_pipe_validator) require zero changes.
+The host-specific shape is assembled entirely inside the adapter layer: this
+builder delegates to ``format_validation_response`` / ``format_ask_response``
+and returns whatever the adapter produces, while preserving the original
+function signature so callers require zero changes.
 """
 
 from __future__ import annotations
@@ -21,17 +21,19 @@ _hooks_dir = str(Path(__file__).resolve().parent.parent.parent)
 if _hooks_dir not in sys.path:
     sys.path.insert(0, _hooks_dir)
 
-from adapters.claude_code import ClaudeCodeAdapter
+from adapters.registry import get_adapter
 from adapters.types import ValidationResult
 
-# Module-level singleton -- lightweight, no I/O in __init__.
-_adapter = ClaudeCodeAdapter()
+# Single construction point: the shared, process-wide adapter from the registry
+# (formerly a module-level ``ClaudeCodeAdapter()`` singleton). Resolved once at
+# import; the registry caches the stateless instance.
+_adapter = get_adapter()
 
 
 def build_hook_permission_response(
     decision: str, reason: str, updated_input: dict | None = None
 ) -> dict:
-    """Build a hookSpecificOutput dict for a PreToolUse permission decision.
+    """Build a host permission-response dict for a PreToolUse decision.
 
     Args:
         decision: "allow", "deny", or "ask".

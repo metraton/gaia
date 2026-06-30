@@ -463,8 +463,8 @@ def build_pending_approvals_block() -> str:
     read source.
 
     Scoping: DB query uses all_sessions=True (no session filter).  The
-    session_id stored in approval rows is the main session while
-    $CLAUDE_SESSION_ID inside a subagent is the subagent id -- filtering by
+    session_id stored in approval rows is the main session while the host
+    session id seen inside a subagent is the subagent id -- filtering by
     session would silently drop all subagent pendings.  The DB is
     per-machine so all rows are from the same user.
 
@@ -526,7 +526,7 @@ def build_pending_approvals_block() -> str:
 # Scoping: identical to scan_pending_db() / build_pending_approvals_block() --
 # all_sessions=True (no session filter). The DB is per-machine so every row is
 # the same user, and pendings are written under the MAIN session while a
-# subagent's $CLAUDE_SESSION_ID differs; a session filter would silently drop
+# subagent's host session id differs; a session filter would silently drop
 # subagent-originated pendings.
 
 def build_verified_pending_approvals() -> list:
