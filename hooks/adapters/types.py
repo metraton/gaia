@@ -66,6 +66,42 @@ class DistributionChannel(enum.Enum):
     PLUGIN = "plugin"
 
 
+class HostCapability(enum.Enum):
+    """A named capability a host (CLI backend) may or may not offer.
+
+    The CLI-agnostic vocabulary business logic uses to ASK a host whether it
+    can do a thing -- without naming any host. Each concrete adapter DECLARES
+    which of these it supports (see :meth:`HookAdapter.capabilities`); the core
+    queries that declaration via :meth:`HookAdapter.supports` and, when a
+    capability is absent, degrades in a *declared* way (a
+    :class:`CapabilityDegradation`) rather than crashing or branching on the
+    host's identity. Claude Code supports all of these today; a future host
+    (Codex, Antigravity) that lacks one drives the degradation path.
+
+    Members:
+        INTERACTIVE_CONSENT: the host can gather the user's consent inline,
+            in-session (Claude Code: the native AskUserQuestion prompt).
+        OUT_OF_BAND_APPROVAL: the host can run an approval cycle keyed to a
+            persisted identifier the decision is later matched against
+            (Claude Code: the orchestrator approval-id hand-off).
+        STRUCTURED_PERMISSION_DECISION: the host accepts a structured
+            allow/deny/ask permission decision (vs. only an exit code).
+        UPDATED_INPUT: the host can apply adapter-modified tool input
+            transparently (e.g. a footer-stripped command).
+        CONTEXT_INJECTION: the host can inject additional context into the
+            session at hook time (SessionStart / SubagentStart context).
+        TRANSCRIPT_ACCESS: the host exposes the agent transcript for
+            post-hoc inspection (contract / anomaly analysis).
+    """
+
+    INTERACTIVE_CONSENT = "interactive_consent"
+    OUT_OF_BAND_APPROVAL = "out_of_band_approval"
+    STRUCTURED_PERMISSION_DECISION = "structured_permission_decision"
+    UPDATED_INPUT = "updated_input"
+    CONTEXT_INJECTION = "context_injection"
+    TRANSCRIPT_ACCESS = "transcript_access"
+
+
 @dataclass(frozen=True)
 class HookEvent:
     """Normalized hook event, CLI-agnostic.
@@ -103,6 +139,70 @@ class ValidationResult:
     modified_input: Optional[Dict[str, Any]] = None
     suggestions: List[str] = field(default_factory=list)
     nonce: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ConsentRequest:
+    """CLI-agnostic description of an operation that needs the user's consent.
+
+    Business logic produces this when it has classified an operation as
+    requiring approval (a T3 mutation, a protected-path write). It states only
+    the *facts* of what needs consent -- never how to ask. The adapter's
+    :meth:`HookAdapter.request_consent` turns it into the host's consent
+    mechanism (a native permission prompt, an approval-id hand-off, ...), so the
+    core never names the host's specific consent flow.
+
+    Fields:
+        operation: The thing needing consent -- a shell command, or a file path.
+        kind: Coarse classification of ``operation`` ("bash", "file", ...).
+            Lets the adapter tailor the prompt wording without parsing.
+        reason: Human-readable explanation of why consent is required, already
+            assembled by business logic (tier banner, verb, command excerpt).
+        tier: The security tier string (e.g. "T3_BLOCKED"); informational.
+        approval_id: When the host runs an out-of-band approval flow (an
+            orchestrator driving the approval cycle), this is the persisted
+            identifier the user's decision is keyed to. None means the host
+            should gather consent inline (e.g. a native prompt).
+        updated_input: Optional modified tool input (e.g. footer-stripped
+            command) the host must preserve through the consent step.
+    """
+
+    operation: str
+    kind: str = "bash"
+    reason: str = ""
+    tier: str = "T3_BLOCKED"
+    approval_id: Optional[str] = None
+    updated_input: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class CapabilityDegradation:
+    """The DECLARED outcome of querying a host for a capability.
+
+    Returned by :meth:`HookAdapter.degrade_when_missing`. It is the explicit,
+    observable answer to "does this host offer capability X, and if not, what
+    safe thing happens instead?" -- the controlled alternative to a crash or an
+    implicit ``if host == "claude_code"`` branch. Business logic receives this
+    value, reads :attr:`available`, and follows :attr:`fallback` when the
+    capability is absent. Nothing here knows which host produced it.
+
+    Fields:
+        capability: The :class:`HostCapability` that was queried.
+        available: True when the host declared support for ``capability``.
+            When True, ``fallback`` is the empty string and ``reason`` is
+            informational only -- the caller uses the full capability.
+        fallback: The semantic name of the safe behavior to take when the
+            capability is NOT available (e.g. "deny", "skip", "log_only").
+            Chosen by the caller and echoed back so the degradation is a
+            value the caller declared, not a side effect it must remember.
+        reason: Human-readable explanation of the degradation, suitable for
+            surfacing in a log or a denial message.
+    """
+
+    capability: HostCapability
+    available: bool
+    fallback: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)
