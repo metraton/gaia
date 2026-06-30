@@ -225,6 +225,22 @@ class TestDetectMutativeCommand:
         assert r.category == "READ_ONLY"
         assert r.confidence == "medium"
 
+    # `python` (non-`python3`) must route through the SAME inline-code path.
+    # Kills mutants that narrow the interpreter sets (_INLINE_CODE_MAP /
+    # _INLINE_CODE_CLIS / _PYTHON_INTERPRETERS) so they only match `python3`:
+    # the read-only assertion fails if `python -c` falls through to the verb
+    # scanner (where the literal `import` collides with MUTATIVE_VERBS).
+    def test_inline_code_python_variant_readonly(self):
+        r = detect_mutative_command('python -c "import json; print(json.dumps({}))"')
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+
+    def test_inline_code_python_variant_dangerous(self):
+        r = detect_mutative_command("python -c \"import os; os.remove('x')\"")
+        assert r.is_mutative is True
+        assert r.category == "MUTATIVE"
+        assert r.verb == "os-remove"
+
     # --- Step 3c: heredoc (lines 1236-1242) ------------------------------
     def test_heredoc_dangerous(self):
         cmd = 'python3 - <<EOF\nimport os\nos.system("rm -rf /")\nEOF'
