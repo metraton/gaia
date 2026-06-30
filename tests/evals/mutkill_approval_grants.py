@@ -343,6 +343,98 @@ def load_baseline_survivor_ids(session_path: Path) -> set:
 
 
 # --------------------------------------------------------------------------
+# Stable mutant identity (re-init-proof skip matching)
+# --------------------------------------------------------------------------
+# WHY: `cosmic-ray init` regenerates a fresh random uuid4 `job_id` for every
+# mutant on every run. The equivalents-*.skip files used to list bare job_ids,
+# so after a re-init those ids matched NOTHING in the new session and silently
+# excluded zero mutants -- producing a false "100% killable" (the skip
+# appeared to apply but did not). The fix is to key exclusions on the mutant's
+# STABLE identity, which `cosmic-ray init` preserves byte-for-byte because it
+# is derived from the source AST, not from a uuid:
+#
+#     operator_name | start_row:start_col-end_row:end_col | occurrence
+#
+# A skip-file line may now be EITHER:
+#   * a stable-id token (preferred, re-init-proof), or
+#   * a legacy 32-hex job_id (still honored for backward compatibility, but
+#     fragile across re-init -- emit a stable id instead going forward).
+
+# A bare cosmic-ray job_id is a uuid4 hex: exactly 32 lowercase hex chars.
+import re as _re  # local alias; module already imports re-free
+_JOB_ID_RE = _re.compile(r"^[0-9a-f]{32}$")
+
+
+def stable_id(spec: dict) -> str:
+    """Canonical, re-init-proof identity for a mutation spec.
+
+    Built from fields `cosmic-ray init` reproduces deterministically from the
+    source AST: the operator, the exact source span, and the occurrence index.
+    The same source + same operator always yields the same stable_id, even
+    though the job_id (uuid4) differs on every init.
+    """
+    sr, sc = spec["start_pos"]
+    er, ec = spec["end_pos"]
+    op = spec["operator_name"]
+    occ = spec["occurrence"]
+    return f"{op}|{sr}:{sc}-{er}:{ec}|{occ}"
+
+
+def parse_skip_file(skip_path: Path) -> tuple[set, set]:
+    """Parse a skip-file into (stable_ids, legacy_job_ids).
+
+    Non-comment, non-blank lines are classified: a line matching the 32-hex
+    job_id shape goes to the legacy set; everything else is treated as a
+    stable-id token. Both sets are matched against the current session in
+    `compute_skip_jobids`.
+    """
+    stable: set[str] = set()
+    legacy: set[str] = set()
+    for raw_line in skip_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # A skip line may carry a trailing inline note after whitespace; the
+        # first whitespace-delimited token is the id. (Stable ids contain no
+        # spaces; job_ids are bare hex.)
+        token = line.split()[0]
+        if _JOB_ID_RE.match(token):
+            legacy.add(token)
+        else:
+            stable.add(token)
+    return stable, legacy
+
+
+def compute_skip_jobids(specs: list, stable: set, legacy: set) -> tuple[set, list]:
+    """Resolve skip-file tokens to the CURRENT session's job_ids.
+
+    Returns (jobids_to_exclude, unmatched_tokens). A stable id is matched by
+    recomputing stable_id() for each spec; a legacy job_id is matched directly.
+    Unmatched tokens are returned so the caller can warn (a stale legacy id, or
+    a stable id whose source span moved, is a signal the skip needs re-keying).
+    """
+    by_stable: dict = {}
+    by_jobid: set = set()
+    for s in specs:
+        by_stable[stable_id(s)] = s["job_id"]
+        by_jobid.add(s["job_id"])
+    exclude: set = set()
+    unmatched: list = []
+    for sid in stable:
+        jid = by_stable.get(sid)
+        if jid is not None:
+            exclude.add(jid)
+        else:
+            unmatched.append(sid)
+    for jid in legacy:
+        if jid in by_jobid:
+            exclude.add(jid)
+        else:
+            unmatched.append(jid)
+    return exclude, unmatched
+
+
+# --------------------------------------------------------------------------
 # Worker: runs a shard of specs inside its own clone
 # --------------------------------------------------------------------------
 def _clone_repo_subset(dst: Path) -> None:
@@ -505,15 +597,15 @@ def main():
             )
         module_rel = mp
 
-    # Load equivalent-mutant exclusions (AC-5 skip list).
-    skip_ids: set[str] = set()
+    # Parse equivalent-mutant exclusions (AC-5 skip list). Tokens are resolved
+    # to the CURRENT session's job_ids by STABLE identity below -- not by the
+    # raw job_id, which cosmic-ray regenerates on every init.
+    skip_stable: set[str] = set()
+    skip_legacy: set[str] = set()
     if args.skip_file is not None:
         if not args.skip_file.exists():
             raise SystemExit(f"skip-file not found: {args.skip_file}")
-        for raw_line in args.skip_file.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if line and not line.startswith("#"):
-                skip_ids.add(line)
+        skip_stable, skip_legacy = parse_skip_file(args.skip_file)
 
     test_command = read_test_command(args.toml)
     timeout = args.timeout if args.timeout is not None else read_timeout(args.toml)
@@ -525,8 +617,20 @@ def main():
     if args.operators:
         wanted = set(args.operators)
         specs = [s for s in specs if s["operator_name"] in wanted]
-    # Apply equivalent-mutant exclusions: remove from the population entirely.
-    if skip_ids:
+    # Resolve skip tokens to current-session job_ids by stable identity, then
+    # remove the matched mutants from the population entirely.
+    skip_ids: set[str] = set()
+    if skip_stable or skip_legacy:
+        skip_ids, unmatched = compute_skip_jobids(specs, skip_stable, skip_legacy)
+        if unmatched:
+            print(
+                f"# WARNING: {len(unmatched)} skip-file token(s) matched NO mutant "
+                f"in this session (stale id, or source span moved -- re-key the "
+                f"skip-file):",
+                file=sys.stderr,
+            )
+            for tok in sorted(unmatched):
+                print(f"#   unmatched: {tok}", file=sys.stderr)
         specs = [s for s in specs if s["job_id"] not in skip_ids]
     if args.limit:
         specs = specs[: args.limit]

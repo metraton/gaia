@@ -78,3 +78,37 @@ class TestTiersMutantClosure:
         is exercised, not an accident of one specific string."""
         tier = _classify_command_tier_cached("mycustomtool dostuff --verbose")
         assert tier == SecurityTier.T0_READ_ONLY
+
+
+class TestTiersFastPathAndDryRun:
+    """Closes the one genuinely-killable survivor in tiers.sqlite (the dedicated
+    per-module session, post-desacople) that the existing test_tiers.py suite
+    did not already kill. The other 27 survivors in that session are proven
+    equivalent and documented in tests/evals/equivalents-tiers.skip.
+
+    NOTE on L109 `--dry-run or --plan-only`: that OrWithAnd mutant LOOKS
+    killable but is EQUIVALENT -- every command reaching the gate is rescued
+    downstream (a `--dry-run` command has verb-detector category SIMULATION and
+    returns T2 at L132; a `--plan-only` command contains the word "plan" and
+    matches the \\bplan\\b T2 regex at L113). No honest input distinguishes it,
+    so it is documented as equivalent, not killed here."""
+
+    # --- L96 `if len(words) >= 2` ReplaceComparisonOperator GtE_Eq ----------
+    # The 2-word prefix fast-path (prefix2 = "words[0] words[1]") is the ONLY
+    # path that classifies a multi-word ULTRA_COMMON_T0 command as T0 BEFORE
+    # the slow path. "git diff HEAD" has 3 words: with the original `>= 2` the
+    # prefix2 "git diff" matches ULTRA_COMMON -> T0. With the mutant `== 2`,
+    # 3 != 2 skips the prefix2 check; the command then falls to the T2 keyword
+    # scan where "diff" (in T2_PATTERNS) classifies it T2_DRY_RUN -- a DIFFERENT
+    # observable. So the boundary `>= 2` (not `== 2`) is load-bearing for any
+    # 3+-word command whose first two words are a read-only prefix.
+    def test_three_word_t0_prefix_uses_prefix2_fastpath(self):
+        """Kills GtE_Eq at tiers.py:96. 'git diff HEAD' must be T0 via the
+        2-word prefix, NOT T2 via the 'diff' keyword."""
+        from modules.security.tiers import classify_command_tier
+        tier = classify_command_tier("git diff HEAD")
+        assert tier == SecurityTier.T0_READ_ONLY, (
+            "a 3-word command whose first two words are an ULTRA_COMMON_T0 "
+            "prefix must hit the prefix2 fast-path (T0); `== 2` would skip it "
+            "and the 'diff' keyword would mis-classify it as T2"
+        )

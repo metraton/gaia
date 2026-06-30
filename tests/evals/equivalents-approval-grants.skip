@@ -1,196 +1,207 @@
 # AC-5 equivalents — ver equivalents-security-core.md
-# Category E1: PEP 563 type-annotation operator flips (33 mutants)
+#
+# RE-KEYED to STABLE-ID format: operator_name|start_row:start_col-end_row:end_col|occurrence
+# (see stable_id() in mutkill_approval_grants.py). Stable-ids are re-init-proof:
+# cosmic-ray regenerates random job_ids on every init, but the source-AST-derived
+# stable-id is preserved byte-for-byte. The legacy 32-hex job_ids are gone.
+#
+# This file lists the 119 PROVEN-EQUIVALENT survivors. The 120th baseline survivor,
+# match_command_set_grant's keyword-only `*` marker
+# (core/ReplaceBinaryOperator_Mul_Div|1620:4-5|1), is RECLASSIFIED to KILLABLE and
+# is killed by TestMatchCommandSetGrantMutants in test_approval_grants_mutants.py
+# (asserts db_path is KEYWORD_ONLY). It is therefore NOT skipped here.
+#
+# Note also REMOVED vs the legacy file: the create_command_set_grant `*` kw-only
+# marker at line 1546 (legacy ReplaceBinaryOperator_Mul_Div b428c87...) is no longer
+# a survivor in the current session (that mutant now DIES), so it has no entry.
+
+# Category E1: PEP 563 type-annotation operator flips (str | None / -> tuple | None)
 # create_command_set_grant line 1547 (session_id: str | None)
-55fbd6bf1d654ff98af4ca1b19e2dd52
-ce8b5924ed7c43718f73b45c47357d2d
-2fa2e7e795d74d85b9fd5bdfd20481d2
-67df43afb7084e7383ab5aa5c3b06cd5
-381a965d3cb544dda22dcbcdf92501de
-f995de550c38420c9eb0a18413c7667e
-4dcb0107cfeb4e8cbb124356848d1f9b
-4902017d25c04064ba4dae76d93e91bd
-0854d2bd0727462290afe1bcb328c318
-a608b14a31c947029909bdce54f1f70e
-8dc8e3defbfa42119c2343598b051084
+core/ReplaceBinaryOperator_BitOr_Add|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_Sub|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_Mul|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_Div|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_FloorDiv|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_Mod|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_Pow|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_RShift|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_LShift|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_BitAnd|1547:20-1547:21|0
+core/ReplaceBinaryOperator_BitOr_BitXor|1547:20-1547:21|0
 # create_command_set_grant line 1548 (agent_id: str | None)
-3c51e60015274eb99ac7f90a6d3b2c08
-cba9e47c4d3344c49713797119fe3a31
-c795d317e7674817bdae80f79de85f88
-183e4d08f32c4f30ab508fd206f13479
-5b46fe1ea883490ba4a56234b3cdccf1
-7ec65c7a27e34958bc9b4ce83cb02e00
-90effc5c9c254e949f4a25d7fbfdc112
-0fca6f6c763743db8b655194a97724c5
-d745d728d2cf4213b3d520ad8db19b84
-f425812e664f4edb8280f357fd222c63
-38a9829f8879426bacf2cdef6bf5ae23
+core/ReplaceBinaryOperator_BitOr_Add|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_Sub|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_Mul|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_Div|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_FloorDiv|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_Mod|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_Pow|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_RShift|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_LShift|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_BitAnd|1548:18-1548:19|1
+core/ReplaceBinaryOperator_BitOr_BitXor|1548:18-1548:19|1
 # match_command_set_grant line 1622 (-> tuple | None)
-467a3d719a90468a9169a1169fe5a7b8
-97871e0dd999433f89b4b59bf05ad333
-8fdafa0c88fc40cbbafbc9fc36db38d6
-4f43c6490e5742eab9f97a3cf7389845
-c372b17dd24443f3accadb8cadaece13
-fb2a28c145a441b88f79300a41954a23
-e932126d1781455eb2ffa8e9470ddf84
-a4a8e39b8263452ca1d16cbee560d5e2
-a56cdc0d9e984a2e92b4bf2a38b70d98
-e3156f4dfb234d22bda0791d2045c3f5
-bc4e015c64e34c81948c07766028da2d
-# Category E2: keyword-only marker * mis-parsed as binary operator (2 mutants)
-# create_command_set_grant line 1546 (kw-only marker Mul→Div)
-b428c87aed9a4b43af0c5eacb70289dc
-# match_command_set_grant line 1620 (kw-only marker Mul→Div)
-2b5e69e882f54cb9a517c94124054eab
-# Category E3: log-only [:N] slice / format-argument NumberReplacer (50 mutants)
+core/ReplaceBinaryOperator_BitOr_Add|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_Sub|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_Mul|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_Div|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_FloorDiv|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_Mod|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_Pow|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_RShift|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_LShift|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_BitAnd|1622:11-1622:12|2
+core/ReplaceBinaryOperator_BitOr_BitXor|1622:11-1622:12|2
+
+# Category E3: log-only [:N] slice / format-argument NumberReplacer
 # check_approval_grant line 506 (command[:80], approval_id[:16], or chain)
-08254cd31ee1400baa5bf12cc7f298a0
-924b67b37979492b9e3678e2590e6343
-4b700bb65dba414ca2ea95ff941b0432
-3d46fdb2502a4f44877444ecc9e4fb53
-4d8740745b1d4093a3c992672db7e0a8
+core/NumberReplacer|506:25-506:27|38
+core/NumberReplacer|506:25-506:27|39
+core/NumberReplacer|506:66-506:68|40
+core/NumberReplacer|506:66-506:68|41
 # consume_grant lines 545,550 (command[:80], approval_id[:16])
-edd3f40307a746cc9237ecc2b65994b7
-f933984bfe504553a28e98b6804e21b9
-027aa989f98f4713a6c4e435c6b6eef6
-fe588bc6447446aa8c26aa27185d3139
-0040edaf6a094f01b07709d795b0fec4
-fda13a8011f3495abe4a25b6cdafd705
+core/NumberReplacer|545:33-545:35|42
+core/NumberReplacer|545:33-545:35|43
+core/NumberReplacer|545:51-545:53|44
+core/NumberReplacer|545:51-545:53|45
+core/NumberReplacer|550:55-550:57|46
+core/NumberReplacer|550:55-550:57|47
 # consume_session_grants lines 615,620 (approval_id[:16])
-469fa8b68c11442b99b92916b1efd66f
-51caa09e537b496ebd32371ea05b7d6a
-f69286d88375447cbe9eca51b580aea9
-9a3935d2b4394615a70d7cf682d36727
+core/NumberReplacer|615:37-615:39|54
+core/NumberReplacer|615:37-615:39|55
+core/NumberReplacer|620:33-620:35|56
+core/NumberReplacer|620:33-620:35|57
 # confirm_grant lines 653,662,667 (command[:80], approval_id[:16])
-aef5ff1764b34adabad8387d60523610
-01a71ff6e1fb40ea9fe0f3d642fb7de9
-bf077f282aab4ab28825b40a51951ec2
-9f23f88efdc0477291a3638ee2db2712
-92bf0291f8d642fcaf874e4c662ec94d
-63ed529b1209444a91aef9b0a1a803f0
-c72623899dc64f73b2cf950499fdaeb8
-74f913a36e7d40d6bc09e089b8ca9266
+core/NumberReplacer|653:87-653:89|58
+core/NumberReplacer|653:87-653:89|59
+core/NumberReplacer|662:25-662:27|60
+core/NumberReplacer|662:25-662:27|61
+core/NumberReplacer|662:43-662:45|62
+core/NumberReplacer|662:43-662:45|63
+core/NumberReplacer|667:47-667:49|64
+core/NumberReplacer|667:47-667:49|65
 # find_pending_for_command line 855 (command[:80])
-a869075afc5c40d691dec3f6d4ccaf83
-b09df88999ed4eaa906ec17173b0fd7e
+core/NumberReplacer|855:40-855:42|86
+core/NumberReplacer|855:40-855:42|87
 # create_command_set_grant line 1606 (approval_id[:12] logger.info)
-c7fc471a5d5246f9a5de49cc3dcc186c
-05bf57a0a80f4d939829ed1dee7fd765
-# match_command_set_grant line 1707 (retried_command[:80], approval_id[:12])
-59ad69e0f0ac4bf19c45a262106cd66e
-0004997ecce94e8cba4aa4b9794c182f
-cc89c0081c4c42689df7a502505fc9d8
-f51c113787d046849ee64c170249668e
-# activate_db_pending_by_prefix lines 1311,1322,1325,1406,1441,1480
-b59a629de3b04473bb51cb577941c72d
-637e4e87278545a9877e96cb6f14064c
-b51a989ac4bb46d8b9bc27072908da03
-9891ad4aad1042e398ba0d67ee0769cb
-afceeaafadcc4eef856931e4baaa4af2
-605db82e4bd74598ab2f65f25725af9d
-ee4ad789e32e42b5baff9923ce3edfcd
-1bdcc1e9d15d4653921ca083abd7c3aa
-52da3e88541f4c8db424cdcddb2a558f
-5c8bee0d27ba4d1f8eb7b7567c5eaea2
-09e08800c02c4e4e8ee3783ca45b9d41
-24e5ace20d3e47be84c843c57235d85e
-f5e4718da0224fdc86c12b925828703a
-597521aa8387492c95131717e99a4647
-52660f367f8c43b696c41d780601dfd2
-89eabfb491264692a3c6963c3c41a55b
-286cdb818832426e817a4d90f5a3f0f1
-db2c654623d94a96a32555cb3a3d1efb
+core/NumberReplacer|1606:29-1606:31|128
+core/NumberReplacer|1606:29-1606:31|129
+# match_command_set_grant line 1707 (approval_id[:12], retried_command[:80] — re-verified
+# log-only: both slices live inside the logger.info(...) argument list at L1705-1707)
+core/NumberReplacer|1707:46-1707:48|130
+core/NumberReplacer|1707:46-1707:48|131
+core/NumberReplacer|1707:73-1707:75|132
+core/NumberReplacer|1707:73-1707:75|133
+# activate_db_pending_by_prefix lines 1311,1322,1325,1406,1441,1444,1480
+core/NumberReplacer|1311:33-1311:35|98
+core/NumberReplacer|1311:33-1311:35|99
+core/NumberReplacer|1322:29-1322:31|100
+core/NumberReplacer|1322:29-1322:31|101
+core/NumberReplacer|1325:36-1325:38|104
+core/NumberReplacer|1325:36-1325:38|105
+core/NumberReplacer|1406:29-1406:31|106
+core/NumberReplacer|1406:29-1406:31|107
+core/NumberReplacer|1441:25-1441:27|116
+core/NumberReplacer|1441:25-1441:27|117
+core/NumberReplacer|1444:42-1444:43|118
+core/NumberReplacer|1444:42-1444:43|119
+core/NumberReplacer|1480:33-1480:35|120
+core/NumberReplacer|1480:33-1480:35|121
+core/NumberReplacer|1480:58-1480:60|122
+core/NumberReplacer|1480:58-1480:60|123
 # load_pending_by_nonce_prefix line 358 (candidates[0].get("nonce","?")[:12])
-f385964d154a4b648598b8f4d0bba876
-13a6dd3a73cd4f278b1893e296bd20d2
-# Category E4: .get(key, DEFAULT) default-NumberReplacer where key always present (4 mutants)
+core/NumberReplacer|358:31-358:32|25
+core/NumberReplacer|358:53-358:55|26
+core/NumberReplacer|358:53-358:55|27
+
+# Category E4: .get(key, DEFAULT) default-NumberReplacer where key always present
 # get_pending_approvals_for_session line 810 (d.get("timestamp", 0))
-4eec568e154d47b1b2f1609d703fcabe
-e5a274b0100140a79c224e9b8f494d27
+core/NumberReplacer|810:50-810:51|84
+core/NumberReplacer|810:50-810:51|85
 # load_pending_by_nonce_prefix line 355 (d.get("timestamp", 0))
-4785c396ce65430eaf4dee3402f1c14b
-b7b0a33979ac44dabc9fa04f3b7e1c6d
-# Category E5: module-init constants overwritten before first read (3 mutants)
-# _last_cleanup_time = 0.0 line 142 (Number 0.0→N)
-713e04066c924f8db90495f392cd1299
-ed6f765fcddd4735a2d5bde1aa8ef53e
-# _last_check_found_expired = False line 258 (False→True)
-4ba3a150d6c94e84b8017e6bb2ba8568
-# Category E6: index [-1] vs [1] coincide under guard (3 mutants)
+core/NumberReplacer|355:57-355:58|22
+core/NumberReplacer|355:57-355:58|23
+
+# Category E5: module-init constants overwritten before first read
+# _last_cleanup_time = 0.0 line 142 (Number 0.0->N)
+core/NumberReplacer|142:28-142:31|4
+core/NumberReplacer|142:28-142:31|5
+# _last_check_found_expired = False line 258 (False->True)
+core/ReplaceFalseWithTrue|258:34-258:39|7
+
+# Category E6: index [-1] vs [1] coincide under guard
 # _db_row_to_pending_dict line 746 (rsplit exactly 2 parts)
-36c687e6e8674fb195e014d2f2f34ebe
-d2c506f9349d414cbd0b6872fa812c61
-58b9323095424e74aec3c51f492f48e6
-# Category E7: exc_info / best-effort except-handler with no reachable raising path (4 mutants)
-# activate_db_pending_by_prefix line 1515 (exc_info=True→False)
-cf538bff281545be9713848e544bd93a
+core/NumberReplacer|746:45-746:46|72
+core/ReplaceUnaryOperator_USub_UAdd|746:48-746:49|0
+core/ReplaceUnaryOperator_Delete_USub|746:48-746:49|0
+
+# Category E7: exc_info / best-effort except-handler with no reachable raising path
+# activate_db_pending_by_prefix line 1515 (exc_info=True->False)
+core/ReplaceTrueWithFalse|1515:40-1515:44|18
 # capture_environment_snapshot line 439 (except Exception narrowed)
-869f0f871e694730ab870214995e1ab2
-# module-level line 374 (_ENV_SNAPSHOT_TIMEOUT_SECONDS 2→3)
-287e196d9d174f0aa04ccfc2e9131d64
-2d88a05a3b094bd8b180772ce8a5e122
+core/ExceptionReplacer|439:11-439:20|4
+# module-level line 374 (_ENV_SNAPSHOT_TIMEOUT_SECONDS 2->3)
+core/NumberReplacer|374:32-374:33|30
+core/NumberReplacer|374:32-374:33|31
+
 # ===========================================================================
-# AC-5 CIERRE FINAL: residual equivalents proven this session (GRIND TOTAL).
-# Each proven by hand-applying the exact cosmic-ray mutant and observing the
-# suite stays green (no honest input distinguishes it). See
-# equivalents-security-core.md categories E8-E12.
+# AC-5 CIERRE FINAL: residual equivalents (GRIND TOTAL). See
+# equivalents-security-core.md categories E8-E13.
 # ===========================================================================
 # E8: SQL pre-filter makes the in-Python scope re-check a constant-False branch.
 # match_command_set_grant line 1683 grant.get("scope") != "COMMAND_SET":
-# list_command_set_grants_agnostic SELECTs WHERE scope='COMMAND_SET', so the
-# value is ALWAYS "COMMAND_SET". NotEq->Gt/Lt: '>'/'<' on equal strings = False
-# like '!='. NotEq->Is: cosmic-ray substitutes '!=' with 'is' (NOT 'is not');
-# the sqlite string is non-interned so 'is "COMMAND_SET"' is False like '!='.
-# All three keep the branch False -> never skip -> identical. Line 1684 continue
-# is then unreachable, so continue->break is unobservable.
-6de4c76e8ff64ddfbe9ab68e6daab706
-2a7b0e10cb7d4660bc78ab39e6e2429e
-cdcb2e87997e498583d0b6ed7ce8844d
-ba66c6093dee4fcaa47f4fbce853e341
+# list_command_set_grants_agnostic SELECTs WHERE scope='COMMAND_SET', so the value
+# is ALWAYS "COMMAND_SET". NotEq->Gt/Lt/Is all keep the branch False -> never skip;
+# line 1684 continue is then unreachable, so continue->break is unobservable.
+core/ReplaceComparisonOperator_NotEq_Lt|1683:34-1683:36|3
+core/ReplaceComparisonOperator_NotEq_Gt|1683:34-1683:36|3
+core/ReplaceComparisonOperator_NotEq_Is|1683:34-1683:36|3
+core/ReplaceContinueWithBreak|1684:16-1684:24|7
 # E9: timestamp==0 fast-path coincides with the wall-clock fall-through.
 # _is_ttl_expired line 177 `if timestamp == 0: return True` NumberReplacer.
-# For timestamp 0 the fall-through (time.time()-0)/60 >> any ttl -> also True;
-# distinguishing needs ttl >= ~2.9e7 min (~55 yr), unreachable in an honest test.
-ad6ce3d819ee4f0397cf58a30096b21f
+# For timestamp 0 the fall-through (time.time()-0)/60 >> any ttl -> also True.
+core/NumberReplacer|177:20-177:21|10
 # E10: index value used only as a truthiness check, never read.
 # activate_db_pending_by_prefix line 1175 command = command_set_items[0]
-# NumberReplacer [0]->[1]/[-1]. In the is_command_set path `command` only gates
-# the `if not command` guard (both items are non-empty), then the COMMAND_SET
-# branch returns without using `command`. Proven: full suite green under [1].
-aedf3ee1056c46bb88b2cf954129116b
-ea36340d4f334680b9c228856a681dbd
+# NumberReplacer [0]->[1]/[-1]. `command` only gates `if not command`; COMMAND_SET
+# branch returns without using it. Proven: full suite green under [1].
+core/NumberReplacer|1175:40-1175:41|96
+core/NumberReplacer|1175:40-1175:41|97
 # E11: dead local variable never read.
 # activate_db_pending_by_prefix line 1458 `verbs = [...] if signature.verb ...`
-# `verbs` has exactly one occurrence in the module (assigned, never used).
-# Both AddNot flips are unobservable. Proven: 1313 tests green under both flips.
-763b4d7f9bb447df981a853b790291a3
-da2d5e1467ec4fbbab97cb69fe05ce1b
+# `verbs` is assigned, never used. Both AddNot flips are unobservable.
+core/AddNot|1458:36-1458:50|76
+core/AddNot|1458:82-1458:93|77
 # E12: log-only branch / log argument / interned-name comparison.
 # 542 `if consumed:` and 713 `if cleaned:` gate ONLY a logger call; the return
 # (consumed/cleaned) is identical either way (AddNot, log-branch-only).
-b9394bf3382d4246932b17fc3d319d0b
-f22e69b45bc64b1f9c4163643d5750b7
+core/AddNot|542:19-542:27|23
+core/AddNot|713:7-713:14|34
 # 978 str(row.get("approval_id",""))[:16] -- both NumberReplacers are inside a
-# logger.info argument (slice bound / .get default); no observable.
-4328823870f040f8a49a600135181f80
-f2bd0b181bd04be1871a9263af93e593
+# logger.info argument (slice bound). Re-verified: L976-978 logger.info(...) args.
+core/NumberReplacer|978:60-978:62|88
+core/NumberReplacer|978:60-978:62|89
 # 1579 len(command_set) if command_set else 0 -- logger.error argument only
 # (AddNot on the guard + NumberReplacers on the 0); no observable.
-01e81148a18945a5bb2b644be8846651
-8f4d7202b79c48d9a24bbc05f5e86efd
-9c50639338494c00a4fdd0076095c15e
-# 358 candidates[0].get("nonce","?")[:12] -- logger.info argument only.
-079c60e3a51f42448082f6d3d5294e32
-# 1324 (originating_session or "")[:12] -- logger.info argument only (Or->And).
-287684e7ae944df891fa74fc0f6966bf
+core/AddNot|1579:32-1579:43|80
+core/NumberReplacer|1579:49-1579:50|126
+core/NumberReplacer|1579:49-1579:50|127
+# 358 candidates[0].get("nonce","?")[:12] index -- logger.info argument only.
+# (the [0] index into candidates, NumberReplacer; log-only)
+# (covered under E3 line 358 entries above)
+# 1324 (originating_session or "")[:12] -- logger.info argument only (Or->And + slice).
+core/ReplaceOrWithAnd|1324:37-1324:39|13
+core/NumberReplacer|1324:45-1324:47|102
+core/NumberReplacer|1324:45-1324:47|103
+# 506 (command or "")[:80] -- logger.debug argument only (Or->And).
+core/ReplaceOrWithAnd|506:57-506:59|1
 # 252 _grants_dir_created = False ReplaceFalseWithTrue -- module-init memoization
-# flag; mkdir(exist_ok=True) is idempotent and any honest test resetting state
-# masks the init value before the only observable (first-call) read.
-ffe55f168c8441e0a62f9280a40fcb14
+# flag; mkdir(exist_ok=True) is idempotent.
+core/ReplaceFalseWithTrue|252:28-252:33|6
 # 1212 _fp_exc.__class__.__name__ == "ChainTamperError" Eq->Is: __name__ is
 # interned by CPython, so 'is' behaves like '==' here. Proven equivalent.
-094def2635d447ae98d6bf3023d48173
-# Category E13: len(parts) == 2 Eq->LtE: outer "intercepted:" in guard makes
+core/ReplaceComparisonOperator_Eq_Is|1212:52-1212:54|2
+# Category E13: len(parts) == 2 Eq->LtE: outer "intercepted:" guard makes
 # len(parts) always >= 2 at line 1426, so == 2 and <= 2 are identical for all
-# reachable inputs (len==2: both True; len>=3: both False). Proven: 1313 tests
-# green under the mutant.
-0ef52574fe5b441da1331068f689f727
+# reachable inputs. Proven: green under the mutant.
+core/ReplaceComparisonOperator_Eq_LtE|1426:26-1426:28|7
