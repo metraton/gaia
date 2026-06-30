@@ -1,48 +1,98 @@
-# GRIND-TOTAL equivalents for tiers.py — see equivalents-security-core.md
-# (Category T1, added this session). Each job_id below is a mutant proven
-# GENUINELY EQUIVALENT: no honest test can distinguish it from the original for
-# ANY reachable input. Listed here it is excluded from the kill-rate
-# denominator. A mutant is listed ONLY if no honest input distinguishes it.
+# Equivalents for tiers.py — see equivalents-security-core.md (Category T1).
+# Each entry is a mutant proven GENUINELY EQUIVALENT: no honest input
+# distinguishes it from the original for ANY reachable input. Excluded from the
+# kill-rate denominator. Killable siblings are killed by tests in
+# tests/hooks/modules/security/test_tiers_mutants.py and test_tiers.py.
 #
-# Module:  hooks/modules/security/tiers.py
-# Session: tiers-spike.sqlite (87 specs)
-# Baseline: 91.95% (80/87, 7 survivors). After closure: 1 killed by
-#           tests/hooks/modules/security/test_tiers_mutants.py
-#           (L82 ReplaceFalseWithTrue, 87dc4edb), 6 proven equivalent below.
+# IDENTITY FORMAT (re-init-proof): each entry is the mutant's STABLE identity
+#   operator_name|start_row:start_col-end_row:end_col|occurrence
+# NOT a job_id (cosmic-ray regenerates job_ids on every `init`; a job_id-keyed
+# skip silently matches nothing after re-init -- the false-100% trap). The
+# harness (mutkill_approval_grants.py: stable_id / compute_skip_jobids) resolves
+# these to the current session and WARNS on any unmatched token.
 #
-# Verification: tests/evals/_probe_tiers_mutants.py (per-mutant, deterministic).
-# Each equivalent below was probed against the full security suite (with the
-# new closure test in place) and SURVIVED; the genuine-equivalence argument is
-# in equivalents-security-core.md Category T1.
+# Re-keyed against tiers.sqlite (87 specs, dedicated per-module session at
+# post-desacople HEAD). The earlier baseline used tiers-spike.sqlite (a
+# different session); this is the COMPLETE module measured on its own toml.
+# 28 survivors: 1 killable (L96 GtE_Eq) is now killed by
+# test_tiers_mutants.py::TestTiersFastPathAndDryRun; the 27 below are equivalent.
 #
 # ===========================================================================
-# Category T1 — tiers.py SecurityTier / cached-classifier residuals (6 mutants).
-#
-# -- L40 `return self == SecurityTier.T3_BLOCKED` (requires_approval).
-#    The domain of `self` is exactly the 4 SecurityTier enum singletons.
-#    Eq_Is: enum members are singletons, so `is` coincides with `==`.
-#    Eq_GtE: SecurityTier is (str, Enum) with values "T0".."T3"; "T3" is the
-#    maximum, so `self >= T3` is True iff `self == T3`. Identical truth table
-#    over all 4 members (verified).
-0a83c4b85a5a4c2cb26e55bdd5aab0f7
-65027875c42446aea4bc2a43239f5bf8
-# -- L79 `@lru_cache(maxsize=512)` on _classify_command_tier_cached.
-#    The function is pure over (command, has_blocked_patterns). lru_cache is
-#    transparent memoization. RemoveDecorator only forgoes caching; the maxsize
-#    NumberReplacer only changes eviction capacity. Neither changes any return
-#    value. (Same as mutative_verbs M2.)
-396d44cba1df47d89f462d4c080f59ce
-89d6fca995304878b6c4b5782d40d019
-# -- L178 `not command or not command.strip()` ReplaceOrWithAnd (public guard
-#    in classify_command_tier). Diverges from `or` only for whitespace-only
-#    input; with `and` it short-circuits False, falls through to
-#    command.strip() == "", the blocked-pattern loop matches nothing, and
-#    _classify_command_tier_cached("") hits its OWN (unmutated) L89 guard and
-#    returns T3 — identical observable. The cached guard masks the public guard.
-9465e182adbf4528b0142380a38c395b
-# -- L193 `break` ReplaceBreakWithContinue (blocked-pattern loop in
-#    classify_command_tier). Once a pattern matches, has_blocked=True is set;
-#    continuing the loop only re-scans the remaining patterns, leaving
-#    has_blocked True. The return value _classify_command_tier_cached(command,
-#    has_blocked) is identical whether the loop breaks or continues.
-440dc30c5a904e14af077eb8af2e239c
+# T1a — requires_approval `return self == SecurityTier.T3_BLOCKED` (L40).
+# Domain of self is the 4 enum singletons. Eq_Is: enum members are singletons
+# so `is` coincides with `==`. Eq_GtE: SecurityTier is (str, Enum) "T0".."T3";
+# "T3" is the max, so `self >= T3` is True iff `self == T3` -- identical truth
+# table over all 4 members.
+core/ReplaceComparisonOperator_Eq_GtE|40:20-40:22|0
+core/ReplaceComparisonOperator_Eq_Is|40:20-40:22|0
+# ===========================================================================
+# T1b — @lru_cache(maxsize=512) on _classify_command_tier_cached (L79). The
+# function is pure over (command, has_blocked_patterns). RemoveDecorator only
+# forgoes caching; the maxsize NumberReplacers change only eviction capacity.
+# Neither changes any return value.
+core/RemoveDecorator|79:0-80:0|2
+core/NumberReplacer|79:19-79:22|0
+core/NumberReplacer|79:19-79:22|1
+# ===========================================================================
+# T1c — ultra-common fast-path guards (L100/L101). The fast-path is a PURE
+# OPTIMIZATION: every ULTRA_COMMON_T0 command also classifies T0 via the slow
+# path (none is mutative, none hits a T1/T2 keyword), so the safe-by-elimination
+# default at L138 returns the SAME T0. Altering the L100 length guard or the
+# L101 index therefore cannot change any observable.
+#   NOTE: the L96 `>= 2` GtE_Eq is NOT here -- it IS killable ('git diff HEAD'
+#   is T0 via prefix2 but T2 via the 'diff' keyword on the slow path) and is
+#   killed by a test. Only the L100/L101 guards (slow path also T0) are equiv.
+core/AddNot|100:7-100:22|3
+core/ReplaceComparisonOperator_GtE_Eq|100:18-100:20|1
+core/ReplaceComparisonOperator_GtE_Gt|100:18-100:20|1
+core/ReplaceComparisonOperator_GtE_Lt|100:18-100:20|1
+core/ReplaceComparisonOperator_GtE_LtE|100:18-100:20|1
+core/ReplaceComparisonOperator_GtE_NotEq|100:18-100:20|1
+core/NumberReplacer|100:21-100:22|8
+core/NumberReplacer|100:21-100:22|9
+core/NumberReplacer|101:17-101:18|11
+# ===========================================================================
+# T1d — dry-run gate `"--dry-run" in command or "--plan-only" in command`
+# (L109) ReplaceOrWithAnd. LOOKS killable but is equivalent: with `and` the
+# gate needs both flags, yet every command that reached it is rescued
+# downstream -- a `--dry-run` command has verb-detector category SIMULATION and
+# returns T2 at L132; a `--plan-only` command contains the word "plan" and
+# matches the \bplan\b T2 regex at L113. So the observable T2 is unchanged for
+# all reachable inputs.
+core/ReplaceOrWithAnd|109:30-109:32|1
+# T1d2 — public empty-guard `not command or not command.strip()` (L178)
+# ReplaceOrWithAnd. Diverges from `or` only for whitespace-only input; with
+# `and` it short-circuits False, strips to "", the blocked-pattern loop matches
+# nothing, and _classify_command_tier_cached("") hits its OWN (unmutated) L89
+# guard and returns T3 -- identical observable. The cached guard masks it.
+core/ReplaceOrWithAnd|178:19-178:21|2
+# ===========================================================================
+# T1e — `*,` keyword-only marker in classify_command_tier signature (L143).
+# ReplaceBinaryOperator_Mul_Div targets a `*` token, but here `*` is the bare
+# keyword-only separator, not a binary operation; the mutation leaves the
+# signature semantics unchanged (no operand to divide), so no input observes it.
+core/ReplaceBinaryOperator_Mul_Div|143:4-143:5|0
+# ===========================================================================
+# T1f — verb-detector result branches (L132 SIMULATION, L134 READ_ONLY).
+# CATEGORY_* are module constants; result.category is the SAME object the dict
+# returns, so `==`->`is` (Eq_Is) coincides by identity. For L134, a READ_ONLY
+# command returns T0 and the L138 default ALSO returns T0, so every `==` flip
+# (NotEq/Gt/GtE/Lt/LtE/IsNot) and AddNot leaves the observable T0 unchanged.
+# L132 SIMULATION is unreachable with a SIMULATION category that is not already
+# caught by the T2 keyword scan at L113 (plan/diff/template), so its Eq_Is flip
+# is unobservable too.
+core/ReplaceComparisonOperator_Eq_Is|132:23-132:25|1
+core/AddNot|134:7-134:44|11
+core/ReplaceComparisonOperator_Eq_Gt|134:23-134:25|2
+core/ReplaceComparisonOperator_Eq_GtE|134:23-134:25|2
+core/ReplaceComparisonOperator_Eq_Is|134:23-134:25|2
+core/ReplaceComparisonOperator_Eq_IsNot|134:23-134:25|2
+core/ReplaceComparisonOperator_Eq_Lt|134:23-134:25|2
+core/ReplaceComparisonOperator_Eq_LtE|134:23-134:25|2
+core/ReplaceComparisonOperator_Eq_NotEq|134:23-134:25|2
+# ===========================================================================
+# T1g — blocked-pattern loop `break` (L193) ReplaceBreakWithContinue. Once a
+# pattern matches, has_blocked=True is set; continuing only re-scans the
+# remaining patterns, leaving has_blocked True. The return value
+# _classify_command_tier_cached(command, has_blocked) is identical.
+core/ReplaceBreakWithContinue|193:12-193:17|0

@@ -29,6 +29,7 @@ Survivor groups closed here (function -> mutant kinds):
                                 byte-for-byte match, return tuple shape
 """
 
+import inspect
 import json
 import secrets
 import sqlite3
@@ -705,6 +706,31 @@ class TestMatchCommandSetGrantMutants:
             consumed_indexes=[0],
         )
         assert match_command_set_grant("git push origin main") == (approval_id, 1)
+
+    def test_db_path_is_keyword_only(self):
+        """`db_path` must be KEYWORD_ONLY in match_command_set_grant's signature
+        (the `*` marker at line 1620). This kills
+        core/ReplaceBinaryOperator_Mul_Div|1620:4-1620:5|1: cosmic-ray parses the
+        bare `*` keyword-only marker as a binary `Mul` and flips it to `Div`,
+        which removes the marker and makes `db_path` a POSITIONAL_OR_KEYWORD
+        parameter. The honest assertions below observe the real source signature,
+        so the mutant (positional db_path) fails both checks while the source
+        passes.
+        """
+        sig = inspect.signature(match_command_set_grant)
+        db_path_param = sig.parameters["db_path"]
+        # The `*` marker forces db_path to be keyword-only. Without the marker
+        # (mutant) it would be POSITIONAL_OR_KEYWORD.
+        assert db_path_param.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"db_path must be KEYWORD_ONLY (the `*` marker), got "
+            f"{db_path_param.kind!r} -- the keyword-only marker was lost"
+        )
+        # And the marker must sit AFTER the positional retried_command, so only
+        # one positional argument is accepted: passing db_path positionally must
+        # raise TypeError. With the marker removed (mutant), this call would
+        # succeed and NOT raise.
+        with pytest.raises(TypeError):
+            match_command_set_grant("git push origin main", "/tmp/x.db")
 
 
 # ===========================================================================

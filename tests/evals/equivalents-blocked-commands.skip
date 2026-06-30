@@ -1,13 +1,22 @@
 # GRIND-TOTAL equivalents for blocked_commands.py — see equivalents-security-core.md
-# (Category B* sections, added this session). Each job_id below is a mutant
-# proven GENUINELY EQUIVALENT by hand: apply the exact cosmic-ray mutant ->
-# full suite stays green -> revert. Listed here it is excluded from the
-# kill-rate denominator. A mutant is listed ONLY if no honest input can
-# distinguish it from the original for ANY reachable input.
+# (Category B* sections). Each entry below is a mutant proven GENUINELY
+# EQUIVALENT by hand: apply the exact cosmic-ray mutant -> full suite stays
+# green -> revert. Listed here it is excluded from the kill-rate denominator.
+# A mutant is listed ONLY if no honest input can distinguish it from the
+# original for ANY reachable input.
+#
+# IDENTITY FORMAT (re-init-proof): each entry is the mutant's STABLE identity
+#   operator_name|start_row:start_col-end_row:end_col|occurrence
+# NOT a job_id. cosmic-ray regenerates job_ids on every `init`, so job_id-keyed
+# skips silently match nothing after a re-init (the false-100% trap). The
+# harness (tests/evals/mutkill_approval_grants.py: stable_id/compute_skip_jobids)
+# resolves these stable ids to the current session's job_ids and WARNS on any
+# token that matches no mutant. Re-keyed against blocked-commands.sqlite
+# (157 specs, post-desacople HEAD).
 #
 # Endpoint: every blocked_commands.py survivor is either killed by a test in
 # tests/hooks/modules/security/test_blocked_commands_mutants.py OR proven
-# equivalent here.
+# equivalent here. Confirmed 0 untriaged survivors via mutkill --skip-file.
 #
 # ===========================================================================
 # Category B1 — _has_unquoted_separator quote-walk equivalents (19)
@@ -15,37 +24,43 @@
 # i lands EXACTLY on n (never overshoots). See equivalents-security-core.md B1.
 # ---------------------------------------------------------------------------
 # B1a loop bound `while i < n` (line 705): != / is-not equivalent
-6b7d47abdbec4c66a1c7946dd2758f8b
-4483941e37c8479d8ea0df6823f7bace
+#   (i reaches n exactly; for short reachable commands `is not` coincides with
+#   `!=` and both coincide with `<` at the n boundary).
+core/ReplaceComparisonOperator_Lt_IsNot|705:12-705:13|0
+core/ReplaceComparisonOperator_Lt_NotEq|705:12-705:13|0
 # B1b escape guard `if ch == "\\" and i + 1 < n` (line 707)
-#   Eq_Is on ch (single-char interning)
-5f9ffde261a348dd9bf671f3f8df2f64
-#   Add_* on i+1 (Sub/Mul/Div/FloorDiv/Mod/Pow/RShift/BitOr/BitAnd/BitXor)
-#   NOTE: Add_LShift was KILLED (aaaa\|), it is NOT in this list.
-2f99fabe81734abf9bdd8533aa8f6829
-7eb8606890ae4f978f4beab7595fa828
-17f7645966c7424686893ac7387dad8c
-2731fa4064bb40a5a5733715277382b2
-af4edb4fc1bd41e6a84410618bce0112
-424f34c99024409ea4615aad2fe372c9
-4bda2c16772744dcb4119e864530ddce
-5295f6ad67cd40809c4a9b57df552963
-c61e470cdcff4872b43edcd105bb7e34
-e83d90ae48a0437dabf1a766c5edf62e
+#   Eq_Is on ch (single-char interning: command[i] for "\\" is identity-equal)
+core/ReplaceComparisonOperator_Eq_Is|707:14-707:16|2
+#   Add_* on i+1 (Sub/Mul/Div/FloorDiv/Mod/Pow/RShift/BitOr/BitAnd/BitXor):
+#   only observable when ch=="\\"; every reachable backslash command keeps i
+#   landing on n, so the guard truth-value is unchanged. Add_LShift was KILLED
+#   (aaaa\|) so it is NOT listed here.
+core/ReplaceBinaryOperator_Add_BitAnd|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_BitOr|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_BitXor|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_Div|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_FloorDiv|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_Mod|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_Mul|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_Pow|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_RShift|707:28-707:29|1
+core/ReplaceBinaryOperator_Add_Sub|707:28-707:29|1
 #   NumberReplacer 1->0 on i+1 (occ5); occ4 1->2 was KILLED
-515dfe842d2940bc999b7ad237905462
+core/NumberReplacer|707:30-707:31|5
 #   Lt_* on `i + 1 < n` (NotEq / LtE / IsNot)
-496b55507cff49d1ac103af0c9bbbedf
-39d9bb39bcad412d83d4be2f2c0fe791
-4778615b1a164a14a72fb073f96ee3d8
+core/ReplaceComparisonOperator_Lt_IsNot|707:32-707:33|1
+core/ReplaceComparisonOperator_Lt_LtE|707:32-707:33|1
+core/ReplaceComparisonOperator_Lt_NotEq|707:32-707:33|1
 # B1c quote-toggle Eq_Is (single-char interning) lines 710, 714
-4f56c3a963d84a69800b12db9744a5a3
-665257f4dee34e1484edd229caa236cc
+core/ReplaceComparisonOperator_Eq_Is|710:14-710:16|3
+core/ReplaceComparisonOperator_Eq_Is|714:14-714:16|4
 # ===========================================================================
 # Category B2 — is_blocked_command empty-guard or->and (line 596)
-# Diverges only for whitespace-only inputs; both yield is_blocked=False.
-792699f458f2460d84a1cdd4252f145b
+# Diverges only for whitespace-only inputs; both yield is_blocked=False
+# (the `and` branch falls through, strips to "", and the pattern loop matches
+# nothing -> same observable).
+core/ReplaceOrWithAnd|596:19-596:21|1
 # ===========================================================================
 # Category B3 — _read_only_base_cmds unreachable except ImportError (line 74)
-# The import always succeeds in-process; the handler body never runs.
-3667c2b2771244e6b5a9201a67e2f4fa
+# The sibling import always succeeds in-process; the handler body never runs.
+core/ExceptionReplacer|74:11-74:22|0
