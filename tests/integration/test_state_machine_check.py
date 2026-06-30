@@ -160,6 +160,74 @@ def test_check_rejects_invalid_plans_status(tmp_path, invalid_status):
         con.close()
 
 
+def _seed_brief(con: sqlite3.Connection, name: str = "ac-brief") -> int:
+    """Insert a workspace + brief so acceptance_criteria rows satisfy the FK.
+    Returns the brief_id."""
+    con.execute("INSERT OR IGNORE INTO workspaces (name) VALUES (?)", ("me",))
+    con.execute(
+        "INSERT INTO briefs (workspace, name, status) VALUES (?, ?, ?)",
+        ("me", name, "draft"),
+    )
+    brief_id = con.execute(
+        "SELECT id FROM briefs WHERE name=?", (name,)
+    ).fetchone()[0]
+    con.commit()
+    return brief_id
+
+
+@pytest.mark.parametrize("invalid_status", ["WRONG", "skipped", "Descoped"])
+def test_check_rejects_invalid_acceptance_criteria_status(tmp_path, invalid_status):
+    """acceptance_criteria.status CHECK rejects values outside VALID_AC_STATUSES.
+
+    'skipped' is the task-only terminal and must NOT be accepted for an AC;
+    'Descoped' (wrong case) must also be rejected.
+    """
+    db = _fresh_db(tmp_path)
+    con = sqlite3.connect(str(db))
+    try:
+        brief_id = _seed_brief(con)
+        with pytest.raises(sqlite3.IntegrityError) as exc_info:
+            con.execute(
+                "INSERT INTO acceptance_criteria (brief_id, ac_id, status) "
+                "VALUES (?, ?, ?)",
+                (brief_id, "AC-1", invalid_status),
+            )
+        assert "CHECK" in str(exc_info.value).upper()
+    finally:
+        con.close()
+
+
+def test_acceptance_criteria_check_accepts_descoped(tmp_path):
+    """v21: the widened CHECK admits 'descoped' (and every other canonical AC
+    status) on acceptance_criteria.status."""
+    from gaia.state import VALID_AC_STATUSES
+    assert "descoped" in VALID_AC_STATUSES
+    db = _fresh_db(tmp_path)
+    con = sqlite3.connect(str(db))
+    try:
+        brief_id = _seed_brief(con)
+        for i, status in enumerate(VALID_AC_STATUSES):
+            con.execute(
+                "INSERT INTO acceptance_criteria (brief_id, ac_id, status) "
+                "VALUES (?, ?, ?)",
+                (brief_id, f"AC-{i}", status),
+            )
+        con.commit()
+        n = con.execute(
+            "SELECT COUNT(*) FROM acceptance_criteria WHERE brief_id=?",
+            (brief_id,),
+        ).fetchone()[0]
+        assert n == len(VALID_AC_STATUSES)
+        row = con.execute(
+            "SELECT status FROM acceptance_criteria "
+            "WHERE brief_id=? AND status='descoped'",
+            (brief_id,),
+        ).fetchone()
+        assert row is not None and row[0] == "descoped"
+    finally:
+        con.close()
+
+
 @pytest.mark.parametrize("invalid_status", ["WRONG", "complete", "Done"])
 def test_check_rejects_invalid_tasks_status(tmp_path, invalid_status):
     """tasks.status CHECK rejects values outside VALID_TASK_STATUSES."""

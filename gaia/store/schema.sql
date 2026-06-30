@@ -434,9 +434,13 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria (
     evidence_shape TEXT,
     artifact_path  TEXT,
     status         TEXT NOT NULL DEFAULT 'pending'
-                   CHECK (status IN ('pending', 'done', 'blocked')),
+                   CHECK (status IN ('pending', 'done', 'blocked', 'descoped')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
+-- 'descoped' (v21) is a HARD-TERMINAL status: an AC deliberately removed from
+-- scope. Unlike a task's reopenable 'skipped', there is NO transition OUT of
+-- 'descoped' (see gaia.state.transitions.AC_LIFECYCLE_TRANSITIONS). It is part
+-- of the TERMINAL set {done, descoped} that verify_brief treats as resolved.
 
 CREATE INDEX IF NOT EXISTS idx_acceptance_criteria_brief ON acceptance_criteria(brief_id);
 

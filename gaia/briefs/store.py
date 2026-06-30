@@ -1039,7 +1039,7 @@ def verify_brief(
     con = _connect(db_path)
     try:
         brief_row = con.execute(
-            "SELECT id, name FROM briefs WHERE workspace = ? AND name = ?",
+            "SELECT id, name, status FROM briefs WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         if brief_row is None:
@@ -1047,8 +1047,17 @@ def verify_brief(
                 f"brief '{name}' not found in workspace '{workspace}'"
             )
         brief_id = brief_row["id"]
+        brief_status = brief_row["status"]
 
         inconsistencies: list[dict] = []
+
+        # The TERMINAL set for an AC: an AC is "resolved" when it is either
+        # satisfied ('done') or deliberately dropped ('descoped', v21). Any other
+        # status ('pending', 'blocked') is non-terminal -- the AC is still live.
+        # Adding 'descoped' to this set is what lets a brief close honestly
+        # without leaving "false done" ACs (an AC that was dropped but had no
+        # terminal status to record the drop).
+        _AC_TERMINAL_STATUSES = ("done", "descoped")
 
         # Invariant 1: plans with zero tasks
         plan_row = con.execute(
@@ -1179,6 +1188,49 @@ def verify_brief(
                     f"task_status='{latest_handoff['task_status']}' (not COMPLETE)"
                 ),
             })
+
+        # Invariant 7: a CLOSED brief with any AC in a NON-terminal status
+        # (pending / blocked). Closing the brief while an AC is still live is the
+        # "false done" gap: the AC was neither satisfied ('done') nor explicitly
+        # dropped ('descoped'). Advisory only -- never blocks the close.
+        if brief_status == "closed":
+            nonterminal_acs = con.execute(
+                "SELECT ac_id, status FROM acceptance_criteria "
+                "WHERE brief_id = ? "
+                "AND status NOT IN ({}) "
+                "ORDER BY ac_id".format(
+                    ", ".join("?" for _ in _AC_TERMINAL_STATUSES)
+                ),
+                (brief_id, *_AC_TERMINAL_STATUSES),
+            ).fetchall()
+            for ac_row in nonterminal_acs:
+                inconsistencies.append({
+                    "kind": "closed_brief_nonterminal_ac",
+                    "detail": (
+                        f"brief '{name}' is 'closed' but AC '{ac_row['ac_id']}' "
+                        f"is status='{ac_row['status']}' (not terminal; terminal "
+                        f"set is {{done, descoped}}) -- mark it 'done' or "
+                        f"'descoped' to close honestly"
+                    ),
+                })
+
+        # Invariant 8: a CLOSED brief whose plan is NOT closed. Advisory-only and
+        # NO automatic cascade -- consistent with the existing advisory philosophy
+        # (close never mutates plan/AC/milestone status; it only surfaces drift).
+        if brief_status == "closed" and plan_id is not None:
+            plan_state = con.execute(
+                "SELECT status FROM plans WHERE id = ?", (plan_id,)
+            ).fetchone()
+            if plan_state is not None and plan_state["status"] != "closed":
+                inconsistencies.append({
+                    "kind": "closed_brief_open_plan",
+                    "detail": (
+                        f"brief '{name}' is 'closed' but its plan is "
+                        f"status='{plan_state['status']}' (not 'closed') -- "
+                        f"close the plan or reopen the brief (no automatic "
+                        f"cascade is performed)"
+                    ),
+                })
 
         return {
             "brief_name": name,

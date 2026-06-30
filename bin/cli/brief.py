@@ -14,7 +14,9 @@ Subcommands:
     gaia brief show <name> [--json]       Print brief as markdown
     gaia brief list [--status=...]        List briefs in the workspace
                   [--format=table|count|json]
-    gaia brief close <name>               Set status -> closed
+    gaia brief close <name>               Set status -> closed (advisory: runs
+                                          verify_brief and prints inconsistencies;
+                                          does NOT change AC/milestone/plan status)
     gaia brief set-status <name> <status> Validated state-machine transition
                                           (DB-only)
     gaia brief deps <name> [--json]       Print dependency graph
@@ -753,8 +755,13 @@ def register(subparsers) -> None:
     # -- close --------------------------------------------------------------
     close_p = actions.add_parser(
         "close",
-        help="Set brief status to closed",
-        description="Shortcut for set-status closed.",
+        help="Set brief status to closed (advisory verify, no cascade)",
+        description=(
+            "Set the brief's status to 'closed', then run verify_brief and "
+            "print any inconsistencies as warnings. ADVISORY ONLY: it does NOT "
+            "change AC, milestone, or plan status, and performs no cascade. To "
+            "resolve a flagged AC, use 'gaia ac set-status' (done / descoped)."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia brief close <name>\n  gaia brief close my-feature --workspace=me\n",
     )
