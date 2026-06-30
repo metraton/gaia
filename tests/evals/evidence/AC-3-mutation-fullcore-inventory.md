@@ -55,8 +55,12 @@ FOLLOW-UP for the broadening lever.
 Individual survivor counts are large (859 total); the inventory below groups
 survivors by the function that contains them, which is the actionable unit for
 closure. Per-mutant detail (line, operator, occurrence) is recoverable from each
-sqlite session via the join `mutation_specs.job_id = work_results.job_id` filtered
-on `work_results.test_outcome = 'SURVIVED'`.
+sqlite session via the join on cosmic-ray's per-session `job_id` column
+(`mutation_specs.job_id = work_results.job_id`) filtered on
+`work_results.test_outcome = 'SURVIVED'`. Note that `job_id` is regenerated on
+every `cosmic-ray init` and is therefore NOT a durable identifier; the stable
+key used by the skip-files is `operator|location|occurrence`, built from
+`operator_name`, `start_pos_row`, and `occurrence` (see the query below).
 
 ### `mutative_verbs.py` — 325 survivors
 
@@ -150,12 +154,15 @@ uv run cr-rate blocked-commands.sqlite
 uv run cr-rate approval-grants.sqlite
 ```
 
-Per-mutant survivor query for any session:
+Per-mutant survivor query for any session. The join uses cosmic-ray's
+per-session `job_id` column, but the durable identity for cross-run tracking is
+the stable key `operator_name|start_pos_row|occurrence` (the three selected
+columns, in that order):
 
 ```sql
 SELECT ms.start_pos_row, ms.operator_name, ms.occurrence, ms.definition_name
 FROM mutation_specs ms
-JOIN work_results wr ON wr.job_id = ms.job_id
+JOIN work_results wr ON wr.job_id = ms.job_id  -- job_id: per-session only, not durable
 WHERE wr.test_outcome = 'SURVIVED'
 ORDER BY ms.start_pos_row;
 ```
