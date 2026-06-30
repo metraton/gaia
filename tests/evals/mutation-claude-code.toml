@@ -1,0 +1,37 @@
+# Per-module mutation config for claude_code.py (ClaudeCodeAdapter)
+#
+# claude_code.py translates between Claude Code's stdin JSON and the
+# normalized adapter types. It is the sole concrete HookAdapter for the
+# Claude Code v2.1+ hook protocol.
+#
+# ANTI-STALENESS RULE (AC-10):
+#   A cosmic-ray session (.sqlite) records the test-command results from the
+#   moment `cosmic-ray init`/`exec` ran. If you change test files or the
+#   source module WITHOUT re-running `cosmic-ray init`, `cr-rate` will report
+#   a STALE kill_rate. RE-INIT IS OBLIGATORY after any change to test files
+#   listed in test-command, the source module, or this toml.
+#   Use `mutkill_approval_grants.py` (not `cr-rate`) for a fresh kill_rate;
+#   it re-runs mutate_and_test against the current tests on every invocation.
+#   Detect stale sessions with:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session claude-code.sqlite \
+#       --toml tests/evals/mutation-claude-code.toml --check-stale
+#
+# Equivalent mutants are documented in equivalents-claude-code.skip once
+# the initial survivor triage is complete.
+#
+# Init:
+#   cd gaia && uv run cosmic-ray init tests/evals/mutation-claude-code.toml claude-code.sqlite
+# Exec (T3 — requires approval):
+#   uv run cosmic-ray exec tests/evals/mutation-claude-code.toml claude-code.sqlite
+# Score:
+#   uv run cr-rate claude-code.sqlite
+
+[cosmic-ray]
+module-path = "hooks/adapters/claude_code.py"
+timeout = 30.0
+excluded-modules = []
+test-command = "python3 -m pytest tests/hooks/adapters/test_claude_code.py -q -x --no-header"
+
+[cosmic-ray.distributor]
+name = "local"

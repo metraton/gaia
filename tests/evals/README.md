@@ -186,6 +186,42 @@ uv run python tests/evals/mutkill_approval_grants.py \
 Without `--check-stale`, the guard still runs and prints a WARNING to stderr
 if the session is older than any tracked file — but execution continues.
 
+## Equivalent-mutant skip files use STABLE ids (re-init-proof)
+
+Equivalent mutants (no input can distinguish them from the original) are
+excluded from the kill-rate denominator via per-module `equivalents-*.skip`
+files. Each non-comment line is keyed on the mutant's STABLE identity:
+
+```
+operator_name | start_row:start_col-end_row:end_col | occurrence
+```
+
+NOT the `job_id`. `cosmic-ray init` regenerates a fresh uuid4 `job_id` for every
+mutant on every run, so a job_id-keyed skip silently matches NOTHING after a
+re-init — the documented equivalents re-enter the denominator as phantom
+"killable" mutants and the rate floats up to a **false 100%**. The stable id is
+derived from the source AST, which `cosmic-ray init` reproduces byte-for-byte,
+so it survives re-init. The harness (`mutkill_approval_grants.py`:
+`stable_id` / `parse_skip_file` / `compute_skip_jobids`) resolves stable ids to
+the current session's job_ids and prints a WARNING for any token that matches no
+mutant (a stale id, or a span that moved — re-key it). Legacy 32-hex job_ids are
+still honored for backward compatibility but are fragile; emit stable ids.
+
+Per-module configs and their skip files:
+
+| Module | `.toml` | `.skip` |
+|--------|---------|---------|
+| `tiers.py` | `mutation-tiers.toml` | `equivalents-tiers.skip` |
+| `mutative_verbs.py` | `mutation-mutative-verbs.toml` | `equivalents-mutative-verbs.skip` |
+| `blocked_commands.py` | `mutation-blocked-commands.toml` | `equivalents-blocked-commands.skip` |
+| `approval_grants.py` | `mutation-approval-grants.toml` | `equivalents-approval-grants.skip` |
+| `inline_ast_analyzer.py` | `mutation-inline-ast.toml` | `equivalents-inline-ast.skip` |
+| `bash_validator.py` | `mutation-bash-validator.toml` | _(none yet — survivors untriaged)_ |
+| `claude_code.py` | `mutation-claude-code.toml` | _(none yet — survivors untriaged)_ |
+
+Baselines for the two newest modules:
+`evidence/mutation-bash-validator-claude-code-baseline.md`.
+
 ## How to run
 
 All commands assume the repo root is `/home/jorge/ws/me/gaia-dev`.
