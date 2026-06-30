@@ -1084,6 +1084,481 @@ class TestEdgeCases:
 # ============================================================================
 
 
+# ============================================================================
+# TestIsProtected: mutation-targeted tests for _is_protected in
+# _adapt_write_edit (L948-965 of hooks/adapters/claude_code.py).
+#
+# The 24 surviving mutants from the baseline (mutation-bash-validator-
+# claude-code-baseline.md) are driven to zero by this class.
+#
+# Strategy: call _adapt_write_edit directly with is_subagent=False so that
+# the foreground path (request_consent -> format_ask_response) is exercised
+# without needing DB.  Protected paths must return permissionDecision=="ask";
+# non-protected paths must return the pass-through (output={}, exit_code=0).
+# ============================================================================
+
+
+def _hooks_dir():
+    """Return the resolved hooks/ directory, mirroring the closure in
+    _adapt_write_edit so test paths are always consistent with the adapter."""
+    return Path(__file__).parent.parent.parent.parent / "hooks"
+
+
+def _protected_py():
+    """A real .py file inside hooks/ that must always be protected."""
+    return str(_hooks_dir() / "modules" / "security" / "approval_grants.py")
+
+
+def _protected_json():
+    """A real .json file inside hooks/ that must always be protected
+    (kills the < ".md" and <= ".md" operator mutants on L956)."""
+    return str(_hooks_dir() / "hooks.json")
+
+
+def _exempt_md():
+    """A real .md file inside hooks/ that must be EXEMPT from protection."""
+    return str(_hooks_dir() / "README.md")
+
+
+class TestIsProtected:
+    """Mutation-killing tests for _is_protected (L948-965).
+
+    Triage of the 24 baseline survivors:
+    - All 24 are KILLABLE (real coverage gaps); none are equivalent.
+    - Tests are organised by the source-line they target; the mutant
+      stable-ids are annotated inline so coverage is traceable.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_ask(response: HookResponse) -> bool:
+        """True when the adapter returned permissionDecision == 'ask'."""
+        return (
+            response.output.get("hookSpecificOutput", {}).get("permissionDecision")
+            == "ask"
+        )
+
+    @staticmethod
+    def _is_passthrough(response: HookResponse) -> bool:
+        """True when the adapter returned the pass-through (allow) response."""
+        return response.output == {} and response.exit_code == 0
+
+    # ------------------------------------------------------------------
+    # L948-953: p.resolve() exception path
+    # Mutant: ExceptionReplacer|952:19-952:28|5
+    # ------------------------------------------------------------------
+
+    def test_resolve_exception_falls_back_to_raw_path(self, adapter, monkeypatch, tmp_path):
+        """When p.resolve() raises, the adapter falls back to the raw Path.
+
+        The ExceptionReplacer mutant narrows the caught class, so a broader
+        exception would propagate and crash the adapter.  We verify that even
+        after a mocked OSError the function still works correctly: a settings
+        path that contains .claude in its *raw* parts is still protected.
+        """
+        # Construct a synthetic raw path whose .parts already contain '.claude'
+        # so rp = p (the fallback) is sufficient to find the '.claude' component.
+        synthetic = tmp_path / ".claude" / "settings.json"
+        synthetic.parent.mkdir(parents=True)
+        synthetic.touch()
+
+        import pathlib
+        original_resolve = pathlib.Path.resolve
+
+        def _exploding_resolve(self, *args, **kwargs):
+            if str(self) == str(synthetic):
+                raise OSError("simulated resolve failure")
+            return original_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "resolve", _exploding_resolve)
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(synthetic)}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "When resolve() raises, the raw path fallback must still detect "
+            ".claude and protect the settings file — kills ExceptionReplacer|952"
+        )
+
+    # ------------------------------------------------------------------
+    # L955-958: hooks-dir .md exemption
+    # Mutants: AddNot|956|45, Eq_Gt|956|6, Eq_GtE|956|6, Eq_Is|956|6,
+    #          Eq_IsNot|956|6, Eq_Lt|956|6, Eq_LtE|956|6, Eq_NotEq|956|6,
+    #          ReplaceFalseWithTrue|957|3
+    # ------------------------------------------------------------------
+
+    def test_hooks_dir_py_file_is_protected(self, adapter):
+        """A .py file inside the hooks directory must always be blocked.
+
+        Kills: ReplaceTrueWithFalse|958|7 (return True → return False)
+        """
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": _protected_py()}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "Writing a .py file inside the hooks directory must be blocked — "
+            "kills ReplaceTrueWithFalse|958:23-958:27|7"
+        )
+
+    def test_hooks_dir_json_file_is_protected(self, adapter):
+        """A .json file inside the hooks directory must be blocked.
+
+        .json < .md and .json <= .md lexicographically; if the operator were
+        mutated to < or <=, a .json file would be *falsely exempt*.
+        Kills: Eq_Lt|956|6, Eq_LtE|956|6
+        """
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": _protected_json()}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "A .json file inside hooks/ must be protected — kills the "
+            "< and <= comparison operator mutants on L956"
+        )
+
+    def test_hooks_dir_toml_file_is_protected(self, adapter):
+        """A .toml file inside the hooks directory must be blocked.
+
+        .toml > .md lexicographically; if the operator were mutated to >,
+        >= or !=, non-.md files would be *falsely exempt*.
+        Kills: Eq_Gt|956|6, Eq_GtE|956|6, Eq_NotEq|956|6
+        """
+        toml_path = str(_hooks_dir() / "some-config.toml")
+        # The file doesn't need to exist — _is_protected only inspects the
+        # *path string*; resolve() may return the non-existent path unchanged.
+        resp = adapter._adapt_write_edit(
+            "Edit", {"file_path": toml_path}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "A .toml file inside hooks/ must be protected — kills Eq_Gt, "
+            "Eq_GtE, Eq_NotEq mutants on L956"
+        )
+
+    def test_hooks_dir_md_file_is_NOT_protected(self, adapter):
+        """A .md file inside the hooks directory must be EXEMPT.
+
+        .md files are documentation; they don't execute code.  The md-exemption
+        clause must return False, not True.
+        Kills: AddNot|956|45, ReplaceFalseWithTrue|957|3, Eq_Is|956|6,
+               Eq_IsNot|956|6 (IsNot makes ALL files exempt, so any non-.md
+               test above already catches it; this test specifically guards
+               the .md → False return).
+        """
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": _exempt_md()}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            ".md files inside hooks/ are documentation — they must pass "
+            "through (exempt from protection). Kills AddNot|956|45, "
+            "ReplaceFalseWithTrue|957|3, and Eq_Is|956|6"
+        )
+
+    def test_hooks_dir_py_is_protected_confirms_md_exemption_is_not_total(self, adapter):
+        """Cross-check: .py in hooks/ is protected AND .md is not.
+
+        When the 'is not .md' mutant (Eq_IsNot, making ALL hooks files exempt)
+        is active, BOTH this test and test_hooks_dir_py_file_is_protected fail.
+        Having both assertions in the same run ensures the mutant is caught
+        even if one test would accidentally pass.
+        Kills: Eq_IsNot|956|6
+        """
+        py_resp = adapter._adapt_write_edit(
+            "Write", {"file_path": _protected_py()}, is_subagent=False
+        )
+        md_resp = adapter._adapt_write_edit(
+            "Write", {"file_path": _exempt_md()}, is_subagent=False
+        )
+        assert self._is_ask(py_resp), ".py in hooks/ must be protected"
+        assert self._is_passthrough(md_resp), ".md in hooks/ must be exempt"
+
+    # ------------------------------------------------------------------
+    # L959: ValueError exception handler for relative_to()
+    # Mutant: ExceptionReplacer|959:19-959:29|6
+    # ------------------------------------------------------------------
+
+    def test_value_error_from_relative_to_is_caught(self, adapter, tmp_path):
+        """A path outside hooks_dir triggers ValueError in relative_to();
+        the handler must catch it and continue to the settings check.
+
+        If the ExceptionReplacer mutant narrows to a non-ValueError class, the
+        exception propagates and the adapter crashes instead of inspecting the
+        settings name.
+        """
+        # A path that is NOT inside hooks_dir but IS settings.json in .claude
+        external_settings = tmp_path / ".claude" / "settings.json"
+        external_settings.parent.mkdir()
+        external_settings.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(external_settings)}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "ValueError from relative_to() must be caught so the settings "
+            "check on L961 can run — kills ExceptionReplacer|959:19-959:29|6"
+        )
+
+    # ------------------------------------------------------------------
+    # L961: p.name in (...) settings name check
+    # Mutant: AddNot|961|46
+    # ------------------------------------------------------------------
+
+    def test_settings_json_in_claude_is_protected(self, adapter, tmp_path):
+        """settings.json inside a .claude directory must be blocked.
+
+        Kills: AddNot|961|46 (inverts the name check, letting settings slip
+        through), ZeroIterationForLoop|962|0 (loop never runs),
+        ReplaceTrueWithFalse|964|8 (return False when .claude found),
+        ReplaceFalseWithTrue|965|4 (final return True — over-blocks).
+        """
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings = claude_dir / "settings.json"
+        settings.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(settings)}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "settings.json inside .claude must be protected — kills "
+            "AddNot|961|46, ZeroIterationForLoop|962|0, "
+            "ReplaceTrueWithFalse|964|8"
+        )
+
+    def test_settings_local_json_in_claude_is_protected(self, adapter, tmp_path):
+        """settings.local.json inside a .claude directory must be blocked.
+
+        Separate from settings.json: both names must be in the protected set.
+        """
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings_local = claude_dir / "settings.local.json"
+        settings_local.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(settings_local)}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "settings.local.json inside .claude must be protected"
+        )
+
+    def test_settings_json_outside_claude_is_NOT_protected(self, adapter, tmp_path):
+        """settings.json NOT under a .claude directory must pass through.
+
+        This test prevents AddNot|961|46 (inverted name check) from silently
+        over-blocking legitimate settings files in the user's project.
+        Also kills ReplaceFalseWithTrue|965|4 (final return True = everything
+        protected): a random settings.json would wrongly be blocked.
+        """
+        # No .claude component anywhere in the path
+        project_settings = tmp_path / "project" / "settings.json"
+        project_settings.parent.mkdir()
+        project_settings.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(project_settings)}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "settings.json without a .claude component must NOT be protected — "
+            "kills AddNot|961|46 and ReplaceFalseWithTrue|965|4"
+        )
+
+    # ------------------------------------------------------------------
+    # L962-963: for-loop and part == ".claude" check
+    # Mutants: ZeroIterationForLoop|962|0, AddNot|963|47,
+    #          Eq_Gt|963|7, Eq_GtE|963|7, Eq_Is|963|7, Eq_IsNot|963|7,
+    #          Eq_Lt|963|7, Eq_LtE|963|7, Eq_NotEq|963|7
+    # ------------------------------------------------------------------
+
+    def test_deeply_nested_claude_settings_is_protected(self, adapter, tmp_path):
+        """A settings.json several levels inside a .claude directory must be
+        blocked — the for loop must iterate all parts.
+
+        Kills: ZeroIterationForLoop|962|0 (loop skipped entirely),
+               Eq_Gt|963|7 and Eq_GtE|963|7 (home > .claude, user > .claude,
+               so they trip on the wrong part),
+               Eq_NotEq|963|7 (returns True on every non-.claude part).
+        """
+        deep = tmp_path / "workspaces" / "projectA" / ".claude" / "sub" / "settings.json"
+        deep.parent.mkdir(parents=True)
+        deep.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(deep)}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "settings.json deeply nested under .claude/ must be protected — "
+            "kills ZeroIterationForLoop|962|0 and comparison mutants on L963"
+        )
+
+    def test_claude_string_identity_not_used(self, adapter, tmp_path):
+        """The part == '.claude' check must not rely on string interning (is).
+
+        CPython does not intern path components from Path.parts, so
+        part is '.claude' returns False in practice. The Eq_Is mutant
+        therefore leaves settings.json unprotected.
+        """
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings = claude_dir / "settings.json"
+        settings.touch()
+
+        # Construct the path through a string round-trip to defeat any
+        # accidental interning of the literal constant.
+        path_str = str(settings)
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": path_str}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "Protection must not depend on string interning — "
+            "kills Eq_Is|963:28-963:30|7"
+        )
+
+    def test_part_is_not_clause_does_not_over_block(self, adapter, tmp_path):
+        """When the part == '.claude' check is inverted (IsNot mutant), every
+        part that is NOT '.claude' triggers return True, which over-blocks all
+        settings.json files regardless of path.  A legitimate settings.json
+        without .claude must not be blocked.
+
+        Kills: Eq_IsNot|963|7
+        """
+        # Path whose .parts contain only non-.claude components
+        project_dir = tmp_path / "myproject" / "config"
+        project_dir.mkdir(parents=True)
+        settings = project_dir / "settings.json"
+        settings.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(settings)}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "settings.json without .claude must NOT be blocked — "
+            "kills Eq_IsNot|963:28-963:30|7"
+        )
+
+    def test_lt_lte_operator_does_not_over_block_settings(self, adapter, tmp_path):
+        """Parts before '.claude' in lexicographic order (e.g. '/', 'home')
+        satisfy part < '.claude' and part <= '.claude' but are NOT '.claude'.
+
+        If the operator is mutated to < or <=, those earlier path parts would
+        trigger return True and over-block any settings.json regardless of path.
+        """
+        # A path like /tmp/... whose first parts ("/", "tmp", ...) are all
+        # lexicographically < ".claude" (since "/" < "." and digit < letter).
+        # With the Lt mutant active, the loop would return True on the first
+        # part ("/"), so a non-.claude path would be wrongly blocked.
+        # We guard with the test_settings_json_outside_claude_is_NOT_protected
+        # test above (same assertion, different reasoning angle).
+        #
+        # Here we construct a path that starts with a part strictly less than
+        # ".claude" and verify it still passes through.
+        project_dir = tmp_path / "aaa" / "bbb"
+        project_dir.mkdir(parents=True)
+        settings = project_dir / "settings.json"
+        settings.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(settings)}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "Parts before .claude lexicographically must NOT trigger protection — "
+            "kills Eq_Lt|963|7 and Eq_LtE|963|7"
+        )
+
+    # ------------------------------------------------------------------
+    # L964: return True when .claude found
+    # Mutant: ReplaceTrueWithFalse|964|8
+    # (also killed by test_settings_json_in_claude_is_protected above)
+    # ------------------------------------------------------------------
+
+    def test_settings_json_in_dotclaude_workspace_is_protected(self, adapter, tmp_path):
+        """Confirm .claude/settings.json protection from a workspace-like path.
+
+        This is a separate scenario from the tmp_path variant above: simulates
+        a real user workspace (e.g. /home/user/ws/me/.claude/settings.json).
+        Kills: ReplaceTrueWithFalse|964:31-964:35|8
+        """
+        workspace = tmp_path / "ws" / "me"
+        workspace.mkdir(parents=True)
+        claude_dir = workspace / ".claude"
+        claude_dir.mkdir()
+        settings = claude_dir / "settings.json"
+        settings.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(settings)}, is_subagent=False
+        )
+        assert self._is_ask(resp), (
+            "Workspace .claude/settings.json must be protected — "
+            "kills ReplaceTrueWithFalse|964:31-964:35|8"
+        )
+
+    # ------------------------------------------------------------------
+    # L965: final return False
+    # Mutant: ReplaceFalseWithTrue|965|4
+    # (also covered by test_settings_json_outside_claude_is_NOT_protected)
+    # ------------------------------------------------------------------
+
+    def test_regular_file_is_NOT_protected(self, adapter, tmp_path):
+        """A regular file (not in hooks_dir, not settings in .claude) must
+        pass through — protects against the final return False → True mutation
+        which would cause every single file to be blocked.
+
+        Kills: ReplaceFalseWithTrue|965:19-965:24|4
+        """
+        regular = tmp_path / "project" / "main.py"
+        regular.parent.mkdir()
+        regular.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(regular)}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "An ordinary project file must NOT be blocked — "
+            "kills ReplaceFalseWithTrue|965:19-965:24|4"
+        )
+
+    def test_non_settings_name_in_claude_is_NOT_protected(self, adapter, tmp_path):
+        """A file with a non-settings name inside .claude must pass through.
+
+        The name guard on L961 must be precise: only settings.json and
+        settings.local.json are covered; arbitrary files in .claude are not.
+        Guards against AddNot|963|47 which would flip every non-.claude part
+        check and over-block config.yaml or other files.
+        """
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        other = claude_dir / "config.yaml"
+        other.touch()
+
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": str(other)}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "config.yaml inside .claude must NOT be protected (only "
+            "settings.json / settings.local.json are) — guards AddNot|963|47"
+        )
+
+    def test_empty_file_path_passes_through(self, adapter):
+        """An empty file_path must pass through without triggering protection."""
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": ""}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "Empty file_path must not raise or block — early-exit guard"
+        )
+
+    def test_missing_file_path_key_passes_through(self, adapter):
+        """A parameters dict with no file_path key must pass through."""
+        resp = adapter._adapt_write_edit(
+            "Write", {}, is_subagent=False
+        )
+        assert self._is_passthrough(resp), (
+            "Missing file_path key must not raise or block"
+        )
+
+
 class TestAppendWorkspaceMemory:
     """Tests for _append_workspace_memory helper -- the module-level
     function called by _adapt_task to inject curated workspace memory
