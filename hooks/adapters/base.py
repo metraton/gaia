@@ -9,15 +9,19 @@ they never see raw CLI JSON.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import FrozenSet
 
 from .types import (
     AgentCompletion,
     BootstrapResult,
+    CapabilityDegradation,
     CompletionResult,
+    ConsentRequest,
     ContextResult,
     DistributionChannel,
     HookEvent,
     HookResponse,
+    HostCapability,
     QualityResult,
     ValidationResult,
     VerificationResult,
@@ -67,6 +71,105 @@ class HookAdapter(ABC):
             - If result.modified_input is set, output contains updatedInput
         """
         ...
+
+    @abstractmethod
+    def request_consent(self, request: ConsentRequest) -> HookResponse:
+        """Ask the user to consent to an operation, via the host's mechanism.
+
+        The single entry point through which business logic requests user
+        consent for an operation it has classified as approval-requiring (a T3
+        mutation, a protected-path write). Business logic hands over the
+        CLI-agnostic facts (:class:`ConsentRequest`) and never names how the
+        host gathers consent: the concrete adapter owns that mechanism entirely
+        (a native permission prompt, an out-of-band approval-id hand-off, ...).
+        Adding or changing the host's consent flow is a change to this method
+        alone -- the core's tier classification, grants, and validation stay
+        untouched.
+
+        Preconditions:
+            - request.operation is a non-empty string
+            - request.reason is the human-readable explanation to surface
+
+        Postconditions:
+            - Returns a HookResponse that drives the host to obtain consent
+              (it does not silently allow or permanently block)
+            - When request.approval_id is set, the response keys the user's
+              decision to that identifier; when None, the host gathers consent
+              inline
+            - When request.updated_input is set, the response preserves it
+              through the consent step
+        """
+        ...
+
+    # ------------------------------------------------------------------ #
+    # Host capabilities: declaration + agnostic query + declared degradation
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    def capabilities(self) -> FrozenSet[HostCapability]:
+        """DECLARE which host capabilities this adapter supports.
+
+        The single place a host states what it can do. Each concrete adapter
+        returns the exact set of :class:`HostCapability` members its host
+        offers -- nothing inferred, nothing implicit. Business logic never
+        reads this set directly; it asks through :meth:`supports` /
+        :meth:`degrade_when_missing`, which are host-agnostic.
+
+        Adding a host (Codex, Antigravity) that lacks a capability is a change
+        to this declaration alone: the core's query and degradation logic stay
+        untouched, and the absence drives the declared degradation path.
+
+        Postconditions:
+            - Returns a frozenset of HostCapability members (possibly empty).
+            - The result is stable for the lifetime of the adapter instance.
+        """
+        ...
+
+    def supports(self, capability: HostCapability) -> bool:
+        """Ask, host-agnostically, whether ``capability`` is available.
+
+        A concrete query over :meth:`capabilities` so business logic can branch
+        on *what the host can do* rather than *which host it is*. Defined here
+        (not abstract) so every adapter shares one query semantics; only the
+        underlying declaration differs.
+        """
+        return capability in self.capabilities()
+
+    def degrade_when_missing(
+        self,
+        capability: HostCapability,
+        fallback: str,
+        reason: str = "",
+    ) -> CapabilityDegradation:
+        """Return the DECLARED degradation for ``capability`` on this host.
+
+        The host-agnostic entry point for safe degradation. Business logic that
+        needs an optional capability calls this with the ``fallback`` it will
+        take if the capability is absent and an optional ``reason``. The result
+        is an explicit, observable :class:`CapabilityDegradation`:
+
+        - capability present -> ``available=True``, ``fallback=""`` (use it).
+        - capability absent  -> ``available=False`` carrying the caller's
+          ``fallback`` and a ``reason`` (degrade in the declared, safe way).
+
+        This replaces the two failure modes the brief forbids: a crash when a
+        host lacks a capability, and an implicit ``if host == ...`` branch. The
+        degradation is a value, returned the same way for every host.
+        """
+        if self.supports(capability):
+            return CapabilityDegradation(
+                capability=capability,
+                available=True,
+                fallback="",
+                reason=reason,
+            )
+        return CapabilityDegradation(
+            capability=capability,
+            available=False,
+            fallback=fallback,
+            reason=reason
+            or f"host does not support {capability.value}; degrading to '{fallback}'",
+        )
 
     @abstractmethod
     def format_completion_response(self, result: CompletionResult) -> HookResponse:

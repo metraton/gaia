@@ -18,18 +18,20 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 from .base import HookAdapter
 from .types import (
     AgentCompletion,
     BootstrapResult,
     CompletionResult,
+    ConsentRequest,
     ContextResult,
     DistributionChannel,
     HookEvent,
     HookEventType,
     HookResponse,
+    HostCapability,
     PermissionDecision,
     QualityResult,
     ToolResult,
@@ -314,6 +316,34 @@ class ClaudeCodeAdapter(HookAdapter):
     # detect_channel: determine NPM vs PLUGIN distribution
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # capabilities: Claude Code DECLARES what this host can do
+    # ------------------------------------------------------------------ #
+
+    # Frozen, instance-stable declaration. Claude Code v2.1+ offers every
+    # capability the core currently asks about: it gathers consent inline via
+    # AskUserQuestion (INTERACTIVE_CONSENT), runs the orchestrator approval-id
+    # cycle (OUT_OF_BAND_APPROVAL), accepts a structured permissionDecision
+    # (STRUCTURED_PERMISSION_DECISION), applies updatedInput transparently
+    # (UPDATED_INPUT), injects SessionStart/SubagentStart context
+    # (CONTEXT_INJECTION), and exposes the agent transcript (TRANSCRIPT_ACCESS).
+    # A future host that lacks one simply omits it here; the absence drives the
+    # core's declared degradation, with no change to business logic.
+    _CAPABILITIES: FrozenSet[HostCapability] = frozenset(
+        {
+            HostCapability.INTERACTIVE_CONSENT,
+            HostCapability.OUT_OF_BAND_APPROVAL,
+            HostCapability.STRUCTURED_PERMISSION_DECISION,
+            HostCapability.UPDATED_INPUT,
+            HostCapability.CONTEXT_INJECTION,
+            HostCapability.TRANSCRIPT_ACCESS,
+        }
+    )
+
+    def capabilities(self) -> FrozenSet[HostCapability]:
+        """Declare the capabilities Claude Code offers (see ``_CAPABILITIES``)."""
+        return self._CAPABILITIES
+
     def detect_channel(self) -> DistributionChannel:
         """Detect distribution channel.
 
@@ -490,6 +520,47 @@ class ClaudeCodeAdapter(HookAdapter):
         return HookResponse(output=output, exit_code=0)
 
     # ------------------------------------------------------------------ #
+    # request_consent: host-specific consent mechanism (AskUserQuestion /
+    # orchestrator approval-id hand-off) -- the ONLY place either lives.
+    # ------------------------------------------------------------------ #
+
+    def request_consent(self, request: ConsentRequest) -> HookResponse:
+        """Drive Claude Code to obtain the user's consent for ``request``.
+
+        This is where Claude Code's consent mechanics live and nowhere else.
+        Two host shapes, selected by whether an out-of-band approval flow owns
+        the decision:
+
+        - ``approval_id`` set -> the orchestrator drives the Gaia approval
+          cycle. Emit a ``deny`` keyed to that ``approval_id``; the subagent
+          reports APPROVAL_REQUEST, the user clicks Approve in the native
+          AskUserQuestion prompt, and the ElicitationResult hook activates the
+          grant. The ``reason`` already carries the approval_id banner, so this
+          is a thin formatting step.
+        - ``approval_id`` is None -> gather consent inline via Claude Code's
+          native permission prompt (``permissionDecision: "ask"`` ->
+          AskUserQuestion), preserving ``updated_input`` through the dialog.
+
+        Business logic calls this without knowing either shape exists.
+        """
+        if request.approval_id is not None:
+            # Out-of-band approval flow: deny now, decision keyed to approval_id.
+            return HookResponse(
+                output={
+                    _HOOK_SPECIFIC_OUTPUT: {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": PermissionDecision.DENY.value,
+                        "permissionDecisionReason": request.reason,
+                    }
+                },
+                exit_code=0,
+            )
+        # Inline consent via the native AskUserQuestion permission prompt.
+        return self.format_ask_response(
+            request.reason, updated_input=request.updated_input
+        )
+
+    # ------------------------------------------------------------------ #
     # adapt_pre_tool_use: full pre-tool-use lifecycle
     # ------------------------------------------------------------------ #
 
@@ -630,14 +701,14 @@ class ClaudeCodeAdapter(HookAdapter):
                     return HookResponse(output=output, exit_code=2)
                 # Mutative commands (git commit, terraform apply, etc.) → ask user
                 logger.info("SECURITY MODE: returning 'ask' for T3: %s", command[:80])
-                output = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "ask",
-                        "permissionDecisionReason": f"[{result.tier}] {reason_line}",
-                    }
-                }
-                return HookResponse(output=output, exit_code=0)
+                return self.request_consent(
+                    ConsentRequest(
+                        operation=command,
+                        kind="bash",
+                        reason=f"[{result.tier}] {reason_line}",
+                        tier=str(result.tier),
+                    )
+                )
             # Ops mode: block with nonce for orchestrator approval flow
             if result.block_response is not None:
                 return HookResponse(output=result.block_response, exit_code=0)
@@ -891,20 +962,19 @@ class ClaudeCodeAdapter(HookAdapter):
         )
 
         if not is_subagent:
-            # Foreground / orchestrator context: use native approval dialog.
+            # Foreground / orchestrator context: ask the user for consent
+            # inline (the adapter maps this to the native approval dialog).
             reason = (
                 "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
                 "require approval."
             )
-            return HookResponse(
-                output={
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "ask",
-                        "permissionDecisionReason": reason,
-                    }
-                },
-                exit_code=0,
+            return self.request_consent(
+                ConsentRequest(
+                    operation=file_path,
+                    kind="file",
+                    reason=reason,
+                    tier="T3_BLOCKED",
+                )
             )
 
         # Subagent context: nonce-based pending approval flow.
@@ -948,15 +1018,13 @@ class ClaudeCodeAdapter(HookAdapter):
                     "require approval. (Pending approval persistence failed; "
                     "native dialog fallback.)"
                 )
-                return HookResponse(
-                    output={
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "ask",
-                            "permissionDecisionReason": reason,
-                        }
-                    },
-                    exit_code=0,
+                return self.request_consent(
+                    ConsentRequest(
+                        operation=file_path,
+                        kind="file",
+                        reason=reason,
+                        tier="T3_BLOCKED",
+                    )
                 )
 
         reason = (
@@ -967,15 +1035,15 @@ class ClaudeCodeAdapter(HookAdapter):
             f"Tool: {tool_name}\n"
             f"approval_id: {approval_id}"
         )
-        return HookResponse(
-            output={
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            },
-            exit_code=0,
+        # Out-of-band approval flow: consent is keyed to the persisted approval_id.
+        return self.request_consent(
+            ConsentRequest(
+                operation=file_path,
+                kind="file",
+                reason=reason,
+                tier="T3_BLOCKED",
+                approval_id=approval_id,
+            )
         )
 
     @staticmethod
