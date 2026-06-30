@@ -77,12 +77,26 @@ def assert_legal_task_lifecycle(
 
 
 # ---------------------------------------------------------------------------
-# Acceptance criteria lifecycle (acceptance_criteria.status: pending, done, blocked)
+# Acceptance criteria lifecycle
+# (acceptance_criteria.status: pending, done, blocked, descoped)
 # ---------------------------------------------------------------------------
+# 'descoped' (v21) is a HARD-TERMINAL status for an AC deliberately removed
+# from scope. Design decision: unlike a task's reopenable 'skipped', and unlike
+# AC's own 'done' (which reopens to 'pending' for revision), there is NO
+# transition OUT of 'descoped'. Once an AC is descoped it stays descoped --
+# reopening it would re-introduce the "false done" ambiguity this status was
+# added to eliminate. A descope that turns out wrong is corrected by editing the
+# brief's AC set (add a fresh AC), not by reviving the discarded one.
+#
+# Entry into 'descoped' is allowed from the two non-terminal states a live AC
+# can occupy: 'pending' (never started, dropped) and 'blocked' (stuck, then
+# dropped). It is intentionally NOT reachable from 'done': a satisfied AC is not
+# "out of scope", and the path to drop it would be to first reopen to 'pending'.
 AC_LIFECYCLE_TRANSITIONS: Mapping[str, frozenset[str]] = {
-    "pending": frozenset({"done", "blocked"}),
-    "done": frozenset({"pending"}),      # allow reopen for AC revision
-    "blocked": frozenset({"pending"}),   # allow unblock
+    "pending": frozenset({"done", "blocked", "descoped"}),
+    "done": frozenset({"pending"}),                  # allow reopen for AC revision
+    "blocked": frozenset({"pending", "descoped"}),   # allow unblock or descope
+    "descoped": frozenset(),                          # HARD TERMINAL: no reopen
 }
 
 

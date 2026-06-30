@@ -229,8 +229,8 @@ def register(subparsers) -> None:
     setstatus_p.add_argument("ac_id", metavar="AC_ID", help="AC identifier.")
     setstatus_p.add_argument(
         "status",
-        choices=("pending", "done", "blocked"),
-        help="Target status.",
+        choices=("pending", "done", "blocked", "descoped"),
+        help="Target status ('descoped' is a hard-terminal drop; no reopen).",
     )
     setstatus_p.add_argument("--workspace", default=None, metavar="W")
     setstatus_p.add_argument("--json", action="store_true", default=False,

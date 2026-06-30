@@ -83,16 +83,23 @@ VALID_TASK_STATUSES: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# 5) Acceptance criteria lifecycle -- acceptance_criteria.status (v5)
+# 5) Acceptance criteria lifecycle -- acceptance_criteria.status (v5; v21 adds 'descoped')
 #
 # 'blocked' replaces 'skipped' from the task enum: an AC is not "skipped"
 # but can be "blocked" (stuck, needs action) before reaching "done".
 # Reopen (done -> pending) is intentionally allowed for AC revision.
+#
+# 'descoped' (v21) is a HARD-TERMINAL status for an AC deliberately removed
+# from scope. It is distinct from a task's reopenable 'skipped': there is NO
+# legal transition OUT of 'descoped' (see transitions.AC_LIFECYCLE_TRANSITIONS).
+# Together with 'done' it forms the TERMINAL set used by verify_brief; adding it
+# closes the "false done" gap where a discarded AC had no honest terminal state.
 # ---------------------------------------------------------------------------
 VALID_AC_STATUSES: tuple[str, ...] = (
     "pending",
     "done",
     "blocked",
+    "descoped",
 )
 
 # ---------------------------------------------------------------------------

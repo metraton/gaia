@@ -182,6 +182,56 @@ class TestSetAcStatus:
         result = set_ac_status("me", "test-brief", "AC-1", "pending", db_path=tmp_db)
         assert result["action"] == "noop"
 
+    def test_transition_pending_to_descoped(self, tmp_db):
+        """v21: pending -> descoped (hard-terminal drop) is legal and accepted
+        by the widened CHECK."""
+        _seed_brief_with_plan_task_ac_ms(tmp_db)
+        from gaia.store.writer import set_ac_status
+        result = set_ac_status("me", "test-brief", "AC-1", "descoped", db_path=tmp_db)
+        assert result["action"] == "updated"
+        assert result["old_status"] == "pending"
+        assert result["new_status"] == "descoped"
+
+    def test_transition_blocked_to_descoped(self, tmp_db):
+        """v21: blocked -> descoped is legal (a stuck AC is then dropped)."""
+        _seed_brief_with_plan_task_ac_ms(tmp_db)
+        from gaia.store.writer import set_ac_status
+        set_ac_status("me", "test-brief", "AC-1", "blocked", db_path=tmp_db)
+        result = set_ac_status("me", "test-brief", "AC-1", "descoped", db_path=tmp_db)
+        assert result["action"] == "updated"
+        assert result["old_status"] == "blocked"
+        assert result["new_status"] == "descoped"
+
+    def test_descoped_is_hard_terminal_no_reopen(self, tmp_db):
+        """v21: 'descoped' is a HARD-TERMINAL status -- no transition out of it.
+        Every other target (pending/done/blocked) must be rejected."""
+        from gaia.store.writer import set_ac_status
+        for target in ("pending", "done", "blocked"):
+            _seed_brief_with_plan_task_ac_ms(tmp_db, brief_name=f"hardterm-{target}")
+            set_ac_status("me", f"hardterm-{target}", "AC-1", "descoped",
+                          db_path=tmp_db)
+            with pytest.raises(ValueError, match="illegal AC lifecycle transition"):
+                set_ac_status("me", f"hardterm-{target}", "AC-1", target,
+                              db_path=tmp_db)
+
+    def test_descoped_to_descoped_is_noop(self, tmp_db):
+        """Re-setting descoped to descoped is an idempotent noop, not an illegal
+        transition (matches the same-status convention for the other states)."""
+        _seed_brief_with_plan_task_ac_ms(tmp_db)
+        from gaia.store.writer import set_ac_status
+        set_ac_status("me", "test-brief", "AC-1", "descoped", db_path=tmp_db)
+        result = set_ac_status("me", "test-brief", "AC-1", "descoped", db_path=tmp_db)
+        assert result["action"] == "noop"
+
+    def test_done_to_descoped_is_illegal(self, tmp_db):
+        """A satisfied AC (done) is not 'out of scope': done -> descoped is not a
+        legal direct transition (done only reopens to pending)."""
+        _seed_brief_with_plan_task_ac_ms(tmp_db)
+        from gaia.store.writer import set_ac_status
+        set_ac_status("me", "test-brief", "AC-1", "done", db_path=tmp_db)
+        with pytest.raises(ValueError, match="illegal AC lifecycle transition"):
+            set_ac_status("me", "test-brief", "AC-1", "descoped", db_path=tmp_db)
+
     def test_illegal_transition_raises(self, tmp_db):
         _seed_brief_with_plan_task_ac_ms(tmp_db)
         from gaia.store.writer import set_ac_status

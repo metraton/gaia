@@ -163,6 +163,110 @@ class TestInvariant6StalledHandoff:
 
 
 # ---------------------------------------------------------------------------
+# Invariant 7: closed brief with a non-terminal AC (v21)
+# ---------------------------------------------------------------------------
+
+def _set_brief_status(db_path: Path, brief_id: int, status: str) -> None:
+    import sqlite3
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("UPDATE briefs SET status=? WHERE id=?", (status, brief_id))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _add_ac(db_path: Path, brief_id: int, ac_id: str, status: str) -> None:
+    import sqlite3
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute(
+            "INSERT INTO acceptance_criteria (brief_id, ac_id, status) "
+            "VALUES (?, ?, ?)",
+            (brief_id, ac_id, status),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+class TestInvariant7ClosedBriefNonterminalAc:
+    def test_closed_brief_with_pending_ac_flags(self, tmp_db):
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-pending", plan_status="closed")
+        _set_brief_status(tmp_db, brief_id, "closed")
+        _add_ac(tmp_db, brief_id, "AC-1", "pending")
+        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        result = verify_brief("me", "inv7-pending", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_nonterminal_ac" in kinds
+        assert result["pass"] is False
+
+    def test_closed_brief_with_blocked_ac_flags(self, tmp_db):
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-blocked", plan_status="closed")
+        _set_brief_status(tmp_db, brief_id, "closed")
+        _add_ac(tmp_db, brief_id, "AC-1", "blocked")
+        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        result = verify_brief("me", "inv7-blocked", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_nonterminal_ac" in kinds
+
+    def test_closed_brief_with_done_and_descoped_acs_no_flag(self, tmp_db):
+        """Terminal set is {done, descoped}: neither fires invariant 7."""
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-terminal", plan_status="closed")
+        _set_brief_status(tmp_db, brief_id, "closed")
+        _add_ac(tmp_db, brief_id, "AC-1", "done")
+        _add_ac(tmp_db, brief_id, "AC-2", "descoped")
+        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        result = verify_brief("me", "inv7-terminal", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_nonterminal_ac" not in kinds
+
+    def test_non_closed_brief_with_pending_ac_no_flag(self, tmp_db):
+        """Invariant 7 only fires when the brief itself is closed."""
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-open", plan_status="active")
+        # brief stays at default 'draft' (not closed)
+        _add_ac(tmp_db, brief_id, "AC-1", "pending")
+        result = verify_brief("me", "inv7-open", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_nonterminal_ac" not in kinds
+
+
+# ---------------------------------------------------------------------------
+# Invariant 8: closed brief with a non-closed plan (v21, advisory, no cascade)
+# ---------------------------------------------------------------------------
+
+class TestInvariant8ClosedBriefOpenPlan:
+    def test_closed_brief_with_active_plan_flags(self, tmp_db):
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv8-active", plan_status="active")
+        _set_brief_status(tmp_db, brief_id, "closed")
+        result = verify_brief("me", "inv8-active", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_open_plan" in kinds
+
+    def test_closed_brief_with_closed_plan_no_flag(self, tmp_db):
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv8-closed", plan_status="closed")
+        _set_brief_status(tmp_db, brief_id, "closed")
+        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        result = verify_brief("me", "inv8-closed", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_open_plan" not in kinds
+
+    def test_non_closed_brief_with_active_plan_no_flag(self, tmp_db):
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv8-open-brief", plan_status="active")
+        # brief stays 'draft'
+        result = verify_brief("me", "inv8-open-brief", db_path=tmp_db)
+        kinds = [i["kind"] for i in result["inconsistencies"]]
+        assert "closed_brief_open_plan" not in kinds
+
+
+# ---------------------------------------------------------------------------
 # Regression: invariants 1-4 still work
 # ---------------------------------------------------------------------------
 
