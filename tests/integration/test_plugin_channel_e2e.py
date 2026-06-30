@@ -33,7 +33,7 @@ HOOKS_DIR = REPO_ROOT / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from adapters.claude_code import ClaudeCodeAdapter
-from adapters.types import DistributionChannel
+from adapters.types import HostDistribution
 from modules.core.paths import clear_path_cache
 from modules.core.state import get_hook_state, STATE_FILE_NAME
 
@@ -130,11 +130,14 @@ class TestPluginChannelDetection:
     """Verify that CLAUDE_PLUGIN_ROOT triggers PLUGIN channel detection."""
 
     def test_detect_channel_returns_plugin(self, plugin_env):
-        """With CLAUDE_PLUGIN_ROOT set, adapter.detect_channel() returns PLUGIN."""
+        """With CLAUDE_PLUGIN_ROOT set, detect_distribution() declares the plugin channel."""
         adapter = ClaudeCodeAdapter()
-        result = adapter.detect_channel()
-        assert result == DistributionChannel.PLUGIN, (
-            f"Expected PLUGIN channel, got {result}"
+        result = adapter.detect_distribution()
+        assert result.channel == "plugin", (
+            f"Expected plugin channel, got {result}"
+        )
+        assert result.root == plugin_env["repo_root"], (
+            f"Expected root {plugin_env['repo_root']}, got {result.root}"
         )
 
     def test_get_plugin_root_returns_correct_path(self, plugin_env):
@@ -147,11 +150,11 @@ class TestPluginChannelDetection:
         )
 
     def test_npm_channel_when_env_unset(self, monkeypatch):
-        """Without CLAUDE_PLUGIN_ROOT, channel defaults to NPM."""
+        """Without CLAUDE_PLUGIN_ROOT, the distribution defaults to the npm channel."""
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
         adapter = ClaudeCodeAdapter()
-        result = adapter.detect_channel()
-        assert result == DistributionChannel.NPM
+        result = adapter.detect_distribution()
+        assert result == HostDistribution(channel="npm")
 
 
 # ============================================================================

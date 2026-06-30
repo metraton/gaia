@@ -5,7 +5,7 @@ Tests for Adapter Normalized Types.
 Validates:
 1. All dataclasses can be instantiated with valid data
 2. Frozen dataclasses raise on mutation
-3. Enum completeness (HookEventType, PermissionDecision, DistributionChannel)
+3. Enum completeness (HookEventType, PermissionDecision)
 4. Default field values
 5. HookResponse serialization
 """
@@ -24,10 +24,10 @@ from adapters.types import (
     BootstrapResult,
     CompletionResult,
     ContextResult,
-    DistributionChannel,
     HookEvent,
     HookEventType,
     HookResponse,
+    HostDistribution,
     PermissionDecision,
     ToolResult,
     ValidationRequest,
@@ -109,18 +109,30 @@ class TestPermissionDecision:
         assert PermissionDecision.ASK.value == "ask"
 
 
-class TestDistributionChannel:
-    """Test DistributionChannel enum."""
+class TestHostDistribution:
+    """Test HostDistribution agnostic value object.
 
-    def test_has_two_values(self):
-        """DistributionChannel must have NPM and PLUGIN."""
-        assert len(DistributionChannel) == 2
+    The core carries an opaque (channel, root); it does NOT enumerate a host's
+    channels. The channel string is the host's own vocabulary.
+    """
 
-    def test_npm(self):
-        assert DistributionChannel.NPM.value == "npm"
+    def test_channel_only(self):
+        """A distribution can be just a channel with no root."""
+        dist = HostDistribution(channel="npm")
+        assert dist.channel == "npm"
+        assert dist.root is None
 
-    def test_plugin(self):
-        assert DistributionChannel.PLUGIN.value == "plugin"
+    def test_channel_with_root(self):
+        """A distribution carries an opaque root when the channel has one."""
+        dist = HostDistribution(channel="plugin", root=Path("/opt/plugins/gaia-ops"))
+        assert dist.channel == "plugin"
+        assert dist.root == Path("/opt/plugins/gaia-ops")
+
+    def test_frozen(self):
+        """HostDistribution is immutable."""
+        dist = HostDistribution(channel="npm")
+        with pytest.raises(AttributeError):
+            dist.channel = "modified"
 
 
 class TestHookEvent:
@@ -132,24 +144,34 @@ class TestHookEvent:
             event_type=HookEventType.PRE_TOOL_USE,
             session_id="test-session-123",
             payload={"tool_name": "Bash", "tool_input": {"command": "ls"}},
-            channel=DistributionChannel.NPM,
+            distribution=HostDistribution(channel="npm"),
         )
         assert event.event_type == HookEventType.PRE_TOOL_USE
         assert event.session_id == "test-session-123"
         assert event.payload["tool_name"] == "Bash"
-        assert event.channel == DistributionChannel.NPM
-        assert event.plugin_root is None
+        assert event.distribution == HostDistribution(channel="npm")
+        assert event.distribution.root is None
 
-    def test_with_plugin_root(self):
-        """HookEvent with plugin_root set."""
+    def test_distribution_defaults_to_none(self):
+        """distribution is optional; absent when the adapter declares no model."""
         event = HookEvent(
             event_type=HookEventType.PRE_TOOL_USE,
             session_id="s1",
             payload={},
-            channel=DistributionChannel.PLUGIN,
-            plugin_root=Path("/opt/plugins/gaia-ops"),
         )
-        assert event.plugin_root == Path("/opt/plugins/gaia-ops")
+        assert event.distribution is None
+
+    def test_with_distribution_root(self):
+        """HookEvent carries a distribution that has a root."""
+        event = HookEvent(
+            event_type=HookEventType.PRE_TOOL_USE,
+            session_id="s1",
+            payload={},
+            distribution=HostDistribution(
+                channel="plugin", root=Path("/opt/plugins/gaia-ops")
+            ),
+        )
+        assert event.distribution.root == Path("/opt/plugins/gaia-ops")
 
     def test_frozen(self):
         """HookEvent is immutable."""
@@ -157,7 +179,7 @@ class TestHookEvent:
             event_type=HookEventType.PRE_TOOL_USE,
             session_id="s1",
             payload={},
-            channel=DistributionChannel.NPM,
+            distribution=HostDistribution(channel="npm"),
         )
         with pytest.raises(AttributeError):
             event.session_id = "modified"

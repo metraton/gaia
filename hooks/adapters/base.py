@@ -18,10 +18,10 @@ from .types import (
     CompletionResult,
     ConsentRequest,
     ContextResult,
-    DistributionChannel,
     HookEvent,
     HookResponse,
     HostCapability,
+    HostDistribution,
     QualityResult,
     ValidationResult,
     VerificationResult,
@@ -262,11 +262,25 @@ class HookAdapter(ABC):
         ...
 
     @abstractmethod
-    def detect_channel(self) -> DistributionChannel:
-        """Detect the distribution channel (NPM or PLUGIN).
+    def detect_distribution(self) -> HostDistribution:
+        """DECLARE the host's distribution model for the current invocation.
 
-        Checks environment variables and filesystem layout to determine
-        how gaia-ops was installed.
+        The single place a host states HOW it distributes and invokes gaia-ops:
+        its own channel identifier and, when it has one, the distribution root.
+        The core never enumerates a host's channels nor reads a host-specific
+        env var to learn them -- it receives an opaque :class:`HostDistribution`
+        and carries it on the :class:`HookEvent`.
+
+        Adding a host with a different distribution model (a native extension
+        with its own root, a single canonical channel, ...) is a change to this
+        method alone: the concrete adapter declares its own channel names and
+        root resolution, and the core vocabulary stays untouched -- the same
+        seam used for :meth:`capabilities` and :meth:`request_consent`.
+
+        Postconditions:
+            - Returns a HostDistribution whose ``channel`` is the host's own
+              channel identifier and whose ``root`` is the distribution root
+              for that channel, or None when the channel has no root.
         """
         ...
 

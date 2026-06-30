@@ -13,7 +13,7 @@ Modules:
 from .types import (
     HookEventType,
     PermissionDecision,
-    DistributionChannel,
+    HostDistribution,
     HostCapability,
     HookEvent,
     ValidationRequest,
@@ -37,7 +37,7 @@ from .utils import has_stdin_data, warn_if_dual_channel
 __all__ = [
     "HookEventType",
     "PermissionDecision",
-    "DistributionChannel",
+    "HostDistribution",
     "HostCapability",
     "HookEvent",
     "ValidationRequest",

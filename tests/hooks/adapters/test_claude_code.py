@@ -11,7 +11,7 @@ Validates:
 6. format_completion_response (valid, needs repair)
 7. format_context_response
 8. format_ask_response
-9. detect_channel (PLUGIN via env var, NPM default)
+9. detect_distribution (PLUGIN via env var, NPM default)
 10. Edge cases: missing fields, malformed JSON
 """
 
@@ -31,10 +31,10 @@ from adapters.types import (
     AgentCompletion,
     CompletionResult,
     ContextResult,
-    DistributionChannel,
     HookEvent,
     HookEventType,
     HookResponse,
+    HostDistribution,
     PermissionDecision,
     ToolResult,
     ValidationRequest,
@@ -141,8 +141,8 @@ class TestParseEvent:
         assert event.session_id == "sess-abc123"
         assert event.payload["tool_name"] == "Bash"
         assert event.payload["tool_input"]["command"] == "git status"
-        assert event.channel == DistributionChannel.NPM
-        assert event.plugin_root is None
+        assert event.distribution == HostDistribution(channel="npm")
+        assert event.distribution.root is None
 
     def test_parse_pre_tool_use_agent(self, adapter, pre_tool_use_agent_payload):
         """Parse a PreToolUse Agent event with subagent_type."""
@@ -222,8 +222,9 @@ class TestParseEvent:
                 "session_id": "s1",
             })
             event = a.parse_event(stdin_data)
-            assert event.channel == DistributionChannel.PLUGIN
-            assert event.plugin_root == Path("/opt/plugins/gaia-ops")
+            assert event.distribution == HostDistribution(
+                channel="plugin", root=Path("/opt/plugins/gaia-ops")
+            )
         finally:
             del os.environ["CLAUDE_PLUGIN_ROOT"]
 
@@ -385,7 +386,7 @@ class TestAdaptSubagentStopSessionId:
         """Even when CLAUDE_SESSION_ID env points at a different (synthetic)
         session, the adapter must use the session_id from the parsed event.
         """
-        from adapters.types import DistributionChannel, HookEvent, HookEventType
+        from adapters.types import HookEvent, HookEventType, HostDistribution
 
         # Point the env-derived synthetic id at a value that does NOT match
         # the event's session_id. The old buggy code would pick this one.
@@ -395,7 +396,7 @@ class TestAdaptSubagentStopSessionId:
             event_type=HookEventType.SUBAGENT_STOP,
             session_id=subagent_stop_payload["session_id"],  # "sess-ghi789"
             payload=subagent_stop_payload,
-            channel=DistributionChannel.NPM,
+            distribution=HostDistribution(channel="npm"),
         )
 
         # Stub the modules adapt_subagent_stop pulls in. We only care about
@@ -639,12 +640,12 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         )
 
     def _build_event(self, subagent_stop_payload):
-        from adapters.types import DistributionChannel, HookEvent, HookEventType
+        from adapters.types import HookEvent, HookEventType, HostDistribution
         return HookEvent(
             event_type=HookEventType.SUBAGENT_STOP,
             session_id=subagent_stop_payload["session_id"],
             payload=subagent_stop_payload,
-            channel=DistributionChannel.NPM,
+            distribution=HostDistribution(channel="npm"),
         )
 
     def test_approval_request_contract_preserves_its_nonce(
@@ -952,24 +953,28 @@ class TestFormatContextResponse:
 
 
 # ============================================================================
-# T004: detect_channel tests
+# T004: detect_distribution tests
 # ============================================================================
 
 
-class TestDetectChannel:
-    """Test distribution channel detection."""
+class TestDetectDistribution:
+    """Test distribution model detection (channel + root)."""
 
     def test_npm_default(self, adapter):
-        """Default channel (no env var) is NPM."""
+        """Default channel (no env var) is the npm channel with no root."""
         os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
-        assert adapter.detect_channel() == DistributionChannel.NPM
+        dist = adapter.detect_distribution()
+        assert dist == HostDistribution(channel="npm")
+        assert dist.root is None
 
     def test_plugin_with_env_var(self):
-        """CLAUDE_PLUGIN_ROOT env var triggers PLUGIN channel."""
+        """CLAUDE_PLUGIN_ROOT env var triggers the plugin channel + root."""
         os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia-ops"
         try:
             a = ClaudeCodeAdapter()
-            assert a.detect_channel() == DistributionChannel.PLUGIN
+            assert a.detect_distribution() == HostDistribution(
+                channel="plugin", root=Path("/opt/plugins/gaia-ops")
+            )
         finally:
             del os.environ["CLAUDE_PLUGIN_ROOT"]
 
@@ -989,10 +994,10 @@ class TestDetectChannel:
         assert adapter._get_plugin_root() is None
 
     def test_empty_plugin_root(self, adapter):
-        """Empty CLAUDE_PLUGIN_ROOT is treated as not set."""
+        """Empty CLAUDE_PLUGIN_ROOT is treated as not set (npm channel)."""
         os.environ["CLAUDE_PLUGIN_ROOT"] = ""
         try:
-            assert adapter.detect_channel() == DistributionChannel.NPM
+            assert adapter.detect_distribution() == HostDistribution(channel="npm")
         finally:
             del os.environ["CLAUDE_PLUGIN_ROOT"]
 
