@@ -26,8 +26,9 @@ if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 from modules.core.paths import get_logs_dir
 
-# Adapter layer
-from adapters.claude_code import ClaudeCodeAdapter
+# Adapter layer -- get_adapter() is the single construction point (registry),
+# so this entry point never names the concrete host class.
+from adapters.registry import get_adapter
 from modules.core.stdin import has_stdin_data
 from adapters.utils import warn_if_dual_channel
 
@@ -78,7 +79,7 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
         str: blocked (error message)
         dict: allowed with modification (JSON with updatedInput)
     """
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
 
     # Build a minimal HookEvent-like payload for the adapter's internal methods
     logger.info(f"Hook invoked: tool={tool_name}, params={json.dumps(parameters)[:200]}")
@@ -206,8 +207,8 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
             )
 
     if additional:
-        from adapters.claude_code import ClaudeCodeAdapter
-        adapter = ClaudeCodeAdapter()
+        from adapters.registry import get_adapter
+        adapter = get_adapter()
         session_id = parameters.get("session_id", "") or "unknown"
         agent_type = result.agent_name or "unknown"
         adapter._cache_context_for_subagent(session_id, agent_type, additional)
@@ -283,10 +284,10 @@ def _handle_write_edit(tool_name: str, parameters: dict) -> str | dict | None:
         None: allowed (no modification)
         dict: requires user approval (hookSpecificOutput with ask)
     """
-    from adapters.claude_code import ClaudeCodeAdapter
+    from adapters.registry import get_adapter
     from adapters.types import HookResponse
 
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
     response = adapter._adapt_write_edit(
         tool_name, parameters,
         session_id=get_session_id(),
@@ -363,7 +364,7 @@ if __name__ == "__main__":
         main()
     elif has_stdin_data():
         try:
-            adapter = ClaudeCodeAdapter()
+            adapter = get_adapter()
             warn_if_dual_channel()
 
             stdin_data = sys.stdin.read()

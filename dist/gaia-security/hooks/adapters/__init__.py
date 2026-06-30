@@ -13,10 +13,13 @@ Modules:
 from .types import (
     HookEventType,
     PermissionDecision,
-    DistributionChannel,
+    HostDistribution,
+    HostCapability,
     HookEvent,
     ValidationRequest,
     ValidationResult,
+    ConsentRequest,
+    CapabilityDegradation,
     ToolResult,
     AgentCompletion,
     CompletionResult,
@@ -28,15 +31,19 @@ from .types import (
 )
 from .base import HookAdapter
 from .claude_code import ClaudeCodeAdapter
+from .registry import get_adapter, register_adapter, DEFAULT_HOST
 from .utils import has_stdin_data, warn_if_dual_channel
 
 __all__ = [
     "HookEventType",
     "PermissionDecision",
-    "DistributionChannel",
+    "HostDistribution",
+    "HostCapability",
     "HookEvent",
     "ValidationRequest",
     "ValidationResult",
+    "ConsentRequest",
+    "CapabilityDegradation",
     "ToolResult",
     "AgentCompletion",
     "CompletionResult",
@@ -47,6 +54,9 @@ __all__ = [
     "HookResponse",
     "HookAdapter",
     "ClaudeCodeAdapter",
+    "get_adapter",
+    "register_adapter",
+    "DEFAULT_HOST",
     "has_stdin_data",
     "warn_if_dual_channel",
 ]

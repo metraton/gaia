@@ -10,57 +10,39 @@ Provides:
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from adapters.host_transcript import iter_transcript_entries
 
 logger = logging.getLogger(__name__)
 
 
 def read_transcript(transcript_path: str) -> str:
-    """Read agent transcript from file path provided by Claude Code.
+    """Read assistant messages from the host transcript provided by the CLI.
 
-    Claude Code provides ``agent_transcript_path`` pointing to a JSONL file.
-    Each line has the structure:
-        {"type": "assistant", "message": {"role": "assistant", "content": [...]}, ...}
-    The role/content are nested inside the ``message`` field.
+    The host CLI advertises ``agent_transcript_path``; the on-disk format
+    (JSONL, ``message``-nesting) is owned by ``adapters/host_transcript.py``.
+    This reader iterates normalized ``(role, content)`` entries from that
+    adapter and joins the text of every ``assistant`` message -- it makes no
+    assumption about how the host serializes the transcript.
 
     Falls back to empty string on any error so the hook never crashes.
     """
     try:
-        # Expand ~ to home directory (Claude Code may use ~ in paths)
-        path = Path(transcript_path).expanduser()
-        logger.debug("Reading transcript from: %s", path)
-
-        if not path.exists():
-            logger.warning("Transcript file not found: %s", path)
-            return ""
-
-        lines = path.read_text().strip().splitlines()
-
         text_parts: List[str] = []
-        for line in lines:
-            if not line.strip():
+        for role, content in iter_transcript_entries(transcript_path):
+            if role != "assistant":
                 continue
-            try:
-                entry = json.loads(line)
-
-                # Claude Code transcript format: content is inside entry["message"]
-                msg = entry.get("message", entry)  # fallback to entry itself for simple format
-                role = msg.get("role", "")
-                if role != "assistant":
-                    continue
-
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    text_parts.append(content)
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                        elif isinstance(block, str):
-                            text_parts.append(block)
-            except (json.JSONDecodeError, TypeError):
-                continue
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
 
         result = "\n".join(text_parts)
         logger.debug("Extracted %d text parts, total length: %d chars", len(text_parts), len(result))
@@ -72,41 +54,24 @@ def read_transcript(transcript_path: str) -> str:
 
 
 def read_first_user_content_from_transcript(transcript_path: str) -> Optional[str]:
-    """Read the raw content string of the first user message from a transcript JSONL.
+    """Read the raw content of the first user message from the host transcript.
 
-    Handles: empty path guard, path expansion, existence check, JSONL iteration,
-    JSON parse, role=="user" check, content normalization (str vs list).
-    Returns the raw content string or None.
+    Iterates normalized ``(role, content)`` entries from the adapter (which
+    owns the host transcript format) and returns the content of the first
+    ``user`` message, normalized to a string. Returns None when there is no
+    user message (or the path is empty/missing).
     """
-    if not transcript_path:
+    for role, content in iter_transcript_entries(transcript_path):
+        if role != "user":
+            continue
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            return " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
         return None
-    try:
-        path = Path(transcript_path).expanduser()
-        if not path.exists():
-            return None
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    msg = entry.get("message", entry)
-                    if msg.get("role") != "user":
-                        continue
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        return content
-                    elif isinstance(content, list):
-                        return " ".join(
-                            b.get("text", "") for b in content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                    return None
-                except (json.JSONDecodeError, TypeError):
-                    continue
-    except Exception as e:
-        logger.debug("Failed to read first user content from transcript: %s", e)
     return None
 
 
@@ -137,8 +102,6 @@ def extract_injected_context_payload_from_transcript(
     Context is delivered via additionalContext and the payload is persisted to
     disk by context_injector. Prompts do not contain embedded payloads.
     """
-    import os
-
     # Empty/None path guard. Without it, Path("").stem == "" and the substring
     # match below (``candidate.stem in "" or "" in candidate.stem``) is ALWAYS
     # True because ``"" in any_string`` is True -- so an empty path would match

@@ -1,5 +1,5 @@
 """
-Session Registry — track active Claude sessions by CLAUDE_SESSION_ID.
+Session Registry — track active host sessions by their session id.
 
 Provides a user-scoped JSON registry at ~/.claude/session_registry.json that
 records which sessions are currently alive. Liveness is heartbeat-only: hooks
@@ -170,7 +170,7 @@ def register_session(
     immediately considered live by get_live_sessions().
 
     Args:
-        session_id: The CLAUDE_SESSION_ID for the session to register.
+        session_id: The host session id for the session to register.
             Must be a non-empty string.
         started_at: ISO-8601 timestamp for session start. Defaults to now
             (UTC) when not provided.
@@ -249,7 +249,7 @@ def touch_session(session_id: str) -> None:
     cleaned up.
 
     Args:
-        session_id: The CLAUDE_SESSION_ID to refresh. Empty/missing is a
+        session_id: The host session id to refresh. Empty/missing is a
             no-op. Failures are swallowed and logged at debug; this is a
             best-effort liveness signal and must never break the calling
             hook.

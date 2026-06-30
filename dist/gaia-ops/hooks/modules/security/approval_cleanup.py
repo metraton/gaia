@@ -219,8 +219,8 @@ def cleanup(
 
     Args:
         agent_type: The agent type that just completed (provenance + logging).
-        session_id: Session ID to scope the TTL sweep (defaults to
-            CLAUDE_SESSION_ID).
+        session_id: Session ID to scope the TTL sweep (defaults to the
+            current host session id).
         preserve_nonces: Optional set of approval_id strings the agent's final
             agent_contract_handoff still references via APPROVAL_REQUEST. With
             Fix A these are protected by their TTL already (they are fresh by

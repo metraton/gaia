@@ -71,6 +71,11 @@ from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
 from .hook_response import build_hook_permission_response
 from .stage_decomposer import StageDecomposer, DecomposedCommand
+from adapters.claude_code import (
+    inject_updated_input,
+    read_permission_decision,
+    read_permission_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -366,13 +371,12 @@ class BashValidator:
             f"Original: {original[:120]}\n"
             f"Cleaned:  {cleaned[:120]}"
         )
+        # build_hook_permission_response forwards updated_input to the adapter,
+        # which assembles the host-specific updatedInput field. No manual
+        # injection here -- business logic does not touch the host shape.
         hook_response = build_hook_permission_response(
             "allow", reason, updated_input={"command": cleaned}
         )
-        # Inject updatedInput into the response for the hook entry point
-        hook_response.setdefault("hookSpecificOutput", {})["updatedInput"] = {
-            "command": cleaned
-        }
         return BashValidationResult(
             allowed=True,
             tier=SecurityTier.T0_READ_ONLY,
@@ -550,7 +554,7 @@ class BashValidator:
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
-                reason=pipe_block["hookSpecificOutput"]["permissionDecisionReason"],
+                reason=read_permission_reason(pipe_block),
                 suggestions=[],
                 modified_input=None,
                 block_response=pipe_block,
@@ -600,16 +604,14 @@ class BashValidator:
         if command_was_modified:
             result.modified_input = {"command": command}
             # If the result is an "ask" block_response, inject updatedInput
-            # so the modification survives the native permission dialog.
+            # so the modification survives the native permission dialog. The
+            # host shape is read/augmented via adapter accessors, never indexed
+            # directly here.
             if (
                 result.block_response is not None
-                and result.block_response.get("hookSpecificOutput", {}).get(
-                    "permissionDecision"
-                ) == "ask"
+                and read_permission_decision(result.block_response) == "ask"
             ):
-                result.block_response["hookSpecificOutput"]["updatedInput"] = {
-                    "command": command
-                }
+                inject_updated_input(result.block_response, {"command": command})
 
         return result
 

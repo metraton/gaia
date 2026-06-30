@@ -38,7 +38,7 @@ def run_hook(
     hook_name: str = "hook",
     usage_message: str | None = None,
 ) -> None:
-    """Read stdin, parse via ClaudeCodeAdapter, and delegate to *handler*.
+    """Read stdin, parse via the registry adapter, and delegate to *handler*.
 
     Args:
         handler: Callable that receives an ``adapters.types.HookEvent``.
@@ -58,10 +58,12 @@ def run_hook(
 
     try:
         # Deferred adapter import avoids circular dependencies at module level;
-        # the adapter package is a sibling of modules/.
-        from adapters.claude_code import ClaudeCodeAdapter
+        # the adapter package is a sibling of modules/. get_adapter() is the
+        # single construction point (registry), so entry points never name the
+        # concrete host class.
+        from adapters.registry import get_adapter
 
-        adapter = ClaudeCodeAdapter()
+        adapter = get_adapter()
         stdin_data = sys.stdin.read()
         event = adapter.parse_event(stdin_data)
         handler(event)
