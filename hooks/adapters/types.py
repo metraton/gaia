@@ -59,11 +59,34 @@ class PermissionDecision(enum.Enum):
     ASK = "ask"
 
 
-class DistributionChannel(enum.Enum):
-    """How gaia-ops was installed and is being invoked."""
+@dataclass(frozen=True)
+class HostDistribution:
+    """How a host distributes and invokes gaia-ops -- declared by the adapter.
 
-    NPM = "npm"
-    PLUGIN = "plugin"
+    The CLI-agnostic value object that replaces a core-owned enumeration of
+    distribution channels. The core never enumerates a host's channels nor
+    names a host-specific "root"; it carries an opaque :class:`HostDistribution`
+    that the concrete adapter PRODUCES from its own distribution model (see
+    :meth:`HookAdapter.detect_distribution`). A host with a distribution model
+    the core has never heard of declares it here without any change to the core
+    vocabulary -- the same seam established for capabilities
+    (:class:`HostCapability`) and consent (:class:`ConsentRequest`).
+
+    The concrete channel names (Claude Code's "npm" / "plugin") and the meaning
+    of ``root`` (Claude Code's plugin root) live ONLY in the host's adapter; the
+    core treats both as opaque values.
+
+    Fields:
+        channel: The host's own opaque channel identifier (e.g. Claude Code
+            uses "npm" / "plugin"). The core compares or logs it but never
+            branches on a value it enumerated -- the host owns the vocabulary.
+        root: The distribution root for this channel when the host has the
+            notion of one (Claude Code: the plugin root directory); ``None``
+            when the channel has no such root. The core does not interpret it.
+    """
+
+    channel: str
+    root: Optional[Path] = None
 
 
 class HostCapability(enum.Enum):
@@ -107,13 +130,18 @@ class HookEvent:
     """Normalized hook event, CLI-agnostic.
 
     Produced by the adapter's parse_event() method.
+
+    ``distribution`` is the host-declared :class:`HostDistribution` (the host's
+    own channel and, when applicable, its distribution root). It replaces the
+    former ``channel`` / ``plugin_root`` pair so the core never enumerates a
+    host's distribution channels. It is ``None`` when the adapter does not
+    declare a distribution model for the event.
     """
 
     event_type: HookEventType
     session_id: str
     payload: Dict[str, Any]
-    channel: DistributionChannel
-    plugin_root: Optional[Path] = None
+    distribution: Optional[HostDistribution] = None
 
 
 @dataclass(frozen=True)

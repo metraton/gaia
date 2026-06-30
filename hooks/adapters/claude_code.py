@@ -27,11 +27,11 @@ from .types import (
     CompletionResult,
     ConsentRequest,
     ContextResult,
-    DistributionChannel,
     HookEvent,
     HookEventType,
     HookResponse,
     HostCapability,
+    HostDistribution,
     PermissionDecision,
     QualityResult,
     ToolResult,
@@ -48,6 +48,15 @@ logger = logging.getLogger(__name__)
 # read or augment an already-formatted host response without coupling to the
 # key names (AC-2: hookSpecificOutput lives only in adapters/).
 _HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
+
+# Claude Code's two distribution channels and the env var that distinguishes
+# them. These host-specific names are OWNED by this adapter (Gap 2 / brief #88):
+# the core carries an opaque HostDistribution and never enumerates these values
+# nor reads CLAUDE_PLUGIN_ROOT. A host with a different distribution model
+# declares its own channels in its own adapter, with no change to the core.
+_CHANNEL_NPM = "npm"
+_CHANNEL_PLUGIN = "plugin"
+_PLUGIN_ROOT_ENV_VAR = "CLAUDE_PLUGIN_ROOT"
 
 
 def read_permission_decision(host_output: Dict[str, Any]) -> Optional[str]:
@@ -160,15 +169,11 @@ class ClaudeCodeAdapter(HookAdapter):
 
         session_id = raw.get("session_id", "")
 
-        channel = self.detect_channel()
-        plugin_root = self._get_plugin_root() if channel == DistributionChannel.PLUGIN else None
-
         return HookEvent(
             event_type=event_type,
             session_id=session_id,
             payload=raw,
-            channel=channel,
-            plugin_root=plugin_root,
+            distribution=self.detect_distribution(),
         )
 
     # ------------------------------------------------------------------ #
@@ -313,7 +318,7 @@ class ClaudeCodeAdapter(HookAdapter):
         return HookResponse(output=output, exit_code=0)
 
     # ------------------------------------------------------------------ #
-    # detect_channel: determine NPM vs PLUGIN distribution
+    # detect_distribution: declare the host's channel + root (NPM vs PLUGIN)
     # ------------------------------------------------------------------ #
 
     # ------------------------------------------------------------------ #
@@ -344,16 +349,22 @@ class ClaudeCodeAdapter(HookAdapter):
         """Declare the capabilities Claude Code offers (see ``_CAPABILITIES``)."""
         return self._CAPABILITIES
 
-    def detect_channel(self) -> DistributionChannel:
-        """Detect distribution channel.
+    def detect_distribution(self) -> HostDistribution:
+        """Declare Claude Code's distribution model for this invocation.
 
-        Priority:
-        1. CLAUDE_PLUGIN_ROOT env var set -> PLUGIN
-        2. Default -> NPM
+        Resolves Claude Code's two channels and their root, then hands the core
+        an opaque :class:`HostDistribution`:
+
+        1. CLAUDE_PLUGIN_ROOT env var set -> "plugin" channel, root = that path
+        2. Default                        -> "npm" channel, no root
+
+        The channel names and the env var are confined to this adapter; the core
+        never sees them.
         """
-        if os.environ.get("CLAUDE_PLUGIN_ROOT"):
-            return DistributionChannel.PLUGIN
-        return DistributionChannel.NPM
+        plugin_root = self._get_plugin_root()
+        if plugin_root is not None:
+            return HostDistribution(channel=_CHANNEL_PLUGIN, root=plugin_root)
+        return HostDistribution(channel=_CHANNEL_NPM, root=None)
 
     # ------------------------------------------------------------------ #
     # Helper: get_plugin_root
@@ -361,7 +372,7 @@ class ClaudeCodeAdapter(HookAdapter):
 
     def _get_plugin_root(self) -> Optional[Path]:
         """Resolve plugin root from CLAUDE_PLUGIN_ROOT env var."""
-        plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        plugin_root = os.environ.get(_PLUGIN_ROOT_ENV_VAR)
         if plugin_root:
             return Path(plugin_root)
         return None
