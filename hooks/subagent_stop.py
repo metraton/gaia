@@ -35,7 +35,7 @@ if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
 # Adapter layer
-from adapters.claude_code import ClaudeCodeAdapter
+from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 
 # Configure structured logging with file handler
@@ -273,7 +273,7 @@ def _handle_subagent_stop(event) -> None:
     Args:
         event: Parsed HookEvent from the adapter layer.
     """
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
     response = adapter.adapt_subagent_stop(event)
 
     if response.exit_code == 2:

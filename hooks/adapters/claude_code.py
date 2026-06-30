@@ -40,6 +40,49 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+# Claude Code's PreToolUse responses nest their permission fields under this
+# top-level key. The literal shape is OWNED by this adapter layer: business
+# logic must never index it directly. The accessors below let business modules
+# read or augment an already-formatted host response without coupling to the
+# key names (AC-2: hookSpecificOutput lives only in adapters/).
+_HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
+
+
+def read_permission_decision(host_output: Dict[str, Any]) -> Optional[str]:
+    """Return the permissionDecision ("allow"/"deny"/"ask") from a host response.
+
+    Reads the Claude Code ``hookSpecificOutput`` shape produced by this adapter.
+    Returns None when the response is not a permission-decision response.
+    """
+    if not isinstance(host_output, dict):
+        return None
+    return host_output.get(_HOOK_SPECIFIC_OUTPUT, {}).get("permissionDecision")
+
+
+def read_permission_reason(host_output: Dict[str, Any]) -> str:
+    """Return the permissionDecisionReason from a host response, or "" if absent."""
+    if not isinstance(host_output, dict):
+        return ""
+    return host_output.get(_HOOK_SPECIFIC_OUTPUT, {}).get(
+        "permissionDecisionReason", ""
+    )
+
+
+def inject_updated_input(
+    host_output: Dict[str, Any], updated_input: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Attach ``updatedInput`` to an already-formatted host response, in place.
+
+    Used when business logic must propagate a modified tool input (e.g. a
+    footer-stripped command) through an existing block/ask response so the
+    modification survives the native permission dialog. Returns the same dict
+    for convenience. No-op when ``host_output`` is not a host response.
+    """
+    if not isinstance(host_output, dict):
+        return host_output
+    host_output.setdefault(_HOOK_SPECIFIC_OUTPUT, {})["updatedInput"] = updated_input
+    return host_output
+
 
 def _append_workspace_memory(context: str) -> str:
     """Append the curated workspace memory block to a subagent context string.

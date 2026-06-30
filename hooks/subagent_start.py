@@ -18,7 +18,7 @@ _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
-from adapters.claude_code import ClaudeCodeAdapter
+from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
 
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def _handle_subagent_start(event) -> None:
     """Record skill snapshot and log the agent dispatch."""
-    adapter = ClaudeCodeAdapter()
+    adapter = get_adapter()
 
     context_result = adapter.adapt_subagent_start(event.payload)
     agent_type = event.payload.get("agent_type", "unknown")
