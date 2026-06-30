@@ -574,6 +574,51 @@ class TestInlineCodeDetection:
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
 
+    # ------------------------------------------------------------------
+    # `python -c` (the non-`python3` interpreter token) read-only payloads.
+    # Symmetric coverage with the python3 -c safe cases above: the false
+    # positive being pinned here is `python -c` code that merely *contains*
+    # the keywords `import` and/or `for` (both lexically collide with
+    # MUTATIVE_VERBS["import"] and the historic "for"/"link" false positive)
+    # being misclassified as T3.  The AST/regex inline path must classify
+    # these as READ_ONLY for `python` exactly as it does for `python3`.
+    # Without these tests a mutant that drops `python` from the inline-code
+    # interpreter sets (or breaks the `python3?` indirect-exec regex) would
+    # survive: the only prior `python` test (test_python_variant) exercises
+    # the MUTATIVE branch, never the AST-clean read-only branch.
+    # ------------------------------------------------------------------
+    def test_python_variant_import_readonly_safe(self):
+        """`python -c` with a bare import + read-only call is NOT mutative."""
+        result = detect_mutative_command(
+            'python -c "import json; print(json.dumps({}))"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_python_variant_for_loop_readonly_safe(self):
+        """`python -c` containing a `for` loop over read-only code is NOT mutative."""
+        result = detect_mutative_command(
+            'python -c "for x in range(3): print(x)"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_python_variant_import_and_for_readonly_safe(self):
+        """`python -c` with BOTH import and for, read-only body -> NOT mutative."""
+        result = detect_mutative_command(
+            'python -c "import json\nfor x in [1, 2]: print(x)"'
+        )
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_python_variant_subprocess_still_mutative(self):
+        """No hole: a genuinely mutative `python -c` (subprocess) stays T3."""
+        result = detect_mutative_command(
+            'python -c "import subprocess; subprocess.run([\'ls\'])"'
+        )
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
     def test_heredoc_stdin_import_safe(self):
         """python3 - <<'PYEOF' with import in body must NOT be flagged as mutative."""
         cmd = "python3 - <<'PYEOF'\nimport json\nprint(json.dumps({}))\nPYEOF"
