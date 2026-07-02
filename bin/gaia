@@ -15,6 +15,8 @@ Usage:
 import argparse
 import importlib
 import importlib.util
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +30,66 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 _CLI_DIR = _SCRIPT_DIR / "cli"
+
+# Subcommands that must NOT trigger the lazy DB bootstrap:
+#   - install:   bootstraps the DB itself (Step 1); double-bootstrap is wasteful.
+#   - uninstall: tearing Gaia down -- recreating the DB would be perverse.
+_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall"})
+
+
+def _resolve_db_path():
+    """Resolve the gaia.db path (honours the GAIA_DB override, else ~/.gaia)."""
+    env = os.environ.get("GAIA_DB")
+    if env:
+        return Path(env).expanduser()
+    return Path("~/.gaia/gaia.db").expanduser()
+
+
+def _ensure_db_bootstrapped(subcommand):
+    """Lazily bootstrap ~/.gaia/gaia.db on first CLI use if it is absent.
+
+    This is the non-invasive replacement for the removed npm ``postinstall``
+    hook. It runs on the first real CLI use rather than at package-install
+    time, so it behaves identically under npm, pnpm (which ignores lifecycle
+    scripts by default), and the Claude Code plugin install -- none of which
+    are required to run a postinstall step. Best-effort and quiet: a failure
+    here never blocks the requested subcommand (the command surfaces its own
+    DB error, and ``gaia doctor`` reports the root cause).
+    """
+    if subcommand in _LAZY_BOOTSTRAP_SKIP:
+        return
+    try:
+        db = _resolve_db_path()
+        if db.exists():
+            return
+        bootstrap = _PACKAGE_ROOT / "scripts" / "bootstrap_database.sh"
+        if not bootstrap.is_file():
+            return
+        env = os.environ.copy()
+        env["GAIA_DB"] = str(db)
+        subprocess.run(
+            ["bash", str(bootstrap)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        # Mirror `gaia install` Step 1a: seed agent_contract_permissions from
+        # agent frontmatters (bootstrap.sh already seeds agent_permissions).
+        seeder = _PACKAGE_ROOT / "tools" / "scan" / "seed_contract_permissions.py"
+        if db.exists() and seeder.is_file():
+            subprocess.run(
+                [sys.executable or "python3", str(seeder), "--db-path", str(db)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+    except Exception:
+        # Lazy bootstrap must never break the CLI.
+        pass
 
 
 def _discover_plugins():
@@ -96,6 +158,11 @@ def main(argv=None):
     if args.subcommand is None:
         parser.print_help()
         return 0
+
+    # Lazy, non-invasive DB bootstrap -- replaces the removed npm postinstall.
+    # Runs once, only when ~/.gaia/gaia.db is absent, and never for the
+    # install/uninstall subcommands (see _LAZY_BOOTSTRAP_SKIP).
+    _ensure_db_bootstrapped(args.subcommand)
 
     # Dispatch to the matching plugin handler
     for name, mod in plugins:

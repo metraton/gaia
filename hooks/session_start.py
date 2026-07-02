@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SessionStart hook — first-time setup + project scan (ops only)."""
+"""SessionStart hook — first-time setup + context injection (no auto-scan)."""
 
 import os
 import sys
@@ -97,7 +97,6 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
 
 from modules.core.stdin import has_stdin_data
 from modules.core.paths import get_logs_dir
-from modules.core.plugin_mode import is_ops_mode
 from modules.core.plugin_setup import run_first_time_setup
 from modules.session.session_registry import register_session, SessionRegistryError
 
@@ -176,23 +175,10 @@ if __name__ == "__main__":
         if setup_message:
             logger.info("First-time setup: %s", setup_message)
 
-        # Project scan: only in ops mode
-        project_scanned = False
-        if is_ops_mode():
-            from modules.context.context_freshness import check_freshness
-            from modules.scanning.scan_trigger import trigger_lightweight_scan
-
-            freshness = check_freshness()
-            if freshness.is_fresh:
-                logger.info("SessionStart: skipped scan (fresh)")
-            else:
-                logger.info("SessionStart: %s — running lightweight scan", freshness.reason)
-                scan_ok = trigger_lightweight_scan(Path.cwd())
-                if scan_ok:
-                    project_scanned = True
-                    logger.info("Auto-refresh completed successfully")
-                else:
-                    logger.warning("Auto-refresh failed")
+        # Note: SessionStart no longer triggers an automatic project scan.
+        # Scanning is a separate, on-demand flow (`gaia scan`). Project context
+        # injection (below, via build_session_context) is unaffected -- it reads
+        # whatever the DB already holds, it does not scan.
 
         # Build the SessionStart manifest (Phase 4). Combines the Environment
         # block, agentic-loop resume, and pending approvals into a one-shot
@@ -209,7 +195,7 @@ if __name__ == "__main__":
                 "build_session_context failed (non-fatal): %s", _manifest_exc
             )
 
-        response = {"session_type": "startup", "project_scanned": project_scanned}
+        response = {"session_type": "startup"}
         if setup_message:
             response["setup_message"] = setup_message
         if additional_context:

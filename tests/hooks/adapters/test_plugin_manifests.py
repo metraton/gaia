@@ -9,8 +9,8 @@ Validates:
 4. hooks.json has PreToolUse, PostToolUse, SubagentStop events
 5. hooks.json uses ${CLAUDE_PLUGIN_ROOT} in all command paths
 6. marketplace.json exists and is valid JSON (flat format: name, owner, plugins)
-7. marketplace.json has 2 plugins (gaia-security, gaia-ops) with source in dist/
-8. Sub-plugin plugin.json files exist in dist/ and are valid
+7. marketplace.json has the single unified 'gaia' plugin with source in dist/
+8. The built plugin.json exists in dist/gaia/ and is valid
 9. All version fields match across all manifest files
 """
 
@@ -27,30 +27,29 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 @pytest.fixture(scope="session")
 def built_plugins_dir(tmp_path_factory) -> Path:
-    """Build both plugins into a session-scoped temp dir.
+    """Build the single unified `gaia` plugin into a session-scoped temp dir.
 
     The sub-plugin manifest/version tests read
-    dist/gaia-*/.claude-plugin/plugin.json, but dist/ is gitignored and the CI
+    dist/gaia/.claude-plugin/plugin.json, but dist/ is gitignored and the CI
     test job never builds it. Building here via build-plugin.py --output-dir
-    makes those tests self-contained: they read freshly built artifacts from a
+    makes those tests self-contained: they read a freshly built artifact from a
     temp dir, not an ambient dist/. build-plugin.py's --output-dir is the
-    plugin's own output root (default dist/<plugin>), so each plugin is built
-    into <tmp>/<plugin-name> to reproduce the dist/gaia-*/ layout.
+    plugin's own output root (default dist/<plugin>), so the plugin is built
+    into <tmp>/gaia to reproduce the dist/gaia/ layout.
     """
     out_root = tmp_path_factory.mktemp("built_plugins")
     build_script = str(PROJECT_ROOT / "scripts" / "build-plugin.py")
-    for plugin in ("gaia-security", "gaia-ops"):
-        subprocess.run(
-            [
-                sys.executable,
-                build_script,
-                plugin,
-                "--output-dir",
-                str(out_root / plugin),
-            ],
-            check=True,
-            cwd=PROJECT_ROOT,
-        )
+    subprocess.run(
+        [
+            sys.executable,
+            build_script,
+            "gaia",
+            "--output-dir",
+            str(out_root / "gaia"),
+        ],
+        check=True,
+        cwd=PROJECT_ROOT,
+    )
     return out_root
 
 
@@ -79,9 +78,9 @@ class TestPluginJson:
         assert "description" in data, "Missing 'description' field"
 
     def test_plugin_json_name(self):
-        """plugin.json name must be 'gaia-ops'."""
+        """plugin.json name must be 'gaia' (single unified plugin)."""
         data = json.loads(self.plugin_path.read_text())
-        assert data["name"] == "gaia-ops"
+        assert data["name"] == "gaia"
 
     def test_plugin_json_description_length(self):
         """plugin.json description must be max 200 characters."""
@@ -269,11 +268,17 @@ class TestMarketplaceJson:
         plugins = data["plugins"]
         assert len(plugins) >= 1, f"Expected at least 1 plugin, got {len(plugins)}"
 
-    def test_marketplace_has_gaia_security(self):
-        """marketplace.json must include gaia-security."""
+    def test_marketplace_has_gaia(self):
+        """marketplace.json must include the single unified 'gaia' plugin."""
         data = json.loads(self.marketplace_path.read_text())
         names = {p["name"] for p in data["plugins"]}
-        assert "gaia-security" in names, f"gaia-security not found in {names}"
+        assert "gaia" in names, f"gaia not found in {names}"
+
+    def test_marketplace_has_single_plugin(self):
+        """The gaia-ops / gaia-security split is retired: exactly one plugin."""
+        data = json.loads(self.marketplace_path.read_text())
+        names = {p["name"] for p in data["plugins"]}
+        assert names == {"gaia"}, f"expected only {{'gaia'}}, got {names}"
 
     def test_marketplace_plugins_have_required_fields(self):
         """Each marketplace plugin must have name, description, version, source."""
@@ -323,53 +328,44 @@ class TestMarketplaceRegistrable:
         assert self.marketplace["owner"].get("email"), "Owner 'email' is missing or empty"
 
 
-class TestSubPluginManifests:
-    """Test sub-plugin plugin.json files in dist/."""
+class TestBuiltPluginManifest:
+    """Test the built plugin.json in dist/gaia/."""
 
     @pytest.fixture(autouse=True)
     def setup(self, built_plugins_dir):
-        self.security_path = (
-            built_plugins_dir / "gaia-security" / ".claude-plugin" / "plugin.json"
-        )
-        self.ops_path = (
-            built_plugins_dir / "gaia-ops" / ".claude-plugin" / "plugin.json"
+        self.gaia_path = (
+            built_plugins_dir / "gaia" / ".claude-plugin" / "plugin.json"
         )
 
-    def test_gaia_security_plugin_json_exists(self):
-        """gaia-security/plugin.json must exist in dist/."""
-        assert self.security_path.exists(), f"Missing: {self.security_path}"
+    def test_gaia_plugin_json_exists(self):
+        """gaia/plugin.json must exist in dist/."""
+        assert self.gaia_path.exists(), f"Missing: {self.gaia_path}"
 
-    def test_gaia_security_plugin_json_valid(self):
-        """gaia-security/plugin.json must be valid JSON."""
-        data = json.loads(self.security_path.read_text())
+    def test_gaia_plugin_json_valid(self):
+        """gaia/plugin.json must be valid JSON."""
+        data = json.loads(self.gaia_path.read_text())
         assert isinstance(data, dict)
 
-    def test_gaia_security_name(self):
-        """gaia-security plugin name must be 'gaia-security'."""
-        data = json.loads(self.security_path.read_text())
-        assert data["name"] == "gaia-security"
+    def test_gaia_name(self):
+        """Built plugin name must be 'gaia'."""
+        data = json.loads(self.gaia_path.read_text())
+        assert data["name"] == "gaia"
 
-    def test_gaia_ops_plugin_json_exists(self):
-        """gaia-ops/plugin.json must exist in dist/."""
-        assert self.ops_path.exists(), f"Missing: {self.ops_path}"
+    def test_built_plugin_ships_bin_cli(self, built_plugins_dir):
+        """The bundle must include the `gaia` CLI so /plugin install exposes it."""
+        bundle = built_plugins_dir / "gaia"
+        assert (bundle / "bin" / "gaia").exists(), "bundle missing bin/gaia"
+        assert (bundle / "bin" / "cli" / "install.py").exists(), "bundle missing bin/cli/"
+        # Lazy DB bootstrap needs the schema + bootstrap script in the bundle.
+        assert (bundle / "gaia" / "store" / "schema.sql").exists(), "bundle missing gaia/store/schema.sql"
+        assert (bundle / "scripts" / "bootstrap_database.sh").exists(), "bundle missing scripts/bootstrap_database.sh"
 
-    def test_gaia_ops_plugin_json_valid(self):
-        """gaia-ops/plugin.json must be valid JSON."""
-        data = json.loads(self.ops_path.read_text())
-        assert isinstance(data, dict)
-
-    def test_gaia_ops_name(self):
-        """gaia-ops plugin name must be 'gaia-ops'."""
-        data = json.loads(self.ops_path.read_text())
-        assert data["name"] == "gaia-ops"
-
-    def test_sub_plugins_have_required_fields(self):
-        """Sub-plugin plugin.json files must have name, version, description."""
-        for path in [self.security_path, self.ops_path]:
-            data = json.loads(path.read_text())
-            assert "name" in data, f"{path}: missing 'name'"
-            assert "version" in data, f"{path}: missing 'version'"
-            assert "description" in data, f"{path}: missing 'description'"
+    def test_built_plugin_has_required_fields(self):
+        """The built plugin.json must have name, version, description."""
+        data = json.loads(self.gaia_path.read_text())
+        assert "name" in data, "missing 'name'"
+        assert "version" in data, "missing 'version'"
+        assert "description" in data, "missing 'description'"
 
 
 class TestVersionSync:
@@ -380,11 +376,8 @@ class TestVersionSync:
         self.package_path = PROJECT_ROOT / "package.json"
         self.plugin_path = PROJECT_ROOT / ".claude-plugin" / "plugin.json"
         self.marketplace_path = PROJECT_ROOT / ".claude-plugin" / "marketplace.json"
-        self.security_path = (
-            built_plugins_dir / "gaia-security" / ".claude-plugin" / "plugin.json"
-        )
-        self.ops_path = (
-            built_plugins_dir / "gaia-ops" / ".claude-plugin" / "plugin.json"
+        self.gaia_path = (
+            built_plugins_dir / "gaia" / ".claude-plugin" / "plugin.json"
         )
 
     def _get_version(self, path: Path) -> str:
@@ -397,8 +390,7 @@ class TestVersionSync:
 
         manifest_files = {
             "plugin.json": self.plugin_path,
-            "dist/gaia-security/plugin.json": self.security_path,
-            "dist/gaia-ops/plugin.json": self.ops_path,
+            "dist/gaia/plugin.json": self.gaia_path,
         }
 
         mismatches = []

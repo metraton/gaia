@@ -26,9 +26,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VALID_PLUGINS = ("gaia-security", "gaia-ops")
+# Single, unified plugin. The former gaia-ops / gaia-security split is retired:
+# one bundle ("gaia") ships hooks + modules + agents + skills + tools + config
+# + the `bin/` CLI + the runtime support (`gaia/` package, `scripts/`).
+VALID_PLUGINS = ("gaia",)
 
-# Directories that "all" resolves to for gaia-ops
+# Directories that "all" resolves to for the unified plugin
 ALL_RESOLUTION = {
     "modules": [
         "hooks/modules/__init__.py",
@@ -132,6 +135,19 @@ def resolve_file_list(manifest: dict) -> list[Path]:
         for cfg in config:
             _collect_paths(REPO_ROOT / cfg, files)
 
+    # bin -- the unified CLI (`bin/gaia` + `bin/cli/`). Shipping these inside the
+    # bundle is what makes `/plugin install` expose the `gaia` executable on the
+    # Bash tool PATH (Claude Code adds a plugin's bin/ to PATH).
+    for entry in manifest.get("bin", []):
+        _collect_paths(REPO_ROOT / entry, files)
+
+    # include -- runtime support the CLI + hooks import but that lives outside
+    # modules/tools/config: the `gaia/` package (store, project, paths, schema.sql)
+    # and the `scripts/` needed by the lazy DB bootstrap (bootstrap_database.sh +
+    # its seeders/migrations). Without these the bundled CLI cannot run.
+    for entry in manifest.get("include", []):
+        _collect_paths(REPO_ROOT / entry, files)
+
     return files
 
 
@@ -228,13 +244,14 @@ def generate_plugin_json(manifest: dict) -> dict:
         version = package_data.get("version", "0.0.0")
 
     plugin_name = manifest["plugin_name"]
-    # Homepage anchor differs per plugin; both point to the same repo README.
+    # Homepage anchor per plugin; all point to the same repo README.
     homepage_anchors = {
+        "gaia": "https://github.com/metraton/gaia#readme",
         "gaia-ops": "https://github.com/metraton/gaia-ops#readme",
         "gaia-security": "https://github.com/metraton/gaia-ops#gaia-security",
     }
     homepage = homepage_anchors.get(
-        plugin_name, "https://github.com/metraton/gaia-ops#readme"
+        plugin_name, "https://github.com/metraton/gaia#readme"
     )
 
     # Build inline hooks structure from the same logic as generate_hooks_json().

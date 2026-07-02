@@ -18,9 +18,10 @@ Responsibilities (in order):
   6. Create or repair `.claude/{agents,tools,hooks,commands,templates,config,skills}`
      symlinks pointing at the installed package.
   7. Write `.claude/plugin-registry.json` with the installed version.
-  8. (Optional) When `--postinstall` is set on a fresh workspace, invoke
-     `gaia scan --npm-postinstall` to seed workspace state into gaia.db. Scan
-     is a separate flow and never installs -- Steps 1-7 own all install work.
+
+Scanning is intentionally NOT part of install. `gaia scan` is a separate,
+standalone module (bin/cli/scan.py + tools/scan/**) the user runs on demand;
+install never triggers it.
 
 Idempotent: re-running over a populated workspace + DB never destroys
 state -- bootstrap.sh uses IF NOT EXISTS / INSERT OR IGNORE, the helpers
@@ -31,10 +32,11 @@ Workspace bootstrap and update logic is centralised in `_install_helpers.py`
 so `gaia install` and `gaia update` share a single source of truth.
 
 Flags:
-  --postinstall      Mark this invocation as the npm postinstall path
-                     (adjusts output, never returns non-zero so npm install
-                     does not abort, and triggers `gaia scan` on a
-                     fresh workspace).
+  --postinstall      Mark this invocation as a non-interactive bootstrap path
+                     (adjusts output, never returns non-zero so a wrapping
+                     install flow does not abort). Kept for callers that want
+                     the fail-soft behaviour; the npm postinstall hook itself
+                     has been removed (bootstrap is now lazy -- see bin/gaia).
   --quiet            Suppress informational output; only errors print.
   --verbose          Stream bootstrap.sh output verbatim and report each
                      helper individually.
@@ -469,94 +471,6 @@ def _clear_install_error_marker() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Optional fresh scan (postinstall path only)
-# ---------------------------------------------------------------------------
-
-def _workspace_already_scanned(workspace: Path) -> bool:
-    """Return True when gaia.db records a prior scan for this workspace.
-
-    Reads workspaces.last_scan_at (the canonical freshness signal, mirroring
-    bin/cli/scan.py:_is_context_fresh). Any failure (DB absent, import error,
-    no row, NULL timestamp) resolves to False -- treat the workspace as fresh
-    and let the scan run. This keeps the postinstall path non-fatal.
-    """
-    try:
-        from gaia.project import current as _project_current
-        from gaia.store.writer import _connect as _store_connect
-
-        ws = _project_current(cwd=workspace)
-        con = _store_connect()
-        try:
-            row = con.execute(
-                "SELECT last_scan_at FROM workspaces WHERE name = ?", (ws,)
-            ).fetchone()
-        finally:
-            con.close()
-        return bool(row and row[0])
-    except Exception:
-        return False
-
-
-def _maybe_run_fresh_scan(workspace: Path, verbose: bool, quiet: bool) -> dict:
-    """Invoke `gaia scan --npm-postinstall` (scan-core) for fresh workspaces.
-
-    Detection (DB-backed): a workspace is "fresh" when it has no recorded
-    scan timestamp in gaia.db (workspaces.last_scan_at is absent/NULL). The
-    legacy project-context.json file is retired (agent-contract-handoff M1 /
-    episodic-workflow-to-db T1.3) -- project context lives exclusively in
-    gaia.db, so the scan timestamp is the authoritative freshness signal.
-    On scan failure we report but never raise -- the postinstall flow must
-    remain non-fatal.
-    """
-    if _workspace_already_scanned(workspace):
-        return {"action": "noop", "details": "workspace already scanned (gaia.db)"}
-
-    gaia_entry = _PACKAGE_ROOT / "bin" / "gaia"
-    if not gaia_entry.is_file():
-        return {"action": "skipped", "details": f"bin/gaia not found at {gaia_entry}"}
-
-    # Use the same Python interpreter the postinstall uses.
-    py = sys.executable or "python3"
-    # Scan-core only: install already configured .claude/, hooks, symlinks,
-    # and the plugin registry in Steps 2-6. Step 7 just needs the scan to seed
-    # workspace state into gaia.db. ``--npm-postinstall`` relaxes the
-    # "must be inside a workspace" guard (install owns the just-created
-    # workspace's identity); scan still never installs anything.
-    #
-    # M1-T3 (AC-3): pass --workspace-name so the scan triggered by install uses
-    # path-based naming (workspace directory basename) instead of the remote-first
-    # derivation. This aligns install and scan: both "name by where you point", not
-    # by the git remote of a workspace that may not have a remote yet (fresh clone
-    # or freshly initialized repo). The override is scoped to this scan invocation
-    # only and does NOT change gaia.project.current() globally.
-    workspace_name_by_path = workspace.name.lower()
-    cmd = [py, str(gaia_entry), "scan", "--npm-postinstall",
-           "--workspace-name", workspace_name_by_path]
-
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(workspace),
-            env=os.environ.copy(),
-            capture_output=not verbose,
-            text=True,
-            check=False,
-            timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"action": "error", "details": f"scan invocation failed: {exc}"}
-
-    if result.returncode == 0:
-        return {"action": "created", "details": "workspace scanned and synced to gaia.db"}
-
-    if not quiet and not verbose:
-        # On failure surface stderr so user has a hint
-        if result.stderr:
-            sys.stderr.write(result.stderr)
-    return {"action": "error", "details": f"gaia scan exited {result.returncode}"}
-
-
-# ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
 
@@ -787,36 +701,10 @@ def cmd_install(args: argparse.Namespace) -> int:
         path_res = _install_path_launcher(workspace=workspace)
         _report_step(name="PATH launcher", result=path_res, quiet=quiet, verbose=verbose)
 
-    # Step 7 -- optional gaia scan on fresh postinstall
-    if postinstall:
-        scan_res = _maybe_run_fresh_scan(workspace, verbose=verbose, quiet=quiet)
-        _report_step(name="project scan", result=scan_res, quiet=quiet, verbose=verbose)
-
-        # Fail-loud on scan error in postinstall mode: persist a marker so
-        # `gaia doctor` can report the failure. We deliberately keep returning
-        # 0 -- a non-zero exit code from `npm install` postinstall aborts the
-        # whole install transaction, which is worse than a degraded workspace
-        # the user can repair with `gaia install`.
-        if scan_res.get("action") == "error":
-            _write_install_error_marker(
-                workspace=workspace,
-                step="project scan",
-                detail=scan_res.get("details", "unknown error"),
-            )
-            if not quiet:
-                print(
-                    "  [!] project scan failed -- marker written to "
-                    f"{_INSTALL_ERROR_MARKER}; run `gaia doctor` for detail.",
-                    file=sys.stderr,
-                )
-        else:
-            # Clean run -- clear any stale marker from a previous attempt.
-            _clear_install_error_marker()
-    else:
-        # Interactive install never invokes the fresh scan; just clear any
-        # stale marker from a prior postinstall failure (the user is here
-        # repairing things by hand, so the marker is no longer authoritative).
-        _clear_install_error_marker()
+    # Install owns Steps 1-6 only. Workspace scanning is a separate, on-demand
+    # flow (`gaia scan`); install never triggers it. A clean install clears any
+    # stale install-error marker left by a prior failed bootstrap attempt.
+    _clear_install_error_marker()
 
     _print_next_steps(quiet=quiet, postinstall=postinstall)
     return 0

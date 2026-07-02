@@ -12,7 +12,9 @@ Parity coverage (cmd_install vs gaia-update.js fresh-install path):
   - merge_local_hooks             -- exercised + verified call order
   - manage_symlinks               -- exercised + verified call order
   - register_plugin               -- exercised + verified call order
-  - gaia scan --fresh (postinstall)-- mocked, verified gated by --postinstall
+
+Scanning is decoupled from install: cmd_install never triggers a scan (the
+former Step 7 / _maybe_run_fresh_scan path is removed).
 """
 
 import argparse
@@ -484,22 +486,20 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                 ["settings_json", "permissions", "hooks", "symlinks", "registry"],
             )
 
-    def test_postinstall_triggers_fresh_scan_when_no_context(self):
+    def test_install_never_triggers_scan(self):
+        """Scanning is decoupled from install. cmd_install must complete
+        without ever invoking a scan, and the scan-trigger functions must no
+        longer exist on the install module."""
+        # The install-coupled scan helpers are retired.
+        self.assertFalse(hasattr(install_mod, "_maybe_run_fresh_scan"))
+        self.assertFalse(hasattr(install_mod, "_workspace_already_scanned"))
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / ".claude").mkdir()
-            scan_called = {"hit": False}
-
-            def fake_scan(workspace, verbose, quiet):
-                scan_called["hit"] = True
-                return {"action": "created", "details": "scan ran"}
-
             with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
-                with patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan):
-                    with redirect_stdout(io.StringIO()):
-                        cmd_install(self._make_args(workspace, postinstall=True))
-
-            self.assertTrue(scan_called["hit"])
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(self._make_args(workspace, postinstall=True))
+            self.assertEqual(rc, 0)
 
     def test_skip_workspace_only_runs_bootstrap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1167,14 +1167,15 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
 
 
 class TestInstallErrorMarker(unittest.TestCase):
-    """Pass 4 Fix 2.1: postinstall scan failures must persist a marker file
-    so `gaia doctor` can surface the degradation.
+    """Install-error marker semantics.
+
+    Scanning is decoupled from install, so the marker now tracks bootstrap
+    failures only (see cmd_install). A clean install -- postinstall or
+    interactive -- clears any stale marker from a prior failed bootstrap.
 
     Contract:
-      - postinstall mode + scan error -> marker written, exit 0 (npm can't
-        be aborted), stderr explains the marker location
-      - postinstall mode + scan success -> marker cleared if stale
-      - interactive mode -> marker cleared on every successful install
+      - clean install (any mode) -> stale marker cleared
+      - the marker helper persists/clears a JSON payload for `gaia doctor`
     """
 
     def _make_args(self, workspace, **overrides):
@@ -1228,42 +1229,9 @@ class TestInstallErrorMarker(unittest.TestCase):
                 # Idempotent -- second call must not raise.
                 _clear_install_error_marker()
 
-    def test_postinstall_scan_error_writes_marker(self):
-        """When `gaia scan` fails under --postinstall, cmd_install must
-        return 0 (so npm install does not abort) and write a marker file
-        that `gaia doctor` can pick up."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "ws"
-            workspace.mkdir()
-            (workspace / ".claude").mkdir()
-            marker = Path(tmp) / "marker.json"
-
-            def fake_scan(workspace, verbose, quiet):
-                return {"action": "error", "details": "scan blew up"}
-
-            patches = self._patch_helpers_noop()
-            patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
-            patches.append(patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan))
-            patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
-
-            for p in patches:
-                p.start()
-            try:
-                with redirect_stdout(io.StringIO()):
-                    rc = cmd_install(self._make_args(workspace, postinstall=True))
-            finally:
-                for p in patches:
-                    p.stop()
-
-            self.assertEqual(rc, 0, "postinstall must never return non-zero")
-            self.assertTrue(marker.is_file(), "scan error should have written a marker")
-            payload = json.loads(marker.read_text())
-            self.assertEqual(payload["step"], "project scan")
-            self.assertIn("scan blew up", payload["detail"])
-
-    def test_postinstall_scan_success_clears_stale_marker(self):
-        """If a previous postinstall left a marker but the current run
-        succeeds, the marker must be cleared."""
+    def test_postinstall_clean_install_clears_stale_marker(self):
+        """A clean postinstall run (no scan involved) clears a stale marker
+        left by a prior failed bootstrap attempt."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -1272,12 +1240,8 @@ class TestInstallErrorMarker(unittest.TestCase):
             # Seed stale marker
             marker.write_text('{"step": "previous failure"}')
 
-            def fake_scan(workspace, verbose, quiet):
-                return {"action": "created", "details": "context seeded"}
-
             patches = self._patch_helpers_noop()
             patches.append(patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}))
-            patches.append(patch("cli.install._maybe_run_fresh_scan", side_effect=fake_scan))
             patches.append(patch.object(install_mod, "_INSTALL_ERROR_MARKER", marker))
 
             for p in patches:
