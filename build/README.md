@@ -1,23 +1,27 @@
 # Build
 
-The `build/` directory contains the plugin manifests that tell Claude Code what Gaia ships. These are JSON files read once at startup — they register every hook entry point, every agent, every skill, and the settings permissions that the plugin contributes.
+The `build/` directory contains the plugin manifest that tells Claude Code what Gaia ships. It is a JSON file read once at startup — it registers every hook entry point, every agent, and every skill. The manifest does **not** carry a permissions block; the workspace permission set is owned by `hooks/modules/core/plugin_setup.py` (`OPS_PERMISSIONS`), the single source of truth for what gets merged into `settings.local.json`.
 
-Gaia ships two plugins, not one. `gaia-ops` is the full system: orchestrator, specialist agents, skills, hooks, commands, and the complete permission set. `gaia-security` is the stripped-down path for teams that only want the security hooks — no agents, no skills, just the pre/post tool use pipeline that classifies and blocks commands. Each manifest is self-contained and activates an independent behavior profile.
+Gaia ships as a **single, unified plugin** named `gaia`. The canonical manifest is `gaia.manifest.json` — one bundle carrying the full system: orchestrator, specialist agents, skills, hooks, commands, tools, and config. (The former `gaia-ops` / `gaia-security` two-plugin split is retired. `scripts/build-plugin.py` has `VALID_PLUGINS = ("gaia",)`, and `.claude-plugin/marketplace.json` advertises one plugin whose `source` is `./dist/gaia`. The legacy `gaia-ops` / `gaia-security` manifest and README files from that split have been removed from disk.)
 
-When Claude Code loads a plugin, it reads the manifest to discover where the hooks live, which matchers should trigger them, and what permissions to merge into `settings.json` and `settings.local.json`. If a hook file listed in the manifest does not exist on disk, Claude Code silently skips it — there is no error, and that hook simply does not fire. This makes the manifest the authoritative list: if you add a new hook file but forget to register it here, it will never execute.
+When Claude Code loads the plugin, it reads the manifest to discover where the hooks live and which matchers should trigger them. (The permission set merged into `settings.local.json` is not read from the manifest — it is defined in `hooks/modules/core/plugin_setup.py::OPS_PERMISSIONS`.) If a hook file listed in the manifest does not exist on disk, Claude Code silently skips it — there is no error, and that hook simply does not fire. This makes the manifest the authoritative list: if you add a new hook file but forget to register it here, it will never execute.
 
-The `version` field in both manifests uses `"from:package.json"` — the build pipeline reads `package.json` and injects the actual version string before publishing. Never edit the version directly in the manifest files.
+The `version` field uses `"from:package.json"` — the build pipeline reads `package.json` and injects the actual version string before publishing. Never edit the version directly in the manifest.
 
 ## Cuándo se activa
 
-This component does not activate at runtime in the usual sense. The manifests are consumed once — at Claude Code plugin load time — and are not read again during the session.
+This component does not activate at runtime in the usual sense. The manifest is consumed twice — once by `scripts/build-plugin.py` at build time (producing `dist/gaia`), and once by Claude Code at plugin load time — and is not read again during the session.
 
 ```
-npm install @jaguilar87/gaia
+npm run build:plugins  ->  python3 scripts/build-plugin.py gaia
         |
-Claude Code detects plugin in node_modules/
+Reads build/gaia.manifest.json
         |
-Reads build/gaia-ops.manifest.json  (or gaia-security.manifest.json)
+Resolves "all" fields to concrete file lists, copies to dist/gaia/
+        |
+Generates dist/gaia/hooks/hooks.json + .claude-plugin/plugin.json (inline hooks)
+        |
+--- later, when Claude Code loads the plugin ---
         |
 Registers hooks: hooks/*.py -> matched to Claude Code events
         |
@@ -25,7 +29,7 @@ Registers agents: agents/*.md -> available for dispatch
         |
 Registers skills: skills/*/ -> available for injection
         |
-Merges permissions into settings.json / settings.local.json
+Merges permissions into settings.local.json (npm surface; source is plugin_setup.py::OPS_PERMISSIONS, not the manifest)
         |
 Session begins -- hooks fire based on registered matchers
 ```
@@ -39,8 +43,8 @@ If a hook file is listed in `entries` but does not exist on disk:
 
 ```
 build/
-├── gaia-ops.manifest.json       # Full system: all hooks, agents, skills, commands, permissions
-└── gaia-security.manifest.json  # Security-only: hooks + deny rules, no agents or skills
+├── gaia.manifest.json           # CANONICAL: the single unified plugin (all hooks, agents, skills, tools, config, permissions)
+└── gaia.README.md               # README copied into dist/gaia at build time
 ```
 
 ## Convenciones
@@ -55,11 +59,12 @@ build/
 
 **Version:** Always `"from:package.json"` — never a hardcoded string.
 
-**Two-manifest rule:** Any hook that belongs in both plugins must be listed in both manifest files. Changes to shared hooks require updating both files.
+**Manifest–plugin-name rule:** `scripts/build-plugin.py` requires the manifest's `plugin_name` field to equal the requested plugin name (`gaia`). Editing one without the other fails the build.
 
 ## Ver también
 
 - [`hooks/README.md`](../hooks/README.md) — hook entry points and pipeline architecture
 - [`agents/README.md`](../agents/README.md) — agent definitions and frontmatter conventions
+- [`scripts/build-plugin.py`](../scripts/build-plugin.py) — reads this manifest and produces `dist/gaia`
 - [`bin/cli/doctor.py`](../bin/cli/doctor.py) — `gaia doctor` detects missing hooks and broken registrations
 - [`package.json`](../package.json) — version source and `files` array (controls what gets published)

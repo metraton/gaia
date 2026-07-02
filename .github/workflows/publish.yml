@@ -8,7 +8,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      # read-only: the workflow no longer commits built dist/ back or force-moves
+      # the tag; it only packs, validates, and publishes to npm.
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,32 +31,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build plugins
-        run: npm run build:plugins
-
-      - name: Verify build outputs
+      - name: Pack tarball
+        # Produce the exact artifact that would be published. `npm pack` runs
+        # the `prepack` script (clean + generate:plugin-root), which regenerates
+        # the ROOT .claude-plugin/plugin.json (inline hooks) + hooks/hooks.json
+        # from the manifest -- this is what makes the tarball root a valid
+        # `source: npm` Claude Code plugin. No dist/ bundle is built or committed
+        # back: the package root IS the plugin, so the old "Build plugins" /
+        # "Verify build outputs" / "Commit built plugins" (git add -f dist + tag
+        # -f + push --force) steps are gone, and with them the silent tag/dist
+        # desync. The sandbox harness installs FROM this tarball, so the gate
+        # validates precisely what npm publish would ship — not the working tree.
+        id: pack
         run: |
-          test -f dist/gaia-security/.claude-plugin/plugin.json
-          test -f dist/gaia-security/hooks/hooks.json
-          test -f dist/gaia-ops/.claude-plugin/plugin.json
-          test -f dist/gaia-ops/hooks/hooks.json
-          echo "All plugin artifacts verified"
-
-      - name: Commit built plugins
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f dist/
-          if git diff --cached --quiet; then
-            echo "No changes in dist/ — skipping commit"
-          else
-            git commit -m "build: generate plugin artifacts for ${{ github.event.release.tag_name }} [skip ci]"
-            git push origin HEAD:main
-            git tag -f ${{ github.event.release.tag_name }}
-            git push origin ${{ github.event.release.tag_name }} --force
-          fi
+          TARBALL=$(npm pack --silent)
+          echo "tarball=${PWD}/${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "Packed ${TARBALL}"
 
       - name: Run validation
+        # Runs AFTER pack so it sees the freshly regenerated root manifests.
         run: npm run pre-publish:validate
 
       - name: Determine npm tag
@@ -70,16 +65,6 @@ jobs:
           else
             echo "tag=latest" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Pack tarball
-        # Produce the exact artifact that would be published. The sandbox
-        # harness installs FROM this tarball, so the gate validates precisely
-        # what npm publish would ship — not the working tree.
-        id: pack
-        run: |
-          TARBALL=$(npm pack --silent)
-          echo "tarball=${PWD}/${TARBALL}" >> "$GITHUB_OUTPUT"
-          echo "Packed ${TARBALL}"
 
       - name: Sandbox validation harness (PRE-PUBLISH GATE)
         # End-to-end consumer-install verification against the PACKED TARBALL.

@@ -211,7 +211,9 @@ def _get_entry_point(event_name: str, entries: list[str]) -> str:
         "SessionStart": "hooks/session_start.py",
         "SessionEnd": "hooks/session_end_hook.py",
         "TaskCompleted": "hooks/task_completed.py",
+        "PreCompact": "hooks/pre_compact.py",
         "PostCompact": "hooks/post_compact.py",
+        "ElicitationResult": "hooks/elicitation_result.py",
     }
     entry = event_to_file.get(event_name)
     if entry and entry in entries:
@@ -244,15 +246,7 @@ def generate_plugin_json(manifest: dict) -> dict:
         version = package_data.get("version", "0.0.0")
 
     plugin_name = manifest["plugin_name"]
-    # Homepage anchor per plugin; all point to the same repo README.
-    homepage_anchors = {
-        "gaia": "https://github.com/metraton/gaia#readme",
-        "gaia-ops": "https://github.com/metraton/gaia-ops#readme",
-        "gaia-security": "https://github.com/metraton/gaia-ops#gaia-security",
-    }
-    homepage = homepage_anchors.get(
-        plugin_name, "https://github.com/metraton/gaia#readme"
-    )
+    homepage = "https://github.com/metraton/gaia#readme"
 
     # Build inline hooks structure from the same logic as generate_hooks_json().
     # CC docs say plugin.json can declare hooks as a path, array, or inline object.
@@ -269,19 +263,13 @@ def generate_plugin_json(manifest: dict) -> dict:
             "email": "jorge.aguilar87@gmail.com",
         },
         "homepage": homepage,
-        "repository": "https://github.com/metraton/gaia-ops",
+        "repository": "https://github.com/metraton/gaia",
         "license": "MIT",
         "keywords": ["security", "devops"],
         "engines": {"claude-code": ">=2.1.0"},
         "categories": ["devops", "security", "orchestration"],
         "hooks": inline_hooks,
     }
-
-
-def generate_settings_json(manifest: dict) -> dict:
-    """Generate settings.json from manifest settings configuration."""
-    settings = manifest.get("settings", {})
-    return {"permissions": settings.get("permissions", {})}
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +324,6 @@ def build_plugin(plugin_name: str, output_dir: Path) -> None:
 
     # settings.json removed -- CC plugin spec only supports 'agent' and 'subagentStatusLine' keys;
     # our 'permissions' block is non-canonical and CC merges it into workspace settings.local.json.
-    # generate_settings_json() is retained above in case a future canonical use case revives it.
 
     # Generate .claude-plugin/plugin.json
     plugin_json = generate_plugin_json(manifest)
@@ -388,6 +375,62 @@ def build_plugin(plugin_name: str, output_dir: Path) -> None:
     print(f"Build complete: {output_dir}")
 
 
+def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
+    """Regenerate ONLY the two plugin manifests into an existing directory.
+
+    Writes:
+      - <output_dir>/.claude-plugin/plugin.json  (with the inline `hooks` block --
+        the ${CLAUDE_PLUGIN_ROOT} workaround so CC loads hooks from the plugin
+        cache under a `source: npm` install)
+      - <output_dir>/hooks/hooks.json            (canonical, manifest-derived;
+        the npm surface reads this via merge_local_hooks() in _install_helpers.py)
+
+    Unlike build_plugin(), this NEVER cleans (`rmtree`) or copies component files.
+    It is the pack-time / release-prepare mechanism that makes the repo root (and
+    therefore the published npm tarball root) a valid Claude Code plugin, without
+    a separate dist/ bundle. The component files (agents/, skills/, hooks/*.py,
+    tools/, config/, bin/) already live at the root and ship via package.json
+    `files[]`.
+
+    SAFETY: because we must be able to target the repo root itself
+    (`--output-dir .`), this function must never delete the output directory.
+    The anti-rmtree guarantee is structural -- there is no rmtree call here.
+    """
+    manifest = load_manifest(plugin_name)
+    output_dir = output_dir.resolve()
+
+    # Anti-rmtree guard, made explicit: this path is chosen precisely when the
+    # target is a live, populated tree (the repo root). Assert the directory
+    # exists and is non-empty so a caller cannot mistake this for the clean-build
+    # path -- we augment in place, we do not own/replace the directory.
+    if not output_dir.is_dir():
+        print(f"Error: --manifests-only target is not a directory: {output_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Regenerating root manifests for plugin '{plugin_name}' in: {output_dir}")
+
+    # hooks/hooks.json
+    hooks_json = generate_hooks_json(manifest)
+    hooks_json_path = output_dir / "hooks" / "hooks.json"
+    hooks_json_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(hooks_json_path, "w") as f:
+        json.dump(hooks_json, f, indent=2)
+        f.write("\n")
+    print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)")
+
+    # .claude-plugin/plugin.json (inline hooks)
+    plugin_json = generate_plugin_json(manifest)
+    plugin_json_dir = output_dir / ".claude-plugin"
+    plugin_json_dir.mkdir(parents=True, exist_ok=True)
+    plugin_json_path = plugin_json_dir / "plugin.json"
+    with open(plugin_json_path, "w") as f:
+        json.dump(plugin_json, f, indent=2)
+        f.write("\n")
+    inline_events = len(plugin_json.get("hooks", {}))
+    print(f"  Generated: .claude-plugin/plugin.json (inline hooks: {inline_events} events)")
+    print("Root manifests regenerated.")
+
+
 def validate_output(manifest: dict, output_dir: Path) -> list[str]:
     """Validate the build output structure."""
     errors: list[str] = []
@@ -432,17 +475,36 @@ def main():
     parser.add_argument(
         "plugin-name",
         choices=VALID_PLUGINS,
-        help="Plugin to build (gaia-security or gaia-ops)",
+        help="Plugin to build (gaia -- the single unified plugin)",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Output directory (default: dist/<plugin-name>)",
+        help="Output directory (default: dist/<plugin-name>; with --manifests-only, default is the repo root)",
+    )
+    parser.add_argument(
+        "--manifests-only",
+        action="store_true",
+        help=(
+            "Regenerate ONLY .claude-plugin/plugin.json (inline hooks) + hooks/hooks.json "
+            "into --output-dir, WITHOUT cleaning or copying component files. Used to make "
+            "the repo root (and the published npm tarball root) a valid plugin for source:npm. "
+            "Never deletes the output directory."
+        ),
     )
 
     args = parser.parse_args()
     plugin_name = getattr(args, "plugin-name")
+
+    if args.manifests_only:
+        # Default target is the repo root -- augment it in place.
+        output_dir = args.output_dir or REPO_ROOT
+        if not output_dir.is_absolute():
+            output_dir = REPO_ROOT / output_dir
+        write_root_manifests(plugin_name, output_dir)
+        return
+
     output_dir = args.output_dir or (REPO_ROOT / "dist" / plugin_name)
 
     # Make output_dir absolute

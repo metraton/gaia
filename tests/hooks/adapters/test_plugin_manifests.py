@@ -9,8 +9,8 @@ Validates:
 4. hooks.json has PreToolUse, PostToolUse, SubagentStop events
 5. hooks.json uses ${CLAUDE_PLUGIN_ROOT} in all command paths
 6. marketplace.json exists and is valid JSON (flat format: name, owner, plugins)
-7. marketplace.json has the single unified 'gaia' plugin with source in dist/
-8. The built plugin.json exists in dist/gaia/ and is valid
+7. marketplace.json has the single unified 'gaia' plugin with a `source: npm` source
+8. The built plugin.json (legacy dist build, test-only) is valid
 9. All version fields match across all manifest files
 """
 
@@ -98,13 +98,27 @@ class TestPluginJson:
             f"package.json={package_data['version']}"
         )
 
-    def test_plugin_json_no_hooks_field(self):
-        """plugin.json must NOT include a 'hooks' field (auto-loaded by convention)."""
+    def test_plugin_json_has_inline_hooks(self):
+        """plugin.json MUST embed an inline 'hooks' block.
+
+        Under the `source: npm` delivery model the package ROOT is the plugin,
+        and the root .claude-plugin/plugin.json is a GENERATED artifact
+        (scripts/build-plugin.py --manifests-only, run at prepack /
+        release:prepare). Hooks are embedded inline as the ${CLAUDE_PLUGIN_ROOT}
+        workaround: CC then loads them from the plugin cache, bypassing the
+        install-time path-expansion bug where ${CLAUDE_PLUGIN_ROOT} resolved to
+        $CWD/.claude/ instead of the plugin cache dir. See
+        generate_plugin_json() in scripts/build-plugin.py.
+        """
         data = json.loads(self.plugin_path.read_text())
-        assert "hooks" not in data, (
-            "plugin.json should not have a 'hooks' field -- "
-            "Claude Code v2.1+ auto-loads hooks/hooks.json by convention"
+        assert "hooks" in data, (
+            "plugin.json must embed an inline 'hooks' block for the source:npm "
+            "plugin surface -- run `npm run generate:plugin-root` to regenerate it"
         )
+        assert isinstance(data["hooks"], dict) and data["hooks"], (
+            "plugin.json 'hooks' must be a non-empty object"
+        )
+        assert "PreToolUse" in data["hooks"], "inline hooks missing PreToolUse event"
 
     def test_plugin_json_has_engines(self):
         """plugin.json must have engines.claude-code field with >=2.1.0."""
@@ -235,7 +249,9 @@ class TestMarketplaceJson:
     """Test .claude-plugin/marketplace.json manifest.
 
     The marketplace.json is a flat structure with top-level name, owner,
-    and plugins array. Plugins are built to dist/ (no plugins/ directory).
+    and plugins array. Each plugin's `source` is the npm object form
+    ({"source": "npm", "package": "@jaguilar87/gaia"}) -- the package IS the
+    plugin; there is no dist/ bundle.
     """
 
     @pytest.fixture(autouse=True)
@@ -289,13 +305,31 @@ class TestMarketplaceJson:
             assert "version" in plugin, f"Plugin missing 'version': {plugin}"
             assert "source" in plugin, f"Plugin missing 'source': {plugin}"
 
-    def test_marketplace_plugin_sources_point_to_dist(self):
-        """Each marketplace plugin source must point to dist/."""
+    def test_marketplace_plugin_sources_are_npm(self):
+        """Each marketplace plugin source must be the npm object form.
+
+        The plugin surface migrated from a `./dist/gaia` path source to
+        `source: npm` so ONE npm artifact serves the npm, pnpm, and plugin
+        surfaces. The source is an object: {"source": "npm", "package": ...}.
+        `source.version` is intentionally OMITTED so `/plugin install` resolves
+        the npm `latest` dist-tag (the catalog stays version-agnostic; npm
+        dist-tags govern what installs).
+        """
         data = json.loads(self.marketplace_path.read_text())
         for plugin in data["plugins"]:
-            assert plugin["source"].startswith("./dist/"), (
-                f"Plugin '{plugin['name']}' source must start with './dist/', "
-                f"got '{plugin['source']}'"
+            source = plugin["source"]
+            assert isinstance(source, dict), (
+                f"Plugin '{plugin['name']}' source must be an object, got {type(source)}"
+            )
+            assert source.get("source") == "npm", (
+                f"Plugin '{plugin['name']}' source.source must be 'npm', got {source.get('source')!r}"
+            )
+            assert source.get("package") == "@jaguilar87/gaia", (
+                f"Plugin '{plugin['name']}' source.package must be '@jaguilar87/gaia', "
+                f"got {source.get('package')!r}"
+            )
+            assert "version" not in source, (
+                "source.version must be omitted so the marketplace resolves npm 'latest'"
             )
 
 

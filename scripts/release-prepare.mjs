@@ -17,11 +17,15 @@
  *   1. Bump ALL version sources to <version>:
  *        - package.json
  *        - pyproject.toml         ([project].version)
- *        - .claude-plugin/plugin.json
- *        - .claude-plugin/marketplace.json  (every plugin entry)
+ *        - .claude-plugin/marketplace.json  (every plugin entry's top-level version)
  *        - CHANGELOG.md           (top versioned header; inserts a stub if absent)
- *   2. npm run build:plugins      (regenerates dist/, including the per-plugin
- *                                  manifests that carry the version)
+ *      NOTE: .claude-plugin/plugin.json is NOT hand-bumped here -- it is a
+ *      GENERATED artifact (inline hooks, version inherited from package.json via
+ *      the manifest's "from:package.json"). Step 2 regenerates it.
+ *   2. npm run generate:plugin-root  (regenerates the ROOT .claude-plugin/plugin.json
+ *                                     with inline hooks + hooks/hooks.json from the
+ *                                     manifest -- the source:npm plugin surface. No
+ *                                     dist/ bundle exists anymore.)
  *   3. npm run pre-publish:validate  (the drift gate -- fails loud on any
  *                                     source that did not move)
  *
@@ -162,9 +166,9 @@ function main() {
   try {
     results.push(bumpJsonVersionField('package.json', version));
     results.push(bumpPyproject('pyproject.toml', version));
-    if (exists('.claude-plugin/plugin.json')) {
-      results.push(bumpJsonVersionField('.claude-plugin/plugin.json', version));
-    }
+    // .claude-plugin/plugin.json is intentionally NOT bumped here -- it is
+    // regenerated in Step 2 (generate:plugin-root), inheriting the version from
+    // package.json via the manifest's "from:package.json".
     if (exists('.claude-plugin/marketplace.json')) {
       results.push(bumpMarketplace('.claude-plugin/marketplace.json', version));
     }
@@ -174,14 +178,15 @@ function main() {
   }
   for (const r of results) log(`  ${r}`, 'success');
 
-  // Step 2 -- rebuild dist/ so the per-plugin manifests carry the new version.
-  log('Step 2: Rebuilding plugins (npm run build:plugins)...', 'step');
+  // Step 2 -- regenerate the ROOT plugin manifests (inline hooks + hooks.json)
+  // so the source:npm plugin surface carries the new version. No dist/ bundle.
+  log('Step 2: Regenerating root plugin manifests (npm run generate:plugin-root)...', 'step');
   try {
-    run('npm run build:plugins');
+    run('npm run generate:plugin-root');
   } catch {
-    fail('build:plugins failed -- dist/ is not regenerated. Fix the build, then re-run release:prepare.');
+    fail('generate:plugin-root failed -- root .claude-plugin/plugin.json / hooks/hooks.json not regenerated. Fix the generator, then re-run release:prepare.');
   }
-  log('dist/ regenerated', 'success');
+  log('root manifests regenerated', 'success');
 
   // Step 3 -- the drift gate. Fails loud if any source did not move.
   log('Step 3: Validating version sync (npm run pre-publish:validate)...', 'step');
@@ -192,7 +197,7 @@ function main() {
       'This is the gate that protects the release; do NOT tag until it is green.');
   }
 
-  log(`release:prepare complete -- all sources at ${version}, dist/ rebuilt, validation green.`, 'success');
+  log(`release:prepare complete -- all sources at ${version}, root manifests regenerated, validation green.`, 'success');
   log('Next (driven by the gaia-release "release" flow, not by hand): pre-flight (Python 3.11/3.12 + tests), commit, tag, push, gh release.', 'info');
 }
 
