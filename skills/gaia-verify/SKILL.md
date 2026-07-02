@@ -28,19 +28,19 @@ If the user does not name a mode, ask: "Which mode -- live, npm-sandbox, plugin,
 
 Validates a workspace that is already wired (npm/pnpm surface). No build, no temp dir, no cleanup.
 
-Run against the workspace: `gaia doctor` then `gaia status`, then the **wire-up checklist** below. This is the mode `gaia-release` Layer 1 and Layer 3 call after installing into the target.
+Run against the workspace: `gaia doctor` then `gaia status`, then the **wire-up checklist** below. This is the mode `gaia-release` Layer 1 and Layer 3 call after installing into the target (via `gaia dev --workspace <TARGET>`, the one-command install).
 
 ## Mode: npm-sandbox
 
-Validates the npm surface of exactly what `npm publish` would ship -- pack, install into a clean sandbox, run the harness, clean up. No accumulated workspace state.
+Validates the npm surface of exactly what a registry publish would ship -- pack, install into a clean sandbox, run the harness, clean up. No accumulated workspace state.
 
-Fastest path: `npm run gaia:verify-install:local` (packs, installs into `/tmp/gaia-sandbox-<ts>-<pid>/`, runs the harness, cleans up). Manual step-by-step in `reference.md`. This is the mode `gaia-release` Layer 2 step 2 calls.
+Primary path: `gaia release check` runs this gate (as gate 2, `gaia:verify-install:local`) inside the full Layer 2 sequence. To run just this surface in isolation, `npm run gaia:verify-install:local` (packs, installs into `/tmp/gaia-sandbox-<ts>-<pid>/`, runs the harness, cleans up) is what `gaia release check` wraps -- manual step-by-step in `reference.md`. This is the mode `gaia-release` Layer 2 gate 2 calls.
 
 ## Mode: plugin
 
 Validates the Claude Code plugin surface -- the exact npm tarball, extracted, with its root mounted as a plugin. This is the only mode that exercises the root inline `plugin.json` / `hooks.json`, the packaged agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
 
-Core flow: `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; the temps are trap-cleaned. Add `-- --functional` for an optional live `claude --plugin-dir <temp> -p '...'` probe (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 step 3 calls. Do NOT publish or install to the real registry to run this.
+Primary path: `gaia release check` runs this gate (as gate 3, `gaia:plugin-dryrun`) inside the full Layer 2 sequence, and SKIPs it gracefully when the `claude` binary is absent. To run just this surface, `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`, what `gaia release check` wraps) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; the temps are trap-cleaned. Add `gaia release check --functional` (or `npm run gaia:plugin-dryrun -- --functional`) for an optional live `claude --plugin-dir <temp> -p '...'` probe (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 gate 3 calls. Do NOT publish or install to the real registry to run this.
 
 ## Mode: registry
 
