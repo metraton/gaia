@@ -957,6 +957,24 @@ def _cmd_get_relevant(args) -> int:
         # Legacy type-based selection -- keep verbatim for back-compat.
         return _cmd_get_relevant_by_type(args, workspace, max_chars)
 
+    # Optional section filter. When --sections is passed (comma-separated subset
+    # of carry_forward,anchor,thread_open) only those sections are rendered. This
+    # is how the subagent-dispatch path requests anchors-only ("About you / What
+    # I know") while the orchestrator's SessionStart path omits the flag and keeps
+    # all three sections. Unknown tokens are ignored; an empty/whitespace value
+    # falls back to all sections (safe default).
+    sections_arg = getattr(args, "sections", None)
+    _all_sections = ("carry_forward", "anchor", "thread_open")
+    if sections_arg:
+        _requested = {
+            s.strip() for s in str(sections_arg).split(",") if s.strip()
+        }
+        active_sections = tuple(s for s in _all_sections if s in _requested)
+        if not active_sections:
+            active_sections = _all_sections
+    else:
+        active_sections = _all_sections
+
     # Reserve room for the recoverable-pointer footer (appended after trimming)
     # so the final block + pointer respects the caller's char budget. Floor at
     # a small positive value so a pathologically tiny budget still renders.
@@ -993,35 +1011,38 @@ def _cmd_get_relevant(args) -> int:
             )
 
             # Section 1: carry_forward -- no LIMIT.
-            cur = con.execute(
-                base_select
-                + "  AND class = 'thread' AND status = 'carry_forward' "
-                + "ORDER BY COALESCE(updated_at, '') DESC",
-                (workspace, workspace),
-            )
-            rows_by_section["carry_forward"] = [dict(r) for r in cur.fetchall()]
+            if "carry_forward" in active_sections:
+                cur = con.execute(
+                    base_select
+                    + "  AND class = 'thread' AND status = 'carry_forward' "
+                    + "ORDER BY COALESCE(updated_at, '') DESC",
+                    (workspace, workspace),
+                )
+                rows_by_section["carry_forward"] = [dict(r) for r in cur.fetchall()]
 
             # Section 2: anchor.
-            anchor_quota = _RELEVANT_PER_CLASS_QUOTA["anchor"]
-            cur = con.execute(
-                base_select
-                + "  AND class = 'anchor' "
-                + "ORDER BY COALESCE(updated_at, '') DESC "
-                + f"LIMIT {anchor_quota}",
-                (workspace, workspace),
-            )
-            rows_by_section["anchor"] = [dict(r) for r in cur.fetchall()]
+            if "anchor" in active_sections:
+                anchor_quota = _RELEVANT_PER_CLASS_QUOTA["anchor"]
+                cur = con.execute(
+                    base_select
+                    + "  AND class = 'anchor' "
+                    + "ORDER BY COALESCE(updated_at, '') DESC "
+                    + f"LIMIT {anchor_quota}",
+                    (workspace, workspace),
+                )
+                rows_by_section["anchor"] = [dict(r) for r in cur.fetchall()]
 
             # Section 3: thread/open (excluding carry_forward).
-            thread_quota = _RELEVANT_PER_CLASS_QUOTA["thread_open"]
-            cur = con.execute(
-                base_select
-                + "  AND class = 'thread' AND status = 'open' "
-                + "ORDER BY COALESCE(updated_at, '') DESC "
-                + f"LIMIT {thread_quota}",
-                (workspace, workspace),
-            )
-            rows_by_section["thread_open"] = [dict(r) for r in cur.fetchall()]
+            if "thread_open" in active_sections:
+                thread_quota = _RELEVANT_PER_CLASS_QUOTA["thread_open"]
+                cur = con.execute(
+                    base_select
+                    + "  AND class = 'thread' AND status = 'open' "
+                    + "ORDER BY COALESCE(updated_at, '') DESC "
+                    + f"LIMIT {thread_quota}",
+                    (workspace, workspace),
+                )
+                rows_by_section["thread_open"] = [dict(r) for r in cur.fetchall()]
         finally:
             con.close()
     except Exception:
@@ -2160,6 +2181,13 @@ def register(subparsers):
         "--types", default=None, metavar="LIST",
         help="Comma-separated type filter (e.g. 'atom,decision'). "
              "Default: atom,decision,negative.",
+    )
+    rel_p.add_argument(
+        "--sections", default=None, metavar="LIST",
+        help="Comma-separated subset of curated sections to render "
+             "(carry_forward,anchor,thread_open). Default: all three. "
+             "The subagent-dispatch path passes --sections=anchor to inject "
+             "only 'About you / What I know'; the orchestrator omits the flag.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,

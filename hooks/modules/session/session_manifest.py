@@ -207,7 +207,10 @@ def build_agentic_loop_block() -> str:
         return ""
 
 
-def build_workspace_memory_block(workspace: Optional[str] = None) -> str:
+def build_workspace_memory_block(
+    workspace: Optional[str] = None,
+    sections: Optional[list[str]] = None,
+) -> str:
     """Top relevant curated memory for the workspace, bounded.
 
     Calls ``gaia memory get-relevant --workspace <X> --max-chars 800`` and
@@ -215,6 +218,15 @@ def build_workspace_memory_block(workspace: Optional[str] = None) -> str:
     additionalContext, or "" when there are no curated rows for the
     workspace, when the workspace cannot be inferred, or when the
     subprocess fails for any reason.
+
+    ``sections`` (optional): a subset of ``carry_forward``/``anchor``/
+    ``thread_open`` to render. When omitted (the orchestrator's SessionStart
+    call), all three sections are emitted -- the orchestrator sees "For this
+    session", "About you / What I know", and "Open threads" unchanged. The
+    subagent-dispatch path passes ``["anchor"]`` so a dispatched subagent
+    receives only the durable "About you / What I know" anchors, not the
+    session-scoped carry_forward or open-thread state. When set, it is
+    forwarded verbatim as ``--sections`` to the CLI.
 
     Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
     empty output) returns "". SessionStart must not block on memory.
@@ -239,12 +251,16 @@ def build_workspace_memory_block(workspace: Optional[str] = None) -> str:
         except Exception:
             cli_args = ["gaia"]
 
+        cmd = cli_args + [
+            "memory", "get-relevant",
+            "--workspace", ws,
+            "--max-chars", "800",
+        ]
+        if sections:
+            cmd += ["--sections", ",".join(sections)]
+
         result = subprocess.run(
-            cli_args + [
-                "memory", "get-relevant",
-                "--workspace", ws,
-                "--max-chars", "800",
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=5,
@@ -265,9 +281,10 @@ def build_workspace_memory_block(workspace: Optional[str] = None) -> str:
         return ""
 
 
-def _extract_projects_from_identity(payload: dict, workspace: str,
-                                    path_lookup: dict) -> list[tuple[str, str]]:
-    """Pull (name, path) pairs out of one ``project_identity`` payload.
+def _extract_projects_from_identity(
+    payload: dict, workspace: str, path_lookup: dict
+) -> list[tuple[str, str, str, str]]:
+    """Pull ``(name, path, type, description)`` tuples out of one payload.
 
     The contract stores two distinct shapes, and this normalizes both:
 
@@ -285,8 +302,13 @@ def _extract_projects_from_identity(payload: dict, workspace: str,
     ``nfi`` but the project row is ``nfi-oro-com``) still resolves when the
     workspace holds exactly one project. Entries that cannot resolve a path
     are still returned (name only) -- the name alone is partial signal.
+
+    ``type`` and ``description`` are carried alongside name and path when the
+    payload holds them (both shapes expose these fields), so the rendered
+    Projects block can label each entry (e.g. "aos-iac (terraform) — Terraform
+    IaC for AOS GCP infra"). Either may be an empty string when absent.
     """
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str, str]] = []
     by_name: dict = path_lookup.get("by_name", {})
     by_ws: dict = path_lookup.get("by_ws", {})
 
@@ -314,7 +336,9 @@ def _extract_projects_from_identity(payload: dict, workspace: str,
                 continue
             name = v.get("name") or slug
             path = v.get("local_path") or _resolve(slug) or _resolve(name)
-            out.append((name, path))
+            ptype = (v.get("type") or "").strip()
+            desc = (v.get("description") or "").strip()
+            out.append((name, path, ptype, desc))
         return out
 
     repos = payload.get("workspace_repos")
@@ -325,15 +349,19 @@ def _extract_projects_from_identity(payload: dict, workspace: str,
             name = r.get("name") or ""
             if not name:
                 continue
-            out.append((name, _resolve(name)))
+            ptype = (r.get("type") or "").strip()
+            desc = (r.get("description") or "").strip()
+            out.append((name, _resolve(name), ptype, desc))
         return out
 
     name = payload.get("name") or workspace
-    out.append((name, _resolve(name)))
+    ptype = (payload.get("type") or "").strip()
+    desc = (payload.get("description") or "").strip()
+    out.append((name, _resolve(name), ptype, desc))
     return out
 
 
-def build_projects_context_block(max_chars: int = 1400) -> str:
+def build_projects_context_block(max_chars: int = 8000) -> str:
     """Render the active-context project index for the SessionStart manifest.
 
     This is NOT an index of every git repo on disk. The source is the set of
@@ -353,10 +381,13 @@ def build_projects_context_block(max_chars: int = 1400) -> str:
     project-context setup the orchestrator receives at SessionStart (it is
     emitted immediately after ``## Environment``), not as an orphan section.
 
-    Budget: bounded to ``max_chars`` (default 1400). The real active-context
-    set is small (~17 entries, ~1.2 KB today) and is meant to land in full;
-    the bound is a guard rail, not a target. On overflow we drop entries from
-    the tail and append a recoverable footer. Fail-safe: any error returns "".
+    Budget: bounded to ``max_chars`` (default 8000). The real active-context
+    set is small (~17 entries) but each entry now carries ``(type)`` and a
+    ``— description`` tail, so the block runs ~2-3 KB; the cap is sized with
+    generous headroom so the full index lands and the routing surface is never
+    silently truncated. On overflow we drop entries from the tail and ALWAYS
+    append a recoverable footer stating the dropped count (footer space is
+    reserved before trimming). Fail-safe: any error returns "".
     """
     # Ensure the package root (which holds the `gaia/` package) is importable.
     # At real SessionStart, session_start.py already inserts it; this self-heal
@@ -406,7 +437,7 @@ def build_projects_context_block(max_chars: int = 1400) -> str:
         by_ws.setdefault(d["workspace"], []).append(p)
     path_lookup = {"by_name": by_name, "by_ws": by_ws}
 
-    entries: list[tuple[str, str]] = []
+    entries: list[tuple[str, str, str, str]] = []
     seen: set = set()
     for r in identity_rows:
         d = dict(r)
@@ -417,12 +448,14 @@ def build_projects_context_block(max_chars: int = 1400) -> str:
             continue
         if not isinstance(payload, dict):
             continue
-        for name, path in _extract_projects_from_identity(payload, ws, path_lookup):
+        for name, path, ptype, desc in _extract_projects_from_identity(
+            payload, ws, path_lookup
+        ):
             key = (name, path)
             if key in seen:
                 continue
             seen.add(key)
-            entries.append((name, path))
+            entries.append((name, path, ptype, desc))
 
     if not entries:
         return ""
@@ -430,24 +463,164 @@ def build_projects_context_block(max_chars: int = 1400) -> str:
     total_available = len(entries)
     header = "## Project Context — Projects"
 
-    def _render(items: list[tuple[str, str]]) -> str:
+    def _render(items: list[tuple[str, str, str, str]]) -> str:
         lines = [header, ""]
-        for name, path in items:
-            lines.append(f"- {name}: {path}" if path else f"- {name}")
+        for name, path, ptype, desc in items:
+            # Name + optional "(type)", then " — description" when present.
+            # Kept on one line per project so the block stays scannable and
+            # bounded; description is not truncated here (the char budget below
+            # trims whole entries from the tail if the block overflows).
+            label = f"{name} ({ptype})" if ptype else name
+            line = f"- {label}: {path}" if path else f"- {label}"
+            if desc:
+                line += f" — {desc}"
+            lines.append(line)
         return "\n".join(lines)
 
     block = _render(entries)
-    # Budget: drop from the tail until it fits, then add a recoverable footer.
+    # Budget: drop from the tail until the block PLUS its footer fits. The
+    # footer must never be lost -- a silent tail-drop with no footer turns the
+    # projects index (a routing surface) into a lie about how many projects
+    # exist. So we reserve the footer's worst-case width up front and trim
+    # against ``max_chars - footer_budget``, guaranteeing the footer always
+    # lands when anything was dropped. See FIX (a)/(b).
     if len(block) > max_chars:
+        # Footer width is bounded by the digit count of ``total_available``;
+        # size the reservation against that count, not against a live ``dropped``
+        # value we do not yet have.
+        def _footer(n: int) -> str:
+            return f"\n... ({n} more, use 'gaia context get')"
+
+        footer_budget = len(_footer(total_available))
+        trim_target = max(0, max_chars - footer_budget)
+
         kept = list(entries)
-        while kept and len(_render(kept)) > max_chars:
+        while kept and len(_render(kept)) > trim_target:
             kept.pop()
         dropped = total_available - len(kept)
         block = _render(kept)
         if dropped > 0:
-            footer = f"\n... ({dropped} more, use 'gaia context get')"
-            if len(block) + len(footer) <= max_chars:
-                block = block + footer
+            block = block + _footer(dropped)
+
+    return block
+
+
+def _load_surface_routing() -> dict:
+    """Best-effort load of ``config/surface-routing.json``. Never raises.
+
+    Resolution order, first hit wins:
+      1. The installed plugin layout: ``find_claude_dir()/config/...``.
+      2. The source-tree / package-checkout layout, relative to this file:
+         ``<pkg_root>/config/surface-routing.json`` (parents[3]).
+
+    Returns the parsed dict, or ``{}`` when the file is absent, unreadable, or
+    not valid JSON -- callers treat an empty dict as "no routing config" and
+    emit no block.
+    """
+    candidates: list[Path] = []
+    try:
+        from ..core.paths import find_claude_dir
+        candidates.append(find_claude_dir() / "config" / "surface-routing.json")
+    except Exception:
+        pass
+    try:
+        candidates.append(
+            Path(__file__).resolve().parents[3] / "config" / "surface-routing.json"
+        )
+    except Exception:
+        pass
+
+    for path in candidates:
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            continue
+    return {}
+
+
+def build_contracts_index_block(max_chars: int = 2000) -> str:
+    """Render a compact ``surface -> contract_sections`` index for SessionStart.
+
+    Static: read straight from ``config/surface-routing.json``, no DB query. It
+    tells the orchestrator which project-context sections each specialist
+    surface will receive when dispatched -- section NAMES only, never their
+    contents. This lets the orchestrator reason about what a target surface can
+    see before spending a subagent, without duplicating the (potentially large)
+    section bodies here.
+
+    Format, one line per surface::
+
+        - iac (platform-architect) → project_identity, stack, git, ...
+
+    The ``primary_agent`` is included in parentheses when present because it is
+    the concrete handle the orchestrator dispatches to; it is cheap (one token)
+    and makes the surface actionable. Surfaces with no ``contract_sections`` are
+    skipped -- an empty section list carries no signal.
+
+    Budget: bounded to ``max_chars`` (default 2000). The full 7-surface index is
+    ~1.25 KB today and is meant to land complete; the bound is a guard rail, not
+    a target. On overflow, whole surface lines are dropped from the tail with a
+    recoverable footer. Fail-safe: any error, a missing file, or an absent
+    ``surfaces`` map returns "".
+    """
+    try:
+        data = _load_surface_routing()
+    except Exception as exc:
+        logger.debug("build_contracts_index_block load failed: %s", exc)
+        return ""
+
+    surfaces = data.get("surfaces") if isinstance(data, dict) else None
+    if not isinstance(surfaces, dict) or not surfaces:
+        return ""
+
+    entries: list[tuple[str, str, list[str]]] = []
+    for name, cfg in surfaces.items():
+        if not isinstance(cfg, dict):
+            continue
+        sections = cfg.get("contract_sections")
+        if not isinstance(sections, list) or not sections:
+            continue
+        section_names = [str(s) for s in sections if isinstance(s, str) and s]
+        if not section_names:
+            continue
+        agent = cfg.get("primary_agent")
+        agent = str(agent) if isinstance(agent, str) and agent else ""
+        entries.append((str(name), agent, section_names))
+
+    if not entries:
+        return ""
+
+    total_available = len(entries)
+    header = "## Project Context — Contract Index (per surface)"
+
+    def _render(items: list[tuple[str, str, list[str]]]) -> str:
+        lines = [header, ""]
+        for name, agent, sections in items:
+            label = f"{name} ({agent})" if agent else name
+            lines.append(f"- {label} → {', '.join(sections)}")
+        return "\n".join(lines)
+
+    block = _render(entries)
+    # Reserve the footer's worst-case width before trimming so a tail-drop can
+    # never happen silently -- the footer that states how many surfaces were
+    # omitted always lands. See FIX (b).
+    if len(block) > max_chars:
+        def _footer(n: int) -> str:
+            return f"\n... ({n} more, see config/surface-routing.json)"
+
+        footer_budget = len(_footer(total_available))
+        trim_target = max(0, max_chars - footer_budget)
+
+        kept = list(entries)
+        while kept and len(_render(kept)) > trim_target:
+            kept.pop()
+        dropped = total_available - len(kept)
+        block = _render(kept)
+        if dropped > 0:
+            block = block + _footer(dropped)
 
     return block
 
