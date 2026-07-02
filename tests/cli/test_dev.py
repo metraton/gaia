@@ -31,6 +31,7 @@ from cli import dev as dev_mod  # noqa: E402
 from cli.dev import (  # noqa: E402
     register,
     cmd_dev,
+    default_pack_dest,
     detect_package_manager,
     install_tarball,
     wire_workspace_via_installed_gaia,
@@ -127,6 +128,62 @@ class TestDetectPackageManager(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "pnpm-workspace.yaml").write_text("")
             self.assertEqual(detect_package_manager(Path(tmp)), "pnpm")
+
+
+# ---------------------------------------------------------------------------
+# default_pack_dest -- stable, persistent per-workspace pack destination
+# ---------------------------------------------------------------------------
+
+class TestDefaultPackDest(unittest.TestCase):
+    """Regression coverage for the tempfile.TemporaryDirectory() incident:
+
+    the old default deleted the pack destination before `gaia dev` even
+    returned, but that same path is recorded as a `file:` dependency in the
+    consumer workspace's package.json/pnpm-lock.yaml -- so the next
+    `pnpm install` failed with ENOENT. `default_pack_dest` must be a pure
+    function of (workspace, GAIA_DATA_DIR) so the same workspace always
+    resolves to the same stable path.
+    """
+
+    def test_pure_function_same_input_same_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gaia_data_dir = Path(tmp) / "gaia-data"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+
+            with patch.dict(os.environ, {"GAIA_DATA_DIR": str(gaia_data_dir)}):
+                first = default_pack_dest(workspace)
+                second = default_pack_dest(workspace)
+
+            self.assertEqual(first, second)
+
+    def test_result_is_under_cache_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gaia_data_dir = Path(tmp) / "gaia-data"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+
+            with patch.dict(os.environ, {"GAIA_DATA_DIR": str(gaia_data_dir)}):
+                result = default_pack_dest(workspace)
+
+            self.assertTrue(
+                str(result).startswith(str(gaia_data_dir / "cache")),
+                f"{result} is not under {gaia_data_dir / 'cache'}",
+            )
+
+    def test_different_gaia_data_dir_changes_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            dir_a = Path(tmp) / "data-a"
+            dir_b = Path(tmp) / "data-b"
+
+            with patch.dict(os.environ, {"GAIA_DATA_DIR": str(dir_a)}):
+                result_a = default_pack_dest(workspace)
+            with patch.dict(os.environ, {"GAIA_DATA_DIR": str(dir_b)}):
+                result_b = default_pack_dest(workspace)
+
+            self.assertNotEqual(result_a, result_b)
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +389,24 @@ class TestLinkSourceIntoWorkspace(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestCmdDevOrchestrationPackMode(unittest.TestCase):
+    """Every test here pins GAIA_DATA_DIR to an isolated tmp dir in setUp:
+    the default (pack_dest=None) path now resolves through
+    `default_pack_dest` -> `gaia.paths.cache_dir()`, which falls back to the
+    real `~/.gaia` when GAIA_DATA_DIR is unset. Pinning keeps every test in
+    this class from ever touching the real `~/.gaia`.
+    """
+
+    def setUp(self):
+        self._data_dir_ctx = tempfile.TemporaryDirectory()
+        self._gaia_data_dir = Path(self._data_dir_ctx.name) / "gaia-data"
+        self._gaia_data_dir.mkdir()
+        self._env_patcher = patch.dict(os.environ, {"GAIA_DATA_DIR": str(self._gaia_data_dir)})
+        self._env_patcher.start()
+
+    def tearDown(self):
+        self._env_patcher.stop()
+        self._data_dir_ctx.cleanup()
+
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
         ns = argparse.Namespace()
         ns.workspace = str(workspace)
@@ -424,15 +499,26 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(pack_calls, [])
 
-    def test_default_deletes_tarball_after_success(self):
+    def test_default_pack_dest_persists_and_does_not_pollute_workspace(self):
+        # Prior to the fix, the default pack destination was a
+        # tempfile.TemporaryDirectory() that cmd_dev deleted after a
+        # successful run. Now the default is the stable, persistent
+        # `default_pack_dest(workspace)` path, which is never deleted --
+        # this test asserts both halves: the tarball survives (regression
+        # guard) AND it never lands inside the target workspace itself.
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
+            captured = {}
 
-            # pack_tarball writes the fake tarball itself so we can assert
-            # cmd_dev deleted it afterward.
+            # pack_tarball creates dest_dir itself (mirroring the real
+            # implementation's `dest.mkdir(parents=True, exist_ok=True)`)
+            # since default_pack_dest's directory does not exist yet.
             def fake_pack(source_root, dest_dir=None, **kwargs):
+                Path(dest_dir).mkdir(parents=True, exist_ok=True)
                 tb = Path(dest_dir) / "pkg.tgz"
                 tb.write_bytes(b"x")
+                captured["dest_dir"] = Path(dest_dir)
+                captured["tarball"] = tb
                 return {
                     "action": "created", "path": str(tb), "details": "ok",
                     "tarball": tb, "name": "@jaguilar87/gaia", "version": "9.9.9",
@@ -445,9 +531,53 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
                     rc = cmd_dev(self._make_args(workspace))
 
             self.assertEqual(rc, 0)
-            # Tarball lived in a tmp dir created by cmd_dev -- verified indirectly:
-            # a fresh TemporaryDirectory means nothing leaks into the workspace.
+            # Never leaks into the workspace itself.
             self.assertFalse(any(workspace.glob("*.tgz")))
+            # Persists -- this is the regression guard: the old default
+            # deleted this directory before cmd_dev returned.
+            self.assertTrue(captured["tarball"].exists())
+            self.assertEqual(captured["dest_dir"], default_pack_dest(workspace))
+
+    def test_second_consecutive_pack_run_succeeds_no_enoent(self):
+        # Regression test for the incident: a fresh tempfile.TemporaryDirectory()
+        # per run meant the tarball backing the workspace's `file:` dependency
+        # was deleted before the run even returned, so a *second* `gaia dev`
+        # (or any pnpm install touching the lockfile) failed with ENOENT
+        # because the previous pack destination no longer existed. With a
+        # stable, persistent default_pack_dest, two consecutive runs against
+        # the same workspace must both succeed and resolve to the same dest.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            captured_dests = []
+
+            def fake_pack(source_root, dest_dir=None, **kwargs):
+                dest = Path(dest_dir)
+                dest.mkdir(parents=True, exist_ok=True)
+                captured_dests.append(dest)
+                tb = dest / "pkg.tgz"
+                tb.write_bytes(b"x")
+                return {
+                    "action": "created", "path": str(tb), "details": "ok",
+                    "tarball": tb, "name": "@jaguilar87/gaia", "version": "9.9.9",
+                }
+
+            with patch("cli.dev._pack_helpers.pack_tarball", side_effect=fake_pack), \
+                 patch("cli.dev.install_tarball", return_value={"action": "created", "path": "x", "details": "ok", "package_manager": "npm"}), \
+                 patch("cli.dev.wire_workspace_via_installed_gaia", return_value={"action": "created", "path": "x", "details": "ok"}):
+                with redirect_stdout(io.StringIO()):
+                    rc1 = cmd_dev(self._make_args(workspace))
+                # The destination from run 1 must still be on disk before run
+                # 2 starts -- exactly the state a real `pnpm install` (or a
+                # second `gaia dev`) depends on.
+                self.assertTrue(captured_dests[0].exists())
+
+                with redirect_stdout(io.StringIO()):
+                    rc2 = cmd_dev(self._make_args(workspace))
+
+            self.assertEqual(rc1, 0)
+            self.assertEqual(rc2, 0)
+            self.assertEqual(len(captured_dests), 2)
+            self.assertEqual(captured_dests[0], captured_dests[1])
 
     def test_keep_tarball_preserves_file(self):
         with tempfile.TemporaryDirectory() as tmp:

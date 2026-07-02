@@ -12,7 +12,16 @@ Two modes:
   --mode pack (default)
     1. `npm pack` the CURRENT source tree (via `_pack_helpers.pack_tarball`,
        shared with the Phase-2 `gaia release check` gate -- one pack
-       primitive, not two).
+       primitive, not two) into a STABLE, persistent per-workspace
+       directory: `gaia.paths.cache_dir() / "dev-pack" / workspace_id()`
+       (see `default_pack_dest`), not a `tempfile.TemporaryDirectory()`.
+       The tarball there is overwritten on every run and never
+       auto-deleted, because it is also the target of the consumer
+       workspace's `file:` dependency (its `package.json` and
+       `pnpm-lock.yaml` reference this exact path) -- deleting it out from
+       under that reference is what breaks a later `pnpm install`/lockfile
+       refresh with ENOENT. This makes `gaia dev` with no flags idempotent
+       across repeated runs against the same workspace.
     2. Install the freshly packed tarball into the target workspace's
        `node_modules` (npm or pnpm, auto-detected from lockfile/workspace
        markers).
@@ -48,7 +57,6 @@ import argparse
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -293,6 +301,28 @@ def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool) -> int:
     return rc
 
 
+def default_pack_dest(workspace: Path) -> Path:
+    """Return the stable, persistent pack destination for *workspace*.
+
+    ``cache_dir() / "dev-pack" / workspace_id(workspace)`` -- a pure
+    function of the workspace path and the environment's `GAIA_DATA_DIR`
+    (via `gaia.paths.cache_dir`), so repeated calls for the same workspace
+    under the same data dir always resolve to the same directory. This
+    replaces the old `tempfile.TemporaryDirectory()` default: that
+    directory (and everything in it, including the packed tarball) was
+    deleted before `gaia dev` even returned, but the tarball's path is
+    also what the consumer workspace's `package.json`/`pnpm-lock.yaml`
+    record as a `file:` dependency -- so the very next `pnpm install`
+    (e.g. a routine lockfile refresh) failed with ENOENT because the
+    referenced path no longer existed. A stable, persistent destination
+    makes `gaia dev` (no flags) idempotent: the tarball is overwritten in
+    place on every run and never auto-deleted.
+    """
+    from gaia.paths import cache_dir, workspace_id
+
+    return cache_dir() / "dev-pack" / workspace_id(cwd=workspace)
+
+
 def _run_pack_mode(
     workspace: Path,
     *,
@@ -301,34 +331,34 @@ def _run_pack_mode(
     keep_tarball: bool,
     pack_dest: str | None,
 ) -> int:
-    with tempfile.TemporaryDirectory(prefix="gaia-dev-pack-") as tmp:
-        dest_dir = Path(pack_dest).expanduser().resolve() if pack_dest else Path(tmp)
+    # keep_tarball is retained for CLI compatibility only: now that the
+    # pack destination is always stable and persistent (never a tmp dir
+    # cleaned up on exit), there is nothing left to delete, so the flag is
+    # a no-op.
+    del keep_tarball
 
-        pack_res = _pack_helpers.pack_tarball(_PACKAGE_ROOT, dest_dir=dest_dir)
-        _report_step(name="npm pack", result=pack_res, quiet=quiet, verbose=verbose)
-        if pack_res["action"] == "error":
-            return 1
+    dest_dir = (
+        Path(pack_dest).expanduser().resolve()
+        if pack_dest
+        else default_pack_dest(workspace)
+    )
 
-        tarball = pack_res["tarball"]
-        try:
-            install_res = install_tarball(workspace, tarball)
-            pm = install_res.get("package_manager", "npm")
-            _report_step(name=f"{pm} install", result=install_res, quiet=quiet, verbose=verbose)
-            if install_res["action"] == "error":
-                return 1
+    pack_res = _pack_helpers.pack_tarball(_PACKAGE_ROOT, dest_dir=dest_dir)
+    _report_step(name="npm pack", result=pack_res, quiet=quiet, verbose=verbose)
+    if pack_res["action"] == "error":
+        return 1
 
-            wire_res = wire_workspace_via_installed_gaia(workspace, quiet=quiet)
-            _report_step(name="gaia install (wire)", result=wire_res, quiet=quiet, verbose=verbose)
-            if wire_res["action"] == "error":
-                return 1
-        finally:
-            if keep_tarball or pack_dest is not None:
-                pass  # caller-managed destination or explicit keep -- leave it in place
-            elif tarball.exists():
-                try:
-                    tarball.unlink()
-                except OSError:
-                    pass
+    tarball = pack_res["tarball"]
+    install_res = install_tarball(workspace, tarball)
+    pm = install_res.get("package_manager", "npm")
+    _report_step(name=f"{pm} install", result=install_res, quiet=quiet, verbose=verbose)
+    if install_res["action"] == "error":
+        return 1
+
+    wire_res = wire_workspace_via_installed_gaia(workspace, quiet=quiet)
+    _report_step(name="gaia install (wire)", result=wire_res, quiet=quiet, verbose=verbose)
+    if wire_res["action"] == "error":
+        return 1
 
     if not quiet:
         print(
@@ -350,10 +380,12 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description=(
             "Collapse the manual pack+add+install loop into one command.\n"
             "\n"
-            "  --mode pack (default): npm pack this source tree, install the\n"
-            "  tarball into the target workspace's node_modules (npm or pnpm),\n"
-            "  then wire .claude/ + bootstrap the DB via the freshly installed\n"
-            "  copy's own `gaia install`. Reflects a real shippable version.\n"
+            "  --mode pack (default): npm pack this source tree into a stable,\n"
+            "  persistent per-workspace path (default_pack_dest, override with\n"
+            "  --pack-dest), install the tarball into the target workspace's\n"
+            "  node_modules (npm or pnpm), then wire .claude/ + bootstrap the DB\n"
+            "  via the freshly installed copy's own `gaia install`. Idempotent\n"
+            "  across repeated runs and reflects a real shippable version.\n"
             "\n"
             "  --mode link: symlink node_modules/@jaguilar87/gaia straight at\n"
             "  this source tree (no pack, no install) for instant iteration.\n"
@@ -394,14 +426,23 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         dest="keep_tarball",
         action="store_true",
         default=False,
-        help="Do not delete the packed tarball after install (ignored in --mode link)",
+        help=(
+            "Deprecated, kept for compatibility: the packed tarball now always "
+            "persists at a stable per-workspace location, so this is a no-op "
+            "(ignored in --mode link)"
+        ),
     )
     p.add_argument(
         "--pack-dest",
         dest="pack_dest",
         type=str,
         default=None,
-        help="Directory to write the packed tarball into (default: a tmp dir, auto-cleaned)",
+        help=(
+            "Directory to write the packed tarball into (default: a stable, "
+            "persistent path under gaia.paths.cache_dir(), keyed by the "
+            "workspace's identity -- overwritten on every run, never "
+            "auto-deleted, so the workspace's file: dependency always resolves)"
+        ),
     )
     return p
 
