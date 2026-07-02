@@ -44,7 +44,20 @@ jobs:
         # validates precisely what npm publish would ship — not the working tree.
         id: pack
         run: |
-          TARBALL=$(npm pack --silent)
+          # Use `npm pack --json` and parse the `filename` field (mirrors
+          # bin/cli/_pack_helpers.py's pattern) instead of trusting `npm pack
+          # --silent`'s stdout to be a single clean line. `--silent` only
+          # quiets npm's OWN log lines -- it does not touch the `prepack`
+          # lifecycle script's stdout, which is inherited into this same
+          # stream. Any diagnostic the lifecycle script prints (build-plugin.py
+          # regenerating .claude-plugin/plugin.json + hooks/hooks.json) would
+          # otherwise make TARBALL multi-line and break the single-line
+          # $GITHUB_OUTPUT append ("Invalid format"). With --json, npm always
+          # emits a JSON array as the LAST stdout content, so parsing the
+          # `filename` field from it is robust even if lifecycle noise
+          # precedes it on stdout.
+          PACK_JSON=$(npm pack --json)
+          TARBALL=$(node -p "JSON.parse(process.argv[1].slice(process.argv[1].indexOf('[')))[0].filename" "$PACK_JSON")
           echo "tarball=${PWD}/${TARBALL}" >> "$GITHUB_OUTPUT"
           echo "Packed ${TARBALL}"
 

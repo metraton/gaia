@@ -318,7 +318,15 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
         print(f"Error: --manifests-only target is not a directory: {output_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Regenerating root manifests for plugin '{plugin_name}' in: {output_dir}")
+    # Diagnostics go to stderr, never stdout: `npm pack` runs this script via
+    # the `prepack` lifecycle hook, and `npm pack`/`npm pack --json` both
+    # forward the child's stdout into their own stdout. Any diagnostic line
+    # printed here would land inside `$(npm pack --silent)` (breaking
+    # single-line consumers like publish.yml's $GITHUB_OUTPUT append) or
+    # before the JSON array `npm pack --json` emits (bin/cli/_pack_helpers.py
+    # already defends against that by slicing from the first '[', but stdout
+    # should carry only the tool's actual data, never incidental narration).
+    print(f"Regenerating root manifests for plugin '{plugin_name}' in: {output_dir}", file=sys.stderr)
 
     # hooks/hooks.json
     hooks_json = generate_hooks_json(manifest)
@@ -327,7 +335,7 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
     with open(hooks_json_path, "w") as f:
         json.dump(hooks_json, f, indent=2)
         f.write("\n")
-    print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)")
+    print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)", file=sys.stderr)
 
     # .claude-plugin/plugin.json (inline hooks)
     plugin_json = generate_plugin_json(manifest)
@@ -338,8 +346,8 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
         json.dump(plugin_json, f, indent=2)
         f.write("\n")
     inline_events = len(plugin_json.get("hooks", {}))
-    print(f"  Generated: .claude-plugin/plugin.json (inline hooks: {inline_events} events)")
-    print("Root manifests regenerated.")
+    print(f"  Generated: .claude-plugin/plugin.json (inline hooks: {inline_events} events)", file=sys.stderr)
+    print("Root manifests regenerated.", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
