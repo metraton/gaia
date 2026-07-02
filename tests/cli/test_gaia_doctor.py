@@ -57,9 +57,9 @@ def healthy_project(tmp_path):
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
 
-    # plugin-registry.json
+    # plugin-registry.json ("gaia" is the canonical single-plugin identity)
     (claude_dir / "plugin-registry.json").write_text(json.dumps({
-        "installed": [{"name": "gaia-ops"}],
+        "installed": [{"name": "gaia"}],
         "source": "local-dev",
     }))
 
@@ -72,15 +72,15 @@ def healthy_project(tmp_path):
     agents_dir = claude_dir / "agents"
     (agents_dir / "gaia-orchestrator.md").write_text("---\nagent: gaia-orchestrator\n---")
 
-    # settings.local.json
+    # settings.local.json -- hooks carry the full canonical event set, matching
+    # what merge_local_hooks copies from hooks.json in npm mode.
     (claude_dir / "settings.local.json").write_text(json.dumps({
         "agent": "gaia-orchestrator",
-        "hooks": {
-            "PreToolUse": [{"command": "python"}],
-            "PostToolUse": [{"command": "python"}],
-            "UserPromptSubmit": [{"command": "python"}],
-            "SessionStart": [{"command": "python"}],
-        },
+        "hooks": {ev: [{"command": "python"}] for ev in [
+            "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
+            "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
+            "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+        ]},
         "permissions": {
             "allow": ["Bash(*)"],
             "deny": ["rm -rf /"],
@@ -93,9 +93,9 @@ def healthy_project(tmp_path):
     # Hook files
     hooks_dir = claude_dir / "hooks"
     for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
-              "session_start.py", "subagent_stop.py", "subagent_start.py",
-              "stop_hook.py", "task_completed.py", "post_compact.py",
-              "elicitation_result.py"]:
+              "session_start.py", "session_end_hook.py", "subagent_stop.py",
+              "subagent_start.py", "stop_hook.py", "task_completed.py",
+              "pre_compact.py", "post_compact.py", "elicitation_result.py"]:
         (hooks_dir / h).write_text("# hook stub")
 
     # project-context.json
@@ -157,8 +157,20 @@ class TestCheckPluginMode:
     """Test plugin mode detection."""
 
     def test_ops_mode(self, healthy_project):
-        """Should detect ops mode from plugin-registry.json."""
+        """Should detect ops mode from plugin-registry.json (canonical name "gaia")."""
         r = doctor_mod.check_plugin_mode(healthy_project)
+        assert r["severity"] == "pass"
+        assert "ops" in r["detail"]
+
+    def test_ops_mode_legacy_gaia_ops(self, tmp_path):
+        """Registries written before the rename (name "gaia-ops") still resolve to ops."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "plugin-registry.json").write_text(json.dumps({
+            "installed": [{"name": "gaia-ops"}],
+            "source": "local-dev",
+        }))
+        r = doctor_mod.check_plugin_mode(tmp_path)
         assert r["severity"] == "pass"
         assert "ops" in r["detail"]
 
@@ -268,6 +280,45 @@ class TestCheckHookFiles:
         (healthy_project / ".claude" / "hooks" / "post_compact.py").unlink()
         r = doctor_mod.check_hook_files(healthy_project)
         assert r["severity"] == "warning"
+
+
+class TestCheckAgentResolution:
+    """Test check_agent_resolution -- surface-routing agents resolve to files."""
+
+    def _write_routing(self, project_root: Path, surfaces: dict, recon: str | None = None):
+        cfg_dir = project_root / ".claude" / "config"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        payload = {"version": "1.0", "surfaces": surfaces}
+        if recon:
+            payload["reconnaissance_agent"] = recon
+        (cfg_dir / "surface-routing.json").write_text(json.dumps(payload))
+
+    def test_all_agents_resolve_passes(self, healthy_project):
+        """When every routed primary_agent maps to an existing .md -> pass."""
+        agents = healthy_project / ".claude" / "agents"
+        (agents / "gaia-system.md").write_text("---\n---")
+        (agents / "developer.md").write_text("---\n---")
+        self._write_routing(healthy_project, {
+            "gaia_system": {"primary_agent": "gaia-system"},
+            "app_ci_tooling": {"primary_agent": "developer"},
+        }, recon="developer")
+        r = doctor_mod.check_agent_resolution(healthy_project)
+        assert r["severity"] == "pass"
+
+    def test_missing_agent_errors(self, healthy_project):
+        """A primary_agent with no matching .md -> error naming the agent."""
+        self._write_routing(healthy_project, {
+            "iac": {"primary_agent": "platform-architect"},  # no .md created
+        })
+        r = doctor_mod.check_agent_resolution(healthy_project)
+        assert r["severity"] == "error"
+        assert "platform-architect" in r["detail"]
+
+    def test_no_routing_config_is_info(self, healthy_project):
+        """Absent surface-routing.json is advisory, not an error."""
+        r = doctor_mod.check_agent_resolution(healthy_project)
+        assert r["severity"] == "info"
+        assert r["ok"] is True
 
 
 class TestCheckProjectContext:
@@ -707,11 +758,12 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 20 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # 21 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
         # last-install-error, workspace-initialized, schema-version) +
         # 1 schema-DDL-consistency added by the migration framework rewrite +
-        # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1).
-        assert len(data["checks"]) == 20
+        # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
+        # 1 agent-routing (surface-routing primary agents resolve to files).
+        assert len(data["checks"]) == 21
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1120,21 +1172,20 @@ class TestCmdDoctorFix:
 
         (claude_dir / "settings.local.json").write_text(json.dumps({
             "agent": "gaia-orchestrator",
-            "hooks": {
-                "PreToolUse": [{"command": "python"}],
-                "PostToolUse": [{"command": "python"}],
-                "UserPromptSubmit": [{"command": "python"}],
-                "SessionStart": [{"command": "python"}],
-            },
+            "hooks": {ev: [{"command": "python"}] for ev in [
+                "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
+                "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
+                "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+            ]},
             "permissions": {"allow": ["Bash(*)"], "deny": ["rm -rf /"]},
             "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "true"},
         }))
 
         hooks_dir = claude_dir / "hooks"
         for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
-                  "session_start.py", "subagent_stop.py", "subagent_start.py",
-                  "stop_hook.py", "task_completed.py", "post_compact.py",
-                  "elicitation_result.py"]:
+                  "session_start.py", "session_end_hook.py", "subagent_stop.py",
+                  "subagent_start.py", "stop_hook.py", "task_completed.py",
+                  "pre_compact.py", "post_compact.py", "elicitation_result.py"]:
             (hooks_dir / h).write_text("# hook stub")
 
         pc_dir = claude_dir / "project-context"
