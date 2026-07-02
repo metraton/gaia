@@ -368,11 +368,11 @@ class GitScanner(BaseScanner):
         return ["git"]
 
     def scan(self, root: Path) -> ScanResult:
-        """Scan the project for git configuration.
+        """Scan the project for git configuration (single-repo section data).
 
-        In multi-repo mode (workspace_info.is_multi_repo), scans ALL
-        subdirectories with .git and produces a 'repos' array. In
-        single-repo mode, behaves as before.
+        Produces the ``git`` section for ``root`` when it is itself a git repo.
+        Multi-repo classification is NOT this scanner's concern -- it is owned
+        by the deterministic classifier in :mod:`tools.scan.classify`.
 
         Args:
             root: Absolute path to the project root directory.
@@ -383,23 +383,11 @@ class GitScanner(BaseScanner):
         start_ms = time.monotonic() * 1000
         warnings: List[str] = []
 
-        # Multi-repo mode: scan all repo subdirectories
-        if self.workspace_info and self.workspace_info.is_multi_repo:
-            section = self._scan_multi_repo(root, warnings)
-            elapsed = (time.monotonic() * 1000) - start_ms
-            return self.make_result(
-                sections={"git": section},
-                warnings=warnings,
-                duration_ms=elapsed,
-            )
-
-        # Single-repo mode (original behavior)
         git_dir = root / ".git"
         git_root = root
 
         if not git_dir.is_dir():
-            # Look in immediate subdirectories for .git
-            git_dir, git_root = self._find_git_in_subdirs(root)
+            git_dir = None
 
         if git_dir is None:
             # No .git directory found at root or in subdirectories
@@ -461,10 +449,17 @@ class GitScanner(BaseScanner):
             duration_ms=elapsed,
         )
 
+    # DEAD CODE — remove after local-install validation.
+    # The multi-repo scan / subdir-descent inference layer is superseded by the
+    # deterministic --workspace classifier (tools.scan.classify). Kept dormant
+    # (never called by scan()) so a local install can validate the new path
+    # before this block is deleted in a separate phase.
     def _scan_multi_repo(
         self, root: Path, warnings: List[str]
     ) -> Dict[str, Any]:
-        """Scan all repos in a multi-repo workspace.
+        """DEAD CODE — remove after local-install validation.
+
+        Scan all repos in a multi-repo workspace.
 
         Produces a section with 'repos' array where each entry has:
         name, path, remote_url, platform, default_branch.
@@ -528,7 +523,9 @@ class GitScanner(BaseScanner):
     def _find_git_in_subdirs(
         root: Path,
     ) -> Tuple[Optional[Path], Path]:
-        """Look for .git in immediate subdirectories.
+        """DEAD CODE — remove after local-install validation.
+
+        Look for .git in immediate subdirectories.
 
         Args:
             root: Scan root directory.

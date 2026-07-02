@@ -44,7 +44,12 @@ from tools.scan.role_detector import detect_role
 # ---------------------------------------------------------------------------
 
 def resolve_identity(project_path: Path) -> str:
-    """Resolve workspace identity from the git remote of `project_path` via B0.
+    """DEAD CODE — remove after local-install validation.
+
+    Resolve workspace identity from the git remote of `project_path` via B0.
+    Superseded by the deterministic ``--workspace``-driven classifier
+    (tools.scan.classify); kept dormant (uncalled) so a local install can
+    validate the new path before this is deleted in a separate phase.
 
     Returns:
         Canonical identity string (host/owner/repo) or the path basename
@@ -139,7 +144,6 @@ def populate_project(
 
     name = project_name or project_path.name
     role = detect_role(project_path)
-    identity = resolve_identity(project_path)
     project_identity = resolve_project_identity(project_path)
     remote_url = _git_remote_origin(project_path)
     platform = _platform_from_remote(remote_url)
@@ -179,7 +183,7 @@ def populate_project(
         "applied": applied,
         "rejected": 1 - applied,
         "role": role,
-        "identity": identity,
+        "identity": workspace,
         "project_identity": project_identity,
         "name": name,
         "group_name": group_name,
@@ -640,50 +644,26 @@ def scan_workspace_to_store(
         agent: Agent name for permission enforcement.
         db_path: Optional explicit DB path (test override).
 
-    Canonical classification rule (gaia-scan-overhaul):
+    Deterministic attribution (post inference-removal):
 
     * A **project** is a dir with ``.git`` (discovered by :func:`_list_repos`).
-    * A **workspace** is a dir with a Gaia installation, detected by the
-      mode-agnostic ``.claude/plugin-registry.json`` signal
-      (:func:`_is_installed_gaia_workspace`). The CLI ``root`` is always a
-      workspace too (the caller resolved its identity).
-    * Intermediate folders (no ``.git``, no install) are NOT entities; their
-      projects are attributed to the **nearest installed-ancestor workspace**
-      within the scanned tree, with ``group_name`` = the container directory
-      between that workspace and the project. Depth is variable.
-    * A dir may be BOTH a project and a workspace -> it produces a ``projects``
-      row (under its nearest installed ANCESTOR, or ``root`` as fallback) AND
-      a ``workspaces`` / ``gaia_installations`` row of its own.
-    * When no installed ancestor exists in the tree, the project falls back to
-      the CLI-``root`` workspace (previous behaviour).
+    * Every discovered repo is attributed to the single caller-provided
+      ``workspace`` -- there is NO installed-workspace detection and NO
+      nearest-installed-ancestor guessing. The caller (the scan classifier in
+      :mod:`tools.scan.classify`, or the migrator) has already decided which
+      workspace this root belongs to.
+    * ``group_name`` = the immediate container directory of the repo when it
+      does not sit directly under ``root``; ``None`` when it does. This records
+      the grouping folder without inferring a separate workspace from it.
 
     Returns:
         Dict mapping ``"<workspace>/<project>"`` keys to per-repo result dicts,
-        plus a ``__workspace__`` key for workspace-scoped populators
-        (``gaia_installations``) of every detected installed workspace, plus a
-        ``__failures__`` key holding a list of per-project failure dicts
+        plus a ``__failures__`` key holding a list of per-project failure dicts
         (``{"workspace", "project", "path", "error"}``) for repos whose
         population raised -- the scan isolates each repo so one failure does not
         abort the whole scan (AC-4, soft-delete).
     """
     project_dirs = _list_repos(root)
-
-    # Detect installed sub-workspaces in the tree (root included). Each becomes
-    # an attribution anchor: a project is owned by the nearest one above it.
-    installed_workspaces = _list_installed_workspaces(root)
-    installed_set: set[Path] = set(installed_workspaces)
-    # The CLI root is always a workspace anchor even if it lacks the registry
-    # signal (the caller already resolved/owns its identity).
-    installed_set.add(root)
-
-    # Map each installed-workspace path -> its workspace identity. The root
-    # uses the caller-provided ``workspace`` name verbatim; detected children
-    # resolve identity from their own path (git remote or basename).
-    ws_name_by_path: dict[Path, str] = {root: workspace}
-    for ws_path in installed_workspaces:
-        if ws_path == root:
-            continue
-        ws_name_by_path[ws_path] = resolve_identity(ws_path)
 
     results: dict = {}
     # Per-project isolation (AC-4): a single problematic repo (bad column,
@@ -695,17 +675,13 @@ def scan_workspace_to_store(
     for project_path in project_dirs:
         project_name = project_path.name
 
-        # Attribution: nearest installed STRICT ancestor wins; else the root.
-        anchor = _nearest_installed_ancestor(project_path, installed_set, root)
-        if anchor is None:
-            anchor = root
-        target_workspace = ws_name_by_path.get(anchor, workspace)
+        # Deterministic: every repo belongs to the caller-provided workspace.
+        target_workspace = workspace
 
-        # group_name = container directory between the anchor workspace and the
-        # project. When the project sits directly under the anchor, there is no
-        # intermediate container -> group_name stays None.
+        # group_name = the immediate container of the repo when it is not
+        # directly under root; None when it sits directly at root.
         container = project_path.parent
-        group_name: str | None = container.name if container != anchor else None
+        group_name: str | None = container.name if container != root else None
 
         try:
             project_res = populate_project(
@@ -751,34 +727,23 @@ def scan_workspace_to_store(
             "libraries": libs_res,
         }
 
-    # Workspace-scoped populator: gaia_installations runs once per detected
-    # installed workspace (and the root). Registering installations through
-    # ``bulk_upsert`` also ensures the ``workspaces`` row exists for each
-    # detected child workspace (canonical rule 2 + 4).
+    # Workspace-scoped populator: ensure the single workspace row exists and
+    # record its Gaia installation footprint (once, for the caller-provided
+    # workspace anchored at root). No sub-workspace detection.
     from gaia.store.writer import set_workspace_last_scan_at
 
     workspace_results: dict = {}
-    for ws_path in sorted(installed_set):
-        ws_name = ws_name_by_path.get(ws_path)
-        if ws_name is None:
-            ws_name = resolve_identity(ws_path)
-            ws_name_by_path[ws_path] = ws_name
-        # Ensure the workspaces row exists for every detected workspace,
-        # independent of whether an installation row is emitted (canonical
-        # rule 2 + 4: a registry-detected dir is a workspace regardless of the
-        # node_modules / skills+agents footprint). The CLI root is also marked
-        # here for child anchors; the CLI separately records its own root.
-        try:
-            set_workspace_last_scan_at(ws_name, db_path=db_path)
-        except Exception:  # pragma: no cover -- non-fatal
-            pass
-        gaia_inst_res = populate_gaia_installations(
-            ws_name, ws_path, agent, db_path=db_path
-        )
-        workspace_results[ws_name] = {
-            "path": str(ws_path),
-            "gaia_installations": gaia_inst_res,
-        }
+    try:
+        set_workspace_last_scan_at(workspace, db_path=db_path)
+    except Exception:  # pragma: no cover -- non-fatal
+        pass
+    gaia_inst_res = populate_gaia_installations(
+        workspace, root, agent, db_path=db_path
+    )
+    workspace_results[workspace] = {
+        "path": str(root),
+        "gaia_installations": gaia_inst_res,
+    }
     results["__workspace__"] = workspace_results
     # Per-project isolation (AC-4): collected failures, empty when all repos
     # populated cleanly. Callers (bin/cli/scan.py:_populate_store) consume this
@@ -961,8 +926,17 @@ def _is_installed_gaia_workspace(directory: Path) -> bool:
     return "gaia-ops" in names or "gaia-security" in names
 
 
+# DEAD CODE — remove after local-install validation.
+# The installed-workspace attribution layer (_list_installed_workspaces,
+# _walk_for_installs, _nearest_installed_ancestor) inferred which workspace a
+# repo belonged to by walking for Gaia install signals. It is superseded by the
+# deterministic --workspace classifier (tools.scan.classify) and is NO LONGER
+# CALLED by scan_workspace_to_store. Kept dormant so a local install can
+# validate the new path before this block is deleted in a separate phase.
 def _list_installed_workspaces(root: Path, max_depth: int = 4) -> list[Path]:
-    """Return directories under `root` (inclusive) that carry a Gaia install.
+    """DEAD CODE — remove after local-install validation.
+
+    Return directories under `root` (inclusive) that carry a Gaia install.
 
     A directory qualifies when :func:`_is_installed_gaia_workspace` returns
     True. The walk uses the SAME bounding (``max_depth``) and the SAME
@@ -994,7 +968,9 @@ def _walk_for_installs(
     max_depth: int,
     installed: list[Path],
 ) -> None:
-    """Recursive helper for :func:`_list_installed_workspaces`.
+    """DEAD CODE — remove after local-install validation.
+
+    Recursive helper for :func:`_list_installed_workspaces`.
 
     Descends into every non-skipped child directory (depth-bounded), testing
     each for the Gaia installation signal. Does not stop at git repos.
@@ -1021,7 +997,9 @@ def _nearest_installed_ancestor(
     installed: set[Path],
     scan_root: Path,
 ) -> Path | None:
-    """Return the deepest installed workspace that is a STRICT ancestor.
+    """DEAD CODE — remove after local-install validation.
+
+    Return the deepest installed workspace that is a STRICT ancestor.
 
     Walks ``project_path``'s parents from nearest to farthest, stopping at
     ``scan_root`` (inclusive), and returns the first parent present in

@@ -51,7 +51,6 @@ class TestPopulateProjectGroupName:
         _make_repo(tmp_path)
         with (
             patch("tools.scan.store_populator.detect_role", return_value="application"),
-            patch("tools.scan.store_populator.resolve_identity", return_value="test/ws/repo"),
             patch("tools.scan.store_populator._git_remote_origin", return_value=None),
             patch("tools.scan.store_populator._detect_primary_language", return_value=None),
             # upsert_project is imported lazily inside populate_project; patch the

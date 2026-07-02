@@ -350,11 +350,17 @@ class TestNoGitDirectory:
 
 
 class TestGitInSubdirectory:
-    """Test that scanner finds .git in immediate subdirectories."""
+    """Post inference-removal: the git scanner reads ONLY root/.git.
 
-    def test_finds_git_in_subdirectory(
+    Subdirectory descent (``_find_git_in_subdirs``) was removed; walking down
+    for repos and classifying them is now owned by tools.scan.classify. The git
+    scanner produces null section data when ``root`` itself is not a repo.
+    """
+
+    def test_git_in_subdir_is_not_picked_up(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
+        # A .git in a subdirectory must NOT be surfaced by the scanner anymore.
         sub = tmp_path / "my-monorepo"
         sub.mkdir()
         create_git_dir(
@@ -364,11 +370,10 @@ class TestGitInSubdirectory:
         )
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["platform"] == "gitlab"
-        assert git_section["default_branch"] == "main"
-        assert len(git_section["remotes"]) >= 1
+        assert git_section["platform"] is None
+        assert git_section["remotes"] == []
 
-    def test_git_root_field_set_when_in_subdir(
+    def test_git_root_field_never_set(
         self, scanner: GitScanner, tmp_path: Path
     ) -> None:
         sub = tmp_path / "qxo-monorepo"
@@ -376,7 +381,7 @@ class TestGitInSubdirectory:
         create_git_dir(sub)
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
-        assert git_section["git_root"] == "qxo-monorepo"
+        assert "git_root" not in git_section
 
     def test_git_root_not_set_when_at_root(
         self, scanner: GitScanner, tmp_path: Path
@@ -385,15 +390,6 @@ class TestGitInSubdirectory:
         result = scanner.scan(tmp_path)
         git_section = result.sections["git"]
         assert "git_root" not in git_section
-
-    def test_warning_when_git_in_subdir(
-        self, scanner: GitScanner, tmp_path: Path
-    ) -> None:
-        sub = tmp_path / "inner-repo"
-        sub.mkdir()
-        create_git_dir(sub)
-        result = scanner.scan(tmp_path)
-        assert any("subdirectory" in w for w in result.warnings)
 
     def test_no_git_anywhere_returns_nulls(
         self, scanner: GitScanner, tmp_path: Path

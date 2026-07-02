@@ -1,28 +1,31 @@
 """
-Unit tests for the CANONICAL classification rule of the scanner
-(brief gaia-scan-overhaul).
+Unit tests for scan_workspace_to_store's DETERMINISTIC classification (post
+inference-removal).
 
-The canonical rule:
-  * A **project** is a dir with ``.git``.
-  * A **workspace** is a dir with a Gaia installation, detected by the
-    mode-agnostic signal ``.claude/plugin-registry.json`` whose
-    ``installed[*].name`` includes ``gaia-ops`` / ``gaia-security``.
-    A third-party ``.claude`` WITHOUT that registry must NOT register.
-  * Intermediate folders (no ``.git``, no install) are not entities; their
-    projects are attributed to the nearest installed-ancestor workspace, with
-    ``group_name`` = the container between the workspace and the project.
-  * A dir may be BOTH a project and a workspace -> rows in both tables.
-  * When no installed ancestor exists in the tree, projects fall back to the
-    CLI-root workspace.
+The deterministic rule:
+  * A **project** is a dir with ``.git`` (discovered by ``_list_repos``).
+  * Every discovered repo is attributed to the SINGLE caller-provided
+    ``workspace``. There is NO sub-workspace detection and NO
+    nearest-installed-ancestor inference -- the caller (tools.scan.classify,
+    driven by ``--workspace``) has already decided the workspace.
+  * ``group_name`` = the immediate container of the repo when it is not directly
+    under ``root``; ``None`` when it sits directly at ``root``.
+  * The install-signal helpers (``_is_installed_gaia_workspace``,
+    ``_list_installed_workspaces``, ``_nearest_installed_ancestor``) still exist
+    but are DEAD CODE -- kept dormant and NOT called by scan_workspace_to_store.
+    They are exercised here only as pure functions to guard against accidental
+    breakage before their scheduled removal.
 
 Coverage:
   (1) a git dir is registered as a project WITH its path populated.
-  (2) a dir with the Gaia registry IS a workspace; a third-party .claude is NOT.
-  (3) a project under an intermediate folder is attributed to the nearest
-      installed-ancestor workspace (not the root), with group_name = container.
-  (4) the real-world aaxis/ tree: nfi is a workspace, nfi-oro-com is a project
-      of nfi with its path; "list projects of nfi" returns nfi-oro-com.
-  (5) a dir that is both git + install appears in BOTH tables.
+  (2) install-signal helpers (dead code) still classify a Gaia registry vs a
+      third-party .claude correctly as pure functions.
+  (3) a project under an intermediate folder is attributed to the caller
+      workspace, with group_name = the repo's immediate container.
+  (4) the real-world aaxis/ tree: all repos are owned by the caller workspace;
+      no separate sub-workspace is registered.
+  (5) a dir that is both git + install is a single project under the caller
+      workspace (no self-attribution, no separate sub-workspace).
 
 Test isolation:
   * GAIA_DATA_DIR is redirected to a tmp dir so we never touch ~/.gaia/gaia.db.
@@ -219,46 +222,44 @@ class TestProjectPathPopulated:
 
 
 # ---------------------------------------------------------------------------
-# (3) attribution to nearest installed-ancestor workspace
+# (3) DETERMINISTIC attribution: every repo belongs to the caller-provided
+# workspace (nearest-installed-ancestor inference was removed).
+#
+# scan_workspace_to_store no longer detects sub-workspaces or attributes a repo
+# to a nearest installed ancestor. The caller (tools.scan.classify, driven by
+# --workspace) has already decided the workspace; the populator records every
+# discovered repo under it. group_name = the immediate container of the repo
+# when it is not directly under root, else None.
 # ---------------------------------------------------------------------------
 
-class TestAttributionToNearestWorkspace:
-    def test_project_attributed_to_nearest_not_root(self, tmp_db, tmp_path):
-        # root "ws" (CLI anchor, no install) / nfi (install) / group / proj
+class TestDeterministicAttribution:
+    def test_all_repos_attributed_to_caller_workspace(self, tmp_db, tmp_path):
+        # root "ws" / nfi (install, ignored as a signal) / group / proj
         nfi = tmp_path / "nfi"
         nfi.mkdir()
-        _make_gaia_install(nfi)
+        _make_gaia_install(nfi)  # install signal is IGNORED now
         proj = nfi / "group" / "proj"
         _make_repo(proj)
 
         scan_workspace_to_store("ws", tmp_path, "scanner", db_path=tmp_db)
 
-        from tools.scan.store_populator import resolve_identity
-        nfi_ws = resolve_identity(nfi)
-
-        # The project belongs to nfi, NOT to the root "ws".
-        root_rows = _project_rows(tmp_db, "ws")
-        nfi_rows = _project_rows(tmp_db, nfi_ws)
-        assert root_rows == [], f"project should not be under root ws: {root_rows}"
-        assert len(nfi_rows) == 1
-        name, group_name, path = nfi_rows[0]
+        # The project belongs to the caller-provided workspace "ws", regardless
+        # of the intermediate install signal.
+        rows = _project_rows(tmp_db, "ws")
+        assert len(rows) == 1, f"expected 1 project under 'ws', got {rows}"
+        name, group_name, path = rows[0]
         assert name == "proj"
-        # group_name = container between nfi and proj == "group"
+        # group_name = the immediate container of the repo (its parent dir).
         assert group_name == "group", f"expected group_name='group', got {group_name!r}"
         assert path == str(proj)
 
-    def test_project_directly_under_workspace_has_no_group(self, tmp_db, tmp_path):
-        nfi = tmp_path / "nfi"
-        nfi.mkdir()
-        _make_gaia_install(nfi)
-        proj = nfi / "proj"
+    def test_project_directly_under_root_has_no_group(self, tmp_db, tmp_path):
+        proj = tmp_path / "proj"
         _make_repo(proj)
 
         scan_workspace_to_store("ws", tmp_path, "scanner", db_path=tmp_db)
 
-        from tools.scan.store_populator import resolve_identity
-        nfi_ws = resolve_identity(nfi)
-        rows = _project_rows(tmp_db, nfi_ws)
+        rows = _project_rows(tmp_db, "ws")
         assert len(rows) == 1
         name, group_name, path = rows[0]
         assert name == "proj"
@@ -266,14 +267,15 @@ class TestAttributionToNearestWorkspace:
 
 
 # ---------------------------------------------------------------------------
-# (4) real-world aaxis/ tree
+# (4) real-world aaxis/ tree, DETERMINISTIC: all repos under the caller
+# workspace, no sub-workspace detection.
 # ---------------------------------------------------------------------------
 
 class TestAaxisTree:
-    def test_nfi_is_workspace_and_owns_nfi_oro_com(self, tmp_db, tmp_path):
-        # aaxis/ (CLI root, no install)
-        #   nfi/ (install)            -> workspace
-        #     nfi-oro-com/ (.git)     -> project of nfi
+    def test_all_repos_owned_by_caller_workspace(self, tmp_db, tmp_path):
+        # aaxis/ (caller workspace)
+        #   nfi/ (install signal, IGNORED)
+        #     nfi-oro-com/ (.git)  -> project of aaxis, group_name='nfi'
         aaxis = tmp_path
         nfi = aaxis / "nfi"
         nfi.mkdir()
@@ -283,62 +285,49 @@ class TestAaxisTree:
 
         scan_workspace_to_store("aaxis", aaxis, "scanner", db_path=tmp_db)
 
-        from tools.scan.store_populator import resolve_identity
-        nfi_ws = resolve_identity(nfi)
-
-        # nfi is a workspace row.
-        ws_names = _workspace_names(tmp_db)
-        assert nfi_ws in ws_names, f"nfi not registered as workspace; have {ws_names}"
-
-        # "list projects of workspace nfi" -> nfi-oro-com, with its path + workspace.
-        nfi_projects = _project_rows(tmp_db, nfi_ws)
-        assert len(nfi_projects) == 1
-        name, group_name, path = nfi_projects[0]
+        # "list projects of workspace aaxis" -> nfi-oro-com, container = nfi.
+        aaxis_projects = _project_rows(tmp_db, "aaxis")
+        assert len(aaxis_projects) == 1
+        name, group_name, path = aaxis_projects[0]
         assert name == "nfi-oro-com"
-        assert group_name is None  # sits directly under nfi
+        assert group_name == "nfi", f"expected group_name='nfi', got {group_name!r}"
         assert path == str(oro)
 
-        # The root aaxis workspace owns NO projects (everything is under nfi).
-        assert _project_rows(tmp_db, "aaxis") == []
-
-        # gaia_installations row exists for the nfi workspace.
-        con = sqlite3.connect(str(tmp_db))
-        try:
-            inst = con.execute(
-                "SELECT COUNT(*) FROM gaia_installations WHERE workspace = ?",
-                (nfi_ws,),
-            ).fetchone()[0]
-        finally:
-            con.close()
-        assert inst >= 1, "gaia_installations row missing for nfi"
+        # No separate 'nfi' workspace row is created (no sub-workspace detection).
+        ws_names = _workspace_names(tmp_db)
+        assert "aaxis" in ws_names
+        from tools.scan.store_populator import resolve_identity
+        nfi_ws = resolve_identity(nfi)
+        assert nfi_ws not in ws_names or nfi_ws == "aaxis", (
+            f"deterministic scan must not register a separate 'nfi' workspace; "
+            f"have {ws_names}"
+        )
 
 
 # ---------------------------------------------------------------------------
-# (5) dir that is BOTH a project and a workspace
+# (5) a dir that is BOTH git + install is a single project under the caller
+# workspace (no self-attribution, no separate sub-workspace).
 # ---------------------------------------------------------------------------
 
 class TestDirIsBothProjectAndWorkspace:
-    def test_appears_in_both_tables(self, tmp_db, tmp_path):
-        # root "ws" (CLI anchor) / both (.git AND install)
+    def test_git_and_install_dir_is_one_project(self, tmp_db, tmp_path):
+        # root "ws" / both (.git AND install)
         both = tmp_path / "both"
         _make_repo(both)
         _make_gaia_install(both)
 
         scan_workspace_to_store("ws", tmp_path, "scanner", db_path=tmp_db)
 
-        from tools.scan.store_populator import resolve_identity
-        both_ws = resolve_identity(both)
-
-        # workspaces table has a row for "both".
-        ws_names = _workspace_names(tmp_db)
-        assert both_ws in ws_names, f"'both' not in workspaces; have {ws_names}"
-
-        # projects table has a row for "both" -- attributed to its nearest
-        # installed ANCESTOR (the CLI root "ws"), since a dir is not its own
-        # ancestor.
+        # projects table has a row for "both" under the caller workspace "ws".
         root_projects = _project_rows(tmp_db, "ws")
         names = {r[0] for r in root_projects}
         assert "both" in names, f"'both' project row missing; have {names}"
 
-        # And its own workspace owns no projects of itself.
-        assert _project_rows(tmp_db, both_ws) == []
+        # No separate 'both' sub-workspace is registered (deterministic).
+        from tools.scan.store_populator import resolve_identity
+        both_ws = resolve_identity(both)
+        ws_names = _workspace_names(tmp_db)
+        assert both_ws not in ws_names or both_ws == "ws", (
+            f"deterministic scan must not register a separate 'both' workspace; "
+            f"have {ws_names}"
+        )

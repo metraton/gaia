@@ -59,7 +59,6 @@ class _MockArgs:
             "full": False,
             "no_color": True,
             "verbose": False,
-            "npm_postinstall": False,
         }
         defaults.update(kwargs)
         self.__dict__.update(defaults)
@@ -265,35 +264,14 @@ class TestPopulateStore:
 
 
 # ---------------------------------------------------------------------------
-# CLI integration: scan persists rows through scan-core
+# scan-core: errors skip population
 # ---------------------------------------------------------------------------
 
-class TestCliScanPopulatesStore:
-    """`gaia scan <target>` runs scan-core and persists project rows."""
-
-    def test_scan_persists_project_row(self, tmp_db, tmp_path, patch_run_scan):
-        """After a --json scan of a target with a git repo, projects has a row."""
-        repo = tmp_path / "ws-repo"
-        _init_git_repo(repo)
-        # The full CLI path treats a non-installed target as DEMOTED (v17), so
-        # to test the live-workspace persistence path the root must carry the
-        # Gaia install signal.
-        _make_gaia_install(tmp_path)
-
-        # The CLI resolves workspace identity from project_root (= tmp_path),
-        # not from the individual repo.  Match that identity here.
-        from gaia.project import current as _current
-        ws = _current(cwd=tmp_path)
-
-        # Explicit target path -> on-demand entry point (no workspace guard).
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-
-        count = _count_projects(tmp_db, ws)
-        assert count >= 1, (
-            f"scan should persist project rows; got {count} for ws={ws!r}"
-        )
+class TestScanCoreSkipsPopulateOnErrors:
+    """scan_workspace (scan-core) must NOT populate the store when the scanner
+    output carries errors. The CLI (cli.scan) now routes through the
+    deterministic classifier (tools.scan.classify); its arg surface is covered
+    by tests/cli/test_scan.py."""
 
     def test_populator_skipped_on_scanner_errors(self, tmp_db, tmp_path,
                                                  patch_run_scan, monkeypatch):
@@ -315,20 +293,32 @@ class TestCliScanPopulatesStore:
 
         repo = tmp_path / "err-repo"
         _init_git_repo(repo)
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 1
-        assert populate_calls == [], "populate_store must not be called when scan has errors"
+
+        from tools.scan.config import load_scan_config
+        cfg = load_scan_config(tmp_path)
+        cfg.project_root = tmp_path
+
+        result = scan_core.scan_workspace(
+            tmp_path, "err-ws", config=cfg, db_path=tmp_db
+        )
+        assert result.output.errors, "scanner errors must be present"
+        assert populate_calls == [], (
+            "populate_store must not be called when scan has errors"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Non-fatal: populate failure must not break scan exit code
+# Non-fatal: populate failure must not break scan-core
 # ---------------------------------------------------------------------------
 
 class TestPopulateStoreNonFatal:
-    def test_populate_failure_does_not_break_scan(self, tmp_db, tmp_path,
-                                                  patch_run_scan, monkeypatch):
-        """If populate_store raises, cmd_scan still returns 0 (non-fatal)."""
+    """scan_workspace (scan-core) is resilient: a store-population failure is
+    logged, not raised."""
+
+    def test_populate_failure_does_not_break_scan_core(self, tmp_db, tmp_path,
+                                                       patch_run_scan, monkeypatch):
+        """If populate_store raises, scan_workspace still returns a result
+        (non-fatal); it does not propagate the exception."""
         def _boom(ws, root, agent=scan_core.SCAN_AGENT, db_path=None):
             raise RuntimeError("simulated DB failure")
 
@@ -336,13 +326,19 @@ class TestPopulateStoreNonFatal:
 
         repo = tmp_path / "nonfatal-repo"
         _init_git_repo(repo)
-        # Installed workspace -> hits populate_store (the patched boom), not the
-        # demote path (which would bypass populate_store entirely).
-        _make_gaia_install(tmp_path)
 
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0, "scan must succeed even when store population fails"
+        from tools.scan.config import load_scan_config
+        cfg = load_scan_config(tmp_path)
+        cfg.project_root = tmp_path
+
+        # Must not raise despite the boom populate_store.
+        result = scan_core.scan_workspace(
+            tmp_path, "nonfatal-ws", config=cfg, db_path=tmp_db
+        )
+        assert result is not None
+        assert result.populated is None, (
+            "populate failure must leave populated=None, not propagate"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -852,212 +848,19 @@ class TestPerProjectIsolation:
 
 
 # ---------------------------------------------------------------------------
-# DEMOTE case (v17): scanning a directory whose Gaia install footprint was
-# removed must NOT scan it as a live workspace -- it is marked demoted
-# (workspaces.status='missing'), its projects are marked missing, and the scan
-# never writes anything under .claude/.
+# REMOVED: TestDemoteCase (v17 demote layer).
+#
+# The v17 "demote" behavior -- a scan of a directory whose Gaia install
+# footprint was removed marking the workspaces row status='missing' -- depended
+# on the CLI resolving workspace identity via gaia.project.current() and on
+# scan_workspace exposing a `demoted` flag. Both were part of the inference
+# layer that the deterministic --workspace classifier (tools.scan.classify)
+# replaces: the CLI no longer guesses which workspace a root belongs to, and
+# scan_workspace no longer demotes. These tests asserted removed behavior and
+# were deleted with that layer. The classifier's own reconcile/soft-delete
+# (R5) is covered by TestSoftDeleteMissingProjectRows above and by the R5 case
+# in tests/cli/test_scan.py.
 # ---------------------------------------------------------------------------
-
-def _get_workspace_status(db_path: Path, workspace: str):
-    """Return (status, missing_since, last_scan_at) for a workspaces row."""
-    import sqlite3
-    con = sqlite3.connect(str(db_path))
-    try:
-        row = con.execute(
-            "SELECT status, missing_since, last_scan_at FROM workspaces "
-            "WHERE name = ?",
-            (workspace,),
-        ).fetchone()
-        return (row[0], row[1], row[2]) if row else (None, None, None)
-    finally:
-        con.close()
-
-
-class TestDemoteCase:
-    """A scanned directory without the Gaia install signal is demoted, not
-    re-affirmed."""
-
-    def test_demoted_dir_marks_workspace_missing(self, tmp_db, tmp_path,
-                                                 patch_run_scan):
-        """Scanning a non-installed target marks the workspaces row missing and
-        does NOT refresh last_scan_at (BUG-3)."""
-        from gaia.project import current as _current
-        from gaia.store.writer import _connect
-
-        repo = tmp_path / "qxo-monorepo"
-        _init_git_repo(repo)
-        # NO _make_gaia_install -> the root is demoted (no .claude install).
-        ws = _current(cwd=tmp_path)
-
-        # Seed a prior workspaces row as if a previous install had scanned it.
-        con = _connect(tmp_db)
-        try:
-            con.execute(
-                "INSERT INTO workspaces (name, identity, created_at, last_scan_at, status) "
-                "VALUES (?, ?, ?, ?, 'active') ON CONFLICT(name) DO NOTHING",
-                (ws, ws, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
-            )
-            con.commit()
-        finally:
-            con.close()
-
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-
-        status, missing_since, last_scan_at = _get_workspace_status(tmp_db, ws)
-        assert status == "missing", (
-            f"demoted workspace must be status='missing', got {status!r}"
-        )
-        assert missing_since, "missing_since must be set on demote"
-        assert last_scan_at == "2026-01-01T00:00:00Z", (
-            "demoted workspace must NOT receive a fresh last_scan_at "
-            f"(got {last_scan_at!r})"
-        )
-
-    def test_demoted_dir_marks_projects_missing_not_reaffirmed(
-        self, tmp_db, tmp_path, patch_run_scan
-    ):
-        """Projects of a demoted workspace are marked missing, not 'repaired'
-        back to active (BUG-4: basename identity matched the stale row)."""
-        from gaia.project import current as _current
-
-        repo = tmp_path / "qxo-monorepo"
-        _init_git_repo(repo)
-        ws = _current(cwd=tmp_path)
-
-        # Pre-seed an ACTIVE project row from a prior (installed) scan.
-        _upsert_project_direct(tmp_db, ws, "qxo-monorepo")
-        status, _ = _get_project_status(tmp_db, ws, "qxo-monorepo")
-        assert status in ("active", None) or status != "missing"
-
-        # Demoted scan (no .claude install on the root).
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-
-        status, missing_since = _get_project_status(tmp_db, ws, "qxo-monorepo")
-        assert status == "missing", (
-            "a demoted workspace's project must be marked missing, NOT "
-            f"re-affirmed active (got {status!r})"
-        )
-        assert missing_since, "missing_since must be set for the demoted project"
-
-    def test_demote_returns_demoted_flag(self, tmp_db, tmp_path, patch_run_scan):
-        """The CLI summary reports demoted=True for a non-installed target."""
-        repo = tmp_path / "rnd-experiments"
-        _init_git_repo(repo)
-
-        from tools.scan.core import scan_workspace
-        from tools.scan.config import load_scan_config
-        from gaia.project import current as _current
-        ws = _current(cwd=tmp_path)
-        cfg = load_scan_config(tmp_path)
-        cfg.project_root = tmp_path
-
-        result = scan_workspace(tmp_path, ws, config=cfg, db_path=tmp_db)
-        assert result.demoted is True, "non-installed target must yield demoted=True"
-
-    def test_installed_workspace_not_demoted(self, tmp_db, tmp_path,
-                                            patch_run_scan):
-        """An INSTALLED workspace is NOT demoted: it scans normally, the row is
-        active, and last_scan_at IS refreshed (preserve nfi/bildwiz)."""
-        from gaia.project import current as _current
-
-        repo = tmp_path / "bildwiz-api"
-        _init_git_repo(repo)
-        _make_gaia_install(tmp_path)  # installed -> live workspace
-        ws = _current(cwd=tmp_path)
-
-        from tools.scan.core import scan_workspace
-        from tools.scan.config import load_scan_config
-        cfg = load_scan_config(tmp_path)
-        cfg.project_root = tmp_path
-
-        result = scan_workspace(tmp_path, ws, config=cfg, db_path=tmp_db)
-        assert result.demoted is False, "installed workspace must NOT be demoted"
-
-        status, missing_since, last_scan_at = _get_workspace_status(tmp_db, ws)
-        assert status == "active", f"installed workspace must stay active, got {status!r}"
-        assert missing_since is None
-        assert last_scan_at, "installed workspace must get a fresh last_scan_at"
-
-        # Its project must be active (not missing).
-        pstatus, _ = _get_project_status(tmp_db, ws, "bildwiz-api")
-        assert pstatus == "active", (
-            f"installed workspace's project must be active, got {pstatus!r}"
-        )
-
-    def test_demote_writes_nothing_under_claude(self, tmp_db, tmp_path,
-                                               patch_run_scan):
-        """BUG-2: scanning a demoted dir (no .claude) must NOT create or write
-        any .claude/ file -- scan never touches .claude."""
-        from gaia.project import current as _current
-
-        repo = tmp_path / "rnd-experiments"
-        _init_git_repo(repo)
-        ws = _current(cwd=tmp_path)
-
-        # Precondition: the demoted root has no .claude at all.
-        assert not (tmp_path / ".claude").exists()
-
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-
-        # Postcondition: scan created NO .claude directory and NO settings files
-        # anywhere under the scanned tree (scan never writes .claude).
-        assert not (tmp_path / ".claude").exists(), (
-            "scan must NOT create a .claude/ directory in a demoted workspace"
-        )
-        for settings in tmp_path.rglob(".claude/settings*.json"):
-            raise AssertionError(
-                f"scan wrote a settings file under .claude: {settings}"
-            )
-
-    def test_reinstalled_workspace_recovers_from_demote(self, tmp_db, tmp_path,
-                                                       patch_run_scan):
-        """A workspace demoted on one scan, then re-installed, recovers to
-        active on the next scan (reactivation mirrors project soft-delete)."""
-        from gaia.project import current as _current
-        from gaia.store.writer import _connect
-
-        repo = tmp_path / "qxo-monorepo"
-        _init_git_repo(repo)
-        ws = _current(cwd=tmp_path)
-
-        # Seed a prior active workspaces row (as if a previous install scanned
-        # it). mark_workspace_demoted only transitions an EXISTING row -- a
-        # never-seen directory is not created merely to demote it.
-        con = _connect(tmp_db)
-        try:
-            con.execute(
-                "INSERT INTO workspaces (name, identity, created_at, last_scan_at, status) "
-                "VALUES (?, ?, ?, ?, 'active') ON CONFLICT(name) DO NOTHING",
-                (ws, ws, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
-            )
-            con.commit()
-        finally:
-            con.close()
-
-        # First scan: demoted (no install).
-        rc = scan_mod.cmd_scan(_MockArgs(path=str(tmp_path), json=True))
-        assert rc == 0
-        status, _, _ = _get_workspace_status(tmp_db, ws)
-        assert status == "missing", "precondition: demoted on first scan"
-
-        # Re-install, then re-scan.
-        _make_gaia_install(tmp_path)
-        rc = scan_mod.cmd_scan(_MockArgs(path=str(tmp_path), json=True))
-        assert rc == 0
-
-        status, missing_since, last_scan_at = _get_workspace_status(tmp_db, ws)
-        assert status == "active", (
-            f"re-installed workspace must recover to active, got {status!r}"
-        )
-        assert missing_since is None, "missing_since must clear on recovery"
-        assert last_scan_at, "recovered workspace must get a fresh last_scan_at"
-
 
 # Note: setup-stubbing helpers were removed -- scan no longer invokes install
 # functions (setup.py), so there is nothing to stub. Scan-core is patched via

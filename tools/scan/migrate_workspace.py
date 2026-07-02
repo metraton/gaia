@@ -133,13 +133,15 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
         populate_orchestration,
         scan_workspace_to_store,
     )
-    from tools.scan.workspace import detect_workspace_type
 
     print(f"[migrate] workspace_root={workspace_root}")
     print(f"[migrate] db_path={db_path}")
     print(f"[migrate] verify_only={verify_only}")
 
-    # Resolve identity
+    # Resolve identity. NOTE: migrate is a legacy one-shot re-ingest tool; it
+    # still derives identity from the git remote via gaia.project.current (a
+    # non-scan caller). The deterministic --workspace scan path lives in
+    # tools.scan.classify.
     identity = current(cwd=workspace_root)
     print(f"[migrate] identity={identity!r}")
 
@@ -155,20 +157,8 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
         wipe_workspace(identity, db_path=db_path)
         print(f"[migrate] wiped workspace {identity!r}")
 
-    # Detect workspace type to enumerate repos
-    ws_info = detect_workspace_type(workspace_root)
-    print(f"[migrate] workspace_type={ws_info.workspace_type}, repos={len(ws_info.repo_dirs)}")
-
-    # Determine repos to scan
-    if ws_info.is_multi_repo:
-        repo_dirs = ws_info.repo_dirs
-    elif (workspace_root / ".git").is_dir():
-        repo_dirs = [workspace_root]
-    else:
-        # Single subdir case (e.g. qxo with qxo-monorepo)
-        repo_dirs = [workspace_root]
-
-    # Scan repos via store_populator (handles single/multi/monorepo cases via _list_repos)
+    # Scan repos via store_populator (deterministic: all repos under
+    # workspace_root attributed to `identity`; _list_repos discovers them).
     results = scan_workspace_to_store(
         workspace=identity,
         root=workspace_root,
