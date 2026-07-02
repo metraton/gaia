@@ -206,12 +206,19 @@ ClaudeCodeAdapter.format_validation_response() -> Claude Code stdout JSON
 ```
 
 ### Plugin Distribution
-Gaia ships as the single unified `gaia` plugin, built to `dist/gaia` and declared
-via `.claude-plugin/plugin.json`. The plugin is auto-discovered by Claude Code --
-agents, skills, commands, and hooks are loaded from their respective directories.
+Gaia ships as the single unified `gaia` plugin. There is **no `dist/` bundle** --
+the npm package root (`@jaguilar87/gaia`) IS the plugin. The root
+`.claude-plugin/plugin.json` (with hooks embedded inline) and `hooks/hooks.json`
+are generated from `build/gaia.manifest.json` at pack time
+(`prepack` -> `generate:plugin-root`) and tracked in git. Claude Code
+auto-discovers agents, skills, commands, and hooks from their respective
+directories at the package root.
 
 See `.claude-plugin/marketplace.json` for the self-hosted marketplace, which
-advertises the one `gaia` plugin whose `source` is `./dist/gaia`.
+advertises the one `gaia` plugin with a `source: npm` object
+(`{"source": "npm", "package": "@jaguilar87/gaia"}`) -- Claude Code installs the
+package into its plugin cache and reads the inline-hooks `plugin.json` from the
+package root.
 
 ## Adapter Coupling Points
 
