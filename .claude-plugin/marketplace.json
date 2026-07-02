@@ -1,5 +1,6 @@
 {
   "name": "gaia-marketplace",
+  "description": "Security-first multi-agent orchestration for Claude Code. Distributes the Gaia plugin: specialized agents across the development lifecycle with codebase-aware context injection and risk-classified command gating.",
   "owner": {
     "name": "jaguilar87",
     "email": "jorge.aguilar87@gmail.com"
@@ -16,8 +17,8 @@
       },
       "homepage": "https://github.com/metraton/gaia#readme",
       "source": {
-        "source": "npm",
-        "package": "@jaguilar87/gaia"
+        "source": "github",
+        "repo": "metraton/gaia"
       }
     }
   ]
