@@ -169,7 +169,6 @@ class TestScanWorkspaceIsPure:
 
         assert isinstance(result, scan_core.ScanResult)
         assert result.has_errors is False
-        assert result.demoted is False
         assert result.populated is not None
 
     def test_scan_skips_populate_on_errors(self, tmp_db, tmp_path, monkeypatch):

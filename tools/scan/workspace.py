@@ -1,18 +1,25 @@
 """
-Workspace Type Detection
+DEAD CODE — remove after local-install validation.
 
-Detects whether the scan root is a single-repo, multi-repo workspace, or
-organizational workspace. Called by the orchestrator before individual scanners
-run, and importable by scanners that need workspace-aware behavior.
+Workspace Type Detection (superseded).
 
-Detection logic:
+``detect_workspace_type`` / ``WorkspaceInfo`` were the inference layer that
+guessed single-repo / multi-repo / organizational workspace shapes. They are
+superseded by the DETERMINISTIC, ``--workspace``-driven classifier in
+:mod:`tools.scan.classify` and are NO LONGER CALLED by any live path.
+
+This module is kept dormant (uncalled) so a local install can validate the new
+deterministic scan path before the block is deleted in a separate phase. Do not
+wire it back into the scan pipeline.
+
+Original detection logic:
   - If root has .git -> single-repo (monorepo refinement owned by stack scanner)
   - If root has NO .git and 2+ immediate subdirectories have .git -> multi-repo-workspace
   - If root has NO .git and 0 immediate subdirectories have .git -> organizational-workspace
     (a container directory like `aaxis/` that holds non-git children; the workspace
     is registered but carries zero projects)
   - Otherwise (root has NO .git, exactly 1 subdir with .git) -> single-repo
-    (the git scanner's _find_git_in_subdirs fallback handles this case)
+    (the git scanner's _find_git_in_subdirs fallback handled this case)
 """
 
 import logging
@@ -33,7 +40,9 @@ _SKIP_DIRS = frozenset({
 
 @dataclass(frozen=True)
 class WorkspaceInfo:
-    """Result of workspace type detection.
+    """DEAD CODE — remove after local-install validation.
+
+    Result of workspace type detection.
 
     Attributes:
         workspace_type: One of 'single-repo', 'monorepo', 'multi-repo-workspace',
@@ -55,7 +64,9 @@ class WorkspaceInfo:
 
 
 def detect_workspace_type(root: Path) -> WorkspaceInfo:
-    """Detect the workspace type for the given root directory.
+    """DEAD CODE — remove after local-install validation.
+
+    Detect the workspace type for the given root directory.
 
     Args:
         root: Absolute path to the project root directory.

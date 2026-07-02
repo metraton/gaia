@@ -1,10 +1,27 @@
 """
-Unit tests for bin/cli/scan.py -- gaia scan subcommand.
+Unit tests for the DETERMINISTIC gaia scan surface.
 
-Covers:
-  * --help smoke test (parser registers cleanly)
-  * register() actually adds the `scan` subparser
-  * --dry-run does not touch the SQLite DB or project-context.json
+Covers the new scan (post inference-removal), driven by a single REQUIRED
+``--workspace <name>`` parameter:
+
+  * bin/cli/scan.py -- the thin CLI front-end (register / cmd_scan / rendering).
+  * tools/scan/classify.py -- the deterministic classifier (R1-R6).
+
+The 6 confirmed validation cases (see TestValidationCases) anchor the ruleset:
+
+  1. aaxis/aos/aos-iac  --workspace aaxis        -> (aaxis, aos, aos-iac)
+  2. github-repos/engram --workspace github-repos -> collapse (project = repo)
+  3. me/gaia            --workspace me            -> collapse (project = repo)
+  4. organic: aos itself as the workspace         -> collapse (project = repo)
+  5. no-match: --workspace acme                   -> error-as-text (structured)
+  6. deeper-than-3 nesting                         -> ambiguity returned as data
+
+Test isolation:
+  * Every scan that writes runs against an explicit temp DB (db_path=...); the
+    real ~/.gaia/gaia.db is never touched. Classification-only tests (apply=False
+    / classify_repo) never open a DB at all.
+  * Git repos are created as bare ``.git`` marker directories -- classification
+    keys on the presence of ``.git``, not on real git history.
 """
 
 from __future__ import annotations
@@ -15,17 +32,18 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-# Ensure bin/ is on sys.path so the plugin is importable
+# Ensure bin/ and the repo root are importable.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BIN_DIR = _REPO_ROOT / "bin"
-if str(_BIN_DIR) not in sys.path:
-    sys.path.insert(0, str(_BIN_DIR))
+for _p in (str(_BIN_DIR), str(_REPO_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import cli.scan as scan_mod
+from tools.scan import classify as classify_mod
 
 
 # ---------------------------------------------------------------------------
@@ -33,26 +51,42 @@ import cli.scan as scan_mod
 # ---------------------------------------------------------------------------
 
 class _MockArgs:
+    """Minimal argparse.Namespace substitute matching the new scan surface."""
+
     def __init__(self, **kwargs):
-        # Defaults matching the parser
         defaults = {
-            "path": None,
             "workspace": None,
+            "root": None,
             "dry_run": False,
             "json": False,
-            "scanners": None,
-            "check_staleness": False,
-            "full": False,
-            "no_color": True,
-            "verbose": False,
-            "npm_postinstall": False,
         }
         defaults.update(kwargs)
         self.__dict__.update(defaults)
 
 
+def _mk_repo(base: Path, *segments: str) -> Path:
+    """Create ``base/segments.../.git`` and return the repo dir (the parent of
+    ``.git``). Segments build the nesting used to exercise the ruleset."""
+    repo = base.joinpath(*segments)
+    (repo / ".git").mkdir(parents=True, exist_ok=True)
+    return repo
+
+
+@pytest.fixture()
+def tmp_db(tmp_path, monkeypatch):
+    """Redirect GAIA_DATA_DIR to a temp dir and return the isolated db path.
+
+    Guarantees no test in this module can reach the real ~/.gaia/gaia.db.
+    """
+    db_dir = tmp_path / "gaia_data"
+    db_dir.mkdir()
+    monkeypatch.setenv("GAIA_DATA_DIR", str(db_dir))
+    from gaia.paths import db_path
+    return db_path()
+
+
 # ---------------------------------------------------------------------------
-# register() -- parser wiring
+# register() -- parser wiring for the new surface
 # ---------------------------------------------------------------------------
 
 class TestRegister:
@@ -68,35 +102,46 @@ class TestRegister:
         sp = scan_mod.register(subparsers)
         assert isinstance(sp, argparse.ArgumentParser)
 
-    def test_scan_subcommand_parses(self):
+    def test_workspace_is_required(self):
+        """--workspace is REQUIRED: bare `scan` must fail to parse."""
         parser = self._build_parser()
-        ns = parser.parse_args(["scan"])
-        assert ns.subcommand == "scan"
-        assert ns.path is None
+        with pytest.raises(SystemExit):
+            parser.parse_args(["scan"])
+
+    def test_workspace_flag_parses(self):
+        parser = self._build_parser()
+        ns = parser.parse_args(["scan", "--workspace", "aaxis"])
+        assert ns.workspace == "aaxis"
+        assert ns.root is None
         assert ns.dry_run is False
         assert ns.json is False
-        assert ns.workspace is None
 
-    def test_scan_subcommand_accepts_positional_target(self):
+    def test_positional_root_parses(self):
         parser = self._build_parser()
-        ns = parser.parse_args(["scan", "/tmp/target"])
-        assert ns.path == "/tmp/target"
+        ns = parser.parse_args(["scan", "--workspace", "aaxis", "/tmp/target"])
+        assert ns.workspace == "aaxis"
+        assert ns.root == "/tmp/target"
 
-    def test_scan_subcommand_accepts_flags(self):
+    def test_flags_parse(self):
         parser = self._build_parser()
-        ns = parser.parse_args([
-            "scan",
-            "--dry-run",
-            "--json",
-            "--workspace", "/tmp/wsx",
-            "--scanners", "stack,git",
-            "--no-color",
-        ])
+        ns = parser.parse_args(
+            ["scan", "--workspace", "me", "--dry-run", "--json"]
+        )
         assert ns.dry_run is True
         assert ns.json is True
-        assert ns.workspace == "/tmp/wsx"
-        assert ns.scanners == "stack,git"
-        assert ns.no_color is True
+
+    def test_project_flag_retired(self):
+        """The old --project flag is retired: the classifier derives the
+        project deterministically from the path, so scan must reject it."""
+        parser = self._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["scan", "--workspace", "me", "--project", "x"])
+
+    def test_workspace_name_flag_retired(self):
+        """The old --workspace-name flag is retired (replaced by --workspace)."""
+        parser = self._build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["scan", "--workspace-name", "x"])
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +150,8 @@ class TestRegister:
 
 class TestHelpSmoke:
     def test_gaia_scan_help_exit_zero(self):
-        """Invoke `python bin/gaia scan --help` end-to-end and check exit 0."""
         env = dict(os.environ)
         env["NO_COLOR"] = "1"
-        # Run from a tmp cwd so we don't accidentally trigger plugin discovery
-        # against an unexpected workspace.
         result = subprocess.run(
             [sys.executable, str(_BIN_DIR / "gaia"), "scan", "--help"],
             capture_output=True,
@@ -120,403 +162,316 @@ class TestHelpSmoke:
         assert result.returncode == 0, (
             f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
-        # Help text must mention key flags so future regressions are visible
         assert "--workspace" in result.stdout
         assert "--dry-run" in result.stdout
         assert "--json" in result.stdout
 
 
 # ---------------------------------------------------------------------------
-# Dry-run behavior -- must not touch the DB or project-context.json
+# cmd_scan: guards + dry-run
 # ---------------------------------------------------------------------------
 
-class TestDryRun:
-    def test_dry_run_human_exits_zero(self, tmp_path, capsys):
-        args = _MockArgs(workspace=str(tmp_path), dry_run=True)
+class TestCmdScanGuards:
+    def test_empty_workspace_errors(self, capsys):
+        args = _MockArgs(workspace="   ", json=True)
         rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-        captured = capsys.readouterr()
-        assert "[dry-run]" in captured.out
-        assert str(tmp_path) in captured.out
-
-    def test_dry_run_json_exits_zero(self, tmp_path, capsys):
-        args = _MockArgs(workspace=str(tmp_path), dry_run=True, json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert data["dry_run"] is True
-        assert data["project_root"] == str(tmp_path)
-
-    def test_dry_run_does_not_write_context_file(self, tmp_path):
-        """--dry-run must not create or modify project-context.json."""
-        args = _MockArgs(workspace=str(tmp_path), dry_run=True, json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-        # project-context.json must not have been created
-        ctx = tmp_path / ".claude" / "project-context" / "project-context.json"
-        assert not ctx.exists()
-
-    def test_dry_run_does_not_touch_gaia_db(self, tmp_path, monkeypatch):
-        """--dry-run must not open or modify ~/.gaia/gaia.db.
-
-        We point GAIA_DATA_DIR at a tmp path so any accidental write would land
-        there, then assert the path stays empty.
-        """
-        gaia_dir = tmp_path / "gaia-data"
-        gaia_dir.mkdir()
-        monkeypatch.setenv("GAIA_DATA_DIR", str(gaia_dir))
-
-        args = _MockArgs(workspace=str(tmp_path), dry_run=True, json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-
-        # No DB file should have been created in the redirected dir
-        assert list(gaia_dir.iterdir()) == [], (
-            f"gaia-data dir was modified during --dry-run: "
-            f"{[p.name for p in gaia_dir.iterdir()]}"
-        )
-
-    def test_dry_run_is_pure_preview(self, tmp_path, capsys):
-        """--dry-run is a pure preview: it reports the target and what would
-        run, and (post scan/install split) does NOT read or touch the DB."""
-        args = _MockArgs(workspace=str(tmp_path), dry_run=True, json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
+        assert rc == 1
         data = json.loads(capsys.readouterr().out)
-        assert data["dry_run"] is True
-        assert data["project_root"] == str(tmp_path)
-        assert "would_scan" in data
+        assert data["status"] == "error"
+        assert "workspace" in data["error"].lower()
 
-
-# ---------------------------------------------------------------------------
-# Target resolution (explicit entry points)
-# ---------------------------------------------------------------------------
-
-class TestTargetResolution:
-    def test_resolve_positional_path(self, tmp_path):
-        args = _MockArgs(path=str(tmp_path))
-        result = scan_mod._resolve_target(args)
-        assert result == tmp_path.resolve()
-
-    def test_resolve_workspace_flag(self, tmp_path):
-        args = _MockArgs(workspace=str(tmp_path))
-        result = scan_mod._resolve_target(args)
-        assert result == tmp_path.resolve()
-
-    def test_positional_wins_over_flag(self, tmp_path):
-        other = tmp_path / "other"
-        args = _MockArgs(path=str(tmp_path), workspace=str(other))
-        result = scan_mod._resolve_target(args)
-        assert result == tmp_path.resolve()
-
-    def test_no_target_resolves_none(self):
-        args = _MockArgs()
-        assert scan_mod._resolve_target(args) is None
-
-    def test_invalid_target_returns_1(self, tmp_path, capsys):
+    def test_missing_root_errors(self, tmp_path, capsys):
         bogus = tmp_path / "does-not-exist"
-        args = _MockArgs(path=str(bogus), dry_run=False, json=True)
+        args = _MockArgs(workspace="me", root=str(bogus), json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
         assert data["status"] == "error"
         assert "not found" in data["error"]
 
-
-# ---------------------------------------------------------------------------
-# Explicit entry points: outside-a-workspace + no target -> clean error
-# ---------------------------------------------------------------------------
-
-class TestOutsideWorkspaceError:
-    def test_no_target_outside_workspace_is_clean_error(self, tmp_path, monkeypatch, capsys):
-        """`gaia scan` with no target, run outside any Gaia workspace, errors
-        cleanly -- it must NOT fall back to an install/bootstrap mode."""
-        # cwd is a plain dir with no Gaia install -> not a workspace.
-        monkeypatch.chdir(tmp_path)
-        args = _MockArgs(json=True)  # no path, no workspace
+    def test_no_repos_under_root_is_clean_error(self, tmp_path, capsys):
+        """A root with no git repos returns a structured error, not a crash."""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        args = _MockArgs(workspace="me", root=str(empty), json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
-        assert data["status"] == "error"
-        assert "not in a Gaia workspace" in data["error"]
+        assert "no git repos" in data["error"]
 
-    def test_no_target_inside_workspace_proceeds(self, tmp_path, monkeypatch):
-        """Inside a workspace (plugin-registry signal), no-target scan proceeds
-        past the workspace guard (reaches the scan-core call)."""
-        claude = tmp_path / ".claude"
-        claude.mkdir()
-        (claude / "plugin-registry.json").write_text(
-            '{"installed": [{"name": "gaia-ops"}]}'
-        )
-        monkeypatch.chdir(tmp_path)
+    def test_dry_run_does_not_touch_db(self, tmp_path, monkeypatch):
+        """--dry-run must not create or write any DB file."""
+        gaia_dir = tmp_path / "gaia-data"
+        gaia_dir.mkdir()
+        monkeypatch.setenv("GAIA_DATA_DIR", str(gaia_dir))
 
-        # Stub scan-core so we only verify the guard let us through.
-        reached = {}
-        def _fake_run_scan(project_root, cfg, args, version):
-            reached["called"] = True
-            return 0
-        monkeypatch.setattr(scan_mod, "_run_scan", _fake_run_scan)
-
-        args = _MockArgs()
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-        assert reached.get("called") is True
-
-    def test_npm_postinstall_bypasses_workspace_guard(self, tmp_path, monkeypatch):
-        """--npm-postinstall scans the cwd without requiring the workspace
-        signal (install owns the just-created workspace identity)."""
-        monkeypatch.chdir(tmp_path)
-        reached = {}
-        def _fake_run_scan(project_root, cfg, args, version):
-            reached["called"] = True
-            return 0
-        monkeypatch.setattr(scan_mod, "_run_scan", _fake_run_scan)
-
-        args = _MockArgs(npm_postinstall=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-        assert reached.get("called") is True
-
-
-# ---------------------------------------------------------------------------
-# Install-decoupling: scan must not import install setup functions
-# ---------------------------------------------------------------------------
-
-class TestScanDoesNotInstall:
-    def test_scan_module_has_no_install_symbols(self):
-        """The removed install-mode functions must be gone from cli.scan."""
-        for removed in ("_mode_fresh", "_mode_existing", "_mode_scan_only"):
-            assert not hasattr(scan_mod, removed), (
-                f"cli.scan still exposes removed install-mode function {removed!r}"
-            )
-
-    def test_scan_source_does_not_reference_setup_install(self):
-        """cli/scan.py must not import the install-layer setup functions."""
-        src = (Path(scan_mod.__file__)).read_text()
-        for forbidden in (
-            "ensure_gaia_ops_package",
-            "create_claude_directory",
-            "install_git_hooks",
-            "ensure_claude_code",
-        ):
-            assert forbidden not in src, (
-                f"cli/scan.py still references install-layer symbol {forbidden!r}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# M1-T1: --workspace-name flag (AC-1)
-# ---------------------------------------------------------------------------
-
-class TestWorkspaceNameFlag:
-    """AC-1: --workspace-name overrides the remote-first identity derivation.
-
-    With the flag the workspace written to the DB (and passed to scan-core) is
-    the explicit NAME, NOT the git-remote-derived canonical form.
-    Without the flag the existing remote-first behaviour is unchanged.
-    """
-
-    def test_register_exposes_workspace_name_flag(self):
-        """Parser must accept --workspace-name."""
-        parser = argparse.ArgumentParser(prog="gaia")
-        subparsers = parser.add_subparsers(dest="subcommand")
-        scan_mod.register(subparsers)
-        ns = parser.parse_args(["scan", "--workspace-name", "my-explicit-ws"])
-        assert ns.workspace_name == "my-explicit-ws"
-
-    def test_workspace_name_default_is_none(self):
-        """Without --workspace-name the attribute is None (no override)."""
-        parser = argparse.ArgumentParser(prog="gaia")
-        subparsers = parser.add_subparsers(dest="subcommand")
-        scan_mod.register(subparsers)
-        ns = parser.parse_args(["scan"])
-        assert ns.workspace_name is None
-
-    def test_run_scan_uses_workspace_name_override(self, tmp_path, monkeypatch):
-        """When workspace_name is set, _run_scan passes that value to scan_workspace
-        instead of calling gaia.project.current()."""
-        captured = {}
-
-        import tools.scan.core as _core
-        monkeypatch.setattr(
-            _core,
-            "scan_workspace",
-            lambda root, workspace, config=None, db_path=None: (
-                captured.__setitem__("workspace", workspace)
-                or _make_stub_result()
-            ),
-        )
-
-        # Ensure gaia.project.current() is NOT called by patching it to raise.
-        import gaia.project as _proj
-        def _should_not_be_called(cwd=None):
-            raise AssertionError(
-                "gaia.project.current() must NOT be called when --workspace-name is set"
-            )
-        monkeypatch.setattr(_proj, "current", _should_not_be_called)
+        # aaxis/aos/aos-iac tree so classification has real work to do.
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
 
         args = _MockArgs(
-            path=str(tmp_path),
-            workspace_name="path-derived-name",
+            workspace="aaxis",
+            root=str(tmp_path / "aaxis"),
+            dry_run=True,
             json=True,
         )
-        rc = scan_mod._run_scan(tmp_path, _DummyScanConfig(), args, "test")
+        rc = scan_mod.cmd_scan(args)
         assert rc == 0
-        assert captured.get("workspace") == "path-derived-name", (
-            f"scan_workspace received workspace={captured.get('workspace')!r}, "
-            "expected 'path-derived-name'"
+        assert list(gaia_dir.iterdir()) == [], (
+            f"--dry-run wrote to the data dir: "
+            f"{[p.name for p in gaia_dir.iterdir()]}"
         )
 
-    def test_run_scan_without_flag_calls_project_current(self, tmp_path, monkeypatch):
-        """Without --workspace-name, _run_scan falls back to gaia.project.current()
-        (remote-first derivation) -- no-regression test."""
-        captured = {}
-
-        import tools.scan.core as _core
-        monkeypatch.setattr(
-            _core,
-            "scan_workspace",
-            lambda root, workspace, config=None, db_path=None: (
-                captured.__setitem__("workspace", workspace)
-                or _make_stub_result()
-            ),
-        )
-
-        import gaia.project as _proj
-        monkeypatch.setattr(_proj, "current", lambda cwd=None: "remote-first-identity")
+    def test_dry_run_reports_would_apply(self, tmp_path, monkeypatch, capsys):
+        gaia_dir = tmp_path / "gaia-data"
+        gaia_dir.mkdir()
+        monkeypatch.setenv("GAIA_DATA_DIR", str(gaia_dir))
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
 
         args = _MockArgs(
-            path=str(tmp_path),
-            # workspace_name intentionally absent -- tests getattr default of None
+            workspace="aaxis",
+            root=str(tmp_path / "aaxis"),
+            dry_run=True,
             json=True,
         )
-        rc = scan_mod._run_scan(tmp_path, _DummyScanConfig(), args, "test")
+        rc = scan_mod.cmd_scan(args)
         assert rc == 0
-        assert captured.get("workspace") == "remote-first-identity", (
-            f"expected remote-first-identity, got {captured.get('workspace')!r}"
-        )
+        data = json.loads(capsys.readouterr().out)
+        assert data["resolved_workspace"] == "aaxis"
+        assert data["projects"], "dry-run must still report classified projects"
+        assert data["projects"][0]["applied"] is False
 
-    def test_workspace_name_flag_end_to_end_with_json(self, tmp_path, monkeypatch):
-        """End-to-end: cmd_scan with --workspace-name writes the named workspace
-        into the scan summary (json output) rather than a git-remote derivation.
 
-        This is the AC-1 evidence path: the workspace reported in the scan result
-        matches the --workspace-name value, NOT a remote-derived identity.
+# ---------------------------------------------------------------------------
+# The 6 confirmed validation cases (classifier, R1-R6)
+# ---------------------------------------------------------------------------
+
+class TestValidationCases:
+    """Anchors the confirmed ruleset. Uses classify_repo (pure, no DB) for the
+    per-repo cases and classify.scan(apply=False) for the report shape."""
+
+    def test_case1_aaxis_aos_aos_iac(self, tmp_path):
+        """aaxis/aos/aos-iac --workspace aaxis -> (aaxis, aos, aos-iac).
+
+        The workspace is the matched ancestor 'aaxis', the project is the
+        segment immediately before the repo ('aos'), and the repo is 'aos-iac'.
         """
-        captured = {}
+        repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+        c = classify_mod.classify_repo(repo, "aaxis")
+        assert c.matched
+        assert c.workspace == "aaxis"
+        assert c.project == "aos"
+        assert c.repo == "aos-iac"
+        assert c.ambiguity is None
 
-        import tools.scan.core as _core
-        monkeypatch.setattr(
-            _core,
-            "scan_workspace",
-            lambda root, workspace, config=None, db_path=None: (
-                captured.__setitem__("workspace", workspace)
-                or _make_stub_result()
-            ),
+    def test_case2_github_repos_engram_collapse(self, tmp_path):
+        """github-repos/engram --workspace github-repos -> collapse.
+
+        The workspace is the direct parent of the repo, so there is nothing
+        between them: project collapses to the repo name (R4)."""
+        repo = _mk_repo(tmp_path, "github-repos", "engram")
+        c = classify_mod.classify_repo(repo, "github-repos")
+        assert c.matched
+        assert c.workspace == "github-repos"
+        assert c.project == "engram"  # collapse: project == repo
+        assert c.repo == "engram"
+        assert c.ambiguity is None
+
+    def test_case3_me_gaia_collapse(self, tmp_path):
+        """me/gaia --workspace me -> collapse (project = repo = 'gaia')."""
+        repo = _mk_repo(tmp_path, "me", "gaia")
+        c = classify_mod.classify_repo(repo, "me")
+        assert c.matched
+        assert c.workspace == "me"
+        assert c.project == "gaia"
+        assert c.repo == "gaia"
+        assert c.ambiguity is None
+
+    def test_case4_organic_repo_as_workspace(self, tmp_path):
+        """Organic: the repo's own direct parent is named as the workspace.
+
+        e.g. .../aos/<repo>  --workspace aos. The parent IS the workspace, so
+        project collapses to the repo name (R4). This is the 'a project CAN be
+        a workspace' case read from the parent side."""
+        repo = _mk_repo(tmp_path, "aos", "aos-server")
+        c = classify_mod.classify_repo(repo, "aos")
+        assert c.matched
+        assert c.workspace == "aos"
+        assert c.project == "aos-server"  # collapse
+        assert c.repo == "aos-server"
+
+    def test_case5_no_match_error_as_text(self, tmp_path):
+        """no-match: --workspace acme against a tree with no 'acme' segment
+        yields a structured error (error-as-text), never a crash, and no
+        project."""
+        repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+        c = classify_mod.classify_repo(repo, "acme")
+        assert not c.matched
+        assert c.project is None
+        assert c.error is not None
+        assert c.error["W"] == "acme"
+        assert "acme" in c.error["suggestion"]
+        # The suggestion names the real ancestor segments so the user can pick.
+        assert "aos" in c.error["suggestion"]
+
+    def test_case6_deeper_than_3_ambiguity_as_data(self, tmp_path):
+        """deeper-than-3 nesting -> the project is the segment just before the
+        repo, and the extra levels are returned as ambiguity DATA (never
+        guessed)."""
+        # W / extra1 / extra2 / project / repo  (2 levels between W and project)
+        repo = _mk_repo(tmp_path, "org", "team", "group", "svc", "svc-api")
+        c = classify_mod.classify_repo(repo, "org")
+        assert c.matched
+        assert c.workspace == "org"
+        assert c.project == "svc"  # segment immediately before the repo
+        assert c.repo == "svc-api"
+        assert c.ambiguity is not None
+        assert c.ambiguity["repo"] == "svc-api"
+        # extra_levels are the segments between the workspace and the project.
+        assert c.ambiguity["extra_levels"] == ["team", "group"]
+
+
+# ---------------------------------------------------------------------------
+# classify.scan: report shape + reconcile (R5/R6) against a temp DB
+# ---------------------------------------------------------------------------
+
+class TestScanReport:
+    def test_scan_report_shape_dry_run(self, tmp_path):
+        """apply=False produces a full ScanReport with applied=False and no
+        DB access."""
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+        report = classify_mod.scan(tmp_path / "aaxis", "aaxis", apply=False)
+        d = report.to_dict()
+        assert d["resolved_workspace"] == "aaxis"
+        assert d["error"] is None
+        assert len(d["projects"]) == 1
+        assert d["projects"][0]["project"] == "aos"
+        assert d["projects"][0]["applied"] is False
+        assert d["marked_missing"] == 0
+
+    def test_scan_mixed_match_and_collapse(self, tmp_path):
+        """A root with a nested repo and a loose repo both matching 'aaxis':
+        the nested one keeps its parent as project, the loose one collapses."""
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")   # project = aos
+        _mk_repo(tmp_path, "aaxis", "loose-repo")       # collapse: project = repo
+        report = classify_mod.scan(tmp_path / "aaxis", "aaxis", apply=False)
+        by_repo = {p["repo"]: p["project"] for p in report.projects}
+        assert by_repo["aos-iac"] == "aos"
+        assert by_repo["loose-repo"] == "loose-repo"
+        assert report.errors == []
+
+    def test_scan_all_no_match_is_error_report(self, tmp_path):
+        """When no repo matches W, the report carries errors and no projects,
+        and resolved_workspace stays None (non-crashing)."""
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+        report = classify_mod.scan(tmp_path / "aaxis", "acme", apply=False)
+        assert report.projects == []
+        assert report.resolved_workspace is None
+        assert len(report.errors) == 1
+        assert report.errors[0]["W"] == "acme"
+
+    def test_scan_persists_and_reconciles(self, tmp_db, tmp_path):
+        """apply=True writes projects rows, then a second scan with one repo
+        gone soft-deletes the missing project (R5).
+
+        Runs entirely against the temp DB (tmp_db fixture)."""
+        import sqlite3
+        import shutil
+
+        # First scan: two repos under workspace 'aaxis'.
+        root = tmp_path / "aaxis"
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+        _mk_repo(tmp_path, "aaxis", "other", "other-repo")
+
+        r1 = classify_mod.scan(root, "aaxis", db_path=tmp_db, apply=True)
+        assert r1.error is None
+        applied = [p for p in r1.projects if p["applied"]]
+        assert len(applied) == 2, f"expected 2 applied rows, got {r1.projects}"
+
+        con = sqlite3.connect(str(tmp_db))
+        try:
+            rows = con.execute(
+                "SELECT name, status FROM projects WHERE workspace = ?",
+                ("aaxis",),
+            ).fetchall()
+        finally:
+            con.close()
+        names = {n for n, _ in rows}
+        assert names == {"aos", "other"}
+        assert all(s == "active" for _, s in rows)
+
+        # Second scan: remove the 'other' subtree -> its project soft-deleted.
+        shutil.rmtree(tmp_path / "aaxis" / "other")
+
+        r2 = classify_mod.scan(root, "aaxis", db_path=tmp_db, apply=True)
+        assert r2.error is None
+        assert r2.marked_missing >= 1
+
+        con = sqlite3.connect(str(tmp_db))
+        try:
+            status_by_name = dict(
+                con.execute(
+                    "SELECT name, status FROM projects WHERE workspace = ?",
+                    ("aaxis",),
+                ).fetchall()
+            )
+        finally:
+            con.close()
+        assert status_by_name.get("aos") == "active", "surviving repo stays active"
+        assert status_by_name.get("other") == "missing", (
+            "removed repo's project must be soft-deleted (status=missing), "
+            f"got {status_by_name.get('other')!r}"
         )
 
-        # Minimal git repo with a remote URL so that WITHOUT --workspace-name
-        # the remote would win over the directory name.
-        import subprocess
-        subprocess.run(["git", "init", "--quiet"], cwd=str(tmp_path), check=True)
-        subprocess.run(
-            ["git", "remote", "add", "origin", "https://github.com/org/my-service.git"],
-            cwd=str(tmp_path),
-            check=True,
-        )
-        # Make the path look like an installed workspace.
-        claude = tmp_path / ".claude"
-        claude.mkdir()
-        import json as _json
-        (claude / "plugin-registry.json").write_text(
-            _json.dumps({"installed": [{"name": "gaia-ops"}]})
-        )
+    def test_scan_identity_collapse_same_repo_two_roots(self, tmp_db, tmp_path):
+        """The SAME physical repo scanned from two roots collapses to ONE
+        projects row (writer identity-collapse UPSERT keyed on
+        project_identity)."""
+        import sqlite3
+        import shutil
 
-        args = _MockArgs(
-            path=str(tmp_path),
-            workspace_name="my-local-monorepo",
-            json=True,
-        )
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
+        # Build aaxis/aos/aos-iac and initialise a real git repo so
+        # resolve_project_identity returns a stable git-common-dir identity.
+        repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+        shutil.rmtree(repo / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
 
-        # The workspace passed to scan_workspace must be the override, not
-        # "github.com/org/my-service" (what current() would derive).
-        assert captured.get("workspace") == "my-local-monorepo", (
-            f"--workspace-name override not honoured: "
-            f"scan_workspace received {captured.get('workspace')!r}, "
-            "expected 'my-local-monorepo'"
-        )
+        # Scan from the workspace root, then again from a deeper root that still
+        # contains the same repo (project resolves to the repo name there).
+        classify_mod.scan(tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True)
+        classify_mod.scan(tmp_path / "aaxis" / "aos", "aos", db_path=tmp_db, apply=True)
 
-    def test_workspace_name_no_flag_uses_remote_first(self, tmp_path, monkeypatch):
-        """No-regression: without --workspace-name the remote-first identity is used."""
-        captured = {}
-
-        import tools.scan.core as _core
-        monkeypatch.setattr(
-            _core,
-            "scan_workspace",
-            lambda root, workspace, config=None, db_path=None: (
-                captured.__setitem__("workspace", workspace)
-                or _make_stub_result()
-            ),
-        )
-
-        # Repo with a clear remote -- remote-first should win.
-        import subprocess
-        subprocess.run(["git", "init", "--quiet"], cwd=str(tmp_path), check=True)
-        subprocess.run(
-            ["git", "remote", "add", "origin", "https://github.com/org/my-service.git"],
-            cwd=str(tmp_path),
-            check=True,
-        )
-        claude = tmp_path / ".claude"
-        claude.mkdir()
-        import json as _json
-        (claude / "plugin-registry.json").write_text(
-            _json.dumps({"installed": [{"name": "gaia-ops"}]})
-        )
-
-        args = _MockArgs(path=str(tmp_path), json=True)
-        rc = scan_mod.cmd_scan(args)
-        assert rc == 0
-
-        ws = captured.get("workspace")
-        assert ws == "github.com/org/my-service", (
-            f"expected remote-first identity 'github.com/org/my-service', got {ws!r}"
+        con = sqlite3.connect(str(tmp_db))
+        try:
+            count = con.execute(
+                "SELECT COUNT(*) FROM projects WHERE project_identity IS NOT NULL"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        assert count == 1, (
+            "the same physical repo must collapse to a single projects row, "
+            f"got {count}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Helpers for TestWorkspaceNameFlag stubs
+# match_workspace_index -- the segment matcher (R3)
 # ---------------------------------------------------------------------------
 
-class _DummyScanConfig:
-    """Minimal scan config stub for unit-level _run_scan tests."""
-    project_root = None
-    verbose = False
-    scanners = None
-    staleness_hours = 24
+class TestMatchWorkspaceIndex:
+    def test_last_occurrence_wins(self):
+        segs = ["aaxis", "sub", "aaxis", "proj", "repo"]
+        # The deepest 'aaxis' (index 2) is the most specific boundary.
+        assert classify_mod.match_workspace_index(segs, "aaxis") == 2
 
+    def test_repo_itself_never_matches(self):
+        """The repo segment (segs[-1]) is never eligible to be the workspace."""
+        segs = ["a", "b", "repo"]
+        assert classify_mod.match_workspace_index(segs, "repo") is None
 
-def _make_stub_result():
-    """Return a minimal ScanResult-like object that _run_scan can consume."""
-    from tools.scan.orchestrator import ScanOutput
-    output = ScanOutput(
-        sections_updated=[],
-        sections_preserved=[],
-        warnings=[],
-        errors=[],
-        duration_ms=1.0,
-        scanner_results={},
-    )
+    def test_nested_token_split_match(self):
+        segs = ["aaxis", "aos", "proj", "repo"]
+        assert classify_mod.match_workspace_index(segs, "aaxis/aos") == 1
 
-    class _StubResult:
-        pass
-
-    r = _StubResult()
-    r.output = output
-    r.demoted = False
-    r.marked_missing = []
-    return r
+    def test_no_match_returns_none(self):
+        segs = ["a", "b", "repo"]
+        assert classify_mod.match_workspace_index(segs, "zzz") is None

@@ -133,12 +133,20 @@ class TestSchemaCompatibility:
             assert "sections" in ctx, f"{name}: missing sections"
 
     def test_gaia_scan_persists_workspace_state_to_db(self, gaia_scan_content):
-        """`gaia scan` syncs workspace state into gaia.db.
+        """`gaia scan` syncs workspace state into gaia.db (never a JSON file).
 
         The legacy ``project-context.json`` artifact was retired (context now
-        lives exclusively in gaia.db); scan-core populates the store and the
-        CLI delegates to it. Assert the CLI references the gaia.db sync path
-        rather than the retired JSON file.
+        lives exclusively in gaia.db). Post inference-removal, the CLI delegates
+        to the deterministic classifier (``tools.scan.classify``), which
+        persists project rows through the DB writer. Assert the CLI routes
+        through the classifier and does NOT write the retired JSON file.
         """
-        assert "gaia.db" in gaia_scan_content
-        assert "scan_workspace" in gaia_scan_content
+        # New deterministic persistence path: the CLI calls the classifier,
+        # which upserts into gaia.db via the writer.
+        assert "classify" in gaia_scan_content, (
+            "scan CLI must delegate to the deterministic classifier"
+        )
+        # The retired project-context.json artifact must not be referenced.
+        assert "project-context.json" not in gaia_scan_content, (
+            "scan CLI must not reference the retired project-context.json"
+        )

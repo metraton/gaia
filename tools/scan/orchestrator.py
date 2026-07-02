@@ -33,7 +33,6 @@ from tools.scan import __version__ as scanner_package_version
 from tools.scan.config import ScanConfig
 from tools.scan.registry import ScannerRegistry
 from tools.scan.scanners.base import BaseScanner, ScanResult
-from tools.scan.workspace import WorkspaceInfo, detect_workspace_type
 
 logger = logging.getLogger(__name__)
 
@@ -325,11 +324,15 @@ class ScanOrchestrator:
         """Run all registered scanners and return aggregated output.
 
         Full pipeline:
-          1. Detect workspace type
-          2. Run scanners in parallel (or sequentially)
-          3. Collect and combine scanner sections
-          4. Merge sections using ownership rules
-          5. Return ScanOutput
+          1. Run scanners in parallel (or sequentially)
+          2. Collect and combine scanner sections
+          3. Merge sections using ownership rules
+          4. Return ScanOutput
+
+        Workspace/project classification is NO LONGER done here. Scanners run in
+        single-repo mode over ``root`` and produce section data only; the
+        deterministic (workspace, project) classification is owned by
+        :mod:`tools.scan.classify` (driven by the required ``--workspace``).
 
         Args:
             project_root: Project root path. Falls back to config.project_root.
@@ -340,22 +343,16 @@ class ScanOrchestrator:
         root = project_root or self.config.project_root
         start_ms = time.monotonic() * 1000
 
-        # Detect workspace type BEFORE running scanners
-        workspace_info = detect_workspace_type(root)
-        if workspace_info.is_multi_repo:
-            logger.info(
-                "Multi-repo workspace: %d repos detected",
-                len(workspace_info.repo_dirs),
-            )
-
         # Select scanners
         scanners = self.registry.get_all()
         if self.config.scanners:
             requested = set(self.config.scanners)
             scanners = [s for s in scanners if s.SCANNER_NAME in requested]
 
+        # Scanners run in single-repo mode: workspace_info stays None so the
+        # multi-repo branches degrade to the single-repo path.
         for scanner in scanners:
-            scanner.workspace_info = workspace_info
+            scanner.workspace_info = None
 
         scanner_results: Dict[str, ScanResult] = {}
         all_warnings: List[str] = []
