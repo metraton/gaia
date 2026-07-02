@@ -934,6 +934,42 @@ class TestDeriveWorkspace:
         result = doctor_mod._derive_workspace()
         assert result == tmp_path.resolve()
 
+    def test_pnpm_virtual_store_install(self, tmp_path, monkeypatch):
+        """Script inside a pnpm virtual-store layout should still derive the
+        real project workspace, not the .pnpm store subdirectory.
+
+        pnpm installs into a content-addressed store and symlinks the
+        package in; once the symlink is resolved the physical path becomes
+        <workspace>/node_modules/.pnpm/@jaguilar87+gaia@X.Y.Z/node_modules/@jaguilar87/gaia/...
+        -- a nested node_modules/@jaguilar87/gaia sits inside the outer one.
+        Regression test for the false-CRITICAL defect: the old algorithm
+        matched on the nested occurrence and returned the .pnpm store
+        subdirectory (no .claude/) as the workspace.
+        """
+        pnpm_pkg_dir = (
+            tmp_path
+            / "node_modules"
+            / ".pnpm"
+            / "@jaguilar87+gaia@1.0.0"
+            / "node_modules"
+            / "@jaguilar87"
+            / "gaia"
+        )
+        script_path = pnpm_pkg_dir / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        (pnpm_pkg_dir / "package.json").write_text(
+            '{"name": "@jaguilar87/gaia", "version": "1.0.0"}'
+        )
+
+        # The real project workspace (NOT the gaia source package).
+        (tmp_path / "package.json").write_text('{"name": "my-app", "version": "1.0.0"}')
+
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+
+        result = doctor_mod._derive_workspace()
+        assert result == tmp_path.resolve()
+
     def test_source_repo_self_install_walks_to_consumer(self, tmp_path, monkeypatch):
         """When the script lives in the gaia source repo's own node_modules self-install,
         _derive_workspace should walk up one level to the real consumer workspace."""

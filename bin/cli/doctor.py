@@ -98,15 +98,34 @@ def _derive_workspace(override: str = None) -> Path:
     ---------
     1. If *override* is given (from --workspace), validate it has .claude/
        and return it directly.
-    2. Resolve Path(__file__) to its realpath and search its parts for the
-       pattern ``<workspace>/node_modules/@jaguilar87/gaia/``.
-    3. If the derived workspace IS the Gaia source package itself (its
+    2. Resolve Path(__file__) to its realpath and find the FIRST (leftmost)
+       ``node_modules`` path segment; the workspace is everything before it.
+    3. Sanity-check that ``@jaguilar87`` and ``gaia`` both appear somewhere
+       after that ``node_modules`` segment, confirming the script really is
+       running from inside the gaia package tree.
+    4. If the derived workspace IS the Gaia source package itself (its
        package.json has name "@jaguilar87/gaia"), treat the workspace as a
        dev self-install and look one directory up for the real consumer
        workspace (which should also have node_modules/@jaguilar87/gaia/).
-    4. If the script is NOT inside any node_modules/@jaguilar87/gaia/ tree
-       (global install, PATH symlink, etc.) exit with a clear error -- no
-       silent cwd fallback.
+    5. If the script is NOT inside any node_modules/.../@jaguilar87/gaia/
+       tree (global install, PATH symlink, etc.) exit with a clear error --
+       no silent cwd fallback.
+
+    Why "leftmost node_modules", not "node_modules immediately followed by
+    @jaguilar87/gaia": a plain npm/hoisted install puts the package directly
+    at ``<workspace>/node_modules/@jaguilar87/gaia/...``, so the two forms
+    agree there. But pnpm installs into a content-addressed virtual store and
+    SYMLINKS the package in; once ``Path.resolve()`` follows that symlink the
+    physical path becomes
+    ``<workspace>/node_modules/.pnpm/@jaguilar87+gaia@X.Y.Z/node_modules/@jaguilar87/gaia/...``
+    -- a SECOND, nested ``node_modules/@jaguilar87/gaia`` sits inside the
+    first. Requiring the pattern to appear immediately after ``node_modules``
+    matched that nested occurrence and derived the workspace as the ``.pnpm``
+    store subdirectory itself (which has no ``.claude/``), producing a false
+    CRITICAL report instead of the real project root. The leftmost
+    ``node_modules`` is always the one directly under the real workspace
+    root, regardless of how many package-manager-internal layers sit between
+    it and the actual ``@jaguilar87/gaia`` package files.
 
     This replaces the old ``_find_project_root()`` walk-up-from-cwd logic
     that caused false-positive HEALTHY reports when the user was cd'd into
@@ -127,35 +146,36 @@ def _derive_workspace(override: str = None) -> Path:
     script_path = Path(__file__).resolve()
     parts = script_path.parts
 
-    for i, part in enumerate(parts):
-        if (
-            part == "node_modules"
-            and i + 2 < len(parts)
-            and parts[i + 1] == "@jaguilar87"
-            and parts[i + 2] == "gaia"
-        ):
-            # Reconstruct the workspace path from the parts before node_modules/.
-            # On POSIX, parts[0] == '/', so Path(*parts[:i]) builds correctly.
-            # Guard i==0 (should never happen in practice) just in case.
-            workspace = Path(parts[0]).joinpath(*parts[1:i]) if i > 0 else Path("/")
+    nm_index = next((i for i, part in enumerate(parts) if part == "node_modules"), None)
 
-            # Check whether this workspace is itself the Gaia source package.
-            # When a developer installs Gaia into the source repo (common dev
-            # workflow), the resulting path is:
-            #   <source_repo>/node_modules/@jaguilar87/gaia/bin/cli/doctor.py
-            # We detect this by checking package.json name.
-            pkg_json = workspace / "package.json"
-            data = _read_json(pkg_json)
-            if data and data.get("name") == "@jaguilar87/gaia":
-                # This is a self-install inside the Gaia source repo.
-                # Walk one level up to find the real consumer workspace.
-                parent = workspace.parent
-                parent_nm = parent / "node_modules" / "@jaguilar87" / "gaia"
-                if parent_nm.is_dir():
-                    return parent
-                # No consumer found above the source repo -- fall through to error.
-                break
+    if (
+        nm_index is not None
+        and "@jaguilar87" in parts[nm_index + 1:]
+        and "gaia" in parts[nm_index + 1:]
+    ):
+        # Reconstruct the workspace path from the parts before node_modules/.
+        # On POSIX, parts[0] == '/', so Path(*parts[:i]) builds correctly.
+        # Guard i==0 (should never happen in practice) just in case.
+        workspace = (
+            Path(parts[0]).joinpath(*parts[1:nm_index]) if nm_index > 0 else Path("/")
+        )
 
+        # Check whether this workspace is itself the Gaia source package.
+        # When a developer installs Gaia into the source repo (common dev
+        # workflow), the resulting path is:
+        #   <source_repo>/node_modules/@jaguilar87/gaia/bin/cli/doctor.py
+        # We detect this by checking package.json name.
+        pkg_json = workspace / "package.json"
+        data = _read_json(pkg_json)
+        if data and data.get("name") == "@jaguilar87/gaia":
+            # This is a self-install inside the Gaia source repo.
+            # Walk one level up to find the real consumer workspace.
+            parent = workspace.parent
+            parent_nm = parent / "node_modules" / "@jaguilar87" / "gaia"
+            if parent_nm.is_dir():
+                return parent
+            # No consumer found above the source repo -- fall through to error.
+        else:
             return workspace
 
     # --- No inferable consumer workspace ---
