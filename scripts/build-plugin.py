@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Build script for gaia plugin ecosystem.
+Build script for the gaia plugin.
 
-Reads a build manifest and produces a plugin output directory with all
-required files, hooks.json, and settings.json.
+Under the `source: npm` delivery model the published package root IS the
+plugin -- there is no dist/ bundle. This script only regenerates the two
+generated manifests (.claude-plugin/plugin.json with inline hooks, and
+hooks/hooks.json) in place; it never cleans or copies component files.
 
 Usage:
-    python3 scripts/build-plugin.py <plugin-name> [--output-dir <path>]
+    python3 scripts/build-plugin.py <plugin-name> --manifests-only [--output-dir <path>]
 
 Exit codes:
     0  Build successful
-    1  Invalid plugin name or missing manifest
-    2  File copy error
+    1  Invalid plugin name, missing manifest, or missing --manifests-only
 """
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# Single, unified plugin. The former gaia-ops / gaia-security split is retired:
+# Single, unified plugin named "gaia":
 # one bundle ("gaia") ships hooks + modules + agents + skills + tools + config
 # + the `bin/` CLI + the runtime support (`gaia/` package, `scripts/`).
 VALID_PLUGINS = ("gaia",)
@@ -275,104 +275,15 @@ def generate_plugin_json(manifest: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Build execution
 # ---------------------------------------------------------------------------
-
-def build_plugin(plugin_name: str, output_dir: Path) -> None:
-    """Execute the full build for a plugin."""
-    print(f"Building plugin: {plugin_name}")
-    print(f"Output directory: {output_dir}")
-    print(f"Source root: {REPO_ROOT}")
-    print()
-
-    # Load manifest
-    manifest = load_manifest(plugin_name)
-
-    # Clean output directory
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Resolve and copy files
-    source_files = resolve_file_list(manifest)
-    copied = 0
-    skipped = 0
-
-    for src in source_files:
-        if not src.exists():
-            print(f"  WARNING: Source file not found: {src.relative_to(REPO_ROOT)}", file=sys.stderr)
-            skipped += 1
-            continue
-
-        rel = src.relative_to(REPO_ROOT)
-        dst = output_dir / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            shutil.copy2(src, dst)
-            copied += 1
-        except Exception as e:
-            print(f"Error: Failed to copy {rel}: {e}", file=sys.stderr)
-            sys.exit(2)
-
-    # Generate hooks.json
-    hooks_json = generate_hooks_json(manifest)
-    hooks_json_path = output_dir / "hooks" / "hooks.json"
-    hooks_json_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(hooks_json_path, "w") as f:
-        json.dump(hooks_json, f, indent=2)
-        f.write("\n")
-    print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)")
-
-    # settings.json removed -- CC plugin spec only supports 'agent' and 'subagentStatusLine' keys;
-    # our 'permissions' block is non-canonical and CC merges it into workspace settings.local.json.
-
-    # Generate .claude-plugin/plugin.json
-    plugin_json = generate_plugin_json(manifest)
-    plugin_json_dir = output_dir / ".claude-plugin"
-    plugin_json_dir.mkdir(parents=True, exist_ok=True)
-    plugin_json_path = plugin_json_dir / "plugin.json"
-    with open(plugin_json_path, "w") as f:
-        json.dump(plugin_json, f, indent=2)
-        f.write("\n")
-    print(f"  Generated: .claude-plugin/plugin.json")
-
-    # Copy per-plugin README.md from build/<plugin>.README.md if present.
-    # This README is user-facing inside the installed plugin tarball.
-    readme_src = REPO_ROOT / "build" / f"{plugin_name}.README.md"
-    if readme_src.exists():
-        readme_dst = output_dir / "README.md"
-        shutil.copy2(readme_src, readme_dst)
-        print(f"  Copied: README.md (from build/{plugin_name}.README.md)")
-
-    # TODO: Re-enable icon copy once Claude Code plugin.json schema documents an 'icon' field (ref: https://code.claude.com/docs/en/plugins-reference)
-    # icon_src = REPO_ROOT / "build" / f"{plugin_name}.icon.svg"
-    # if icon_src.exists():
-    #     icon_dst = output_dir / ".claude-plugin" / "icon.svg"
-    #     shutil.copy2(icon_src, icon_dst)
-    #     print(f"  Copied: .claude-plugin/icon.svg (from build/{plugin_name}.icon.svg)")
-
-    # Validate output
-    errors = validate_output(manifest, output_dir)
-
-    # Print summary
-    print()
-    print("=" * 60)
-    print(f"Build Summary: {plugin_name}")
-    print("=" * 60)
-    print(f"  Files copied: {copied}")
-    print(f"  Files skipped: {skipped}")
-    print(f"  Hook events: {len(hooks_json['hooks'])}")
-    print(f"  Validation errors: {len(errors)}")
-
-    if errors:
-        print()
-        print("Validation errors:")
-        for err in errors:
-            print(f"  - {err}")
-        # Don't exit with error for missing optional files
-        # The build is still usable
-
-    print()
-    print(f"Build complete: {output_dir}")
+#
+# NOTE: the former clean-build path (`build_plugin()`) that rmtree'd an
+# output directory and copied every manifest-resolved file into a fresh
+# `dist/<plugin>` tree has been removed. Nothing in the ship pipeline used
+# it -- package.json's only build step is `generate:plugin-root`, which
+# calls `write_root_manifests()` below via `--manifests-only`. Under the
+# `source: npm` delivery model the package root IS the plugin (component
+# files already live there and ship via package.json `files[]`), so there
+# is no dist/ artifact to produce.
 
 
 def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
@@ -431,45 +342,13 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
     print("Root manifests regenerated.")
 
 
-def validate_output(manifest: dict, output_dir: Path) -> list[str]:
-    """Validate the build output structure."""
-    errors: list[str] = []
-
-    # Check hook entry points exist in output
-    for entry in manifest["hooks"]["entries"]:
-        if not (output_dir / entry).exists():
-            errors.append(f"Missing hook entry point: {entry}")
-
-    # Check hooks.json exists
-    if not (output_dir / "hooks" / "hooks.json").exists():
-        errors.append("Missing hooks/hooks.json")
-
-    # settings.json check removed -- file is intentionally not generated (non-canonical per CC plugin spec)
-
-    # Check .claude-plugin/plugin.json exists
-    if not (output_dir / ".claude-plugin" / "plugin.json").exists():
-        errors.append("Missing .claude-plugin/plugin.json")
-
-    # Check agents
-    for agent in manifest.get("agents", []):
-        if not (output_dir / agent).exists():
-            errors.append(f"Missing agent: {agent}")
-
-    # Check commands
-    for cmd in manifest.get("commands", []):
-        if not (output_dir / cmd).exists():
-            errors.append(f"Missing command: {cmd}")
-
-    return errors
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build a gaia plugin from its manifest.",
+        description="Regenerate the gaia plugin's generated manifests from its build manifest.",
         prog="build-plugin.py",
     )
     parser.add_argument(
@@ -481,7 +360,7 @@ def main():
         "--output-dir",
         type=Path,
         default=None,
-        help="Output directory (default: dist/<plugin-name>; with --manifests-only, default is the repo root)",
+        help="Output directory for --manifests-only (default: the repo root)",
     )
     parser.add_argument(
         "--manifests-only",
@@ -490,28 +369,28 @@ def main():
             "Regenerate ONLY .claude-plugin/plugin.json (inline hooks) + hooks/hooks.json "
             "into --output-dir, WITHOUT cleaning or copying component files. Used to make "
             "the repo root (and the published npm tarball root) a valid plugin for source:npm. "
-            "Never deletes the output directory."
+            "Never deletes the output directory. This is the only supported build mode -- "
+            "there is no dist/ clean-build path."
         ),
     )
 
     args = parser.parse_args()
     plugin_name = getattr(args, "plugin-name")
 
-    if args.manifests_only:
-        # Default target is the repo root -- augment it in place.
-        output_dir = args.output_dir or REPO_ROOT
-        if not output_dir.is_absolute():
-            output_dir = REPO_ROOT / output_dir
-        write_root_manifests(plugin_name, output_dir)
-        return
+    if not args.manifests_only:
+        print(
+            "Error: --manifests-only is required. The dist/ clean-build path has been "
+            "removed -- under source:npm the package root IS the plugin, so this script "
+            "only regenerates .claude-plugin/plugin.json + hooks/hooks.json in place.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    output_dir = args.output_dir or (REPO_ROOT / "dist" / plugin_name)
-
-    # Make output_dir absolute
+    # Default target is the repo root -- augment it in place.
+    output_dir = args.output_dir or REPO_ROOT
     if not output_dir.is_absolute():
         output_dir = REPO_ROOT / output_dir
-
-    build_plugin(plugin_name, output_dir)
+    write_root_manifests(plugin_name, output_dir)
 
 
 if __name__ == "__main__":

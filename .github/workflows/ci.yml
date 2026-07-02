@@ -82,7 +82,7 @@ jobs:
         run: npm run lint
 
   build-plugins:
-    name: Build Plugins (Python ${{ matrix.python-version }})
+    name: Build Plugin (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -96,19 +96,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Build gaia-security
-        run: python3 scripts/build-plugin.py gaia-security
-
-      - name: Build gaia-ops
-        run: python3 scripts/build-plugin.py gaia-ops
+      # Single unified plugin (gaia-ops / gaia-security are retired). There is
+      # no dist/ bundle: under source:npm the repo root IS the plugin, so the
+      # only build step regenerates the two generated manifests in place --
+      # the same invocation as package.json's `generate:plugin-root` script.
+      - name: Generate plugin root manifests
+        run: python3 scripts/build-plugin.py gaia --manifests-only --output-dir .
 
       - name: Verify build outputs
         run: |
-          test -f dist/gaia-security/.claude-plugin/plugin.json
-          test -f dist/gaia-security/hooks/hooks.json
-          test -f dist/gaia-ops/.claude-plugin/plugin.json
-          test -f dist/gaia-ops/hooks/hooks.json
-          echo "All plugin artifacts verified"
+          test -f .claude-plugin/plugin.json
+          test -f hooks/hooks.json
+          echo "Plugin manifests verified"
 
   validate-manifests:
     name: Validate Manifests
