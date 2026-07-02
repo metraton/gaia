@@ -78,12 +78,6 @@ modules/
 │   ├── metrics.py        # MetricsCollector + FUNCTIONAL generate_summary
 │   └── event_detector.py # CriticalEventDetector
 │
-├── identity/             # Orchestrator identity injection
-│   ├── __init__.py
-│   ├── identity_provider.py # Build identity based on installed plugins
-│   ├── ops_identity.py      # Ops mode: minimal identity + on-demand skills
-│   └── security_identity.py # Security-only mode identity
-│
 └── agents/               # Subagent support
     ├── __init__.py
     └── response_contract.py # Agent response contract validation

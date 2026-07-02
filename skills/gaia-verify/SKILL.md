@@ -53,7 +53,7 @@ Core flow: `npm run gaia:verify-install:rc` (the `@rc` tag) or `npm run gaia:ver
 After wiring a workspace, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor itself walks up to the user `.claude/` instead of the workspace. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
 
 1. `ls -la <workspace>/.claude/` -- **5 symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
-2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). `gaia-ops` is recognized as a legacy name for registries written by older installs (`gaia doctor` and `gaia cleanup` still accept it), but a fresh install always writes `gaia`. Fail the check only if the name is neither `gaia` nor the legacy `gaia-ops`.
+2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). A fresh install always writes `gaia`; fail the check if the name is anything other than `gaia`.
 3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the bundle's `hooks.json` / inline `plugin.json`, not from `settings.local.json`).
 4. `ls ~/.gaia/gaia.db` -- DB file exists. It is bootstrapped **lazily on first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`) or by `gaia install` -- there is no postinstall.
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist. `gaia install` writes this marker on any bootstrap or wire-up failure; treat its presence as a hard failure regardless of what `gaia doctor` reports.
@@ -79,7 +79,7 @@ If `gaia doctor` fails, report the exact error and stop -- do not continue to `g
 
 - **Skipping the mode question** -- each mode tests a different surface; running the wrong one gives false confidence. A green npm-sandbox says nothing about the plugin bundle.
 - **Validating only one surface** -- npm/pnpm and plugin load hooks by different paths; one can pass while the other is broken. Match the mode to what changed.
-- **Failing on the legacy registry name** -- `gaia` is the canonical registry identity (check 2); `gaia-ops` is recognized only as a legacy name from older installs, not a live alternative. A fresh install that writes anything other than `gaia` is a real bug, not a naming ambiguity.
+- **Accepting a non-canonical registry name** -- `gaia` is the sole canonical registry identity (check 2). A fresh install that writes anything other than `gaia` is a real bug.
 - **Assuming a postinstall bootstrapped the DB** -- the DB is lazy (first CLI use) or explicit (`gaia install`); if it is missing, run a `gaia` command, not "re-run postinstall".
 - **Skipping cleanup** -- `/tmp/gaia-sandbox-*` and registry temp dirs accumulate; always delete after reporting (n/a for live).
 - **Continuing after doctor failure** -- a failing doctor means the installation is broken; status output is meaningless.

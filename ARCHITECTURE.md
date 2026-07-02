@@ -4,7 +4,7 @@
 
 Gaia is an orchestration system for Claude Code agents. It turns a single Claude Code session into a coordinated multi-agent system with security enforcement, context injection, surface-based routing, episodic memory, and deterministic response contracts.
 
-The package is published as `@jaguilar87/gaia` on npm and installed into a project's `.claude/` directory via symlinks. Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. (The hook layer still recognizes two internal *behavioral* modes — `ops` and `security` — as a runtime fallback for legacy installs and the `GAIA_PLUGIN_MODE` override; this is not a packaging split. See `skills/gaia-patterns/reference.md` → "Plugin Modes".)
+The package is published as `@jaguilar87/gaia` on npm and installed into a project's `.claude/` directory via symlinks. Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. Every install runs the full orchestrator surface, and the T3 mutation-safety floor for the main session is unconditional (see `skills/gaia-patterns/reference.md` → "Plugin Packaging").
 
 ## Core Concepts
 

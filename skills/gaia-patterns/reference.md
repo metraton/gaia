@@ -22,7 +22,7 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | `hooks/post_compact.py` | PostCompact | (all) |
 | `hooks/elicitation_result.py` | ElicitationResult | (all) |
 
-SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals) when running in ops mode. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome. SubagentStart injects two memory blocks into every dispatched agent: `## Memory Index` (episodic atoms ranked by relevance to the task) and `## Workspace Memory` (curated persistent memory atoms — user preferences, key decisions, project facts — stored in `~/.gaia/gaia.db` and scoped to the workspace).
+SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals). UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome. SubagentStart injects two memory blocks into every dispatched agent: `## Memory Index` (episodic atoms ranked by relevance to the task) and `## Workspace Memory` (curated persistent memory atoms — user preferences, key decisions, project facts — stored in `~/.gaia/gaia.db` and scoped to the workspace).
 
 ### Hook Modules (13 packages)
 
@@ -48,7 +48,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 |-------|------|--------|----------------|
 | gaia-orchestrator | `agents/gaia-orchestrator.md` | Routes requests, manages workflow, consolidation | (not set) |
 | gaia-operator | `agents/gaia-operator.md` | Workspace operator -- personal workspace tasks, memory management, integrations | `acceptEdits` |
-| gaia-system | `agents/gaia-system.md` | Gaia-ops meta-system itself | `acceptEdits` |
+| gaia-system | `agents/gaia-system.md` | Gaia meta-system itself | `acceptEdits` |
 | developer | `agents/developer.md` | Application code (Node/TS, Python) | `acceptEdits` |
 | cloud-troubleshooter | `agents/cloud-troubleshooter.md` | Live cloud diagnostics | (not set) |
 | gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux | `acceptEdits` |
@@ -127,36 +127,9 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 
 ---
 
-## 2. Plugin Modes
+## 2. Plugin Packaging
 
-Gaia ships as a **single** npm package (`@jaguilar87/gaia`) and a **single** Claude Code plugin (`gaia`, built to `dist/gaia`). The former `gaia-ops` / `gaia-security` package split is retired -- one bundle carries all hooks, modules, agents, skills, tools, and config.
-
-Internally, the hook layer still recognizes two *behavioral* modes via `hooks/modules/core/plugin_mode.py`. This is not a packaging split -- it is a runtime fallback that keeps pre-existing installs (registries written before the rename, or anyone still exporting `GAIA_PLUGIN_MODE=security`) resolving correctly:
-
-| Mode | Selected by | What runs |
-|------|------------|-----------|
-| `ops` (default for the `gaia` plugin) | registry `installed[].name == "gaia"` (or legacy `"gaia-ops"`) | All hooks, all modules, all agents, all skills, all tools, all config |
-| `security` | legacy registry name `"gaia-security"`, or `GAIA_PLUGIN_MODE=security` | Hooks + modules only, no agents, no skills, no config |
-
-### Detection Cascade (`hooks/modules/core/plugin_mode.py`)
-
-```
-1. plugin-registry.json    -- installed[].name: "gaia" or legacy "gaia-ops" -> ops; "gaia-security" -> security
-2. CLAUDE_PLUGIN_ROOT + plugin.json  -- reads .claude-plugin/plugin.json name field
-3. NPM package path        -- inspects node_modules path for package name
-4. GAIA_PLUGIN_MODE env    -- explicit override ("security" or "ops")
-5. Default: "security"     -- most restrictive fallback
-```
-
-### Mode Behavioral Differences
-
-| Behavior | `security` mode | `ops` mode |
-|----------|----------------|------------|
-| T3 approval | Claude Code native dialog (`permissionDecision: ask`) | Hook blocks with nonce, orchestrator approval flow |
-| Agents | None | 8 agents routed by orchestrator |
-| Skills | None | 32 skills injected per frontmatter |
-| PreToolUse matchers | `Bash` only | `Bash`, `Task`, `Agent`, `SendMessage`, multi-tool |
-| File write protection | `_is_protected()` blocks hooks/ and settings*.json for Edit/Write tools | Same -- fires regardless of permissionMode |
+Gaia ships as a **single, unified** plugin named `gaia`. There is **no `dist/` bundle** -- the npm package root (`@jaguilar87/gaia`) IS the plugin. The root `.claude-plugin/plugin.json` (hooks embedded inline) and `hooks/hooks.json` are generated from `build/gaia.manifest.json` at pack time (`prepack` -> `generate:plugin-root`) and tracked in git. One bundle carries all hooks, modules, agents, skills, tools, and config, and every install runs the full orchestrator surface.
 
 ### Security Tiers (quick reference)
 
@@ -175,21 +148,14 @@ Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (nonce
 
 ### Build
 
-```
-scripts/build-plugin.py <plugin-name> [--output-dir <path>]
-```
-
-1. Reads `build/<plugin-name>.manifest.json`
-2. Resolves `"all"` to concrete file lists
-3. Copies to `dist/<plugin-name>/`
-4. Generates `hooks.json` and `settings.json` from manifest
+There is **no `dist/` bundle** -- the package root IS the plugin. `scripts/build-plugin.py gaia --manifests-only --output-dir .` (run via `npm run generate:plugin-root`) reads `build/gaia.manifest.json`, resolves `"all"` fields to concrete file lists, and regenerates `.claude-plugin/plugin.json` (inline hooks) + `hooks/hooks.json` in place at the package root.
 
 ### Publish
 
 ```
-npm run build:plugins          # builds the single `gaia` plugin to dist/gaia
-npm run pre-publish:validate   # validates dist/ contents
-npm run prepublishOnly         # build + validate (automatic before npm publish)
+npm run generate:plugin-root   # regenerates .claude-plugin/plugin.json + hooks/hooks.json from the manifest (also runs via prepack)
+npm run pre-publish:validate   # validates the package root contents
+npm run prepublishOnly         # generate:plugin-root + validate (automatic before npm publish)
 npm publish                    # publishes @jaguilar87/gaia
 ```
 
@@ -198,14 +164,13 @@ npm publish                    # publishes @jaguilar87/gaia
 There is **no npm postinstall hook**. `package.json` carries an explicit `_install_note` documenting this: the DB is bootstrapped lazily on first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped only for the `install`/`uninstall` subcommands themselves), and workspace `.claude/` config is applied on demand via `gaia install` or by the SessionStart hook. `gaia install --postinstall` still exists as a flag for fail-soft, non-interactive invocation, but nothing in the npm lifecycle calls it automatically.
 
 `gaia install` (interactive or `--postinstall`), first run (no `.claude/`):
-1. Detect plugin mode (npm vs CC plugin) for diagnostic output.
-2. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
-3. Create `.claude/` if missing (created early so subsequent steps can write into it).
-4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
-5. Merge hooks from `hooks.json` into `settings.local.json`.
-6. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus a `CHANGELOG.md` file link.
-7. Write `plugin-registry.json` with `installed[].name == "gaia"` (the canonical identity; `gaia-ops` is recognized as a legacy name for registries written by older installs, never written fresh).
-8. Write the `~/.local/bin/gaia` PATH launcher unless `--no-path`.
+1. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
+2. Create `.claude/` if missing (created early so subsequent steps can write into it).
+3. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
+4. Merge hooks from `hooks.json` into `settings.local.json`.
+5. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus a `CHANGELOG.md` file link.
+6. Write `plugin-registry.json` with `installed[].name == "gaia"` (the single unified plugin identity).
+7. Write the `~/.local/bin/gaia` PATH launcher unless `--no-path`.
 
 Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it -- install never triggers a scan.
 
@@ -274,7 +239,7 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 | Context/routing | `pytest tests/tools/ tests/integration/ -v` |
 | CLI tool (bin/) | `pytest tests/layer3_e2e/ -v -m e2e` |
 | Any change (pre-commit) | `npm test` (full L1) |
-| Pre-publish | `npm run build:plugins && npm run pre-publish:validate` |
+| Pre-publish | `npm run generate:plugin-root && npm run pre-publish:validate` |
 
 ---
 
@@ -350,7 +315,7 @@ npm test                             # run L1 suite from gaia-dev
 
 ```bash
 npm version patch|minor|major        # bump in package.json
-npm run build:plugins                 # rebuild dist/
+npm run generate:plugin-root          # regenerate .claude-plugin/plugin.json + hooks/hooks.json
 npm run pre-publish:validate          # validate
 npm publish                           # publish to npm
 ```
