@@ -43,22 +43,6 @@ from tools.scan.role_detector import detect_role
 # Identity resolution
 # ---------------------------------------------------------------------------
 
-def resolve_identity(project_path: Path) -> str:
-    """DEAD CODE — remove after local-install validation.
-
-    Resolve workspace identity from the git remote of `project_path` via B0.
-    Superseded by the deterministic ``--workspace``-driven classifier
-    (tools.scan.classify); kept dormant (uncalled) so a local install can
-    validate the new path before this is deleted in a separate phase.
-
-    Returns:
-        Canonical identity string (host/owner/repo) or the path basename
-        when no remote is detected. Never empty, never raises.
-    """
-    from gaia.project import current
-    return current(cwd=project_path)
-
-
 def resolve_project_identity(project_path: Path) -> str:
     """Resolve a STABLE, vantage-independent identity for a physical project.
 
@@ -924,103 +908,6 @@ def _is_installed_gaia_workspace(directory: Path) -> bool:
         if isinstance(p, dict) and isinstance(p.get("name"), str)
     }
     return "gaia-ops" in names or "gaia-security" in names
-
-
-# DEAD CODE — remove after local-install validation.
-# The installed-workspace attribution layer (_list_installed_workspaces,
-# _walk_for_installs, _nearest_installed_ancestor) inferred which workspace a
-# repo belonged to by walking for Gaia install signals. It is superseded by the
-# deterministic --workspace classifier (tools.scan.classify) and is NO LONGER
-# CALLED by scan_workspace_to_store. Kept dormant so a local install can
-# validate the new path before this block is deleted in a separate phase.
-def _list_installed_workspaces(root: Path, max_depth: int = 4) -> list[Path]:
-    """DEAD CODE — remove after local-install validation.
-
-    Return directories under `root` (inclusive) that carry a Gaia install.
-
-    A directory qualifies when :func:`_is_installed_gaia_workspace` returns
-    True. The walk uses the SAME bounding (``max_depth``) and the SAME
-    skip-dir set (:data:`_REPO_WALK_SKIP`, which includes ``.claude`` and
-    ``node_modules``) as :func:`_list_repos`, so we never descend into a child
-    workspace's installation tree (canonical rule 5).
-
-    Unlike :func:`_list_repos`, this walk does NOT stop at git repos -- a dir
-    can be both a project and a workspace, and a workspace may contain nested
-    installed workspaces. The signal is tested on the directory itself; we
-    never descend into ``.claude`` to find it (we read ``dir/.claude/...``).
-
-    Returns:
-        Sorted list of absolute ``Path`` objects, each an installed workspace.
-    """
-    if not root.is_dir():
-        return []
-
-    installed: list[Path] = []
-    if _is_installed_gaia_workspace(root):
-        installed.append(root)
-    _walk_for_installs(root, current_depth=0, max_depth=max_depth, installed=installed)
-    return sorted(installed)
-
-
-def _walk_for_installs(
-    current: Path,
-    current_depth: int,
-    max_depth: int,
-    installed: list[Path],
-) -> None:
-    """DEAD CODE — remove after local-install validation.
-
-    Recursive helper for :func:`_list_installed_workspaces`.
-
-    Descends into every non-skipped child directory (depth-bounded), testing
-    each for the Gaia installation signal. Does not stop at git repos.
-    """
-    if current_depth >= max_depth:
-        return
-    try:
-        entries = sorted(current.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.is_dir():
-            continue
-        name = entry.name
-        if name.startswith(".") or name in _REPO_WALK_SKIP:
-            continue
-        if _is_installed_gaia_workspace(entry):
-            installed.append(entry)
-        _walk_for_installs(entry, current_depth + 1, max_depth, installed)
-
-
-def _nearest_installed_ancestor(
-    project_path: Path,
-    installed: set[Path],
-    scan_root: Path,
-) -> Path | None:
-    """DEAD CODE — remove after local-install validation.
-
-    Return the deepest installed workspace that is a STRICT ancestor.
-
-    Walks ``project_path``'s parents from nearest to farthest, stopping at
-    ``scan_root`` (inclusive), and returns the first parent present in
-    ``installed``. Excludes ``project_path`` itself: a dir that is both a
-    project and a workspace is attributed to the workspace ABOVE it, not to
-    itself (its own workspace row is registered separately).
-
-    Returns:
-        The nearest installed-ancestor path, or ``None`` when no installed
-        workspace sits between the project and ``scan_root``.
-    """
-    try:
-        parents = list(project_path.parents)
-    except (OSError, ValueError):
-        return None
-    for parent in parents:
-        if parent in installed:
-            return parent
-        if parent == scan_root:
-            break
-    return None
 
 
 def _walk_for_repos(
