@@ -23,8 +23,12 @@ logger = logging.getLogger(__name__)
 VALID_MODES = ("security", "ops")
 DEFAULT_MODE = "security"
 
-# Map NPM package names to plugin modes
+# Map NPM package names to plugin modes.
+# "gaia" is the unified single plugin (ships the full ops surface: agents,
+# orchestrator, skills). It resolves to ops. The legacy split names are kept
+# so pre-existing installs / registries continue to resolve correctly.
 _NPM_PACKAGE_MODE = {
+    "gaia": "ops",
     "gaia-ops": "ops",
     "gaia-security": "security",
 }
