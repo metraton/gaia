@@ -75,11 +75,11 @@ class TestIsGaiaWorkspace:
     def test_plain_dir_is_not_a_workspace(self, tmp_path):
         assert scan_core.is_gaia_workspace(tmp_path) is False
 
-    def test_registry_with_gaia_ops_is_a_workspace(self, tmp_path):
+    def test_registry_with_gaia_is_a_workspace(self, tmp_path):
         claude = tmp_path / ".claude"
         claude.mkdir()
         (claude / "plugin-registry.json").write_text(
-            json.dumps({"installed": [{"name": "gaia-ops"}]})
+            json.dumps({"installed": [{"name": "gaia"}]})
         )
         assert scan_core.is_gaia_workspace(tmp_path) is True
 
@@ -152,13 +152,13 @@ class TestScanWorkspaceIsPure:
         # take the normal populate path. Since the v17 demote/soft-delete change,
         # a directory with no install footprint is demoted (populated=None)
         # rather than populated. Mount the canonical install signal -- a
-        # .claude/plugin-registry.json listing "gaia-ops" -- the same fixture
+        # .claude/plugin-registry.json listing "gaia" -- the same fixture
         # TestIsGaiaWorkspace uses. This is scoped to THIS test only: the
         # no-side-effect tests above must NOT carry a .claude/ footprint.
         claude = tmp_path / ".claude"
         claude.mkdir()
         (claude / "plugin-registry.json").write_text(
-            json.dumps({"installed": [{"name": "gaia-ops"}]})
+            json.dumps({"installed": [{"name": "gaia"}]})
         )
 
         from gaia.project import current as _current

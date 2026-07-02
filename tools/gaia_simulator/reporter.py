@@ -1,5 +1,5 @@
 """
-Results reporter for gaia-ops replay testing.
+Results reporter for gaia replay testing.
 
 Formats and presents ReplayResult data for human consumption and
 programmatic analysis. Completely decoupled from execution.

@@ -485,7 +485,7 @@ class TestCmdUninstallFootprint(unittest.TestCase):
         (claude_dir / "plugin-registry.json").write_text(
             json.dumps({
                 "installed": [
-                    {"name": "gaia-ops", "version": "4.4.0"},
+                    {"name": "gaia", "version": "4.4.0"},
                     {"name": "third-party", "version": "2.0.0"},
                 ],
                 "source": "cli-install",
@@ -536,7 +536,7 @@ class TestCmdUninstallFootprint(unittest.TestCase):
             self.assertFalse((claude_dir / ".plugin-initialized").exists())
 
             # plugin-registry.json: Gaia entry gone, third-party preserved
-            self.assertEqual(data["plugin_registry"]["removed_entries"], ["gaia-ops"])
+            self.assertEqual(data["plugin_registry"]["removed_entries"], ["gaia"])
             self.assertTrue((claude_dir / "plugin-registry.json").exists())
             reg = json.loads((claude_dir / "plugin-registry.json").read_text())
             names = [e["name"] for e in reg["installed"]]

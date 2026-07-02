@@ -16,7 +16,7 @@ from gaia.project import _normalize_remote, current
     # SSH form, mixed case, with .git suffix
     ("git@github.com:metraton/Gaia.git", "github.com/metraton/gaia"),
     # SSH form, alternate org
-    ("git@github.com:Metraton/Gaia-Ops-Dev.git", "github.com/metraton/gaia-ops-dev"),
+    ("git@github.com:Metraton/Gaia-Dev.git", "github.com/metraton/gaia-dev"),
     # HTTPS form, mixed case, with .git suffix
     ("https://github.com/Metraton/Gaia.git", "github.com/metraton/gaia"),
     # HTTPS form, alternate host
@@ -54,8 +54,8 @@ def _init_git_repo(path: Path, remote_url: str | None = None) -> None:
 
 
 def test_current_with_ssh_remote(tmp_path):
-    _init_git_repo(tmp_path, "git@github.com:Metraton/Gaia-Ops-Dev.git")
-    assert current(cwd=tmp_path) == "github.com/metraton/gaia-ops-dev"
+    _init_git_repo(tmp_path, "git@github.com:Metraton/Gaia-Dev.git")
+    assert current(cwd=tmp_path) == "github.com/metraton/gaia-dev"
 
 
 def test_current_with_https_remote(tmp_path):

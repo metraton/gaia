@@ -1,5 +1,5 @@
 """
-E2E subprocess tests for gaia-ops hooks.
+E2E subprocess tests for gaia hooks.
 
 These tests run the actual hook scripts (pre_tool_use.py, post_tool_use.py)
 as subprocesses, piping JSON on stdin and asserting exit codes + stdout JSON.
@@ -67,12 +67,11 @@ def run_hook(script_name, stdin_payload, env_extras=None):
     # Isolate hook subprocess from the host environment so tests are
     # deterministic regardless of where they run:
     # - CLAUDE_PLUGIN_ROOT: would activate plugin-dir mode detection
-    # - GAIA_PLUGIN_MODE: force "ops" so the adapter uses nonce-deny
-    #   flow (the tests assert permissionDecision: deny for T3 commands)
-    # - agent_id injected into payload: delegate mode is always active,
-    #   so we simulate a subagent to test the security layer directly.
+    # - agent_id injected into payload: a subagent under the orchestrator
+    #   routes T3 to deny + approval_id (the tests assert permissionDecision:
+    #   deny for T3 commands), so we simulate a subagent to test the security
+    #   layer directly.
     env.pop("CLAUDE_PLUGIN_ROOT", None)
-    env["GAIA_PLUGIN_MODE"] = "ops"
     if env_extras:
         env.update(env_extras)
 

@@ -214,7 +214,7 @@ class TestParseEvent:
 
     def test_parse_event_with_plugin_channel(self):
         """When CLAUDE_PLUGIN_ROOT is set, channel is PLUGIN."""
-        os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia-ops"
+        os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia"
         try:
             a = ClaudeCodeAdapter()
             stdin_data = json.dumps({
@@ -223,7 +223,7 @@ class TestParseEvent:
             })
             event = a.parse_event(stdin_data)
             assert event.distribution == HostDistribution(
-                channel="plugin", root=Path("/opt/plugins/gaia-ops")
+                channel="plugin", root=Path("/opt/plugins/gaia")
             )
         finally:
             del os.environ["CLAUDE_PLUGIN_ROOT"]
@@ -969,22 +969,22 @@ class TestDetectDistribution:
 
     def test_plugin_with_env_var(self):
         """CLAUDE_PLUGIN_ROOT env var triggers the plugin channel + root."""
-        os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia-ops"
+        os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia"
         try:
             a = ClaudeCodeAdapter()
             assert a.detect_distribution() == HostDistribution(
-                channel="plugin", root=Path("/opt/plugins/gaia-ops")
+                channel="plugin", root=Path("/opt/plugins/gaia")
             )
         finally:
             del os.environ["CLAUDE_PLUGIN_ROOT"]
 
     def test_plugin_root_path(self):
         """_get_plugin_root returns Path from env var."""
-        os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia-ops"
+        os.environ["CLAUDE_PLUGIN_ROOT"] = "/opt/plugins/gaia"
         try:
             a = ClaudeCodeAdapter()
             root = a._get_plugin_root()
-            assert root == Path("/opt/plugins/gaia-ops")
+            assert root == Path("/opt/plugins/gaia")
         finally:
             del os.environ["CLAUDE_PLUGIN_ROOT"]
 

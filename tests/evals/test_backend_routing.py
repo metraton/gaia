@@ -7,7 +7,7 @@ Two layers of coverage:
    ``RoutingSimBackend.simulator`` so the backend round-trip can be
    tested without reading ``config/surface-routing.json``. The stub
    also exercises the "non-dataclass result" fallback path.
-2. **Integration layer (uses real gaia-ops config)**: Let the backend
+2. **Integration layer (uses real gaia config)**: Let the backend
    build a real ``RoutingSimulator`` from ``<repo>/config`` and
    ``<repo>/agents`` and assert the S4 (``kubectl apply``) prompt
    routes to ``gitops-operator`` or ``cloud-troubleshooter`` -- the
@@ -190,12 +190,12 @@ class TestRoutingSimBackendContract:
 
 
 # ---------------------------------------------------------------------------
-# Integration layer: use real RoutingSimulator with gaia-ops config
+# Integration layer: use real RoutingSimulator with gaia config
 # ---------------------------------------------------------------------------
 
 
 class TestRoutingSimBackendIntegration:
-    """Exercise the real ``RoutingSimulator`` with gaia-ops ``config/``.
+    """Exercise the real ``RoutingSimulator`` with gaia ``config/``.
 
     These tests confirm that (a) the lazy-loading path wires up, and
     (b) the S4 routing expectation pinned in

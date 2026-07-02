@@ -98,8 +98,6 @@ class TestBashSemanticGrantCycleNoSessionEnv:
         The test uses a DIFFERENT session for the retry than was used for the block;
         if session_id were a filter criterion, the retry would be blocked again.
         """
-        # Ops mode so the subagent path is active (deny + DB pending).
-        monkeypatch.setenv("GAIA_PLUGIN_MODE", "ops")
         cwd = _make_cwd(tmp_path)
 
         # ── Phase 1: block ──────────────────────────────────────────────────
@@ -180,7 +178,6 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
         constraint.  Using a different session_id for the retry exercises the
         cross-session boundary that Brief 71 Task E fixed.
         """
-        monkeypatch.setenv("GAIA_PLUGIN_MODE", "ops")
         cwd = _make_cwd(tmp_path)
 
         # Target a real path inside the hooks dir so _is_protected() returns True.

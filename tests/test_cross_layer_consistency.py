@@ -3,7 +3,7 @@ Cross-Layer Consistency Tests
 
 These tests validate that the different layers of the system agree with each other.
 They catch the class of bugs where "each module works in isolation but the system
-is inconsistent" — the #1 source of silent failures in gaia-ops.
+is inconsistent" — the #1 source of silent failures in gaia.
 
 What these tests cover:
 1. plugin_setup.py permissions ↔ blocked_commands.py consistency
@@ -63,8 +63,8 @@ def _load_permissions_from_plugin_setup() -> dict:
 
     Returns a dict with 'permissions' key containing allow/deny/ask lists.
     """
-    from modules.core.plugin_setup import OPS_PERMISSIONS
-    return OPS_PERMISSIONS
+    from modules.core.plugin_setup import PERMISSIONS
+    return PERMISSIONS
 
 
 def _load_settings_live_local() -> dict:

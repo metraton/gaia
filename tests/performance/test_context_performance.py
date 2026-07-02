@@ -78,7 +78,7 @@ def _generate_large_context(target_kb: int = TARGET_CONTEXT_SIZE_KB) -> dict:
             "project_identity": {
                 "name": "perf-benchmark-123456",
                 "type": "application",
-                "description": "Performance benchmark project for gaia-ops context pipeline",
+                "description": "Performance benchmark project for gaia context pipeline",
             },
             # 1b. infrastructure (v2)
             "infrastructure": {

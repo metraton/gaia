@@ -152,14 +152,8 @@ def build_environment_block() -> str:
         version = _read_gaia_version()
         cwd = str(Path.cwd())
 
-        # Plugin mode and data dir resolution can both fail under headless
-        # tests with no .claude/ tree; treat as soft-missing.
-        try:
-            from ..core.plugin_mode import get_plugin_mode
-            mode = get_plugin_mode()
-        except Exception:
-            mode = None
-
+        # Data dir resolution can fail under headless tests with no .claude/
+        # tree; treat as soft-missing.
         try:
             from ..core.paths import find_claude_dir, get_plugin_data_dir
             plugin_root = str(find_claude_dir())
@@ -174,8 +168,6 @@ def build_environment_block() -> str:
         lines.append(f"- Machine: {machine}")
         if version:
             lines.append(f"- Gaia: {version}")
-        if mode:
-            lines.append(f"- Mode: {mode}")
         lines.append(f"- cwd: {cwd}")
         if plugin_root:
             lines.append(f"- Plugin root: {plugin_root}")
@@ -911,19 +903,11 @@ def build_per_turn_pending_approvals_block() -> str:
 # Assembler
 # ---------------------------------------------------------------------------
 
-def build_session_context(mode: str) -> str:
+def build_session_context() -> str:
     """Top-level assembler. Concatenate non-empty blocks with blank lines.
 
-    Args:
-        mode: Plugin mode string from ``get_plugin_mode()``. Anything other
-            than ``"ops"`` returns "" -- the security plugin has no
-            orchestrator routing layer to act on the manifest.
-
-    Returns "" when the mode is not ops or every block is empty. Never raises.
+    Returns "" when every block is empty. Never raises.
     """
-    if mode != "ops":
-        return ""
-
     try:
         blocks = [
             build_environment_block(),

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Conflict Detection Module for GAIA-OPS Memory Files
+Conflict Detection Module for GAIA Memory Files
 
 Scans memory .md files for contradictions by:
 1. Loading all .md files from the memory directory

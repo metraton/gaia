@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 # Add the tools directory to sys.path so 'gaia_simulator' package is importable
-# Pattern: tests/tools/test_gaia_simulator.py -> tests/tools -> tests -> gaia-ops-plugin -> tools
+# Pattern: tests/tools/test_gaia_simulator.py -> tests/tools -> tests -> gaia-plugin -> tools
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
 if TOOLS_DIR.is_symlink():
     TOOLS_DIR = TOOLS_DIR.resolve()
@@ -69,12 +69,6 @@ SAMPLE_AUDIT_JSONL = textwrap.dedent("""\
     {"timestamp": "2026-03-11T10:00:02.100000", "session_id": "default", "tool_name": "Bash", "command": "ls /tmp/foo", "parameters": {"command": "ls /tmp/foo", "description": "List directory"}, "duration_ms": 50.0, "exit_code": 0, "tier": "T0"}
     {"timestamp": "2026-03-11T10:00:06.100000", "session_id": "default", "tool_name": "Bash", "command": "git status", "parameters": {"command": "git status", "description": "Check git status"}, "duration_ms": 200.0, "exit_code": 0, "tier": "T0"}
 """)
-
-
-@pytest.fixture(autouse=True)
-def isolate_env(monkeypatch):
-    """Isolate from host environment for deterministic tests."""
-    monkeypatch.setenv("GAIA_PLUGIN_MODE", "ops")
 
 
 @pytest.fixture

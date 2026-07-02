@@ -91,8 +91,7 @@ def run_pre_tool_use_event(
         cwd: Working directory for the subprocess -- the project root whose
             ``.claude`` dir holds the isolated state/DB.
         extra_env: Optional env overrides merged on top of the sanitized base
-            (used to point ``GAIA_DATA_DIR`` / ``GAIA_PLUGIN_MODE`` at the
-            test isolation).
+            (used to point ``GAIA_DATA_DIR`` at the test isolation).
 
     Returns:
         A ``GrantCycleResult`` capturing exit code, stdout, stderr, and the

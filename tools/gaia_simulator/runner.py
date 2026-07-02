@@ -1,5 +1,5 @@
 """
-Hook executor for gaia-ops replay testing.
+Hook executor for gaia replay testing.
 
 Runs hooks as subprocesses with ReplayEvent payloads and compares results
 against expected outcomes. Completely decoupled from log parsing.

@@ -1,5 +1,5 @@
 """
-Adapter Normalized Types for Gaia-Ops Hooks.
+Adapter Normalized Types for Gaia Hooks.
 
 CLI-agnostic frozen dataclasses and enums consumed by business logic modules.
 The adapter layer translates between these types and CLI-specific JSON protocols.
@@ -61,7 +61,7 @@ class PermissionDecision(enum.Enum):
 
 @dataclass(frozen=True)
 class HostDistribution:
-    """How a host distributes and invokes gaia-ops -- declared by the adapter.
+    """How a host distributes and invokes gaia -- declared by the adapter.
 
     The CLI-agnostic value object that replaces a core-owned enumeration of
     distribution channels. The core never enumerates a host's channels nor

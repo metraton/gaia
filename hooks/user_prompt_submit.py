@@ -17,7 +17,6 @@ if _pkg_root not in sys.path:
 from modules.core.paths import get_logs_dir
 from modules.core.stdin import has_stdin_data
 from modules.core.plugin_setup import run_first_time_setup
-from modules.core.plugin_mode import get_plugin_mode
 
 # Configure logging — file only, no stderr
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -232,7 +231,6 @@ if __name__ == "__main__":
 
         # Ensure registry + permissions exist (idempotent, no mark).
         setup_msg = run_first_time_setup(mark_done=False)
-        mode = get_plugin_mode()
 
         # Build additionalContext: welcome + routing.
         # Identity now lives in agents/gaia-orchestrator.md (agent definition).
@@ -248,25 +246,24 @@ if __name__ == "__main__":
             welcome = _build_welcome()
             context_parts.append(welcome)
             mark_initialized()  # Mark AFTER building the welcome
-            logger.info("First-run welcome prepended (%s mode)", mode)
+            logger.info("First-run welcome prepended")
 
-        # Append deterministic surface routing recommendation (ops mode only)
-        if mode == "ops":
-            prompt_text = _extract_user_prompt(raw_input)
+        # Append deterministic surface routing recommendation.
+        prompt_text = _extract_user_prompt(raw_input)
 
-            # NOTE: Approval activation moved to ElicitationResult hook.
-            # AskUserQuestion responses trigger ElicitationResult, not
-            # UserPromptSubmit, so approval detection lives there now.
+        # NOTE: Approval activation moved to ElicitationResult hook.
+        # AskUserQuestion responses trigger ElicitationResult, not
+        # UserPromptSubmit, so approval detection lives there now.
 
-            if prompt_text:
-                routing_block = _build_routing_recommendation(prompt_text)
-                if routing_block:
-                    context_parts.append(routing_block)
-            else:
-                logger.info("Could not extract user prompt from stdin, skipping routing")
+        if prompt_text:
+            routing_block = _build_routing_recommendation(prompt_text)
+            if routing_block:
+                context_parts.append(routing_block)
+        else:
+            logger.info("Could not extract user prompt from stdin, skipping routing")
 
         additional_context = "\n\n".join(context_parts)
-        logger.info("Context injected: %s mode (%d chars)", mode, len(additional_context))
+        logger.info("Context injected (%d chars)", len(additional_context))
 
         print(json.dumps({
             "hookSpecificOutput": {

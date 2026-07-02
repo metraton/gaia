@@ -216,9 +216,9 @@ def cmd_history(args) -> int:
 
     if not claude_dir.exists():
         if as_json:
-            print(json.dumps({"error": "gaia-ops not installed in this directory"}))
+            print(json.dumps({"error": "gaia not installed in this directory"}))
         else:
-            print("\n  gaia-ops not installed in this directory")
+            print("\n  gaia not installed in this directory")
             print("  Run: gaia scan\n")
         return 1
 

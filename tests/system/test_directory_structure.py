@@ -8,11 +8,11 @@ from pathlib import Path
 
 
 class TestCoreDirectories:
-    """Test that all core package directories exist (gaia-ops npm package structure)"""
+    """Test that all core package directories exist (gaia npm package structure)"""
 
     @pytest.fixture
     def package_root(self):
-        """Get the package root directory (gaia-ops/)"""
+        """Get the package root directory (gaia/)"""
         return Path(__file__).resolve().parents[2]
 
     def test_package_directory_exists(self, package_root):
@@ -195,7 +195,7 @@ class TestReadmePresence:
 
     @pytest.fixture
     def package_root(self):
-        """Get the package root directory (gaia-ops/)"""
+        """Get the package root directory (gaia/)"""
         return Path(__file__).resolve().parents[2]
 
     def test_skill_folders_have_skill_md(self, package_root):

@@ -14,12 +14,12 @@ The hardcoded paths let a subagent that triggered those patterns escape the
 Gaia approval flow into Claude Code's native dialog.  All three now converge
 on decide_t3_outcome, so the policy lives in ONE place:
 
-  has_orchestrator_above (is_subagent AND ops mode) -> deny + approval_id
-  otherwise                                         -> native ask
+  has_orchestrator_above (is_subagent) -> deny + approval_id
+  otherwise (the main session)         -> native ask
 
-The test suite runs under GAIA_PLUGIN_MODE=ops (see tests/conftest.py), so
-``is_ops_mode()`` is True; the ops+subagent context therefore routes to
-deny + approval_id, and the orchestrator context falls back to native ask.
+A subagent under the orchestrator routes to deny + approval_id; the main
+session (has_orchestrator_above=False) falls back to the native ask dialog --
+the T3 mutation-safety floor, independent of any plugin mode.
 """
 
 import hashlib

@@ -600,29 +600,26 @@ class ClaudeCodeAdapter(HookAdapter):
 
         try:
             # ── Delegate mode gate ─────────────────────────────────
-            # Must run before any other logic.  When enabled, the
-            # orchestrator (main session) is restricted to dispatch-only
-            # tools.  Subagents are unaffected.
-            # Only active in ops mode -- security mode has no orchestrator.
-            from modules.core.plugin_mode import is_ops_mode
-            if is_ops_mode():
-                from modules.orchestrator.delegate_mode import check_delegate_mode
+            # Must run before any other logic.  The orchestrator (main
+            # session) is restricted to dispatch-only tools.  Subagents are
+            # unaffected.
+            from modules.orchestrator.delegate_mode import check_delegate_mode
 
-                dm_result = check_delegate_mode(tool_name, hook_data)
-                if dm_result.blocked:
-                    logger.warning(
-                        "DELEGATE_MODE denied %s for orchestrator", tool_name,
-                    )
-                    return HookResponse(
-                        output={
-                            "hookSpecificOutput": {
-                                "hookEventName": "PreToolUse",
-                                "permissionDecision": "deny",
-                                "permissionDecisionReason": dm_result.reason,
-                            }
-                        },
-                        exit_code=0,
-                    )
+            dm_result = check_delegate_mode(tool_name, hook_data)
+            if dm_result.blocked:
+                logger.warning(
+                    "DELEGATE_MODE denied %s for orchestrator", tool_name,
+                )
+                return HookResponse(
+                    output={
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": dm_result.reason,
+                        }
+                    },
+                    exit_code=0,
+                )
 
             # Periodic cleanup of expired approval grants
             cleanup_expired_grants()
@@ -696,36 +693,13 @@ class ClaudeCodeAdapter(HookAdapter):
         )
 
         if not result.allowed:
-            from modules.core.plugin_mode import is_ops_mode
             logger.warning("BLOCKED: %s - %s", command[:100], result.reason)
-            # Security-only mode: delegate T3 approval to native Claude Code dialog
-            # instead of blocking with nonce (which requires orchestrator + agents)
-            if not is_ops_mode():
-                reason_line = result.reason.split('\n')[0] if result.reason else f"T3 operation: {command[:80]}"
-                # Permanently blocked commands (rm -rf, kubectl delete namespace, etc.)
-                # are denied even in security mode — user cannot override
-                is_permanently_blocked = "blocked by security policy" in (result.reason or "").lower()
-                if is_permanently_blocked:
-                    logger.info("SECURITY MODE: permanently denied: %s", command[:80])
-                    output = {
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": f"[BLOCKED] {reason_line}",
-                        }
-                    }
-                    return HookResponse(output=output, exit_code=2)
-                # Mutative commands (git commit, terraform apply, etc.) → ask user
-                logger.info("SECURITY MODE: returning 'ask' for T3: %s", command[:80])
-                return self.request_consent(
-                    ConsentRequest(
-                        operation=command,
-                        kind="bash",
-                        reason=f"[{result.tier}] {reason_line}",
-                        tier=str(result.tier),
-                    )
-                )
-            # Ops mode: block with nonce for orchestrator approval flow
+            # Block with nonce for the orchestrator approval flow. The T3
+            # deny-vs-native-ask decision was already made in the validator
+            # (decide_t3_outcome): a subagent under the orchestrator gets a
+            # deny+approval_id block_response; the main session falls back to
+            # the native ask dialog. Either way the block_response carries the
+            # correct outcome.
             if result.block_response is not None:
                 return HookResponse(output=result.block_response, exit_code=0)
             return HookResponse(
@@ -934,7 +908,7 @@ class ClaudeCodeAdapter(HookAdapter):
         - On retry, if an active grant exists for this path, allows through.
 
         Protected paths:
-        - Any path that resolves within the gaia-ops hooks directory (Path.resolve().relative_to(hooks_dir)), EXCEPT .md files — documentation does not execute code and is exempt
+        - Any path that resolves within the gaia hooks directory (Path.resolve().relative_to(hooks_dir)), EXCEPT .md files — documentation does not execute code and is exempt
         - .claude/settings.json and .claude/settings.local.json
         """
         from modules.security.approval_grants import (

@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 
 from .paths import get_plugin_data_dir
-from .plugin_mode import get_plugin_mode
 
 logger = logging.getLogger(__name__)
 
@@ -203,31 +202,8 @@ _DENY_RULES = [
     "Bash(glab project delete:*)",
 ]
 
-# Base permissions for security-only mode
-SECURITY_PERMISSIONS = {
-    "permissions": {
-        "allow": [
-            "Bash(*)",
-            "Read",
-            "Glob",
-            "Grep",
-            "BashOutput",
-            "ExitPlanMode",
-            "KillShell",
-            "Skill",
-            "SlashCommand",
-            "TodoWrite",
-            "WebFetch",
-            "WebSearch",
-            "NotebookEdit",
-        ],
-        "deny": _DENY_RULES,
-        "ask": [],
-    }
-}
-
-# Extended permissions for ops mode (adds agent dispatch tools)
-OPS_PERMISSIONS = {
+# Permissions for the single unified gaia plugin (full orchestrator surface).
+PERMISSIONS = {
     "permissions": {
         "allow": [
             "Bash(*)",
@@ -267,7 +243,7 @@ def mark_initialized() -> None:
     marker = get_plugin_data_dir() / MARKER_FILE
     marker.write_text(json.dumps({
         "initialized_at": datetime.now().isoformat(),
-        "mode": get_plugin_mode(),
+        "mode": "gaia",
     }))
     logger.info("Plugin marked as initialized: %s", marker)
 
@@ -314,8 +290,7 @@ def setup_project_permissions() -> bool:
     claude_dir = Path.cwd() / ".claude"
     settings_path = claude_dir / "settings.local.json"
 
-    mode = get_plugin_mode()
-    our_perms = OPS_PERMISSIONS if mode == "ops" else SECURITY_PERMISSIONS
+    our_perms = PERMISSIONS
     our_allow = set(our_perms["permissions"]["allow"])
     our_deny = set(our_perms["permissions"].get("deny", []))
 
@@ -349,7 +324,7 @@ def setup_project_permissions() -> bool:
 
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
-    logger.info("Merged gaia %s permissions and env into %s", mode, settings_path)
+    logger.info("Merged gaia permissions and env into %s", settings_path)
     return True
 
 
@@ -358,7 +333,7 @@ def ensure_plugin_registry() -> None:
 
     Detection strategies (in order):
     1. CLAUDE_PLUGIN_ROOT env var (plugin marketplace mode):
-       Path looks like .../cache/marketplace/gaia-ops/4.4.0-rc.2
+       Path looks like .../cache/marketplace/gaia/4.4.0-rc.2
     2. NPM package detection: resolve package name and version from
        node_modules path and package.json
     """
@@ -439,9 +414,8 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
                 pkg_root = Path(*parts[:i + 2])
             break
 
-    # "gaia" is the canonical single-plugin package name; "gaia-ops" /
-    # "gaia-security" are recognized for legacy split-package installs.
-    if not pkg_name or pkg_name not in ("gaia", "gaia-ops", "gaia-security"):
+    # "gaia" is the canonical single-plugin package name.
+    if not pkg_name or pkg_name != "gaia":
         return None
 
     # Try to read version from package.json
@@ -568,7 +542,6 @@ def run_first_time_setup(mark_done: bool = True) -> str | None:
         mark_initialized()
 
     if reload_needed:
-        mode = get_plugin_mode()
-        return f"GAIA {mode} setup complete. Run /reload-plugins to activate permissions."
+        return "GAIA setup complete. Run /reload-plugins to activate permissions."
 
     return None

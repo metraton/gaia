@@ -88,7 +88,7 @@ class TestMergeLocalPermissions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / ".claude").mkdir()
-            res = helpers.merge_local_permissions(workspace, mode="ops")
+            res = helpers.merge_local_permissions(workspace)
             self.assertEqual(res["action"], "updated")
             data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
             self.assertEqual(data["agent"], "gaia-orchestrator")
@@ -99,8 +99,8 @@ class TestMergeLocalPermissions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / ".claude").mkdir()
-            helpers.merge_local_permissions(workspace, mode="ops")
-            res2 = helpers.merge_local_permissions(workspace, mode="ops")
+            helpers.merge_local_permissions(workspace)
+            res2 = helpers.merge_local_permissions(workspace)
             self.assertEqual(res2["action"], "noop")
 
     def test_preserves_user_permissions_for_unmanaged_tools(self):
@@ -116,7 +116,7 @@ class TestMergeLocalPermissions(unittest.TestCase):
                     "ask": [],
                 },
             }))
-            helpers.merge_local_permissions(workspace, mode="ops")
+            helpers.merge_local_permissions(workspace)
             data = json.loads(local.read_text())
             self.assertIn("MyCustomTool(*)", data["permissions"]["allow"])
             self.assertIn("Bash(*)", data["permissions"]["allow"])
@@ -125,7 +125,7 @@ class TestMergeLocalPermissions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / ".claude").mkdir()
-            res = helpers.merge_local_permissions(workspace, mode="ops", dry_run=True)
+            res = helpers.merge_local_permissions(workspace, dry_run=True)
             self.assertEqual(res["action"], "updated")
             self.assertFalse((workspace / ".claude" / "settings.local.json").exists())
 
@@ -137,7 +137,7 @@ class TestMergeLocalPermissions(unittest.TestCase):
             local.write_text(json.dumps({
                 "env": {"CUSTOM_VAR": "x"},
             }))
-            helpers.merge_local_permissions(workspace, mode="ops")
+            helpers.merge_local_permissions(workspace)
             data = json.loads(local.read_text())
             # AGENT_TEAMS is not injected regardless of prior state
             self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))

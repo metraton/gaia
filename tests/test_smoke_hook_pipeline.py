@@ -31,10 +31,6 @@ HOOKS_DIR = REPO_ROOT / "hooks"
 if str(HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(HOOKS_DIR))
 
-# Set GAIA_PLUGIN_MODE=ops so the hook behaves consistently with the test suite
-# (T3 commands are denied with nonce rather than returning an "ask" dialog).
-os.environ.setdefault("GAIA_PLUGIN_MODE", "ops")
-
 # ---------------------------------------------------------------------------
 # Import the real hook entry point (same function Claude Code uses)
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 """
-Routing simulator for gaia-ops surface routing analysis.
+Routing simulator for gaia surface routing analysis.
 
 Simulates what would happen when a prompt enters the orchestrator:
 which surfaces activate, which agent is selected, what skills load,
@@ -120,7 +120,7 @@ def _load_agent_skills(agents_dir: Path) -> dict[str, list[str]]:
 
 
 class RoutingSimulator:
-    """Simulates the gaia-ops routing pipeline for a given prompt.
+    """Simulates the gaia routing pipeline for a given prompt.
 
     Loads surface-routing.json, context-contracts.json, and agent frontmatter
     to predict: which surfaces activate, which agent handles, what skills and

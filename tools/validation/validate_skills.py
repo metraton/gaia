@@ -61,9 +61,9 @@ def find_agents(base_dirs):
 
 def analyze_injection():
     """Analiza cómo se inyectan las skills (revisando pre_tool_use.py)."""
-    hook_path = Path("gaia-ops/hooks/pre_tool_use.py")
+    hook_path = Path("gaia/hooks/pre_tool_use.py")
     if not hook_path.exists():
-        return "No se encontró gaia-ops/hooks/pre_tool_use.py"
+        return "No se encontró gaia/hooks/pre_tool_use.py"
     
     content = hook_path.read_text(encoding="utf-8", errors="ignore")
     if "skills are injected natively by Claude Code" in content:
@@ -159,8 +159,8 @@ def generate_report(skills, validation, agents, injection_info):
     return "\n".join(report)
 
 def main():
-    skill_dirs = ["gaia-ops/skills", ".claude/skills", "conductor-orchestrator/skills"]
-    agent_dirs = ["gaia-ops/agents", ".claude/agents", "conductor-orchestrator/agents"]
+    skill_dirs = ["gaia/skills", ".claude/skills", "conductor-orchestrator/skills"]
+    agent_dirs = ["gaia/agents", ".claude/agents", "conductor-orchestrator/agents"]
     
     print("Buscando skills...")
     skills = find_skills(skill_dirs)
@@ -177,7 +177,7 @@ def main():
     print("Generando reporte...")
     report = generate_report(skills, validation, agents, injection_info)
     
-    report_path = Path("gaia-ops/tools/validation/skills_report.md")
+    report_path = Path("gaia/tools/validation/skills_report.md")
     report_path.write_text(report, encoding="utf-8")
     print(f"Reporte generado en {report_path}")
     

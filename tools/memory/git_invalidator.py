@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Git Invalidation Module for GAIA-OPS Episodic Memory
+Git Invalidation Module for GAIA Episodic Memory
 
 Scans recent git commits for migration/deprecation patterns and weakens
 matching episodic memories by reducing their relevance_score.

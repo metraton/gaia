@@ -1,5 +1,5 @@
 """
-Adapter Layer for Gaia-Ops Hooks.
+Adapter Layer for Gaia Hooks.
 
 Provides CLI-agnostic normalized types and the abstract HookAdapter interface.
 Business logic modules consume and produce these types; concrete adapters

@@ -216,8 +216,8 @@ class TestClaudeCodeModelUnchanged:
         assert dist.root is None
 
     def test_plugin_channel_with_root_from_env(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/opt/plugins/gaia-ops")
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", "/opt/plugins/gaia")
         dist = ClaudeCodeAdapter().detect_distribution()
         assert dist == HostDistribution(
-            channel="plugin", root=Path("/opt/plugins/gaia-ops")
+            channel="plugin", root=Path("/opt/plugins/gaia")
         )

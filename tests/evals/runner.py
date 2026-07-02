@@ -331,7 +331,7 @@ class FakeBackend:
 
 
 def _default_repo_root() -> Path:
-    """Return the gaia-ops repo root.
+    """Return the gaia repo root.
 
     The runner lives at ``<repo>/tests/evals/runner.py`` so we walk two
     parents up. Callers can override via ``RoutingSimBackend.repo_root``.
@@ -355,7 +355,7 @@ class RoutingSimBackend:
     other backends.
 
     Attributes:
-        repo_root: Path to the gaia-ops repo root. ``config/`` and
+        repo_root: Path to the gaia repo root. ``config/`` and
             ``agents/`` are resolved relative to this. Defaults to the
             repo inferred from this file's location so tests can run
             without any setup.
@@ -507,18 +507,12 @@ def _isolated_gaia_data_dir() -> Iterator[None]:
     propagates into the ``HookRunner`` subprocess; the prior value is
     restored on exit.
 
-    ``GAIA_PLUGIN_MODE`` is pinned to ``ops`` so the replay deterministically
-    exercises Gaia's own T3 nonce path (the full-capability mode gaia-ops
-    ships) regardless of the ambient mode the test process inherited. The
-    oracle decision is mode-independent -- a T3 maps to ``ask`` whether it
-    surfaces as the native consent prompt (security mode) or the approvable
-    nonce block (ops mode) -- so pinning a mode only removes a flaky
-    dependency on the caller's environment, it does not change the asserted
-    decision.
+    The oracle decision is context-independent -- a T3 maps to ``ask`` whether
+    it surfaces as the native consent prompt (main session) or the approvable
+    nonce block (subagent under the orchestrator).
     """
     overrides = {
         "GAIA_DATA_DIR": tempfile.mkdtemp(prefix="eval_gaia_data_"),
-        "GAIA_PLUGIN_MODE": "ops",
     }
     prev = {k: os.environ.get(k) for k in overrides}
     os.environ.update(overrides)
@@ -581,7 +575,7 @@ class HookLogReplayBackend:
     emits routing JSON.
 
     Attributes:
-        repo_root: gaia-ops repo root. ``hooks/`` and ``tools/`` resolve
+        repo_root: gaia repo root. ``hooks/`` and ``tools/`` resolve
             relative to this. Defaults to the repo inferred from this
             file's location.
         hooks_dir: Overrides the ``<repo_root>/hooks`` default.

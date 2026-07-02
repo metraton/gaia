@@ -435,12 +435,12 @@ class TestRemovePluginRegistryEntry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = self._write_registry(root, {
-                "installed": [{"name": "gaia-ops", "version": "4.4.0"}],
+                "installed": [{"name": "gaia", "version": "4.4.0"}],
                 "source": "cli-install",
             })
             result = _remove_plugin_registry_entry(root, dry_run=False)
             self.assertTrue(result["found"])
-            self.assertEqual(result["removed_entries"], ["gaia-ops"])
+            self.assertEqual(result["removed_entries"], ["gaia"])
             self.assertTrue(result["file_removed"])
             self.assertFalse(path.exists())
 
@@ -449,7 +449,7 @@ class TestRemovePluginRegistryEntry(unittest.TestCase):
             root = Path(tmp)
             path = self._write_registry(root, {
                 "installed": [
-                    {"name": "gaia-ops", "version": "4.4.0"},
+                    {"name": "gaia", "version": "4.4.0"},
                     {"name": "some-other-plugin", "version": "1.0.0"},
                 ],
                 "source": "cli-install",
@@ -460,7 +460,7 @@ class TestRemovePluginRegistryEntry(unittest.TestCase):
             self.assertTrue(path.exists())
             data = json.loads(path.read_text())
             names = [e["name"] for e in data["installed"]]
-            self.assertNotIn("gaia-ops", names)
+            self.assertNotIn("gaia", names)
             self.assertIn("some-other-plugin", names)
 
     def test_extra_top_level_keys_keep_file(self):
@@ -468,7 +468,7 @@ class TestRemovePluginRegistryEntry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = self._write_registry(root, {
-                "installed": [{"name": "gaia-ops", "version": "4.4.0"}],
+                "installed": [{"name": "gaia", "version": "4.4.0"}],
                 "source": "cli-install",
                 "enabledPlugins": ["something"],
             })
@@ -484,7 +484,7 @@ class TestRemovePluginRegistryEntry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path = self._write_registry(root, {
-                "installed": [{"name": "gaia-ops", "version": "4.4.0"}],
+                "installed": [{"name": "gaia", "version": "4.4.0"}],
                 "source": "cli-install",
             })
             result = _remove_plugin_registry_entry(root, dry_run=True)
@@ -496,7 +496,7 @@ class TestRemovePluginRegistryEntry(unittest.TestCase):
             root = Path(tmp)
             self._write_registry(root, {
                 "installed": [
-                    {"name": "gaia-ops", "version": "4.4.0"},
+                    {"name": "gaia", "version": "4.4.0"},
                     {"name": "other", "version": "1.0.0"},
                 ],
                 "source": "cli-install",

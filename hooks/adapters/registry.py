@@ -1,5 +1,5 @@
 """
-Adapter Registry / Factory for Gaia-Ops Hooks.
+Adapter Registry / Factory for Gaia Hooks.
 
 The single construction point for the host :class:`HookAdapter`. Every entry
 point (``pre_tool_use``, ``post_tool_use``, ``stop_hook``, ``subagent_start``,

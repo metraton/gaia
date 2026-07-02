@@ -1,5 +1,5 @@
 """
-Log parser for gaia-ops hook replay testing.
+Log parser for gaia hook replay testing.
 
 Extracts ReplayEvent instances from production hook logs and audit JSONL files.
 Completely decoupled from hooks -- only understands log formats.
@@ -128,7 +128,7 @@ def _try_parse_params(raw: str) -> Optional[dict]:
 
 
 class LogExtractor:
-    """Extracts ReplayEvents from gaia-ops hook logs.
+    """Extracts ReplayEvents from gaia hook logs.
 
     Parses two log formats:
     - hooks-YYYY-MM-DD.log: Human-readable hook execution logs

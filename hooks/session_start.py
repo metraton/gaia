@@ -224,8 +224,7 @@ if __name__ == "__main__":
         additional_context = ""
         try:
             from modules.session.session_manifest import build_session_context
-            from modules.core.plugin_mode import get_plugin_mode
-            additional_context = build_session_context(get_plugin_mode())
+            additional_context = build_session_context()
         except Exception as _manifest_exc:
             logger.debug(
                 "build_session_context failed (non-fatal): %s", _manifest_exc

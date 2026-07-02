@@ -50,7 +50,7 @@ from tests.fixtures.db_helpers import (
 @pytest.fixture
 def test_project(tmp_path):
     """
-    Create a temporary project that mirrors a real gaia-ops installation.
+    Create a temporary project that mirrors a real gaia installation.
 
     Structure:
         tmp_path/

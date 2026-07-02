@@ -14,22 +14,20 @@ lifecycle script. Workspace `.claude/` config is applied on demand by
 running `gaia install` (this module) or by the SessionStart hook.
 
 Responsibilities (in order):
-  1. Detect plugin mode (npm vs CC plugin) for diagnostic output.
-  2. Invoke `scripts/bootstrap_database.sh` -- the single source of truth for
+  1. Invoke `scripts/bootstrap_database.sh` -- the single source of truth for
      creating/upgrading `~/.gaia/gaia.db` (schema, agent_permissions seed,
      project registration, FTS5 backfill, invariant checks).
-  3. Configure workspace `.claude/settings.json` (create if missing).
-  4. Merge gaia permissions, env vars, and agent identity into
+  2. Configure workspace `.claude/settings.json` (create if missing).
+  3. Merge gaia permissions, env vars, and agent identity into
      `.claude/settings.local.json`.
-  5. Merge hook event entries from `hooks.json` into `.claude/settings.local.json`
+  4. Merge hook event entries from `hooks.json` into `.claude/settings.local.json`
      (only relevant in npm mode -- in plugin mode CC reads hooks.json directly).
-  6. Create or repair `.claude/{agents,tools,hooks,config,skills}` symlinks
+  5. Create or repair `.claude/{agents,tools,hooks,config,skills}` symlinks
      (5 directories) plus a `.claude/CHANGELOG.md` file link, pointing at the
      installed package (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in
      `_install_helpers.py`).
-  7. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
-     (the canonical registry identity; `gaia-ops` is recognized as a legacy
-     name for registries written by older installs, never written fresh).
+  6. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
+     (the single unified plugin registry identity).
 
 Scanning is intentionally NOT part of install. `gaia scan` is a separate,
 standalone module (bin/cli/scan.py + tools/scan/**) the user runs on demand;
@@ -273,19 +271,6 @@ _create_path_symlink = _install_path_launcher
 
 
 # ---------------------------------------------------------------------------
-# Plugin mode detection (best-effort, never fatal)
-# ---------------------------------------------------------------------------
-
-def _detect_plugin_mode() -> str:
-    """Return 'ops', 'security', or 'unknown'. Never raises."""
-    try:
-        from hooks.modules.core.plugin_mode import get_plugin_mode  # type: ignore
-        return get_plugin_mode() or "unknown"
-    except Exception:
-        return os.environ.get("GAIA_PLUGIN_MODE", "unknown")
-
-
-# ---------------------------------------------------------------------------
 # Bootstrap invocation
 # ---------------------------------------------------------------------------
 
@@ -487,12 +472,12 @@ def _clear_install_error_marker() -> None:
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def _print_header(*, postinstall: bool, quiet: bool, mode: str, workspace: Path) -> None:
+def _print_header(*, postinstall: bool, quiet: bool, workspace: Path) -> None:
     if quiet:
         return
     label = "postinstall" if postinstall else "first-time install"
     print(f"\n  Setting up Gaia for the first time...")
-    print(f"  ({label}, plugin mode: {mode})")
+    print(f"  ({label})")
     print(f"  workspace: {workspace}")
     print()
 
@@ -618,8 +603,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         else Path(os.environ.get("INIT_CWD", os.getcwd())).resolve()
     )
 
-    mode = _detect_plugin_mode()
-    _print_header(postinstall=postinstall, quiet=quiet, mode=mode, workspace=workspace)
+    _print_header(postinstall=postinstall, quiet=quiet, workspace=workspace)
 
     # Step 1 -- bootstrap DB (always)
     bootstrap_res = _run_bootstrap(db_path=db_path, verbose=verbose, quiet=quiet)
@@ -691,7 +675,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     settings_res = _install_helpers.configure_settings_json(workspace)
     _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
 
-    perms_res = _install_helpers.merge_local_permissions(workspace, mode=mode if mode != "unknown" else None)
+    perms_res = _install_helpers.merge_local_permissions(workspace)
     _report_step(name="permissions", result=perms_res, quiet=quiet, verbose=verbose)
 
     # merge_local_hooks is most relevant for npm mode but is safe in any mode

@@ -62,7 +62,7 @@ def _import_grants_dir():
 
     Keeping CLAUDE_PLUGIN_DATA as the first check ensures the CLI finds the
     same approvals directory the hooks use when invoked from any working
-    directory (e.g. from inside gaia-ops-dev/ during development).
+    directory (e.g. from inside gaia-dev/ during development).
     """
     import os
     plugin_data = os.environ.get("CLAUDE_PLUGIN_DATA")

@@ -1,5 +1,5 @@
 """
-gaia doctor -- System health checks for Gaia-Ops.
+gaia doctor -- System health checks for Gaia.
 
 Checks (in order):
    5. package-integrity  - scripts/bootstrap_database.sh shipped + exec
@@ -177,7 +177,7 @@ def _read_json(path: Path):
 
 
 def _package_root() -> Path:
-    """Return the gaia-ops package root (parent of bin/)."""
+    """Return the gaia package root (parent of bin/)."""
     return Path(__file__).resolve().parent.parent.parent
 
 
@@ -274,14 +274,14 @@ def check_package_integrity() -> dict:
     )
 
 
-@register_check("Gaia-Ops", order=10)
+@register_check("Gaia", order=10)
 def check_gaia_version() -> dict:
     """Check that package.json is readable and has a version."""
     pkg_path = _package_root() / "package.json"
     data = _read_json(pkg_path)
     if data and "version" in data:
-        return _result("Gaia-Ops", "pass", f"v{data['version']}")
-    return _result("Gaia-Ops", "error", "Version unknown", "Reinstall @jaguilar87/gaia")
+        return _result("Gaia", "pass", f"v{data['version']}")
+    return _result("Gaia", "error", "Version unknown", "Reinstall @jaguilar87/gaia")
 
 
 @register_check("Last install error", order=15)
@@ -398,29 +398,25 @@ def check_workspace_initialized(project_root: Path) -> dict:
     return _result("Workspace initialized", "pass", "Gaia-aware workspace")
 
 
-@register_check("Plugin mode", order=40)
+@register_check("Plugin registered", order=40)
 def check_plugin_mode(project_root: Path) -> dict:
-    """Check plugin mode from plugin-registry.json."""
+    """Check that the gaia plugin is registered in plugin-registry.json."""
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
-        return _result("Plugin mode", "warning", "No plugin-registry.json", "Run `gaia scan` or restart Claude Code")
+        return _result("Plugin registered", "warning", "No plugin-registry.json", "Run `gaia scan` or restart Claude Code")
 
     data = _read_json(registry_path)
     if not data:
-        return _result("Plugin mode", "warning", "Invalid plugin-registry.json", "Delete and restart Claude Code")
+        return _result("Plugin registered", "warning", "Invalid plugin-registry.json", "Delete and restart Claude Code")
 
     installed = [p.get("name", "") for p in (data.get("installed") or [])]
     source = data.get("source", "unknown")
 
-    # "gaia" is the canonical single-plugin registry identity (written by
-    # register_plugin going forward). "gaia-ops" is kept recognized for
-    # registries written before the rename (no automatic re-install).
-    if "gaia" in installed or "gaia-ops" in installed:
-        return _result("Plugin mode", "pass", f"ops (source: {source})")
-    if "gaia-security" in installed:
-        return _result("Plugin mode", "pass", f"security (source: {source})")
+    # "gaia" is the single unified plugin identity.
+    if "gaia" in installed:
+        return _result("Plugin registered", "pass", f"gaia (source: {source})")
 
-    return _result("Plugin mode", "warning", f"Unknown plugin: {', '.join(installed)}", "Verify installation")
+    return _result("Plugin registered", "warning", f"gaia not registered: {', '.join(installed)}", "Verify installation")
 
 
 @register_check("Schema version", order=45)
@@ -1364,7 +1360,7 @@ def _print_human(results: list, version_detail: str = "", workspace: Path = None
     so the user can see at a glance whether the install needs attention.
     """
     version_tag = f" ({version_detail})" if version_detail else ""
-    print(f"\n  Gaia-Ops Health Check{version_tag}\n")
+    print(f"\n  Gaia Health Check{version_tag}\n")
     if workspace:
         print(f"  Workspace: {workspace}\n")
 
@@ -1401,7 +1397,7 @@ def register(subparsers):
     """Register the doctor subcommand."""
     sub = subparsers.add_parser(
         "doctor",
-        help="Run Gaia-Ops health checks",
+        help="Run Gaia health checks",
         description="Validate the local installation and report drift.",
     )
     sub.add_argument("--json", action="store_true", default=False,
@@ -1497,7 +1493,7 @@ def cmd_doctor(args) -> int:
         }
         print(json.dumps(output, indent=2))
     else:
-        gaia_check = next((r for r in results if r["name"] == "Gaia-Ops"), None)
+        gaia_check = next((r for r in results if r["name"] == "Gaia"), None)
         version_detail = gaia_check["detail"] if gaia_check and gaia_check["severity"] == "pass" else ""
         _print_human(results, version_detail, workspace=project_root)
         if fixes:

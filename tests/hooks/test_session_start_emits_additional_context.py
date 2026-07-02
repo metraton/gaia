@@ -91,21 +91,20 @@ class TestSessionStartManifest:
     is non-empty, and omit it when the manifest is empty."""
 
     def test_manifest_non_empty_emits_additional_context(self, isolated_workspace):
-        """The Environment block is built unconditionally in ops mode and
-        always produces at least cwd + machine. Run the hook in ops mode
-        with a clean home and verify hookSpecificOutput is present.
+        """The Environment block is built unconditionally and always produces
+        at least cwd + machine. Run the hook with a clean home and verify
+        hookSpecificOutput is present.
         """
         cwd, _ = isolated_workspace
         result = _run_session_start(
             cwd,
             {
                 "CLAUDE_SESSION_ID": "sess-test-phase4",
-                "GAIA_PLUGIN_MODE": "ops",
             },
         )
         hso = result.get("hookSpecificOutput")
         assert hso is not None, (
-            "ops mode with reachable cwd must produce a non-empty manifest. "
+            "A reachable cwd must produce a non-empty manifest. "
             "The hookSpecificOutput key MUST appear so Claude Code injects "
             "the manifest into the orchestrator's context."
         )
@@ -117,34 +116,9 @@ class TestSessionStartManifest:
         )
         assert "## Environment" in ctx, (
             "The Environment block is the minimum guaranteed content of "
-            "the manifest in ops mode."
+            "the manifest."
         )
         assert "cwd:" in ctx
-
-    def test_manifest_empty_in_security_mode_omits_hook_specific_output(
-        self, isolated_workspace
-    ):
-        """build_session_context returns '' when mode != 'ops'. The hook
-        must NOT emit hookSpecificOutput in that case -- an empty
-        additionalContext field is meaningfully different from absence.
-        """
-        cwd, _ = isolated_workspace
-        result = _run_session_start(
-            cwd,
-            {
-                "CLAUDE_SESSION_ID": "sess-test-phase4",
-                "GAIA_PLUGIN_MODE": "security",
-            },
-        )
-        # Either no hookSpecificOutput key at all, or one without an
-        # additionalContext payload. The brief asks for the former.
-        assert "hookSpecificOutput" not in result, (
-            "Empty manifest must not emit hookSpecificOutput. Including the "
-            "key with an empty string would still trigger Claude Code's "
-            "context-injection path with zero payload."
-        )
-        # Sanity: session_type still produced.
-        assert result.get("session_type") == "startup"
 
     def test_session_registers_using_stdin_session_id_without_env(
         self, isolated_workspace, monkeypatch
@@ -162,7 +136,6 @@ class TestSessionStartManifest:
         env.pop("CLAUDE_SESSION_ID", None)
         env["CLAUDE_PLUGIN_DATA"] = os.environ["CLAUDE_PLUGIN_DATA"]
         env["HOME"] = os.environ["HOME"]
-        env["GAIA_PLUGIN_MODE"] = "ops"
 
         payload = json.dumps(
             {

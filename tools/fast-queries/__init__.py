@@ -1,7 +1,7 @@
 """
 Fast-Queries Module: Agent diagnostic scripts
 
-This module provides quick diagnostic and health-check scripts for each Gaia-Ops agent.
+This module provides quick diagnostic and health-check scripts for each Gaia agent.
 Scripts provide instant snapshots of system state without invoking the full orchestration workflow.
 
 Typical usage:

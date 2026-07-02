@@ -1,5 +1,5 @@
 """
-Episodic Memory Module for GAIA-OPS
+Episodic Memory Module for GAIA
 
 This module provides episodic memory functionality for storing and retrieving
 historical context from user interactions.

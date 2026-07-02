@@ -91,7 +91,7 @@ def _init_git_repo(path: Path, remote: str = "https://github.com/test/repo.git")
 def _make_gaia_install(path: Path) -> None:
     """Mark `path` as an INSTALLED Gaia workspace (canonical registry signal).
 
-    Writes ``path/.claude/plugin-registry.json`` listing gaia-ops as installed.
+    Writes ``path/.claude/plugin-registry.json`` listing gaia as installed.
     This lives entirely under pytest's tmp_path -- an isolated temp tree, NOT
     the protected workspace .claude/ directory.
 
@@ -103,7 +103,7 @@ def _make_gaia_install(path: Path) -> None:
     claude = path / ".claude"
     claude.mkdir(parents=True, exist_ok=True)
     (claude / "plugin-registry.json").write_text(
-        _json.dumps({"installed": [{"name": "gaia-ops", "version": "5.0.0"}]})
+        _json.dumps({"installed": [{"name": "gaia", "version": "5.0.0"}]})
     )
 
 

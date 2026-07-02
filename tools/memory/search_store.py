@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FTS5-Backed Search Store for GAIA-OPS
+FTS5-Backed Search Store for GAIA
 
 Provides full-text search over episodic memory using SQLite FTS5 (default)
 with an optional Chroma vector-search backend.

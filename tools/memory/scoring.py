@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Memory Scoring Module for GAIA-OPS
+Memory Scoring Module for GAIA
 
 Provides strength-based scoring for episodic memories using a decay formula
 inspired by the hippo-memory model. Memories decay over time (recency bias)
