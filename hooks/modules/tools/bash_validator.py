@@ -252,7 +252,9 @@ class BashValidator:
                 dialog_msg = (
                     "Indirect execution detected. The command uses a shell "
                     "wrapper (bash -c, eval, etc.) that can bypass "
-                    "security checks. Please confirm you want to run this."
+                    "security checks. Please confirm you want to run this, "
+                    "or use discrete commands or a script file / python3 "
+                    "<file> instead of bash -c/eval."
                 )
                 hook_block = build_hook_permission_response("ask", dialog_msg)
                 return BashValidationResult(

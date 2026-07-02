@@ -12,6 +12,7 @@ project_context_contracts:
 skills:
   - agent-protocol
   - security-tiers
+  - command-execution
   - gaia-patterns
   - investigation
   - gaia-audit
