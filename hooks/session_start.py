@@ -168,6 +168,42 @@ if __name__ == "__main__":
         except Exception as _ag_exc:
             logger.debug("cleanup_expired_grants failed (non-fatal): %s", _ag_exc)
 
+        # TTL-sweep stale DB pending approvals (AC-2). Previously this only ran
+        # at SubagentStop (via approval_cleanup.cleanup()), so a pending that
+        # aged past DEFAULT_PENDING_TTL_MINUTES while no subagent was dispatched
+        # (or orphaned by a dead/other session) kept re-surfacing in the
+        # SessionStart [ACTIONABLE] block every session. Running the sweep here
+        # too -- GLOBAL across sessions, same as the SubagentStop sweep --
+        # transitions genuinely stale rows to 'expired' before
+        # build_session_context() below scans for pendings to inject, so they
+        # no longer re-appear. force=True semantics do not apply here (there is
+        # no throttle on this sweep); non-fatal like the grant cleanup above.
+        try:
+            from modules.security.approval_cleanup import expire_db_pendings
+            _expired_pendings = expire_db_pendings(agent_type="session_start", session_id=_sid)
+            if _expired_pendings:
+                logger.info(
+                    "approval_cleanup: expired %d stale DB pending(s) at SessionStart",
+                    _expired_pendings,
+                )
+        except Exception as _pend_exc:
+            logger.debug("expire_db_pendings failed (non-fatal): %s", _pend_exc)
+
+        # Throttled DB auto-backup (AC-7). The user DB (~/.gaia/gaia.db) is
+        # precious; back it up automatically, but SessionStart fires many
+        # times a day, so maybe_backup_db() snapshots at most once per 24h
+        # (skips when the newest snapshot is younger than the window) and
+        # rotates to keep only the last 5. Copy-based + additive: it never
+        # moves, deletes, or writes the live DB. Non-fatal like the grant /
+        # pending sweeps above -- any failure logs and continues.
+        try:
+            from modules.session.db_backup import maybe_backup_db
+            _snap_path = maybe_backup_db()
+            if _snap_path:
+                logger.info("db_backup: created SessionStart snapshot %s", _snap_path)
+        except Exception as _bak_exc:
+            logger.debug("maybe_backup_db failed (non-fatal): %s", _bak_exc)
+
         # First-time setup: create project permissions if needed.
         # mark_done=False so UserPromptSubmit can detect first-run
         # and show the welcome message before marking initialized.
