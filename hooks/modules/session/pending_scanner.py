@@ -41,6 +41,15 @@ def scan_pending_db() -> List[Dict]:
         pendings (the known bug owned by another task; see CONFIRMED FINDINGS,
         Task C).
 
+    TTL filtering (AC-2, belt-and-suspenders): rows aged past
+    DEFAULT_PENDING_TTL_MINUTES are excluded from the returned list even if
+    the periodic expiry sweep (approval_cleanup.expire_db_pendings /
+    .cleanup(), run at SessionStart and SubagentStop) has not yet transitioned
+    them to 'expired' -- e.g. the sweep failed non-fatally, or this scan runs
+    in a code path that never calls the sweep first. This mirrors the sweep's
+    own age gate so a row cannot re-surface here a moment before the sweep
+    would have reaped it, without needing to mutate the row's status.
+
     Returns [] on any error (never raises) so the caller's fail-safe catches it.
     """
     try:
@@ -61,10 +70,30 @@ def scan_pending_db() -> List[Dict]:
         logger.debug("scan_pending_db: DB query failed (non-fatal): %s", exc)
         return []
 
+    # modules.security.approval_grants is a sibling package under the same
+    # `hooks` root as this module, so it needs no sys.path fallback (unlike
+    # gaia.approvals.store above, which lives under a different top-level
+    # package). If it is ever unimportable, fail open -- skip the TTL guard
+    # rather than guessing the policy value -- the age-gated expiry sweep
+    # (approval_cleanup) remains the authoritative source of truth either way.
+    ttl_seconds: Optional[float] = None
+    try:
+        from modules.security.approval_grants import DEFAULT_PENDING_TTL_MINUTES
+        ttl_seconds = DEFAULT_PENDING_TTL_MINUTES * 60
+    except ImportError as exc:
+        logger.debug(
+            "scan_pending_db: DEFAULT_PENDING_TTL_MINUTES unavailable, "
+            "skipping scan-level TTL guard (non-fatal): %s", exc,
+        )
+
     results = []
     now = time.time()
     for row in rows:
         try:
+            if ttl_seconds is not None and (row.get("age_seconds", 0.0) or 0.0) >= ttl_seconds:
+                # Past-TTL orphan: the expiry sweep should reap it shortly;
+                # do not surface it in the meantime (AC-2).
+                continue
             approval_id = row.get("id", "unknown")
             # Short display id: strip the "P-" prefix and take first 8 chars.
             nonce_short = approval_id[2:10] if approval_id.startswith("P-") else approval_id[:8]
