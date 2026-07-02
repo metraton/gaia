@@ -129,6 +129,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--version",
+        dest="show_version",
         action="store_true",
         default=False,
         help="Print version and exit",
@@ -144,7 +145,7 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
-    if args.version:
+    if args.show_version:
         # Print version from package.json
         try:
             import json
