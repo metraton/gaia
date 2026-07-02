@@ -107,11 +107,11 @@ For an optional live functional probe (needs Claude auth/tokens -- opt-in, never
 ```
 gaia release check --functional              # or: npm run gaia:plugin-dryrun -- --functional
 ```
-Alternatively, exercise the published marketplace path (after publish) by adding the marketplace and installing from npm:
+Alternatively, exercise the published marketplace path by adding the marketplace and installing the plugin from its git source:
 ```
 # inside CC:
-/plugin marketplace add /home/jorge/ws/me/gaia     # reads .claude-plugin/marketplace.json (source: npm @jaguilar87/gaia)
-/plugin install gaia@gaia-marketplace              # CC runs `npm install @jaguilar87/gaia`
+/plugin marketplace add /home/jorge/ws/me/gaia     # reads .claude-plugin/marketplace.json (source: github metraton/gaia)
+/plugin install gaia@gaia-marketplace              # CC clones metraton/gaia into its plugin cache
 /reload-plugins
 gaia doctor
 ```
@@ -214,7 +214,7 @@ A green pre-flight only protects the release if it runs the same gates CI runs. 
 The workflow at `.github/workflows/publish.yml` runs on every GitHub Release event (read-only checkout -- it neither commits nor pushes). It:
 - Checks out the exact tagged commit.
 - Installs deps with `npm ci`.
-- Packs the tarball with `npm pack` -- `prepack` (clean + `generate:plugin-root`) regenerates the root inline `plugin.json` + `hooks/hooks.json`, so the tarball root is a valid `source: npm` plugin. No `dist/` bundle is built or committed back.
+- Packs the tarball with `npm pack` -- `prepack` (clean + `generate:plugin-root`) regenerates the root inline `plugin.json` + `hooks/hooks.json`, so the tarball root is a valid plugin root (the same tree the git plugin source serves). No `dist/` bundle is built or committed back.
 - Runs `npm run pre-publish:validate` (after pack, so it sees the fresh root manifests).
 - Auto-detects npm tag from the version string: `*-rc.*` -> `rc`, `*-beta.*` -> `beta`, `*-alpha.*` -> `alpha`, else -> `latest`.
 - Runs the sandbox validation harness against the packed tarball (the gate).
