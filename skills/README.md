@@ -102,7 +102,7 @@ skills/
 | platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions | — |
 | gitops-operator | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
 | developer | agent-protocol, security-tiers, investigation, command-execution | git-conventions |
-| gaia-system | agent-protocol, security-tiers, investigation, gaia-patterns | gaia-audit (on-demand: agent-creation, skill-creation, gaia-release, gaia-verify) |
+| gaia-system | agent-protocol, security-tiers, investigation, command-execution, gaia-patterns | gaia-audit (on-demand: agent-creation, skill-creation, gaia-release, gaia-verify) |
 | gaia-planner | agent-protocol, security-tiers | gaia-planner |
 | gaia-operator | agent-protocol, security-tiers, command-execution, memory, gmail-triage, gws-setup | blog-writing |
 

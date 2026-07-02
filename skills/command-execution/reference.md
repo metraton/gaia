@@ -47,6 +47,24 @@ terraform validate
 terraform plan -out=/tmp/tfplan
 ```
 
+### No Indirect-Execution Wrappers (Rule 2b)
+
+```bash
+# BAD:  bash -c "mv foo bar"
+# GOOD: mv foo bar
+
+# BAD:  bash -c "terraform init && terraform apply"
+# GOOD: write the steps to a committed script and invoke it directly
+python3 /abs/path/to/script.py
+./deploy.sh
+```
+
+`bash -c`, `sh -c`, and `eval` hide the real command inside a string argument,
+so the security classifier cannot see it — the runtime forces an "ask"
+confirmation dialog even when the inner command would otherwise pass cleanly.
+Run the discrete command, or commit the logic to a script file and invoke it
+directly.
+
 ### Absolute Paths (Rule 4)
 
 ```bash
