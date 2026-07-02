@@ -127,8 +127,9 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
     - consolidation_report (when multi-surface task requires it)
     - blocking promotions (T2.2):
         * verification.result must be "pass" when status is COMPLETE
-        * approval_request.rollback must be present when approval_request present
         * approval_request.verification must be present when approval_request present
+      approval_request.rollback is advisory only (non-blocking, logged) --
+      the hook relays rollback_hint=None by design (AC-5).
 
     Args:
         contract: Parsed dict from parse_contract().
@@ -195,11 +196,19 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
             if result_val != "pass":
                 all_missing.append("VERIFICATION_RESULT_MUST_BE_PASS")
 
-    # 4b. approval_request.rollback and approval_request.verification must be present
+    # 4b. approval_request.verification must be present (blocking).
+    # approval_request.rollback is advisory only (non-blocking): the hook
+    # hardcodes rollback_hint=None by design (bash_validator.py
+    # _build_sealed_payload), so a well-formed APPROVAL_REQUEST always
+    # relays rollback=null -- treating that as a blocking violation
+    # produced ~600 of 678 recorded false-positive anomalies (AC-5).
     approval_req = contract.get("approval_request")
     if approval_req and isinstance(approval_req, dict):
         if not approval_req.get("rollback"):
-            all_missing.append("APPROVAL_REQUEST_ROLLBACK_REQUIRED")
+            logger.warning(
+                "approval_request.rollback is null/missing (expected -- "
+                "the hook relays rollback_hint=None by design); advisory only, not blocking"
+            )
         if not approval_req.get("verification"):
             all_missing.append("APPROVAL_REQUEST_VERIFICATION_REQUIRED")
 
@@ -239,7 +248,8 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
             f"\n"
             f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
             f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps\n"
-            f"Blocking: COMPLETE requires verification.result=pass; approval_request requires rollback and verification fields"
+            f"Blocking: COMPLETE requires verification.result=pass; approval_request requires verification field "
+            f"(rollback is advisory only, not blocking)"
         )
         return ValidationResult(
             is_valid=False,

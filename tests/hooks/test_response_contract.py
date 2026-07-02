@@ -3,8 +3,12 @@ Tests for blocking contract promotions (T2.2) and T2.3 clause parsers.
 
 T2.2 Blocking promotions:
 1. verification.result must be "pass" when task_status/plan_status is COMPLETE
-2. approval_request.rollback must be present when approval_request is present
-3. approval_request.verification must be present when approval_request is present
+2. approval_request.verification must be present when approval_request is present
+
+Non-blocking (advisory, AC-5): approval_request.rollback is relayed as null
+by design (the hook hardcodes rollback_hint=None -- bash_validator.py
+_build_sealed_payload), so its absence is logged/warned but never fails
+validation in either validator.
 
 T2.3 Clause parsers (positive + negative cases):
 - parse_update_contracts
@@ -192,7 +196,7 @@ class TestBlockingPromotions:
         result = validate(output, self._task_info)
         assert result.is_valid, f"Expected valid. Missing: {result.missing}"
 
-    # -- approval_request.rollback (blocking) --
+    # -- approval_request.rollback (non-blocking, AC-5) / .verification (blocking) --
 
     def test_approval_request_with_rollback_and_verification_valid(self):
         output = _make_complete_output(
@@ -203,17 +207,16 @@ class TestBlockingPromotions:
         result = validate(output, self._task_info)
         assert result.is_valid, f"Expected valid. Missing: {result.missing}"
 
-    def test_approval_request_missing_rollback_is_invalid(self):
+    def test_approval_request_missing_rollback_is_valid(self):
+        """AC-5: rollback is relayed as null by design; absence is advisory only."""
         output = _make_complete_output(
             with_approval_request=True,
             approval_rollback=False,
             approval_verification=True,
         )
         result = validate(output, self._task_info)
-        assert not result.is_valid
-        assert any("ROLLBACK" in m for m in result.missing), (
-            f"Expected ROLLBACK error. Got: {result.missing}"
-        )
+        assert result.is_valid, f"Expected valid (rollback non-blocking). Missing: {result.missing}"
+        assert not any("ROLLBACK" in m for m in result.missing)
 
     def test_approval_request_missing_verification_is_invalid(self):
         output = _make_complete_output(
@@ -227,7 +230,8 @@ class TestBlockingPromotions:
             f"Expected VERIFICATION error. Got: {result.missing}"
         )
 
-    def test_approval_request_missing_both_rollback_and_verification_is_invalid(self):
+    def test_approval_request_missing_both_rollback_and_verification_is_invalid_on_verification_only(self):
+        """AC-5: only verification absence blocks; rollback absence does not."""
         output = _make_complete_output(
             with_approval_request=True,
             approval_rollback=False,
@@ -236,7 +240,7 @@ class TestBlockingPromotions:
         result = validate(output, self._task_info)
         assert not result.is_valid
         missing_upper = [m.upper() for m in result.missing]
-        assert any("ROLLBACK" in m for m in missing_upper)
+        assert not any("ROLLBACK" in m for m in missing_upper)
         assert any("VERIFICATION" in m for m in missing_upper)
 
     def test_no_approval_request_null_is_valid(self):
@@ -262,11 +266,15 @@ class TestResponseContractBlockingPromotions:
         assert not result.valid
         assert any("VERIFICATION" in m for m in result.missing)
 
-    def test_approval_request_status_missing_rollback_invalid(self):
+    def test_approval_request_status_missing_rollback_is_valid(self):
+        """AC-5: rollback is relayed as null by design; absence is advisory only (warnings, not missing)."""
         output = _make_approval_request_output(with_rollback=False, with_verification=True)
         result = validate_response_contract(output)
-        assert not result.valid
-        assert any("ROLLBACK" in m for m in result.missing)
+        assert result.valid, f"Expected valid (rollback non-blocking). Missing: {result.missing}"
+        assert not any("ROLLBACK" in m for m in result.missing)
+        assert any("ROLLBACK" in w for w in result.warnings), (
+            f"Expected advisory ROLLBACK warning. Got: {result.warnings}"
+        )
 
     def test_approval_request_status_missing_verification_invalid(self):
         output = _make_approval_request_output(with_rollback=True, with_verification=False)
