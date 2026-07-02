@@ -10,16 +10,18 @@ The deterministic rule:
     driven by ``--workspace``) has already decided the workspace.
   * ``group_name`` = the immediate container of the repo when it is not directly
     under ``root``; ``None`` when it sits directly at ``root``.
-  * The install-signal helpers (``_is_installed_gaia_workspace``,
-    ``_list_installed_workspaces``, ``_nearest_installed_ancestor``) still exist
-    but are DEAD CODE -- kept dormant and NOT called by scan_workspace_to_store.
-    They are exercised here only as pure functions to guard against accidental
-    breakage before their scheduled removal.
+  * ``_is_installed_gaia_workspace`` remains a LIVE signal helper (used by
+    ``_scan_gaia_installations``) and is exercised here as a pure function.
+    Its former companions -- ``_list_installed_workspaces``,
+    ``_walk_for_installs``, ``_nearest_installed_ancestor`` -- were the
+    installed-workspace attribution layer superseded by the deterministic
+    ``--workspace`` classifier; they, along with ``resolve_identity``, have
+    been removed as dead code.
 
 Coverage:
   (1) a git dir is registered as a project WITH its path populated.
-  (2) install-signal helpers (dead code) still classify a Gaia registry vs a
-      third-party .claude correctly as pure functions.
+  (2) the live install-signal helper classifies a Gaia registry vs a
+      third-party .claude correctly as a pure function.
   (3) a project under an intermediate folder is attributed to the caller
       workspace, with group_name = the repo's immediate container.
   (4) the real-world aaxis/ tree: all repos are owned by the caller workspace;
@@ -45,8 +47,6 @@ import pytest
 
 from tools.scan.store_populator import (
     _is_installed_gaia_workspace,
-    _list_installed_workspaces,
-    _nearest_installed_ancestor,
     scan_workspace_to_store,
 )
 
@@ -164,48 +164,6 @@ class TestInstallSignal:
 
 
 # ---------------------------------------------------------------------------
-# _list_installed_workspaces / _nearest_installed_ancestor
-# ---------------------------------------------------------------------------
-
-class TestInstalledWorkspaceWalk:
-    def test_finds_nested_installed_workspace(self, tmp_path):
-        # aaxis/ (no install) -> nfi/ (install)
-        nfi = tmp_path / "aaxis" / "nfi"
-        nfi.mkdir(parents=True)
-        _make_gaia_install(nfi)
-        found = _list_installed_workspaces(tmp_path)
-        assert nfi in found
-
-    def test_third_party_claude_not_listed(self, tmp_path):
-        clone = tmp_path / "some-clone"
-        clone.mkdir()
-        _make_third_party_claude(clone)
-        found = _list_installed_workspaces(tmp_path)
-        assert clone not in found
-
-    def test_nearest_strict_ancestor(self, tmp_path):
-        # root(install) / mid(install) / sub / proj
-        root = tmp_path
-        _make_gaia_install(root)
-        mid = root / "mid"
-        mid.mkdir()
-        _make_gaia_install(mid)
-        proj = mid / "sub" / "proj"
-        proj.mkdir(parents=True)
-        installed = {root, mid}
-        # nearest strict ancestor of proj is mid, not root.
-        assert _nearest_installed_ancestor(proj, installed, root) == mid
-
-    def test_excludes_self(self, tmp_path):
-        # A dir that is itself installed is NOT its own ancestor.
-        root = tmp_path
-        proj = root / "proj"
-        proj.mkdir()
-        installed = {root, proj}
-        assert _nearest_installed_ancestor(proj, installed, root) == root
-
-
-# ---------------------------------------------------------------------------
 # (1) project path is populated
 # ---------------------------------------------------------------------------
 
@@ -296,12 +254,6 @@ class TestAaxisTree:
         # No separate 'nfi' workspace row is created (no sub-workspace detection).
         ws_names = _workspace_names(tmp_db)
         assert "aaxis" in ws_names
-        from tools.scan.store_populator import resolve_identity
-        nfi_ws = resolve_identity(nfi)
-        assert nfi_ws not in ws_names or nfi_ws == "aaxis", (
-            f"deterministic scan must not register a separate 'nfi' workspace; "
-            f"have {ws_names}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +274,3 @@ class TestDirIsBothProjectAndWorkspace:
         root_projects = _project_rows(tmp_db, "ws")
         names = {r[0] for r in root_projects}
         assert "both" in names, f"'both' project row missing; have {names}"
-
-        # No separate 'both' sub-workspace is registered (deterministic).
-        from tools.scan.store_populator import resolve_identity
-        both_ws = resolve_identity(both)
-        ws_names = _workspace_names(tmp_db)
-        assert both_ws not in ws_names or both_ws == "ws", (
-            f"deterministic scan must not register a separate 'both' workspace; "
-            f"have {ws_names}"
-        )
