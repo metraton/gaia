@@ -13,7 +13,8 @@ Checks (in order):
   47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
   50. symlinks           - .claude/ symlinks resolve
   60. identity           - orchestrator agent configured
-  70. settings           - hooks registered, permissions, deny rules
+  65. agent-routing      - surface-routing primary agents resolve to files
+  70. settings           - hooks registered (full event set), permissions, deny rules
   80. hook-files         - all hook scripts present
   90. project-context    - project-context.json valid
  100. project-dirs       - paths declared in context exist
@@ -190,6 +191,37 @@ EXPECTED_SCHEMA_VERSION = 21
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
 _DEFAULT_DB_PATH = Path("~/.gaia/gaia.db").expanduser()
+
+# Canonical set of hook events Gaia wires. This is the same set asserted by
+# tests/hooks/adapters/test_plugin_manifests.py::test_hooks_json_has_all_required_events
+# and generated from build/gaia.manifest.json's hooks.matchers. It is the
+# floor used when the shipped hooks.json cannot be resolved at runtime;
+# _expected_hook_events() prefers the live hooks.json so the check self-heals
+# if the event set changes. merge_local_hooks (bin/cli/_install_helpers.py)
+# copies every event from hooks.json into settings.local.json in npm mode, so
+# a correctly-installed workspace carries this complete set.
+CANONICAL_HOOK_EVENTS = frozenset({
+    "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
+    "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
+    "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+})
+
+
+def _expected_hook_events(project_root: Path) -> set:
+    """Resolve the set of hook events a healthy workspace should register.
+
+    Prefers the event keys of the shipped hooks.json (via the .claude/hooks
+    symlink), which is the source merge_local_hooks copies into
+    settings.local.json. Falls back to CANONICAL_HOOK_EVENTS when hooks.json
+    is absent or unreadable, so the check never silently under-validates.
+    """
+    hooks_json = project_root / ".claude" / "hooks" / "hooks.json"
+    data = _read_json(hooks_json) if hooks_json.is_file() else None
+    if isinstance(data, dict):
+        events = data.get("hooks", data)
+        if isinstance(events, dict) and events:
+            return set(events.keys())
+    return set(CANONICAL_HOOK_EVENTS)
 
 
 # ============================================================================
@@ -380,7 +412,10 @@ def check_plugin_mode(project_root: Path) -> dict:
     installed = [p.get("name", "") for p in (data.get("installed") or [])]
     source = data.get("source", "unknown")
 
-    if "gaia-ops" in installed:
+    # "gaia" is the canonical single-plugin registry identity (written by
+    # register_plugin going forward). "gaia-ops" is kept recognized for
+    # registries written before the rename (no automatic re-install).
+    if "gaia" in installed or "gaia-ops" in installed:
         return _result("Plugin mode", "pass", f"ops (source: {source})")
     if "gaia-security" in installed:
         return _result("Plugin mode", "pass", f"security (source: {source})")
@@ -823,6 +858,65 @@ def check_identity(project_root: Path) -> dict:
     return _result("Identity", "pass", "Orchestrator agent configured")
 
 
+@register_check("Agent routing", order=65)
+def check_agent_resolution(project_root: Path) -> dict:
+    """Check every agent the router can dispatch resolves to a real file.
+
+    Reads config/surface-routing.json (via the .claude/config symlink) and
+    verifies that each surface's ``primary_agent`` and the top-level
+    ``reconnaissance_agent`` map to an ``agents/<name>.md`` that exists. A
+    routing entry that points at a missing agent silently breaks dispatch for
+    that surface, so an unresolved agent is an error.
+
+    Advisory when the routing config is absent (a workspace that has not yet
+    been scanned): info, not error.
+    """
+    routing_path = project_root / ".claude" / "config" / "surface-routing.json"
+    if not routing_path.is_file():
+        return _result(
+            "Agent routing", "info", "surface-routing.json not found",
+            "Run `gaia scan` or `gaia update`",
+        )
+
+    data = _read_json(routing_path)
+    if not isinstance(data, dict):
+        return _result(
+            "Agent routing", "error", "surface-routing.json invalid",
+            "Run `gaia scan` or reinstall",
+        )
+
+    agents_dir = project_root / ".claude" / "agents"
+
+    # Collect the agents the router references: one per surface + recon.
+    referenced: dict[str, str] = {}  # agent name -> where it is referenced
+    for surface, cfg in (data.get("surfaces", {}) or {}).items():
+        if isinstance(cfg, dict) and cfg.get("primary_agent"):
+            referenced.setdefault(cfg["primary_agent"], f"surface '{surface}'")
+    recon = data.get("reconnaissance_agent")
+    if recon:
+        referenced.setdefault(recon, "reconnaissance_agent")
+
+    if not referenced:
+        return _result(
+            "Agent routing", "warning", "no agents referenced in surface-routing.json",
+            "Run `gaia scan` or reinstall",
+        )
+
+    unresolved = sorted(
+        f"{name} ({where})"
+        for name, where in referenced.items()
+        if not (agents_dir / f"{name}.md").is_file()
+    )
+    if unresolved:
+        return _result(
+            "Agent routing", "error",
+            f"{len(unresolved)} routed agent(s) not found: {', '.join(unresolved)}",
+            "Run `gaia scan` or reinstall to recreate agent files",
+        )
+
+    return _result("Agent routing", "pass", f"{len(referenced)} routed agents resolve")
+
+
 @register_check("Settings", order=70)
 def check_settings(project_root: Path) -> dict:
     """Check settings.local.json for hooks, permissions, deny rules."""
@@ -841,8 +935,8 @@ def check_settings(project_root: Path) -> dict:
     if not hooks_config:
         issues.append("No hooks configured")
     else:
-        required = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart"]
-        missing = [h for h in required if h not in hooks_config]
+        expected = _expected_hook_events(project_root)
+        missing = sorted(h for h in expected if h not in hooks_config)
         if missing:
             issues.append(f"Missing hooks: {', '.join(missing)}")
 
@@ -873,10 +967,12 @@ def check_hook_files(project_root: Path) -> dict:
         ("post_tool_use.py", True),
         ("user_prompt_submit.py", True),
         ("session_start.py", True),
+        ("session_end_hook.py", False),
         ("subagent_stop.py", False),
         ("subagent_start.py", False),
         ("stop_hook.py", False),
         ("task_completed.py", False),
+        ("pre_compact.py", False),
         ("post_compact.py", False),
         ("elicitation_result.py", False),
     ]
