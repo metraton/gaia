@@ -6,7 +6,7 @@ This guide will help you install and configure Gaia in your project. The process
 
 Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
-Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed via the `@jaguilar87/gaia` npm package and, equivalently, as a Claude Code plugin built to `dist/gaia`.
+Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (`source: npm`), so there is no separate `dist/` bundle.
 
 ---
 
@@ -34,7 +34,7 @@ After install, `gaia doctor` verifies the result. If a bootstrap or wire-up step
 
 ### Surface 2: Claude Code plugin
 
-Claude Code consumes the built `dist/gaia` bundle directly. Add the marketplace and install the single plugin:
+Claude Code consumes the npm package directly (`source: npm`) — it runs `npm install @jaguilar87/gaia` into its plugin cache. Add the marketplace and install the single plugin:
 
 ```bash
 # Add the marketplace
@@ -44,14 +44,13 @@ Claude Code consumes the built `dist/gaia` bundle directly. Add the marketplace 
 /plugin install gaia
 ```
 
-For development, mount the bundle without publishing:
+For a pre-release dry-run of the plugin surface without publishing, pack the exact tarball and validate the extracted root headless:
 
 ```bash
-npm run build:plugins        # regenerates dist/gaia
-claude --plugin-dir dist/gaia
+npm run gaia:plugin-dryrun   # pack -> temp extract -> structural asserts + `claude plugin validate`
 ```
 
-On the plugin surface, Claude Code reads hooks from the bundle's inline `hooks.json` / `.claude-plugin/plugin.json` — **not** from `settings.local.json`.
+On the plugin surface, Claude Code reads hooks from the package root's inline `.claude-plugin/plugin.json` / `hooks/hooks.json` (generated from `build/gaia.manifest.json` at pack time) — **not** from `settings.local.json`.
 
 ### Project Scanner (on-demand, separate from install)
 
