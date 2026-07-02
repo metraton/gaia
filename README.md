@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/node/v/@jaguilar87/gaia.svg)](https://nodejs.org)
 
-## Cómo leer este repo
+## How to read this repo
 
 Gaia is event-driven. Every capability in the codebase is attached to a moment in the Claude Code lifecycle — a prompt arriving, a tool being called, an agent completing. Reading the folder structure without that lens makes it look like a collection of files. Reading it with that lens, everything clicks into place.
 
@@ -25,7 +25,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 
 ## Overview
 
-**Gaia** is a multi-agent orchestration system for DevOps automation. It ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config — with security-first command classification, specialized AI agents, and plugin-based distribution. Currently integrates with Claude Code.
+**Gaia** is a security-first multi-agent orchestration plugin for Claude Code. It classifies every command by risk, gates state-changing operations behind consent, injects project context, and routes work to specialist agents. It ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config.
 
 ### Features
 
@@ -33,7 +33,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 - **8 agents** - platform-architect, gitops-operator, cloud-troubleshooter, developer, gaia-planner, gaia-operator, gaia-orchestrator, gaia-system (meta-agent)
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
 - **Dynamic identity** - Orchestrator identity defined in `agents/gaia-orchestrator.md`, activated via `settings.json` agent config; skills loaded on-demand
-- **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (inalterable via symlink)
+- **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (enforced from the installed plugin source, not user-editable)
 - **Indirect execution detection** - Catches `bash -c`, `eval`, `python -c` wrappers that bypass regex patterns
 - **Approval gates** for T3 operations via native `ask` dialog
 - **Git commit validation** with Conventional Commits
@@ -97,7 +97,7 @@ Gaia separates hooks from permissions:
 
 | File | Content | Strategy |
 |------|---------|----------|
-| `settings.json` | Hooks only (9 hook types) | Overwritten from template on each update |
+| `settings.json` | Hooks only (12 hook types) | Overwritten from template on each update |
 | `settings.local.json` | Permissions (allow + deny rules) | Union merge — never removes user config |
 
 This ensures your personal customizations (MCP servers, extra permissions) survive updates.
@@ -145,21 +145,20 @@ Gaia enforces a 6-layer security pipeline:
 | Layer | Mechanism | Bypassable? |
 |-------|-----------|-------------|
 | Indirect execution detection | `bash -c`, `eval`, `python -c` wrappers | No (hook-level) |
-| Blocked commands (regex) | 85+ regex patterns | No (symlink to npm package) |
-| Blocked commands (semantic) | 70+ ordered-token rules | No (symlink to npm package) |
+| Blocked commands (regex) | Regex patterns for irreversible commands | No (enforced from plugin source) |
+| Blocked commands (semantic) | Ordered-token / mutative-verb rules | No (enforced from plugin source) |
 | Cloud pipe validator | Credential piping detection | No (hook-level) |
 | Mutative verb detection | `ask` dialog for state-changing ops | User approves via native dialog |
-| Settings deny rules | 147 deny rules in `settings.local.json` | Self-healing (restored each session) |
+| Settings deny rules | 100+ deny rules generated at install into `settings.local.json` | Self-healing (restored each session) |
 
 ## Project Structure
 
 ```
-gaia-dev/
+gaia/
 ├── agents/              # Agent definitions (8 agents) — specialist identities + tool grants
 ├── skills/              # Skill modules (32 skills) — injected procedural knowledge
 ├── hooks/               # Claude Code hooks — the event-driven pipeline
 ├── config/              # Configuration — routing, contracts, rules, git standards
-├── commands/            # Slash commands — /gaia, /scan-project
 ├── build/               # Plugin manifests — hook + agent registration for Claude Code
 ├── bin/                 # Single `gaia` CLI; subcommands discovered from bin/cli/
 ├── tests/               # Test suite — 3-layer pyramid (pytest, LLM eval, e2e)
@@ -192,7 +191,6 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 - [skills/](./skills/) - Skill modules and assignment matrix
 - [hooks/](./hooks/) - Hook pipeline and security architecture
 - [config/](./config/) - Configuration (contracts, git standards, surface routing)
-- [commands/](./commands/) - Slash commands
 - [build/](./build/) - Plugin manifests
 - [bin/](./bin/) - CLI utilities
 - [tests/](./tests/) - Test suite
