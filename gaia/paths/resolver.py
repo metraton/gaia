@@ -53,10 +53,15 @@ def db_path() -> Path:
 def snapshot_dir() -> Path:
     """Return the path to the snapshot directory.
 
+    Canonical directory for DB snapshots (e.g. ``gaia uninstall --backup``).
+    Uses the plural form to match every caller (``bin/cli/uninstall.py``,
+    ``bin/cli/paths.py``, ``bin/cli/workspace.py``) -- there is exactly one
+    snapshot directory, never a singular sibling.
+
     Returns:
-        ``data_dir() / "snapshot"``
+        ``data_dir() / "snapshots"``
     """
-    return data_dir() / "snapshot"
+    return data_dir() / "snapshots"
 
 
 def state_dir() -> Path:

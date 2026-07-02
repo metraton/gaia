@@ -3,16 +3,22 @@ gaia uninstall -- disconnect Gaia from the current workspace.
 
 Wraps the workspace-level cleanup performed by `gaia cleanup` and adds:
   * preuninstall mode (invoked by npm before package removal)
-  * optional --purge to delete ~/.gaia/gaia.db (DESTRUCTIVE, off by default)
+  * a gzip snapshot of ~/.gaia/gaia.db, taken by DEFAULT before cleanup
   * dry-run reporting
 
 Default behaviour is CONSERVATIVE: the user database in ~/.gaia/gaia.db is
-preserved unless --purge is passed explicitly. Memory, episodes, and any
-persisted state survive an accidental `npm uninstall`.
+ALWAYS preserved -- there is no flag, combination of flags, or code path in
+this module that deletes it. Memory, episodes, and any persisted state
+survive `npm uninstall` unconditionally. The default snapshot is purely
+ADDITIVE: it only ever writes a new gzip file next to the live DB; it never
+removes or modifies the source. Pass --no-backup to skip it.
 
 Modes:
   --preuninstall      Tone output for npm preuninstall hook (still exits 0)
-  --purge             Also delete ~/.gaia/gaia.db (DESTRUCTIVE)
+  --no-backup         Skip the default gzip snapshot of ~/.gaia/gaia.db
+                      (the DB is still never deleted either way)
+  --snapshot-dir DIR  Directory for the snapshot (default: the shared
+                      gaia.paths.snapshot_dir())
   --workspace PATH    Restrict cleanup to PATH instead of auto-detected root
   --dry-run           Print what would happen without modifying anything
   --quiet             Suppress non-error output
@@ -26,12 +32,8 @@ still surface a non-zero exit.
 from __future__ import annotations
 
 import argparse
-import gzip
 import json
-import os
-import shutil
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # Reuse the heavy lifting already implemented in cleanup.py rather than
@@ -47,17 +49,32 @@ from cli.cleanup import (  # type: ignore  # noqa: E402
     _remove_symlinks,
 )
 
+# cli.cleanup (imported above) already inserts the repo root into sys.path,
+# so gaia.paths is importable here. Single source of truth for BOTH the
+# snapshot directory (AC-4: gaia/paths/resolver.py snapshot_dir() and this
+# module MUST resolve to the same plural `snapshots` directory) AND the
+# snapshot+retention implementation itself (AC-7: shared with the
+# SessionStart auto-backup in hooks/modules/session/db_backup.py -- ONE
+# "create gzip snapshot + keep last N" implementation, two call sites).
+from gaia.paths import create_snapshot  # noqa: E402
+from gaia.paths import snapshot_dir as _resolver_snapshot_dir  # noqa: E402
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = Path.home() / ".gaia" / "gaia.db"
-DEFAULT_SNAPSHOT_DIR = Path.home() / ".gaia" / "snapshots"
+DEFAULT_SNAPSHOT_DIR = _resolver_snapshot_dir()
+DEFAULT_RETAIN = 5
 
 
 # ---------------------------------------------------------------------------
-# DB snapshot helper (always runs before --purge to guarantee a backup)
+# DB snapshot helper (on by default; --no-backup skips it; DB is preserved
+# either way). Thin wrapper over the shared gaia.paths.create_snapshot so
+# uninstall and the SessionStart auto-backup (AC-7) share ONE
+# create-snapshot-and-rotate implementation.
 # ---------------------------------------------------------------------------
 
 def _snapshot_db(db_path: Path, snapshot_dir: Path, dry_run: bool) -> dict:
-    """Create a gzip snapshot of the DB before destructive purge.
+    """Create a gzip snapshot of the DB and enforce the shared retention
+    policy (keep the newest ``DEFAULT_RETAIN`` snapshots).
 
     Returns a result dict with shape:
       {"requested": True,
@@ -65,67 +82,18 @@ def _snapshot_db(db_path: Path, snapshot_dir: Path, dry_run: bool) -> dict:
        "path":    "<snapshot path>",
        "created": True/False,
        "dry_run": True/False,
+       "pruned":  ["<path>", ...],
        "error":   "<message>" (only on failure)}
 
-    Failure to create the snapshot is fatal -- the caller MUST abort the
-    purge so the user does not lose their DB without a backup.
+    This is purely additive to the source DB -- it never deletes or
+    modifies it. A failure here only means no backup was written; the DB
+    is untouched. See gaia.paths.snapshot.create_snapshot for the
+    copy-based safety guarantee.
     """
-    result: dict = {
-        "requested": True,
-        "source": str(db_path),
-        "path": None,
-        "created": False,
-        "dry_run": dry_run,
-    }
-
-    if not db_path.exists():
-        # Nothing to snapshot -- not an error, just a no-op.
-        result["details"] = "DB does not exist; nothing to snapshot"
-        return result
-
-    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-    snapshot_path = snapshot_dir / f"uninstall-{timestamp}.db.gz"
-    result["path"] = str(snapshot_path)
-
-    if dry_run:
-        result["details"] = "would create snapshot"
-        return result
-
-    try:
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
-        with open(db_path, "rb") as src, gzip.open(snapshot_path, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-    except OSError as exc:
-        result["error"] = str(exc)
-        return result
-
-    result["created"] = True
-    result["details"] = f"snapshot {snapshot_path.stat().st_size} bytes"
-    return result
-
-
-# ---------------------------------------------------------------------------
-# DB purge helper (only runs when --purge is passed)
-# ---------------------------------------------------------------------------
-
-def _purge_db(db_path: Path, dry_run: bool) -> dict:
-    """Delete the user DB if it exists. Returns a result dict."""
-    result = {
-        "path": str(db_path),
-        "found": db_path.exists(),
-        "removed": False,
-        "dry_run": dry_run,
-    }
-    if not result["found"]:
-        return result
-    if dry_run:
-        return result
-    try:
-        db_path.unlink()
-        result["removed"] = True
-    except OSError as exc:
-        result["error"] = str(exc)
-    return result
+    return create_snapshot(
+        db_path, snapshot_dir, dry_run=dry_run, retain=DEFAULT_RETAIN,
+        prefix="uninstall",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,13 +115,15 @@ def register(subparsers):
     """Register the 'uninstall' subcommand."""
     p = subparsers.add_parser(
         "uninstall",
-        help="Disconnect Gaia from this workspace (cleanup + optional DB purge)",
+        help="Disconnect Gaia from this workspace (cleanup; DB is never deleted)",
         description=(
             "Disconnect Gaia from the current machine.\n"
             "\n"
             "By default removes CLAUDE.md, .claude/ symlinks, settings.json,\n"
             "and applies the retention policy. The user DB at ~/.gaia/gaia.db\n"
-            "is PRESERVED unless --purge is passed.\n"
+            "is NEVER deleted by this command -- there is no flag that removes\n"
+            "it. A gzip snapshot of it is written by default before cleanup;\n"
+            "pass --no-backup to skip that snapshot.\n"
             "\n"
             "Intended to be invoked from npm preuninstall via:\n"
             "    python3 bin/gaia uninstall --preuninstall\n"
@@ -165,12 +135,6 @@ def register(subparsers):
         action="store_true",
         default=False,
         help="Adapt output for npm preuninstall hook (still exits 0)",
-    )
-    p.add_argument(
-        "--purge",
-        action="store_true",
-        default=False,
-        help="Also delete ~/.gaia/gaia.db (DESTRUCTIVE, off by default)",
     )
     p.add_argument(
         "--workspace",
@@ -204,29 +168,38 @@ def register(subparsers):
         help=f"Override DB path (default: {DEFAULT_DB_PATH})",
     )
     p.add_argument(
+        "--no-backup",
+        dest="no_backup",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip the gzip snapshot of ~/.gaia/gaia.db that uninstall "
+            "writes by default (the DB is preserved in place either way)"
+        ),
+    )
+    p.add_argument(
         "--snapshot-dir",
         dest="snapshot_dir",
         type=str,
         default=None,
         help=(
-            f"Directory for pre-purge DB snapshots "
-            f"(default: {DEFAULT_SNAPSHOT_DIR}). Only used with --purge."
+            f"Directory for the default snapshot "
+            f"(default: {DEFAULT_SNAPSHOT_DIR}). Ignored with --no-backup."
         ),
-    )
-    p.add_argument(
-        "--no-snapshot",
-        dest="no_snapshot",
-        action="store_true",
-        default=False,
-        help="Skip the pre-purge snapshot (DANGEROUS; loses backup safety net)",
     )
     return p
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
-    """Execute the uninstall subcommand. Always returns 0 from the cleanup path."""
+    """Execute the uninstall subcommand. Always returns 0 from the cleanup path.
+
+    The DB at ``db_path`` is NEVER deleted by this function -- no flag,
+    combination of flags, or branch below removes it. The default gzip
+    snapshot (skippable via --no-backup) only ever writes an additional
+    file alongside the live DB.
+    """
     dry_run = bool(getattr(args, "dry_run", False))
-    purge = bool(getattr(args, "purge", False))
+    backup = not bool(getattr(args, "no_backup", False))
     preuninstall = bool(getattr(args, "preuninstall", False))
     quiet = bool(getattr(args, "quiet", False))
     as_json = bool(getattr(args, "json", False))
@@ -236,7 +209,6 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     db_path = Path(db_override).expanduser() if db_override else DEFAULT_DB_PATH
 
     snapshot_override = getattr(args, "snapshot_dir", None)
-    no_snapshot = bool(getattr(args, "no_snapshot", False))
     snapshot_dir = (
         Path(snapshot_override).expanduser() if snapshot_override else DEFAULT_SNAPSHOT_DIR
     )
@@ -246,7 +218,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         "workspace": str(workspace),
         "db_path": str(db_path),
         "dry_run": dry_run,
-        "purge_requested": purge,
+        "backup_requested": backup,
     }
 
     # --- Workspace cleanup (delegated to cleanup.py helpers) -------------
@@ -261,85 +233,46 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         result["cleanup_error"] = str(exc)
 
-    # --- DB handling ------------------------------------------------------
-    if purge:
-        # Safety net: snapshot before purge unless explicitly disabled.
-        # If snapshot creation fails (and not --no-snapshot), abort the
-        # purge so the user does not lose their DB without a backup.
-        if no_snapshot:
-            result["snapshot"] = {
-                "requested": False,
-                "details": "snapshot skipped via --no-snapshot",
-            }
-        else:
-            snapshot_result = _snapshot_db(db_path, snapshot_dir, dry_run)
-            result["snapshot"] = snapshot_result
+    # --- DB handling --------------------------------------------------------
+    # The DB is ALWAYS preserved -- uninstall has no delete path for it.
+    # A gzip snapshot is taken by DEFAULT (skippable via --no-backup): it is
+    # purely additive -- writes a new snapshot and rotates old ones, never
+    # touches the source DB, so a failed backup never blocks anything.
+    if backup:
+        snapshot_result = _snapshot_db(db_path, snapshot_dir, dry_run)
+        result["snapshot"] = snapshot_result
 
-            snapshot_failed = (
-                db_path.exists()
-                and not dry_run
-                and not snapshot_result.get("created")
-                and "error" in snapshot_result
-            )
-            if snapshot_failed:
-                result["db"] = {
-                    "path": str(db_path),
-                    "found": True,
-                    "preserved": True,
-                    "note": "Purge aborted: snapshot failed -- DB preserved.",
-                    "error": snapshot_result.get("error"),
-                }
-                if not quiet and not as_json:
-                    print(
-                        f"\n  ERROR: snapshot failed ({snapshot_result.get('error')}); "
-                        f"--purge aborted to protect your DB.\n",
-                        file=sys.stderr,
-                    )
-                if as_json:
-                    print(json.dumps(result, indent=2))
-                elif not quiet:
-                    _print_human(
-                        result, preuninstall=preuninstall, purge=purge, dry_run=dry_run,
-                    )
-                return 0
+        if not quiet and not as_json:
+            if snapshot_result.get("created"):
+                print(f"  Backup created: {snapshot_result['path']}")
+            elif dry_run and db_path.exists():
+                print(f"  Would create backup: {snapshot_result['path']}")
+            elif "error" in snapshot_result:
+                print(
+                    f"  WARNING: backup failed ({snapshot_result['error']}); "
+                    f"DB was NOT touched.",
+                    file=sys.stderr,
+                )
 
-            # Print snapshot path right after creation so the user has it
-            # before the destructive operation appears.
-            if (
-                not quiet
-                and not as_json
-                and snapshot_result.get("created")
-            ):
-                print(f"  Snapshot created: {snapshot_result['path']}")
-            elif (
-                not quiet
-                and not as_json
-                and dry_run
-                and db_path.exists()
-            ):
-                print(f"  Would create snapshot: {snapshot_result['path']}")
-
-        result["db"] = _purge_db(db_path, dry_run)
-    else:
-        result["db"] = {
-            "path": str(db_path),
-            "found": db_path.exists(),
-            "preserved": True,
-            "note": "Pass --purge to delete (DESTRUCTIVE).",
-        }
+    result["db"] = {
+        "path": str(db_path),
+        "found": db_path.exists(),
+        "preserved": True,
+        "note": "gaia uninstall never deletes the DB. It is snapshotted by default (use --no-backup to skip).",
+    }
 
     # --- Reporting --------------------------------------------------------
     if as_json:
         print(json.dumps(result, indent=2))
     elif not quiet:
-        _print_human(result, preuninstall=preuninstall, purge=purge, dry_run=dry_run)
+        _print_human(result, preuninstall=preuninstall, dry_run=dry_run)
 
     # Always exit 0 on the cleanup path so npm uninstall continues even on
     # partial failures. Argparse errors still produce non-zero via parse_args.
     return 0
 
 
-def _print_human(result: dict, *, preuninstall: bool, purge: bool, dry_run: bool) -> None:
+def _print_human(result: dict, *, preuninstall: bool, dry_run: bool) -> None:
     """Print a human-friendly summary."""
     header = "gaia uninstall (preuninstall)" if preuninstall else "gaia uninstall"
     print(f"\n{header}")
@@ -385,18 +318,18 @@ def _print_human(result: dict, *, preuninstall: bool, purge: bool, dry_run: bool
         print(f"  {verb}: {path} ({label})")
 
     print()
-    if purge:
-        if db.get("found"):
-            verb = "Would delete" if dry_run else "Deleted"
-            print(f"  {verb} DB: {db.get('path')}")
-        else:
-            print(f"  DB not found: {db.get('path')}")
+    snapshot = result.get("snapshot") or {}
+    if snapshot:
+        if snapshot.get("created"):
+            print(f"  Backup written: {snapshot.get('path')}")
+        elif "error" in snapshot:
+            print(f"  Backup failed: {snapshot.get('error')}")
+    if db.get("found"):
+        print(f"  DB preserved: {db.get('path')}")
+        if not result.get("backup_requested"):
+            print("    (--no-backup: snapshot skipped; uninstall never deletes the DB)")
     else:
-        if db.get("found"):
-            print(f"  DB preserved: {db.get('path')}")
-            print("    (pass --purge to delete -- DESTRUCTIVE)")
-        else:
-            print(f"  DB not present: {db.get('path')}")
+        print(f"  DB not present: {db.get('path')}")
 
     print()
     if "cleanup_error" in result:
