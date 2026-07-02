@@ -4,9 +4,18 @@ Detailed runbooks, diagnostic guide, release checklist, and schema-migration pro
 
 ## Layer 1 runbook -- install local (fast iteration)
 
-Install the working tree into a real workspace so a live Claude Code picks it up. pnpm is the default (non-invasive; ignores lifecycle scripts, which is fine because the DB bootstrap is lazy).
+Install the working tree into a real workspace so a live Claude Code picks it up.
 
-**tarball (fidelity to what ships) -- recommended default:**
+**Primary path -- one command, either mode:**
+```
+gaia dev --workspace <TARGET>                      # --mode pack (default): pack + install + wire
+gaia dev --workspace <TARGET> --mode link           # --mode link: symlink source, no pack, instant iteration
+```
+`gaia dev` (`bin/cli/dev.py`) is what the manual sequences below collapse into. `--mode pack` runs `npm pack` (via the shared `_pack_helpers.pack_tarball` primitive) against the CURRENT source tree, installs the freshly packed tarball into `<TARGET>`'s `node_modules` (npm or pnpm, auto-detected from lockfile/workspace markers), then wires `.claude/` and bootstraps the DB by invoking the freshly-installed copy's own `gaia install --workspace <TARGET>` -- reflecting a real shippable version and exercising the exact machinery a real consumer would. `--mode link` symlinks `<TARGET>/node_modules/@jaguilar87/gaia` straight at this source tree (no pack, no install) and wires in-process, for the tightest possible loop when fidelity to the shipped tarball does not matter yet. Extra flags: `--keep-tarball`, `--pack-dest <dir>`, `--quiet`, `--verbose` -- see `gaia dev --help`.
+
+**What `gaia dev --mode pack` wraps** (for diagnosing which step failed, or working entirely by hand):
+
+*tarball (fidelity to what ships):*
 ```
 cd /home/jorge/ws/me/gaia
 pnpm pack                                   # -> jaguilar87-gaia-<ver>.tgz
@@ -15,20 +24,20 @@ pnpm add file:/home/jorge/ws/me/gaia/jaguilar87-gaia-<ver>.tgz
 gaia install --workspace <TARGET>
 ```
 
-**path link (tightest loop) -- reflects the working tree without a repack:**
+*path link (what `--mode link` wraps) -- reflects the working tree without a repack:*
 ```
 cd <TARGET>
 pnpm link /home/jorge/ws/me/gaia            # links the source tree in place
 gaia install --workspace <TARGET>
 ```
-`pnpm link --global` was removed in modern pnpm; use a path link (above) or `pnpm add -g .` from the source repo for a global CLI. Trade-off: the tarball proves what a consumer actually receives (respecting `package.json` `files[]`); the path link is faster to iterate but can mask a missing-from-tarball file. Use the tarball before any pre-release work.
+`pnpm link --global` was removed in modern pnpm; use a path link (above) or `pnpm add -g .` from the source repo for a global CLI. Trade-off: the tarball proves what a consumer actually receives (respecting `package.json` `files[]`); the path link is faster to iterate but can mask a missing-from-tarball file. Use the tarball (`gaia dev`'s default `--mode pack`) before any pre-release work.
 
 **npm equivalent (when the target is an npm project):**
 ```
 cd /home/jorge/ws/me/gaia
 npm run gaia:install-local -- --workspace <TARGET>
 ```
-`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. Prefer pnpm for the fast loop; use this when the target's package manager is npm.
+`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev --mode pack` auto-detects npm vs pnpm from the target workspace, so it covers this case too; use the raw npm script only when diagnosing.
 
 **fresh (wipe install metadata first):**
 Append `--fresh` to the `validate-sandbox.sh` form, or manually clear `node_modules/ package.json package-lock.json` (or the pnpm equivalents) in `<TARGET>` before reinstalling. Use when a prior install left state you want gone.
@@ -64,12 +73,19 @@ Under `--target local` the settings-preservation check is **skipped** (no pre-in
 
 Zero network. Proves both install surfaces and reproduces CI before any tag exists.
 
+**Primary path -- one command, all four gates, always run:**
+```
+gaia release check                # add --functional for the opt-in live plugin probe
+gaia release check --quiet        # suppress per-gate progress, only print the summary
+```
+`gaia release check` (`bin/cli/release.py`) runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which of the four broke. Each gate is a subprocess call to the existing script (never reimplemented); the raw forms below are what it wraps, useful when diagnosing which one failed.
+
 **1 -- version-drift gate (reproduces `validate-manifests`):**
 ```
 npm run pre-publish:validate
 ```
 
-**2 -- npm surface (what `npm publish` would ship):**
+**2 -- npm surface (what a registry publish would ship):**
 ```
 npm run gaia:verify-install:local          # pack + install into /tmp/gaia-sandbox-<ts>/ + harness
 ```
@@ -85,11 +101,11 @@ Sandbox path prints on exit; inspect `.claude/`, rerun checks, then `rm -rf` man
 ```
 npm run gaia:plugin-dryrun                   # pack -> temp extract -> headless validate -> trap cleanup
 ```
-`bin/plugin-dryrun.sh` packs the exact npm tarball (its `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`), extracts it to a throwaway temp dir (the package root IS the plugin), and runs a headless, offline gate: filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; both temps are removed by an EXIT trap.
+`bin/plugin-dryrun.sh` packs the exact npm tarball (its `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`), extracts it to a throwaway temp dir (the package root IS the plugin), and runs a headless, offline gate: filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; both temps are removed by an EXIT trap. `gaia release check` SKIPs (not fails) this gate when `claude` is not on PATH.
 
 For an optional live functional probe (needs Claude auth/tokens -- opt-in, never implicit):
 ```
-npm run gaia:plugin-dryrun -- --functional   # runs `claude --plugin-dir <temp> -p '...'` from a temp cwd
+gaia release check --functional              # or: npm run gaia:plugin-dryrun -- --functional
 ```
 Alternatively, exercise the published marketplace path (after publish) by adding the marketplace and installing from npm:
 ```
@@ -113,22 +129,29 @@ A pass here means both surfaces of the exact artifact are green and CI's drift g
 
 The expansion of the "release" intention in `SKILL.md`. The orchestrator runs the steps; the user supplies/confirms the version and approves T3.
 
-1. Layer 2 (pre-release) must be green first.
-2. **`npm run release:prepare <version>`** -- the atomic bump. This is `scripts/release-prepare.mjs`, invoked by the flow, **never run by the user by hand**. In one command it:
+**Primary path -- one command runs steps 2-6 below (step 7 fires automatically as a consequence of step 6), stopping at the first failure:**
+```
+gaia release publish [version]              # version: bare semver, or patch/minor/major (default: patch)
+gaia release publish --dry-run [version]    # preview the six-step sequence, execute nothing
+```
+`gaia release publish` (`bin/cli/release.py`) runs `release:prepare` -> `npm test` -> `git commit` -> `git tag` -> `git push --follow-tags` -> `gh release create`, in that order, STOPPING at the first failure (unlike `release check`'s always-run-all-4-gates design -- these steps are causally dependent). The first four steps are local and un-gated; the last two are Tier 3 and the hook layer will require your approval before they run -- that is expected, not retried around. It never runs npm's own registry-publish command directly: that command runs only inside `.github/workflows/publish.yml`, gated behind `NODE_AUTH_TOKEN`. `--dry-run` prints the resolved version and all six planned commands (with the two Tier-3 ones flagged) without spawning any subprocess.
+
+1. Layer 2 (pre-release) must be green first -- run `gaia release check`.
+2. **`release:prepare <version>`** (`gaia release publish` step 1) -- the atomic bump. This wraps `scripts/release-prepare.mjs`, invoked by the flow, **never run by the user by hand**. In one command it:
    - writes `<version>` to the hand-owned sources at once -- `package.json`, `pyproject.toml`, `.claude-plugin/marketplace.json` (top-level `version`), and the `CHANGELOG.md` top header (inserts a dated stub above the current top if absent -- edit its body before release);
    - runs `npm run generate:plugin-root` to regenerate the ROOT `.claude-plugin/plugin.json` (inline hooks) + `hooks/hooks.json` from the manifest -- `plugin.json`'s version is inherited from `package.json` (`from:package.json`), so it is NOT hand-bumped. No `dist/` bundle;
    - runs `npm run pre-publish:validate` and fails loud on any drift.
 
    This replaces hand-bumping one file at a time. The two real escapes a hand-bump leaves are a `pyproject.toml` left behind on a prior version (caught only by `pre-publish:validate`) and a `marketplace.json` that still advertises the old top-level version. `release:prepare` makes the desync impossible because all hand-owned sources are written from one target version and `plugin.json` is generated from it. For a bare semver: `5.0.5` for stable, `5.1.0-rc.1` for RC (no leading `v` -- the tag adds it). Idempotent: re-running with the same version is a no-op bump that re-validates.
-3. Pre-flight that reproduces CI (partly done inside `release:prepare`): `npm test`. `pre-publish:validate` ran in step 2.
-4. Commit (`git add` + `git commit` -- local-only, not T3). **If the remote diverged, reconcile with MERGE, never rebase** (see "Reconciling a diverged remote").
-5. Tag (force-free -- a *new* `v<version>`, never moved) + push (`git push`, T3). The merge in step 4 keeps the push force-free.
-6. Create a GitHub Release:
+3. Pre-flight that reproduces CI (partly done inside `release:prepare`) -- `gaia release publish` step 2: `npm test` (reuses the same `gate_npm_test` helper `gaia release check` uses). `pre-publish:validate` ran in step 2 above.
+4. Commit -- `gaia release publish` step 3: `git add` (the version-source paths only) + `git commit` -- local-safe, not T3. Idempotent: nothing-to-commit on a tree already at the target version is a PASS. **If the remote diverged, reconcile with MERGE, never rebase** (see "Reconciling a diverged remote").
+5. Tag -- `gaia release publish` step 4: `git tag -a` (force-free -- a *new* `v<version>`, never moved). Then push -- step 5: `git push --follow-tags` (T3; pushes the commit and the tag in one push). The merge in step 4 above keeps the push force-free.
+6. Create a GitHub Release -- `gaia release publish` step 6: `gh release create v<version> --title v<version> --generate-notes` (T3):
    - Tag: the version from `package.json` (e.g., `v5.0.0-rc.4` or `v5.3.0`).
    - Title: the version.
-   - Mark RC releases as pre-release.
-7. `publish.yml` triggers automatically and publishes with `--tag <auto-detected>`.
-8. Verify from the registry and install into the target: `gaia-verify registry` (`gaia:verify-install:rc` / `:latest`), then `pnpm add @jaguilar87/gaia@<tag>` + `gaia install` into `<TARGET>` and `gaia-verify live`. The release is done when the published version installs and validates -- not at the tag.
+   - RC/beta/alpha versions get `--prerelease` automatically.
+7. `publish.yml` triggers automatically (as a consequence of step 6) and publishes with `--tag <auto-detected>`.
+8. Verify from the registry and install into the target: `gaia-verify registry` (`gaia:verify-install:rc` / `:latest`), then `gaia dev --workspace <TARGET>` against the published tarball (or `pnpm add @jaguilar87/gaia@<tag>` + `gaia install`) and `gaia-verify live`. The release is done when the published version installs and validates -- not at the tag.
 
 ### Reconciling a diverged remote -- merge, never rebase; never move a tag
 

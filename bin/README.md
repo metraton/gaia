@@ -61,6 +61,7 @@ bin/
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
     ├── context.py             # gaia context    — show / scan / get / query / wipe project context from gaia.db
+    ├── dev.py                 # gaia dev        — fast local dev loop: pack/link + install + wire, one command
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)
     ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
@@ -68,9 +69,11 @@ bin/
     ├── memory.py              # gaia memory     — episodic memory: stats, search, show
     ├── metrics.py             # gaia metrics    — usage analytics (tier, agent, anomalies)
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
+    ├── _pack_helpers.py       # shared `npm pack` primitive for dev/release (private, no register())
     ├── paths.py               # Shared path resolution helpers
     ├── plan.py                # gaia plan       — manage plans (one per brief, DB-canonical)
     ├── query.py               # gaia query      — cross-surface read-only query (memory, episodes, harness_events)
+    ├── release.py             # gaia release    — check (Layer 2 local gate) | publish (Layer 3 trigger sequence)
     ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)
     ├── workspace.py           # gaia workspace  — workspace identity / consolidate operations
     ├── scan.py                # gaia scan       — project scanner; writes scan results to gaia.db (DB-canonical)
@@ -78,6 +81,8 @@ bin/
     ├── uninstall.py           # gaia uninstall  — full or preuninstall removal
     └── update.py              # gaia update     — re-sync after npm install bumped the version
 ```
+
+**Fast local dev loop and release flow (`gaia dev`, `gaia release`):** `gaia dev [--workspace <path>] [--mode pack|link]` collapses the manual `npm pack` + `npm/pnpm add <tarball>` + `gaia install` sequence into one command. `gaia release check [--functional]` runs the full offline Layer 2 pre-release gate (drift check, npm-sandbox install, plugin dry-run, `npm test`) as one command. `gaia release publish [version] [--dry-run]` runs the Layer 3 trigger sequence -- version bump, test, commit, tag, then the Tier-3 `git push` / `gh release create` that hands off to `.github/workflows/publish.yml`; it never runs npm's own registry-publish step itself, that stays in CI behind `NODE_AUTH_TOKEN`. See `skills/gaia-release/SKILL.md` for the full three-layer model these commands implement.
 
 ## Convenciones
 
@@ -123,3 +128,5 @@ A single binary; subcommands are discovered, not registered.
 - [`INSTALL.md`](../INSTALL.md) -- installation workflow that calls `gaia scan` and `gaia install`
 - [`hooks/README.md`](../hooks/README.md) -- `gaia doctor` verifies the hook registrations are valid
 - [`bin/validate-sandbox.sh`](./validate-sandbox.sh) -- end-to-end harness that drives `gaia` subcommands against a fresh tarball install
+- [`skills/gaia-release/SKILL.md`](../skills/gaia-release/SKILL.md) -- the three-layer install/release model `gaia dev` and `gaia release check|publish` implement
+- [`skills/gaia-verify/SKILL.md`](../skills/gaia-verify/SKILL.md) -- how to validate what `gaia dev` / `gaia release check|publish` just installed or triggered
