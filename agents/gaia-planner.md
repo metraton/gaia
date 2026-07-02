@@ -53,7 +53,7 @@ The decision point is the object of the work, not which command would touch it. 
 | Creating or changing infrastructure / IaC | `platform-architect` |
 | Desired-state of Kubernetes (manifests, HelmReleases, Flux config) | `gitops-operator` |
 | Diagnosis of live / cloud state, or its drift from desired | `cloud-troubleshooter` |
-| gaia-ops internals (agents, skills, hooks, CLI) | `gaia` |
+| Gaia internals (agents, skills, hooks, CLI) | `gaia` |
 | Brief / spec creation | Orchestrator (`brief-spec` skill) |
 | Task dispatch, confirmation, and execution | Orchestrator (dispatch execution) |
 | Brief status transitions | Orchestrator (`gaia brief set-status`) |

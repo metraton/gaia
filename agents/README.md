@@ -6,7 +6,7 @@ Every agent is defined as a Markdown file with YAML frontmatter at the top. That
 
 The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode`, no file tools, and no domain skills. Its job is routing and governance, not execution. All other agents set `permissionMode: acceptEdits` so that file edits inside their domain flow without extra prompts, while the hook layer still enforces security tiers on every Bash call.
 
-Adding a new agent is three steps: write the `.md` file here, add it to `build/gaia-ops.manifest.json` under `agents`, and add a routing entry in `config/surface-routing.json`. The agent becomes available on the next Claude Code restart.
+Adding a new agent is three steps: write the `.md` file here, add it to `build/gaia.manifest.json` under `agents`, and add a routing entry in `config/surface-routing.json`. The agent becomes available on the next Claude Code restart.
 
 ## Cuándo se activa
 
@@ -72,7 +72,7 @@ agents/
 ## Ver también
 
 - [`config/surface-routing.json`](../config/surface-routing.json) — intent-to-agent mapping
-- [`build/gaia-ops.manifest.json`](../build/gaia-ops.manifest.json) — agent registration
+- [`build/gaia.manifest.json`](../build/gaia.manifest.json) — agent registration
 - [`hooks/subagent_start.py`](../hooks/subagent_start.py) — context injection at spawn time
 - [`hooks/subagent_stop.py`](../hooks/subagent_stop.py) — contract validation after agent completes
 - [`skills/README.md`](../skills/README.md) — skill assignment matrix

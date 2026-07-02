@@ -4,8 +4,10 @@ Reproducible consumer-project shape used by `bin/validate-sandbox.sh` to
 exercise a freshly installed Gaia package end-to-end. The fixture is the
 bare minimum a real user project would have after running `gaia-scan`
 once and accumulating a handful of episodes -- enough to trigger every
-install-time code path (postinstall hook merge, FTS5 backfill, doctor,
-context show) without depending on any external state.
+install-time code path (`gaia install` merge, lazy FTS5 backfill, doctor,
+context show) without depending on any external state. (There is no npm
+postinstall -- the install-time paths run via `gaia install` and lazy
+bootstrap on first `gaia` use.)
 
 ## What lives here
 
@@ -52,7 +54,7 @@ bash bin/validate-sandbox.sh --version @jaguilar87/gaia@X.Y.Z --target sandbox
 | `npm run gaia:verify-install:latest` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Smoke-test the `@latest` dist-tag |
 | `npm run gaia:install-local` | `$HOME/ws/me/` or nearest `.claude/` ancestor | **OVERWRITE** local workspace install with current working tree (development fresh-install; replaces symlink-based live mode) |
 
-`gaia:install-local` is the dev iteration loop: edit code in `gaia-ops-dev/`, run it, restart Claude Code. Same harness runs in both modes -- the only difference is workspace path and that the checksum-preservation check is skipped under `--target local` (no pre-snapshot possible for a real workspace).
+`gaia:install-local` is the dev iteration loop: edit code in the gaia repo, run it, restart Claude Code. Same harness runs in both modes -- the only difference is workspace path and that the checksum-preservation check is skipped under `--target local` (no pre-snapshot possible for a real workspace).
 
 Keep the sandbox for debugging:
 
@@ -72,11 +74,11 @@ with `--target local`.
 | 2 | `gaia doctor` passes 13/13 | Catches missing hooks, bad symlinks, context drift |
 | 3 | `gaia status` exits 0 | Ensures runtime state loader is healthy |
 | 4 | `gaia context show` reports >=5 sections | Project-context reader works |
-| 5 | FTS5 indexed count >= 9/10 after install | Postinstall backfill safety-net fired |
+| 5 | FTS5 indexed count >= 9/10 after install | Install-time (lazy bootstrap) backfill safety-net fired |
 | 6 | `gaia memory search deploy` returns >=1 hit | FTS5 prefix + hybrid scoring live |
 | 7 | `gaia memory search bildwiz-deploy` returns >=1 hit | Hyphen tokenisation fix is in |
 | 8 | `gaia scan` exits 0 | Scanner runs cleanly on a minimal project |
-| 9 | `settings.local.json` sha256 preserved (user keys) | Postinstall merge does not clobber user config |
+| 9 | `settings.local.json` sha256 preserved (user keys) | `gaia install` merge does not clobber user config |
 
 Any new invariant goes in `bin/validate-sandbox.sh` as a numbered step
 -- each step prints `PASS`/`FAIL` with elapsed ms so a CI log scan is

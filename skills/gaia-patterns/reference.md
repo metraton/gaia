@@ -105,7 +105,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia context` | `bin/cli/context.py` | Display, refresh, and inspect project context (legacy JSON + DB-backed sections) |
 | `gaia doctor` | `bin/cli/doctor.py` | System health checks: schema, FTS5 sync, agent_permissions, symlinks, settings.local.json |
 | `gaia history` | `bin/cli/history.py` | Recent agent sessions: list, show, search |
-| `gaia install` | `bin/cli/install.py` | Bootstrap DB + .claude/ structure + symlinks for a fresh install (also npm postinstall entry) |
+| `gaia install` | `bin/cli/install.py` | Bootstrap DB + .claude/ structure + symlinks for a fresh install (no npm postinstall -- run manually or via lazy bootstrap on first `gaia` use) |
 | `gaia memory` | `bin/cli/memory.py` | Episodic memory: FTS5 search, show episode, health checks |
 | `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
@@ -129,15 +129,19 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 
 ## 2. Plugin Modes
 
-| Mode | Package | What ships |
-|------|---------|-----------|
-| `gaia-ops` | `@jaguilar87/gaia` (full) | All hooks, all modules, all agents, all skills, all tools, all config |
-| `gaia-security` | `@jaguilar87/gaia` (security dist) | 6 hooks (`pre_tool_use`, `post_tool_use`, `stop_hook`, `user_prompt_submit`, `session_start`, `session_end_hook`), all modules, no agents, no skills, no config |
+Gaia ships as a **single** npm package (`@jaguilar87/gaia`) and a **single** Claude Code plugin (`gaia`, built to `dist/gaia`). The former `gaia-ops` / `gaia-security` package split is retired -- one bundle carries all hooks, modules, agents, skills, tools, and config.
+
+Internally, the hook layer still recognizes two *behavioral* modes via `hooks/modules/core/plugin_mode.py`. This is not a packaging split -- it is a runtime fallback that keeps pre-existing installs (registries written before the rename, or anyone still exporting `GAIA_PLUGIN_MODE=security`) resolving correctly:
+
+| Mode | Selected by | What runs |
+|------|------------|-----------|
+| `ops` (default for the `gaia` plugin) | registry `installed[].name == "gaia"` (or legacy `"gaia-ops"`) | All hooks, all modules, all agents, all skills, all tools, all config |
+| `security` | legacy registry name `"gaia-security"`, or `GAIA_PLUGIN_MODE=security` | Hooks + modules only, no agents, no skills, no config |
 
 ### Detection Cascade (`hooks/modules/core/plugin_mode.py`)
 
 ```
-1. plugin-registry.json    -- checks installed[].name for "gaia-ops" or "gaia-security"
+1. plugin-registry.json    -- installed[].name: "gaia" or legacy "gaia-ops" -> ops; "gaia-security" -> security
 2. CLAUDE_PLUGIN_ROOT + plugin.json  -- reads .claude-plugin/plugin.json name field
 3. NPM package path        -- inspects node_modules path for package name
 4. GAIA_PLUGIN_MODE env    -- explicit override ("security" or "ops")
@@ -150,7 +154,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 |----------|----------------|------------|
 | T3 approval | Claude Code native dialog (`permissionDecision: ask`) | Hook blocks with nonce, orchestrator approval flow |
 | Agents | None | 8 agents routed by orchestrator |
-| Skills | None | 24 skills injected per frontmatter |
+| Skills | None | 32 skills injected per frontmatter |
 | PreToolUse matchers | `Bash` only | `Bash`, `Task`, `Agent`, `SendMessage`, multi-tool |
 | File write protection | `_is_protected()` blocks hooks/ and settings*.json for Edit/Write tools | Same -- fires regardless of permissionMode |
 
@@ -183,34 +187,29 @@ scripts/build-plugin.py <plugin-name> [--output-dir <path>]
 ### Publish
 
 ```
-npm run build:plugins          # builds both gaia-security + gaia-ops to dist/
+npm run build:plugins          # builds the single `gaia` plugin to dist/gaia
 npm run pre-publish:validate   # validates dist/ contents
 npm run prepublishOnly         # build + validate (automatic before npm publish)
 npm publish                    # publishes @jaguilar87/gaia
 ```
 
-### Postinstall (`gaia install --postinstall`, invoked by npm scripts on `npm install`)
+### Install (no npm postinstall -- bootstrap is lazy)
 
-**First install** (no `.claude/`):
-1. Check Python 3 available.
-2. Create `.claude/` if missing (created early so subsequent steps can write into it).
-3. Run `scripts/bootstrap_database.sh` -- seeds the schema (v17), agent rows, and `schema_version`. Fail-loud: any non-zero exit writes `~/.gaia/last-install-error.json` and propagates the error.
+There is **no npm postinstall hook**. `package.json` carries an explicit `_install_note` documenting this: the DB is bootstrapped lazily on first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped only for the `install`/`uninstall` subcommands themselves), and workspace `.claude/` config is applied on demand via `gaia install` or by the SessionStart hook. `gaia install --postinstall` still exists as a flag for fail-soft, non-interactive invocation, but nothing in the npm lifecycle calls it automatically.
+
+`gaia install` (interactive or `--postinstall`), first run (no `.claude/`):
+1. Detect plugin mode (npm vs CC plugin) for diagnostic output.
+2. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
+3. Create `.claude/` if missing (created early so subsequent steps can write into it).
 4. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
-5. Merge hooks from `hooks.json` into `settings.local.json` via the consolidated `merge_hooks` step.
-6. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus `CHANGELOG.md` file link.
-7. Write `plugin-registry.json` with `installed[].name == "gaia-ops"` (or `gaia-security`).
-8. Verification.
+5. Merge hooks from `hooks.json` into `settings.local.json`.
+6. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus a `CHANGELOG.md` file link.
+7. Write `plugin-registry.json` with `installed[].name == "gaia"` (the canonical identity; `gaia-ops` is recognized as a legacy name for registries written by older installs, never written fresh).
+8. Write the `~/.local/bin/gaia` PATH launcher unless `--no-path`.
 
-Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it.
+Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it -- install never triggers a scan.
 
-**Update** (`.claude/` exists):
-1. Show version transition.
-2. `settings.json`: create only if missing (non-invasive).
-3. Merge permissions, env vars, agent key into `settings.local.json` (union, preserves user config).
-4. Merge hooks from `hooks.json` into `settings.local.json`.
-5. Recreate/fix broken symlinks.
-6. Run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`.
-7. Verify hooks, Python, DB schema, config.
+`gaia update` (`.claude/` exists): shares the same helpers via `_install_helpers.py` -- show version transition, create `settings.json` only if missing, merge permissions/env/hooks (union, preserves user config), recreate/fix broken symlinks, run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`, verify hooks/Python/DB schema/config.
 
 The hook invoker is `python3 <script>` rather than executing the script directly, so missing exec bits on cross-platform checkouts do not break the install.
 
@@ -224,6 +223,8 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 .claude/skills    -> node_modules/@jaguilar87/gaia/skills/
 .claude/CHANGELOG.md (file link) -> node_modules/@jaguilar87/gaia/CHANGELOG.md
 ```
+
+(`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py` -- 5 directory symlinks plus one file link, not 7.)
 
 ---
 
@@ -294,7 +295,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia paths` | Print resolved storage paths | Path debugging |
 | `gaia workspace` | Workspace identity and consolidate operations | Multi-workspace setups |
 | `gaia scan` | In-process project scanner | Refresh project context in ~/.gaia/gaia.db |
-| `gaia install` | Bootstrap DB + workspace (also npm postinstall) | Fresh setup, manual repair |
+| `gaia install` | Bootstrap DB + workspace (run manually; no npm postinstall) | Fresh setup, manual repair |
 | `gaia update` | Re-sync after a package upgrade | After bumping the version |
 | `gaia cleanup` | Remove temp caches, old logs, `__pycache__` | Housekeeping |
 | `gaia uninstall` | Disconnect Gaia from the workspace | Before package removal |

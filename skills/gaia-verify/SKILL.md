@@ -10,7 +10,7 @@ metadata:
 
 Confirm that a Gaia installation actually works. Given a workspace and a delivery surface, run the checks that match that surface and report PASS/FAIL. This skill owns the definition of "a healthy install" -- the wire-up checklist and the per-surface checks. It is the check that `gaia-release` calls at the close of every layer; here it stands alone so the user can invoke it directly against whatever they just installed.
 
-Gaia ships as one plugin (`gaia`) reaching a workspace through two surfaces -- npm/pnpm (symlinks + `settings.local.json`) and the Claude Code plugin (`dist/gaia` bundle with inline hooks). A change can pass on one surface and break on the other, so the mode you pick must match the surface you are validating.
+Gaia ships as one npm artifact (`@jaguilar87/gaia`) reaching a workspace through two surfaces -- npm/pnpm (symlinks + `settings.local.json`) and the Claude Code plugin (`source: npm` -- CC installs the package into its plugin cache and reads the package root's inline-hooks `plugin.json`; there is no `dist/` bundle). A change can pass on one surface and break on the other, so the mode you pick must match the surface you are validating.
 
 ## Decision tree
 
@@ -18,7 +18,7 @@ Gaia ships as one plugin (`gaia`) reaching a workspace through two surfaces -- n
 "probemos" / "verify" / "test installation"
 ├─ Already installed in a workspace (npm/pnpm), just edited source? -> live
 ├─ Proving the npm tarball before a release?                        -> npm-sandbox
-├─ Proving the plugin bundle (dist/gaia) before a release?          -> plugin
+├─ Proving the npm tarball as a plugin before a release?           -> plugin
 └─ Confirming a version already published to npm?                   -> registry
 ```
 
@@ -38,9 +38,9 @@ Fastest path: `npm run gaia:verify-install:local` (packs, installs into `/tmp/ga
 
 ## Mode: plugin
 
-Validates the Claude Code plugin surface -- the built `dist/gaia` bundle mounted in a live Claude Code. This is the only mode that exercises the generated inline `hooks.json` / `plugin.json`, the bundled agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
+Validates the Claude Code plugin surface -- the exact npm tarball, extracted, with its root mounted as a plugin. This is the only mode that exercises the root inline `plugin.json` / `hooks.json`, the packaged agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
 
-Core flow (commands in `reference.md`): `npm run build:plugins` to regenerate `dist/gaia`, then `claude --plugin-dir <repo>/dist/gaia` (or `/plugin marketplace add` + `/plugin install`), then `gaia doctor` inside that session. This is the mode `gaia-release` Layer 2 step 3 calls. Do NOT publish or install to the real registry to run this.
+Core flow: `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; the temps are trap-cleaned. Add `-- --functional` for an optional live `claude --plugin-dir <temp> -p '...'` probe (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 step 3 calls. Do NOT publish or install to the real registry to run this.
 
 ## Mode: registry
 
@@ -53,7 +53,7 @@ Core flow: `npm run gaia:verify-install:rc` (the `@rc` tag) or `npm run gaia:ver
 After wiring a workspace, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor itself walks up to the user `.claude/` instead of the workspace. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
 
 1. `ls -la <workspace>/.claude/` -- **5 symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
-2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **TBD (open user decision):** the plugin bundle is named `gaia`, but the registry currently records `gaia-ops` as the canonical name (`register_plugin` in `_install_helpers.py` maps `gaia` -> `gaia-ops`, and `gaia doctor` expects it). Whether the registry identity becomes `gaia` or stays `gaia-ops` is not yet decided -- validate against whatever the install wrote; do NOT hardcode one and fail the other.
+2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). `gaia-ops` is recognized as a legacy name for registries written by older installs (`gaia doctor` and `gaia cleanup` still accept it), but a fresh install always writes `gaia`. Fail the check only if the name is neither `gaia` nor the legacy `gaia-ops`.
 3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the bundle's `hooks.json` / inline `plugin.json`, not from `settings.local.json`).
 4. `ls ~/.gaia/gaia.db` -- DB file exists. It is bootstrapped **lazily on first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`) or by `gaia install` -- there is no postinstall.
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist. `gaia install` writes this marker on any bootstrap or wire-up failure; treat its presence as a hard failure regardless of what `gaia doctor` reports.
@@ -79,7 +79,7 @@ If `gaia doctor` fails, report the exact error and stop -- do not continue to `g
 
 - **Skipping the mode question** -- each mode tests a different surface; running the wrong one gives false confidence. A green npm-sandbox says nothing about the plugin bundle.
 - **Validating only one surface** -- npm/pnpm and plugin load hooks by different paths; one can pass while the other is broken. Match the mode to what changed.
-- **Hardcoding the registry name** -- the `gaia` vs `gaia-ops` identity is an open decision (check 2). Validate against what the install wrote, not against a fixed string.
+- **Failing on the legacy registry name** -- `gaia` is the canonical registry identity (check 2); `gaia-ops` is recognized only as a legacy name from older installs, not a live alternative. A fresh install that writes anything other than `gaia` is a real bug, not a naming ambiguity.
 - **Assuming a postinstall bootstrapped the DB** -- the DB is lazy (first CLI use) or explicit (`gaia install`); if it is missing, run a `gaia` command, not "re-run postinstall".
 - **Skipping cleanup** -- `/tmp/gaia-sandbox-*` and registry temp dirs accumulate; always delete after reporting (n/a for live).
 - **Continuing after doctor failure** -- a failing doctor means the installation is broken; status output is meaningless.

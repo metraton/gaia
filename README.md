@@ -25,7 +25,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 
 ## Overview
 
-**Gaia** is a multi-agent orchestration system for DevOps automation. It ships two sub-plugins — `gaia-ops` (full orchestrator) and `gaia-security` (security-only) — with security-first command classification, specialized AI agents, and plugin-based distribution. Currently integrates with Claude Code.
+**Gaia** is a multi-agent orchestration system for DevOps automation. It ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config — with security-first command classification, specialized AI agents, and plugin-based distribution. Currently integrates with Claude Code.
 
 ### Features
 
@@ -45,45 +45,45 @@ That pipeline is the spine. Everything else in this repo is either a component o
 
 ## Installation
 
+Gaia is one plugin reaching a workspace through two surfaces. Pick the one that matches how you run Claude Code.
+
 ### Via Claude Code Plugin (recommended)
 ```bash
 # Add the marketplace
 /plugin marketplace add metraton/gaia
 
-# Install the full system (includes security)
-/plugin install gaia-ops
-
-# Or install security only
-/plugin install gaia-security    # Security hooks only
+# Install the unified plugin
+/plugin install gaia
 ```
 
-### Via npm (advanced setup)
+### Via npm / pnpm (advanced setup)
 ```bash
-npm install @jaguilar87/gaia
+npm install @jaguilar87/gaia    # or: pnpm add @jaguilar87/gaia
+gaia install                    # wires the workspace
 ```
 
-The `npm install` postinstall script bootstraps the database, creates `.claude/`, writes symlinks, and registers the plugin. Run `gaia doctor` afterward to verify.
+**There is no `postinstall` hook.** The install is non-invasive and works identically under npm and pnpm. The DB is bootstrapped **lazily on the first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`); the workspace `.claude/` structure is written by running `gaia install` explicitly, or by the SessionStart hook. Run `gaia doctor` afterward to verify.
 
-### Quick Start (npm)
+### Quick Start (npm / pnpm)
 
 ```bash
-# Install and bootstrap (postinstall does the rest)
-npm install @jaguilar87/gaia
+# Install the package
+npm install @jaguilar87/gaia        # or: pnpm add @jaguilar87/gaia
 
-# Or install globally
-npm install -g @jaguilar87/gaia
+# Wire the workspace (no postinstall does this for you)
+gaia install
 ```
 
-The postinstall hook does everything automatically. To scan your project stack after install:
+To scan your project stack after install:
 ```bash
 gaia scan
 ```
 
-`gaia install` (run by postinstall) will:
-1. Bootstrap the DB (`~/.gaia/gaia.db`) with the current schema
-2. Create `.claude/` directory with symlinks to this package
+`gaia install` will:
+1. Bootstrap the DB (`~/.gaia/gaia.db`) with the current schema (lazy on first use, or here explicitly)
+2. Create `.claude/` directory with 5 symlinks + a `CHANGELOG.md` link to this package
 3. Merge hooks and permissions into `settings.local.json` (preserves existing user config)
-4. Write `plugin-registry.json`
+4. Write `plugin-registry.json` with `installed[].name == "gaia"`
 
 `gaia scan` (run separately, on-demand) will:
 1. Auto-detect your project structure (GitOps, Terraform, AppServices, stack)
@@ -104,21 +104,22 @@ This ensures your personal customizations (MCP servers, extra permissions) survi
 
 ### Manual Installation
 
+`gaia install` writes these for you; the manual equivalent is:
+
 ```bash
 npm install @jaguilar87/gaia
 ```
 
-Then create symlinks:
+Then create the 5 directory symlinks plus the CHANGELOG file link:
 
 ```bash
 mkdir -p .claude && cd .claude
 ln -s ../node_modules/@jaguilar87/gaia/agents agents
 ln -s ../node_modules/@jaguilar87/gaia/tools tools
 ln -s ../node_modules/@jaguilar87/gaia/hooks hooks
-ln -s ../node_modules/@jaguilar87/gaia/commands commands
 ln -s ../node_modules/@jaguilar87/gaia/config config
-ln -s ../node_modules/@jaguilar87/gaia/templates templates
 ln -s ../node_modules/@jaguilar87/gaia/skills skills
+ln -s ../node_modules/@jaguilar87/gaia/CHANGELOG.md CHANGELOG.md
 ```
 
 ## Usage

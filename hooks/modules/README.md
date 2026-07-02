@@ -1,6 +1,6 @@
 # Hooks Modular Architecture
 
-This directory contains the modular hook system for gaia-ops.
+This directory contains the modular hook system for Gaia.
 
 ## What is this?
 

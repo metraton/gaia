@@ -18,15 +18,19 @@ Each module's register(subparsers) attaches its argparse + cmd_<name>() handler
 Dispatcher routes to the matched handler, which exits with a status code
 ```
 
-The npm lifecycle scripts in `package.json` invoke specific subcommands rather than separate binaries:
+There is **no npm `postinstall` hook** — install is non-invasive and bootstrap is lazy. The DB is created on the first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped only for `install`/`uninstall` themselves), and workspace `.claude/` config is written by running `gaia install` explicitly or by the SessionStart hook:
 
 ```
-npm install @jaguilar87/gaia
+npm|pnpm install @jaguilar87/gaia
         |
-postinstall script -> python3 bin/gaia install --postinstall
+(no postinstall — nothing runs automatically)
         |
-Bootstraps the database, merges permissions/hooks, recreates symlinks
+First `gaia <cmd>` -> _ensure_db_bootstrapped() seeds ~/.gaia/gaia.db (lazy)
+        |
+gaia install -> merges permissions/hooks, recreates symlinks, writes registry
 ```
+
+The one lifecycle script that remains is `preuninstall`:
 
 ```
 npm uninstall @jaguilar87/gaia
@@ -60,7 +64,7 @@ bin/
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)
     ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
-    ├── install.py             # gaia install    — postinstall: bootstrap DB, settings, symlinks
+    ├── install.py             # gaia install    — bootstrap DB, settings, symlinks (run manually; no postinstall)
     ├── memory.py              # gaia memory     — episodic memory: stats, search, show
     ├── metrics.py             # gaia metrics    — usage analytics (tier, agent, anomalies)
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
@@ -93,7 +97,7 @@ def cmd_<name>(args) -> int:
 
 Modules whose name starts with `_` (e.g. `_install_helpers.py`) are private helpers, never registered as subcommands. Files like `paths.py` that expose only utilities and no `register()` are also skipped by the dispatcher.
 
-**Lifecycle binding:** Only `gaia install` (postinstall) and `gaia uninstall` (preuninstall) are wired to npm events via `package.json` `scripts`. The lifecycle calls pass `--postinstall` / `--preuninstall` so the subcommand can apply the more conservative install-time policy.
+**Lifecycle binding:** Only `gaia uninstall` (preuninstall) is wired to an npm event via `package.json` `scripts`. There is no `postinstall` — install bootstraps lazily on first `gaia` use (`_ensure_db_bootstrapped` in `bin/gaia`) and via explicit `gaia install`. The `--postinstall` flag on `gaia install` still exists for fail-soft non-interactive callers, but nothing in the npm/pnpm lifecycle invokes it automatically.
 
 **Path resolution:** Subcommands resolve paths through symlinks to the source package using `Path.resolve()`. The pattern is visible in `cli/doctor.py`.
 
@@ -115,7 +119,7 @@ A single binary; subcommands are discovered, not registered.
 
 ## Ver también
 
-- [`package.json`](../package.json) -- exposes `bin/gaia`; `scripts.postinstall` / `scripts.preuninstall` wire the lifecycle subcommands
+- [`package.json`](../package.json) -- exposes `bin/gaia`; `scripts.preuninstall` wires the one lifecycle subcommand (no `postinstall`; see `_install_note`)
 - [`INSTALL.md`](../INSTALL.md) -- installation workflow that calls `gaia scan` and `gaia install`
 - [`hooks/README.md`](../hooks/README.md) -- `gaia doctor` verifies the hook registrations are valid
 - [`bin/validate-sandbox.sh`](./validate-sandbox.sh) -- end-to-end harness that drives `gaia` subcommands against a fresh tarball install

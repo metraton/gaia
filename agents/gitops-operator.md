@@ -49,7 +49,7 @@ The decision point is the object of the work and who owns it, not which command 
 | Application code (Node.js, TypeScript, Python) | `developer` |
 | Infrastructure / IaC the cluster runs on (Terraform, Pulumi, CloudFormation, OpenTofu, CDK) | `platform-architect` |
 | Diagnosis of live / cloud runtime state, or forcing reconciliation against a live cluster | `cloud-troubleshooter` |
-| gaia-ops internals (agents, skills, hooks, CLI, routing) | `gaia` |
+| Gaia internals (agents, skills, hooks, CLI, routing) | `gaia` |
 
 Declaring a workload that a developer's code will run is still desired state: it belongs here. But the moment the object is the live cluster's health, why a pod is crashing, or forcing the running state to converge, that is `cloud-troubleshooter` — gitops-operator declares, the controller reconciles, and live diagnosis is a different surface. When a change's blast radius reaches a surface gitops-operator does not own, flag the impact via `cross_layer_impacts` and stop; do not edit across the boundary.
 

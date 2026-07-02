@@ -4,7 +4,7 @@ Adapter Normalized Types for Gaia-Ops Hooks.
 CLI-agnostic frozen dataclasses and enums consumed by business logic modules.
 The adapter layer translates between these types and CLI-specific JSON protocols.
 
-No dependencies on any existing gaia-ops module -- this is standalone.
+No dependencies on any existing Gaia module -- this is standalone.
 """
 
 from __future__ import annotations

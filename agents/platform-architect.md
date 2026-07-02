@@ -49,7 +49,7 @@ The decision point is the object of the work and who owns it, not which command 
 | Application code (Node.js, TypeScript, Python) | `developer` |
 | Diagnosis of live / cloud runtime state, or its drift from desired | `cloud-troubleshooter` |
 | Desired-state of Kubernetes (manifests, HelmReleases, Flux config) | `gitops-operator` |
-| gaia-ops internals (agents, skills, hooks, CLI, routing) | `gaia` |
+| Gaia internals (agents, skills, hooks, CLI, routing) | `gaia` |
 
 A resource that is the prerequisite for another surface's work is still infrastructure: declaring it belongs here even when developer or gitops-operator needs it next. Conversely, querying live runtime to confirm a plan landed is incidental reading, not a diagnosis — but when the *object* is the runtime's health or drift, that is `cloud-troubleshooter`. When a change's blast radius reaches a surface platform-architect does not own, flag the impact via `cross_layer_impacts` and stop; do not edit across the boundary.
 

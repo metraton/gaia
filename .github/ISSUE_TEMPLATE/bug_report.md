@@ -20,7 +20,7 @@ What actually happened. Include error messages or logs if available.
 
 ## Environment
 
-- **gaia-ops version:**
+- **gaia version:**
 - **Node.js version:**
 - **Python version:**
 - **OS:**

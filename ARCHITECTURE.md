@@ -4,7 +4,7 @@
 
 Gaia is an orchestration system for Claude Code agents. It turns a single Claude Code session into a coordinated multi-agent system with security enforcement, context injection, surface-based routing, episodic memory, and deterministic response contracts.
 
-The package is published as `@jaguilar87/gaia` on npm and installed into a project's `.claude/` directory via symlinks. Gaia ships two sub-plugins: `gaia-ops` (full orchestrator with all agents) and `gaia-security` (security hooks only).
+The package is published as `@jaguilar87/gaia` on npm and installed into a project's `.claude/` directory via symlinks. Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. (The hook layer still recognizes two internal *behavioral* modes — `ops` and `security` — as a runtime fallback for legacy installs and the `GAIA_PLUGIN_MODE` override; this is not a packaging split. See `skills/gaia-patterns/reference.md` → "Plugin Modes".)
 
 ## Core Concepts
 
@@ -206,11 +206,12 @@ ClaudeCodeAdapter.format_validation_response() -> Claude Code stdout JSON
 ```
 
 ### Plugin Distribution
-Gaia ships the `gaia-ops` sub-plugin as a Claude Code plugin via `.claude-plugin/plugin.json`.
-The plugin is auto-discovered by Claude Code -- agents, skills, commands, and hooks
-are loaded from their respective directories.
+Gaia ships as the single unified `gaia` plugin, built to `dist/gaia` and declared
+via `.claude-plugin/plugin.json`. The plugin is auto-discovered by Claude Code --
+agents, skills, commands, and hooks are loaded from their respective directories.
 
-See `.claude-plugin/marketplace.json` for the self-hosted marketplace with sub-plugins.
+See `.claude-plugin/marketplace.json` for the self-hosted marketplace, which
+advertises the one `gaia` plugin whose `source` is `./dist/gaia`.
 
 ## Adapter Coupling Points
 
