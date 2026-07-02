@@ -27,8 +27,7 @@ Controls
     pending (no command_set key);
   * a chain with no T3 sub-command mints no pending and is allowed.
 
-The suite runs under GAIA_PLUGIN_MODE=ops (tests/conftest.py), so a subagent
-context (is_subagent=True) routes to deny + approval_id (Gaia flow).
+A subagent context (is_subagent=True) routes to deny + approval_id (Gaia flow).
 """
 
 import hashlib

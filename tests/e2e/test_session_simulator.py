@@ -1,5 +1,5 @@
 """
-E2E session simulator for gaia-ops hook pipeline.
+E2E session simulator for gaia hook pipeline.
 
 Simulates a complete Claude Code session by invoking hooks as subprocesses,
 chained in session order. Validates the full hook lifecycle without needing
@@ -147,7 +147,6 @@ class SessionSimulator:
 
         env = os.environ.copy()
         env.pop("CLAUDE_PLUGIN_ROOT", None)
-        env["GAIA_PLUGIN_MODE"] = "ops"
         # Isolate from host /tmp state (stale gaia-context-payloads, etc.)
         env["TMPDIR"] = str(self._tmpdir)
         if env_extras:

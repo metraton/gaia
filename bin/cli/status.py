@@ -363,7 +363,7 @@ def cmd_status(args) -> int:
     claude_dir = project_root / ".claude"
 
     if not claude_dir.is_dir():
-        msg = "gaia-ops not installed in this directory. Run: gaia scan"
+        msg = "gaia not installed in this directory. Run: gaia scan"
         if getattr(args, "json", False):
             print(json.dumps({"error": msg}))
         else:

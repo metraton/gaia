@@ -59,7 +59,6 @@ from ..security.approval_messages import (
     build_t3_approval_instructions,
     build_t3_blocked_denial_message,
 )
-from ..core.plugin_mode import is_ops_mode
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.composition_rules import (
@@ -747,9 +746,8 @@ class BashValidator:
             else:
                 # Converge on the single T3 decision point.  When there is an
                 # orchestrator above (subagent context), it denies with a
-                # persisted approval_id; otherwise it falls back to native ask.
-                # The ops-vs-security mode gate is enforced downstream by the
-                # Claude Code adapter.
+                # persisted approval_id; otherwise (the main session) it falls
+                # back to the native ask dialog.
                 native_ask_reason = (
                     f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
                     f"Command: {command}\n"
@@ -760,7 +758,7 @@ class BashValidator:
                     command,
                     verb=result.verb,
                     category=result.category,
-                    has_orchestrator_above=is_subagent and is_ops_mode(),
+                    has_orchestrator_above=is_subagent,
                     native_ask_reason=native_ask_reason,
                     session_id=session_id,
                     agent_type=agent_type,
@@ -900,7 +898,7 @@ class BashValidator:
                         command,
                         verb=flag_result.matched_pattern or flag_result.command_family,
                         category="MUTATIVE",
-                        has_orchestrator_above=is_subagent and is_ops_mode(),
+                        has_orchestrator_above=is_subagent,
                         native_ask_reason=native_ask_reason,
                         session_id=session_id,
                         agent_type=agent_type,
@@ -996,7 +994,7 @@ class BashValidator:
         logger.info(f"Compound command detected with {len(components)} components")
 
         # NON-MINTING pre-pass: which components are ungranted T3? (AC-8)
-        if is_subagent and is_ops_mode():
+        if is_subagent:
             ungranted_t3_idx = [
                 idx
                 for idx, comp in enumerate(components)
@@ -1130,7 +1128,7 @@ class BashValidator:
                 decomposed.raw,
                 verb=result.pattern,
                 category="MUTATIVE",
-                has_orchestrator_above=is_subagent and is_ops_mode(),
+                has_orchestrator_above=is_subagent,
                 native_ask_reason=native_ask_reason,
                 session_id=session_id,
                 agent_type=agent_type,
@@ -1511,15 +1509,16 @@ def decide_t3_outcome(
     running under the orchestrator).  In that case the command is DENIED with a
     persisted ``approval_id`` so the orchestrator can drive the approval cycle.
 
-    When there is no orchestrator above (the orchestrator itself, which cannot
-    hand off a T3 approval to itself), the command falls back to the native
-    Claude Code ``ask`` dialog -- a deliberate, correct defensive fallback.
+    When there is no orchestrator above (the main session / orchestrator
+    itself, which cannot hand off a T3 approval to itself), the command falls
+    back to the native Claude Code ``ask`` dialog -- a deliberate, correct
+    defensive fallback. This is the main-session T3 mutation-safety floor: it
+    is driven solely by ``has_orchestrator_above`` (False for the main
+    session) and is independent of any plugin mode.
 
-    The ops-vs-security mode gate is enforced DOWNSTREAM in the Claude Code
-    adapter (``_is_protected`` / the ``is_ops_mode()`` check): in security mode
-    the adapter downgrades any T3 ``deny`` to a native ``ask``; in ops mode it
-    passes this ``block_response`` through verbatim.  So this function only
-    decides deny-with-approval-id vs native-ask; it does not consult the mode.
+    The ``block_response`` on the returned result already encodes the outcome
+    (deny+approval_id, or native ask); the Claude Code adapter delivers it
+    verbatim.
 
     Args:
         command: Full Bash command being classified.

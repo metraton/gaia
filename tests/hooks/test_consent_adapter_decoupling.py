@@ -110,32 +110,6 @@ def _assert_consent_via_abstraction(resp: HookResponse) -> None:
 class TestConsentFlowGoesViaAdapter:
     """The pre-tool-use consent paths must source consent from request_consent."""
 
-    def test_bash_t3_security_mode_requests_consent_via_adapter(self, monkeypatch):
-        """Security-mode T3 Bash asks the user VIA request_consent.
-
-        In security mode a blocked T3 command (e.g. ``git push``) must request
-        consent through the adapter. The fake adapter records the request and
-        returns its NON-AskUserQuestion shape; if _adapt_bash still built
-        ``permissionDecision: "ask"`` inline, the marker would be missing.
-        """
-        # Security mode: no orchestrator, T3 routes to inline consent (ask).
-        monkeypatch.setattr(
-            "modules.core.plugin_mode.is_ops_mode", lambda: False
-        )
-
-        adapter = FakeConsentAdapter()
-        resp = adapter._adapt_bash(
-            "Bash", {"command": "git push origin main"}, hook_data={},
-        )
-
-        # Closure: the consent request was routed through the abstraction.
-        assert len(adapter.consent_requests) == 1
-        req = adapter.consent_requests[0]
-        assert req.kind == "bash"
-        assert "git push" in req.operation
-        assert req.approval_id is None  # inline consent, no out-of-band id
-        _assert_consent_via_abstraction(resp)
-
     def test_protected_file_foreground_requests_consent_via_adapter(self):
         """A protected-path Write in foreground asks the user VIA request_consent."""
         adapter = FakeConsentAdapter()

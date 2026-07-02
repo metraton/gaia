@@ -124,7 +124,7 @@ class CommitMessageValidator:
                          the module-level constants, not from any file.
         """
         if config_path is None:
-            # base_path -> gaia-ops root, used to resolve the violation log.
+            # base_path -> gaia root, used to resolve the violation log.
             # __file__ -> hooks/modules/validation/commit_validator.py
             base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         else:

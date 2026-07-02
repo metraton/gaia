@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CLI entry point for gaia-ops hook replay testing and routing analysis.
+CLI entry point for gaia hook replay testing and routing analysis.
 
 Usage:
     python3 tools/gaia_simulator/cli.py                          # replay all logs
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     hooks_dir_default, logs_dir_default, plugin_root = _find_defaults()
 
     parser = argparse.ArgumentParser(
-        description="Replay gaia-ops hook events from production logs to detect regressions.",
+        description="Replay gaia hook events from production logs to detect regressions.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

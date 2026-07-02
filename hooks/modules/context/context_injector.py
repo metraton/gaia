@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def _ensure_context_provider_importable(hooks_dir: Path) -> None:
     """Make tools.context.context_provider importable from in-process callers.
 
-    The hooks live under hooks/; the gaia-ops tools package sits as a sibling
+    The hooks live under hooks/; the gaia tools package sits as a sibling
     at the same level. We add the package root (hooks_dir.parent) to sys.path
     so ``from tools.context.context_provider import ...`` resolves regardless
     of cwd.

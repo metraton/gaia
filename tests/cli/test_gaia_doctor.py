@@ -137,7 +137,7 @@ class TestCheckGaiaVersion:
         """Should read version from the real package.json."""
         r = doctor_mod.check_gaia_version()
         # In the dev repo, package.json exists
-        assert r["name"] == "Gaia-Ops"
+        assert r["name"] == "Gaia"
         assert r["severity"] == "pass"
         assert r["detail"].startswith("v")
 
@@ -154,42 +154,29 @@ class TestCheckPython:
 
 
 class TestCheckPluginMode:
-    """Test plugin mode detection."""
+    """Test that the gaia plugin is registered."""
 
-    def test_ops_mode(self, healthy_project):
-        """Should detect ops mode from plugin-registry.json (canonical name "gaia")."""
+    def test_gaia_registered(self, healthy_project):
+        """Should pass when 'gaia' is in plugin-registry.json."""
         r = doctor_mod.check_plugin_mode(healthy_project)
         assert r["severity"] == "pass"
-        assert "ops" in r["detail"]
-
-    def test_ops_mode_legacy_gaia_ops(self, tmp_path):
-        """Registries written before the rename (name "gaia-ops") still resolve to ops."""
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / "plugin-registry.json").write_text(json.dumps({
-            "installed": [{"name": "gaia-ops"}],
-            "source": "local-dev",
-        }))
-        r = doctor_mod.check_plugin_mode(tmp_path)
-        assert r["severity"] == "pass"
-        assert "ops" in r["detail"]
+        assert "gaia" in r["detail"]
 
     def test_no_registry(self, broken_project):
         """Should warn when plugin-registry.json is missing."""
         r = doctor_mod.check_plugin_mode(broken_project)
         assert r["severity"] == "warning"
 
-    def test_security_mode(self, tmp_path):
-        """Should detect security mode."""
+    def test_gaia_not_registered(self, tmp_path):
+        """Should warn when gaia is not in the registry (e.g. an unknown plugin)."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         (claude_dir / "plugin-registry.json").write_text(json.dumps({
-            "installed": [{"name": "gaia-security"}],
+            "installed": [{"name": "other-plugin"}],
             "source": "npm",
         }))
         r = doctor_mod.check_plugin_mode(tmp_path)
-        assert r["severity"] == "pass"
-        assert "security" in r["detail"]
+        assert r["severity"] == "warning"
 
 
 class TestCheckSymlinks:
@@ -726,7 +713,7 @@ class TestCmdDoctorHuman:
         out = capsys.readouterr().out
         assert "Health Check" in out
         assert "Python" in out
-        assert "Plugin mode" in out
+        assert "Plugin registered" in out
 
     def test_broken_project_errors(self, broken_project, monkeypatch, capsys):
         """Should return exit code 2 when errors found."""
@@ -1159,7 +1146,7 @@ class TestCmdDoctorFix:
 
         # plugin-registry.json
         (claude_dir / "plugin-registry.json").write_text(json.dumps({
-            "installed": [{"name": "gaia-ops"}],
+            "installed": [{"name": "gaia"}],
             "source": "local-dev",
         }))
 

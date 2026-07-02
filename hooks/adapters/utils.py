@@ -1,5 +1,5 @@
 """
-Shared utility functions for Gaia-Ops hooks.
+Shared utility functions for Gaia hooks.
 
 Centralizes common patterns that were previously copy-pasted across all hook
 entry points (has_stdin_data, dual-channel warnings, etc.).

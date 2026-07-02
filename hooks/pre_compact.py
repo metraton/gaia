@@ -23,7 +23,6 @@ if _pkg_root not in sys.path:
 
 from modules.core.hook_entry import run_hook
 from modules.core.paths import get_logs_dir
-from modules.core.plugin_mode import is_ops_mode
 
 # Configure logging
 _log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
@@ -39,16 +38,15 @@ def _handle_pre_compact(event) -> None:
     """Inject agentic-loop checkpoint instructions before compaction."""
     context = ""
 
-    if is_ops_mode():
-        try:
-            from modules.context.agentic_loop_detector import build_precompact_prompt
-            context = build_precompact_prompt()
-            if context:
-                logger.info("PreCompact: injecting agentic-loop checkpoint prompt (%d chars)", len(context))
-            else:
-                logger.info("PreCompact: no active agentic loop, skipping")
-        except Exception as e:
-            logger.debug("PreCompact: agentic-loop detection failed (non-fatal): %s", e)
+    try:
+        from modules.context.agentic_loop_detector import build_precompact_prompt
+        context = build_precompact_prompt()
+        if context:
+            logger.info("PreCompact: injecting agentic-loop checkpoint prompt (%d chars)", len(context))
+        else:
+            logger.info("PreCompact: no active agentic loop, skipping")
+    except Exception as e:
+        logger.debug("PreCompact: agentic-loop detection failed (non-fatal): %s", e)
 
     response = {
         "hookSpecificOutput": {

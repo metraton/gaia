@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for session_manifest -- SessionStart additionalContext (Phase 4).
 
-Builders are fail-safe and side-effect-free; the assembler decides what to
-include based on plugin mode. These tests use heavy patching to keep each
-unit isolated from disk, processes, and external state.
+Builders are fail-safe and side-effect-free; the assembler concatenates the
+non-empty blocks. These tests use heavy patching to keep each unit isolated
+from disk, processes, and external state.
 """
 
 import json
@@ -262,26 +262,6 @@ class TestBuildPendingApprovalsBlock:
 # ---------------------------------------------------------------------------
 
 class TestBuildSessionContext:
-    def test_returns_empty_in_security_mode(self, monkeypatch):
-        """The security plugin has no orchestrator to act on the manifest."""
-        # Stub all builders to return non-empty content; assembler must
-        # still drop them because mode != ops.
-        monkeypatch.setattr(
-            session_manifest, "build_environment_block", lambda: "ENV"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: "LOOP"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_pending_approvals_block", lambda: "PEND"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: "MEM"
-        )
-
-        assert build_session_context("security") == ""
-        assert build_session_context("") == ""
-
     def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
         monkeypatch.setattr(
             session_manifest, "build_environment_block", lambda: "ENV BLOCK"
@@ -299,7 +279,7 @@ class TestBuildSessionContext:
             session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
         )
 
-        result = build_session_context("ops")
+        result = build_session_context()
         assert result == (
             "ENV BLOCK\n\nPROJ BLOCK\n\nLOOP BLOCK\n\nPEND BLOCK\n\nMEM BLOCK"
         ), (
@@ -330,7 +310,7 @@ class TestBuildSessionContext:
             session_manifest, "build_workspace_memory_block", lambda: ""
         )
 
-        result = build_session_context("ops")
+        result = build_session_context()
         assert result == "ENV BLOCK\n\nPEND BLOCK"
         assert "\n\n\n" not in result, (
             "Triple-newline indicates an empty block sneaked into the join."
@@ -356,7 +336,7 @@ class TestBuildSessionContext:
             session_manifest, "build_workspace_memory_block", lambda: ""
         )
 
-        assert build_session_context("ops") == ""
+        assert build_session_context() == ""
 
     def test_failsafe_when_a_builder_raises(self, monkeypatch):
         """An exception in a builder must not break the assembler."""
@@ -379,7 +359,7 @@ class TestBuildSessionContext:
         # Either the assembler swallows the exception entirely (returning "")
         # or it catches around the whole pipeline and returns "". Both are
         # acceptable; what is not acceptable is propagating the exception.
-        result = build_session_context("ops")
+        result = build_session_context()
         assert isinstance(result, str)
 
 

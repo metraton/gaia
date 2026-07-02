@@ -34,7 +34,7 @@ pytestmark = [
 
 @pytest.fixture
 def package_root():
-    """Root of the gaia-ops package."""
+    """Root of the gaia package."""
     root = Path(__file__).resolve().parents[2]
     return root.resolve() if root.is_symlink() else root
 

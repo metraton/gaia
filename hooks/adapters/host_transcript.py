@@ -1,5 +1,5 @@
 """
-Host Transcript Access for Gaia-Ops.
+Host Transcript Access for Gaia.
 
 Adapter-owned utility that encapsulates how the host CLI (Claude Code) persists
 a subagent transcript on disk. The host-specific format -- a JSONL file whose

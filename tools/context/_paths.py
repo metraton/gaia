@@ -11,7 +11,7 @@ def resolve_config_dir() -> Path:
     if installed_path.is_dir():
         return installed_path
 
-    # context/ -> tools/ -> gaia-ops/
+    # context/ -> tools/ -> gaia/
     script_dir = Path(__file__).parent.parent.parent
     package_path = script_dir / "config"
     if package_path.is_dir():

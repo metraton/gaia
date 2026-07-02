@@ -1,5 +1,5 @@
 """
-Gaia-Ops Hooks Modular Architecture
+Gaia Hooks Modular Architecture
 
 This package provides a modular, maintainable hook system for Claude Code.
 

@@ -876,9 +876,9 @@ _REPO_WALK_SKIP: frozenset[str] = frozenset({
 def _is_installed_gaia_workspace(directory: Path) -> bool:
     """Return True if `directory` carries a Gaia installation footprint.
 
-    Canonical, MODE-AGNOSTIC signal (see hooks/modules/core/plugin_mode.py):
+    Canonical signal (see hooks/modules/core/plugin_mode.py):
     a ``.claude/plugin-registry.json`` whose ``installed[*].name`` list
-    includes ``"gaia-ops"`` OR ``"gaia-security"``.
+    includes ``"gaia"``.
 
     This deliberately does NOT use ``.plugin-initialized`` and does NOT treat a
     bare ``.claude`` directory as a Gaia install. A repo that was cloned with
@@ -907,7 +907,7 @@ def _is_installed_gaia_workspace(directory: Path) -> bool:
         for p in installed
         if isinstance(p, dict) and isinstance(p.get("name"), str)
     }
-    return "gaia-ops" in names or "gaia-security" in names
+    return "gaia" in names
 
 
 def _walk_for_repos(
@@ -1628,7 +1628,7 @@ def _scan_gaia_installations(workspace_root: Path) -> list[dict]:
                 )
             )
             for p in registry.get("installed", []):
-                if isinstance(p, dict) and p.get("name") in ("gaia-ops", "gaia-security"):
+                if isinstance(p, dict) and p.get("name") == "gaia":
                     v = p.get("version")
                     if isinstance(v, str):
                         version = v

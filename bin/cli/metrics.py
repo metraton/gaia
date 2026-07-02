@@ -579,7 +579,7 @@ def _calculate_context_update_summary(run_snapshots: list):
 def _display_metrics(data: dict):
     SEP = "=" * 52
 
-    print("\nGaia-Ops System Metrics")
+    print("\nGaia System Metrics")
     print(SEP)
 
     tiers = data["tiers"]
@@ -932,7 +932,7 @@ def register(subparsers):
         "metrics",
         help="Show system metrics dashboard (tiers, commands, agents, anomalies)",
         description=(
-            "Display Gaia-Ops system metrics dashboard.\n"
+            "Display Gaia system metrics dashboard.\n"
             "\n"
             "Data sources:\n"
             "  ~/.gaia/gaia.db  (substrate SQLite, primary for agent sessions)\n"
@@ -965,9 +965,9 @@ def cmd_metrics(args) -> int:
 
     if not claude_dir.exists():
         if as_json:
-            print(json.dumps({"error": "gaia-ops not installed in this directory"}))
+            print(json.dumps({"error": "gaia not installed in this directory"}))
         else:
-            print("\nGaia-ops not installed in this directory")
+            print("\nGaia not installed in this directory")
             print("Run: gaia scan\n")
         return 1
 

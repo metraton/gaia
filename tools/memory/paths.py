@@ -8,7 +8,7 @@ that has Gaia-specific subdirectories under ``.claude/``.
 
 This prevents two classes of problems:
 1. A nested ``.claude/`` in a sub-repository or dev checkout (e.g.
-   ``gaia-ops-dev/.claude/``) shadowing the real Gaia instance.
+   ``gaia-dev/.claude/``) shadowing the real Gaia instance.
 2. Claude Code's own user settings dir (``$HOME/.claude/``) being mistaken
    for a Gaia instance — it has a ``.claude/`` but no Gaia-specific layout.
 """

@@ -40,7 +40,7 @@ from typing import Any
 
 # ---------------------------------------------------------------------------
 # Reuse the canonical permission/hook merge logic from plugin_setup.py.
-# That module is the SINGLE SOURCE OF TRUTH for OPS_PERMISSIONS, deny rules,
+# That module is the SINGLE SOURCE OF TRUTH for PERMISSIONS, deny rules,
 # the authoritative-merge algorithm, and the hooks.json conversion. We import
 # the constants but reimplement the orchestration here so we can return the
 # {action, path, details} contract instead of plain booleans.
@@ -53,19 +53,16 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 try:
     from hooks.modules.core.plugin_setup import (  # type: ignore  # noqa: E402
-        OPS_PERMISSIONS,
-        SECURITY_PERMISSIONS,
+        PERMISSIONS,
         _authoritative_merge,
         _tool_name,
     )
-    from hooks.modules.core.plugin_mode import get_plugin_mode  # type: ignore  # noqa: E402
 except Exception:  # noqa: BLE001
     # Fallback constants if the hooks package cannot be imported (e.g. partial
     # install). These mirror the canonical values in plugin_setup.py at the
     # time of writing -- if those drift, this fallback becomes stale, but the
     # primary path is the import above. Tests pin the import path.
-    OPS_PERMISSIONS = {"permissions": {"allow": ["Bash(*)"], "deny": [], "ask": []}}
-    SECURITY_PERMISSIONS = {"permissions": {"allow": ["Bash(*)"], "deny": [], "ask": []}}
+    PERMISSIONS = {"permissions": {"allow": ["Bash(*)"], "deny": [], "ask": []}}
 
     def _tool_name(entry: str) -> str:  # type: ignore[no-redef]
         paren = entry.find("(")
@@ -75,9 +72,6 @@ except Exception:  # noqa: BLE001
         gaia_tools = {_tool_name(e) for e in ours}
         kept = {e for e in current if _tool_name(e) not in gaia_tools}
         return sorted(kept | ours)
-
-    def get_plugin_mode() -> str:  # type: ignore[no-redef]
-        return os.environ.get("GAIA_PLUGIN_MODE", "ops")
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +131,6 @@ def configure_settings_json(workspace: Path, *, dry_run: bool = False) -> dict[s
 def merge_local_permissions(
     workspace: Path,
     *,
-    mode: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Merge gaia permissions, env vars, and agent identity into settings.local.json.
@@ -148,7 +141,6 @@ def merge_local_permissions(
 
     Args:
         workspace: directory containing .claude/.
-        mode: "ops" or "security". Default: detect via plugin_mode.
         dry_run: if True, compute the diff but do not write.
     """
     claude_dir = workspace / ".claude"
@@ -157,8 +149,7 @@ def merge_local_permissions(
     if not claude_dir.exists():
         return _result("skipped", local_path, ".claude/ not found")
 
-    resolved_mode = mode or get_plugin_mode() or "ops"
-    our_perms = OPS_PERMISSIONS if resolved_mode == "ops" else SECURITY_PERMISSIONS
+    our_perms = PERMISSIONS
     our_allow = set(our_perms["permissions"].get("allow", []))
     our_deny = set(our_perms["permissions"].get("deny", []))
 
@@ -198,7 +189,7 @@ def merge_local_permissions(
     existing["permissions"].setdefault("ask", [])
 
     if not changed_fields:
-        return _result("noop", local_path, f"settings.local.json already up to date ({resolved_mode} mode)")
+        return _result("noop", local_path, "settings.local.json already up to date")
 
     if dry_run:
         return _result(
@@ -348,7 +339,7 @@ _SYMLINK_FILES = ["CHANGELOG.md"]
 
 
 def _symlink_is_stale(link: Path, plugin_root: Path) -> tuple[bool, str | None]:
-    """Return (stale, reason). Stale if target missing or pointing at legacy gaia-ops."""
+    """Return (stale, reason). Stale if the symlink target no longer exists."""
     try:
         raw = os.readlink(link)
     except OSError:
@@ -361,12 +352,6 @@ def _symlink_is_stale(link: Path, plugin_root: Path) -> tuple[bool, str | None]:
 
     if not target.exists():
         return True, f"target missing: {raw}"
-
-    # If we're installed as @jaguilar87/gaia but the link still references
-    # the legacy @jaguilar87/gaia-ops path, treat it as stale.
-    pkg_name = plugin_root.name
-    if pkg_name == "gaia" and "@jaguilar87/gaia-ops" in raw:
-        return True, f"legacy target: {raw}"
 
     return False, None
 
@@ -468,9 +453,8 @@ def _read_plugin_name(plugin_root: Path) -> str:
     data = _read_json(pkg_json)
     if data and data.get("name"):
         # @jaguilar87/gaia -> "gaia" is the canonical registry identity: Gaia
-        # ships as a single unified plugin (the former gaia-ops/gaia-security
-        # split is retired). Strip scope for the registry (Claude Code does
-        # the same).
+        # ships as a single unified plugin. Strip scope for the registry
+        # (Claude Code does the same).
         name = data["name"]
         if "/" in name:
             name = name.split("/", 1)[1]

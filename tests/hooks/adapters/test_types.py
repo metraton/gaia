@@ -124,9 +124,9 @@ class TestHostDistribution:
 
     def test_channel_with_root(self):
         """A distribution carries an opaque root when the channel has one."""
-        dist = HostDistribution(channel="plugin", root=Path("/opt/plugins/gaia-ops"))
+        dist = HostDistribution(channel="plugin", root=Path("/opt/plugins/gaia"))
         assert dist.channel == "plugin"
-        assert dist.root == Path("/opt/plugins/gaia-ops")
+        assert dist.root == Path("/opt/plugins/gaia")
 
     def test_frozen(self):
         """HostDistribution is immutable."""
@@ -168,10 +168,10 @@ class TestHookEvent:
             session_id="s1",
             payload={},
             distribution=HostDistribution(
-                channel="plugin", root=Path("/opt/plugins/gaia-ops")
+                channel="plugin", root=Path("/opt/plugins/gaia")
             ),
         )
-        assert event.distribution.root == Path("/opt/plugins/gaia-ops")
+        assert event.distribution.root == Path("/opt/plugins/gaia")
 
     def test_frozen(self):
         """HookEvent is immutable."""

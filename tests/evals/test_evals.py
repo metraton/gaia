@@ -344,7 +344,7 @@ def _ensure_s8_audit_fixture() -> None:
     """
     if _S8_AUDIT_FIXTURE.exists():
         return
-    path = "/home/jorge/ws/me/gaia-ops-dev/tests/evals/catalog.py"
+    path = "/home/jorge/ws/me/gaia-dev/tests/evals/catalog.py"
     lines = [
         {
             "timestamp": "2026-04-20T11:30:00.100000",

@@ -382,11 +382,9 @@ def _remove_settings_json(root: Path, dry_run: bool) -> dict:
 # Code's plugin system, so only Gaia's own entry is removed surgically.
 # ---------------------------------------------------------------------------
 
-# Plugin names Gaia registers in plugin-registry.json. "gaia" is the
-# canonical identity written by _read_plugin_name in _install_helpers.py;
-# "gaia-ops"/"gaia-security" are kept recognized for registries written by
-# installs from before the single-plugin rename.
-_GAIA_PLUGIN_NAMES = {"gaia-ops", "gaia-security", "gaia"}
+# Plugin names Gaia registers in plugin-registry.json. "gaia" is the sole
+# canonical identity written by _read_plugin_name in _install_helpers.py.
+_GAIA_PLUGIN_NAMES = {"gaia"}
 
 
 def _remove_plugin_initialized(root: Path, dry_run: bool) -> dict:
@@ -493,24 +491,17 @@ _GAIA_ENV_KEYS = {
 def _gaia_managed_permission_sets():
     """Return (managed_tool_names, deny_entries) Gaia injects into settings.
 
-    Pulled from the canonical OPS/SECURITY permission constants in
-    plugin_setup.py (the same source install merges from). Falls back to a
-    minimal set if the hooks package cannot be imported (partial install).
+    Pulled from the canonical PERMISSIONS constant in plugin_setup.py (the
+    same source install merges from). Falls back to a minimal set if the
+    hooks package cannot be imported (partial install).
     """
     try:
         from hooks.modules.core.plugin_setup import (  # type: ignore
-            OPS_PERMISSIONS,
-            SECURITY_PERMISSIONS,
+            PERMISSIONS,
             _tool_name,
         )
-        allow = (
-            set(OPS_PERMISSIONS["permissions"]["allow"])
-            | set(SECURITY_PERMISSIONS["permissions"]["allow"])
-        )
-        deny = (
-            set(OPS_PERMISSIONS["permissions"]["deny"])
-            | set(SECURITY_PERMISSIONS["permissions"]["deny"])
-        )
+        allow = set(PERMISSIONS["permissions"]["allow"])
+        deny = set(PERMISSIONS["permissions"]["deny"])
         managed_names = {_tool_name(e) for e in allow}
         return managed_names, deny
     except Exception:  # noqa: BLE001
@@ -751,7 +742,7 @@ def cmd_cleanup(args) -> int:
 
     if prune_only:
         if not as_json:
-            print("\ngaia-ops data retention")
+            print("\ngaia data retention")
             print("\nRetention policy:")
             print("  Audit logs:          30 days")
             print("  Hook logs:           14 days")
@@ -787,7 +778,7 @@ def cmd_cleanup(args) -> int:
 
     # Full cleanup mode
     if not as_json:
-        print("\ngaia-ops cleanup")
+        print("\ngaia cleanup")
         if dry_run:
             print("  (dry-run mode -- no files will be modified)\n")
         else:

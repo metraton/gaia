@@ -1,7 +1,7 @@
 """
-Distribution Channel Detection for Gaia-Ops.
+Distribution Channel Detection for Gaia.
 
-Utility module that detects whether gaia-ops is running as a Claude Code plugin
+Utility module that detects whether gaia is running as a Claude Code plugin
 or via npm. Used by entry points to log coexistence warnings and by business
 logic to adapt behavior per channel.
 """

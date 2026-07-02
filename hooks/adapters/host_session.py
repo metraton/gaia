@@ -1,5 +1,5 @@
 """
-Host Session ID Access for Gaia-Ops.
+Host Session ID Access for Gaia.
 
 Adapter-owned utility that encapsulates how the host CLI exposes the current
 session identifier via the environment. The host-specific env var name lives

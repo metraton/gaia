@@ -157,7 +157,7 @@ class TestClassifyCommandTier:
         """Scenario #29: Unknown/unclassified -> T0 (safe by elimination, NOT T3).
 
         This is a critical design decision: unknown commands default to SAFE,
-        not BLOCKED. The security model relies on blocked_commands.py and
+        not BLOCKED. The security posture relies on blocked_commands.py and
         mutative_verbs.py to catch dangerous commands. Everything else is safe.
         """
         tier = classify_command_tier("some_unknown_command --flag")

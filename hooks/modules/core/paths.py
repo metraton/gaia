@@ -1,5 +1,5 @@
 """
-Unified path resolution for gaia-ops hooks.
+Unified path resolution for gaia hooks.
 
 Single source of truth for finding .claude directory and its subdirectories.
 
@@ -153,8 +153,3 @@ def clear_path_cache():
     """Clear all cached path results (useful for testing)."""
     find_claude_dir.cache_clear()
     get_plugin_data_dir.cache_clear()
-    try:
-        from .plugin_mode import clear_mode_cache
-        clear_mode_cache()
-    except ImportError:
-        pass

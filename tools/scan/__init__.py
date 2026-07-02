@@ -1,5 +1,5 @@
 """
-Scan Module: Modular project scanner for gaia-ops
+Scan Module: Modular project scanner for gaia
 
 This module provides a pluggable scanner system that detects project stack,
 infrastructure, git configuration, tools, orchestration, and environment.

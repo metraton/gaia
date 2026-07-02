@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Episodic Memory System for GAIA-OPS
+Episodic Memory System for GAIA
 
 This module provides functionality to store, index, and search episodic memory
 for the workflow system. Episodes capture user interactions, clarifications,

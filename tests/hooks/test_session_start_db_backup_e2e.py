@@ -50,7 +50,6 @@ def sandbox(tmp_path):
     env["GAIA_DATA_DIR"] = str(data_dir)
     env["HOME"] = str(tmp_path)
     env["CLAUDE_PLUGIN_DATA"] = str(plugin_data)
-    env["GAIA_PLUGIN_MODE"] = "ops"
     return workspace, env, data_dir, db
 
 

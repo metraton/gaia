@@ -29,12 +29,12 @@ def setup_test_project(tmp_dir: Path, package_root: Path) -> Path:
     """
     Create a temporary project directory with full .claude/ structure.
 
-    Copies agents, skills, hooks, config, and settings from the gaia-ops
+    Copies agents, skills, hooks, config, and settings from the gaia
     package into a temp directory to simulate an installed project.
 
     Args:
         tmp_dir: Temporary directory for the test project.
-        package_root: Root of the gaia-ops package.
+        package_root: Root of the gaia package.
 
     Returns:
         Path to the created .claude/ directory.

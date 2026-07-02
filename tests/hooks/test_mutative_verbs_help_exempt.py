@@ -26,7 +26,7 @@ class TestHelpFlagExemption:
     def test_gaia_update_help_is_not_mutative(self):
         """Regression: ghost P-738355ab was created from this exact command."""
         result = detect_mutative_command(
-            "/home/jorge/ws/me/gaia-ops-dev/bin/gaia update --help 2>&1"
+            "/home/jorge/ws/me/gaia-dev/bin/gaia update --help 2>&1"
         )
         assert result.is_mutative is False, (
             f"--help must downgrade 'update' to non-mutative. "
@@ -37,7 +37,7 @@ class TestHelpFlagExemption:
     def test_gaia_approvals_clean_help_is_not_mutative(self):
         """Regression: ghost P-0b06738b was created from this exact command."""
         result = detect_mutative_command(
-            "/home/jorge/ws/me/gaia-ops-dev/bin/gaia approvals clean --help 2>&1"
+            "/home/jorge/ws/me/gaia-dev/bin/gaia approvals clean --help 2>&1"
         )
         assert result.is_mutative is False, (
             f"--help must downgrade 'clean' to non-mutative. "

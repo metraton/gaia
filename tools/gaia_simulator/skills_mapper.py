@@ -1,5 +1,5 @@
 """
-Skills mapper for gaia-ops agent/skill/surface/contract analysis.
+Skills mapper for gaia agent/skill/surface/contract analysis.
 
 Builds a complete map of agents, their skills, the surfaces that route
 to them, and the contract permissions they hold. Flags orphan skills.

@@ -1,5 +1,5 @@
 """
-Gaia simulator module for gaia-ops hooks.
+Gaia simulator module for gaia hooks.
 
 Extracts real hook events from production logs, replays them against the current
 hooks, and detects regressions. Also provides routing simulation and skills mapping.

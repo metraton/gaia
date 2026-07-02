@@ -37,8 +37,8 @@ _BASE_AGENTS = [
     "general-purpose",
 ]
 # Support both "cloud-troubleshooter" and "gaia:cloud-troubleshooter" -- the
-# plugin ships as the single unified "gaia" bundle (the former gaia-ops /
-# gaia-security split is retired), so the namespaced form uses that prefix.
+# plugin ships as the single unified "gaia" bundle, so the namespaced form
+# uses that prefix.
 AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia:{a}" for a in _BASE_AGENTS]
 
 # Native Claude Code agent types — utility subagents built into the harness,

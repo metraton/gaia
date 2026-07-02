@@ -2,7 +2,7 @@
 Health Check / Verification Functions for `gaia scan`
 
 Provides post-install verification checks to confirm that the
-gaia-ops installation is healthy. Used after fresh install (Mode 1)
+gaia installation is healthy. Used after fresh install (Mode 1)
 and after rescan+sync (Mode 2).
 
 Functions:

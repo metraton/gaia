@@ -71,12 +71,12 @@ def _make_repo(path: Path) -> None:
 def _make_gaia_install(path: Path) -> None:
     """Create the canonical Gaia install signal at `path`.
 
-    Writes ``path/.claude/plugin-registry.json`` listing gaia-ops as installed.
+    Writes ``path/.claude/plugin-registry.json`` listing gaia as installed.
     """
     claude = path / ".claude"
     claude.mkdir(parents=True, exist_ok=True)
     (claude / "plugin-registry.json").write_text(
-        json.dumps({"installed": [{"name": "gaia-ops", "version": "5.0.0"}]})
+        json.dumps({"installed": [{"name": "gaia", "version": "5.0.0"}]})
     )
 
 
@@ -139,17 +139,18 @@ def _workspace_names(db_path: Path) -> set[str]:
 # ---------------------------------------------------------------------------
 
 class TestInstallSignal:
-    def test_registry_with_gaia_ops_is_workspace(self, tmp_path):
+    def test_registry_with_gaia_is_workspace(self, tmp_path):
         _make_gaia_install(tmp_path)
         assert _is_installed_gaia_workspace(tmp_path) is True
 
-    def test_registry_with_gaia_security_is_workspace(self, tmp_path):
+    def test_registry_with_unknown_name_is_not_workspace(self, tmp_path):
+        # Only "gaia" is recognized; any other name is not a Gaia workspace.
         claude = tmp_path / ".claude"
         claude.mkdir()
         (claude / "plugin-registry.json").write_text(
-            json.dumps({"installed": [{"name": "gaia-security"}]})
+            json.dumps({"installed": [{"name": "unrelated-plugin"}]})
         )
-        assert _is_installed_gaia_workspace(tmp_path) is True
+        assert _is_installed_gaia_workspace(tmp_path) is False
 
     def test_third_party_claude_is_not_workspace(self, tmp_path):
         _make_third_party_claude(tmp_path)
