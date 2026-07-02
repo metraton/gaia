@@ -439,7 +439,9 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
                 pkg_root = Path(*parts[:i + 2])
             break
 
-    if not pkg_name or pkg_name not in ("gaia-ops", "gaia-security"):
+    # "gaia" is the canonical single-plugin package name; "gaia-ops" /
+    # "gaia-security" are recognized for legacy split-package installs.
+    if not pkg_name or pkg_name not in ("gaia", "gaia-ops", "gaia-security"):
         return None
 
     # Try to read version from package.json

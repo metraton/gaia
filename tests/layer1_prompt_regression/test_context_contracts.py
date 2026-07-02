@@ -128,7 +128,7 @@ class TestContractAgentConsistency:
         bootstrap_gaia_schema(db_path)
         seed_workspace(db_path, "test-ws")
 
-        meta_set = set(META_AGENTS) | {f"gaia-ops:{m}" for m in META_AGENTS}
+        meta_set = set(META_AGENTS) | {f"gaia:{m}" for m in META_AGENTS}
         project_agents = [
             a for a in AVAILABLE_AGENTS
             if a not in meta_set and ":" not in a

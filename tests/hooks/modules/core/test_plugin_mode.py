@@ -123,8 +123,13 @@ class TestRegistryDetection:
             yield
         clear_mode_cache()
 
+    def test_registry_ops_canonical_gaia(self):
+        """Registry has canonical name 'gaia' -> returns 'ops'."""
+        _write_registry(self.tmp_path, ["gaia"])
+        assert get_plugin_mode() == "ops"
+
     def test_registry_ops(self):
-        """Registry has gaia-ops -> returns 'ops'."""
+        """Registry has legacy 'gaia-ops' -> returns 'ops'."""
         _write_registry(self.tmp_path, ["gaia-ops"])
         assert get_plugin_mode() == "ops"
 

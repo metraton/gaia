@@ -382,8 +382,10 @@ def _remove_settings_json(root: Path, dry_run: bool) -> dict:
 # Code's plugin system, so only Gaia's own entry is removed surgically.
 # ---------------------------------------------------------------------------
 
-# Plugin names Gaia registers in plugin-registry.json (see _read_plugin_name
-# in _install_helpers.py: package "gaia" maps to the canonical "gaia-ops").
+# Plugin names Gaia registers in plugin-registry.json. "gaia" is the
+# canonical identity written by _read_plugin_name in _install_helpers.py;
+# "gaia-ops"/"gaia-security" are kept recognized for registries written by
+# installs from before the single-plugin rename.
 _GAIA_PLUGIN_NAMES = {"gaia-ops", "gaia-security", "gaia"}
 
 
