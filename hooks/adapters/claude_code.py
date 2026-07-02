@@ -99,16 +99,21 @@ def _append_workspace_memory(context: str) -> str:
     """Append the curated workspace memory block to a subagent context string.
 
     Calls the same primitive the orchestrator uses at SessionStart --
-    ``session_manifest.build_workspace_memory_block`` -- so subagents see the
-    identical curated memory sections (``## Memory — For this session``,
-    ``## Memory — About you / What I know``, ``## Memory — Open threads``).
+    ``session_manifest.build_workspace_memory_block`` -- but scoped to the
+    ``anchor`` section only. A dispatched subagent receives just
+    ``## Memory — About you / What I know`` (durable, identity-level anchors),
+    NOT ``## Memory — For this session`` (carry_forward) nor
+    ``## Memory — Open threads`` (thread/open): those are session-scoped state
+    that belongs to the orchestrator's turn, not to a one-shot subagent. The
+    orchestrator's own SessionStart path calls the primitive with no ``sections``
+    argument and still receives all three sections -- this cut is subagent-only.
     Joins with a blank-line separator when context is non-empty. Returns the
     original context unchanged on any error (fail-safe: dispatch must never
     fail because memory injection misbehaved).
     """
     try:
         from modules.session.session_manifest import build_workspace_memory_block
-        block = build_workspace_memory_block()
+        block = build_workspace_memory_block(sections=["anchor"])
         if not block:
             return context
         separator = "\n\n" if context else ""

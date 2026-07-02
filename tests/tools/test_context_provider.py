@@ -12,7 +12,7 @@ if TOOLS_DIR.is_symlink():
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(TOOLS_DIR / "context"))
 
-from context_provider import get_relevant_sections  # noqa: E402
+from context_provider import get_relevant_sections, load_provider_contracts  # noqa: E402
 
 # ============================================================================
 # NOTE: Tests that exercised the retired context-contracts.json pipeline
@@ -294,3 +294,99 @@ class TestGetRelevantSections:
 
         # Unknown surface has no contract_sections -> relevant is empty -> fallback
         assert set(result.keys()) == {"project_identity", "stack", "monitoring_observability"}
+
+
+# ============================================================================
+# FIX (c): readable/writable sections are deduped, order-stable
+# ============================================================================
+
+import sqlite3  # noqa: E402
+
+
+class TestLoadProviderContractsDedupe:
+    """load_provider_contracts must collapse duplicate rows into a single
+    entry per contract_name, order-stable by first appearance.
+
+    Field condition: agent_contract_permissions accumulated many duplicate
+    NULL-scope rows because SQLite treats NULL as distinct in the composite
+    PRIMARY KEY (agent_name, contract_name, cloud_scope), so INSERT OR REPLACE
+    never conflicts on NULL scope and every re-seed appends. The subagent
+    Permissions block rendered every duplicate verbatim (~93% payload bloat,
+    the same pair repeated 1977x). The reader must dedupe defensively so the
+    block lists each section exactly once regardless of DB state.
+    """
+
+    def _make_db(self, tmp_path, rows):
+        """rows: list of (contract_name, can_read, can_write, cloud_scope)."""
+        db = tmp_path / "perms.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            """
+            CREATE TABLE agent_contract_permissions (
+                agent_name    TEXT NOT NULL,
+                contract_name TEXT NOT NULL,
+                can_read      INTEGER NOT NULL DEFAULT 0,
+                can_write     INTEGER NOT NULL DEFAULT 0,
+                cloud_scope   TEXT,
+                PRIMARY KEY (agent_name, contract_name, cloud_scope)
+            )
+            """
+        )
+        for cname, cr, cw, scope in rows:
+            con.execute(
+                "INSERT INTO agent_contract_permissions "
+                "(agent_name, contract_name, can_read, can_write, cloud_scope) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("developer", cname, cr, cw, scope),
+            )
+        con.commit()
+        con.close()
+        return db
+
+    def test_massive_null_scope_duplicates_collapse_to_one(self, tmp_path):
+        # Reproduce the field bloat: the same two contracts, each with many
+        # duplicate NULL-scope rows (NULL bypasses the PK, so raw INSERT allows it).
+        rows = []
+        for _ in range(500):
+            rows.append(("project_identity", 1, 0, None))
+            rows.append(("stack", 1, 1, None))
+        db = self._make_db(tmp_path, rows)
+
+        contracts = load_provider_contracts("developer", "gcp", db_path=db)
+        readable = contracts["agents"]["developer"]["read"]
+        writable = contracts["agents"]["developer"]["write"]
+
+        assert readable == ["project_identity", "stack"], (
+            f"readable not deduped/order-stable: len={len(readable)}"
+        )
+        assert writable == ["stack"]
+        # The whole point: no fan-out. 1000 rows collapse to 2 distinct reads.
+        assert len(readable) == len(set(readable))
+
+    def test_order_is_deterministic(self, tmp_path):
+        # Order is stable across runs via the query's ORDER BY contract_name.
+        rows = [
+            ("git", 1, 0, None),
+            ("environment", 1, 0, None),
+            ("git", 1, 0, None),          # dup
+            ("infrastructure", 1, 0, None),
+            ("environment", 1, 0, None),  # dup
+        ]
+        db = self._make_db(tmp_path, rows)
+        readable = load_provider_contracts(
+            "developer", "gcp", db_path=db
+        )["agents"]["developer"]["read"]
+        assert readable == ["environment", "git", "infrastructure"]
+
+    def test_null_and_provider_scope_same_contract_dedupe(self, tmp_path):
+        # A NULL-scope row plus a provider-scoped overlay for the same contract
+        # both match a gcp query; the contract must still appear only once.
+        rows = [
+            ("infrastructure", 1, 0, None),
+            ("infrastructure", 1, 0, "gcp"),
+        ]
+        db = self._make_db(tmp_path, rows)
+        readable = load_provider_contracts(
+            "developer", "gcp", db_path=db
+        )["agents"]["developer"]["read"]
+        assert readable == ["infrastructure"]

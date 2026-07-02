@@ -144,6 +144,7 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
             FROM agent_contract_permissions
             WHERE agent_name = ?
               AND (cloud_scope IS NULL OR cloud_scope = ?)
+            ORDER BY contract_name
             """,
             (agent_name, cloud_provider),
         ).fetchall()
@@ -152,8 +153,26 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
         print(f"Warning: DB error reading permissions for '{agent_name}': {exc}", file=sys.stderr)
         rows = []
 
-    readable = [r["contract_name"] for r in rows if r["can_read"]]
-    writable = [r["contract_name"] for r in rows if r["can_write"]]
+    # Dedupe defensively; order is deterministic via the query's ORDER BY
+    # contract_name. The row set can carry the same contract_name more than
+    # once -- e.g. a NULL cloud_scope row plus a provider-scoped overlay, or
+    # (observed in the field) accumulated duplicate NULL-scope rows because
+    # SQLite treats NULL as distinct in the composite PRIMARY KEY, so
+    # INSERT OR REPLACE never conflicts on NULL scope. Without this dedupe the
+    # readable/writable lists fan out into thousands of repeated entries, which
+    # the subagent Permissions block renders verbatim (~93% payload bloat
+    # observed). See FIX (c).
+    def _dedupe(names: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out
+
+    readable = _dedupe([r["contract_name"] for r in rows if r["can_read"]])
+    writable = _dedupe([r["contract_name"] for r in rows if r["can_write"]])
 
     return {
         "version": "db",

@@ -350,3 +350,76 @@ class TestHeaderStructure:
         assert "## Memory — For this session" in block
         assert "## Memory — About you / What I know" in block
         assert "## Memory — Open threads" in block
+
+
+class TestSectionsFilter:
+    """--sections filters which curated sections render (subagent cut).
+
+    The subagent-dispatch path passes --sections=anchor so a dispatched
+    subagent receives only the durable anchors, never the session-scoped
+    carry_forward or open-thread state. The orchestrator omits --sections and
+    keeps all three sections (covered by TestSectionHeaders above).
+    """
+
+    def _seed_all_three(self, tmp_db):
+        _insert_memory(tmp_db, "atom_carry_1", "atom", "thread", "carry_forward",
+                       "carry", "2026-05-22T10:00:00Z")
+        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+                       "anchor", "2026-05-22T09:00:00Z")
+        _insert_memory(tmp_db, "atom_open_1", "atom", "thread", "open",
+                       "open", "2026-05-22T08:00:00Z")
+
+    def test_sections_anchor_only_renders_anchor(self, tmp_db, capsys):
+        self._seed_all_three(tmp_db)
+        rc = memory_mod._cmd_get_relevant(_args(sections="anchor"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        payload = json.loads(out)
+        block = payload["block"]
+        assert "## Memory — About you / What I know" in block
+        assert "## Memory — For this session" not in block
+        assert "## Memory — Open threads" not in block
+        # items are anchors only
+        assert all(i["section"] == "anchor" for i in payload["items"])
+
+    def test_sections_omitted_renders_all_three(self, tmp_db, capsys):
+        self._seed_all_three(tmp_db)
+        rc = memory_mod._cmd_get_relevant(_args())  # no sections -> all three
+        out = capsys.readouterr().out
+        assert rc == 0
+        block = json.loads(out)["block"]
+        assert "## Memory — For this session" in block
+        assert "## Memory — About you / What I know" in block
+        assert "## Memory — Open threads" in block
+
+    def test_sections_empty_string_falls_back_to_all(self, tmp_db, capsys):
+        """A blank/whitespace --sections is a safe fallback to all sections."""
+        self._seed_all_three(tmp_db)
+        rc = memory_mod._cmd_get_relevant(_args(sections="   "))
+        out = capsys.readouterr().out
+        assert rc == 0
+        block = json.loads(out)["block"]
+        assert "## Memory — For this session" in block
+        assert "## Memory — About you / What I know" in block
+        assert "## Memory — Open threads" in block
+
+    def test_sections_unknown_token_ignored_falls_back_to_all(self, tmp_db, capsys):
+        """Only unknown tokens -> no valid section -> safe fallback to all."""
+        self._seed_all_three(tmp_db)
+        rc = memory_mod._cmd_get_relevant(_args(sections="bogus"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        block = json.loads(out)["block"]
+        assert "## Memory — About you / What I know" in block
+        assert "## Memory — For this session" in block
+
+    def test_sections_multi_subset(self, tmp_db, capsys):
+        """--sections=anchor,thread_open renders those two, drops carry_forward."""
+        self._seed_all_three(tmp_db)
+        rc = memory_mod._cmd_get_relevant(_args(sections="anchor,thread_open"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        block = json.loads(out)["block"]
+        assert "## Memory — About you / What I know" in block
+        assert "## Memory — Open threads" in block
+        assert "## Memory — For this session" not in block

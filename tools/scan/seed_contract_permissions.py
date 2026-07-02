@@ -239,6 +239,20 @@ def grant_contract_permissions(db_path: Path, agents_dir: Path | None = None) ->
                 rows_skipped += 1
                 continue
 
+            # Idempotency guard: INSERT OR REPLACE does NOT dedupe NULL-scope
+            # rows, because SQLite treats NULL as distinct in the composite
+            # PRIMARY KEY (agent_name, contract_name, cloud_scope) -- NULL never
+            # equals NULL, so no ON CONFLICT fires and every re-run APPENDS a
+            # fresh duplicate. Left unchecked this accumulated ~1977 duplicate
+            # rows per (agent, contract) in the field. Clear this agent's
+            # NULL-scope rows first so a re-seed fully replaces them; any
+            # provider-scoped overlays (cloud_scope IS NOT NULL) are untouched.
+            con.execute(
+                "DELETE FROM agent_contract_permissions "
+                "WHERE agent_name = ? AND cloud_scope IS NULL",
+                (agent_name,),
+            )
+
             for contract_name, can_read, can_write in grants:
                 con.execute(
                     "INSERT OR REPLACE INTO agent_contract_permissions "
