@@ -326,7 +326,6 @@ class PrePublishValidator {
       'skills',
       'config',
       'tools',
-      'dist',
     ];
 
     const missing = [];
@@ -424,6 +423,52 @@ class PrePublishValidator {
         'Schema drift detected: gaia/store/schema.sql changed without a ' +
         'version bump + migration. Bump EXPECTED_SCHEMA_VERSION in ' +
         'bin/cli/doctor.py and add the migration, then re-run the guard.'
+      );
+    }
+  }
+
+  /**
+   * Hooks-drift guard.
+   *
+   * Fails the publish if the committed generated hook artifacts
+   * (hooks/hooks.json and the inline hooks in .claude-plugin/plugin.json)
+   * diverge from what generate_hooks_json(build/gaia.manifest.json) produces.
+   * The manifest is the single source of truth; these artifacts are generated
+   * by `npm run generate:plugin-root`. Drift means a stale/hand-edited
+   * artifact would ship -- e.g. dropping ElicitationResult or degrading the
+   * PreToolUse matcher set. This is the root-cause guard behind
+   * tests/hooks/adapters/test_plugin_manifests.
+   *
+   * The logic lives in scripts/check_hooks_drift.py; this method invokes it
+   * and surfaces a non-zero exit as a hard failure.
+   */
+  validateHooksDrift() {
+    this.log('Step 5d: Hooks-drift guard (hooks.json/plugin.json vs manifest)...', 'info');
+
+    const guardPath = path.join(GAIA_OPS_ROOT, 'scripts', 'check_hooks_drift.py');
+    if (!fs.existsSync(guardPath)) {
+      this.log(`✗ hooks-drift guard missing: ${guardPath}`, 'error');
+      throw new Error('scripts/check_hooks_drift.py not found -- cannot verify hooks drift');
+    }
+
+    const pyCmd = findPython();
+    if (!pyCmd) {
+      this.log('✗ Python not available -- cannot run hooks-drift guard', 'error');
+      throw new Error('Python interpreter not found; hooks-drift guard cannot run');
+    }
+
+    try {
+      const out = this.execute(`${pyCmd} "${guardPath}"`, GAIA_OPS_ROOT, true);
+      out.trim().split('\n').filter(Boolean).forEach(line => this.log(`  ${line}`, 'info'));
+      this.log('✓ Hook artifacts in sync with manifest', 'success');
+    } catch (error) {
+      const detail = (error.stderr || error.stdout || error.message || '').toString().trim();
+      this.log('✗ Hooks-drift guard failed:', 'error');
+      if (detail) detail.split('\n').forEach(line => console.error(`    ${line}`));
+      throw new Error(
+        'Hooks drift detected: a generated hook artifact (hooks/hooks.json or ' +
+        '.claude-plugin/plugin.json inline hooks) diverges from ' +
+        'build/gaia.manifest.json. Run `npm run generate:plugin-root` and commit.'
       );
     }
   }
@@ -562,23 +607,6 @@ class PrePublishValidator {
         }
       }
 
-      // Check sub-plugin plugin.json files
-      const subPlugins = [
-        { name: 'gaia-security', path: path.join(baseDir, 'plugins', 'gaia-security', '.claude-plugin', 'plugin.json') },
-        { name: 'gaia-ops', path: path.join(baseDir, 'plugins', 'gaia-ops', '.claude-plugin', 'plugin.json') }
-      ];
-
-      for (const subPlugin of subPlugins) {
-        if (fs.existsSync(subPlugin.path)) {
-          const subData = JSON.parse(fs.readFileSync(subPlugin.path, 'utf-8'));
-          if (subData.version !== expectedVersion) {
-            versionMismatches.push(`${subPlugin.name}/plugin.json: ${subData.version}`);
-          } else {
-            this.log(`  ✓ ${subPlugin.name}/plugin.json version matches`, 'success');
-          }
-        }
-      }
-
       // Check pyproject.toml [project].version
       const pyprojectPath = path.join(baseDir, 'pyproject.toml');
       if (fs.existsSync(pyprojectPath)) {
@@ -635,7 +663,7 @@ class PrePublishValidator {
         ];
         this.log(`✗ Version drift detected. Align all sources before publish: ${sources.join(', ')}`, 'error');
         throw new Error(
-          `Version drift: ${sources.join(', ')} — align all sources (package.json, plugin.json, marketplace.json, sub-plugin manifests, pyproject.toml, CHANGELOG.md top) before publish`
+          `Version drift: ${sources.join(', ')} — align all sources (package.json, plugin.json, marketplace.json, pyproject.toml, CHANGELOG.md top) before publish`
         );
       }
 
@@ -697,6 +725,7 @@ class PrePublishValidator {
       }
       this.validateFilesCoverage();
       this.validateSchemaDrift();
+      this.validateHooksDrift();
       this.validatePluginManifest();
       this.runTests();
 

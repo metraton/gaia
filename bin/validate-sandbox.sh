@@ -5,10 +5,12 @@
 #
 #   --target sandbox (default):
 #     Creates an ephemeral sandbox project populated from
-#     tests/fixtures/sandbox-project/, installs the target Gaia version, and
-#     exercises the install-time code paths (postinstall hook merge, FTS5
-#     backfill safety-net) plus read-side CLI surface (version, doctor,
-#     status, context show, memory stats/search, scan).
+#     tests/fixtures/sandbox-project/, installs the target Gaia version
+#     (no postinstall hook -- bootstrap is lazy, see bin/cli/install.py),
+#     and exercises the FTS5 backfill safety-net plus the read-side CLI
+#     surface (version, doctor, status, context show, memory stats/search,
+#     scan). It also confirms plain `npm install` never clobbers an
+#     existing settings.local.json.
 #
 #   --target local:
 #     Installs Gaia directly into a real workspace. If --workspace <path> is
@@ -18,6 +20,11 @@
 #     falling back to $HOME/ws/me/ if present. NO cleanup -- the install
 #     IS the installation. A fresh tarball install avoids per-path approval
 #     prompts for edited files during a session.
+#     There is no npm postinstall hook (bootstrap is lazy, see
+#     bin/cli/install.py), so `npm install` alone does not wire the
+#     workspace's .claude/ config, symlinks, or plugin registry. This mode
+#     explicitly runs `gaia install --workspace <target>` right after
+#     `npm install` to perform that wiring.
 #
 # Exit 0 when every check passes; 1 otherwise. `--stay` keeps the sandbox
 # dir for post-mortem inspection (path printed on exit). Only meaningful
@@ -413,6 +420,20 @@ install_package() {
 }
 
 # ---------------------------------------------------------------------------
+# Wire the workspace (local mode only)
+# ---------------------------------------------------------------------------
+#
+# There is no npm postinstall hook (bootstrap is lazy, see bin/cli/install.py
+# and package.json's `_install_note`): `npm install` alone drops the package
+# into node_modules/ but never touches the workspace's .claude/ settings,
+# symlinks, or plugin registry. Without this explicit step, `--target local`
+# would leave the workspace installed-but-unwired.
+wire_local_workspace() {
+  echo "[install] wiring workspace: gaia install --workspace ${WORKSPACE}"
+  gaia install --workspace "${WORKSPACE}"
+}
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -555,6 +576,12 @@ install_package
 # Put installed bin at head of PATH so we can call `gaia` directly
 # (runtime check: node-independent invocation, no npx indirection).
 export PATH="${WORKSPACE}/node_modules/.bin:${PATH}"
+
+# Local: no postinstall hook wires the workspace, so do it explicitly here
+# (see wire_local_workspace() above).
+if [[ "${TARGET}" == "local" ]]; then
+  wire_local_workspace
+fi
 
 # Sandbox: isolate the DB from the global ~/.gaia/gaia.db and seed it
 # with fixture episodes so checks 5 (FTS5 stats) and 6 (deploy search)
@@ -711,7 +738,8 @@ else
   record "gaia scan" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
 fi
 
-# 8. Checksum preservation: settings.local.json unchanged by postinstall
+# 8. Checksum preservation: settings.local.json unchanged by `npm install`
+#    (no postinstall hook exists to touch it -- this asserts that stays true).
 #    Sandbox only -- local mode has no meaningful "pre" snapshot.
 if [[ "${TARGET}" == "sandbox" ]]; then
   if [[ -n "${PRE_CHECKSUM}" && -f "${SETTINGS_FILE}" ]]; then
@@ -727,7 +755,7 @@ assert p.get('env',{}).get('SANDBOX_FIXTURE_MARKER')=='preserved-across-install'
       record "settings preservation" "PASS" "sentinel + env markers intact" "${ms}"
     else
       ms=$(( $(now_ms) - t0 ))
-      record "settings preservation" "FAIL" "user keys clobbered by postinstall" "${ms}"
+      record "settings preservation" "FAIL" "user keys clobbered during npm install" "${ms}"
     fi
   else
     record "settings preservation" "FAIL" "settings.local.json missing pre or post" "0"

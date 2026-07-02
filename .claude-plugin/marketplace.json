@@ -15,7 +15,10 @@
         "email": "jorge.aguilar87@gmail.com"
       },
       "homepage": "https://github.com/metraton/gaia#readme",
-      "source": "./dist/gaia"
+      "source": {
+        "source": "npm",
+        "package": "@jaguilar87/gaia"
+      }
     }
   ]
 }

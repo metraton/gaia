@@ -1,9 +1,17 @@
 """
 gaia install -- Bootstrap Gaia in this machine + workspace.
 
-This subcommand is the Python entry point for both:
-  - npm postinstall hook: bootstrap DB + .claude/ structure + symlinks for a fresh install
+This subcommand is the Python entry point for:
   - manual first-time setup (`gaia install` from any workspace)
+  - the non-interactive `--postinstall` path, kept for callers that want the
+    fail-soft behaviour described below
+
+There is NO npm postinstall hook -- `package.json` carries no `postinstall`
+script. Bootstrap is lazy: `bin/gaia` calls `_ensure_db_bootstrapped()` on
+first CLI use (for any subcommand except `install`/`uninstall`) so the DB
+exists before anything needs it, without npm or pnpm ever running a
+lifecycle script. Workspace `.claude/` config is applied on demand by
+running `gaia install` (this module) or by the SessionStart hook.
 
 Responsibilities (in order):
   1. Detect plugin mode (npm vs CC plugin) for diagnostic output.
@@ -15,9 +23,13 @@ Responsibilities (in order):
      `.claude/settings.local.json`.
   5. Merge hook event entries from `hooks.json` into `.claude/settings.local.json`
      (only relevant in npm mode -- in plugin mode CC reads hooks.json directly).
-  6. Create or repair `.claude/{agents,tools,hooks,commands,templates,config,skills}`
-     symlinks pointing at the installed package.
-  7. Write `.claude/plugin-registry.json` with the installed version.
+  6. Create or repair `.claude/{agents,tools,hooks,config,skills}` symlinks
+     (5 directories) plus a `.claude/CHANGELOG.md` file link, pointing at the
+     installed package (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in
+     `_install_helpers.py`).
+  7. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
+     (the canonical registry identity; `gaia-ops` is recognized as a legacy
+     name for registries written by older installs, never written fresh).
 
 Scanning is intentionally NOT part of install. `gaia scan` is a separate,
 standalone module (bin/cli/scan.py + tools/scan/**) the user runs on demand;
@@ -35,8 +47,9 @@ Flags:
   --postinstall      Mark this invocation as a non-interactive bootstrap path
                      (adjusts output, never returns non-zero so a wrapping
                      install flow does not abort). Kept for callers that want
-                     the fail-soft behaviour; the npm postinstall hook itself
-                     has been removed (bootstrap is now lazy -- see bin/gaia).
+                     the fail-soft behaviour; nothing in the npm/pnpm
+                     lifecycle invokes this automatically -- bootstrap is
+                     lazy (see bin/gaia:_ensure_db_bootstrapped).
   --quiet            Suppress informational output; only errors print.
   --verbose          Stream bootstrap.sh output verbatim and report each
                      helper individually.
@@ -532,9 +545,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "schema migrations, re-seeds permissions, and repairs broken symlinks\n"
             "without destroying user state.\n"
             "\n"
-            "Typically called by:\n"
-            "  - npm postinstall (with --postinstall) after `npm install`\n"
+            "There is no npm postinstall hook -- bootstrap is lazy, triggered\n"
+            "by the first `gaia` CLI invocation. Typically called by:\n"
             "  - the user, manually, to re-bootstrap the DB or workspace\n"
+            "  - a non-interactive caller passing --postinstall for fail-soft output\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
