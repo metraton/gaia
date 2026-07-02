@@ -547,16 +547,21 @@ def validate_response_contract(
     # ------------------------------------------------------------------
     # Approval request validation (T2.2 blocking promotions)
     #
-    # approval_request.rollback and approval_request.verification are now
-    # blocking (missing -> invalid, not just advisory warnings).
-    # Other approval_request fields remain as warnings.
+    # approval_request.verification is blocking (missing -> invalid, not
+    # just an advisory warning). approval_request.rollback is advisory
+    # (non-blocking): the hook hardcodes rollback_hint=None by design
+    # (bash_validator.py _build_sealed_payload), so a well-formed
+    # APPROVAL_REQUEST always relays rollback=null -- treating that as a
+    # blocking violation produced ~600 of 678 recorded false-positive
+    # anomalies (AC-5). Other approval_request fields remain as warnings.
     # ------------------------------------------------------------------
     warnings: List[str] = []
     approval_req = contract.get("approval_request")
     if approval_req and isinstance(approval_req, dict):
-        # Blocking: rollback and verification must be present (T2.2)
+        # Non-blocking (advisory): rollback is relayed as null by design.
         if not approval_req.get("rollback"):
-            missing.append("APPROVAL_REQUEST_ROLLBACK")
+            warnings.append("APPROVAL_REQUEST_ROLLBACK")
+        # Blocking: verification must be present (T2.2)
         if not approval_req.get("verification"):
             missing.append("APPROVAL_REQUEST_VERIFICATION")
         # Advisory: remaining required fields
