@@ -8,7 +8,7 @@
     {
       "name": "gaia",
       "description": "Security-first multi-agent orchestration for Claude Code. Specialized agents cover the full development lifecycle — analysis, planning, execution, deployment — with codebase-aware context injection. Every command is risk-classified: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
-      "version": "5.1.0-rc.1",
+      "version": "5.1.0-rc.2",
       "category": "devops",
       "author": {
         "name": "jaguilar87",
