@@ -467,17 +467,16 @@ def _read_plugin_name(plugin_root: Path) -> str:
     pkg_json = plugin_root / "package.json"
     data = _read_json(pkg_json)
     if data and data.get("name"):
-        # @jaguilar87/gaia -> "gaia-ops" historically; modern source publishes as
-        # @jaguilar87/gaia. Strip scope for the registry (Claude Code does the same).
+        # @jaguilar87/gaia -> "gaia" is the canonical registry identity: Gaia
+        # ships as a single unified plugin (the former gaia-ops/gaia-security
+        # split is retired). Strip scope for the registry (Claude Code does
+        # the same).
         name = data["name"]
         if "/" in name:
             name = name.split("/", 1)[1]
-        # Doctor expects "gaia-ops" or "gaia-security" in the registry. If
-        # package.json says just "gaia", record "gaia-ops" (the canonical name).
-        if name == "gaia":
-            return "gaia-ops"
         return name
-    return "gaia-ops"
+    # No package.json / no name -- "gaia" is the canonical fallback identity.
+    return "gaia"
 
 
 def register_plugin(

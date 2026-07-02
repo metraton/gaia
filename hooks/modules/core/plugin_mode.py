@@ -5,8 +5,9 @@ Security mode: T3 operations use native Claude Code approval dialog (permissionD
 Ops mode: T3 operations block with nonce for orchestrator agent approval flow.
 
 Detection order:
-1. plugin-registry.json in plugin data directory
-2. NPM package name detection (gaia-ops vs gaia-security)
+1. plugin-registry.json in plugin data directory (name "gaia" or legacy
+   "gaia-ops" -> ops; "gaia-security" -> security)
+2. NPM package name detection (gaia vs legacy gaia-ops vs gaia-security)
 3. GAIA_PLUGIN_MODE env var fallback
 4. Default: "security" (most restrictive)
 """
@@ -89,7 +90,10 @@ def get_plugin_mode() -> str:
         if registry_path.exists():
             registry = json.loads(registry_path.read_text())
             installed = [p.get("name", "") for p in registry.get("installed", [])]
-            if "gaia-ops" in installed:
+            # "gaia" is the canonical single-plugin registry identity
+            # (register_plugin writes this going forward). "gaia-ops" is
+            # kept recognized for registries written before the rename.
+            if "gaia" in installed or "gaia-ops" in installed:
                 return "ops"
             if "gaia-security" in installed:
                 return "security"

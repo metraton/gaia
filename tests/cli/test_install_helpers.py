@@ -303,7 +303,7 @@ class TestRegisterPlugin(unittest.TestCase):
             res = helpers.register_plugin(workspace, plugin_root=pkg, source="cli-install")
             self.assertEqual(res["action"], "created")
             data = json.loads((workspace / ".claude" / "plugin-registry.json").read_text())
-            self.assertEqual(data["installed"][0]["name"], "gaia-ops")
+            self.assertEqual(data["installed"][0]["name"], "gaia")
             self.assertEqual(data["installed"][0]["version"], "5.4.0")
             self.assertEqual(data["source"], "cli-install")
 
