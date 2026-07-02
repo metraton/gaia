@@ -25,6 +25,7 @@ import argparse
 import inspect
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1027,6 +1028,73 @@ class TestNeverInvokesNpmPublishDirectly(unittest.TestCase):
                 captured["cmd"][:2] == ["npm", "publish"],
                 f"{step.__name__} invoked npm publish directly: {captured['cmd']}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Regression: bin/gaia's top-level `--version` flag and `release publish`'s
+# positional `version` argument both defaulted to `dest="version"` on the
+# SAME argparse Namespace (argparse subparsers share one Namespace). That
+# collision made `main()`'s `if args.version:` check (evaluated BEFORE
+# `args.subcommand`) fire for every `gaia release publish <version>`
+# invocation, short-circuiting straight to printing the bare package
+# version and returning 0 -- `cmd_release_publish` / `build_publish_plan`
+# were never reached, for real runs OR `--dry-run`.
+#
+# Every other test in this module builds an `argparse.Namespace` by hand
+# (see `TestCmdReleasePublish` above), which never exercises argparse's own
+# dest resolution -- the exact place this bug lived. These tests instead
+# invoke the real `bin/gaia` entry point via subprocess, the only way to
+# catch a dest collision on the shared top-level Namespace.
+# ---------------------------------------------------------------------------
+
+class TestGaiaEntrypointVersionDestCollision(unittest.TestCase):
+    def test_release_publish_dry_run_reaches_the_publish_plan(self):
+        """`gaia release publish 5.1.0-rc.1 --dry-run` must print the six-step
+        trigger sequence, not just the bare version string."""
+        bin_gaia = _BIN_DIR / "gaia"
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, str(bin_gaia), "release", "publish", "5.1.0-rc.1", "--dry-run"],
+                capture_output=True,
+                text=True,
+                cwd=str(_REPO_ROOT),
+                env={**os.environ, "GAIA_DATA_DIR": tmp},
+            )
+
+        self.assertEqual(
+            result.returncode, 0,
+            msg=f"stdout: {result.stdout}\nstderr: {result.stderr}",
+        )
+        # The bug's exact signature: stdout was ONLY the bare version line.
+        self.assertNotEqual(result.stdout.strip(), "gaia 5.1.0-rc.1")
+        self.assertIn("DRY RUN", result.stdout)
+        self.assertIn("release:prepare", result.stdout)
+        self.assertIn("npm test", result.stdout)
+        self.assertIn("git commit", result.stdout)
+        self.assertIn("git tag", result.stdout)
+        self.assertIn("git push", result.stdout)
+        self.assertIn("gh release create", result.stdout)
+
+    def test_top_level_version_flag_still_prints_version(self):
+        """`gaia --version` must still short-circuit to the package version --
+        the fix must not break the flag it shares no dest with anymore."""
+        bin_gaia = _BIN_DIR / "gaia"
+        pkg_version = json.loads((_REPO_ROOT / "package.json").read_text())["version"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, str(bin_gaia), "--version"],
+                capture_output=True,
+                text=True,
+                cwd=str(_REPO_ROOT),
+                env={**os.environ, "GAIA_DATA_DIR": tmp},
+            )
+
+        self.assertEqual(
+            result.returncode, 0,
+            msg=f"stdout: {result.stdout}\nstderr: {result.stderr}",
+        )
+        self.assertIn(pkg_version, result.stdout)
 
 
 if __name__ == "__main__":
