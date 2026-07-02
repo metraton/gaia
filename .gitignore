@@ -56,7 +56,6 @@ coverage/
 specs/
 
 # Distribution builds (generated on-demand by npm pack/publish)
-dist/
 *.egg-info/
 *.tgz
 .npm-cache/
