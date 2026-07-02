@@ -70,7 +70,7 @@ def test_db_path_under_data_dir(monkeypatch, tmp_path):
 
 def test_snapshot_dir_under_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
-    assert snapshot_dir() == tmp_path.resolve() / "snapshot"
+    assert snapshot_dir() == tmp_path.resolve() / "snapshots"
 
 
 def test_state_dir_under_data_dir(monkeypatch, tmp_path):

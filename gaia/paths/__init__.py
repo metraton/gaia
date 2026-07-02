@@ -17,6 +17,9 @@ Public API::
         cache_dir,
         ensure_layout,
         workspace_id,  # alias for gaia.project.current()
+        create_snapshot,             # gaia.paths.snapshot -- shared backup helper
+        enforce_retention,
+        latest_snapshot_age_seconds,
     )
 
 Environment variables:
@@ -34,6 +37,11 @@ from gaia.paths.resolver import (
     state_dir,
     workspaces_dir,
 )
+from gaia.paths.snapshot import (
+    create_snapshot,
+    enforce_retention,
+    latest_snapshot_age_seconds,
+)
 
 __all__ = [
     "data_dir",
@@ -46,6 +54,9 @@ __all__ = [
     "cache_dir",
     "ensure_layout",
     "workspace_id",
+    "create_snapshot",
+    "enforce_retention",
+    "latest_snapshot_age_seconds",
 ]
 
 

@@ -3,7 +3,13 @@ Tests for bin/cli/uninstall.py -- gaia uninstall subcommand.
 
 All tests use isolated tmp directories. The real ~/.gaia/gaia.db is never
 touched because every test patches the DB path or operates on a tmp DB
-file. Tests never invoke `gaia uninstall` against the live machine.
+file, and every backup-producing test pins --snapshot-dir to a tmp path so
+the real ~/.gaia/snapshots is never written. Tests never invoke
+`gaia uninstall` against the live machine.
+
+AC-6 (reworked): uninstall ALWAYS creates a gzip snapshot of the DB by
+default (backup-by-default), while NEVER deleting the DB. --no-backup skips
+the snapshot. There is no flag combination that deletes the DB.
 """
 
 import argparse
@@ -22,7 +28,6 @@ if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
 from cli.uninstall import (  # noqa: E402
-    _purge_db,
     _resolve_workspace,
     _snapshot_db,
     cmd_uninstall,
@@ -31,17 +36,22 @@ from cli.uninstall import (  # noqa: E402
 
 
 def _make_args(**overrides) -> argparse.Namespace:
-    """Build a Namespace with all uninstall flags defaulted."""
+    """Build a Namespace with all uninstall flags defaulted.
+
+    NOTE: no_backup defaults False (backup-by-default), so any test that
+    invokes cmd_uninstall MUST also pass snapshot_dir=<tmp> to keep the
+    default snapshot out of the real ~/.gaia/snapshots -- OR pass
+    no_backup=True to skip it.
+    """
     ns = argparse.Namespace()
     ns.preuninstall = False
-    ns.purge = False
     ns.workspace = None
     ns.dry_run = False
     ns.quiet = False
     ns.json = False
     ns.db_path = None
+    ns.no_backup = False
     ns.snapshot_dir = None
-    ns.no_snapshot = False
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
@@ -54,16 +64,32 @@ class TestRegisterSubcommand(unittest.TestCase):
         register(subparsers)
         args = parser.parse_args(["uninstall"])
         self.assertEqual(args.subcommand, "uninstall")
-        self.assertFalse(args.purge)
+        self.assertFalse(args.no_backup)  # backup-by-default
         self.assertFalse(args.dry_run)
         self.assertFalse(args.preuninstall)
 
-    def test_purge_flag(self):
+    def test_purge_flag_no_longer_exists(self):
+        """AC-6: --purge is removed entirely -- uninstall can never delete the DB."""
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="subcommand")
         register(subparsers)
-        args = parser.parse_args(["uninstall", "--purge"])
-        self.assertTrue(args.purge)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["uninstall", "--purge"])
+
+    def test_backup_flag_no_longer_exists(self):
+        """AC-6 rework: backup is the default, so the opt-in --backup flag is gone."""
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["uninstall", "--backup"])
+
+    def test_no_backup_flag(self):
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["uninstall", "--no-backup"])
+        self.assertTrue(args.no_backup)
 
     def test_preuninstall_flag(self):
         parser = argparse.ArgumentParser()
@@ -101,33 +127,6 @@ class TestResolveWorkspace(unittest.TestCase):
                 self.assertEqual(_resolve_workspace(None), root)
 
 
-class TestPurgeDb(unittest.TestCase):
-    def test_missing_db_returns_not_found(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "ghost.db"
-            r = _purge_db(db, dry_run=False)
-            self.assertFalse(r["found"])
-            self.assertFalse(r["removed"])
-
-    def test_purge_actually_deletes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "fake.db"
-            db.write_bytes(b"SQLite\x00")
-            r = _purge_db(db, dry_run=False)
-            self.assertTrue(r["found"])
-            self.assertTrue(r["removed"])
-            self.assertFalse(db.exists())
-
-    def test_dry_run_preserves_db(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "fake.db"
-            db.write_bytes(b"SQLite\x00")
-            r = _purge_db(db, dry_run=True)
-            self.assertTrue(r["found"])
-            self.assertFalse(r["removed"])
-            self.assertTrue(db.exists())  # CRITICAL: dry-run never deletes
-
-
 class TestCmdUninstallDryRun(unittest.TestCase):
     def test_dry_run_does_not_touch_filesystem(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,13 +136,15 @@ class TestCmdUninstallDryRun(unittest.TestCase):
             (root / ".claude" / "settings.json").write_text("{}\n")
             fake_db = root / "fake.db"
             fake_db.write_bytes(b"SQLite\x00")
+            snapshot_dir = root / "snapshots"
 
+            # Default (backup on) + dry-run: creates nothing.
             args = _make_args(
                 workspace=str(root),
                 dry_run=True,
-                purge=True,  # even with purge, dry-run preserves
                 json=True,
                 db_path=str(fake_db),
+                snapshot_dir=str(snapshot_dir),
             )
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -154,48 +155,57 @@ class TestCmdUninstallDryRun(unittest.TestCase):
             self.assertTrue((root / "CLAUDE.md").exists())
             self.assertTrue((root / ".claude" / "settings.json").exists())
             self.assertTrue(fake_db.exists())
+            self.assertFalse(snapshot_dir.exists())  # dry-run wrote nothing
 
             data = json.loads(buf.getvalue())
             self.assertTrue(data["dry_run"])
-            self.assertTrue(data["purge_requested"])
+            self.assertTrue(data["backup_requested"])
 
     def test_returns_zero_even_with_no_workspace_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
-            args = _make_args(workspace=str(root), dry_run=True, json=True)
+            args = _make_args(
+                workspace=str(root), dry_run=True, json=True, no_backup=True,
+            )
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = cmd_uninstall(args)
             self.assertEqual(rc, 0)
 
 
-class TestCmdUninstallPurgeGate(unittest.TestCase):
-    """The --purge flag is the ONLY way the user DB gets deleted."""
+class TestCmdUninstallNeverDeletesDb(unittest.TestCase):
+    """AC-6: uninstall has no code path, flag, or flag combination that deletes the DB."""
 
-    def test_default_preserves_db_even_when_present(self):
+    def test_default_preserves_db_and_backs_it_up(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
             fake_db = root / "fake.db"
             fake_db.write_bytes(b"SQLite\x00")
+            snapshot_dir = root / "snapshots"
 
+            # Default flags: backup-by-default.
             args = _make_args(
                 workspace=str(root),
                 json=True,
                 db_path=str(fake_db),
-                # purge=False (default)
+                snapshot_dir=str(snapshot_dir),
             )
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = cmd_uninstall(args)
 
             self.assertEqual(rc, 0)
-            self.assertTrue(fake_db.exists(), "DB must be preserved without --purge")
+            self.assertTrue(fake_db.exists(), "DB must be preserved by default")
             data = json.loads(buf.getvalue())
             self.assertTrue(data["db"]["preserved"])
+            # Backup-by-default: a snapshot was created.
+            self.assertTrue(data["backup_requested"])
+            self.assertTrue(data["snapshot"]["created"])
 
-    def test_purge_deletes_db_when_flag_set(self):
+    def test_no_backup_still_preserves_db(self):
+        """--no-backup skips the snapshot but the DB is still never deleted."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
@@ -204,7 +214,7 @@ class TestCmdUninstallPurgeGate(unittest.TestCase):
 
             args = _make_args(
                 workspace=str(root),
-                purge=True,
+                no_backup=True,
                 json=True,
                 db_path=str(fake_db),
             )
@@ -213,9 +223,28 @@ class TestCmdUninstallPurgeGate(unittest.TestCase):
                 rc = cmd_uninstall(args)
 
             self.assertEqual(rc, 0)
-            self.assertFalse(fake_db.exists(), "DB should be deleted with --purge")
+            self.assertTrue(fake_db.exists(), "DB must be preserved even with --no-backup")
             data = json.loads(buf.getvalue())
-            self.assertTrue(data["db"]["removed"])
+            self.assertTrue(data["db"]["preserved"])
+            self.assertNotIn("removed", data["db"])
+
+    def test_no_removed_key_ever_appears_on_db_result(self):
+        """The db result dict has no 'removed' field -- there is nothing that removes it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            fake_db = root / "fake.db"
+            fake_db.write_bytes(b"SQLite\x00")
+            args = _make_args(
+                workspace=str(root), json=True, db_path=str(fake_db),
+                no_backup=True,
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cmd_uninstall(args)
+            data = json.loads(buf.getvalue())
+            self.assertNotIn("removed", data["db"])
+            self.assertTrue(data["db"]["preserved"])
 
 
 class TestCmdUninstallPreuninstall(unittest.TestCase):
@@ -228,6 +257,7 @@ class TestCmdUninstallPreuninstall(unittest.TestCase):
                 preuninstall=True,
                 dry_run=True,
                 json=True,
+                no_backup=True,
             )
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -242,7 +272,7 @@ class TestCmdUninstallQuiet(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
-            args = _make_args(workspace=str(root), quiet=True)
+            args = _make_args(workspace=str(root), quiet=True, no_backup=True)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = cmd_uninstall(args)
@@ -251,7 +281,7 @@ class TestCmdUninstallQuiet(unittest.TestCase):
 
 
 class TestSnapshotDb(unittest.TestCase):
-    """The snapshot helper guards the user against accidental DB loss on --purge."""
+    """The snapshot helper writes a gzip backup and enforces retention; never deletes the DB."""
 
     def test_snapshot_creates_gzip_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,6 +294,8 @@ class TestSnapshotDb(unittest.TestCase):
             snapshot_path = Path(res["path"])
             self.assertTrue(snapshot_path.exists())
             self.assertEqual(snapshot_path.suffix, ".gz")
+            # Source DB untouched
+            self.assertTrue(db.exists())
             # Verify gzip content matches original
             import gzip
             with gzip.open(snapshot_path, "rb") as f:
@@ -287,10 +319,10 @@ class TestSnapshotDb(unittest.TestCase):
             self.assertNotIn("error", res)
 
 
-class TestPurgeWithSnapshot(unittest.TestCase):
-    """--purge MUST snapshot before deletion (default behavior)."""
+class TestBackupByDefault(unittest.TestCase):
+    """AC-6 rework: uninstall snapshots by default; --no-backup skips; DB never deleted."""
 
-    def test_purge_creates_snapshot_then_deletes(self):
+    def test_default_creates_snapshot_db_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
@@ -298,9 +330,9 @@ class TestPurgeWithSnapshot(unittest.TestCase):
             db.write_bytes(b"SQLite\x00")
             snapshot_dir = root / "snapshots"
 
+            # No flags beyond defaults -> backup happens.
             args = _make_args(
                 workspace=str(root),
-                purge=True,
                 json=True,
                 db_path=str(db),
                 snapshot_dir=str(snapshot_dir),
@@ -312,14 +344,13 @@ class TestPurgeWithSnapshot(unittest.TestCase):
             self.assertEqual(rc, 0)
             data = json.loads(buf.getvalue())
             self.assertTrue(data["snapshot"]["created"])
-            self.assertTrue(data["db"]["removed"])
-            self.assertFalse(db.exists())
-            # Snapshot file exists
+            self.assertTrue(data["db"]["preserved"])
+            self.assertTrue(db.exists(), "DB must still exist after default backup")
             snapshot_path = Path(data["snapshot"]["path"])
             self.assertTrue(snapshot_path.exists())
 
-    def test_purge_with_no_snapshot_flag_skips_snapshot(self):
-        """--no-snapshot bypasses safety net (advanced; documented as DANGEROUS)."""
+    def test_no_backup_flag_skips_snapshot(self):
+        """With --no-backup, no snapshot dir/file is created and the DB is untouched."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
@@ -329,8 +360,7 @@ class TestPurgeWithSnapshot(unittest.TestCase):
 
             args = _make_args(
                 workspace=str(root),
-                purge=True,
-                no_snapshot=True,
+                no_backup=True,
                 json=True,
                 db_path=str(db),
                 snapshot_dir=str(snapshot_dir),
@@ -341,13 +371,14 @@ class TestPurgeWithSnapshot(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             data = json.loads(buf.getvalue())
-            self.assertFalse(data["snapshot"].get("created", False))
-            self.assertFalse(data["snapshot"].get("requested", True))
-            self.assertTrue(data["db"]["removed"])
+            self.assertNotIn("snapshot", data)
+            self.assertFalse(data["backup_requested"])
+            self.assertTrue(data["db"]["preserved"])
+            self.assertTrue(db.exists())
             self.assertFalse(snapshot_dir.exists())  # no snapshot dir created
 
-    def test_purge_aborts_when_snapshot_fails(self):
-        """If snapshot creation fails, purge MUST be aborted (DB preserved)."""
+    def test_backup_failure_does_not_touch_db(self):
+        """If snapshot creation fails, the DB is still there -- backup is additive-only."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
@@ -356,10 +387,8 @@ class TestPurgeWithSnapshot(unittest.TestCase):
 
             args = _make_args(
                 workspace=str(root),
-                purge=True,
                 json=True,
                 db_path=str(db),
-                # snapshot_dir will be patched to fail
             )
 
             from unittest.mock import patch as _patch
@@ -371,6 +400,7 @@ class TestPurgeWithSnapshot(unittest.TestCase):
                     "path": "/fake/snapshot.db.gz",
                     "created": False,
                     "dry_run": False,
+                    "pruned": [],
                     "error": "permission denied",
                 },
             ):
@@ -380,11 +410,11 @@ class TestPurgeWithSnapshot(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             data = json.loads(buf.getvalue())
-            self.assertTrue(db.exists(), "DB must be preserved when snapshot fails")
+            self.assertTrue(db.exists(), "DB must be preserved when backup fails")
             self.assertTrue(data["db"]["preserved"])
-            self.assertEqual(data["db"].get("error"), "permission denied")
+            self.assertEqual(data["snapshot"].get("error"), "permission denied")
 
-    def test_purge_dry_run_does_not_create_snapshot_or_delete(self):
+    def test_default_backup_dry_run_does_not_create_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
@@ -394,7 +424,6 @@ class TestPurgeWithSnapshot(unittest.TestCase):
 
             args = _make_args(
                 workspace=str(root),
-                purge=True,
                 dry_run=True,
                 json=True,
                 db_path=str(db),
@@ -407,6 +436,31 @@ class TestPurgeWithSnapshot(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(db.exists())
             self.assertFalse(snapshot_dir.exists())
+
+    def test_default_backup_enforces_retention_keep_5(self):
+        """AC-7 shared retention: repeated backups keep only the newest 5 snapshots."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            db = root / "fake.db"
+            db.write_bytes(b"SQLite\x00")
+            snapshot_dir = root / "snapshots"
+
+            for _ in range(8):
+                args = _make_args(
+                    workspace=str(root),
+                    quiet=True,
+                    json=True,
+                    db_path=str(db),
+                    snapshot_dir=str(snapshot_dir),
+                )
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    cmd_uninstall(args)
+
+            snaps = sorted(snapshot_dir.glob("*.db.gz"))
+            self.assertEqual(len(snaps), 5, "retention must keep exactly 5 snapshots")
+            self.assertTrue(db.exists())
 
 
 class TestCmdUninstallFootprint(unittest.TestCase):
@@ -463,7 +517,9 @@ class TestCmdUninstallFootprint(unittest.TestCase):
             db = root / "fake.db"
             db.write_bytes(b"SQLite\x00")
 
-            args = _make_args(workspace=str(root), json=True, db_path=str(db))
+            args = _make_args(
+                workspace=str(root), json=True, db_path=str(db), no_backup=True,
+            )
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = cmd_uninstall(args)
@@ -494,7 +550,7 @@ class TestCmdUninstallFootprint(unittest.TestCase):
             self.assertIn("UserTool(x)", local["permissions"]["allow"])
             self.assertNotIn("Bash(*)", local["permissions"]["allow"])
 
-            # DB preserved (no --purge)
+            # DB preserved (uninstall never deletes it)
             self.assertTrue(db.exists())
             self.assertTrue(data["db"]["preserved"])
 
@@ -507,7 +563,10 @@ class TestCmdUninstallFootprint(unittest.TestCase):
             db.write_bytes(b"SQLite\x00")
 
             for _ in range(2):
-                args = _make_args(workspace=str(root), json=True, db_path=str(db))
+                args = _make_args(
+                    workspace=str(root), json=True, db_path=str(db),
+                    no_backup=True,
+                )
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     rc = cmd_uninstall(args)
@@ -529,6 +588,7 @@ class TestCmdUninstallFootprint(unittest.TestCase):
 
             args = _make_args(
                 workspace=str(root), json=True, dry_run=True, db_path=str(db),
+                no_backup=True,
             )
             buf = io.StringIO()
             with redirect_stdout(buf):
