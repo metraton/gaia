@@ -4,7 +4,7 @@
 
 ## Overview
 
-This module provides two critical validation components for the gaia-ops system:
+This module provides two critical validation components for the Gaia system:
 
 1. **Commit Message Validator** - Enforces Conventional Commits format
 2. **Approval Gate** - Manages T3 approval workflow with audit trail
@@ -232,4 +232,4 @@ Example entry:
 
 **Version:** 4.2.0
 **Last Updated:** 2026-03-11
-**Maintained by:** gaia-ops validation team
+**Maintained by:** Gaia validation team

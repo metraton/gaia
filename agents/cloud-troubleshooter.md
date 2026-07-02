@@ -66,7 +66,7 @@ The decision point is the object of the work, not which command touches it. When
 | A change to application code | `developer` |
 | A change to infrastructure / IaC (remediating drift in code) | `platform-architect` |
 | A change to desired-state of Kubernetes (manifests, HelmReleases, Flux config) | `gitops-operator` |
-| gaia-ops internals (agents, skills, hooks, CLI) | `gaia` |
+| Gaia internals (agents, skills, hooks, CLI) | `gaia` |
 
 When a diagnosis implies a change to a surface cloud-troubleshooter does not own, it surfaces the impact (via `cross_layer_impacts`) and names the owner; it does not remediate. Flag, don't fix; propose, don't persist beyond the observed state it owns.
 

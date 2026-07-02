@@ -28,7 +28,7 @@ gaia install --workspace <TARGET>
 cd /home/jorge/ws/me/gaia
 npm run gaia:install-local -- --workspace <TARGET>
 ```
-`gaia:install-local` runs `build:plugins` + `npm pack` + `validate-sandbox.sh --target local`. Prefer pnpm for the fast loop; use this when the target's package manager is npm.
+`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. Prefer pnpm for the fast loop; use this when the target's package manager is npm.
 
 **fresh (wipe install metadata first):**
 Append `--fresh` to the `validate-sandbox.sh` form, or manually clear `node_modules/ package.json package-lock.json` (or the pnpm equivalents) in `<TARGET>` before reinstalling. Use when a prior install left state you want gone.
@@ -75,27 +75,27 @@ npm run gaia:verify-install:local          # pack + install into /tmp/gaia-sandb
 ```
 To poke at the sandbox interactively:
 ```
-npm run build:plugins
 npm run pre-publish:validate
-npm pack
+npm pack                                    # prepack regenerates root manifests
 bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target sandbox --stay
 ```
 Sandbox path prints on exit; inspect `.claude/`, rerun checks, then `rm -rf` manually.
 
 **3 -- plugin surface (the dry-run nothing else covers):**
 ```
-npm run build:plugins                       # clean:dist + build-plugin.py gaia -> dist/gaia
+npm run gaia:plugin-dryrun                   # pack -> temp extract -> headless validate -> trap cleanup
 ```
-Then mount the freshly built bundle in a live Claude Code -- do NOT install or publish:
+`bin/plugin-dryrun.sh` packs the exact npm tarball (its `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`), extracts it to a throwaway temp dir (the package root IS the plugin), and runs a headless, offline gate: filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; both temps are removed by an EXIT trap.
+
+For an optional live functional probe (needs Claude auth/tokens -- opt-in, never implicit):
 ```
-claude --plugin-dir /home/jorge/ws/me/gaia/dist/gaia \
-  -p 'gaia doctor; ¿quién eres?' --output-format json
+npm run gaia:plugin-dryrun -- --functional   # runs `claude --plugin-dir <temp> -p '...'` from a temp cwd
 ```
-`--plugin-dir` loads `dist/gaia` directly; a local plugin sharing a name with an installed one wins for that session. This exercises the generated inline `hooks.json` / `plugin.json`, the bundled agents/skills, and `bin/gaia` on PATH. Alternatively, add a local marketplace and install from it:
+Alternatively, exercise the published marketplace path (after publish) by adding the marketplace and installing from npm:
 ```
 # inside CC:
-/plugin marketplace add /home/jorge/ws/me/gaia     # reads .claude-plugin/marketplace.json (source ./dist/gaia)
-/plugin install gaia@gaia-marketplace
+/plugin marketplace add /home/jorge/ws/me/gaia     # reads .claude-plugin/marketplace.json (source: npm @jaguilar87/gaia)
+/plugin install gaia@gaia-marketplace              # CC runs `npm install @jaguilar87/gaia`
 /reload-plugins
 gaia doctor
 ```
@@ -115,11 +115,11 @@ The expansion of the "release" intention in `SKILL.md`. The orchestrator runs th
 
 1. Layer 2 (pre-release) must be green first.
 2. **`npm run release:prepare <version>`** -- the atomic bump. This is `scripts/release-prepare.mjs`, invoked by the flow, **never run by the user by hand**. In one command it:
-   - writes `<version>` to ALL sources at once -- `package.json`, `pyproject.toml`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and the `CHANGELOG.md` top header (inserts a dated stub above the current top if absent -- edit its body before release);
-   - runs `npm run build:plugins` to regenerate `dist/gaia` (including the manifest-carried version);
+   - writes `<version>` to the hand-owned sources at once -- `package.json`, `pyproject.toml`, `.claude-plugin/marketplace.json` (top-level `version`), and the `CHANGELOG.md` top header (inserts a dated stub above the current top if absent -- edit its body before release);
+   - runs `npm run generate:plugin-root` to regenerate the ROOT `.claude-plugin/plugin.json` (inline hooks) + `hooks/hooks.json` from the manifest -- `plugin.json`'s version is inherited from `package.json` (`from:package.json`), so it is NOT hand-bumped. No `dist/` bundle;
    - runs `npm run pre-publish:validate` and fails loud on any drift.
 
-   This replaces hand-bumping one file at a time. The two real escapes a hand-bump leaves are a `pyproject.toml` left behind on a prior version (caught only by `pre-publish:validate`) and a `marketplace.json` that still advertises the old tag. `release:prepare` makes the desync impossible because all sources are written from one target version. For a bare semver: `5.0.5` for stable, `5.1.0-rc.1` for RC (no leading `v` -- the tag adds it). Idempotent: re-running with the same version is a no-op bump that re-validates.
+   This replaces hand-bumping one file at a time. The two real escapes a hand-bump leaves are a `pyproject.toml` left behind on a prior version (caught only by `pre-publish:validate`) and a `marketplace.json` that still advertises the old top-level version. `release:prepare` makes the desync impossible because all hand-owned sources are written from one target version and `plugin.json` is generated from it. For a bare semver: `5.0.5` for stable, `5.1.0-rc.1` for RC (no leading `v` -- the tag adds it). Idempotent: re-running with the same version is a no-op bump that re-validates.
 3. Pre-flight that reproduces CI (partly done inside `release:prepare`): `npm test`. `pre-publish:validate` ran in step 2.
 4. Commit (`git add` + `git commit` -- local-only, not T3). **If the remote diverged, reconcile with MERGE, never rebase** (see "Reconciling a diverged remote").
 5. Tag (force-free -- a *new* `v<version>`, never moved) + push (`git push`, T3). The merge in step 4 keeps the push force-free.
@@ -132,11 +132,11 @@ The expansion of the "release" intention in `SKILL.md`. The orchestrator runs th
 
 ### Reconciling a diverged remote -- merge, never rebase; never move a tag
 
-`publish.yml` commits built artifacts back to `main` and pushes (the "Commit built plugins" step), so after a release the remote `main` is *ahead* of your local. When you next go to release and find the remote diverged, the reconciliation choice is forced by local policy:
+`publish.yml` no longer commits artifacts back to `main` (it is a read-only checkout that packs + publishes), so a release does **not** auto-advance the remote. But if the remote ever diverges for any other reason, the reconciliation choice is forced by local policy:
 
 - **Reconcile with merge, not rebase.** Rebase rewrites your local commit hashes. If a tag already pointed at one of those commits, you would have to re-point it -- which means `git tag -f` or a force-push of the tag. Both match the `git_destructive` pattern in `hooks/modules/security/blocked_commands.py` and are **hard-denied locally** (exit 2, not approvable) -- there is no `approval_id` that unblocks them. Merge preserves the existing hashes, so existing tags stay valid and no force is ever needed.
 - **Tags are create-only -- never move one.** A published tag is immutable history; a new release gets a *new* tag (`-rc.N+1`, next patch/minor), it does not re-point an old one. Moving a tag requires the same force path that local hooks deny.
-- **The force-deny is a local hooks policy, not a CI one.** `publish.yml` itself runs `git tag -f` and `git push --force` for the tag after committing `dist/` -- that is the pipeline operating under its own permissions, outside the local hook layer. Do not read the pipeline's force-push as license to force locally; the local deny stands regardless of what CI does.
+- **The force-deny is a local hooks policy.** With the `dist/` commit-back removed, `publish.yml` no longer runs `git tag -f` or `git push --force` at all -- it neither commits nor pushes. The local force-deny still stands for any manual reconciliation: never force a tag or push locally; merge instead.
 
 **Verify from npm** (registry round-trip):
 - RC: `npm run gaia:verify-install:rc`
@@ -154,7 +154,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 | `.claude/` not wired after install | `gaia install` not run, or it exited non-zero | `cat ~/.gaia/last-install-error.json` (written by `gaia install` on failure). Re-run `gaia install --workspace <path>`. If it persists, file a bug. |
 | `gaia doctor` walks up to the user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --workspace <path>`. |
 | DB missing / `no such table` on first use | Lazy bootstrap did not run (e.g. `gaia` never invoked yet) | Run any `gaia` command (it triggers `_ensure_db_bootstrapped`), or `gaia install` for the full seed. There is no postinstall to "re-run". |
-| Plugin mounts but hooks never fire | Generated inline `hooks.json` / `plugin.json` broken in the bundle, or CC did not reload | Rebuild (`npm run build:plugins`), re-mount with `claude --plugin-dir dist/gaia`, and `/reload-plugins`. Inspect `dist/gaia/.claude-plugin/plugin.json` for the inline `hooks` block. |
+| Plugin mounts but hooks never fire | Generated inline `plugin.json` / `hooks.json` broken at the package root, or CC did not reload | Regenerate (`npm run generate:plugin-root`), re-run `npm run gaia:plugin-dryrun`, and `/reload-plugins`. Inspect the root `.claude-plugin/plugin.json` for the inline `hooks` block. |
 | `bootstrap exited 1: table projects has no column named identity` | Schema/bootstrap drift (old seed SQL) | Update to a build whose seed matches the current schema. |
 | `Permission denied` invoking a hook `.py` | Exec bit lost on cross-platform checkout | Hooks are invoked via `python3 <script>` (see `build-plugin.py` `generate_hooks_json`), so the exec bit should not matter; if it does, update to a build that uses the `python3 <script>` invoker. |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired (npm surface) | Re-run `gaia install`. In plugin surface, `/reload-plugins`. |
@@ -182,21 +182,20 @@ A green pre-flight only protects the release if it runs the same gates CI runs. 
 **Pre-publish gate (Layer 2):**
 - `pytest tests/` green (or `npm test` for the L1 subset).
 - `npm run pre-publish:validate` green locally -- the version-drift gate (`validate-manifests` in `ci.yml`).
-- `npm pack --dry-run` confirms `scripts/bootstrap_database.sh` and `dist/gaia` are included in the tarball.
+- `npm pack --dry-run` confirms `scripts/bootstrap_database.sh`, `.claude-plugin/plugin.json` (with inline hooks), and `hooks/hooks.json` are included in the tarball, and that `dist/` is NOT.
 - `npm run gaia:verify-install:local` green (npm surface).
-- `npm run build:plugins` + `claude --plugin-dir dist/gaia` green (plugin surface).
+- `npm run gaia:plugin-dryrun` green (plugin surface -- pack + extract + headless validate).
 
 ## Pipeline (`publish.yml`)
 
-The workflow at `.github/workflows/publish.yml` runs on every GitHub Release event. It:
+The workflow at `.github/workflows/publish.yml` runs on every GitHub Release event (read-only checkout -- it neither commits nor pushes). It:
 - Checks out the exact tagged commit.
 - Installs deps with `npm ci`.
-- Builds the plugin with `npm run build:plugins`.
-- Verifies expected artifacts in `dist/gaia`.
-- Commits built artifacts back if changed (commit message carries `[skip ci]` so the dist commit-back does not re-trigger CI).
-- Runs `npm run pre-publish:validate`.
+- Packs the tarball with `npm pack` -- `prepack` (clean + `generate:plugin-root`) regenerates the root inline `plugin.json` + `hooks/hooks.json`, so the tarball root is a valid `source: npm` plugin. No `dist/` bundle is built or committed back.
+- Runs `npm run pre-publish:validate` (after pack, so it sees the fresh root manifests).
 - Auto-detects npm tag from the version string: `*-rc.*` -> `rc`, `*-beta.*` -> `beta`, `*-alpha.*` -> `alpha`, else -> `latest`.
-- Publishes with `npm publish --access public --tag <detected>`.
+- Runs the sandbox validation harness against the packed tarball (the gate).
+- Publishes the same tarball with `npm publish <tarball> --access public --tag <detected>`.
 
 `NPM_TOKEN` lives in GitHub Secrets, never local.
 

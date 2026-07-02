@@ -64,7 +64,7 @@ hooks/pre_tool_use.py              <- Entry point: stdin/stdout glue only
 
 To add a new behavior to an existing hook: write a module in `modules/<package>/`, import it in the adapter, and call it from the relevant adapter method. Modules receive parsed context as arguments and return results. They never read stdin or write stdout directly.
 
-To add a new hook entry point: create `hooks/<event_name>.py`, register it in `build/gaia-ops.manifest.json` under `hooks.entries` and `hooks.matchers`, then write the adapter method. The entry point pattern is always the same: read stdin JSON, call adapter, print response.
+To add a new hook entry point: create `hooks/<event_name>.py`, register it in `build/gaia.manifest.json` under `hooks.entries` and `hooks.matchers`, then write the adapter method. The entry point pattern is always the same: read stdin JSON, call adapter, print response.
 
 ## Qué hay aquí
 
@@ -105,7 +105,7 @@ hooks/
 
 ## Ver también
 
-- [`build/gaia-ops.manifest.json`](../build/gaia-ops.manifest.json) — hook registration and matchers
+- [`build/gaia.manifest.json`](../build/gaia.manifest.json) — hook registration and matchers
 - [`config/surface-routing.json`](../config/surface-routing.json) — read by `user_prompt_submit.py`
 - [`config/context-contracts.json`](../config/context-contracts.json) — seeding source for context contracts; runtime SSOT is `~/.gaia/gaia.db` (`project_context_contracts` table)
 - [`skills/security-tiers/SKILL.md`](../skills/security-tiers/SKILL.md) — tier classification that agents use; hook enforces the same tiers

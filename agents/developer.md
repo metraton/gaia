@@ -47,7 +47,7 @@ The decision point is the object of the work, not which command touches it. When
 | Diagnosis of live / cloud state, or its drift from desired | `cloud-troubleshooter` |
 | A change to infrastructure / IaC | `platform-architect` |
 | Desired-state of Kubernetes (manifests, HelmReleases, Flux config) | `gitops-operator` |
-| gaia-ops internals (agents, skills, hooks, CLI) | `gaia` |
+| Gaia internals (agents, skills, hooks, CLI) | `gaia` |
 
 developer is contract-blind to IaC and GitOps — it does not carry their context and cannot evaluate them. So when a change's blast radius reaches one of those surfaces, it flags the impact (via `cross_layer_impacts`) and stops; it does not edit across the boundary, nor evaluate it blind. Flag, don't edit; propose, don't persist.
 

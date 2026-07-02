@@ -265,7 +265,7 @@ class HookAdapter(ABC):
     def detect_distribution(self) -> HostDistribution:
         """DECLARE the host's distribution model for the current invocation.
 
-        The single place a host states HOW it distributes and invokes gaia-ops:
+        The single place a host states HOW it distributes and invokes Gaia:
         its own channel identifier and, when it has one, the distribution root.
         The core never enumerates a host's channels nor reads a host-specific
         env var to learn them -- it receives an opaque :class:`HostDistribution`

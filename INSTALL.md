@@ -1,30 +1,61 @@
 # Gaia Installation Guide
 
-This guide will help you install and configure Gaia in your project. The process is automatic and takes less than 5 minutes.
+This guide will help you install and configure Gaia in your project. The process is non-invasive and takes less than 5 minutes.
 
 ## 🎯 What is Gaia?
 
 Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
-The `gaia-ops` sub-plugin ships the full orchestrator and all agents; `gaia-security` ships security hooks only. Both are distributed via the `@jaguilar87/gaia` npm package.
+Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed via the `@jaguilar87/gaia` npm package and, equivalently, as a Claude Code plugin built to `dist/gaia`.
 
 ---
 
-## 🚀 Quick Installation (Recommended)
+## 🚀 Installation
 
-### Option 1: npm install (standard)
+Gaia reaches a workspace through **two surfaces**. Pick the one that matches how you run Claude Code.
 
-The npm `postinstall` hook does everything automatically -- bootstraps the DB, creates `.claude/`, writes symlinks, registers the plugin, and merges hook config:
+### Surface 1: npm / pnpm
+
+Install the package, then wire the workspace with `gaia install`:
 
 ```bash
 npm install @jaguilar87/gaia
+# or: pnpm add @jaguilar87/gaia
+
+gaia install
 ```
 
-After install, `gaia doctor` verifies the result. If postinstall fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
+**There is no `postinstall` hook.** The install is deliberately non-invasive (npm and pnpm both handle it identically — pnpm ignores lifecycle scripts by default, so relying on `postinstall` would have been fragile). Two things bootstrap on demand instead:
 
-### Option 2: Project Scanner (on-demand)
+- The database `~/.gaia/gaia.db` is created **lazily on the first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`). You do not have to run anything special — the first `gaia` command you run seeds it.
+- The workspace `.claude/` structure (symlinks + `settings.local.json` + registry) is written by running `gaia install` explicitly, or by the SessionStart hook.
 
-To detect or refresh your project context (stack, GitOps directory, Terraform layout, GCP project, etc.) -- this is **not** the installer, it writes scan results to `~/.gaia/gaia.db`:
+After install, `gaia doctor` verifies the result. If a bootstrap or wire-up step fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
+
+### Surface 2: Claude Code plugin
+
+Claude Code consumes the built `dist/gaia` bundle directly. Add the marketplace and install the single plugin:
+
+```bash
+# Add the marketplace
+/plugin marketplace add metraton/gaia
+
+# Install the unified plugin
+/plugin install gaia
+```
+
+For development, mount the bundle without publishing:
+
+```bash
+npm run build:plugins        # regenerates dist/gaia
+claude --plugin-dir dist/gaia
+```
+
+On the plugin surface, Claude Code reads hooks from the bundle's inline `hooks.json` / `.claude-plugin/plugin.json` — **not** from `settings.local.json`.
+
+### Project Scanner (on-demand, separate from install)
+
+To detect or refresh your project context (stack, GitOps directory, Terraform layout, GCP project, etc.), run the scanner. This is **not** the installer — it writes scan results to `~/.gaia/gaia.db`:
 
 ```bash
 gaia scan
@@ -41,7 +72,7 @@ gaia scan --non-interactive \
   --cluster my-gke-cluster
 ```
 
-**Important:** `gaia scan` and `gaia install` are separate flows. `gaia install` (run automatically by `npm install` postinstall) bootstraps the database and `.claude/` structure. `gaia scan` detects your project stack and writes the results to the DB. Running `gaia scan` never installs or creates symlinks; running `gaia install` never scans. To bootstrap from scratch, use `gaia install` (or `npm install @jaguilar87/gaia`), not `gaia scan`.
+**Important:** `gaia scan` and `gaia install` are separate flows. `gaia install` bootstraps the database and `.claude/` structure. `gaia scan` detects your project stack and writes the results to the DB. Running `gaia scan` never installs or creates symlinks; running `gaia install` never scans.
 
 ---
 
@@ -50,27 +81,29 @@ gaia scan --non-interactive \
 ### Installation Flow
 
 ```
-User runs: npm install @jaguilar87/gaia
+User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
         ↓
-postinstall script → gaia install --postinstall
+(no postinstall — nothing runs automatically)
         ↓
-[Bootstrap] runs scripts/bootstrap_database.sh
-   - Seeds ~/.gaia/gaia.db with current schema (v17)
+User runs: gaia install    (or the SessionStart hook wires the workspace)
+        ↓
+[Bootstrap] first `gaia` use runs scripts/bootstrap_database.sh (lazy)
+   - Seeds ~/.gaia/gaia.db with current schema
    - Seeds agent rows and permissions
         ↓
 [Install] creates .claude/ structure
-   Creates symlinks to gaia package:
-     .claude/agents    → node_modules/.../agents
-     .claude/tools     → node_modules/.../tools
-     .claude/hooks     → node_modules/.../hooks
-     .claude/commands  → node_modules/.../commands
-     .claude/config    → node_modules/.../config
-     .claude/skills    → node_modules/.../skills
-     .claude/templates → node_modules/.../templates
+   Creates 5 directory symlinks to the gaia package:
+     .claude/agents  → node_modules/.../agents
+     .claude/tools   → node_modules/.../tools
+     .claude/hooks   → node_modules/.../hooks
+     .claude/config  → node_modules/.../config
+     .claude/skills  → node_modules/.../skills
+   Plus a file link:
+     .claude/CHANGELOG.md → node_modules/.../CHANGELOG.md
         ↓
 [Install] merges config files:
    - settings.local.json (hooks + permissions, union merge)
-   - plugin-registry.json (installed[].name = "gaia-ops")
+   - plugin-registry.json (installed[].name = "gaia")
         ↓
 Validates installation:
   ✅ Symlinks correct
@@ -86,14 +119,15 @@ Then optionally scan your project stack: gaia scan
 ```
 Example: Install + scan in a project with GitOps and Terraform
 
-1. User: npm install @jaguilar87/gaia
+1. User: pnpm add @jaguilar87/gaia   (no postinstall runs)
    ↓
-2. postinstall runs gaia install --postinstall:
-   ✅ ~/.gaia/gaia.db bootstrapped (schema v17)
+2. User: gaia install
+   ✅ ~/.gaia/gaia.db bootstrapped (lazy, on first `gaia` use)
    ✅ .claude/ created
-   ✅ 7 symlinks created (agents, tools, hooks, commands, templates, config, skills)
+   ✅ 5 directory symlinks + CHANGELOG.md link created
+      (agents, tools, hooks, config, skills)
    ✅ settings.local.json merged
-   ✅ plugin-registry.json written (name: gaia-ops)
+   ✅ plugin-registry.json written (name: gaia)
    ↓
 3. User: gaia scan (optional -- detects project stack)
    ↓
@@ -109,7 +143,7 @@ Example: Install + scan in a project with GitOps and Terraform
 6. Result:
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    ✅ Gaia installed and project scanned!
-   
+
    Next steps:
    1. Run: gaia doctor
    2. Run: claude
@@ -143,7 +177,7 @@ gaia scan --non-interactive
 ### Complete CLI Options
 
 ```
-gaia install [options]          # Bootstrap DB + .claude/ structure (also: npm postinstall)
+gaia install [options]          # Bootstrap DB + .claude/ structure (run manually; no postinstall)
 
 gaia scan [options]             # Detect project stack, write to ~/.gaia/gaia.db
 
@@ -165,27 +199,29 @@ gaia scan options:
 
 ```
 your-project/
-├── .claude/                       ← Created by gaia install (npm postinstall)
+├── .claude/                       ← Created by gaia install
 │   ├── agents/ (symlink)          → Agent definitions
 │   ├── skills/ (symlink)          → Skill modules
 │   ├── tools/ (symlink)           → Orchestration tools
 │   ├── hooks/ (symlink)           → Security validations
-│   ├── commands/ (symlink)        → Slash commands
 │   ├── config/ (symlink)          → Configuration (contracts, rules)
+│   ├── CHANGELOG.md (file link)    → Package changelog
 │   ├── logs/                      ← Audit logs
 │   ├── approvals/                 ← Pending T3 approval files
-│   ├── plugin-registry.json       ← installed[].name = "gaia-ops"
+│   ├── plugin-registry.json       ← installed[].name = "gaia"
 │   └── settings.local.json        ← Merged hooks + permissions + env
 └── node_modules/
-    └── @jaguilar87/gaia/          ← npm package
+    └── @jaguilar87/gaia/          ← npm package (single unified plugin)
 
 ~/.gaia/
-└── gaia.db                        ← Canonical context + memory store (SQLite, schema v17)
+└── gaia.db                        ← Canonical context + memory store (SQLite)
 ```
+
+Five directory symlinks (`agents`, `tools`, `hooks`, `config`, `skills`) plus one `CHANGELOG.md` file link — the canonical list is `_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.
 
 Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. Run `gaia scan` to populate it and `gaia context show` to inspect it.
 
-**Wire-up verification:** after install, the same checklist applies to every install mode (live, dry-run, RC, stable). See `skills/gaia-release/SKILL.md` -> "Wire-up Verification Checklist".
+**Wire-up verification:** after install, the same checklist applies to every install mode (live, npm-sandbox, plugin, registry). See `skills/gaia-verify/SKILL.md` → "Wire-up checklist".
 
 ---
 
@@ -197,11 +233,10 @@ Once installed, you have access to **complete documentation** in each directory:
 
 ```
 .claude/
-├── agents/               6 agents (platform-architect, gitops-operator, etc.)
-├── skills/README.md      20 skill modules
-├── commands/README.md    Slash commands (gaia-plan, scan-project)
+├── agents/               8 agents (platform-architect, gitops-operator, etc.)
+├── skills/README.md      32 skill modules
 ├── config/README.md      Contracts, git standards, surface routing
-├── hooks/README.md       8 hook scripts (4 primary + 4 event handlers)
+├── hooks/README.md       Hook scripts (primary + event handlers)
 ├── tools/                Context, memory, validation, review
 └── bin/README.md         CLI utilities
 ```
@@ -269,11 +304,11 @@ Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated vi
 
 ```bash
 # 1. Update package
-npm install @jaguilar87/gaia@latest
+npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
 
-# 2. Postinstall hook automatically:
-#    - Replaces settings.json from template
-#    - Fixes broken symlinks
+# 2. Re-sync the workspace (no postinstall does this for you):
+gaia update
+#    - Refreshes DB schema, config, and symlinks after the version bump
 ```
 
 ---
@@ -357,14 +392,15 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 # Check the diagnostic marker first
 cat ~/.gaia/last-install-error.json
 
-# Re-run install (postinstall is re-entrant)
-npm install @jaguilar87/gaia
-
-# Or repair without a fresh tarball
+# Re-run install (idempotent, re-entrant)
 gaia install
+
+# Or, if the DB itself is missing, just run any gaia command
+# (lazy bootstrap re-creates it):
+gaia doctor
 ```
 
-For the full symptom -> cause -> fix table, see `skills/gaia-release/reference.md` -> "Diagnostic Guide".
+For the full symptom → cause → fix table, see `skills/gaia-release/reference.md` → "Diagnostic guide".
 
 ---
 
@@ -398,7 +434,7 @@ Gaia is designed with these principles:
 
 ✅ **Minimal** - Only creates what's needed, no duplicates  
 ✅ **Adaptive** - Auto-detects existing installations  
-✅ **Non-invasive** - Works from any directory  
+✅ **Non-invasive** - No postinstall; bootstrap is lazy, works under npm and pnpm alike  
 ✅ **Safe** - Validates paths and skips reinstalls  
 ✅ **Clear** - Explicit feedback on each step  
 ✅ **Documented** - Complete documentation in each directory  
@@ -422,11 +458,10 @@ A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. Run `gaia sca
 A: Yes, but you need to enable developer mode or run as administrator.
 
 **Q: How do I update only documentation without changing code?**
-A: `npm update @jaguilar87/gaia` - symlinks point to the new version automatically.
+A: `npm update @jaguilar87/gaia` then `gaia update` - symlinks point to the new version automatically.
 
 ---
 
-**Version:** 5.0.0-rc.7
-**Last updated:** 2026-05-22
+**Version:** 5.0.11
+**Last updated:** 2026-07-01
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
-

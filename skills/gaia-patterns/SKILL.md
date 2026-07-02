@@ -1,12 +1,12 @@
 ---
 name: gaia-patterns
-description: Use when building or modifying gaia-ops components -- agents, skills, hooks, CLI tools, or routing config
+description: Use when building or modifying Gaia components -- agents, skills, hooks, CLI tools, or routing config
 metadata:
   user-invocable: false
   type: domain
 ---
 
-# Gaia-Ops Code Patterns
+# Gaia Code Patterns
 
 Construction patterns for building Gaia components. Every component type follows a discoverable pattern -- read 2-3 existing examples before creating a new one. For the full component inventory, see `reference.md`.
 
