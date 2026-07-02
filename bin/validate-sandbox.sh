@@ -7,10 +7,11 @@
 #     Creates an ephemeral sandbox project populated from
 #     tests/fixtures/sandbox-project/, installs the target Gaia version
 #     (no postinstall hook -- bootstrap is lazy, see bin/cli/install.py),
-#     and exercises the FTS5 backfill safety-net plus the read-side CLI
-#     surface (version, doctor, status, context show, memory stats/search,
-#     scan). It also confirms plain `npm install` never clobbers an
-#     existing settings.local.json.
+#     wires it via `gaia install --workspace` (the real consumer flow, since
+#     no postinstall does it), then exercises the FTS5 backfill safety-net
+#     plus the read-side CLI surface (version, doctor, status, context show,
+#     memory stats/search, scan). It also confirms the install-time
+#     settings.local.json merge never clobbers pre-existing user keys.
 #
 #   --target local:
 #     Installs Gaia directly into a real workspace. If --workspace <path> is
@@ -420,15 +421,23 @@ install_package() {
 }
 
 # ---------------------------------------------------------------------------
-# Wire the workspace (local mode only)
+# Wire the workspace (BOTH targets)
 # ---------------------------------------------------------------------------
 #
 # There is no npm postinstall hook (bootstrap is lazy, see bin/cli/install.py
 # and package.json's `_install_note`): `npm install` alone drops the package
 # into node_modules/ but never touches the workspace's .claude/ settings,
-# symlinks, or plugin registry. Without this explicit step, `--target local`
-# would leave the workspace installed-but-unwired.
-wire_local_workspace() {
+# symlinks, or plugin registry. Both targets therefore need this explicit
+# wiring step -- without it the workspace is installed-but-unwired and
+# `gaia doctor` (check 2) reports rc=2 (Symlinks/Identity/Settings/Hook files
+# = error). This mirrors the real consumer flow: a `gaia install` (or the
+# plugin install) always follows `npm install`. `gaia install --workspace`
+# merges hooks + permissions + agent identity into settings.local.json
+# authoritatively but non-destructively (see merge_local_permissions /
+# merge_local_hooks in _install_helpers.py), so the sandbox's
+# settings-preservation check (check 8) still passes -- the user sentinel
+# keys survive the merge.
+wire_workspace() {
   echo "[install] wiring workspace: gaia install --workspace ${WORKSPACE}"
   gaia install --workspace "${WORKSPACE}"
 }
@@ -577,18 +586,21 @@ install_package
 # (runtime check: node-independent invocation, no npx indirection).
 export PATH="${WORKSPACE}/node_modules/.bin:${PATH}"
 
-# Local: no postinstall hook wires the workspace, so do it explicitly here
-# (see wire_local_workspace() above).
-if [[ "${TARGET}" == "local" ]]; then
-  wire_local_workspace
-fi
-
 # Sandbox: isolate the DB from the global ~/.gaia/gaia.db and seed it
 # with fixture episodes so checks 5 (FTS5 stats) and 6 (deploy search)
-# validate against sandbox-local data, not the user's global state.
+# validate against sandbox-local data, not the user's global state. This
+# MUST run before wire_workspace so `gaia install`'s own DB writes land in
+# the isolated sandbox DB (via the GAIA_DATA_DIR seed_sandbox_db exports),
+# never in the user's global ~/.gaia/gaia.db.
 if [[ "${TARGET}" == "sandbox" ]]; then
   seed_sandbox_db
 fi
+
+# Wire the workspace for BOTH targets: no postinstall hook exists, so
+# `npm install` alone leaves .claude/ unconfigured (see wire_workspace()
+# above). Runs after seed_sandbox_db so a sandbox install writes to the
+# isolated DB.
+wire_workspace
 
 echo
 echo "=== Running checks ==="
@@ -738,8 +750,12 @@ else
   record "gaia scan" "FAIL" "exit non-zero: ${out:0:60}" "${ms}"
 fi
 
-# 8. Checksum preservation: settings.local.json unchanged by `npm install`
-#    (no postinstall hook exists to touch it -- this asserts that stays true).
+# 8. User-key preservation: the wire step (gaia install --workspace) merges
+#    hooks/permissions/agent into settings.local.json AUTHORITATIVELY but must
+#    never clobber pre-existing user keys. This asserts the fixture's sentinel
+#    + env marker survive that merge (see merge_local_permissions /
+#    merge_local_hooks in _install_helpers.py -- they load-then-merge, leaving
+#    unknown top-level keys and user env values intact).
 #    Sandbox only -- local mode has no meaningful "pre" snapshot.
 if [[ "${TARGET}" == "sandbox" ]]; then
   if [[ -n "${PRE_CHECKSUM}" && -f "${SETTINGS_FILE}" ]]; then

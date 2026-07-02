@@ -88,7 +88,20 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 
-_DETAIL_TAIL = 500
+# How much of a gate's combined stdout+stderr each gate function keeps (from
+# the END -- see the gate_* functions below). A gate's own summary/RESULT
+# line is always the LAST thing it prints, so slicing from the end is what
+# keeps that line in frame; slicing from the start would keep only whatever
+# ran first and lose the actual verdict.
+_DETAIL_TAIL = 4000
+
+# How much of that captured tail `_report()` actually prints for a FAILED
+# gate. Must stay well below `_DETAIL_TAIL` so there is always more captured
+# than displayed by default, and large enough that a failing gate's own
+# summary line (e.g. plugin-dryrun.sh's "RESULT: FAIL", validate-sandbox.sh's
+# per-check [FAIL] lines) survives the print, not just whatever text happens
+# to fall in an arbitrary 300-char window.
+_REPORT_DETAIL_TAIL = 2000
 
 # Mirrors SEMVER_RE in scripts/release-prepare.mjs -- a bare semver, no
 # leading "v" (the tag adds it, the sources never carry it).
@@ -499,8 +512,17 @@ def _report(
         for r in results:
             print(f"  [{r['status']:<4}] {r['name']:<28} ({r['duration_ms']}ms)")
             if r["status"] != "PASS":
-                detail = r["detail"].replace("\n", " ")[:300]
-                print(f"           {detail}")
+                # Take the END of the already-tail-sliced detail, not the
+                # start -- a gate's own summary/verdict line (RESULT: FAIL,
+                # the specific failing [FAIL] assertion) is always the LAST
+                # thing it printed, so a start-anchored slice shows an
+                # arbitrary early fragment instead of the actual failure.
+                # Multi-line (indented per line) instead of collapsed to one
+                # line, since the diagnosable content is usually more than
+                # one line (e.g. a [FAIL] assertion plus the RESULT line).
+                detail = r["detail"][-_REPORT_DETAIL_TAIL:]
+                for line in detail.splitlines() or [detail]:
+                    print(f"           {line}")
 
     passed = sum(1 for r in results if r["status"] == "PASS")
     failed = sum(1 for r in results if r["status"] == "FAIL")

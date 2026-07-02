@@ -35,7 +35,25 @@ fi
 # ---------------------------------------------------------------------------
 cd "${REPO_ROOT}"
 echo "[dryrun] packing tarball (prepack regenerates root manifests)..."
-TARBALL_NAME="$(npm pack --silent)"
+# `npm pack --json` prints the prepack lifecycle script's stdout (clean +
+# generate:plugin-root logging: "Regenerating root manifests...", "Generated:
+# ...") BEFORE the JSON array. `--silent` only suppresses npm's OWN logs, not
+# a lifecycle script's echo output, so capturing raw `npm pack --silent`
+# swallows that noise into the tarball name. Slice from the first '[' and
+# parse JSON instead -- mirrors bin/cli/_pack_helpers.py::pack_tarball.
+PACK_JSON="$(npm pack --json)"
+PACK_JSON="${PACK_JSON#*[}"
+TARBALL_NAME="$(python3 -c '
+import json, sys
+try:
+    payload = json.loads("[" + sys.argv[1])
+    print(payload[0]["filename"])
+except (json.JSONDecodeError, IndexError, KeyError):
+    sys.exit(1)
+' "${PACK_JSON}")" || {
+  echo "FATAL: npm pack --json produced no parsable tarball filename" >&2
+  exit 1
+}
 TARBALL="${REPO_ROOT}/${TARBALL_NAME}"
 if [[ ! -f "${TARBALL}" ]]; then
   echo "FATAL: npm pack did not produce a tarball" >&2
