@@ -454,6 +454,31 @@ _INTERP_NON_SCRIPT_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "php": frozenset({"-r"}),
 }
 
+# Interpreter flags that VALIDATE SYNTAX ONLY and never execute the script
+# body.  ``bash -n <script>`` reads the script and reports parse errors without
+# running a single command; ``node --check <script>`` / ``node -c <script>``
+# does the same for JavaScript.  When one of these leads the interpreter flags
+# (i.e. it precedes the script positional), the invocation cannot mutate state,
+# so the script-file lane classifies it NON-mutative WITHOUT reading the file's
+# contents -- the body is never run regardless of what it contains.
+#
+# Gating: a flag is only honored when it appears BEFORE the first positional
+# (a ``-n`` after the script is an argument to the script, not to bash).  A
+# co-occurring inline-exec flag (``bash -c <code>``) is excluded upstream --
+# ``_resolve_script_argument`` returns None the moment a defer flag from
+# ``_INTERP_NON_SCRIPT_VALUE_FLAGS`` precedes a positional -- so this downgrade
+# is only reached when the payload truly is a non-executed script file.  Note
+# ``node`` uses ``-c``/``--check`` for the syntax check (its inline-exec flag is
+# ``-e``), while for the shells ``-c`` is inline exec, not a syntax check.
+_INTERP_SYNTAX_CHECK_FLAGS: Dict[str, FrozenSet[str]] = {
+    "bash": frozenset({"-n"}),
+    "sh": frozenset({"-n"}),
+    "zsh": frozenset({"-n"}),
+    "dash": frozenset({"-n"}),
+    "ksh": frozenset({"-n"}),
+    "node": frozenset({"-c", "--check"}),
+}
+
 # ---------------------------------------------------------------------------
 # Python ``-m <package-manager>`` re-dispatch (Brief 91, AC-7)
 # ---------------------------------------------------------------------------
@@ -1188,6 +1213,17 @@ def detect_mutative_command(command: str) -> MutativeResult:
     if script_result is not None:
         return script_result
 
+    # --- Step 1e: npm script-runner resolution (AC-3) ---
+    # `npm run <script>` classifies by the SCRIPT NAME under the verb scanner,
+    # but the name is arbitrary: `npm run db-migrate` / `npm ci` bypass consent
+    # as SAFE while `npm run start` false-positives.  Resolve `npm run <script>`
+    # to its real package.json body and classify THAT (mirroring the script-file
+    # lane); `npm ci` is unconditionally mutative; unresolvable -> conservative
+    # T3.  Returns None for other npm forms so ordinary detection continues.
+    npm_result = _check_npm_script_runner(base_cmd, family, semantics)
+    if npm_result is not None:
+        return npm_result
+
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
         return MutativeResult(
@@ -1856,6 +1892,34 @@ def _check_script_file(
         return None
 
     script_path, lane = resolved
+
+    # Syntax-check-only invocations (`bash -n <script>`, `node --check <script>`)
+    # validate syntax WITHOUT executing the script body -- the file's contents
+    # are never run, so the invocation cannot mutate state (T0).  Scan only the
+    # leading interpreter flags: stop at the first positional (the script), so a
+    # flag appearing AFTER the script is an argument to the script and does not
+    # downgrade.  A co-occurring inline-exec flag is already excluded upstream
+    # (`_resolve_script_argument` returns None on a defer flag), so reaching here
+    # means the payload is a genuine, non-executed script file.
+    syntax_flags = _INTERP_SYNTAX_CHECK_FLAGS.get(base_cmd, frozenset())
+    if syntax_flags:
+        for token in semantics.tokens[1:]:
+            if not token.startswith("-"):
+                break  # first positional (the script) -- stop scanning flags
+            if token in syntax_flags:
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb="script-syntax-check",
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Interpreter '{base_cmd}' invoked with syntax-check "
+                        f"flag '{token}' on '{script_path}' -- validates syntax "
+                        f"without executing the script body (non-mutative)"
+                    ),
+                )
+
     content = _read_script_content(script_path)
     if content is None:
         # Conservative default: an interpreter invoked on a missing or
@@ -1965,6 +2029,142 @@ def _classify_script_content_by_regex(
         cli_family=family,
         confidence="medium",
         reason=f"Script '{script_path}' has no mutative or blocked line",
+    )
+
+
+# ---------------------------------------------------------------------------
+# npm run <script> body resolution (Brief gaia-system-security-lifecycle, AC-3)
+# ---------------------------------------------------------------------------
+# The verb scanner matches the npm SCRIPT NAME against the taxonomy, but the
+# name is arbitrary: ``npm run db-migrate`` / ``npm ci`` slip through as SAFE
+# (a consent bypass) while ``npm run start`` / ``copy-assets`` false-positive.
+# The fix mirrors the script-file lane: resolve ``npm run <script>`` to its real
+# command body from ``package.json`` (``scripts.<script>``) and classify THAT
+# body with the existing engine.  When the body cannot be resolved -- no
+# package.json, unparseable JSON, or the script entry is absent -- fall back to
+# the same conservative T3 default the unreadable-script-file case uses.
+
+# Splits a script body into the individual commands the shell would run so a
+# mutation in ANY clause is seen, not just the first.  Long operators (``&&``,
+# ``||``) match before the single-char class so they are not double-counted.
+_SHELL_SEGMENT_SPLIT_RE = _re.compile(r"&&|\|\||[;\n|&]")
+
+
+def _resolve_npm_script_body(script_name: str) -> "Optional[str]":
+    """Read ``scripts.<script_name>`` from ./package.json.
+
+    Returns the command-body string, or ``None`` when package.json is missing,
+    unparseable, has no ``scripts`` map, or lacks a non-empty entry for the
+    script -- the caller treats ``None`` as the conservative (T3) case, matching
+    the unreadable-script-file default.  Resolution is relative to the current
+    working directory, the same convention the script-file lane uses for a
+    relative path token.
+    """
+    import os
+    import json
+
+    path = os.path.join(os.getcwd(), "package.json")
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    scripts = data.get("scripts")
+    if not isinstance(scripts, dict):
+        return None
+    body = scripts.get(script_name)
+    if not isinstance(body, str) or not body.strip():
+        return None
+    return body
+
+
+def _check_npm_script_runner(
+    base_cmd: str, family: str, semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Classify ``npm run <script>`` / ``npm ci`` by real effect, not by name.
+
+    * ``npm ci`` performs a clean install that rewrites ``node_modules`` -- it
+      is unconditionally mutative (T3), regardless of the verb taxonomy.
+    * ``npm run <script>`` is resolved to its ``package.json`` body and that
+      body is classified by the shell/regex engine (``_classify_script_content_
+      by_regex``), the same standard the script-file lane meets.  An
+      unresolvable script (missing/unparseable package.json or absent entry)
+      falls back to conservative T3.
+
+    Returns ``None`` for any other npm invocation so ordinary detection
+    continues unchanged (``npm run`` with no script lists scripts -- read-only;
+    ``npm install`` and friends keep their existing classification).
+    """
+    if base_cmd != "npm":
+        return None
+
+    non_flag = semantics.non_flag_tokens
+    if not non_flag:
+        return None
+    sub = non_flag[0]
+
+    # `npm ci` -- clean install, always mutates node_modules.
+    if sub == "ci":
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="ci",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                "`npm ci` performs a clean install that rewrites node_modules "
+                "-- state-mutating, requires consent"
+            ),
+        )
+
+    if sub not in ("run", "run-script"):
+        return None  # not a script-runner form -- ordinary detection handles it
+
+    # `npm run` with no script name lists available scripts -- read-only.
+    if len(non_flag) < 2:
+        return None
+
+    script_name = non_flag[1]
+    body = _resolve_npm_script_body(script_name)
+    if body is None:
+        # Conservative default: the script body cannot be resolved, so we
+        # cannot prove it is safe -- mirror the unreadable-script-file case.
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="npm-run-unresolved",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"`npm run {script_name}` could not be resolved to a "
+                f"package.json script body -- cannot verify the payload, "
+                f"requiring approval (conservative default)"
+            ),
+        )
+
+    # Classify the resolved body: split into per-clause commands (a mutation may
+    # live in any clause of `tsc && rm -rf dist`) and feed the existing engine.
+    segments = "\n".join(
+        seg for seg in _SHELL_SEGMENT_SPLIT_RE.split(body) if seg.strip()
+    )
+    inner = _classify_script_content_by_regex(
+        segments, f"package.json:scripts.{script_name}", family
+    )
+    return MutativeResult(
+        is_mutative=inner.is_mutative,
+        category=inner.category,
+        verb=inner.verb,
+        dangerous_flags=inner.dangerous_flags,
+        cli_family=family,
+        confidence=inner.confidence,
+        reason=(
+            f"`npm run {script_name}` resolved to body {body!r}: {inner.reason}"
+        ),
     )
 
 
