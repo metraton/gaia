@@ -10,7 +10,7 @@ import os
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from ..core.paths import get_logs_dir
@@ -56,7 +56,11 @@ class AuditLogger:
             exit_code: Exit code (0 = success)
             tier: Security tier
         """
-        timestamp = datetime.now().isoformat()
+        # UTC, not local time: gaia metrics (bin/cli/metrics.py) filters
+        # "today" / anomaly windows by comparing against
+        # datetime.now(timezone.utc) -- a naive local timestamp here would
+        # silently drift the Activity Today section by the host's UTC offset.
+        timestamp = datetime.now(timezone.utc).isoformat()
 
         # Extract command for bash tools
         command = ""
@@ -76,7 +80,8 @@ class AuditLogger:
         }
 
         # Write to daily audit log (session log removed — was always "session-default.jsonl")
-        daily_log_file = self.log_dir / f"audit-{datetime.now().strftime('%Y-%m-%d')}.jsonl"
+        # Filename rotates on UTC midnight, matching `timestamp` above.
+        daily_log_file = self.log_dir / f"audit-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
         self._write_record(daily_log_file, audit_record)
 
         logger.debug(f"Logged execution: {tool_name} - {command[:50]} - {duration:.2f}s")
