@@ -332,3 +332,62 @@ class TestInjectedContextPayload:
         assert extract_injected_context_payload_from_transcript(
             "/some/dir/totally-different-xyz.jsonl"
         ) == {}
+
+    # -- Write/read key alignment (the context_snapshots-empty bug) ----------
+
+    def test_agent_type_lookup_matches_write_side_key(self, monkeypatch, tmp_path):
+        """The reader finds the payload the write side stored under the agent name.
+
+        context_injector.build_project_context writes the payload to
+        f"{subagent_type}.json". Passing agent_type resolves that exact file --
+        this is what populates context_snapshots telemetry.
+        """
+        self._seed_payload(
+            monkeypatch, tmp_path, "developer",
+            {"surface_routing": {"primary_surface": "app_ci"}},
+        )
+        result = extract_injected_context_payload_from_transcript(
+            "/some/dir/agent-ae190a4da68d626d4.jsonl",  # unique per-invocation hash
+            "developer",
+        )
+        assert result == {"surface_routing": {"primary_surface": "app_ci"}}
+
+    def test_agent_type_lookup_beats_broken_substring_path(self, monkeypatch, tmp_path):
+        """REGRESSION: without agent_type the transcript hash never matches the
+        agent-name payload file, so the old code path returned {} and
+        context_snapshots stayed empty. With agent_type it resolves.
+        """
+        self._seed_payload(
+            monkeypatch, tmp_path, "gaia-system",
+            {"surface_routing": {"multi_surface": False}},
+        )
+        transcript = "/some/dir/agent-ae190a4da68d626d4.jsonl"
+        # Old behavior (no agent_type): stem shares no substring with
+        # "gaia-system" -> no match.
+        assert extract_injected_context_payload_from_transcript(transcript) == {}
+        # New behavior (agent_type supplied): resolves the write-side file.
+        assert extract_injected_context_payload_from_transcript(
+            transcript, "gaia-system"
+        ) == {"surface_routing": {"multi_surface": False}}
+
+    def test_agent_type_lookup_works_with_empty_transcript_path(self, monkeypatch, tmp_path):
+        """agent_type lookup does not depend on transcript_path being present."""
+        self._seed_payload(
+            monkeypatch, tmp_path, "developer",
+            {"surface_routing": {"primary_surface": "iac"}},
+        )
+        assert extract_injected_context_payload_from_transcript(
+            "", "developer"
+        ) == {"surface_routing": {"primary_surface": "iac"}}
+
+    def test_missing_agent_type_file_falls_back_to_substring(self, monkeypatch, tmp_path):
+        """When no {agent_type}.json exists, the legacy substring path still runs."""
+        self._seed_payload(
+            monkeypatch, tmp_path, "agent-abc123",
+            {"surface_routing": {"multi_surface": True}},
+        )
+        # agent_type "developer" has no developer.json; fall back to stem match.
+        result = extract_injected_context_payload_from_transcript(
+            "/some/dir/agent-abc123.jsonl", "developer"
+        )
+        assert result == {"surface_routing": {"multi_surface": True}}

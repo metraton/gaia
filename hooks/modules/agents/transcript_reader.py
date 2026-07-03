@@ -96,35 +96,55 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
 
 def extract_injected_context_payload_from_transcript(
     transcript_path: str,
+    agent_type: str = "",
 ) -> Dict[str, Any]:
     """Extract the auto-injected context payload from disk cache.
 
     Context is delivered via additionalContext and the payload is persisted to
     disk by context_injector. Prompts do not contain embedded payloads.
-    """
-    # Empty/None path guard. Without it, Path("").stem == "" and the substring
-    # match below (``candidate.stem in "" or "" in candidate.stem``) is ALWAYS
-    # True because ``"" in any_string`` is True -- so an empty path would match
-    # (and return) the FIRST payload sitting in gaia-context-payloads/, making
-    # the result depend on whatever happens to be in that directory. Mirror the
-    # guard in read_first_user_content_from_transcript: no path, no match.
-    if not transcript_path:
-        return {}
 
+    The payload is written by context_injector.build_project_context keyed by
+    agent name: ``gaia-context-payloads/{agent_name}.json``. The reliable way to
+    find it is therefore ``agent_type`` (the SubagentStop event's ``agent_type``
+    / task_info ``agent``), which equals the write side's ``subagent_type``.
+
+    The legacy transcript-stem substring match is retained as a fallback for
+    callers that cannot supply ``agent_type`` -- but it never intersects the
+    write key (a transcript stem like ``agent-ae190a4da68d626d4`` shares no
+    substring with an agent name like ``developer``), so passing ``agent_type``
+    is what actually populates the context-snapshot telemetry.
+    """
     try:
         payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
-        if payload_dir.exists():
-            agent_file = Path(transcript_path).stem  # e.g. "agent-ae190a4da68d626d4"
-            # A stem that came out empty (e.g. path was "/" or "."): nothing to
-            # match against, so the substring test would again degrade to the
-            # always-true ``"" in candidate.stem``. Bail rather than grab an
-            # arbitrary payload.
-            if not agent_file:
-                return {}
-            # Match by agent ID substring
-            for candidate in payload_dir.glob("*.json"):
-                if candidate.stem in agent_file or agent_file in candidate.stem:
-                    return json.loads(candidate.read_text())
+        if not payload_dir.exists():
+            return {}
+
+        # Primary lookup: keyed by agent name, matching the write side.
+        if agent_type:
+            candidate = payload_dir / f"{agent_type}.json"
+            if candidate.exists():
+                return json.loads(candidate.read_text())
+
+        # Legacy fallback: transcript-stem substring match.
+        # Empty/None path guard. Without it, Path("").stem == "" and the
+        # substring match below (``candidate.stem in "" or "" in
+        # candidate.stem``) is ALWAYS True because ``"" in any_string`` is
+        # True -- so an empty path would match (and return) the FIRST payload
+        # sitting in gaia-context-payloads/, making the result depend on
+        # whatever happens to be in that directory. Mirror the guard in
+        # read_first_user_content_from_transcript: no path, no match.
+        if not transcript_path:
+            return {}
+        agent_file = Path(transcript_path).stem  # e.g. "agent-ae190a4da68d626d4"
+        # A stem that came out empty (e.g. path was "/" or "."): nothing to
+        # match against, so the substring test would again degrade to the
+        # always-true ``"" in candidate.stem``. Bail rather than grab an
+        # arbitrary payload.
+        if not agent_file:
+            return {}
+        for candidate in payload_dir.glob("*.json"):
+            if candidate.stem in agent_file or agent_file in candidate.stem:
+                return json.loads(candidate.read_text())
     except Exception:
         pass
     return {}
