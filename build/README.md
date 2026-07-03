@@ -19,7 +19,7 @@ Reads build/gaia.manifest.json
         |
 Resolves "all" fields to concrete file lists
         |
-Regenerates hooks/hooks.json + .claude-plugin/plugin.json (inline hooks) in place at the package root
+Regenerates hooks/hooks.json (the hooks CC loads) + .claude-plugin/plugin.json (metadata only, no inline hooks) in place at the package root
         |
 --- later, when Claude Code loads the plugin ---
         |

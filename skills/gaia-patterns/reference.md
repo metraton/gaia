@@ -129,7 +129,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 
 ## 2. Plugin Packaging
 
-Gaia ships as a **single, unified** plugin named `gaia`. There is **no `dist/` bundle** -- the npm package root (`@jaguilar87/gaia`) IS the plugin. The root `.claude-plugin/plugin.json` (hooks embedded inline) and `hooks/hooks.json` are generated from `build/gaia.manifest.json` at pack time (`prepack` -> `generate:plugin-root`) and tracked in git. One bundle carries all hooks, modules, agents, skills, tools, and config, and every install runs the full orchestrator surface.
+Gaia ships as a **single, unified** plugin named `gaia`. There is **no `dist/` bundle** -- the npm package root (`@jaguilar87/gaia`) IS the plugin. The root `.claude-plugin/plugin.json` (metadata only -- no inline hooks) and `hooks/hooks.json` (the canonical location Claude Code loads hooks from) are generated from `build/gaia.manifest.json` at pack time (`prepack` -> `generate:plugin-root`) and tracked in git. One bundle carries all hooks, modules, agents, skills, tools, and config, and every install runs the full orchestrator surface.
 
 ### Security Tiers (quick reference)
 
@@ -148,7 +148,7 @@ Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (nonce
 
 ### Build
 
-There is **no `dist/` bundle** -- the package root IS the plugin. `scripts/build-plugin.py gaia --manifests-only --output-dir .` (run via `npm run generate:plugin-root`) reads `build/gaia.manifest.json`, resolves `"all"` fields to concrete file lists, and regenerates `.claude-plugin/plugin.json` (inline hooks) + `hooks/hooks.json` in place at the package root.
+There is **no `dist/` bundle** -- the package root IS the plugin. `scripts/build-plugin.py gaia --manifests-only --output-dir .` (run via `npm run generate:plugin-root`) reads `build/gaia.manifest.json`, resolves `"all"` fields to concrete file lists, and regenerates `.claude-plugin/plugin.json` (metadata only -- no inline hooks) + `hooks/hooks.json` (the canonical location Claude Code loads hooks from) in place at the package root.
 
 ### Publish
 

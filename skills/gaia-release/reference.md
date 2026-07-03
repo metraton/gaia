@@ -37,7 +37,7 @@ gaia install --workspace <TARGET>
 cd /home/jorge/ws/me/gaia
 npm run gaia:install-local -- --workspace <TARGET>
 ```
-`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev --mode pack` auto-detects npm vs pnpm from the target workspace, so it covers this case too; use the raw npm script only when diagnosing.
+`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev --mode pack` auto-detects npm vs pnpm from the target workspace, so it covers this case too; use the raw npm script only when diagnosing.
 
 **fresh (wipe install metadata first):**
 Append `--fresh` to the `validate-sandbox.sh` form, or manually clear `node_modules/ package.json package-lock.json` (or the pnpm equivalents) in `<TARGET>` before reinstalling. Use when a prior install left state you want gone.
@@ -101,7 +101,7 @@ Sandbox path prints on exit; inspect `.claude/`, rerun checks, then `rm -rf` man
 ```
 npm run gaia:plugin-dryrun                   # pack -> temp extract -> headless validate -> trap cleanup
 ```
-`bin/plugin-dryrun.sh` packs the exact npm tarball (its `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`), extracts it to a throwaway temp dir (the package root IS the plugin), and runs a headless, offline gate: filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; both temps are removed by an EXIT trap. `gaia release check` SKIPs (not fails) this gate when `claude` is not on PATH.
+`bin/plugin-dryrun.sh` packs the exact npm tarball (its `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`), extracts it to a throwaway temp dir (the package root IS the plugin), and runs a headless, offline gate: filesystem asserts (root `plugin.json` present with NO inline `hooks` block, `hooks/hooks.json` with every entry point resolving, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; both temps are removed by an EXIT trap. `gaia release check` SKIPs (not fails) this gate when `claude` is not on PATH.
 
 For an optional live functional probe (needs Claude auth/tokens -- opt-in, never implicit):
 ```
@@ -139,7 +139,7 @@ gaia release publish --dry-run [version]    # preview the six-step sequence, exe
 1. Layer 2 (pre-release) must be green first -- run `gaia release check`.
 2. **`release:prepare <version>`** (`gaia release publish` step 1) -- the atomic bump. This wraps `scripts/release-prepare.mjs`, invoked by the flow, **never run by the user by hand**. In one command it:
    - writes `<version>` to the hand-owned sources at once -- `package.json`, `pyproject.toml`, `.claude-plugin/marketplace.json` (top-level `version`), and the `CHANGELOG.md` top header (inserts a dated stub above the current top if absent -- edit its body before release);
-   - runs `npm run generate:plugin-root` to regenerate the ROOT `.claude-plugin/plugin.json` (inline hooks) + `hooks/hooks.json` from the manifest -- `plugin.json`'s version is inherited from `package.json` (`from:package.json`), so it is NOT hand-bumped. No `dist/` bundle;
+   - runs `npm run generate:plugin-root` to regenerate the ROOT `.claude-plugin/plugin.json` (metadata only -- no inline hooks) + `hooks/hooks.json` from the manifest -- `plugin.json`'s version is inherited from `package.json` (`from:package.json`), so it is NOT hand-bumped. No `dist/` bundle;
    - runs `npm run pre-publish:validate` and fails loud on any drift.
 
    This replaces hand-bumping one file at a time. The two real escapes a hand-bump leaves are a `pyproject.toml` left behind on a prior version (caught only by `pre-publish:validate`) and a `marketplace.json` that still advertises the old top-level version. `release:prepare` makes the desync impossible because all hand-owned sources are written from one target version and `plugin.json` is generated from it. For a bare semver: `5.0.5` for stable, `5.1.0-rc.1` for RC (no leading `v` -- the tag adds it). Idempotent: re-running with the same version is a no-op bump that re-validates.
@@ -177,7 +177,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 | `.claude/` not wired after install | `gaia install` not run, or it exited non-zero | `cat ~/.gaia/last-install-error.json` (written by `gaia install` on failure). Re-run `gaia install --workspace <path>`. If it persists, file a bug. |
 | `gaia doctor` walks up to the user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --workspace <path>`. |
 | DB missing / `no such table` on first use | Lazy bootstrap did not run (e.g. `gaia` never invoked yet) | Run any `gaia` command (it triggers `_ensure_db_bootstrapped`), or `gaia install` for the full seed. There is no postinstall to "re-run". |
-| Plugin mounts but hooks never fire | Generated inline `plugin.json` / `hooks.json` broken at the package root, or CC did not reload | Regenerate (`npm run generate:plugin-root`), re-run `npm run gaia:plugin-dryrun`, and `/reload-plugins`. Inspect the root `.claude-plugin/plugin.json` for the inline `hooks` block. |
+| Plugin mounts but hooks never fire | Generated `hooks/hooks.json` broken at the package root, or CC did not reload | Regenerate (`npm run generate:plugin-root`), re-run `npm run gaia:plugin-dryrun`, and `/reload-plugins`. Inspect the root `hooks/hooks.json` (the canonical hook source); `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block. |
 | `bootstrap exited 1: table projects has no column named identity` | Schema/bootstrap drift (old seed SQL) | Update to a build whose seed matches the current schema. |
 | `Permission denied` invoking a hook `.py` | Exec bit lost on cross-platform checkout | Hooks are invoked via `python3 <script>` (see `build-plugin.py` `generate_hooks_json`), so the exec bit should not matter; if it does, update to a build that uses the `python3 <script>` invoker. |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired (npm surface) | Re-run `gaia install`. In plugin surface, `/reload-plugins`. |
@@ -205,7 +205,7 @@ A green pre-flight only protects the release if it runs the same gates CI runs. 
 **Pre-publish gate (Layer 2):**
 - `pytest tests/` green (or `npm test` for the L1 subset).
 - `npm run pre-publish:validate` green locally -- the version-drift gate (`validate-manifests` in `ci.yml`).
-- `npm pack --dry-run` confirms `scripts/bootstrap_database.sh`, `.claude-plugin/plugin.json` (with inline hooks), and `hooks/hooks.json` are included in the tarball, and that `dist/` is NOT.
+- `npm pack --dry-run` confirms `scripts/bootstrap_database.sh`, `.claude-plugin/plugin.json` (metadata only), and `hooks/hooks.json` (the canonical hook source) are included in the tarball, and that `dist/` is NOT.
 - `npm run gaia:verify-install:local` green (npm surface).
 - `npm run gaia:plugin-dryrun` green (plugin surface -- pack + extract + headless validate).
 
@@ -214,7 +214,7 @@ A green pre-flight only protects the release if it runs the same gates CI runs. 
 The workflow at `.github/workflows/publish.yml` runs on every GitHub Release event (read-only checkout -- it neither commits nor pushes). It:
 - Checks out the exact tagged commit.
 - Installs deps with `npm ci`.
-- Packs the tarball with `npm pack` -- `prepack` (clean + `generate:plugin-root`) regenerates the root inline `plugin.json` + `hooks/hooks.json`, so the tarball root is a valid plugin root (the same tree the git plugin source serves). No `dist/` bundle is built or committed back.
+- Packs the tarball with `npm pack` -- `prepack` (clean + `generate:plugin-root`) regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`, so the tarball root is a valid plugin root (the same tree the git plugin source serves). No `dist/` bundle is built or committed back.
 - Runs `npm run pre-publish:validate` (after pack, so it sees the fresh root manifests).
 - Auto-detects npm tag from the version string: `*-rc.*` -> `rc`, `*-beta.*` -> `beta`, `*-alpha.*` -> `alpha`, else -> `latest`.
 - Runs the sandbox validation harness against the packed tarball (the gate).
