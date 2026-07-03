@@ -9,7 +9,7 @@ Validates:
 4. hooks.json has PreToolUse, PostToolUse, SubagentStop events
 5. hooks.json uses ${CLAUDE_PLUGIN_ROOT} in all command paths
 6. marketplace.json exists and is valid JSON (flat format: name, owner, plugins)
-7. marketplace.json has the single unified 'gaia' plugin with a `source: npm` source
+7. marketplace.json has the single unified 'gaia' plugin with a `source: github` source
 8. The manifest's declared bin/agents/commands entries exist in the source tree
 9. All version fields match across all manifest files
 """
@@ -245,9 +245,9 @@ class TestMarketplaceJson:
     """Test .claude-plugin/marketplace.json manifest.
 
     The marketplace.json is a flat structure with top-level name, owner,
-    and plugins array. Each plugin's `source` is the npm object form
-    ({"source": "npm", "package": "@jaguilar87/gaia"}) -- the package IS the
-    plugin; there is no dist/ bundle.
+    and plugins array. Each plugin's `source` is the github object form
+    ({"source": "github", "repo": "metraton/gaia"}) -- `/plugin install`
+    clones the repo so the full plugin tree ships; there is no dist/ bundle.
     """
 
     @pytest.fixture(autouse=True)
@@ -301,15 +301,16 @@ class TestMarketplaceJson:
             assert "version" in plugin, f"Plugin missing 'version': {plugin}"
             assert "source" in plugin, f"Plugin missing 'source': {plugin}"
 
-    def test_marketplace_plugin_sources_are_npm(self):
-        """Each marketplace plugin source must be the npm object form.
+    def test_marketplace_plugin_sources_are_github(self):
+        """Each marketplace plugin source must be the github object form.
 
-        The plugin surface migrated from a `./dist/gaia` path source to
-        `source: npm` so ONE npm artifact serves the npm, pnpm, and plugin
-        surfaces. The source is an object: {"source": "npm", "package": ...}.
-        `source.version` is intentionally OMITTED so `/plugin install` resolves
-        the npm `latest` dist-tag (the catalog stays version-agnostic; npm
-        dist-tags govern what installs).
+        The plugin surface is distributed via a git/github source
+        ({"source": "github", "repo": "metraton/gaia"}) so `/plugin install`
+        clones the repo and the full plugin tree (agents, skills, hooks) ships
+        intact -- the npm-source model dropped the skills/ tree, so the plugin
+        surface uses github while npm remains the CLI-only surface.
+        `source.repo` is the `owner/name` slug; no version is pinned so the
+        install resolves the repo's current default ref.
         """
         data = json.loads(self.marketplace_path.read_text())
         for plugin in data["plugins"]:
@@ -317,15 +318,12 @@ class TestMarketplaceJson:
             assert isinstance(source, dict), (
                 f"Plugin '{plugin['name']}' source must be an object, got {type(source)}"
             )
-            assert source.get("source") == "npm", (
-                f"Plugin '{plugin['name']}' source.source must be 'npm', got {source.get('source')!r}"
+            assert source.get("source") == "github", (
+                f"Plugin '{plugin['name']}' source.source must be 'github', got {source.get('source')!r}"
             )
-            assert source.get("package") == "@jaguilar87/gaia", (
-                f"Plugin '{plugin['name']}' source.package must be '@jaguilar87/gaia', "
-                f"got {source.get('package')!r}"
-            )
-            assert "version" not in source, (
-                "source.version must be omitted so the marketplace resolves npm 'latest'"
+            assert source.get("repo") == "metraton/gaia", (
+                f"Plugin '{plugin['name']}' source.repo must be 'metraton/gaia', "
+                f"got {source.get('repo')!r}"
             )
 
 
