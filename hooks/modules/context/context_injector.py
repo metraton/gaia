@@ -403,12 +403,19 @@ def build_project_context(
             orientation_lines.append("- **Metadata** -- session and environment metadata; use for debugging and traceability")
         orientation_section = "\n".join(orientation_lines) + "\n"
 
-        # Save context_payload to disk for downstream hooks (SubagentStop)
+        # Save context_payload to disk for downstream hooks (SubagentStop).
+        # Keyed by agent name (subagent_type): it is the ONLY identifier that
+        # both this PreToolUse write side and the SubagentStop read side share
+        # reliably. The subagent's transcript hash does not exist yet at
+        # dispatch time, and the previously-used parameters['_agent_id'] was
+        # never populated anywhere in the codebase (it always fell through to
+        # subagent_type), so it was not a usable key. The read side
+        # (transcript_reader.extract_injected_context_payload_from_transcript)
+        # must resolve the same f"{agent_name}.json" name.
         try:
             payload_dir = Path(os.environ.get("TMPDIR", "/tmp")) / "gaia-context-payloads"
             payload_dir.mkdir(parents=True, exist_ok=True)
-            agent_id = parameters.get("_agent_id", "") or subagent_type
-            payload_path = payload_dir / f"{agent_id}.json"
+            payload_path = payload_dir / f"{subagent_type}.json"
             payload_path.write_text(json.dumps(context_payload, separators=(',', ':')))
             logger.debug(f"Context payload saved to {payload_path}")
         except Exception as exc:

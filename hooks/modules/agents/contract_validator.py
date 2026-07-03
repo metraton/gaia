@@ -384,7 +384,8 @@ def requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
         # Fallback: read from transcript if injected_context was not pre-extracted
         from .transcript_reader import extract_injected_context_payload_from_transcript
         payload = extract_injected_context_payload_from_transcript(
-            task_info.get("agent_transcript_path", "")
+            task_info.get("agent_transcript_path", ""),
+            task_info.get("agent", ""),
         )
     if not payload:
         return False
