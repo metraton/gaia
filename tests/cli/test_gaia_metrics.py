@@ -10,6 +10,11 @@ gaia.store.writer._connect (which gaia.store.reader._connect delegates to)
 plus gaia.project.current. The three audit-log sections (tier usage, command
 breakdown, top commands) still read audit-*.jsonl and keep their filesystem
 fixtures.
+
+Dashboard v3: adds TimeWindow (--range/--since/--until, all funneled through
+gaia.store.reader.parse_when), SQL-level window filtering on the three
+DB-backed readers, native-agent-filtered runtime skills, and schema_version=2
+with a 'window' key on to_dict().
 """
 
 import json
@@ -42,10 +47,14 @@ from cli.metrics import (
     _calculate_agent_outcomes,
     _calculate_token_usage,
     _calculate_anomaly_summary,
+    _calculate_runtime_skill_summary,
     _split_native_agents,
     _format_tokens,
     _format_chars,
+    _format_duration_ms,
     _make_bar,
+    _resolve_time_window,
+    TimeWindow,
     register,
     cmd_metrics,
     MetricsSnapshot,
@@ -61,15 +70,13 @@ def _write_audit_jsonl(logs_dir: Path, entries: list, filename: str = "audit-202
     (logs_dir / filename).write_text(lines)
 
 
-def _make_in_memory_db(episodes: list, anomalies: list = None) -> sqlite3.Connection:
-    """In-memory SQLite DB with episodes + episode_anomalies seeded.
+def _seed_schema_and_rows(con: sqlite3.Connection, episodes: list, anomalies: list = None) -> None:
+    """Create the episodes + episode_anomalies schema on ``con`` and seed rows.
 
-    ``episodes`` accepts dicts with optional ``context_metrics`` (a dict, which
-    is JSON-serialized to match the real column). ``anomalies`` accepts dicts
-    with episode_id/workspace/timestamp/type.
+    Shared by ``_make_in_memory_db`` (single-reader tests) and any test that
+    needs a file-backed DB that survives a reader's ``con.close()`` (see
+    TestCmdMetrics.test_range_today_excludes_old_episode_from_snapshot).
     """
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
     con.execute(
         """CREATE TABLE episodes (
             episode_id TEXT PRIMARY KEY,
@@ -145,6 +152,18 @@ def _make_in_memory_db(episodes: list, anomalies: list = None) -> sqlite3.Connec
             ),
         )
     con.commit()
+
+
+def _make_in_memory_db(episodes: list, anomalies: list = None) -> sqlite3.Connection:
+    """In-memory SQLite DB with episodes + episode_anomalies seeded.
+
+    ``episodes`` accepts dicts with optional ``context_metrics`` (a dict, which
+    is JSON-serialized to match the real column). ``anomalies`` accepts dicts
+    with episode_id/workspace/timestamp/type.
+    """
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    _seed_schema_and_rows(con, episodes, anomalies)
     return con
 
 
@@ -273,15 +292,52 @@ class TestCalculateTopCommands(unittest.TestCase):
         self.assertIsNotNone(git_status)
         self.assertEqual(git_status["count"], 2)
 
-    def test_tracks_t3(self):
+    def test_no_tier_column(self):
+        # P1 fix #5: tier/t3count is gone from this calculator -- it
+        # duplicated Security Tier Usage. Only label/count/percentage/
+        # avg_duration_ms remain.
+        logs = [{"command": "git push", "tier": "T3"}]
+        result = _calculate_top_commands(logs)
+        self.assertNotIn("tier", result[0])
+        self.assertNotIn("t3count", result[0])
+        self.assertIn("percentage", result[0])
+        self.assertIn("avg_duration_ms", result[0])
+
+    def test_percentage_is_share_of_total(self):
         logs = [
-            {"command": "git push", "tier": "T3"},
-            {"command": "git push", "tier": "T3"},
+            {"command": "git status"},
+            {"command": "git status"},
+            {"command": "kubectl get pods"},
         ]
         result = _calculate_top_commands(logs)
-        push = next((r for r in result if "git" in r["label"]), None)
-        self.assertIsNotNone(push)
-        self.assertEqual(push["t3count"], 2)
+        git_status = next(r for r in result if r["label"] == "git status")
+        self.assertAlmostEqual(git_status["percentage"], 2 / 3 * 100)
+
+    def test_avg_duration_from_duration_ms(self):
+        # P1 fix #5: duration_ms (logger.py) was recorded but unused.
+        logs = [
+            {"command": "git status", "duration_ms": 100},
+            {"command": "git status", "duration_ms": 300},
+        ]
+        result = _calculate_top_commands(logs)
+        git_status = next(r for r in result if r["label"] == "git status")
+        self.assertEqual(git_status["avg_duration_ms"], 200)
+
+    def test_avg_duration_none_when_no_timed_entries(self):
+        logs = [{"command": "git status"}]
+        result = _calculate_top_commands(logs)
+        self.assertIsNone(result[0]["avg_duration_ms"])
+
+
+class TestFormatDuration(unittest.TestCase):
+    def test_none_is_na(self):
+        self.assertEqual(_format_duration_ms(None), "n/a")
+
+    def test_sub_second_in_ms(self):
+        self.assertEqual(_format_duration_ms(250), "250ms")
+
+    def test_over_second_in_s(self):
+        self.assertEqual(_format_duration_ms(1500), "1.5s")
 
 
 class TestCalculateAgentInvocations(unittest.TestCase):
@@ -388,6 +444,103 @@ class TestSplitNativeAgents(unittest.TestCase):
         self.assertIn("claude-code-guide", NATIVE_AGENT_NAMES)
 
 
+class TestRuntimeSkillsExcludesNative(unittest.TestCase):
+    """P0 fix #1: runtime skills previously computed over UNFILTERED
+    run_snapshots, unlike invocations/outcomes/tokens (which already used
+    gaia_metrics). MetricsSnapshot.build() now segregates run_snapshots the
+    same way before calling _calculate_runtime_skill_summary.
+    """
+
+    def test_calculator_still_accepts_raw_input(self):
+        # The calculator itself has no opinion on native agents -- filtering
+        # is the caller's job (MetricsSnapshot.build). Direct calls with an
+        # already-mixed list still produce a profile per agent seen.
+        run_snapshots = [
+            {"agent": "Explore", "timestamp": "t1",
+             "default_skills_snapshot": {"model": "inherit", "skills": ["a"], "skills_count": 1, "tools": []}},
+            {"agent": "developer", "timestamp": "t1",
+             "default_skills_snapshot": {"model": "inherit", "skills": ["b"], "skills_count": 1, "tools": []}},
+        ]
+        result = _calculate_runtime_skill_summary([], run_snapshots)
+        agents = {p["agent"] for p in result["latest_profiles"]}
+        self.assertEqual(agents, {"Explore", "developer"})
+
+    def test_snapshot_build_excludes_native_agents(self):
+        # End-to-end via MetricsSnapshot.build(): Explore must NOT appear in
+        # runtime_skills even though it's present in run_snapshots.
+        run_snapshots = [
+            {"agent": "Explore", "timestamp": "t1",
+             "default_skills_snapshot": {"model": "inherit", "skills": ["explore-only"], "skills_count": 1, "tools": []}},
+            {"agent": "developer", "timestamp": "t1",
+             "default_skills_snapshot": {"model": "inherit", "skills": ["agent-protocol"], "skills_count": 1, "tools": []}},
+        ]
+        snap = MetricsSnapshot.build(
+            workspace=None, audit_logs=[], workflow_metrics=[],
+            run_snapshots=run_snapshots, skill_snapshots=[], anomaly_entries=[],
+        )
+        agents = {p["agent"] for p in snap.runtime_skills["latest_profiles"]}
+        self.assertIn("developer", agents)
+        self.assertNotIn("Explore", agents)
+
+    def test_sorted_by_skills_count_desc(self):
+        # P3 fix #10: busiest profile first, not alphabetical.
+        run_snapshots = [
+            {"agent": "aaa-agent", "timestamp": "t1",
+             "default_skills_snapshot": {"model": "inherit", "skills": ["a"], "skills_count": 1, "tools": []}},
+            {"agent": "zzz-agent", "timestamp": "t1",
+             "default_skills_snapshot": {"model": "inherit", "skills": ["a", "b", "c"], "skills_count": 3, "tools": []}},
+        ]
+        result = _calculate_runtime_skill_summary([], run_snapshots)
+        names = [p["agent"] for p in result["latest_profiles"]]
+        self.assertEqual(names[0], "zzz-agent")
+
+
+class TestTimeWindow(unittest.TestCase):
+    """Dashboard v3: TimeWindow / _resolve_time_window, built on top of
+    gaia.store.reader.parse_when() (no new parser)."""
+
+    def test_default_range_is_30d(self):
+        window = _resolve_time_window(None, None, None)
+        self.assertEqual(window.label, "30d")
+        self.assertIsNotNone(window.since_iso)
+        self.assertIsNone(window.until_iso)
+        self.assertFalse(window.capped_by_retention)
+
+    def test_range_all_has_no_bounds(self):
+        window = _resolve_time_window("all", None, None)
+        self.assertEqual(window.label, "all")
+        self.assertIsNone(window.since_iso)
+        self.assertIsNone(window.until_iso)
+
+    def test_range_today_bounds_to_utc_midnight(self):
+        window = _resolve_time_window("today", None, None)
+        self.assertEqual(window.label, "today")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+        self.assertEqual(window.since_iso, today)
+
+    def test_range_7d_delegates_to_parse_when(self):
+        window = _resolve_time_window("7d", None, None)
+        self.assertEqual(window.label, "7d")
+        self.assertIsNotNone(window.since_iso)
+
+    def test_explicit_since_until(self):
+        window = _resolve_time_window(None, "2026-01-01", "2026-02-01")
+        self.assertEqual(window.since_iso, "2026-01-01T00:00:00Z")
+        self.assertEqual(window.until_iso, "2026-02-01T00:00:00Z")
+
+    def test_invalid_since_raises(self):
+        with self.assertRaises(ValueError):
+            _resolve_time_window(None, "not-a-date", None)
+
+    def test_to_dict_shape(self):
+        window = TimeWindow(label="7d", since_iso="2026-01-01T00:00:00Z", until_iso=None)
+        d = window.to_dict()
+        self.assertEqual(
+            set(d.keys()), {"label", "since_iso", "until_iso", "capped_by_retention"}
+        )
+        self.assertFalse(d["capped_by_retention"])
+
+
 class TestCalculateAnomalySummary(unittest.TestCase):
     def test_recent_anomalies(self):
         recent = datetime.now(timezone.utc).isoformat()
@@ -402,7 +555,11 @@ class TestCalculateAnomalySummary(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["total"], 2)
 
-    def test_old_anomalies_excluded(self):
+    def test_no_internal_age_cutoff(self):
+        # Dashboard v3: age filtering moved to the reader layer (SQL, bound
+        # by the caller's TimeWindow) so --range=all isn't silently reclamped
+        # to 30 days by the calculator. An "old" entry passed directly is
+        # counted -- the calculator no longer applies its own cutoff.
         old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         entries = [
             {
@@ -412,7 +569,11 @@ class TestCalculateAnomalySummary(unittest.TestCase):
             }
         ]
         result = _calculate_anomaly_summary(entries)
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["total"], 1)
+
+    def test_empty_entries_returns_none(self):
+        self.assertIsNone(_calculate_anomaly_summary([]))
 
     def test_severity_sorts_above_volume(self):
         # P2 fix #6: a rare critical must sort above a high-volume warning.
@@ -551,6 +712,37 @@ class TestDbBackedReaders(unittest.TestCase):
             with patch("cli.metrics._open_store", return_value=(None, None)):
                 self.assertEqual(_read_workflow_metrics(root), [])
 
+    def test_workflow_metrics_since_iso_filters_older_episodes(self):
+        # Dashboard v3: --range now filters episodes in SQL.
+        episodes = [
+            {"episode_id": "ep-old", "agent": "developer", "timestamp": "2020-01-01T00:00:00Z"},
+            {"episode_id": "ep-new", "agent": "developer", "timestamp": "2026-04-15T10:00:00Z"},
+        ]
+        con = _make_in_memory_db(episodes)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                result = _read_workflow_metrics(root, since_iso="2026-01-01T00:00:00Z")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["episode_id"], "ep-new")
+
+    def test_anomaly_entries_since_iso_filters_older_rows(self):
+        episodes = [
+            {"episode_id": "ep-old", "agent": "developer", "timestamp": "2020-01-01T00:00:00Z"},
+            {"episode_id": "ep-new", "agent": "developer", "timestamp": "2026-04-15T10:00:00Z"},
+        ]
+        anomalies = [
+            {"episode_id": "ep-old", "timestamp": "2020-01-01T00:00:00Z", "type": "pipe_retroactive"},
+            {"episode_id": "ep-new", "timestamp": "2026-04-15T10:00:00Z", "type": "pipe_retroactive"},
+        ]
+        con = _make_in_memory_db(episodes, anomalies)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                result = _read_anomaly_entries(root, since_iso="2026-01-01T00:00:00Z")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["timestamp"], "2026-04-15T10:00:00Z")
+
     def test_workflow_metrics_workspace_override_wins_over_project_current(self):
         """Explicit --workspace beats gaia.project.current() resolution."""
         episodes = [
@@ -678,6 +870,29 @@ class TestMetricsSnapshot(unittest.TestCase):
         self.assertEqual(d["schema_version"], SCHEMA_VERSION)
         self.assertEqual(d["security_tiers"]["total"], 0)
         self.assertEqual(d["agent_invocations"]["total"], 0)
+
+    def test_schema_version_is_2(self):
+        # Dashboard v3 bump: to_dict() gains 'window' + 'window_support'.
+        self.assertEqual(SCHEMA_VERSION, "2")
+
+    def test_to_dict_carries_window(self):
+        window = TimeWindow(label="7d", since_iso="2026-01-01T00:00:00Z", until_iso=None)
+        snap = self._build(window=window)
+        d = snap.to_dict()
+        self.assertEqual(d["window"]["label"], "7d")
+        self.assertEqual(d["window"]["since_iso"], "2026-01-01T00:00:00Z")
+        self.assertIn("capped_by_retention", d["window"])
+
+    def test_to_dict_carries_window_support(self):
+        d = self._build().to_dict()
+        self.assertIn("window_support", d)
+        self.assertIn("security_tiers", d["window_support"]["audit_log_backed"])
+        self.assertIn("agent_invocations", d["window_support"]["episodes_backed"])
+        self.assertEqual(d["window_support"]["cap_days"], 30)
+
+    def test_default_window_when_not_provided(self):
+        d = self._build().to_dict()
+        self.assertEqual(d["window"]["label"], "all")
 
     def test_native_agents_segregated_in_snapshot(self):
         metrics = [
@@ -836,7 +1051,10 @@ class TestCmdMetrics(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("SECURITY TIER USAGE", output)
             self.assertIn("COMMAND TYPE BREAKDOWN", output)
-            self.assertIn("ACTIVITY TODAY", output)
+            # Dashboard v3: Activity Today is a compact strip under the
+            # header, not its own box (P2 #7) -- T3-today lives in Security
+            # Tier Usage instead of being repeated in a separate section.
+            self.assertIn("Today (UTC):", output)
 
     def test_agent_detail_view(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -870,12 +1088,15 @@ class TestCmdMetrics(unittest.TestCase):
             self.assertIn("Invocation History", output)
 
     def test_workspace_flag_forwarded_to_readers(self):
-        """cmd_metrics passes args.workspace through to every DB-backed reader."""
+        """cmd_metrics passes args.workspace + the resolved window through to
+        every DB-backed reader."""
+        fixed_window = TimeWindow(label="7d", since_iso="2026-04-08T00:00:00Z", until_iso=None)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
             args = self._make_args(as_json=True, workspace="other-ws")
             with patch("cli.metrics._find_project_root", return_value=root), \
+                    patch("cli.metrics._resolve_time_window", return_value=fixed_window), \
                     patch("cli.metrics._read_workflow_metrics", return_value=[]) as m_wf, \
                     patch("cli.metrics._read_run_snapshots", return_value=[]) as m_rs, \
                     patch("cli.metrics._read_anomaly_entries", return_value=[]) as m_ae:
@@ -884,9 +1105,129 @@ class TestCmdMetrics(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     rc = cmd_metrics(args)
             self.assertEqual(rc, 0)
-            m_wf.assert_called_once_with(root, "other-ws")
-            m_rs.assert_called_once_with(root, "other-ws")
-            m_ae.assert_called_once_with(root, "other-ws")
+            m_wf.assert_called_once_with(
+                root, "other-ws", since_iso="2026-04-08T00:00:00Z", until_iso=None
+            )
+            m_rs.assert_called_once_with(
+                root, "other-ws", since_iso="2026-04-08T00:00:00Z", until_iso=None
+            )
+            m_ae.assert_called_once_with(
+                root, "other-ws", since_iso="2026-04-08T00:00:00Z", until_iso=None
+            )
+
+    def _make_range_args(self, agent=None, as_json=False, workspace=None, range=None, since=None, until=None):
+        import argparse
+        ns = argparse.Namespace()
+        ns.agent = agent
+        ns.json = as_json
+        ns.workspace = workspace
+        ns.range = range
+        ns.since = since
+        ns.until = until
+        return ns
+
+    def test_range_and_since_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            args = self._make_range_args(range="7d", since="24h")
+            with patch("cli.metrics._find_project_root", return_value=root):
+                import io
+                from contextlib import redirect_stdout
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_metrics(args)
+            self.assertEqual(rc, 2)
+
+    def test_invalid_since_returns_error_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            args = self._make_range_args(since="not-a-date")
+            with patch("cli.metrics._find_project_root", return_value=root):
+                import io
+                from contextlib import redirect_stdout
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_metrics(args)
+            self.assertEqual(rc, 2)
+
+    def test_range_today_excludes_old_episode_from_snapshot(self):
+        # End-to-end: --range=today must exclude an episode from 2020 while
+        # --range=all includes it, proving the window reaches SQL filtering.
+        # setUp() globally patches _open_store to (None, None) -- swap it out
+        # for a real (file-backed, reopenable) store connection for the span
+        # of this test. A single in-memory connection can't be reused here:
+        # one cmd_metrics call opens/closes it across three DB readers
+        # (_read_workflow_metrics, _read_run_snapshots, _read_anomaly_entries),
+        # and closing an in-memory sqlite3 connection destroys its data --
+        # exactly the limitation _patch_store's docstring calls out for
+        # single-reader tests. A file-backed DB survives close+reopen, like
+        # production's gaia.db.
+        old_ts = "2020-01-01T00:00:00Z"
+        episodes = [{"episode_id": "ep-old", "agent": "developer", "timestamp": old_ts}]
+
+        self._open_patch.stop()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".claude").mkdir()
+                db_path = Path(tmp) / "gaia.db"
+                seed_con = sqlite3.connect(str(db_path))
+                seed_con.row_factory = sqlite3.Row
+                _seed_schema_and_rows(seed_con, episodes)
+                seed_con.close()
+
+                import gaia.store.writer as _writer_mod
+                import gaia.project as _project_mod
+
+                def _fresh_connect(*a, **k):
+                    con = sqlite3.connect(str(db_path))
+                    con.row_factory = sqlite3.Row
+                    return con
+
+                with patch("cli.metrics._find_project_root", return_value=root), \
+                        patch.object(_writer_mod, "_connect", _fresh_connect), \
+                        patch.object(_project_mod, "current", lambda **k: None):
+                    import io
+                    from contextlib import redirect_stdout
+
+                    args_today = self._make_range_args(as_json=True, range="today")
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        cmd_metrics(args_today)
+                    data_today = json.loads(buf.getvalue())
+
+                    args_all = self._make_range_args(as_json=True, range="all")
+                    buf2 = io.StringIO()
+                    with redirect_stdout(buf2):
+                        cmd_metrics(args_all)
+                    data_all = json.loads(buf2.getvalue())
+        finally:
+            self._open_patch.start()
+
+        self.assertEqual(data_today["agent_invocations"]["total"], 0)
+        self.assertEqual(data_all["agent_invocations"]["total"], 1)
+
+
+class TestRegisterRangeFlags(unittest.TestCase):
+    def test_range_choices_enforced(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["metrics", "--range", "7d"])
+        self.assertEqual(args.range, "7d")
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["metrics", "--range", "bogus"])
+
+    def test_since_until_default_none(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["metrics"])
+        self.assertIsNone(args.range)
+        self.assertIsNone(args.since)
+        self.assertIsNone(args.until)
 
 
 if __name__ == "__main__":
