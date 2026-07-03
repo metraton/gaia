@@ -5,7 +5,6 @@ import os
 import sys
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -96,17 +95,13 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
     return False
 
 from modules.core.stdin import has_stdin_data
-from modules.core.paths import get_logs_dir
+from modules.core.logging_setup import configure_hook_logging
 from modules.core.plugin_setup import run_first_time_setup
 from modules.session.session_registry import register_session, SessionRegistryError
 
-# Configure logging — file only
-_log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [session_start] %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler(_log_file)],
-)
+# Configure logging -- file handler only when GAIA_DEBUG is set; no
+# hooks-*.log is written by default (see modules.core.logging_setup).
+configure_hook_logging("session_start")
 logger = logging.getLogger(__name__)
 
 

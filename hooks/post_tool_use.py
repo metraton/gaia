@@ -12,7 +12,6 @@ import sys
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
 
 _hooks_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_hooks_dir))
@@ -20,17 +19,13 @@ _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
-from modules.core.paths import get_logs_dir
+from modules.core.logging_setup import configure_hook_logging
 from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
 
-# Configure logging
-log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [post_tool_use] %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler(log_file)],
-)
+# Configure logging -- file handler only when GAIA_DEBUG is set; no
+# hooks-*.log is written by default (see modules.core.logging_setup).
+configure_hook_logging("post_tool_use")
 logger = logging.getLogger(__name__)
 
 

@@ -4,7 +4,6 @@
 import sys
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 _hooks_dir = Path(__file__).resolve().parent
@@ -14,16 +13,12 @@ if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 
 from modules.core.hook_entry import run_hook
-from modules.core.paths import get_logs_dir
+from modules.core.logging_setup import configure_hook_logging
 from modules.context.compact_context_builder import build_compact_context
 
-# Configure logging
-_log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [post_compact] %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler(_log_file)],
-)
+# Configure logging -- file handler only when GAIA_DEBUG is set; no
+# hooks-*.log is written by default (see modules.core.logging_setup).
+configure_hook_logging("post_compact")
 logger = logging.getLogger(__name__)
 
 

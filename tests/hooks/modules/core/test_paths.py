@@ -22,7 +22,6 @@ from modules.core.paths import (
     find_claude_dir,
     get_plugin_data_dir,
     get_logs_dir,
-    get_metrics_dir,
     get_memory_dir,
     get_session_dir,
     clear_path_cache,
@@ -188,29 +187,6 @@ class TestGetLogsDir:
         assert result.is_dir()
 
 
-class TestGetMetricsDir:
-    """Test get_metrics_dir() function."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self, tmp_path):
-        """Set up test environment."""
-        clear_path_cache()
-        data_dir = tmp_path / "plugin-data"
-        data_dir.mkdir()
-        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
-            yield data_dir
-
-    def test_returns_metrics_path(self, setup):
-        """Test returns correct metrics path."""
-        result = get_metrics_dir()
-        assert result.name == "metrics"
-        assert result.parent == setup
-
-    def test_creates_directory_if_missing(self, setup):
-        """Test creates metrics directory if it doesn't exist."""
-        result = get_metrics_dir()
-        assert result.exists()
-        assert result.is_dir()
 
 
 class TestGetMemoryDir:

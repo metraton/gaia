@@ -96,18 +96,6 @@ def get_logs_dir() -> Path:
     return logs_dir
 
 
-def get_metrics_dir() -> Path:
-    """
-    Get the metrics directory, creating it if necessary.
-
-    Returns:
-        Path to .claude/metrics/
-    """
-    metrics_dir = get_plugin_data_dir() / "metrics"
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    return metrics_dir
-
-
 def get_memory_dir(subdir: Optional[str] = None) -> Path:
     """
     Get the memory directory, creating it if necessary.
