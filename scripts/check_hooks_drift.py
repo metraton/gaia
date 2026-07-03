@@ -2,10 +2,16 @@
 """Hooks-drift guard: fail if the committed generated hook artifacts diverge
 from what the manifest would produce.
 
-Background: ``hooks/hooks.json`` and the inline ``hooks`` object embedded in
-``.claude-plugin/plugin.json`` are GENERATED from ``build/gaia.manifest.json``
+Background: ``hooks/hooks.json`` is GENERATED from ``build/gaia.manifest.json``
 via ``generate_hooks_json`` (scripts/build-plugin.py), invoked by
-``npm run generate:plugin-root``. The manifest is the single source of truth.
+``npm run generate:plugin-root``. The manifest is the single source of truth,
+and hooks/hooks.json is the SINGLE place hooks are declared.
+
+``.claude-plugin/plugin.json`` must NOT embed an inline ``hooks`` block:
+Claude Code reads both the inline block and hooks/hooks.json, so declaring
+hooks in both registered every hook twice and made every event fire twice.
+This guard asserts hooks/hooks.json matches the manifest AND that plugin.json
+carries no ``hooks`` key.
 
 If a committed artifact no longer matches the manifest, someone either
 hand-edited a generated file or forgot to re-run the generator after editing
@@ -78,14 +84,14 @@ def main() -> int:
         )
         _report_diff("hooks/hooks.json", expected, hooks_json)
 
-    if plugin_hooks != expected:
+    if plugin_hooks:
         drift = True
         print(
-            "hooks-drift guard: .claude-plugin/plugin.json inline hooks != "
-            "generate_hooks_json(build/gaia.manifest.json)",
+            "hooks-drift guard: .claude-plugin/plugin.json embeds an inline "
+            "'hooks' block -- hooks must be declared ONLY in hooks/hooks.json. "
+            "An inline block makes Claude Code register every hook twice.",
             file=sys.stderr,
         )
-        _report_diff(".claude-plugin/plugin.json", expected, plugin_hooks)
 
     if drift:
         print(

@@ -31,7 +31,7 @@ if [[ "${1:-}" == "--functional" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# (a) Pack -> prepack regenerates the root inline plugin.json + hooks/hooks.json
+# (a) Pack -> prepack regenerates the root plugin.json (metadata only) + hooks/hooks.json
 # ---------------------------------------------------------------------------
 cd "${REPO_ROOT}"
 echo "[dryrun] packing tarball (prepack regenerates root manifests)..."
@@ -118,15 +118,24 @@ else
   echo "  [PASS] no dist/ in tarball (package root is the plugin)"
 fi
 
-# The inline-hooks workaround MUST be present, and every referenced entry-point
-# file must exist under the plugin root.
-if python3 - "${ROOT}/.claude-plugin/plugin.json" "${ROOT}" <<'PY'
+# Hooks are declared ONLY in hooks/hooks.json. plugin.json must NOT embed an
+# inline 'hooks' block -- CC reads both, so an inline block double-registers
+# every hook. Assert its absence, and assert every entry point referenced by
+# hooks/hooks.json exists under the plugin root.
+if python3 - "${ROOT}/.claude-plugin/plugin.json" "${ROOT}/hooks/hooks.json" "${ROOT}" <<'PY'
 import json, os, re, sys
 
-plugin_json, root = sys.argv[1], sys.argv[2]
-data = json.load(open(plugin_json))
+plugin_json, hooks_json, root = sys.argv[1], sys.argv[2], sys.argv[3]
+
+plugin = json.load(open(plugin_json))
+assert "hooks" not in plugin, (
+    "plugin.json embeds an inline 'hooks' block -- hooks must live only in "
+    "hooks/hooks.json (an inline block double-registers every hook)"
+)
+
+data = json.load(open(hooks_json))
 hooks = data.get("hooks")
-assert isinstance(hooks, dict) and hooks, "plugin.json is missing a non-empty inline 'hooks' block"
+assert isinstance(hooks, dict) and hooks, "hooks/hooks.json is missing a non-empty 'hooks' block"
 
 missing = []
 for event, entries in hooks.items():
@@ -135,13 +144,13 @@ for event, entries in hooks.items():
             m = re.search(r"\$\{CLAUDE_PLUGIN_ROOT\}/(\S+\.py)", h.get("command", ""))
             if m and not os.path.isfile(os.path.join(root, m.group(1))):
                 missing.append(m.group(1))
-assert not missing, f"inline hook entry points not found under plugin root: {sorted(set(missing))}"
-print(f"  inline hooks: {len(hooks)} events, all entry points resolve")
+assert not missing, f"hook entry points not found under plugin root: {sorted(set(missing))}"
+print(f"  hooks.json: {len(hooks)} events, all entry points resolve; plugin.json has no inline hooks")
 PY
 then
-  echo "  [PASS] inline hooks block valid + entry points resolve"
+  echo "  [PASS] hooks declared once (hooks.json only) + entry points resolve"
 else
-  echo "  [FAIL] inline hooks block invalid or entry points missing"
+  echo "  [FAIL] hooks declaration invalid (inline block present or entry points missing)"
   fail=1
 fi
 
