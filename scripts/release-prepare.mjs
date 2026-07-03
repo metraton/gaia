@@ -94,9 +94,25 @@ function bumpMarketplace(rel, version) {
   const plugins = data.plugins || [];
   if (plugins.length === 0) throw new Error(`${rel}: no plugins[] to bump`);
   const befores = plugins.map((p) => `${p.name}=${p.version}`);
-  for (const plugin of plugins) plugin.version = version;
+  const tag = `v${version}`;
+  const refUpdates = [];
+  for (const plugin of plugins) {
+    plugin.version = version;
+    // Pin the source to the release tag for git/github sources so
+    // `/plugin install` serves a fixed, reproducible tag instead of tracking
+    // moving default-branch HEAD. Bumped atomically with the version so the
+    // ref can never go stale (the earlier flagged follow-up). Guard: only
+    // git/github object sources carry a ref -- npm/local sources must not.
+    const src = plugin.source;
+    if (src && typeof src === 'object' &&
+        (src.source === 'github' || src.source === 'git')) {
+      src.ref = tag;
+      refUpdates.push(`${plugin.name}.source.ref=${tag}`);
+    }
+  }
   writeText(rel, JSON.stringify(data, null, 2) + '\n');
-  return `${rel}: [${befores.join(', ')}] -> all ${version}`;
+  const refNote = refUpdates.length ? ` (${refUpdates.join(', ')})` : '';
+  return `${rel}: [${befores.join(', ')}] -> all ${version}${refNote}`;
 }
 
 function bumpPyproject(rel, version) {

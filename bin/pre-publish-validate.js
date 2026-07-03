@@ -601,9 +601,24 @@ class PrePublishValidator {
           if (plugin.version !== expectedVersion) {
             versionMismatches.push(`marketplace/${plugin.name}: ${plugin.version}`);
           }
+          // For git/github object sources a `source.ref` pins `/plugin install`
+          // to a fixed release tag (`v<version>`). release:prepare's
+          // bumpMarketplace writes it atomically with the version. Tolerant
+          // when absent (refless resolves the repo's default HEAD -- a valid
+          // pre-pin state); strict when present so a stale/hand-edited ref that
+          // would serve the wrong tag is caught here rather than after publish.
+          const src = plugin.source;
+          if (src && typeof src === 'object' &&
+              (src.source === 'github' || src.source === 'git') &&
+              src.ref !== undefined) {
+            const expectedRef = `v${expectedVersion}`;
+            if (src.ref !== expectedRef) {
+              versionMismatches.push(`marketplace/${plugin.name}.source.ref: ${src.ref}`);
+            }
+          }
         }
         if (!versionMismatches.some(m => m.startsWith('marketplace/'))) {
-          this.log(`  ✓ marketplace.json plugin versions match`, 'success');
+          this.log(`  ✓ marketplace.json plugin versions${marketplaceData.plugins.some(p => p.source && p.source.ref) ? ' + source.ref pins' : ''} match`, 'success');
         }
       }
 
