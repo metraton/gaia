@@ -810,7 +810,12 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     session_id       TEXT,                        -- CLAUDE_SESSION_ID at SubagentStop time
     workspace        TEXT NOT NULL,               -- FK -> workspaces.name
     brief_id         INTEGER,                     -- NULLABLE FK -> briefs.id; EXTENSION_POINT
-    task_status      TEXT NOT NULL,               -- resolved plan_status from contract envelope
+    task_status      TEXT NOT NULL               -- resolved plan_status from contract envelope
+                     -- v22: CHECK mirrors the episodes.plan_status enum (the
+                     -- canonical plan_status values -- see agent-protocol
+                     -- SKILL.md and handoff_persister.py, which writes
+                     -- envelope["agent_status"]["plan_status"] verbatim here).
+                     CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     FOREIGN KEY (workspace) REFERENCES workspaces(name),
