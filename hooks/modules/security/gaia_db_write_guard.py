@@ -8,8 +8,13 @@ Pattern detected:
     sqlite3\\s+.*(gaia\\.db|~/\\.gaia/.*\\.db).*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)
     case-insensitive, inside quotes / heredocs.
 
-Read-only SQL (SELECT) is allowed. Bypass is possible via T3 approval grant
-for legitimate cases (manual migrations, debug ops).
+Read-only SQL (SELECT) is allowed. The write block is categorical and NOT
+approvable -- like blocked_commands.py, it denies with SecurityTier.T3_BLOCKED
+and no approval_id, so there is no T3 grant that lifts it. Legitimate cases
+go through the sanctioned paths instead:
+    - DDL / migrations: scripts/bootstrap_database.sh and tools/migration/*
+    - data writes: the `gaia context` CLI / update_contracts, backed by the
+      typed API in gaia/store/writer.py (which enforces _is_authorized())
 
 Public API:
     is_db_write_attempt(command: str) -> bool
