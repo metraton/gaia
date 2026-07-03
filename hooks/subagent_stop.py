@@ -24,7 +24,6 @@ Business logic modules (called by the adapter):
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -37,23 +36,11 @@ if _pkg_root not in sys.path:
 # Adapter layer
 from adapters.registry import get_adapter
 from modules.core.hook_entry import run_hook
+from modules.core.logging_setup import configure_hook_logging
 
-# Configure structured logging with file handler
-try:
-    from modules.core.paths import get_logs_dir
-    _log_dir = get_logs_dir()
-except ImportError:
-    _log_dir = Path.cwd() / ".claude" / "logs"
-    _log_dir.mkdir(parents=True, exist_ok=True)
-
-_log_file = _log_dir / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [subagent_stop] %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(_log_file),
-    ]
-)
+# Configure logging -- file handler only when GAIA_DEBUG is set; no
+# hooks-*.log is written by default (see modules.core.logging_setup).
+configure_hook_logging("subagent_stop")
 logger = logging.getLogger(__name__)
 
 

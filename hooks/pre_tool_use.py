@@ -17,14 +17,13 @@ import sys
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
 
 _hooks_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_hooks_dir))
 _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
-from modules.core.paths import get_logs_dir
+from modules.core.logging_setup import configure_hook_logging
 
 # Adapter layer -- get_adapter() is the single construction point (registry),
 # so this entry point never names the concrete host class.
@@ -32,15 +31,9 @@ from adapters.registry import get_adapter
 from modules.core.stdin import has_stdin_data
 from adapters.utils import warn_if_dual_channel
 
-# Configure logging -- all hooks share hooks-YYYY-MM-DD.log for easy tailing
-log_file = get_logs_dir() / f"hooks-{datetime.now().strftime('%Y-%m-%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [pre_tool_use] %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-    ]
-)
+# Configure logging -- file handler only when GAIA_DEBUG is set (see
+# modules.core.logging_setup); no hooks-*.log is written by default.
+configure_hook_logging("pre_tool_use")
 logger = logging.getLogger(__name__)
 
 

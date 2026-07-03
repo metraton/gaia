@@ -311,11 +311,15 @@ def _print_human(result: dict, *, preuninstall: bool, dry_run: bool) -> None:
     for rel in symlinks.get("removed", []):
         verb = "Would remove symlink" if dry_run else "Removed symlink"
         print(f"  {verb}: {rel}")
-    for action in retention:
-        verb = "Would prune" if dry_run else "Pruned"
-        path = action.get("path", "?")
-        label = action.get("label", "")
-        print(f"  {verb}: {path} ({label})")
+    if retention:
+        # These are routine log-hygiene prunes applied on the way out, NOT
+        # part of the uninstall teardown -- the header keeps that distinct.
+        print("\n  Retention policy (routine log hygiene, not part of uninstall):")
+        for action in retention:
+            verb = "Would prune" if dry_run else "Pruned"
+            path = action.get("path", "?")
+            label = action.get("label", "")
+            print(f"    {verb}: {path} ({label})")
 
     print()
     snapshot = result.get("snapshot") or {}

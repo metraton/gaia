@@ -75,14 +75,6 @@ RETENTION_POLICY = [
         "label": "Hook logs",
     },
     {
-        "key": "monthlyMetrics",
-        "type": "files",
-        "pattern": "metrics-*.jsonl",
-        "dir": ".claude/metrics",
-        "max_days": 90,
-        "label": "Monthly metrics",
-    },
-    {
         "key": "responseContract",
         "type": "dirs",
         "dir": ".claude/session/active/response-contract",
@@ -731,7 +723,6 @@ def cmd_cleanup(args) -> int:
     retention_policy_info = {
         "audit_logs_days": 30,
         "hook_logs_days": 14,
-        "monthly_metrics_days": 90,
         "response_contracts_days": 7,
         "episodic_episodes_days": 90,
         "workflow_metrics_days": 90,
@@ -746,7 +737,6 @@ def cmd_cleanup(args) -> int:
             print("\nRetention policy:")
             print("  Audit logs:          30 days")
             print("  Hook logs:           14 days")
-            print("  Monthly metrics:     90 days")
             print("  Response contracts:   7 days")
             print("  Episodic episodes:   90 days")
             print("  Workflow metrics:    90 days")
@@ -842,12 +832,11 @@ def cmd_cleanup(args) -> int:
         if anything_done:
             status = "Cleanup preview complete" if dry_run else "Cleanup completed"
             print(f"\n{status}")
-            print("\nPreserved data:")
+            print("\nDirectories Gaia does not remove (files within them are pruned by retention policy, not deleted outright):")
             print("  .claude/logs/")
             print("  .claude/tests/")
             print("  .claude/project-context/")
             print("  .claude/session/")
-            print("  .claude/metrics/")
         else:
             print("  Nothing to clean up")
         print()
