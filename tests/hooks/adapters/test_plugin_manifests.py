@@ -94,27 +94,23 @@ class TestPluginJson:
             f"package.json={package_data['version']}"
         )
 
-    def test_plugin_json_has_inline_hooks(self):
-        """plugin.json MUST embed an inline 'hooks' block.
+    def test_plugin_json_has_no_inline_hooks(self):
+        """plugin.json must NOT embed an inline 'hooks' block.
 
-        Under the `source: npm` delivery model the package ROOT is the plugin,
-        and the root .claude-plugin/plugin.json is a GENERATED artifact
-        (scripts/build-plugin.py --manifests-only, run at prepack /
-        release:prepare). Hooks are embedded inline as the ${CLAUDE_PLUGIN_ROOT}
-        workaround: CC then loads them from the plugin cache, bypassing the
-        install-time path-expansion bug where ${CLAUDE_PLUGIN_ROOT} resolved to
-        $CWD/.claude/ instead of the plugin cache dir. See
+        Hooks are declared in exactly ONE place -- hooks/hooks.json (the
+        standard plugin convention Claude Code reads). An earlier design also
+        embedded them inline here as a ${CLAUDE_PLUGIN_ROOT} workaround, but CC
+        reads BOTH sources, so every hook registered twice (17 -> 34) and every
+        event (SessionStart, SessionEnd, ...) fired twice. Dropping the inline
+        block is the fix; this test guards against the regression. See
         generate_plugin_json() in scripts/build-plugin.py.
         """
         data = json.loads(self.plugin_path.read_text())
-        assert "hooks" in data, (
-            "plugin.json must embed an inline 'hooks' block for the source:npm "
-            "plugin surface -- run `npm run generate:plugin-root` to regenerate it"
+        assert "hooks" not in data, (
+            "plugin.json must NOT embed an inline 'hooks' block -- hooks belong "
+            "only in hooks/hooks.json. An inline block double-registers every "
+            "hook. Run `npm run generate:plugin-root` to regenerate it."
         )
-        assert isinstance(data["hooks"], dict) and data["hooks"], (
-            "plugin.json 'hooks' must be a non-empty object"
-        )
-        assert "PreToolUse" in data["hooks"], "inline hooks missing PreToolUse event"
 
     def test_plugin_json_has_engines(self):
         """plugin.json must have engines.claude-code field with >=2.1.0."""
