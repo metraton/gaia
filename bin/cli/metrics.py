@@ -24,8 +24,9 @@ Data sources:
                                breakdown, top commands)
 
 Flags:
-  --agent NAME    Show detail view for a specific agent
-  --json          Machine-readable output
+  --agent NAME      Show detail view for a specific agent
+  --workspace NAME  Workspace identity override (default: gaia.project.current())
+  --json            Machine-readable output
 """
 
 import fnmatch
@@ -108,10 +109,12 @@ def _read_audit_logs(root: Path) -> list:
 # .claude/logs/audit-*.jsonl and are untouched.
 # ---------------------------------------------------------------------------
 
-def _open_store(root: Path):
+def _open_store(root: Path, workspace_override: str = None):
     """Resolve (connection, workspace) against gaia.db, or (None, None).
 
-    Mirrors the connection setup in bin/cli/history.py._read_workflow_metrics.
+    ``workspace_override`` -- explicit ``--workspace`` value from the CLI.
+    When set, it wins over ``gaia.project.current()`` resolution. Mirrors the
+    connection setup in bin/cli/history.py._read_workflow_metrics.
     """
     import sys as _sys
     _BIN_DIR = Path(__file__).resolve().parent.parent
@@ -126,10 +129,13 @@ def _open_store(root: Path):
     except ImportError:
         return None, None
 
-    try:
-        ws = _project_current(cwd=root)
-    except Exception:
-        ws = None
+    if workspace_override:
+        ws = workspace_override
+    else:
+        try:
+            ws = _project_current(cwd=root)
+        except Exception:
+            ws = None
 
     try:
         con = _connect()
@@ -138,7 +144,7 @@ def _open_store(root: Path):
     return con, ws
 
 
-def _read_workflow_metrics(root: Path) -> list:
+def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
     """Agent-session rows from the gaia.db ``episodes`` table (T6 migration).
 
     Returns episode dicts carrying agent/timestamp/plan_status/exit_code/
@@ -146,7 +152,7 @@ def _read_workflow_metrics(root: Path) -> list:
     agent-outcome, and token-usage calculators consume. Replaces the dead
     episodic-memory/index.json + workflow-episodic-memory/metrics.jsonl reads.
     """
-    con, ws = _open_store(root)
+    con, ws = _open_store(root, workspace_override)
     if con is None:
         return []
     try:
@@ -175,7 +181,7 @@ def _read_workflow_metrics(root: Path) -> list:
         return []
 
 
-def _read_run_snapshots(root: Path) -> list:
+def _read_run_snapshots(root: Path, workspace_override: str = None) -> list:
     """Per-episode workflow-metrics blobs from ``episodes.context_metrics``.
 
     T4 folded the old run-snapshots.jsonl signals (context_snapshot,
@@ -185,7 +191,7 @@ def _read_run_snapshots(root: Path) -> list:
     context-update, and runtime-skill calculators keep working. Older migrated
     rows that stored the metrics dict at the top level are handled too.
     """
-    con, ws = _open_store(root)
+    con, ws = _open_store(root, workspace_override)
     if con is None:
         return []
     try:
@@ -238,7 +244,7 @@ def _read_agent_skill_snapshots(root: Path) -> list:
     return []
 
 
-def _read_anomaly_entries(root: Path) -> list:
+def _read_anomaly_entries(root: Path, workspace_override: str = None) -> list:
     """Anomaly entries grouped per episode from the ``episode_anomalies`` table.
 
     T4 migrated anomalies from workflow-episodic-memory/anomalies.jsonl into
@@ -246,7 +252,7 @@ def _read_anomaly_entries(root: Path) -> list:
     regroups them into the per-session shape the anomaly-summary calculator
     expects: ``{timestamp, anomalies: [{type}, ...], metrics: {agent}}``.
     """
-    con, ws = _open_store(root)
+    con, ws = _open_store(root, workspace_override)
     if con is None:
         return []
     try:
@@ -1107,6 +1113,10 @@ def register(subparsers):
         help="Show detail view for a specific agent",
     )
     p.add_argument(
+        "--workspace", default=None,
+        help="Workspace identity override. Default: gaia.project.current().",
+    )
+    p.add_argument(
         "--json",
         action="store_true",
         default=False,
@@ -1121,6 +1131,7 @@ def cmd_metrics(args) -> int:
     claude_dir = root / ".claude"
     agent_name = getattr(args, "agent", None)
     as_json = getattr(args, "json", False)
+    workspace_override = getattr(args, "workspace", None)
 
     if not claude_dir.exists():
         if as_json:
@@ -1131,10 +1142,10 @@ def cmd_metrics(args) -> int:
         return 1
 
     audit_logs = _read_audit_logs(root)
-    workflow_metrics = _read_workflow_metrics(root)
-    run_snapshots = _read_run_snapshots(root)
+    workflow_metrics = _read_workflow_metrics(root, workspace_override)
+    run_snapshots = _read_run_snapshots(root, workspace_override)
     skill_snapshots = _read_agent_skill_snapshots(root)
-    anomaly_entries = _read_anomaly_entries(root)
+    anomaly_entries = _read_anomaly_entries(root, workspace_override)
 
     if not audit_logs and not workflow_metrics and not run_snapshots and not skill_snapshots and not anomaly_entries:
         if as_json:

@@ -412,6 +412,22 @@ class TestRegisterSubcommand(unittest.TestCase):
         args = parser.parse_args(["metrics", "--json"])
         self.assertTrue(args.json)
 
+    def test_workspace_flag_default_none(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["metrics"])
+        self.assertIsNone(args.workspace)
+
+    def test_workspace_flag_explicit(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["metrics", "--workspace", "other-ws"])
+        self.assertEqual(args.workspace, "other-ws")
+
 
 class TestDbBackedReaders(unittest.TestCase):
     """T6 migration: readers now query gaia.db, not .claude/*.jsonl files.
@@ -450,6 +466,28 @@ class TestDbBackedReaders(unittest.TestCase):
             root = self._root(Path(tmp))
             with patch("cli.metrics._open_store", return_value=(None, None)):
                 self.assertEqual(_read_workflow_metrics(root), [])
+
+    def test_workflow_metrics_workspace_override_wins_over_project_current(self):
+        """Explicit --workspace beats gaia.project.current() resolution."""
+        episodes = [
+            {"episode_id": "ep-1", "agent": "developer", "workspace": "me",
+             "timestamp": "2026-04-15T10:00:00Z"},
+            {"episode_id": "ep-2", "agent": "gaia-operator", "workspace": "other-ws",
+             "timestamp": "2026-04-15T11:00:00Z"},
+        ]
+        con = _make_in_memory_db(episodes)
+        import gaia.store.writer as _writer_mod
+        import gaia.project as _project_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with patch.object(_writer_mod, "_connect", lambda *a, **k: con):
+                # project.current() resolves to "me" -- the default path --
+                # but the explicit override must take precedence.
+                with patch.object(_project_mod, "current", lambda **k: "me"):
+                    result = _read_workflow_metrics(root, workspace_override="other-ws")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["agent"], "gaia-operator")
 
     def test_run_snapshots_extract_metrics_blob(self):
         blob = {"metrics": {
@@ -540,11 +578,12 @@ class TestCmdMetrics(unittest.TestCase):
         self._open_patch.start()
         self.addCleanup(self._open_patch.stop)
 
-    def _make_args(self, agent=None, as_json=False):
+    def _make_args(self, agent=None, as_json=False, workspace=None):
         import argparse
         ns = argparse.Namespace()
         ns.agent = agent
         ns.json = as_json
+        ns.workspace = workspace
         return ns
 
     def test_no_claude_dir_returns_1(self):
@@ -672,6 +711,25 @@ class TestCmdMetrics(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("developer", output)
             self.assertIn("Invocation History", output)
+
+    def test_workspace_flag_forwarded_to_readers(self):
+        """cmd_metrics passes args.workspace through to every DB-backed reader."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            args = self._make_args(as_json=True, workspace="other-ws")
+            with patch("cli.metrics._find_project_root", return_value=root), \
+                    patch("cli.metrics._read_workflow_metrics", return_value=[]) as m_wf, \
+                    patch("cli.metrics._read_run_snapshots", return_value=[]) as m_rs, \
+                    patch("cli.metrics._read_anomaly_entries", return_value=[]) as m_ae:
+                import io
+                from contextlib import redirect_stdout
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_metrics(args)
+            self.assertEqual(rc, 0)
+            m_wf.assert_called_once_with(root, "other-ws")
+            m_rs.assert_called_once_with(root, "other-ws")
+            m_ae.assert_called_once_with(root, "other-ws")
 
 
 if __name__ == "__main__":
