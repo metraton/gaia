@@ -15,13 +15,13 @@ Displays system metrics dashboard:
 With --agent NAME shows a detail view for that agent.
 
 Data sources:
-  ~/.gaia/gaia.db  (substrate SQLite, primary for agent sessions)
-  .claude/logs/audit-*.jsonl  (security tier events)
-  .claude/project-context/episodic-memory/index.json  (legacy fallback)
-  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (legacy fallback)
-  .claude/project-context/workflow-episodic-memory/anomalies.jsonl
-  .claude/project-context/workflow-episodic-memory/run-snapshots.jsonl
-  .claude/project-context/workflow-episodic-memory/agent-skills.jsonl
+  ~/.gaia/gaia.db  (substrate SQLite)
+    - episodes table          -> agent invocations, outcomes, token usage,
+                                 runtime skills, context snapshots/updates
+                                 (context_metrics JSON column)
+    - episode_anomalies table -> anomaly summary
+  .claude/logs/audit-*.jsonl  (security tier events -> tier usage, command
+                               breakdown, top commands)
 
 Flags:
   --agent NAME    Show detail view for a specific agent
@@ -94,38 +94,199 @@ def _read_audit_logs(root: Path) -> list:
     return all_entries
 
 
-def _read_workflow_metrics(root: Path) -> list:
-    """Primary: episodic-memory/index.json; fallback: workflow metrics.jsonl."""
-    index_path = root / ".claude" / "project-context" / "episodic-memory" / "index.json"
-    if index_path.exists():
-        try:
-            data = json.loads(index_path.read_text(encoding="utf-8"))
-            episodes = [e for e in (data.get("episodes") or []) if e.get("agent")]
-            if episodes:
-                return episodes
-        except (json.JSONDecodeError, OSError):
-            pass
+# ---------------------------------------------------------------------------
+# DB-backed readers (T6 episodic-workflow-to-db migration)
+#
+# T4 migrated the workflow episodic writers from JSONL/JSON files to the
+# gaia.db ``episodes`` + ``episode_anomalies`` tables. These readers were the
+# missing half of that migration (T6): they now query gaia.db via
+# gaia.store.reader instead of the dead .claude/project-context/*.jsonl files.
+# The connection setup mirrors bin/cli/history.py's own T6 migration exactly:
+# resolve the workspace via gaia.project.current, open the store connection,
+# and fall back to [] on any import/connection failure. The three audit-log
+# sections (tier usage, command breakdown, top commands) still read
+# .claude/logs/audit-*.jsonl and are untouched.
+# ---------------------------------------------------------------------------
 
-    metrics_path = root / ".claude" / "project-context" / "workflow-episodic-memory" / "metrics.jsonl"
-    return [e for e in _read_jsonl(metrics_path) if e.get("agent")]
+def _open_store(root: Path):
+    """Resolve (connection, workspace) against gaia.db, or (None, None).
+
+    Mirrors the connection setup in bin/cli/history.py._read_workflow_metrics.
+    """
+    import sys as _sys
+    _BIN_DIR = Path(__file__).resolve().parent.parent
+    _REPO_ROOT = _BIN_DIR.parent
+    for p in (_REPO_ROOT, str(_REPO_ROOT)):
+        if str(p) not in _sys.path:
+            _sys.path.insert(0, str(p))
+
+    try:
+        from gaia.store.reader import _connect
+        from gaia.project import current as _project_current
+    except ImportError:
+        return None, None
+
+    try:
+        ws = _project_current(cwd=root)
+    except Exception:
+        ws = None
+
+    try:
+        con = _connect()
+    except Exception:
+        return None, None
+    return con, ws
+
+
+def _read_workflow_metrics(root: Path) -> list:
+    """Agent-session rows from the gaia.db ``episodes`` table (T6 migration).
+
+    Returns episode dicts carrying agent/timestamp/plan_status/exit_code/
+    output_length/output_tokens_approx -- the fields the agent-invocation,
+    agent-outcome, and token-usage calculators consume. Replaces the dead
+    episodic-memory/index.json + workflow-episodic-memory/metrics.jsonl reads.
+    """
+    con, ws = _open_store(root)
+    if con is None:
+        return []
+    try:
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT episode_id, workspace, timestamp, session_id, task_id, "
+                    "agent, type, title, plan_status, outcome, exit_code, "
+                    "duration_seconds, output_length, output_tokens_approx, tier "
+                    "FROM episodes WHERE workspace = ? AND agent IS NOT NULL "
+                    "ORDER BY timestamp DESC",
+                    (ws,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT episode_id, workspace, timestamp, session_id, task_id, "
+                    "agent, type, title, plan_status, outcome, exit_code, "
+                    "duration_seconds, output_length, output_tokens_approx, tier "
+                    "FROM episodes WHERE agent IS NOT NULL "
+                    "ORDER BY timestamp DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+    except Exception:
+        return []
 
 
 def _read_run_snapshots(root: Path) -> list:
-    return _read_jsonl(
-        root / ".claude" / "project-context" / "workflow-episodic-memory" / "run-snapshots.jsonl"
-    )
+    """Per-episode workflow-metrics blobs from ``episodes.context_metrics``.
+
+    T4 folded the old run-snapshots.jsonl signals (context_snapshot,
+    context_updated / *_sections, default_skills_snapshot, model, skills) into
+    the ``episodes.context_metrics`` JSON column under the ``metrics`` key.
+    This reader parses that blob per episode so the context-snapshot,
+    context-update, and runtime-skill calculators keep working. Older migrated
+    rows that stored the metrics dict at the top level are handled too.
+    """
+    con, ws = _open_store(root)
+    if con is None:
+        return []
+    try:
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT context_metrics FROM episodes "
+                    "WHERE workspace = ? AND context_metrics IS NOT NULL "
+                    "ORDER BY timestamp DESC",
+                    (ws,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT context_metrics FROM episodes "
+                    "WHERE context_metrics IS NOT NULL "
+                    "ORDER BY timestamp DESC"
+                ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+    snapshots = []
+    for r in rows:
+        raw = r["context_metrics"]
+        if not raw:
+            continue
+        try:
+            blob = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(blob, dict) and isinstance(blob.get("metrics"), dict):
+            snap = blob["metrics"]
+        else:
+            snap = blob
+        if isinstance(snap, dict):
+            snapshots.append(snap)
+    return snapshots
 
 
 def _read_agent_skill_snapshots(root: Path) -> list:
-    return _read_jsonl(
-        root / ".claude" / "project-context" / "workflow-episodic-memory" / "agent-skills.jsonl"
-    )
+    """Explicit per-agent skill snapshots.
+
+    The legacy agent-skills.jsonl (explicit snapshots) has no gaia.db
+    equivalent -- the runtime-skill summary now derives every profile from
+    each episode's ``default_skills_snapshot`` (supplied by
+    _read_run_snapshots). Returns [] so _calculate_runtime_skill_summary falls
+    back to those run-default profiles.
+    """
+    return []
 
 
 def _read_anomaly_entries(root: Path) -> list:
-    return _read_jsonl(
-        root / ".claude" / "project-context" / "workflow-episodic-memory" / "anomalies.jsonl"
-    )
+    """Anomaly entries grouped per episode from the ``episode_anomalies`` table.
+
+    T4 migrated anomalies from workflow-episodic-memory/anomalies.jsonl into
+    the ``episode_anomalies`` child table (one row per anomaly). This reader
+    regroups them into the per-session shape the anomaly-summary calculator
+    expects: ``{timestamp, anomalies: [{type}, ...], metrics: {agent}}``.
+    """
+    con, ws = _open_store(root)
+    if con is None:
+        return []
+    try:
+        try:
+            if ws:
+                rows = con.execute(
+                    "SELECT ea.episode_id AS episode_id, ea.timestamp AS timestamp, "
+                    "ea.type AS type, e.agent AS agent "
+                    "FROM episode_anomalies ea "
+                    "LEFT JOIN episodes e ON e.episode_id = ea.episode_id "
+                    "WHERE ea.workspace = ? "
+                    "ORDER BY ea.timestamp DESC",
+                    (ws,),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT ea.episode_id AS episode_id, ea.timestamp AS timestamp, "
+                    "ea.type AS type, e.agent AS agent "
+                    "FROM episode_anomalies ea "
+                    "LEFT JOIN episodes e ON e.episode_id = ea.episode_id "
+                    "ORDER BY ea.timestamp DESC"
+                ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+    grouped = {}
+    order = []
+    for r in rows:
+        ep = r["episode_id"]
+        if ep not in grouped:
+            grouped[ep] = {
+                "timestamp": r["timestamp"],
+                "anomalies": [],
+                "metrics": {"agent": r["agent"] or "unknown"},
+            }
+            order.append(ep)
+        grouped[ep]["anomalies"].append({"type": r["type"]})
+    return [grouped[ep] for ep in order]
 
 
 def _read_agent_definition(root: Path, agent_name: str) -> dict:
@@ -724,7 +885,7 @@ def _display_metrics(data: dict):
         print(f"  Error rate:    {error_stats['errors']}/{error_stats['total']} ({error_stats['error_rate']:.1f}%)")
 
     print("\n" + SEP)
-    print("Source: ~/.gaia/gaia.db  |  .claude/logs/audit-*.jsonl  |  episodic-memory/index.json (legacy)\n")
+    print("Source: ~/.gaia/gaia.db (episodes, episode_anomalies)  |  .claude/logs/audit-*.jsonl\n")
 
 
 def _display_agent_detail(root: Path, agent_name: str, data: dict):
@@ -804,7 +965,7 @@ def _display_agent_detail(root: Path, agent_name: str, data: dict):
 
     print("\nInvocation History  (last 7 days)")
     if not agent_sessions:
-        print("  no invocations found in episodic-memory/index.json")
+        print("  no invocations found in gaia.db episodes")
     else:
         print(
             f"  Total: {len(agent_sessions)} invocations  |  "
@@ -935,10 +1096,8 @@ def register(subparsers):
             "Display Gaia system metrics dashboard.\n"
             "\n"
             "Data sources:\n"
-            "  ~/.gaia/gaia.db  (substrate SQLite, primary for agent sessions)\n"
+            "  ~/.gaia/gaia.db  (episodes + episode_anomalies tables)\n"
             "  .claude/logs/audit-*.jsonl  (security tier events)\n"
-            "  .claude/project-context/episodic-memory/index.json  (legacy fallback)\n"
-            "  .claude/project-context/workflow-episodic-memory/  (legacy fallback)\n"
         ),
     )
     p.add_argument(

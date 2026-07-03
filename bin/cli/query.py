@@ -105,6 +105,57 @@ def _render_grouped_count(rows: list[dict], group_by: str | None) -> None:
         print(f"{(str(r.get(group_by) or '')):<{key_w}}  {r['count']}")
 
 
+def _fmt_int(n) -> str:
+    return "-" if n is None else f"{int(n):,}"
+
+
+def _render_metrics_agg(rows: list[dict], group_by: str | None) -> None:
+    """Render aggregate_metrics() output: avg compliance + token sums per group."""
+    if not rows:
+        print("(no results)")
+        return
+    key = group_by or "group"
+    key_vals = [str(r.get(group_by) or "(all)") if group_by else "(all)" for r in rows]
+    key_w = max(len(key.upper()), max(len(v) for v in key_vals))
+    header = (f"{key.upper():<{key_w}}  {'COUNT':>6}  {'AVG_COMPL':>9}  "
+              f"{'AVG_MS':>8}  {'IN_TOK':>12}  {'OUT_TOK':>12}  {'CACHE_RD':>14}")
+    print(header)
+    print("-" * len(header))
+    for r, kv in zip(rows, key_vals):
+        avg_c = "-" if r.get("avg_compliance_score") is None else f"{r['avg_compliance_score']:.1f}"
+        avg_ms = _fmt_int(r.get("avg_duration_ms"))
+        print(
+            f"{kv:<{key_w}}  {r['count']:>6}  {avg_c:>9}  {avg_ms:>8}  "
+            f"{_fmt_int(r.get('input_tokens')):>12}  "
+            f"{_fmt_int(r.get('output_tokens_real')):>12}  "
+            f"{_fmt_int(r.get('cache_read_tokens')):>14}"
+        )
+
+
+def _render_metrics_rows(rows: list[dict]) -> None:
+    """Render per-episode --metrics rows (agent, compliance, tokens, model)."""
+    if not rows:
+        print("(no results)")
+        return
+    agent_w = max(len("AGENT"), max(len(r.get("agent") or "") for r in rows))
+    header = (f"{'TIMESTAMP':<19}  {'AGENT':<{agent_w}}  {'COMPL':>5}  "
+              f"{'GR':>2}  {'IN_TOK':>10}  {'OUT_REAL':>10}  MODEL")
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        raw = r.get("raw") or {}
+        ts = (r.get("timestamp") or "")[:19]
+        cs = raw.get("compliance_score")
+        cs_s = "-" if cs is None else str(cs)
+        grade = raw.get("compliance_grade") or "-"
+        print(
+            f"{ts:<19}  {(r.get('agent') or ''):<{agent_w}}  {cs_s:>5}  "
+            f"{grade:>2}  {_fmt_int(raw.get('input_tokens')):>10}  "
+            f"{_fmt_int(raw.get('output_tokens_real')):>10}  "
+            f"{raw.get('model_used') or '-'}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -114,6 +165,7 @@ def cmd_query(args) -> int:
     from gaia.store.reader import (
         cross_surface_query,
         group_and_count,
+        aggregate_metrics,
         _extract_text_needle,
         _highlight_snippet,
         _row_text_for_snippet,
@@ -127,6 +179,12 @@ def cmd_query(args) -> int:
     group_by = getattr(args, "group_by", None)
     do_count = bool(getattr(args, "count", False))
     do_snippets = bool(getattr(args, "snippets", False))
+    do_metrics = bool(getattr(args, "metrics", False))
+
+    # --metrics projects context_metrics telemetry, which only lives on the
+    # episodes surface -- scope the query to it so the projection applies.
+    if do_metrics:
+        surface = "episodes"
 
     try:
         rows = cross_surface_query(
@@ -139,9 +197,31 @@ def cmd_query(args) -> int:
             agent=getattr(args, "agent", None),
             command_like=getattr(args, "command_like", None),
             failed=getattr(args, "failed", False),
+            metrics=do_metrics,
         )
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
+
+    # --metrics: project + optionally aggregate the per-turn telemetry.
+    if do_metrics:
+        if do_count or group_by:
+            try:
+                agg = aggregate_metrics(rows, group_by=group_by)
+            except ValueError as exc:
+                return _err(str(exc), as_json=as_json)
+            if as_json or fmt == "json":
+                print(json.dumps(agg, indent=2, default=str))
+                return 0
+            _render_metrics_agg(agg, group_by)
+            return 0
+        if as_json or fmt == "json":
+            print(json.dumps(rows, indent=2, default=str))
+            return 0
+        if fmt == "count":
+            print(len(rows))
+            return 0
+        _render_metrics_rows(rows)
+        return 0
 
     # --snippets: rewrite the summary field with highlighted fragments.
     # Applies only when there is a textual filter (command_like / type / agent).
@@ -189,6 +269,8 @@ _QUERY_EPILOG = """\
 Examples:
   gaia query --since=24h --failed
   gaia query --since=7d --command-like='%git push%' --group-by=day
+  gaia query --metrics --since=7d --group-by=agent
+  gaia query --metrics --agent=developer --since=24h
 """
 
 
@@ -255,6 +337,13 @@ def register(subparsers) -> None:
         "--snippets", action="store_true", default=False,
         help="Replace summary with [bracketed] fragments around the textual "
              "filter. No-op without --command-like / --type / --agent.",
+    )
+    p.add_argument(
+        "--metrics", action="store_true", default=False,
+        help="Project per-turn telemetry from episodes.context_metrics "
+             "(compliance_score, token counts, duration_ms, tool/api calls, "
+             "model). Forces --surface=episodes. Combine with --group-by / "
+             "--count for avg-compliance + token-sum rollups per agent/day/type.",
     )
     p.add_argument(
         "--format", default="table",

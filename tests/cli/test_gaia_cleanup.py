@@ -23,6 +23,7 @@ from cli.cleanup import (
     _find_project_root,
     _matches_pattern,
     _apply_retention_policy,
+    _truncate_jsonl,
     _clean_settings_local_json,
     _remove_claude_md,
     _remove_plugin_initialized,
@@ -240,6 +241,12 @@ class TestApplyRetentionPolicy(unittest.TestCase):
             self.assertFalse(legacy_log.exists())
 
     def test_truncates_jsonl_by_timestamp(self):
+        # NOTE: as of the T6 episodic-workflow-to-db migration, no
+        # RETENTION_POLICY entry targets a "truncate-jsonl" file anymore
+        # (workflowMetrics/anomalies were dead -- zero writers, removed
+        # analogous to monthlyMetrics in 8a7078e). The generic _truncate_jsonl
+        # mechanism is still reusable infra, so it is exercised directly here
+        # rather than through _apply_retention_policy/RETENTION_POLICY.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wem_dir = root / ".claude" / "project-context" / "workflow-episodic-memory"
@@ -250,13 +257,25 @@ class TestApplyRetentionPolicy(unittest.TestCase):
             new_entry = json.dumps({"timestamp": "2026-04-15T00:00:00Z", "data": "new"})
             metrics_file.write_text(f"{old_entry}\n{new_entry}\n")
 
-            actions = _apply_retention_policy(root, dry_run=False)
+            actions = _truncate_jsonl(
+                root,
+                ".claude/project-context/workflow-episodic-memory/metrics.jsonl",
+                max_days=90,
+                label="Workflow metrics (test)",
+                dry_run=False,
+            )
             truncate_actions = [a for a in actions if a["action"] == "truncate-jsonl"]
             self.assertTrue(len(truncate_actions) >= 1)
 
             remaining = metrics_file.read_text()
             self.assertIn("new", remaining)
             self.assertNotIn("old", remaining)
+
+    def test_retention_policy_has_no_dead_truncate_jsonl_targets(self):
+        """workflowMetrics/anomalies keys (zero writers since T4) are gone."""
+        keys = {p["key"] for p in RETENTION_POLICY}
+        self.assertNotIn("workflowMetrics", keys)
+        self.assertNotIn("anomalies", keys)
 
 
 class TestRegisterSubcommand(unittest.TestCase):

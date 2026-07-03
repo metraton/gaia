@@ -1,11 +1,23 @@
 """
 Tests for bin/cli/metrics.py -- gaia metrics subcommand.
+
+T6 migration (episodic-workflow-to-db): the workflow-metric readers
+(_read_workflow_metrics, _read_run_snapshots, _read_agent_skill_snapshots,
+_read_anomaly_entries) now query the gaia.db episodes + episode_anomalies
+tables instead of the dead .claude/project-context/*.jsonl files, mirroring
+bin/cli/history.py. Reader tests seed an in-memory DB and patch
+gaia.store.writer._connect (which gaia.store.reader._connect delegates to)
+plus gaia.project.current. The three audit-log sections (tier usage, command
+breakdown, top commands) still read audit-*.jsonl and keep their filesystem
+fixtures.
 """
 
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +30,8 @@ from cli.metrics import (
     _find_project_root,
     _read_audit_logs,
     _read_workflow_metrics,
+    _read_run_snapshots,
+    _read_agent_skill_snapshots,
     _read_anomaly_entries,
     _classify_command,
     _extract_command_label,
@@ -42,17 +56,108 @@ def _write_audit_jsonl(logs_dir: Path, entries: list, filename: str = "audit-202
     (logs_dir / filename).write_text(lines)
 
 
-def _write_index(claude_dir: Path, episodes: list):
-    ep_dir = claude_dir / "project-context" / "episodic-memory"
-    ep_dir.mkdir(parents=True, exist_ok=True)
-    (ep_dir / "index.json").write_text(json.dumps({"episodes": episodes}))
+def _make_in_memory_db(episodes: list, anomalies: list = None) -> sqlite3.Connection:
+    """In-memory SQLite DB with episodes + episode_anomalies seeded.
+
+    ``episodes`` accepts dicts with optional ``context_metrics`` (a dict, which
+    is JSON-serialized to match the real column). ``anomalies`` accepts dicts
+    with episode_id/workspace/timestamp/type.
+    """
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute(
+        """CREATE TABLE episodes (
+            episode_id TEXT PRIMARY KEY,
+            workspace TEXT,
+            timestamp TEXT,
+            session_id TEXT,
+            task_id TEXT,
+            agent TEXT,
+            type TEXT,
+            title TEXT,
+            plan_status TEXT,
+            outcome TEXT,
+            exit_code INTEGER,
+            duration_seconds REAL,
+            output_length INTEGER,
+            output_tokens_approx INTEGER,
+            tier TEXT,
+            context_metrics TEXT
+        )"""
+    )
+    con.execute(
+        """CREATE TABLE episode_anomalies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_id TEXT,
+            workspace TEXT,
+            timestamp TEXT,
+            type TEXT,
+            severity TEXT,
+            message TEXT,
+            payload TEXT
+        )"""
+    )
+    for i, ep in enumerate(episodes):
+        cm = ep.get("context_metrics")
+        if isinstance(cm, (dict, list)):
+            cm = json.dumps(cm)
+        con.execute(
+            "INSERT INTO episodes (episode_id, workspace, timestamp, session_id, "
+            "task_id, agent, type, title, plan_status, outcome, exit_code, "
+            "duration_seconds, output_length, output_tokens_approx, tier, "
+            "context_metrics) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                ep.get("episode_id", f"ep-{i}"),
+                ep.get("workspace", "me"),
+                ep.get("timestamp"),
+                ep.get("session_id"),
+                ep.get("task_id"),
+                ep.get("agent"),
+                ep.get("type"),
+                ep.get("title"),
+                ep.get("plan_status"),
+                ep.get("outcome"),
+                ep.get("exit_code"),
+                ep.get("duration_seconds"),
+                ep.get("output_length"),
+                ep.get("output_tokens_approx"),
+                ep.get("tier"),
+                cm,
+            ),
+        )
+    for an in (anomalies or []):
+        con.execute(
+            "INSERT INTO episode_anomalies (episode_id, workspace, timestamp, "
+            "type, severity, message, payload) VALUES (?,?,?,?,?,?,?)",
+            (
+                an.get("episode_id", "ep-0"),
+                an.get("workspace", "me"),
+                an.get("timestamp"),
+                an.get("type"),
+                an.get("severity"),
+                an.get("message"),
+                an.get("payload"),
+            ),
+        )
+    con.commit()
+    return con
 
 
-def _write_anomalies(claude_dir: Path, entries: list):
-    wem_dir = claude_dir / "project-context" / "workflow-episodic-memory"
-    wem_dir.mkdir(parents=True, exist_ok=True)
-    lines = "\n".join(json.dumps(e) for e in entries) + "\n"
-    (wem_dir / "anomalies.jsonl").write_text(lines)
+@contextmanager
+def _patch_store(con):
+    """Patch gaia.store.writer._connect + gaia.project.current for reader tests."""
+    import gaia.store.writer as _writer_mod
+    import gaia.project as _project_mod
+
+    def _fake_connect(*a, **k):
+        return con
+
+    def _fake_current(**kwargs):
+        return None
+
+    with patch.object(_writer_mod, "_connect", _fake_connect):
+        with patch.object(_project_mod, "current", _fake_current):
+            yield
 
 
 class TestClassifyCommand(unittest.TestCase):
@@ -308,7 +413,133 @@ class TestRegisterSubcommand(unittest.TestCase):
         self.assertTrue(args.json)
 
 
+class TestDbBackedReaders(unittest.TestCase):
+    """T6 migration: readers now query gaia.db, not .claude/*.jsonl files.
+
+    Each test seeds a fresh in-memory DB and patches gaia.store.writer._connect
+    (delegated to by gaia.store.reader._connect) + gaia.project.current(None).
+    A reader closes its connection after use, so one reader is exercised per DB.
+    """
+
+    def _root(self, tmp: Path) -> Path:
+        (tmp / ".claude").mkdir()
+        return tmp
+
+    def test_workflow_metrics_reads_episodes(self):
+        episodes = [
+            {"episode_id": "ep-1", "agent": "developer",
+             "timestamp": "2026-04-15T10:00:00Z", "plan_status": "COMPLETE",
+             "output_length": 1200, "output_tokens_approx": 300, "exit_code": 0},
+            {"episode_id": "ep-2", "agent": "gaia-operator",
+             "timestamp": "2026-04-15T11:00:00Z", "plan_status": "BLOCKED"},
+        ]
+        con = _make_in_memory_db(episodes)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                result = _read_workflow_metrics(root)
+        self.assertEqual(len(result), 2)
+        agents = {r["agent"] for r in result}
+        self.assertEqual(agents, {"developer", "gaia-operator"})
+        dev = next(r for r in result if r["agent"] == "developer")
+        self.assertEqual(dev["output_length"], 1200)
+        self.assertEqual(dev["output_tokens_approx"], 300)
+
+    def test_workflow_metrics_empty_on_connect_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with patch("cli.metrics._open_store", return_value=(None, None)):
+                self.assertEqual(_read_workflow_metrics(root), [])
+
+    def test_run_snapshots_extract_metrics_blob(self):
+        blob = {"metrics": {
+            "agent": "developer",
+            "timestamp": "2026-04-15T10:00:00Z",
+            "default_skills_snapshot": {"model": "inherit",
+                                        "skills": ["agent-protocol"],
+                                        "skills_count": 1, "tools": ["Read"]},
+            "context_updated": True,
+            "context_sections_updated": ["application_services"],
+            "context_rejected_sections": [],
+            "context_snapshot": {},
+        }}
+        episodes = [{"episode_id": "ep-1", "agent": "developer",
+                     "timestamp": "2026-04-15T10:00:00Z", "context_metrics": blob}]
+        con = _make_in_memory_db(episodes)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                snaps = _read_run_snapshots(root)
+        self.assertEqual(len(snaps), 1)
+        self.assertEqual(snaps[0]["agent"], "developer")
+        self.assertTrue(snaps[0]["context_updated"])
+        self.assertEqual(snaps[0]["default_skills_snapshot"]["skills_count"], 1)
+
+    def test_run_snapshots_handles_top_level_metrics_shape(self):
+        # Older migrated rows may store the metrics dict at the top level.
+        blob = {"agent": "developer", "timestamp": "2026-04-15T10:00:00Z",
+                "context_updated": False}
+        episodes = [{"episode_id": "ep-1", "agent": "developer",
+                     "timestamp": "2026-04-15T10:00:00Z", "context_metrics": blob}]
+        con = _make_in_memory_db(episodes)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                snaps = _read_run_snapshots(root)
+        self.assertEqual(len(snaps), 1)
+        self.assertEqual(snaps[0]["agent"], "developer")
+
+    def test_agent_skill_snapshots_always_empty(self):
+        # No gaia.db equivalent for explicit agent-skills.jsonl; returns [].
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            self.assertEqual(_read_agent_skill_snapshots(root), [])
+
+    def test_anomaly_entries_grouped_per_episode(self):
+        episodes = [{"episode_id": "ep-1", "agent": "developer",
+                     "timestamp": "2026-04-15T10:00:00Z"}]
+        anomalies = [
+            {"episode_id": "ep-1", "timestamp": "2026-04-15T10:00:00Z",
+             "type": "investigation_skip"},
+            {"episode_id": "ep-1", "timestamp": "2026-04-15T10:00:00Z",
+             "type": "context_ignored"},
+        ]
+        con = _make_in_memory_db(episodes, anomalies)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                entries = _read_anomaly_entries(root)
+        # Two anomaly rows for one episode -> one grouped entry with 2 anomalies.
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["metrics"]["agent"], "developer")
+        types = {a["type"] for a in entries[0]["anomalies"]}
+        self.assertEqual(types, {"investigation_skip", "context_ignored"})
+
+    def test_anomaly_entries_feed_summary_calculator(self):
+        # End-to-end: grouped entries are the shape _calculate_anomaly_summary wants.
+        now = datetime.now(timezone.utc).isoformat()
+        episodes = [{"episode_id": "ep-1", "agent": "developer", "timestamp": now}]
+        anomalies = [{"episode_id": "ep-1", "timestamp": now, "type": "pipe_retroactive"}]
+        con = _make_in_memory_db(episodes, anomalies)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(Path(tmp))
+            with _patch_store(con):
+                entries = _read_anomaly_entries(root)
+        summary = _calculate_anomaly_summary(entries)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["total"], 1)
+        self.assertEqual(summary["session_count"], 1)
+
+
 class TestCmdMetrics(unittest.TestCase):
+    def setUp(self):
+        # Isolate every cmd_metrics test from the real ~/.gaia/gaia.db: with
+        # _open_store returning (None, None) the three DB-backed readers all
+        # return []. Tests that need episode data override the specific reader.
+        self._open_patch = patch("cli.metrics._open_store", return_value=(None, None))
+        self._open_patch.start()
+        self.addCleanup(self._open_patch.stop)
+
     def _make_args(self, agent=None, as_json=False):
         import argparse
         ns = argparse.Namespace()
@@ -371,10 +602,6 @@ class TestCmdMetrics(unittest.TestCase):
                 {"tier": "T3", "command": "git push", "timestamp": now, "exit_code": 0},
             ]
             _write_audit_jsonl(claude_dir / "logs", logs)
-            episodes = [
-                {"agent": "developer", "timestamp": now, "plan_status": "COMPLETE", "exit_code": 0},
-            ]
-            _write_index(claude_dir, episodes)
 
             args = self._make_args(as_json=True)
             with patch("cli.metrics._find_project_root", return_value=root):
@@ -431,10 +658,10 @@ class TestCmdMetrics(unittest.TestCase):
                     "task_id": "task-001",
                 }
             ]
-            _write_index(claude_dir, episodes)
 
             args = self._make_args(agent="developer")
-            with patch("cli.metrics._find_project_root", return_value=root):
+            with patch("cli.metrics._find_project_root", return_value=root), \
+                    patch("cli.metrics._read_workflow_metrics", return_value=episodes):
                 import io
                 from contextlib import redirect_stdout
                 buf = io.StringIO()
